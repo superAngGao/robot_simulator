@@ -78,6 +78,21 @@ works for both legged robots and manipulators?
   composable terms (see REFERENCES.md).
 - Not yet designed. Needed before Phase 2 rl_env implementation.
 
+**Q11 — `<inertial><origin rpy>` 非零的处理**
+URDF 允许惯量张量在任意旋转的 CoM frame 里定义（非零 rpy）。
+几乎所有真实 URDF 的 inertial rpy 都是零，但规范上合法。
+- 当前决策：零 rpy 正常处理；非零 rpy log warning，不报错，张量直接使用
+- 待定：是否需要将张量旋转到 link frame（`I_link = R @ I_com @ R.T`）
+- 参考：Pinocchio 和 Drake 都做了完整旋转变换
+
+**Q12 — Fixed joint 合并优化（未来）**
+当前每个 link 保留独立 Body，fixed joint 不合并。
+若未来做合并优化（减少 ABA 计算量），需注意平行轴定理的正确应用：
+`I_A = I_B + m * (|r|²·I₃ - r·rᵀ)`，其中 r 是从 A origin 到 B CoM 的向量。
+Pinocchio issue #1388 曾在此处有 bug。
+- 当前：不合并，无风险
+- 未来：合并前必须加单元测试验证惯量变换
+
 ---
 
 ## Infrastructure
