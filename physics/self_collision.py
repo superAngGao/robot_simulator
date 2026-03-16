@@ -22,17 +22,17 @@ leg swinging through the torso) without the overhead of exact geometry.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Set, Tuple, Optional
+from typing import List, Optional, Set, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
 
-from .spatial import SpatialTransform, Vec3, Vec6
-
+from .spatial import SpatialTransform, Vec6
 
 # ---------------------------------------------------------------------------
 # Per-body AABB descriptor
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class BodyAABB:
@@ -42,13 +42,15 @@ class BodyAABB:
         body_index   : Index of the body in the RobotTree body list.
         half_extents : Half-size along each local axis [m].  Shape (3,).
     """
-    body_index:   int
-    half_extents: NDArray[np.float64]   # (3,)
+
+    body_index: int
+    half_extents: NDArray[np.float64]  # (3,)
 
 
 # ---------------------------------------------------------------------------
 # World-frame AABB helper
 # ---------------------------------------------------------------------------
+
 
 def _world_aabb(
     babb: BodyAABB,
@@ -61,7 +63,7 @@ def _world_aabb(
 
         world_half[i] = Σ_j |R[i,j]| * local_half[j]
     """
-    center     = X_world.r.copy()
+    center = X_world.r.copy()
     world_half = np.abs(X_world.R) @ babb.half_extents
     return center - world_half, center + world_half
 
@@ -69,6 +71,7 @@ def _world_aabb(
 # ---------------------------------------------------------------------------
 # Self-collision model
 # ---------------------------------------------------------------------------
+
 
 class AABBSelfCollision:
     """Penalty-based self-collision model using body AABBs.
@@ -100,7 +103,7 @@ class AABBSelfCollision:
         self.k_contact = float(k_contact)
         self.b_contact = float(b_contact)
         self._aabbs: List[BodyAABB] = []
-        self._pairs: List[Tuple[int, int]] = []   # indices into self._aabbs
+        self._pairs: List[Tuple[int, int]] = []  # indices into self._aabbs
 
     # ------------------------------------------------------------------
     # Registration
@@ -146,8 +149,8 @@ class AABBSelfCollision:
     def compute_forces(
         self,
         X_world_list: List[SpatialTransform],
-        v_body_list:  Optional[List[NDArray]] = None,
-        num_bodies:   int = 0,
+        v_body_list: Optional[List[NDArray]] = None,
+        num_bodies: int = 0,
     ) -> List[Vec6]:
         """Compute spatial self-collision penalty forces for all bodies.
 
@@ -180,11 +183,11 @@ class AABBSelfCollision:
             # Per-axis overlap (positive = penetrating)
             overlap = np.minimum(max_i, max_j) - np.maximum(min_i, min_j)
             if np.any(overlap <= 0.0):
-                continue   # separated on at least one axis → no contact
+                continue  # separated on at least one axis → no contact
 
             # Axis of minimum penetration (MTV direction)
             k_axis = int(np.argmin(overlap))
-            depth  = overlap[k_axis]
+            depth = overlap[k_axis]
 
             # Push i away from j along the MTV axis
             sep = Xi.r - Xj.r
@@ -196,10 +199,10 @@ class AABBSelfCollision:
 
             # Optional velocity damping along the contact direction
             if v_body_list is not None:
-                vi_world = Xi.R @ v_body_list[bi][3:]   # linear vel of body i in world
+                vi_world = Xi.R @ v_body_list[bi][3:]  # linear vel of body i in world
                 vj_world = Xj.R @ v_body_list[bj][3:]
                 v_rel = np.dot(vi_world - vj_world, direction)
-                if v_rel < 0.0:   # bodies approaching → add damping
+                if v_rel < 0.0:  # bodies approaching → add damping
                     F_mag -= self.b_contact * v_rel
 
             F_world = direction * F_mag
@@ -222,6 +225,4 @@ class AABBSelfCollision:
         return len(self._pairs)
 
     def __repr__(self) -> str:
-        return (f"AABBSelfCollision(bodies={len(self._aabbs)}, "
-                f"pairs={len(self._pairs)}, "
-                f"k={self.k_contact})")
+        return f"AABBSelfCollision(bodies={len(self._aabbs)}, pairs={len(self._pairs)}, k={self.k_contact})"

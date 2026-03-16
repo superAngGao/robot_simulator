@@ -21,35 +21,33 @@ Usage
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
-import numpy as np
-import matplotlib
-import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-from mpl_toolkits.mplot3d import Axes3D           # noqa: F401  (registers 3D projection)
-from mpl_toolkits.mplot3d.art3d import Line3DCollection
+import matplotlib.pyplot as plt
+import numpy as np
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  (registers 3D projection)
 
-from ..physics.robot_tree import RobotTree, Body
+from ..physics.robot_tree import RobotTree
 from ..physics.spatial import SpatialTransform
-
 
 # ---------------------------------------------------------------------------
 # Colour palette
 # ---------------------------------------------------------------------------
 
 PALETTE = {
-    "body":    "#4C9BE8",   # blue spheres for bodies
-    "joint":   "#E8854C",   # orange lines for links
-    "contact": "#E84C4C",   # red sphere for foot in contact
-    "ground":  "#CCCCCC",   # light grey ground plane
-    "origin":  "#888888",   # axis ticks
+    "body": "#4C9BE8",  # blue spheres for bodies
+    "joint": "#E8854C",  # orange lines for links
+    "contact": "#E84C4C",  # red sphere for foot in contact
+    "ground": "#CCCCCC",  # light grey ground plane
+    "origin": "#888888",  # axis ticks
 }
 
 
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
+
 
 def _body_world_pos(X: SpatialTransform) -> np.ndarray:
     """Return the world-frame origin of a body transform."""
@@ -59,6 +57,7 @@ def _body_world_pos(X: SpatialTransform) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # RobotViewer
 # ---------------------------------------------------------------------------
+
 
 class RobotViewer:
     """Interactive 3D viewer for a RobotTree.
@@ -73,16 +72,16 @@ class RobotViewer:
 
     def __init__(
         self,
-        tree:          RobotTree,
-        ground_z:      float = 0.0,
-        floor_size:    float = 1.0,
-        body_radius:   float = 0.03,
+        tree: RobotTree,
+        ground_z: float = 0.0,
+        floor_size: float = 1.0,
+        body_radius: float = 0.03,
         contact_names: Optional[List[str]] = None,
     ) -> None:
-        self.tree          = tree
-        self.ground_z      = ground_z
-        self.floor_size    = floor_size
-        self.body_radius   = body_radius
+        self.tree = tree
+        self.ground_z = ground_z
+        self.floor_size = floor_size
+        self.body_radius = body_radius
         self.contact_names = set(contact_names or [])
 
     # ------------------------------------------------------------------
@@ -91,10 +90,10 @@ class RobotViewer:
 
     def render_pose(
         self,
-        q:          np.ndarray,
-        title:      str = "Robot pose",
-        show:       bool = True,
-        save_path:  Optional[str] = None,
+        q: np.ndarray,
+        title: str = "Robot pose",
+        show: bool = True,
+        save_path: Optional[str] = None,
     ) -> plt.Figure:
         """Render a single robot pose.
 
@@ -108,7 +107,7 @@ class RobotViewer:
             The matplotlib Figure object.
         """
         fig = plt.figure(figsize=(8, 7))
-        ax  = fig.add_subplot(111, projection="3d")
+        ax = fig.add_subplot(111, projection="3d")
         self._draw_frame(ax, q)
         ax.set_title(title)
         self._configure_axes(ax)
@@ -121,12 +120,12 @@ class RobotViewer:
 
     def animate(
         self,
-        times:      np.ndarray,
-        qs:         np.ndarray,
-        interval:   int = 20,
-        title:      str = "Simulation replay",
-        show:       bool = True,
-        save_path:  Optional[str] = None,
+        times: np.ndarray,
+        qs: np.ndarray,
+        interval: int = 20,
+        title: str = "Simulation replay",
+        show: bool = True,
+        save_path: Optional[str] = None,
     ) -> animation.FuncAnimation:
         """Animate a recorded trajectory.
 
@@ -142,12 +141,10 @@ class RobotViewer:
             The FuncAnimation object.
         """
         fig = plt.figure(figsize=(8, 7))
-        ax  = fig.add_subplot(111, projection="3d")
+        ax = fig.add_subplot(111, projection="3d")
         self._configure_axes(ax)
 
-        time_text = ax.text2D(
-            0.02, 0.95, "", transform=ax.transAxes, fontsize=10, color="#333333"
-        )
+        time_text = ax.text2D(0.02, 0.95, "", transform=ax.transAxes, fontsize=10, color="#333333")
         artists: list = []  # cleared each frame
 
         def update(frame_idx: int) -> list:
@@ -186,11 +183,11 @@ class RobotViewer:
     def _draw_frame(
         self,
         ax: "Axes3D",
-        q:  np.ndarray,
+        q: np.ndarray,
     ) -> list:
         """Draw bodies, links, and ground for a given q. Returns artist list."""
         X_world = self.tree.forward_kinematics(q)
-        artists  = []
+        artists = []
 
         # Ground plane (mesh grid)
         artists += self._draw_ground(ax)
@@ -210,7 +207,9 @@ class RobotViewer:
         xx, yy = np.meshgrid(xs, ys)
         zz = np.full_like(xx, self.ground_z)
         surf = ax.plot_surface(
-            xx, yy, zz,
+            xx,
+            yy,
+            zz,
             alpha=0.25,
             color=PALETTE["ground"],
             linewidth=0,
@@ -220,7 +219,7 @@ class RobotViewer:
 
     def _draw_links(
         self,
-        ax:      "Axes3D",
+        ax: "Axes3D",
         X_world: List[SpatialTransform],
     ) -> list:
         artists = []
@@ -229,7 +228,7 @@ class RobotViewer:
                 continue
             p_pos = _body_world_pos(X_world[body.parent])
             c_pos = _body_world_pos(X_world[body.index])
-            line, = ax.plot(
+            (line,) = ax.plot(
                 [p_pos[0], c_pos[0]],
                 [p_pos[1], c_pos[1]],
                 [p_pos[2], c_pos[2]],
@@ -242,17 +241,17 @@ class RobotViewer:
 
     def _draw_bodies(
         self,
-        ax:      "Axes3D",
+        ax: "Axes3D",
         X_world: List[SpatialTransform],
     ) -> list:
         artists = []
         for body in self.tree.bodies:
-            pos   = _body_world_pos(X_world[body.index])
-            color = (PALETTE["contact"]
-                     if body.name in self.contact_names
-                     else PALETTE["body"])
+            pos = _body_world_pos(X_world[body.index])
+            color = PALETTE["contact"] if body.name in self.contact_names else PALETTE["body"]
             sc = ax.scatter(
-                [pos[0]], [pos[1]], [pos[2]],
+                [pos[0]],
+                [pos[1]],
+                [pos[2]],
                 s=120,
                 c=color,
                 depthshade=True,

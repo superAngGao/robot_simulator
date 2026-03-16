@@ -30,20 +30,21 @@ from typing import List, Optional
 import numpy as np
 from numpy.typing import NDArray
 
+from .joint import Joint
 from .spatial import (
-    SpatialTransform,
+    Mat6,
     SpatialInertia,
-    spatial_cross_velocity,
-    spatial_cross_force,
-    Vec6, Mat6,
+    SpatialTransform,
+    Vec6,
     gravity_spatial,
+    spatial_cross_force,
+    spatial_cross_velocity,
 )
-from .joint import Joint, FreeJoint
-
 
 # ---------------------------------------------------------------------------
 # Body
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class Body:
@@ -61,33 +62,37 @@ class Body:
         q_idx       : Slice into the global q  vector for this body's joint.
         v_idx       : Slice into the global qdot / tau vector.
     """
-    name:     str
-    index:    int
-    joint:    Joint
-    inertia:  SpatialInertia
-    X_tree:   SpatialTransform
-    parent:   int                  = -1
-    children: List[int]            = field(default_factory=list)
-    q_idx:    slice                = field(default=slice(0, 0))
-    v_idx:    slice                = field(default=slice(0, 0))
+
+    name: str
+    index: int
+    joint: Joint
+    inertia: SpatialInertia
+    X_tree: SpatialTransform
+    parent: int = -1
+    children: List[int] = field(default_factory=list)
+    q_idx: slice = field(default=slice(0, 0))
+    v_idx: slice = field(default=slice(0, 0))
 
 
 # ---------------------------------------------------------------------------
 # Kinematic state (scratch-pad, recomputed each step)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class KinematicState:
     """Per-body quantities computed during forward kinematics / ABA."""
-    X_world:  SpatialTransform    # body frame expressed in world
-    v:        Vec6                # spatial velocity  in body frame
-    a:        Vec6                # spatial acceleration in body frame
-    f:        Vec6                # spatial force (net) in body frame
+
+    X_world: SpatialTransform  # body frame expressed in world
+    v: Vec6  # spatial velocity  in body frame
+    a: Vec6  # spatial acceleration in body frame
+    f: Vec6  # spatial force (net) in body frame
 
 
 # ---------------------------------------------------------------------------
 # Robot tree
 # ---------------------------------------------------------------------------
+
 
 class RobotTree:
     """Articulated rigid body tree.
@@ -105,9 +110,9 @@ class RobotTree:
     """
 
     def __init__(self, gravity: float = 9.81) -> None:
-        self._bodies:   List[Body] = []
-        self._gravity:  float      = gravity
-        self._finalized: bool      = False
+        self._bodies: List[Body] = []
+        self._gravity: float = gravity
+        self._finalized: bool = False
         self.nq: int = 0
         self.nv: int = 0
 
@@ -153,7 +158,7 @@ class RobotTree:
 
     def default_state(self) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """Return (q, qdot) initialised to the zero / default configuration."""
-        q    = np.concatenate([b.joint.default_q()    for b in self._bodies])
+        q = np.concatenate([b.joint.default_q() for b in self._bodies])
         qdot = np.concatenate([b.joint.default_qdot() for b in self._bodies])
         return q, qdot
 
@@ -181,7 +186,7 @@ class RobotTree:
 
         for body in self._bodies:
             X_J = body.joint.transform(self._q_of(body, q))
-            X_local = body.X_tree @ X_J          # parent-to-body (default+joint)
+            X_local = body.X_tree @ X_J  # parent-to-body (default+joint)
             if body.parent < 0:
                 X_world[body.index] = X_local
             else:
@@ -195,7 +200,7 @@ class RobotTree:
 
     def rnea(
         self,
-        q:    NDArray[np.float64],
+        q: NDArray[np.float64],
         qdot: NDArray[np.float64],
         qddot: NDArray[np.float64],
         external_forces: Optional[List[Optional[Vec6]]] = None,
@@ -221,14 +226,14 @@ class RobotTree:
 
         # --- Pass 1: forward recursion (kinematics) ---
         for body in self._bodies:
-            q_i    = self._q_of(body, q)
+            q_i = self._q_of(body, q)
             qdot_i = self._v_of(body, qdot)
-            qddot_i= self._v_of(body, qddot)
+            qddot_i = self._v_of(body, qddot)
 
-            X_J  = body.joint.transform(q_i)
-            S    = body.joint.motion_subspace(q_i)
-            cJ   = body.joint.bias_acceleration(q_i, qdot_i)
-            X_up = body.X_tree @ X_J         # parent → body
+            X_J = body.joint.transform(q_i)
+            S = body.joint.motion_subspace(q_i)
+            cJ = body.joint.bias_acceleration(q_i, qdot_i)
+            X_up = body.X_tree @ X_J  # parent → body
 
             vJ = S @ qdot_i if S.shape[1] > 0 else np.zeros(6)
 
@@ -238,25 +243,27 @@ class RobotTree:
             else:
                 v_p = v[body.parent]
                 v[body.index] = X_up.apply_velocity(v_p) + vJ
-                a[body.index] = (X_up.apply_velocity(a[body.parent])
-                                 + S @ qddot_i + cJ
-                                 + spatial_cross_velocity(v[body.index]) @ vJ)
+                a[body.index] = (
+                    X_up.apply_velocity(a[body.parent])
+                    + S @ qddot_i
+                    + cJ
+                    + spatial_cross_velocity(v[body.index]) @ vJ
+                )
 
             # Net rigid-body force = I*a + v×*(I*v) − external
             I_mat = body.inertia.matrix()
-            vi    = v[body.index]
-            ai    = a[body.index]
-            f[body.index] = (I_mat @ ai
-                             + spatial_cross_force(vi) @ (I_mat @ vi))
+            vi = v[body.index]
+            ai = a[body.index]
+            f[body.index] = I_mat @ ai + spatial_cross_force(vi) @ (I_mat @ vi)
             if external_forces is not None and external_forces[body.index] is not None:
                 f[body.index] -= external_forces[body.index]
 
         # --- Pass 2: backward recursion (force propagation) ---
         tau = np.zeros(self.nv, dtype=np.float64)
         for body in reversed(self._bodies):
-            q_i  = self._q_of(body, q)
-            S    = body.joint.motion_subspace(q_i)
-            X_J  = body.joint.transform(q_i)
+            q_i = self._q_of(body, q)
+            S = body.joint.motion_subspace(q_i)
+            X_J = body.joint.transform(q_i)
             X_up = body.X_tree @ X_J
 
             if S.shape[1] > 0:
@@ -273,9 +280,9 @@ class RobotTree:
 
     def aba(
         self,
-        q:    NDArray[np.float64],
+        q: NDArray[np.float64],
         qdot: NDArray[np.float64],
-        tau:  NDArray[np.float64],
+        tau: NDArray[np.float64],
         external_forces: Optional[List[Optional[Vec6]]] = None,
     ) -> NDArray[np.float64]:
         """Compute generalised accelerations given joint torques.
@@ -294,23 +301,23 @@ class RobotTree:
         n = self.num_bodies
 
         # Per-body storage
-        v:    List[Vec6]  = [np.zeros(6)] * n
-        c:    List[Vec6]  = [np.zeros(6)] * n    # bias acceleration
-        IA:   List[Mat6]  = [np.zeros((6,6))] * n
-        pA:   List[Vec6]  = [np.zeros(6)] * n
-        a:    List[Vec6]  = [np.zeros(6)] * n
+        v: List[Vec6] = [np.zeros(6)] * n
+        c: List[Vec6] = [np.zeros(6)] * n  # bias acceleration
+        IA: List[Mat6] = [np.zeros((6, 6))] * n
+        pA: List[Vec6] = [np.zeros(6)] * n
+        a: List[Vec6] = [np.zeros(6)] * n
         X_up: List[Optional[SpatialTransform]] = [None] * n
 
         a_gravity = gravity_spatial(self._gravity)
 
         # ---- Pass 1: forward — velocities and bias forces ----
         for body in self._bodies:
-            q_i    = self._q_of(body, q)
+            q_i = self._q_of(body, q)
             qdot_i = self._v_of(body, qdot)
 
-            X_J   = body.joint.transform(q_i)
-            S     = body.joint.motion_subspace(q_i)
-            cJ    = body.joint.bias_acceleration(q_i, qdot_i)
+            X_J = body.joint.transform(q_i)
+            S = body.joint.motion_subspace(q_i)
+            cJ = body.joint.bias_acceleration(q_i, qdot_i)
             Xup_i = body.X_tree @ X_J
             X_up[body.index] = Xup_i
 
@@ -322,33 +329,33 @@ class RobotTree:
             else:
                 v_p = v[body.parent]
                 v[body.index] = Xup_i.apply_velocity(v_p) + vJ
-                c[body.index] = (spatial_cross_velocity(v[body.index]) @ vJ + cJ)
+                c[body.index] = spatial_cross_velocity(v[body.index]) @ vJ + cJ
 
             I_mat = body.inertia.matrix()
-            vi    = v[body.index]
+            vi = v[body.index]
             IA[body.index] = I_mat.copy()
             pA[body.index] = spatial_cross_force(vi) @ (I_mat @ vi)
             if external_forces is not None and external_forces[body.index] is not None:
                 pA[body.index] -= external_forces[body.index]
 
         # ---- Pass 2: backward — articulated inertias ----
-        U:     List[Optional[NDArray]] = [None] * n
+        U: List[Optional[NDArray]] = [None] * n
         D_inv: List[Optional[NDArray]] = [None] * n
-        u:     List[Optional[NDArray]] = [None] * n
+        u: List[Optional[NDArray]] = [None] * n
 
         for body in reversed(self._bodies):
-            q_i    = self._q_of(body, q)
-            tau_i  = self._v_of(body, tau)
-            S      = body.joint.motion_subspace(q_i)
+            q_i = self._q_of(body, q)
+            tau_i = self._v_of(body, tau)
+            S = body.joint.motion_subspace(q_i)
 
             if S.shape[1] > 0:
-                U_i     = IA[body.index] @ S                        # (6, nv_i)
-                D_i     = S.T @ U_i                                  # (nv_i, nv_i)
+                U_i = IA[body.index] @ S  # (6, nv_i)
+                D_i = S.T @ U_i  # (nv_i, nv_i)
                 D_inv_i = np.linalg.inv(D_i)
-                u_i     = tau_i - S.T @ pA[body.index]
-                U[body.index]     = U_i
+                u_i = tau_i - S.T @ pA[body.index]
+                U[body.index] = U_i
                 D_inv[body.index] = D_inv_i
-                u[body.index]     = u_i
+                u[body.index] = u_i
 
                 # Articulated inertia contribution to parent
                 IA_A = IA[body.index] - U_i @ D_inv_i @ U_i.T
@@ -359,7 +366,7 @@ class RobotTree:
 
             if body.parent >= 0:
                 Xup_i = X_up[body.index]
-                X6    = Xup_i.matrix()
+                X6 = Xup_i.matrix()
                 IA[body.parent] += X6.T @ IA_A @ X6
                 pA[body.parent] += Xup_i.apply_force(pA_A)
 
@@ -367,9 +374,9 @@ class RobotTree:
         qddot = np.zeros(self.nv, dtype=np.float64)
 
         for body in self._bodies:
-            q_i    = self._q_of(body, q)
-            S      = body.joint.motion_subspace(q_i)
-            Xup_i  = X_up[body.index]
+            q_i = self._q_of(body, q)
+            S = body.joint.motion_subspace(q_i)
+            Xup_i = X_up[body.index]
 
             if body.parent < 0:
                 # Featherstone (2008) §7.3: set base acceleration to -a_gravity
@@ -403,7 +410,7 @@ class RobotTree:
 
     def joint_limit_torques(
         self,
-        q:    NDArray[np.float64],
+        q: NDArray[np.float64],
         qdot: NDArray[np.float64],
     ) -> NDArray[np.float64]:
         """Compute restoring torques for all joints that have active limits.
@@ -412,14 +419,12 @@ class RobotTree:
         before calling aba(), so the limits are enforced every time-step.
         """
         from .joint import RevoluteJoint as _Rev
+
         tau_lim = np.zeros(self.nv, dtype=np.float64)
         for body in self._bodies:
             if isinstance(body.joint, _Rev):
-                tau_lim[body.v_idx] = body.joint.compute_limit_torque(
-                    q[body.q_idx], qdot[body.v_idx]
-                )
+                tau_lim[body.v_idx] = body.joint.compute_limit_torque(q[body.q_idx], qdot[body.v_idx])
         return tau_lim
 
     def __repr__(self) -> str:
-        return (f"RobotTree(bodies={self.num_bodies}, "
-                f"nq={self.nq}, nv={self.nv})")
+        return f"RobotTree(bodies={self.num_bodies}, nq={self.nq}, nv={self.nv})"

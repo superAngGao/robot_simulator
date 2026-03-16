@@ -29,17 +29,16 @@ References:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List
 
 import numpy as np
-from numpy.typing import NDArray
 
 from .spatial import SpatialTransform, Vec3, Vec6
-
 
 # ---------------------------------------------------------------------------
 # Contact parameters
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class ContactParams:
@@ -52,16 +51,18 @@ class ContactParams:
         slip_eps  : Regularisation for Coulomb cone [m/s].
         ground_z  : Height of the ground plane [m] (default 0).
     """
-    k_normal:  float = 5_000.0
-    b_normal:  float = 500.0
-    mu:        float = 0.8
-    slip_eps:  float = 1e-3
-    ground_z:  float = 0.0
+
+    k_normal: float = 5_000.0
+    b_normal: float = 500.0
+    mu: float = 0.8
+    slip_eps: float = 1e-3
+    ground_z: float = 0.0
 
 
 # ---------------------------------------------------------------------------
 # Contact point definition
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class ContactPoint:
@@ -72,9 +73,10 @@ class ContactPoint:
         position    : Position of the contact point in the body's local frame [m].
         name        : Optional label (e.g. "FL_foot").
     """
+
     body_index: int
-    position:   Vec3
-    name:       str = ""
+    position: Vec3
+    name: str = ""
 
     def world_position(self, X_world: SpatialTransform) -> Vec3:
         """Return contact point position in the world frame."""
@@ -84,15 +86,15 @@ class ContactPoint:
     def world_velocity(
         self,
         X_world: SpatialTransform,
-        v_body:  Vec6,
+        v_body: Vec6,
     ) -> Vec3:
         """Return contact point velocity in the world frame.
 
         Uses the rigid-body velocity formula:
             v_point = v_linear + ω × r_point
         """
-        omega   = X_world.R @ v_body[:3]   # angular vel in world
-        v_lin   = X_world.R @ v_body[3:]   # linear vel of body origin in world
+        omega = X_world.R @ v_body[:3]  # angular vel in world
+        v_lin = X_world.R @ v_body[3:]  # linear vel of body origin in world
         r_world = X_world.R @ self.position
         return v_lin + np.cross(omega, r_world)
 
@@ -100,6 +102,7 @@ class ContactPoint:
 # ---------------------------------------------------------------------------
 # Contact model
 # ---------------------------------------------------------------------------
+
 
 class ContactModel:
     """Penalty-based contact model for a set of contact points.
@@ -127,8 +130,8 @@ class ContactModel:
     def compute_forces(
         self,
         X_world_list: List[SpatialTransform],
-        v_body_list:  List[Vec6],
-        num_bodies:   int,
+        v_body_list: List[Vec6],
+        num_bodies: int,
     ) -> List[Vec6]:
         """Compute spatial contact forces for all bodies.
 
@@ -141,17 +144,16 @@ class ContactModel:
             List of spatial force vectors (6,) in body frame, one per body.
             Zero for bodies with no active contact.
         """
-        forces: List[Vec6] = [np.zeros(6, dtype=np.float64)
-                               for _ in range(num_bodies)]
+        forces: List[Vec6] = [np.zeros(6, dtype=np.float64) for _ in range(num_bodies)]
         p = self.params
 
         for cp in self._contact_points:
             bi = cp.body_index
-            X  = X_world_list[bi]
-            v  = v_body_list[bi]
+            X = X_world_list[bi]
+            v = v_body_list[bi]
 
             pos_world = cp.world_position(X)
-            depth = p.ground_z - pos_world[2]   # positive when penetrating
+            depth = p.ground_z - pos_world[2]  # positive when penetrating
 
             if depth <= 0.0:
                 continue  # not in contact
@@ -159,18 +161,17 @@ class ContactModel:
             vel_world = cp.world_velocity(X, v)
 
             # --- Normal force ---
-            v_normal = vel_world[2]             # z-component of contact velocity
+            v_normal = vel_world[2]  # z-component of contact velocity
             F_normal = p.k_normal * depth - p.b_normal * v_normal
-            F_normal = max(0.0, F_normal)       # unilateral constraint
+            F_normal = max(0.0, F_normal)  # unilateral constraint
 
             # --- Tangential (friction) force ---
-            v_slip = vel_world[:2]              # x, y slip velocity
+            v_slip = vel_world[:2]  # x, y slip velocity
             slip_norm = np.sqrt(v_slip @ v_slip + p.slip_eps**2)
             F_tangent = -p.mu * F_normal * v_slip / slip_norm
 
             # Force in world frame
-            F_world = np.array([F_tangent[0], F_tangent[1], F_normal],
-                                dtype=np.float64)
+            F_world = np.array([F_tangent[0], F_tangent[1], F_normal], dtype=np.float64)
 
             # Convert to spatial force in body frame
             # Torque arm: r = pos_world − body_origin_world
@@ -212,5 +213,6 @@ class ContactModel:
         return list(self._contact_points)
 
     def __repr__(self) -> str:
-        return (f"ContactModel(points={len(self._contact_points)}, "
-                f"k={self.params.k_normal}, mu={self.params.mu})")
+        return (
+            f"ContactModel(points={len(self._contact_points)}, k={self.params.k_normal}, mu={self.params.mu})"
+        )

@@ -24,42 +24,80 @@ Isaac Sim is a powerful industrial tool, but we build our own because:
 
 ## Architecture Overview
 
+### Layered Architecture (5 layers)
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Layer 4: Application                                    │
+│  rl_env/vec_env.py  —  parallel VecEnv for RL training   │
+├──────────────────────────────────────────────────────────┤
+│  Layer 3: Task / Environment                             │
+│  rl_env/base_env.py  —  Gymnasium interface              │
+│  domain_rand/        —  physics & visual randomization   │
+├──────────────────────────────────────────────────────────┤
+│  Layer 2: Simulator  (single-env step, auto-manages      │
+│  passive forces; wraps Layer 1 + contact + self-collision)│
+├──────────────────────────────────────────────────────────┤
+│  Layer 1: Physics Core  (backend-agnostic algorithms)    │
+│  physics/{joint, robot_tree, contact, self_collision,    │
+│           integrator}  —  NumPy now, Warp in Phase 2     │
+├──────────────────────────────────────────────────────────┤
+│  Layer 0: Math Primitives                                │
+│  physics/spatial.py  —  pure spatial algebra, no physics │
+└──────────────────────────────────────────────────────────┘
+
+Robot Description (orthogonal config axis):
+  URDF / programmatic builder
+       → robot/urdf_loader.py → RobotModel
+             (bundles RobotTree + ContactModel + AABBSelfCollision)
+       → feeds into Layer 2 Simulator
+```
+
+### External-Facing APIs (two primary entry points)
+
+```
+1. load_urdf("robot.urdf", ...)  →  RobotModel     # bring-your-own robot
+2. Env(model, ...)               →  Gymnasium env  # RL training interface
+```
+
+Everything below these two interfaces is implementation detail.
+
+### Module Map
+
 ```
 robot_simulator/
-├── physics/               # GPU-accelerated physics core
-│   ├── warp_kernels/      # NVIDIA Warp / CUDA kernels (Phase 2+)
-│   ├── spatial.py         # Spatial algebra (6D vectors, Plücker transforms)
-│   ├── joint.py           # Joint models (revolute, fixed)
-│   ├── robot_tree.py      # Kinematic tree + FK + ABA forward dynamics
-│   ├── contact.py         # Spring-damper contact model (penalty method)
-│   └── integrator.py      # Semi-implicit Euler / RK4
+├── physics/               # Layer 0 + Layer 1
+│   ├── spatial.py         # Layer 0: 6D spatial algebra (Plücker)
+│   ├── joint.py           # Layer 1: joint kinematics + passive torques
+│   ├── robot_tree.py      # Layer 1: kinematic tree, FK, RNEA, ABA
+│   ├── contact.py         # Layer 1: penalty ground contact
+│   ├── self_collision.py  # Layer 1: AABB self-collision
+│   ├── integrator.py      # Layer 1: Semi-implicit Euler / RK4
+│   └── warp_kernels/      # Layer 1 (Phase 2): GPU backend
 │
-├── robot/
-│   ├── urdf_loader.py     # URDF parser
-│   ├── kinematics.py      # FK / IK
-│   └── dynamics.py        # Mass matrix, Coriolis
+├── robot/                 # Robot Description axis
+│   ├── model.py           # RobotModel dataclass
+│   └── urdf_loader.py     # URDF → RobotModel
 │
 ├── rendering/
-│   ├── vulkan_renderer/   # High-fidelity rendering (Phase 3+)
-│   ├── viewer.py          # Simple 3D visualization (matplotlib / PyOpenGL)
-│   ├── camera_sim.py      # Camera model + noise
-│   └── lidar_sim.py       # Point cloud simulation
+│   ├── viewer.py          # matplotlib debug viewer (Phase 1)
+│   ├── camera_sim.py      # camera noise model (Phase 3)
+│   └── lidar_sim.py       # LiDAR point cloud (Phase 3)
 │
-├── domain_rand/           # Sim-to-Real key module
-│   ├── physics_rand.py    # Randomize mass / friction / damping
-│   ├── visual_rand.py     # Randomize textures / lighting / colors
-│   └── noise_models.py    # Sensor noise models
+├── domain_rand/           # Layer 3: physics & visual randomization
+│   ├── physics_rand.py
+│   ├── visual_rand.py
+│   └── noise_models.py
 │
-├── rl_env/                # Reinforcement learning interface
-│   ├── base_env.py        # Gymnasium-compatible interface
-│   └── vec_env.py         # Parallel environments
+├── rl_env/                # Layer 3 + Layer 4
+│   ├── base_env.py        # Layer 3: Gymnasium-compatible single env
+│   └── vec_env.py         # Layer 4: parallel VecEnv
 │
-├── deploy/                # Real robot deployment
-│   ├── policy_export.py   # ONNX / TorchScript export
-│   └── hardware_bridge.py # ROS2 / vendor SDK interface
+├── deploy/                # Phase 5 (deferred)
+│   ├── policy_export.py
+│   └── hardware_bridge.py
 │
 ├── examples/
-│   └── simple_quadruped.py
 └── tests/
 ```
 

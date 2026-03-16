@@ -21,20 +21,20 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
-
 # ---------------------------------------------------------------------------
 # Type alias
 # ---------------------------------------------------------------------------
 
-Vec3 = NDArray[np.float64]   # shape (3,)
-Vec6 = NDArray[np.float64]   # shape (6,)
-Mat3 = NDArray[np.float64]   # shape (3, 3)
-Mat6 = NDArray[np.float64]   # shape (6, 6)
+Vec3 = NDArray[np.float64]  # shape (3,)
+Vec6 = NDArray[np.float64]  # shape (6,)
+Mat3 = NDArray[np.float64]  # shape (3, 3)
+Mat6 = NDArray[np.float64]  # shape (6, 6)
 
 
 # ---------------------------------------------------------------------------
 # Rotation utilities
 # ---------------------------------------------------------------------------
+
 
 def skew(v: Vec3) -> Mat3:
     """Return the 3x3 skew-symmetric matrix of vector v.
@@ -42,11 +42,14 @@ def skew(v: Vec3) -> Mat3:
     Satisfies: skew(v) @ u == np.cross(v, u)
     """
     x, y, z = v
-    return np.array([
-        [ 0., -z,  y],
-        [ z,  0., -x],
-        [-y,  x,  0.],
-    ], dtype=np.float64)
+    return np.array(
+        [
+            [0.0, -z, y],
+            [z, 0.0, -x],
+            [-y, x, 0.0],
+        ],
+        dtype=np.float64,
+    )
 
 
 def rot_x(angle: float) -> Mat3:
@@ -70,11 +73,14 @@ def rot_z(angle: float) -> Mat3:
 def quat_to_rot(q: NDArray[np.float64]) -> Mat3:
     """Convert unit quaternion [w, x, y, z] to rotation matrix."""
     w, x, y, z = q / np.linalg.norm(q)
-    return np.array([
-        [1 - 2*(y*y + z*z),     2*(x*y - w*z),     2*(x*z + w*y)],
-        [    2*(x*y + w*z), 1 - 2*(x*x + z*z),     2*(y*z - w*x)],
-        [    2*(x*z - w*y),     2*(y*z + w*x), 1 - 2*(x*x + y*y)],
-    ], dtype=np.float64)
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+            [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+            [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+        ],
+        dtype=np.float64,
+    )
 
 
 def rot_to_quat(R: Mat3) -> NDArray[np.float64]:
@@ -111,6 +117,7 @@ def rot_to_quat(R: Mat3) -> NDArray[np.float64]:
 # ---------------------------------------------------------------------------
 # Spatial transforms  (Plücker coordinate transforms)
 # ---------------------------------------------------------------------------
+
 
 class SpatialTransform:
     """Rigid-body coordinate transform in Plücker coordinates.
@@ -179,21 +186,25 @@ class SpatialTransform:
         """Transform a spatial velocity vector: v_B = X @ v_A."""
         R, r = self.R, self.r
         omega = v[:3]
-        vel   = v[3:]
-        return np.concatenate([
-            R @ omega,
-            R @ (vel - np.cross(r, omega)),
-        ])
+        vel = v[3:]
+        return np.concatenate(
+            [
+                R @ omega,
+                R @ (vel - np.cross(r, omega)),
+            ]
+        )
 
     def apply_force(self, f: Vec6) -> Vec6:
         """Transform a spatial force vector (dual): f_A = X^T @ f_B."""
         R, r = self.R, self.r
         tau = f[:3]
         frc = f[3:]
-        return np.concatenate([
-            R.T @ tau + np.cross(r, R.T @ frc),
-            R.T @ frc,
-        ])
+        return np.concatenate(
+            [
+                R.T @ tau + np.cross(r, R.T @ frc),
+                R.T @ frc,
+            ]
+        )
 
     def inverse(self) -> "SpatialTransform":
         """Return the inverse transform (B→A)."""
@@ -217,6 +228,7 @@ class SpatialTransform:
 # Spatial inertia
 # ---------------------------------------------------------------------------
 
+
 class SpatialInertia:
     """Spatial (6x6) inertia matrix of a rigid body.
 
@@ -239,9 +251,9 @@ class SpatialInertia:
             inertia: 3x3 rotational inertia tensor about CoM [kg·m²].
             com:     Center of mass position in body frame [m].
         """
-        self.mass    = float(mass)
+        self.mass = float(mass)
         self.inertia = np.asarray(inertia, dtype=np.float64)
-        self.com     = np.asarray(com,     dtype=np.float64)
+        self.com = np.asarray(com, dtype=np.float64)
 
     # ------------------------------------------------------------------
     # Factories
@@ -273,13 +285,13 @@ class SpatialInertia:
 
     def matrix(self) -> Mat6:
         """Return the 6x6 spatial inertia matrix expressed at body origin."""
-        m   = self.mass
-        c   = self.com
-        I   = self.inertia
-        C   = skew(c)
-        top_left  = I + m * (C @ C.T)   # shifted inertia (parallel axis)
+        m = self.mass
+        c = self.com
+        I = self.inertia
+        C = skew(c)
+        top_left = I + m * (C @ C.T)  # shifted inertia (parallel axis)
         top_right = m * C
-        bot_left  = m * C.T
+        bot_left = m * C.T
         bot_right = m * np.eye(3)
         M = np.zeros((6, 6), dtype=np.float64)
         M[:3, :3] = top_left
@@ -296,10 +308,14 @@ class SpatialInertia:
             return SpatialInertia(0.0, np.zeros((3, 3)), np.zeros(3))
         com = (m1 * self.com + m2 * other.com) / m
         # Parallel axis theorem for combined inertia
-        d1 = self.com  - com
+        d1 = self.com - com
         d2 = other.com - com
-        I  = (self.inertia  + m1 * (np.dot(d1, d1) * np.eye(3) - np.outer(d1, d1))
-            + other.inertia + m2 * (np.dot(d2, d2) * np.eye(3) - np.outer(d2, d2)))
+        I = (
+            self.inertia
+            + m1 * (np.dot(d1, d1) * np.eye(3) - np.outer(d1, d1))
+            + other.inertia
+            + m2 * (np.dot(d2, d2) * np.eye(3) - np.outer(d2, d2))
+        )
         return SpatialInertia(m, I, com)
 
     def __repr__(self) -> str:
@@ -310,6 +326,7 @@ class SpatialInertia:
 # Spatial vector helpers
 # ---------------------------------------------------------------------------
 
+
 def spatial_cross_velocity(v: Vec6) -> Mat6:
     """Spatial cross-product operator for velocity vectors.
 
@@ -319,10 +336,10 @@ def spatial_cross_velocity(v: Vec6) -> Mat6:
     Used in the equation of motion:  f = I*a + v x* (I*v)
     """
     omega = v[:3]
-    vel   = v[3:]
-    top_left  = skew(omega)
+    vel = v[3:]
+    top_left = skew(omega)
     top_right = np.zeros((3, 3))
-    bot_left  = skew(vel)
+    bot_left = skew(vel)
     bot_right = skew(omega)
     M = np.zeros((6, 6), dtype=np.float64)
     M[:3, :3] = top_left
@@ -343,4 +360,4 @@ def spatial_cross_force(v: Vec6) -> Mat6:
 
 def gravity_spatial(g: float = 9.81) -> Vec6:
     """Spatial gravity vector (acceleration of free fall, z-up convention)."""
-    return np.array([0., 0., 0., 0., 0., -g], dtype=np.float64)
+    return np.array([0.0, 0.0, 0.0, 0.0, 0.0, -g], dtype=np.float64)

@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/*)",
+      "Bash(python -m pytest tests/ *)",
+      "Bash(pre-commit run *)",
+      "Bash(ruff check *)",
+      "Bash(ruff format *)",
+      "Bash(git add *)",
+      "Bash(git commit*)",
+      "Bash(git diff*)",
+      "Bash(git status*)",
+      "Bash(git log*)",
+      "Bash(git branch*)",
+      "Bash(git switch*)",
+      "Bash(git fetch origin*)",
+      "Bash(pip install -e *)",
+      "Bash(MPLBACKEND=Agg python -m robot_simulator.examples.simple_quadruped*)",
+      "Bash(python -m robot_simulator.examples.simple_quadruped*)",
+      "Bash(find tests/ *)"
+    ]
+  }
+}

@@ -26,26 +26,29 @@ from numpy.typing import NDArray
 
 from .spatial import (
     SpatialTransform,
-    Vec3, Vec6, Mat6,
-    rot_x, rot_y, rot_z,
-    skew,
+    Vec3,
+    Vec6,
     quat_to_rot,
+    rot_x,
+    rot_y,
+    rot_z,
 )
-
 
 # ---------------------------------------------------------------------------
 # Joint axis constants
 # ---------------------------------------------------------------------------
+
 
 class Axis(Enum):
     X = auto()
     Y = auto()
     Z = auto()
 
+
 _AXIS_VEC: dict[Axis, Vec3] = {
-    Axis.X: np.array([1., 0., 0.]),
-    Axis.Y: np.array([0., 1., 0.]),
-    Axis.Z: np.array([0., 0., 1.]),
+    Axis.X: np.array([1.0, 0.0, 0.0]),
+    Axis.Y: np.array([0.0, 1.0, 0.0]),
+    Axis.Z: np.array([0.0, 0.0, 1.0]),
 }
 
 _AXIS_ROT = {
@@ -58,6 +61,7 @@ _AXIS_ROT = {
 # ---------------------------------------------------------------------------
 # Abstract base
 # ---------------------------------------------------------------------------
+
 
 class Joint(ABC):
     """Abstract base class for all joint types."""
@@ -85,7 +89,7 @@ class Joint(ABC):
     @abstractmethod
     def bias_acceleration(
         self,
-        q:    NDArray[np.float64],
+        q: NDArray[np.float64],
         qdot: NDArray[np.float64],
     ) -> Vec6:
         """Bias acceleration term c_J = Ṡ @ q̇  (often zero for simple joints)."""
@@ -105,6 +109,7 @@ class Joint(ABC):
 # ---------------------------------------------------------------------------
 # Revolute joint  (1 DOF)
 # ---------------------------------------------------------------------------
+
 
 class RevoluteJoint(Joint):
     """Single-axis revolute (hinge) joint.
@@ -126,7 +131,7 @@ class RevoluteJoint(Joint):
         name: str,
         axis: Axis = Axis.Z,
         q_min: float = -np.inf,
-        q_max: float =  np.inf,
+        q_max: float = np.inf,
         k_limit: float = 5_000.0,
         b_limit: float = 50.0,
     ) -> None:
@@ -136,8 +141,8 @@ class RevoluteJoint(Joint):
         self._S: NDArray[np.float64] = np.zeros((6, 1), dtype=np.float64)
         # Motion subspace: pure rotation about axis (angular component only)
         self._S[:3, 0] = self._axis_vec
-        self.q_min   = float(q_min)
-        self.q_max   = float(q_max)
+        self.q_min = float(q_min)
+        self.q_max = float(q_max)
         self.k_limit = float(k_limit)
         self.b_limit = float(b_limit)
 
@@ -151,14 +156,14 @@ class RevoluteJoint(Joint):
 
     def bias_acceleration(
         self,
-        q:    NDArray[np.float64],
+        q: NDArray[np.float64],
         qdot: NDArray[np.float64],
     ) -> Vec6:
         return np.zeros(6, dtype=np.float64)  # Ṡ = 0 for fixed-axis joints
 
     def compute_limit_torque(
         self,
-        q:    NDArray[np.float64],
+        q: NDArray[np.float64],
         qdot: NDArray[np.float64],
     ) -> float:
         """Return a penalty spring-damper torque when q violates [q_min, q_max].
@@ -192,6 +197,7 @@ class RevoluteJoint(Joint):
 # Prismatic joint  (1 DOF)
 # ---------------------------------------------------------------------------
 
+
 class PrismaticJoint(Joint):
     """Single-axis prismatic (sliding) joint.
 
@@ -219,7 +225,7 @@ class PrismaticJoint(Joint):
 
     def bias_acceleration(
         self,
-        q:    NDArray[np.float64],
+        q: NDArray[np.float64],
         qdot: NDArray[np.float64],
     ) -> Vec6:
         return np.zeros(6, dtype=np.float64)
@@ -234,6 +240,7 @@ class PrismaticJoint(Joint):
 # ---------------------------------------------------------------------------
 # Fixed joint  (0 DOF)
 # ---------------------------------------------------------------------------
+
 
 class FixedJoint(Joint):
     """Zero-DOF rigid connection between two bodies."""
@@ -253,7 +260,7 @@ class FixedJoint(Joint):
 
     def bias_acceleration(
         self,
-        q:    NDArray[np.float64],
+        q: NDArray[np.float64],
         qdot: NDArray[np.float64],
     ) -> Vec6:
         return np.zeros(6, dtype=np.float64)
@@ -268,6 +275,7 @@ class FixedJoint(Joint):
 # ---------------------------------------------------------------------------
 # Free joint  (6 DOF) — used for floating-base root body
 # ---------------------------------------------------------------------------
+
 
 class FreeJoint(Joint):
     """6-DOF free joint for the floating base of a robot.
@@ -286,8 +294,8 @@ class FreeJoint(Joint):
         super().__init__(name)
 
     def transform(self, q: NDArray[np.float64]) -> SpatialTransform:
-        quat  = q[:4]
-        pos   = q[4:]
+        quat = q[:4]
+        pos = q[4:]
         R = quat_to_rot(quat)
         return SpatialTransform(R, pos)
 
@@ -296,7 +304,7 @@ class FreeJoint(Joint):
 
     def bias_acceleration(
         self,
-        q:    NDArray[np.float64],
+        q: NDArray[np.float64],
         qdot: NDArray[np.float64],
     ) -> Vec6:
         return np.zeros(6, dtype=np.float64)
@@ -312,22 +320,24 @@ class FreeJoint(Joint):
 
     def integrate_q(
         self,
-        q:    NDArray[np.float64],
+        q: NDArray[np.float64],
         qdot: NDArray[np.float64],
-        dt:   float,
+        dt: float,
     ) -> NDArray[np.float64]:
         """Integrate quaternion state (avoids naive Euler on quaternions)."""
         omega = qdot[:3]
-        vel   = qdot[3:]
+        vel = qdot[3:]
         qw, qx, qy, qz = q[:4]
         # Quaternion derivative: q̇ = 0.5 * Ω(ω) @ q
-        dq = 0.5 * np.array([
-            -qx*omega[0] - qy*omega[1] - qz*omega[2],
-             qw*omega[0] + qy*omega[2] - qz*omega[1],
-             qw*omega[1] - qx*omega[2] + qz*omega[0],
-             qw*omega[2] + qx*omega[1] - qy*omega[0],
-        ])
+        dq = 0.5 * np.array(
+            [
+                -qx * omega[0] - qy * omega[1] - qz * omega[2],
+                qw * omega[0] + qy * omega[2] - qz * omega[1],
+                qw * omega[1] - qx * omega[2] + qz * omega[0],
+                qw * omega[2] + qx * omega[1] - qy * omega[0],
+            ]
+        )
         quat_new = q[:4] + dq * dt
         quat_new /= np.linalg.norm(quat_new)
-        pos_new  = q[4:] + vel * dt
+        pos_new = q[4:] + vel * dt
         return np.concatenate([quat_new, pos_new])
