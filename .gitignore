@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Distribution / packaging
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Environments
+.env
+.venv
+env/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Output files
+*.gif
+*.mp4
+*.png
+out/
