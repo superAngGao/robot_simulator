@@ -1,0 +1,92 @@
+# Robot Simulator — Open Questions
+
+> **How to use:** Read this file at the start of every session.
+> Add new items as they come up. Resolve items by moving them to
+> REFLECTIONS.md with the decision recorded, then deleting from here.
+
+---
+
+## Physics / Algorithms
+
+**Q1 — Joint friction (URDF `<dynamics friction="..."/>`)**
+URDF joint friction is parsed and stored in `_URDFData` but not used.
+True static/dynamic friction at the joint level requires a different model
+from viscous damping (e.g., Coulomb friction with stiction zone).
+- Current: parsed, silently ignored in `_build_model`
+- Needed: decide model (Coulomb? LuGre?) and where it lives (joint or integrator)
+- Blocking: nothing for now. Revisit in Phase 2.
+
+**Q2 — Body velocity exposure from RobotTree**
+`_compute_body_velocities()` in `simple_quadruped.py` duplicates the forward
+pass already done inside `aba()`. `RobotTree` should expose a public
+`body_velocities(q, qdot) -> list[Vec6]` method so contact and self-collision
+models don't recompute kinematics.
+- Blocking: efficiency, and correctness risk if the two passes diverge.
+- Fix: add method to `robot_tree.py` before Phase 2.
+
+**Q3 — AABB center at body origin, not CoM**
+Current `AABBSelfCollision` uses the body frame origin as the AABB center.
+If the CoM is far from the origin (offset-heavy links), the bounding box
+is inaccurate.
+- Current: acceptable for Phase 1 (links are roughly symmetric)
+- Fix: use CoM-centered AABB, or switch to OBB. Revisit in Phase 2.
+
+**Q4 — Contact/self-collision unification (long-term)**
+Phase 1 uses explicit `ContactPoint` (discrete foot tips) for ground contact
+and `BodyAABB` for self-collision — two separate geometry systems.
+Phase 2+ should unify: ground contact generated from `BodyCollisionGeometry`
+automatically (any geometry touching terrain → contact), not from manually
+specified points.
+- Blocking: nothing for Phase 2. Keep the two systems from diverging in API.
+- Revisit: when implementing `TerrainPenaltyContactModel`.
+
+---
+
+## robot/ Layer
+
+**Q5 — URDF with no `<inertial>` on a link**
+Treated as point mass `1e-6 kg` at origin with a warning log.
+Alternative: infer inertia from collision geometry (MuJoCo `inertiafromgeom`).
+- Current decision: placeholder mass, log warning.
+- Revisit: if users report unrealistic behaviour for sensor/virtual links.
+
+**Q6 — Multiple `<collision>` elements per link**
+All shapes are kept in `BodyCollisionGeometry.shapes: list[ShapeInstance]`.
+Each collision algorithm decides how to merge or iterate them.
+- Confirmed design, no action needed — but must verify AABB merge logic
+  in `AABBSelfCollision.from_geometries()` handles multi-shape bodies correctly.
+
+**Q7 — Mesh collision geometry (`<geometry><mesh/>`)**
+`MeshShape` stores only `filename`, no geometry is loaded or processed.
+- Current: silently skipped in collision model construction (logged as warning)
+- Needed: convex hull or SDF baking. Phase 3.
+
+**Q8 — Simulator (Layer 2) module location**
+Where does the `Simulator` class live?
+- Option A: `physics/simulator.py` (alongside algorithms)
+- Option B: top-level `simulator.py` (emphasises it as the external interface)
+- Not yet decided.
+
+---
+
+## rl_env / Layer 3
+
+**Q9 — Generic obs/action space for diverse robot types**
+How does `base_env.py` define observation and action spaces in a way that
+works for both legged robots and manipulators?
+- Isaac Lab reference: `ObservationManager` / `RewardManager` with named,
+  composable terms (see REFERENCES.md).
+- Not yet designed. Needed before Phase 2 rl_env implementation.
+
+---
+
+## Infrastructure
+
+**Q10 — Unit tests are missing**
+`tests/` is empty. Phase 1 validation was done via the drop-test example,
+not automated tests. Minimum needed before Phase 2:
+- `test_free_fall.py` — analytic free-fall vs ABA (already validated manually)
+- `test_pendulum.py` — single pendulum energy conservation
+- `test_contact.py` — contact force direction and magnitude
+- `test_joint_limits.py` — penalty torque at/beyond limits
+- Blocking: CI and the `/review` skill will flag missing tests for any new module.

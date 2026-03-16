@@ -50,6 +50,12 @@ tests/           # Unit tests (expand in Phase 2)
 - **New physics modules**: must include a docstring citing the reference equation/section.
 - **No type annotations required**, but add them to new public APIs.
 
+## At the Start of Every Session
+
+Read **OPEN_QUESTIONS.md**. It lists all unresolved design questions and
+deferred work. Check whether the current task touches any of them, and
+update the file if a question gets resolved or a new one comes up.
+
 ## Before Making Any Design Decision
 
 Read **REFERENCES.md** first. For every non-trivial design choice (API shape,
