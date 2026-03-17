@@ -408,6 +408,40 @@ class RobotTree:
                 return b
         raise KeyError(f"No body named {name!r}")
 
+    def body_velocities(
+        self,
+        q: NDArray[np.float64],
+        qdot: NDArray[np.float64],
+    ) -> List[Vec6]:
+        """Compute spatial velocity (body frame) for every body.
+
+        Performs a single forward pass (root → leaves).  The result is the
+        same ``v`` array that ABA Pass 1 computes internally; exposing it here
+        lets contact and self-collision models avoid redundant recomputation.
+
+        Reference: Featherstone (2008) §7.3, Pass 1 velocity recursion.
+
+        Returns:
+            List of (6,) spatial velocity vectors, one per body, in body frame.
+        """
+        self._check_finalized()
+        n = self.num_bodies
+        v: List[Vec6] = [np.zeros(6)] * n
+
+        for body in self._bodies:
+            q_i = self._q_of(body, q)
+            qdot_i = self._v_of(body, qdot)
+            X_J = body.joint.transform(q_i)
+            S = body.joint.motion_subspace(q_i)
+            X_up = body.X_tree @ X_J
+            vJ = S @ qdot_i if S.shape[1] > 0 else np.zeros(6)
+            if body.parent < 0:
+                v[body.index] = vJ
+            else:
+                v[body.index] = X_up.apply_velocity(v[body.parent]) + vJ
+
+        return v
+
     def joint_limit_torques(
         self,
         q: NDArray[np.float64],

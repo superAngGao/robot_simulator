@@ -280,29 +280,6 @@ def standing_state(tree: RobotTree) -> tuple[np.ndarray, np.ndarray]:
 
 
 # ---------------------------------------------------------------------------
-# Body-velocity helper (needed for contact + self-collision damping)
-# ---------------------------------------------------------------------------
-
-
-def _compute_body_velocities(
-    tree: RobotTree,
-    q: np.ndarray,
-    qdot: np.ndarray,
-) -> list:
-    """Return a list of spatial velocities (body frame) for every body."""
-    v_bodies = []
-    for body in tree.bodies:
-        S = body.joint.motion_subspace(q[body.q_idx])
-        vJ = S @ qdot[body.v_idx] if S.shape[1] > 0 else np.zeros(6)
-        if body.parent < 0:
-            v_bodies.append(vJ)
-        else:
-            Xup = body.X_tree @ body.joint.transform(q[body.q_idx])
-            v_bodies.append(Xup.apply_velocity(v_bodies[body.parent]) + vJ)
-    return v_bodies
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -347,7 +324,7 @@ def main(save_path: str | None = None) -> None:
 
         tau = controller(times[i], q, qdot)
         X_world = tree.forward_kinematics(q)
-        v_bodies = _compute_body_velocities(tree, q, qdot)
+        v_bodies = tree.body_velocities(q, qdot)
 
         # Ground contact forces
         contact_forces = contact_model.compute_forces(X_world, v_bodies, tree.num_bodies)

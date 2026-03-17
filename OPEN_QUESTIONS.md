@@ -16,13 +16,11 @@ from viscous damping (e.g., Coulomb friction with stiction zone).
 - Needed: decide model (Coulomb? LuGre?) and where it lives (joint or integrator)
 - Blocking: nothing for now. Revisit in Phase 2.
 
-**Q2 — Body velocity exposure from RobotTree**
-`_compute_body_velocities()` in `simple_quadruped.py` duplicates the forward
-pass already done inside `aba()`. `RobotTree` should expose a public
-`body_velocities(q, qdot) -> list[Vec6]` method so contact and self-collision
-models don't recompute kinematics.
-- Blocking: efficiency, and correctness risk if the two passes diverge.
-- Fix: add method to `robot_tree.py` before Phase 2.
+**Q2 — Body velocity exposure from RobotTree** ✅ RESOLVED
+Added `RobotTree.body_velocities(q, qdot) -> list[Vec6]` in `physics/robot_tree.py`.
+Removed `_compute_body_velocities()` from `simple_quadruped.py`.
+Covered by `tests/test_body_velocities.py` (4 tests).
+→ Moved to REFLECTIONS.md.
 
 **Q3 — AABB center at body origin, not CoM**
 Current `AABBSelfCollision` uses the body frame origin as the AABB center.
@@ -61,22 +59,21 @@ Each collision algorithm decides how to merge or iterate them.
 - Current: silently skipped in collision model construction (logged as warning)
 - Needed: convex hull or SDF baking. Phase 3.
 
-**Q8 — Simulator (Layer 2) module location**
-Where does the `Simulator` class live?
-- Option A: `physics/simulator.py` (alongside algorithms)
-- Option B: top-level `simulator.py` (emphasises it as the external interface)
-- Not yet decided.
+**Q8 — Simulator (Layer 2) module location** ✅ RESOLVED
+Decision: top-level `simulator.py` (Option B).
+Rationale: physics/ is an algorithm library; Simulator is a consumer/orchestrator.
+Consistent with Drake (Simulator separate from MultibodyPlant) and MuJoCo (mj_step
+is not inside the physics model). Matches the "two external entry points" constraint:
+`load_urdf()` and `Env()` — Simulator sits between them, not inside physics/.
+→ Moved to REFLECTIONS.md.
 
 ---
 
 ## rl_env / Layer 3
 
-**Q9 — Generic obs/action space for diverse robot types**
-How does `base_env.py` define observation and action spaces in a way that
-works for both legged robots and manipulators?
-- Isaac Lab reference: `ObservationManager` / `RewardManager` with named,
-  composable terms (see REFERENCES.md).
-- Not yet designed. Needed before Phase 2 rl_env implementation.
+**Q9 — Generic obs/action space for diverse robot types** ✅ RESOLVED
+Full design decided. See REFLECTIONS.md.
+→ Moved to REFLECTIONS.md.
 
 **Q11 — `<inertial><origin rpy>` 非零的处理**
 URDF 允许惯量张量在任意旋转的 CoM frame 里定义（非零 rpy）。
