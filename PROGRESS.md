@@ -10,7 +10,7 @@
 | Phase | 状态 | 完成度 |
 |-------|------|--------|
 | Phase 1 — Basic Physics + Simple Rendering | ✅ 完成（含修复） | 100% |
-| Phase 2 — GPU Acceleration + Parallel Envs | ⬜ 未开始 | 0% |
+| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 25% (2a+2b ✅) |
 | Phase 3 — High-Fidelity Rendering          | ⬜ 未开始 | 0% |
 | Phase 4 — Domain Randomization             | ⬜ 未开始 | 0% |
 | Phase 5 — Sim-to-Real Validation           | ⬜ 未开始 | 0% |
@@ -80,21 +80,22 @@
 > 目标：将 Phase 1 的 NumPy 后端移植到 NVIDIA Warp（GPU 原生 Python），实现
 > 1000+ 并行环境供 RL 训练。架构决策已在 REFLECTIONS.md (2026-03-17) 确认。
 
-### 2a — Layer 1 重构（GPU 和 robot/ 的前提）
+### 2a — Layer 1 重构（GPU 和 robot/ 的前提）✅
 
-- [ ] `physics/_robot_tree_base.py` — `RobotTreeBase(ABC)` 接口
-- [ ] `physics/robot_tree.py` — 重命名为 `RobotTreeNumpy(RobotTreeBase)`
-- [ ] `physics/joint.py` — `RevoluteJoint` 支持任意旋转轴（3-vector）+ `damping` 参数
-- [ ] `physics/robot_tree.py` — `joint_limit_torques()` → `passive_torques()`（统一限位+阻尼）
-- [ ] `physics/geometry.py` — `CollisionShape(ABC)` + `BoxShape / SphereShape / CylinderShape / MeshShape` + `BodyCollisionGeometry`
-- [ ] `physics/terrain.py` — `Terrain(ABC)` + `FlatTerrain` + `HeightmapTerrain`
-- [ ] `physics/contact.py` — `ContactModel(ABC)` + 现有逻辑改名 `PenaltyContactModel` + `NullContactModel`；`ground_z` → `terrain: Terrain`
-- [ ] `physics/collision.py` — `SelfCollisionModel(ABC)` + `AABBSelfCollision.from_geometries()` + `NullSelfCollision`；退役 `self_collision.py`
+- [x] `physics/_robot_tree_base.py` — `RobotTreeBase(ABC)` 接口
+- [x] `physics/robot_tree.py` — 重命名为 `RobotTreeNumpy(RobotTreeBase)`
+- [x] `physics/joint.py` — `RevoluteJoint` 支持任意旋转轴（3-vector）+ `damping` 参数
+- [x] `physics/robot_tree.py` — `joint_limit_torques()` → `passive_torques()`（统一限位+阻尼）
+- [x] `physics/geometry.py` — `CollisionShape(ABC)` + `BoxShape / SphereShape / CylinderShape / MeshShape` + `BodyCollisionGeometry`
+- [x] `physics/terrain.py` — `Terrain(ABC)` + `FlatTerrain` + `HeightmapTerrain`
+- [x] `physics/contact.py` — `ContactModel(ABC)` + 现有逻辑改名 `PenaltyContactModel` + `NullContactModel`；`ground_z` → `terrain: Terrain`
+- [x] `physics/collision.py` — `SelfCollisionModel(ABC)` + `AABBSelfCollision.from_geometries()` + `NullSelfCollision`；退役 `self_collision.py`
 
-### 2b — Robot description layer
+### 2b — Robot description layer ✅
 
-- [ ] `robot/model.py` — `RobotModel` dataclass
-- [ ] `robot/urdf_loader.py` — 两阶段：`_parse_urdf()` + `_build_model()`；`load_urdf()` 完整实现
+- [x] `robot/model.py` — `RobotModel` dataclass
+- [x] `robot/urdf_loader.py` — 两阶段：`_parse_urdf()` + `_build_model()`；`load_urdf()` 完整实现
+- [x] `tests/test_urdf_loader.py` — 6 个单元测试（floating/fixed base、revolute、任意轴、contact links、缺 inertial）
 
 ### 2c — Simulator (Layer 2)
 

@@ -284,7 +284,7 @@ physics/
 
 ---
 
-## 2026-03-16 — load_urdf 内部实现设计（进行中）
+## 2026-03-17 — load_urdf 内部实现设计（✅ 已完成）
 
 ### 两阶段设计（已确认）
 
@@ -366,14 +366,15 @@ def load_urdf(
 - `contact_links=None` → 不设置任何接触点（显式，不自动探测）
 - `self_collision_links=None` 的默认策略 → 待定（步骤 7 时讨论）
 
-### 待续（下次 session）
+### 实现结果（2026-03-17）
 
-- 步骤 4：floating_base 处理（倾向 Pinocchio 方式 A：root body 直接持有
-  `FreeJoint`，`X_tree = identity`）
-- 步骤 5：`BodyCollisionGeometry` 构建
-- 步骤 6：`ContactPoint` 构建
-- 步骤 7：`self_collision_links=None` 的默认策略 + `collision_method` 分发
-- 步骤 8：`RobotModel` 打包
+全部步骤已完成并提交（commit 879f2c2）：
+
+- floating_base=True → root body 持有 `FreeJoint("root")`，`X_tree = identity`（Pinocchio 方式 A）
+- `BodyCollisionGeometry` 从 URDF `<collision>` 元素构建；MeshShape-only body 跳过并 log warning（Q7）
+- `ContactPoint` 从 `contact_links` 参数构建，`position=zeros`（body origin）
+- `self_collision_links=None` → 使用所有有非 Mesh 碰撞几何的 link；`collision_method="aabb"` → `AABBSelfCollision.from_geometries()`
+- `RobotModel` 打包完成，6 个单元测试全部通过
 
 ### 背景
 
