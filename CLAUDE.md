@@ -35,6 +35,19 @@ examples/simple_quadruped.py  # Integration test / demo
 tests/           # Unit tests (expand in Phase 2)
 ```
 
+## Dependency Direction — HARD RULE
+
+`physics/` is the future independent library. It must never import from any
+other layer of this repo. The allowed dependency graph is strictly:
+
+```
+rl_env/  →  simulator.py  →  robot/  →  physics/  (no reverse edges)
+```
+
+**Violation = blocking review comment.** If you find yourself adding an import
+from `physics/` to `simulator.py`, `robot/`, or `rl_env/`, the design is wrong —
+restructure so the dependency flows downward only.
+
 ## Key Algorithms & Invariants
 
 - **ABA (Featherstone)**: root body initialized with `a_p = -gravity` (not +gravity).

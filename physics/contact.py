@@ -28,12 +28,14 @@ References:
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import List
 
 import numpy as np
 
 from .spatial import SpatialTransform, Vec3, Vec6
+from .terrain import FlatTerrain, Terrain
 
 # ---------------------------------------------------------------------------
 # Contact parameters
@@ -100,19 +102,58 @@ class ContactPoint:
 
 
 # ---------------------------------------------------------------------------
-# Contact model
+# Abstract contact model
 # ---------------------------------------------------------------------------
 
 
-class ContactModel:
+class ContactModel(ABC):
+    """Abstract base class for ground-contact models."""
+
+    @abstractmethod
+    def compute_forces(
+        self,
+        X_world_list: List[SpatialTransform],
+        v_body_list: List[Vec6],
+        num_bodies: int,
+    ) -> List[Vec6]:
+        """Compute spatial contact forces for all bodies.
+
+        Returns:
+            List of spatial force vectors (6,) in body frame, one per body.
+        """
+
+    @abstractmethod
+    def active_contacts(
+        self,
+        X_world_list: List[SpatialTransform],
+    ) -> List[tuple[str, Vec3]]:
+        """Return list of (name, world_position) for currently active contacts."""
+
+
+# ---------------------------------------------------------------------------
+# Penalty contact model (concrete)
+# ---------------------------------------------------------------------------
+
+
+class PenaltyContactModel(ContactModel):
     """Penalty-based contact model for a set of contact points.
 
     Computes the spatial forces acting on each body due to ground contact.
     Forces are expressed in the respective body frame (ready for ABA).
+
+    Args:
+        params  : Contact parameters (stiffness, damping, friction).
+        terrain : Optional Terrain object.  If None, a FlatTerrain at
+                  ``params.ground_z`` is used (backward-compatible default).
     """
 
-    def __init__(self, params: ContactParams | None = None) -> None:
+    def __init__(
+        self,
+        params: ContactParams | None = None,
+        terrain: Terrain | None = None,
+    ) -> None:
         self.params = params or ContactParams()
+        self._terrain: Terrain = terrain if terrain is not None else FlatTerrain(self.params.ground_z)
         self._contact_points: List[ContactPoint] = []
 
     # ------------------------------------------------------------------
@@ -153,7 +194,8 @@ class ContactModel:
             v = v_body_list[bi]
 
             pos_world = cp.world_position(X)
-            depth = p.ground_z - pos_world[2]  # positive when penetrating
+            ground_z = self._terrain.height_at(pos_world[0], pos_world[1])
+            depth = ground_z - pos_world[2]  # positive when penetrating
 
             if depth <= 0.0:
                 continue  # not in contact
@@ -199,12 +241,12 @@ class ContactModel:
         X_world_list: List[SpatialTransform],
     ) -> List[tuple[str, Vec3]]:
         """Return list of (name, world_position) for currently active contacts."""
-        p = self.params
         active = []
         for cp in self._contact_points:
             X = X_world_list[cp.body_index]
             pos = cp.world_position(X)
-            if pos[2] <= p.ground_z:
+            ground_z = self._terrain.height_at(pos[0], pos[1])
+            if pos[2] <= ground_z:
                 active.append((cp.name, pos))
         return active
 
@@ -214,5 +256,32 @@ class ContactModel:
 
     def __repr__(self) -> str:
         return (
-            f"ContactModel(points={len(self._contact_points)}, k={self.params.k_normal}, mu={self.params.mu})"
+            f"PenaltyContactModel(points={len(self._contact_points)}, "
+            f"k={self.params.k_normal}, mu={self.params.mu})"
         )
+
+
+# ---------------------------------------------------------------------------
+# Null contact model (for debugging / no-contact scenarios)
+# ---------------------------------------------------------------------------
+
+
+class NullContactModel(ContactModel):
+    """Contact model that always returns zero forces (no contact)."""
+
+    def compute_forces(
+        self,
+        X_world_list: List[SpatialTransform],
+        v_body_list: List[Vec6],
+        num_bodies: int,
+    ) -> List[Vec6]:
+        return [np.zeros(6, dtype=np.float64) for _ in range(num_bodies)]
+
+    def active_contacts(
+        self,
+        X_world_list: List[SpatialTransform],
+    ) -> List[tuple[str, Vec3]]:
+        return []
+
+    def __repr__(self) -> str:
+        return "NullContactModel()"

@@ -121,6 +121,10 @@ class RevoluteJoint(Joint):
         q_min, q_max : angular limits [rad]
         k_limit      : spring stiffness  [N·m/rad]
         b_limit      : damping           [N·m·s/rad]
+
+    The ``axis`` parameter accepts either an :class:`Axis` enum value
+    (backward-compatible) or an arbitrary unit 3-vector ``NDArray``.
+    Rotation is computed with Rodrigues' formula regardless of axis type.
     """
 
     nq = 1
@@ -129,15 +133,23 @@ class RevoluteJoint(Joint):
     def __init__(
         self,
         name: str,
-        axis: Axis = Axis.Z,
+        axis: Axis | NDArray[np.float64] = Axis.Z,
         q_min: float = -np.inf,
         q_max: float = np.inf,
         k_limit: float = 5_000.0,
         b_limit: float = 50.0,
+        damping: float = 0.0,
     ) -> None:
         super().__init__(name)
         self.axis = axis
-        self._axis_vec: Vec3 = _AXIS_VEC[axis].copy()
+        if isinstance(axis, Axis):
+            self._axis_vec: Vec3 = _AXIS_VEC[axis].copy()
+        else:
+            k = np.asarray(axis, dtype=np.float64).ravel()
+            norm = np.linalg.norm(k)
+            if norm < 1e-12:
+                raise ValueError("Joint axis vector must be non-zero.")
+            self._axis_vec = k / norm
         self._S: NDArray[np.float64] = np.zeros((6, 1), dtype=np.float64)
         # Motion subspace: pure rotation about axis (angular component only)
         self._S[:3, 0] = self._axis_vec
@@ -145,10 +157,19 @@ class RevoluteJoint(Joint):
         self.q_max = float(q_max)
         self.k_limit = float(k_limit)
         self.b_limit = float(b_limit)
+        self.damping = float(damping)
 
     def transform(self, q: NDArray[np.float64]) -> SpatialTransform:
+        # Rodrigues' rotation formula: R = I cosθ + sinθ [k]× + (1−cosθ) k kᵀ
+        # Works for arbitrary unit axes including X/Y/Z.
         angle = float(q[0])
-        R = _AXIS_ROT[self.axis](angle)
+        k = self._axis_vec
+        c, s = np.cos(angle), np.sin(angle)
+        K = np.array(
+            [[0.0, -k[2], k[1]], [k[2], 0.0, -k[0]], [-k[1], k[0], 0.0]],
+            dtype=np.float64,
+        )
+        R = c * np.eye(3) + s * K + (1.0 - c) * np.outer(k, k)
         return SpatialTransform(R, np.zeros(3))
 
     def motion_subspace(self, q: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -186,6 +207,10 @@ class RevoluteJoint(Joint):
             return -(self.k_limit * penetration + self.b_limit * max(omega, 0.0))
         return 0.0
 
+    def compute_damping_torque(self, qdot: NDArray[np.float64]) -> float:
+        """Return viscous damping torque: −damping × qdot."""
+        return -self.damping * float(qdot[0])
+
     def default_q(self) -> NDArray[np.float64]:
         return np.zeros(1, dtype=np.float64)
 
@@ -203,18 +228,34 @@ class PrismaticJoint(Joint):
 
     q    : scalar displacement [m]
     qdot : scalar velocity [m/s]
+
+    The ``axis`` parameter accepts either an :class:`Axis` enum value
+    (backward-compatible) or an arbitrary unit 3-vector ``NDArray``.
     """
 
     nq = 1
     nv = 1
 
-    def __init__(self, name: str, axis: Axis = Axis.Z) -> None:
+    def __init__(
+        self,
+        name: str,
+        axis: Axis | NDArray[np.float64] = Axis.Z,
+        damping: float = 0.0,
+    ) -> None:
         super().__init__(name)
         self.axis = axis
-        self._axis_vec: Vec3 = _AXIS_VEC[axis].copy()
+        if isinstance(axis, Axis):
+            self._axis_vec: Vec3 = _AXIS_VEC[axis].copy()
+        else:
+            k = np.asarray(axis, dtype=np.float64).ravel()
+            norm = np.linalg.norm(k)
+            if norm < 1e-12:
+                raise ValueError("Joint axis vector must be non-zero.")
+            self._axis_vec = k / norm
         self._S: NDArray[np.float64] = np.zeros((6, 1), dtype=np.float64)
         # Motion subspace: pure translation (linear component only)
         self._S[3:, 0] = self._axis_vec
+        self.damping = float(damping)
 
     def transform(self, q: NDArray[np.float64]) -> SpatialTransform:
         r = self._axis_vec * float(q[0])
@@ -229,6 +270,10 @@ class PrismaticJoint(Joint):
         qdot: NDArray[np.float64],
     ) -> Vec6:
         return np.zeros(6, dtype=np.float64)
+
+    def compute_damping_torque(self, qdot: NDArray[np.float64]) -> float:
+        """Return viscous damping force: −damping × qdot."""
+        return -self.damping * float(qdot[0])
 
     def default_q(self) -> NDArray[np.float64]:
         return np.zeros(1, dtype=np.float64)

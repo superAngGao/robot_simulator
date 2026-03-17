@@ -1,6 +1,6 @@
 # Robot Simulator — Progress Tracker
 
-> Last updated: 2026-03-16
+> Last updated: 2026-03-17
 > Reference plan: [PLAN.md](./PLAN.md)
 
 ---
@@ -25,7 +25,7 @@
 |------|------|------|
 | `physics/spatial.py` | ✅ | 空间代数（6D 向量、Plücker 变换、SpatialInertia） |
 | `physics/joint.py` | ✅ | Revolute / Prismatic / Fixed / Free 关节模型；含关节限位 |
-| `physics/robot_tree.py` | ✅ | 运动学树 + FK + RNEA + ABA；含 `joint_limit_torques()` |
+| `physics/robot_tree.py` | ✅ | 运动学树 + FK + RNEA + ABA；含 `body_velocities()` 公开方法 |
 | `physics/contact.py` | ✅ | Penalty spring-damper 地面接触模型 |
 | `physics/integrator.py` | ✅ | 半隐式欧拉 + RK4 + `simulate()` |
 | `physics/self_collision.py` | ✅ | AABB 自碰撞检测（**新增**，2026-03-16） |
@@ -68,9 +68,9 @@
 
 ### 已知剩余限制（Phase 2 解决）
 
-- `_compute_body_velocities()` 每步重复前向递推，与 ABA 内部冗余，应缓存
+- ~~`_compute_body_velocities()` 每步重复前向递推，与 ABA 内部冗余，应缓存~~ ✅ Q2 已修复（`body_velocities()` 公开方法）
 - matplotlib 渲染速度慢，无法实时；Phase 3 替换为 Vulkan
-- AABB 以 body origin 为中心，CoM 偏心时精度下降
+- AABB 以 body origin 为中心，CoM 偏心时精度下降（Q3，Phase 2 升级）
 - 无传感器模型（IMU / 力传感器）
 
 ---
@@ -78,15 +78,42 @@
 ## Phase 2 — GPU Acceleration + Parallel Environments ⬜
 
 > 目标：将 Phase 1 的 NumPy 后端移植到 NVIDIA Warp（GPU 原生 Python），实现
-> 1000+ 并行环境供 RL 训练。
+> 1000+ 并行环境供 RL 训练。架构决策已在 REFLECTIONS.md (2026-03-17) 确认。
 
-**待完成：**
-- [ ] `physics/warp_kernels/` — Warp 版 ABA、FK、contact
-- [ ] `rl_env/base_env.py` — Gymnasium 兼容接口
-- [ ] `rl_env/vec_env.py` — 并行向量化环境
-- [ ] Phase 1 vs Phase 2 性能 benchmark（吞吐量 steps/s）
-- [ ] 单环境物理精度与 Phase 1 NumPy 结果对比验证
-- [ ] 修复：缓存 ABA 内部 body velocity，供 contact / self-collision 直接复用
+### 2a — Layer 1 重构（GPU 和 robot/ 的前提）
+
+- [ ] `physics/_robot_tree_base.py` — `RobotTreeBase(ABC)` 接口
+- [ ] `physics/robot_tree.py` — 重命名为 `RobotTreeNumpy(RobotTreeBase)`
+- [ ] `physics/joint.py` — `RevoluteJoint` 支持任意旋转轴（3-vector）+ `damping` 参数
+- [ ] `physics/robot_tree.py` — `joint_limit_torques()` → `passive_torques()`（统一限位+阻尼）
+- [ ] `physics/geometry.py` — `CollisionShape(ABC)` + `BoxShape / SphereShape / CylinderShape / MeshShape` + `BodyCollisionGeometry`
+- [ ] `physics/terrain.py` — `Terrain(ABC)` + `FlatTerrain` + `HeightmapTerrain`
+- [ ] `physics/contact.py` — `ContactModel(ABC)` + 现有逻辑改名 `PenaltyContactModel` + `NullContactModel`；`ground_z` → `terrain: Terrain`
+- [ ] `physics/collision.py` — `SelfCollisionModel(ABC)` + `AABBSelfCollision.from_geometries()` + `NullSelfCollision`；退役 `self_collision.py`
+
+### 2b — Robot description layer
+
+- [ ] `robot/model.py` — `RobotModel` dataclass
+- [ ] `robot/urdf_loader.py` — 两阶段：`_parse_urdf()` + `_build_model()`；`load_urdf()` 完整实现
+
+### 2c — Simulator (Layer 2)
+
+- [ ] `simulator.py` — `Simulator(model, integrator, dt)`：自动调用 `passive_torques()`、contact、self-collision、integrator
+
+### 2d — RL environment (Layer 3/4)
+
+- [ ] `rl_env/cfg.py` — `ObsTermCfg`、`NoiseCfg`（Gaussian + Uniform）、`EnvCfg`（含顶层 `device`）
+- [ ] `rl_env/obs_terms.py` — 标准 obs term 函数
+- [ ] `rl_env/managers.py` — `TermManager(ABC)`、`ObsManager`（完整）、`RewardManager`（stub）、`TerminationManager`（stub）；`train()`/`eval()` 噪声开关
+- [ ] `rl_env/base_env.py` — `Env(model, cfg)`，Gymnasium 接口
+- [ ] `rl_env/vec_env.py` — `VecEnv`：直接持有 Warp 数组，无 Python env-loop
+
+### 2e — GPU backend
+
+- [ ] `physics/warp_kernels/robot_tree_warp.py` — `RobotTreeWarp(RobotTreeBase)`：批量 ABA + FK（`dim=N`）
+- [ ] Warp contact 和 self-collision kernel
+- [ ] 数值验证：Warp 输出 vs NumPy baseline（相同输入，容差检查）
+- [ ] Benchmark：steps/s，Phase 1 NumPy vs Phase 2 Warp（1 / 100 / 1000 envs）
 
 ---
 

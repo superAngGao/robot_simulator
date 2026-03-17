@@ -44,11 +44,11 @@ from robot_simulator.physics import (
     Axis,
     Body,
     BodyAABB,
-    ContactModel,
     ContactParams,
     ContactPoint,
     FixedJoint,
     FreeJoint,
+    PenaltyContactModel,
     RevoluteJoint,
     RobotTree,
     SemiImplicitEuler,
@@ -101,7 +101,7 @@ B_LIMIT = 50.0  # N·m·s / rad
 # ---------------------------------------------------------------------------
 
 
-def build_quadruped() -> tuple[RobotTree, ContactModel, AABBSelfCollision]:
+def build_quadruped() -> tuple[RobotTree, PenaltyContactModel, AABBSelfCollision]:
     """Construct the quadruped RobotTree, ContactModel, and self-collision model."""
     tree = RobotTree(gravity=9.81)
 
@@ -117,7 +117,7 @@ def build_quadruped() -> tuple[RobotTree, ContactModel, AABBSelfCollision]:
     )
     torso_idx = tree.add_body(torso)
 
-    contact_model = ContactModel(
+    contact_model = PenaltyContactModel(
         ContactParams(
             k_normal=1_000.0,
             b_normal=300.0,

@@ -66,18 +66,28 @@ Everything below these two interfaces is implementation detail.
 
 ```
 robot_simulator/
+├── simulator.py           # Layer 2: single-env step, auto passive forces
+│                          #   (orchestrates physics + contact + integrator)
+│
 ├── physics/               # Layer 0 + Layer 1
 │   ├── spatial.py         # Layer 0: 6D spatial algebra (Plücker)
 │   ├── joint.py           # Layer 1: joint kinematics + passive torques
-│   ├── robot_tree.py      # Layer 1: kinematic tree, FK, RNEA, ABA
-│   ├── contact.py         # Layer 1: penalty ground contact
-│   ├── self_collision.py  # Layer 1: AABB self-collision
+│   │                      #   (RevoluteJoint: arbitrary axis + damping)
+│   ├── _robot_tree_base.py  # Layer 1: RobotTreeBase(ABC) — shared interface
+│   ├── robot_tree.py      # Layer 1: RobotTreeNumpy — FK, RNEA, ABA (NumPy)
+│   ├── geometry.py        # Layer 1: CollisionShape + BodyCollisionGeometry
+│   ├── terrain.py         # Layer 1: Terrain(ABC) + FlatTerrain + HeightmapTerrain
+│   ├── contact.py         # Layer 1: ContactModel(ABC) + PenaltyContactModel
+│   │                      #           + NullContactModel + TerrainPenaltyContactModel
+│   ├── collision.py       # Layer 1: SelfCollisionModel(ABC) + AABBSelfCollision
+│   │                      #   (replaces self_collision.py in Phase 2)
 │   ├── integrator.py      # Layer 1: Semi-implicit Euler / RK4
 │   └── warp_kernels/      # Layer 1 (Phase 2): GPU backend
+│       └── robot_tree_warp.py  # RobotTreeWarp(RobotTreeBase) — batched ABA/FK
 │
 ├── robot/                 # Robot Description axis
 │   ├── model.py           # RobotModel dataclass
-│   └── urdf_loader.py     # URDF → RobotModel
+│   └── urdf_loader.py     # URDF → RobotModel (two-phase: parse + build)
 │
 ├── rendering/
 │   ├── viewer.py          # matplotlib debug viewer (Phase 1)
@@ -90,8 +100,13 @@ robot_simulator/
 │   └── noise_models.py
 │
 ├── rl_env/                # Layer 3 + Layer 4
+│   ├── cfg.py             # ObsTermCfg, NoiseCfg, EnvCfg dataclasses
+│   ├── obs_terms.py       # standard obs term functions (base_lin_vel, joint_pos, ...)
+│   ├── reward_terms.py    # standard reward term functions (Phase 2+)
+│   ├── managers.py        # TermManager(ABC) + ObsManager + RewardManager(stub)
+│   │                      #   + TerminationManager(stub)
 │   ├── base_env.py        # Layer 3: Gymnasium-compatible single env
-│   └── vec_env.py         # Layer 4: parallel VecEnv
+│   └── vec_env.py         # Layer 4: parallel VecEnv (Warp-backed, true GPU parallel)
 │
 ├── deploy/                # Phase 5 (deferred)
 │   ├── policy_export.py
@@ -138,9 +153,60 @@ Deliverables:
 - [x] `examples/simple_quadruped.py` — Quadruped drop-test validation
 
 ### Phase 2 — GPU Acceleration + Parallel Environments
-- Port physics core to NVIDIA Warp (GPU-native Python)
-- Implement parallel VecEnv for RL training (1000+ envs simultaneously)
-- Benchmark speedup vs Phase 1 NumPy baseline
+
+Architecture decisions confirmed in REFLECTIONS.md (2026-03-17):
+- **Warp backend**: Option B — `RobotTreeWarp(RobotTreeBase)` + `RobotTreeNumpy(RobotTreeBase)`; NumPy baseline kept for correctness checks.
+- **VecEnv parallelism**: Warp kernels batched over N envs (`dim=N`), not Python-level for-loop.
+- **Obs/Action space**: Manager + term-function pattern (Isaac Lab style); `ObsManager` fully implemented, Reward/Termination as stubs.
+- **Simulator placement**: Top-level `simulator.py` (not inside `physics/`).
+
+#### 2a — Layer 1 refactoring (prerequisite for robot/ and GPU)
+
+- [ ] `physics/_robot_tree_base.py` — `RobotTreeBase(ABC)` defining `aba/fk/passive_torques` interface
+- [ ] `physics/robot_tree.py` — rename existing class to `RobotTreeNumpy(RobotTreeBase)`
+- [ ] `physics/joint.py` — `RevoluteJoint`: arbitrary rotation axis (3-vector); add `damping` param
+- [ ] `physics/robot_tree.py` — replace `joint_limit_torques()` with `passive_torques()` (limits + damping unified)
+- [ ] `physics/geometry.py` — `CollisionShape(ABC)` + `BoxShape / SphereShape / CylinderShape / MeshShape` + `BodyCollisionGeometry`
+- [ ] `physics/terrain.py` — `Terrain(ABC)` + `FlatTerrain` + `HeightmapTerrain`
+- [ ] `physics/contact.py` — `ContactModel(ABC)` + rename existing → `PenaltyContactModel` + `NullContactModel`; replace `ground_z` with `terrain: Terrain`
+- [ ] `physics/collision.py` — `SelfCollisionModel(ABC)` + `AABBSelfCollision.from_geometries()` + `NullSelfCollision`; retire `self_collision.py`
+
+#### 2b — Robot description layer
+
+- [ ] `robot/model.py` — `RobotModel` dataclass (`tree`, `contact_model`, `self_collision`, `actuated_joint_names`, `contact_body_names`)
+- [ ] `robot/urdf_loader.py` — two-phase design: `_parse_urdf() → _URDFData` then `_build_model() → RobotModel`
+
+  `load_urdf` final signature:
+  ```python
+  def load_urdf(
+      urdf_path: str,
+      floating_base: bool = True,
+      contact_links: list[str] | None = None,
+      self_collision_links: list[str] | None = None,
+      collision_method: str = "aabb",
+      contact_params: ContactParams | None = None,
+      gravity: float = 9.81,
+  ) -> RobotModel:
+  ```
+
+#### 2c — Simulator (Layer 2)
+
+- [ ] `simulator.py` — `Simulator(model, integrator, dt)`: auto-calls `passive_torques()`, contact, self-collision, integrator each step
+
+#### 2d — RL environment (Layer 3/4)
+
+- [ ] `rl_env/cfg.py` — `ObsTermCfg`, `NoiseCfg` (Gaussian + Uniform), `EnvCfg` (with top-level `device`)
+- [ ] `rl_env/obs_terms.py` — standard term functions: `base_lin_vel`, `base_ang_vel`, `joint_pos`, `joint_vel`, `contact_mask`, …
+- [ ] `rl_env/managers.py` — `TermManager(ABC)`, `ObsManager` (full), `RewardManager` (stub), `TerminationManager` (stub); `train()` / `eval()` noise switch
+- [ ] `rl_env/base_env.py` — `Env(model, cfg)`, Gymnasium interface
+- [ ] `rl_env/vec_env.py` — `VecEnv`: holds Warp arrays directly, no Python env-loop
+
+#### 2e — GPU backend
+
+- [ ] `physics/warp_kernels/robot_tree_warp.py` — `RobotTreeWarp(RobotTreeBase)`: batched ABA + FK (Warp kernel, `dim=N`)
+- [ ] Warp contact and self-collision kernels
+- [ ] Numerical validation: Warp output vs NumPy baseline (same input, tolerance check)
+- [ ] Benchmark: steps/s throughput, Phase 1 NumPy vs Phase 2 Warp (1 / 100 / 1000 envs)
 
 ### Phase 3 — High-Fidelity Rendering + Sensor Simulation
 - Vulkan renderer with ray tracing

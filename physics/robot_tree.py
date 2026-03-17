@@ -30,6 +30,7 @@ from typing import List, Optional
 import numpy as np
 from numpy.typing import NDArray
 
+from ._robot_tree_base import RobotTreeBase
 from .joint import Joint
 from .spatial import (
     Mat6,
@@ -94,12 +95,12 @@ class KinematicState:
 # ---------------------------------------------------------------------------
 
 
-class RobotTree:
-    """Articulated rigid body tree.
+class RobotTreeNumpy(RobotTreeBase):
+    """Articulated rigid body tree — NumPy CPU backend.
 
     Usage
     -----
-    >>> tree = RobotTree()
+    >>> tree = RobotTreeNumpy()
     >>> root_idx = tree.add_body(Body(...))
     >>> leg_idx  = tree.add_body(Body(..., parent=root_idx))
     >>> tree.finalize()
@@ -113,8 +114,8 @@ class RobotTree:
         self._bodies: List[Body] = []
         self._gravity: float = gravity
         self._finalized: bool = False
-        self.nq: int = 0
-        self.nv: int = 0
+        self._nq: int = 0
+        self._nv: int = 0
 
     # ------------------------------------------------------------------
     # Tree construction
@@ -140,13 +141,21 @@ class RobotTree:
             body.v_idx = slice(nv, nv + j.nv)
             nq += j.nq
             nv += j.nv
-        self.nq = nq
-        self.nv = nv
+        self._nq = nq
+        self._nv = nv
         self._finalized = True
 
     @property
     def bodies(self) -> List[Body]:
         return self._bodies
+
+    @property
+    def nq(self) -> int:
+        return self._nq
+
+    @property
+    def nv(self) -> int:
+        return self._nv
 
     @property
     def num_bodies(self) -> int:
@@ -447,18 +456,43 @@ class RobotTree:
         q: NDArray[np.float64],
         qdot: NDArray[np.float64],
     ) -> NDArray[np.float64]:
-        """Compute restoring torques for all joints that have active limits.
+        """Deprecated alias for passive_torques()."""
+        return self.passive_torques(q, qdot)
 
-        Returns a (nv,) array that should be *added* to the applied tau
-        before calling aba(), so the limits are enforced every time-step.
+    def passive_torques(
+        self,
+        q: NDArray[np.float64],
+        qdot: NDArray[np.float64],
+    ) -> NDArray[np.float64]:
+        """Compute passive joint torques: joint limits + viscous damping.
+
+        Iterates over all joints and accumulates:
+          - RevoluteJoint  : limit penalty torque + damping torque
+          - PrismaticJoint : damping torque only (no limits implemented)
+
+        Returns a (nv,) array to be *added* to the applied tau before aba().
         """
+        from .joint import PrismaticJoint as _Pris
         from .joint import RevoluteJoint as _Rev
 
-        tau_lim = np.zeros(self.nv, dtype=np.float64)
+        tau = np.zeros(self.nv, dtype=np.float64)
         for body in self._bodies:
-            if isinstance(body.joint, _Rev):
-                tau_lim[body.v_idx] = body.joint.compute_limit_torque(q[body.q_idx], qdot[body.v_idx])
-        return tau_lim
+            j = body.joint
+            if isinstance(j, _Rev):
+                tau[body.v_idx] = j.compute_limit_torque(
+                    q[body.q_idx], qdot[body.v_idx]
+                ) + j.compute_damping_torque(qdot[body.v_idx])
+            elif isinstance(j, _Pris):
+                tau[body.v_idx] = j.compute_damping_torque(qdot[body.v_idx])
+        return tau
 
     def __repr__(self) -> str:
-        return f"RobotTree(bodies={self.num_bodies}, nq={self.nq}, nv={self.nv})"
+        return f"RobotTreeNumpy(bodies={self.num_bodies}, nq={self.nq}, nv={self.nv})"
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatibility alias
+# ---------------------------------------------------------------------------
+
+#: ``RobotTree`` is an alias for :class:`RobotTreeNumpy`.
+RobotTree = RobotTreeNumpy
