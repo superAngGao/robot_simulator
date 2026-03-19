@@ -94,11 +94,11 @@ Pinocchio issue #1388 曾在此处有 bug。
 
 ## Infrastructure
 
-**Q10 — Unit tests are missing**
-`tests/` is empty. Phase 1 validation was done via the drop-test example,
-not automated tests. Minimum needed before Phase 2:
-- `test_free_fall.py` — analytic free-fall vs ABA (already validated manually)
-- `test_pendulum.py` — single pendulum energy conservation
-- `test_contact.py` — contact force direction and magnitude
-- `test_joint_limits.py` — penalty torque at/beyond limits
-- Blocking: CI and the `/review` skill will flag missing tests for any new module.
+**Q10 — Unit tests are missing** ✅ RESOLVED
+Tests added across Phase 2a/2b/2c:
+- `tests/test_free_fall.py` — analytic free-fall vs ABA (2 tests)
+- `tests/test_body_velocities.py` — body velocity API (4 tests)
+- `tests/test_urdf_loader.py` — URDF loader (6 tests)
+- `tests/test_simulator.py` — Simulator orchestrator (4 tests)
+Total: 16 tests, all passing.
+→ Moved to REFLECTIONS.md.

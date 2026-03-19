@@ -1,6 +1,6 @@
 # Robot Simulator — Progress Tracker
 
-> Last updated: 2026-03-17
+> Last updated: 2026-03-19
 > Reference plan: [PLAN.md](./PLAN.md)
 
 ---
@@ -75,7 +75,7 @@
 
 ---
 
-## Phase 2 — GPU Acceleration + Parallel Environments ⬜
+## Phase 2 — GPU Acceleration + Parallel Environments 🔄
 
 > 目标：将 Phase 1 的 NumPy 后端移植到 NVIDIA Warp（GPU 原生 Python），实现
 > 1000+ 并行环境供 RL 训练。架构决策已在 REFLECTIONS.md (2026-03-17) 确认。
