@@ -5,7 +5,51 @@ Updated at the end of each development session.
 
 ---
 
-## 2026-03-19 (session 2) — 测试补全 + SpatialTransform 约定修复
+## 2026-03-19 (session 3) — Phase 2d RL Environment Layer
+
+### Decision: term 函数接收整个 env，从缓存属性读状态
+
+Isaac Lab 的 obs term 签名是 `fn(env, **params) -> Tensor`，而不是直接传 `q`/`qdot`。
+好处：term 函数可以读任何缓存属性（`X_world`、`v_bodies`、`active_contacts`），
+不需要重算 FK；Phase 2e 换 Warp array 时只需改 env 的缓存属性，term 函数签名不变。
+
+参考：Isaac Lab `ObservationManager`（`isaaclab/envs/mdp/observations.py`）。
+
+### Decision: action clip 在 Env.step() 入口，effort limit 在 PDController 出口
+
+两者语义不同：
+- `action_clip`：训练超参数，限制神经网络输出范围，防止早期训练发散。
+- `effort_limits`：物理约束，来自 URDF `<limit effort>`，硬件电机的实际力矩上限。
+
+分开处理使两者可以独立配置，也符合 Isaac Lab 的惯例。
+
+### Decision: __init__ 预计算静态索引（actuated_q_indices、actuated_v_indices）
+
+用 `np.array` 存 fancy index，而不是每步重新遍历 tree.bodies。
+原因：Phase 2e 批量化时这些索引直接用于 Warp array 切片，预计算是必要条件。
+
+### Decision: VecEnv Phase 2d 用 Python for loop
+
+Phase 2d 目标是"可运行的接口"，不是性能。for loop 实现简单、易调试，
+Phase 2e 换 Warp kernel 时 `reset()`/`step()` 的输入输出签名完全不变。
+参考：Isaac Lab 在 CPU 模式下也用 Python loop 作为 fallback。
+
+### 测试覆盖现状（74 tests）
+
+| 模块 | 测试文件 | 数量 |
+|------|----------|------|
+| physics/spatial + joint + robot_tree | test_aba_vs_pinocchio, test_body_velocities, test_joint_limits, test_free_fall | 24 |
+| physics/contact | test_contact | 9 |
+| physics/collision | test_self_collision | 13 |
+| physics/integrator | test_integrator | 11 |
+| robot/urdf_loader | test_urdf_loader | 6 |
+| simulator | test_simulator | 4 |
+| rl_env | test_rl_env | 6 |
+| **合计** | | **74** |
+
+---
+
+
 
 ### Bug: SpatialTransform 使用了 Plücker 约定而非 SE3 约定
 
