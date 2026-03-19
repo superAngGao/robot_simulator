@@ -75,6 +75,23 @@ is not inside the physics model). Matches the "two external entry points" constr
 Full design decided. See REFLECTIONS.md.
 → Moved to REFLECTIONS.md.
 
+**Q13 — RewardManager / TerminationManager term functions**
+Phase 2d 留了 stub（返回 0.0 / False）。Phase 3 需要实现具体 term：
+- Reward: forward velocity、energy penalty、alive bonus、foot clearance 等
+- Termination: base height too low、base orientation too tilted、timeout
+- 设计问题：term 函数是否与 obs_terms 共享同一签名 `fn(env, **params) -> Tensor`？
+  还是 reward term 返回 scalar、termination term 返回 bool？
+- 参考：Isaac Lab RewardManager 用 `fn(env) -> Tensor` 统一，scalar 由 weight 乘后 sum
+- Blocking: nothing for Phase 2e. Revisit at Phase 3 start.
+
+**Q14 — VecEnv auto-reset on episode termination**
+当前 `VecEnv.step()` 不自动 reset 已结束的 sub-env（terminated 或 truncated）。
+RL 训练通常需要 auto-reset（Isaac Lab / Gymnasium VectorEnv 均支持）。
+- 当前：调用方负责检测 term/trunc 并手动 reset
+- 选项 A：VecEnv 内部 auto-reset，返回 `final_obs` 在 info 里（Gymnasium 标准）
+- 选项 B：保持当前行为，由 RL trainer 管理 reset
+- Blocking: nothing until Phase 3 RL training loop is implemented.
+
 **Q11 — `<inertial><origin rpy>` 非零的处理**
 URDF 允许惯量张量在任意旋转的 CoM frame 里定义（非零 rpy）。
 几乎所有真实 URDF 的 inertial rpy 都是零，但规范上合法。

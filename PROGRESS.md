@@ -1,6 +1,6 @@
 # Robot Simulator — Progress Tracker
 
-> Last updated: 2026-03-19 (session 2)
+> Last updated: 2026-03-19 (session 3)
 > Reference plan: [PLAN.md](./PLAN.md)
 
 ---
@@ -10,7 +10,7 @@
 | Phase | 状态 | 完成度 |
 |-------|------|--------|
 | Phase 1 — Basic Physics + Simple Rendering | ✅ 完成（含修复） | 100% |
-| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 40% (2a+2b+2c ✅, 测试补全 ✅) |
+| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 60% (2a+2b+2c+2d ✅) |
 | Phase 3 — High-Fidelity Rendering          | ⬜ 未开始 | 0% |
 | Phase 4 — Domain Randomization             | ⬜ 未开始 | 0% |
 | Phase 5 — Sim-to-Real Validation           | ⬜ 未开始 | 0% |
@@ -124,13 +124,20 @@
 
 两个修复对现有测试向后兼容（所有已有 X_tree 均为 R=I，两种约定等价）。
 
-### 2d — RL environment (Layer 3/4)
+### 2d — RL environment (Layer 3/4) ✅
 
-- [ ] `rl_env/cfg.py` — `ObsTermCfg`、`NoiseCfg`（Gaussian + Uniform）、`EnvCfg`（含顶层 `device`）
-- [ ] `rl_env/obs_terms.py` — 标准 obs term 函数
-- [ ] `rl_env/managers.py` — `TermManager(ABC)`、`ObsManager`（完整）、`RewardManager`（stub）、`TerminationManager`（stub）；`train()`/`eval()` 噪声开关
-- [ ] `rl_env/base_env.py` — `Env(model, cfg)`，Gymnasium 接口
-- [ ] `rl_env/vec_env.py` — `VecEnv`：直接持有 Warp 数组，无 Python env-loop
+- [x] `robot/model.py` — 新增 `effort_limits: NDArray | None` 字段
+- [x] `robot/urdf_loader.py` — 解析 `<limit effort="..."/>`，按 actuated_joint_names 顺序组装 `(nu,)` 数组
+- [x] `rl_env/cfg.py` — `NoiseCfg`（Gaussian + Uniform）、`ObsTermCfg`、`EnvCfg`（含 kp/kd/action_scale/action_clip/init_noise_scale）
+- [x] `rl_env/controllers.py` — `Controller(ABC)`、`PDController`（effort clip）、`TorqueController`
+- [x] `rl_env/obs_terms.py` — 6 个标准 term 函数（base_lin_vel、base_ang_vel、base_orientation、joint_pos、joint_vel、contact_mask）
+- [x] `rl_env/managers.py` — `TermManager(ABC)`、`ObsManager`（完整，train/eval 噪声开关）、`RewardManager`（stub）、`TerminationManager`（stub）
+- [x] `rl_env/base_env.py` — `Env(gym.Env)`：预计算静态索引、`_update_cache()`、Gymnasium reset/step API
+- [x] `rl_env/vec_env.py` — `VecEnv`：Python for-loop，Phase 2e 换 Warp kernel 时接口不变
+- [x] `rl_env/__init__.py` — 导出 Env、VecEnv、EnvCfg、ObsTermCfg、NoiseCfg、Controller、PDController、TorqueController
+- [x] `tests/test_rl_env.py` — 6 个测试（obs shape、train噪声、eval无噪声、step有限值、VecEnv shape、effort clip）
+
+**总测试数：74（全部通过）**
 
 ### 2e — GPU backend
 
