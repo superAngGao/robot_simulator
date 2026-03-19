@@ -5,6 +5,32 @@ Updated at the end of each development session.
 
 ---
 
+## 2026-03-19 — Phase 2c: Simulator (Layer 2)
+
+### Decision: Simulator.step() orchestration order
+
+`passive_torques` is added to `tau` before the integrator call, not inside the
+integrator. This keeps `physics/integrator.py` unaware of the passive-torque
+concept (single responsibility) and matches the Drake pattern where
+`CalcGeneralizedForces` is called by the System, not by the integrator.
+
+### Decision: debug print in simple_quadruped.py calls FK twice per logged step
+
+The step loop calls `sim.step()` (which runs FK internally) and then the debug
+print calls `tree.forward_kinematics(q)` again for `active_contacts()`. This is
+a 0.2% overhead at the 1-in-200 logging rate — acceptable for a debug example.
+A production loop would cache `X_world` from the last step; deferred to Phase 2e
+when Simulator gains optional state caching.
+
+### Decision: RobotModel constructed inline in simple_quadruped.py
+
+`build_quadruped()` returns `(tree, contact_model, self_collision)` — the
+pre-Phase-2b signature. Rather than changing `build_quadruped()`, we wrap the
+three objects into a `RobotModel` in `main()`. This is the minimal change and
+keeps the builder function reusable for tests that don't need a full model.
+
+---
+
 ## 2026-03-16 — Phase 1 kickoff & completion
 
 ### Decisions

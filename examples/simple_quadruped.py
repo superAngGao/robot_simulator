@@ -39,6 +39,7 @@ import argparse
 
 import numpy as np
 
+from robot.model import RobotModel
 from robot_simulator.physics import (
     AABBSelfCollision,
     Axis,
@@ -56,6 +57,7 @@ from robot_simulator.physics import (
     SpatialTransform,
 )
 from robot_simulator.rendering import RobotViewer
+from simulator import Simulator
 
 # ---------------------------------------------------------------------------
 # Robot geometry / inertia constants
@@ -287,6 +289,7 @@ def standing_state(tree: RobotTree) -> tuple[np.ndarray, np.ndarray]:
 def main(save_path: str | None = None) -> None:
     print("Building quadruped...")
     tree, contact_model, self_collision = build_quadruped()
+    model = RobotModel(tree=tree, contact_model=contact_model, self_collision=self_collision)
     print(tree)
     print(f"  nq={tree.nq}, nv={tree.nv}")
     print(f"  Contact points : {[cp.name for cp in contact_model.contact_points]}")
@@ -304,8 +307,6 @@ def main(save_path: str | None = None) -> None:
             if j.nv == 0 or isinstance(j, FreeJoint):
                 continue
             tau[body.v_idx] = -KP * q[body.q_idx] - KD * qdot[body.v_idx]
-        # Add joint-limit restoring torques
-        tau += tree.joint_limit_torques(q, qdot)
         return tau
 
     dt = 2e-4
@@ -313,7 +314,7 @@ def main(save_path: str | None = None) -> None:
     n_steps = int(duration / dt)
 
     print(f"\nSimulating {duration}s at dt={dt}s ({n_steps} steps)...")
-    integrator = SemiImplicitEuler(dt)
+    sim = Simulator(model, SemiImplicitEuler(dt))
 
     times = np.zeros(n_steps)
     qs = np.zeros((n_steps, tree.nq))
@@ -323,23 +324,12 @@ def main(save_path: str | None = None) -> None:
         qs[i] = q
 
         tau = controller(times[i], q, qdot)
-        X_world = tree.forward_kinematics(q)
-        v_bodies = tree.body_velocities(q, qdot)
-
-        # Ground contact forces
-        contact_forces = contact_model.compute_forces(X_world, v_bodies, tree.num_bodies)
-        # AABB self-collision forces
-        sc_forces = self_collision.compute_forces(X_world, v_bodies, tree.num_bodies)
-
-        # Merge external forces
-        ext_forces = [cf + scf for cf, scf in zip(contact_forces, sc_forces)]
-
-        q, qdot = integrator.step(tree, q, qdot, tau, ext_forces)
+        q, qdot = sim.step(q, qdot, tau)
 
         if i % 200 == 0:
             torso = tree.body_by_name("torso")
             z = q[torso.q_idx][6]
-            active = contact_model.active_contacts(X_world)
+            active = contact_model.active_contacts(tree.forward_kinematics(q))
             print(f"  t={times[i]:.2f}s  torso_z={z:.3f}m  contacts={[c[0] for c in active]}")
 
     print("\nRendering animation...")

@@ -10,7 +10,7 @@
 | Phase | 状态 | 完成度 |
 |-------|------|--------|
 | Phase 1 — Basic Physics + Simple Rendering | ✅ 完成（含修复） | 100% |
-| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 25% (2a+2b ✅) |
+| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 37% (2a+2b+2c ✅) |
 | Phase 3 — High-Fidelity Rendering          | ⬜ 未开始 | 0% |
 | Phase 4 — Domain Randomization             | ⬜ 未开始 | 0% |
 | Phase 5 — Sim-to-Real Validation           | ⬜ 未开始 | 0% |
@@ -97,9 +97,11 @@
 - [x] `robot/urdf_loader.py` — 两阶段：`_parse_urdf()` + `_build_model()`；`load_urdf()` 完整实现
 - [x] `tests/test_urdf_loader.py` — 6 个单元测试（floating/fixed base、revolute、任意轴、contact links、缺 inertial）
 
-### 2c — Simulator (Layer 2)
+### 2c — Simulator (Layer 2) ✅
 
-- [ ] `simulator.py` — `Simulator(model, integrator, dt)`：自动调用 `passive_torques()`、contact、self-collision、integrator
+- [x] `simulator.py` — `Simulator(model, integrator)`：自动调用 `passive_torques()`、contact、self-collision、integrator
+- [x] `examples/simple_quadruped.py` — 改用 `Simulator`，删除手动步骤循环和 `joint_limit_torques()` 调用
+- [x] `tests/test_simulator.py` — 4 个单元测试（valid state、passive torques、manual loop 对比、swap integrator）
 
 ### 2d — RL environment (Layer 3/4)
 
