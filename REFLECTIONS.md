@@ -5,7 +5,54 @@ Updated at the end of each development session.
 
 ---
 
-## 2026-03-19 — Phase 2c: Simulator (Layer 2)
+## 2026-03-19 (session 2) — 测试补全 + SpatialTransform 约定修复
+
+### Bug: SpatialTransform 使用了 Plücker 约定而非 SE3 约定
+
+Pinocchio ABA 对比测试发现双摆加速度不匹配，根因是 `SpatialTransform` 的三个方法
+（`apply_velocity`、`apply_force`、`compose`）使用了 Featherstone Plücker 约定
+（r 在子坐标系），但 `X_tree` 的构造语义是 SE3（r 在父坐标系，R 为 child→parent）。
+
+**修复（SE3 约定统一）：**
+```python
+apply_velocity: [R.T@ω;  R.T@(v + ω×r)]      # r 在父坐标系
+apply_force:    [R@τ + r×(R@f);  R@f]
+compose:        r = self.r + self.R @ other.r
+```
+
+向后兼容：所有已有 `X_tree` 均为 `R=I`，两种约定在 R=I 时等价，39 个已有测试全部继续通过。
+
+### Bug: ABA Pass 3 根节点重力未变换到 body frame
+
+根节点的 `a_p` 应将世界系重力变换到 body frame：
+```python
+a_p = Xup_i.apply_velocity(-a_gravity)   # 正确
+# 原来: a_p = Xup_i.inverse().apply_velocity(-a_gravity)  # 错误（SE3 修复前的临时补丁）
+```
+
+### Decision: 用 Pinocchio 作为 ABA 的外部基准
+
+Pinocchio 是工业级多体动力学库，ABA 实现经过大量验证。用它作为 cross-validation
+基准比手写解析解更可靠（解析解只适用于简单拓扑）。atol=1e-8 对 float64 是合理容差。
+
+### 测试覆盖现状（68 tests）
+
+| 模块 | 测试文件 | 数量 |
+|------|----------|------|
+| `physics/spatial.py` (间接) | test_body_velocities | 4 |
+| `physics/contact.py` | test_contact | 9 |
+| `physics/joint.py` | test_joint_limits | 14 |
+| `physics/robot_tree.py` (ABA) | test_aba_vs_pinocchio + test_free_fall | 7 |
+| `physics/collision.py` | test_self_collision | 13 |
+| `physics/integrator.py` | test_integrator | 11 |
+| `robot/urdf_loader.py` | test_urdf_loader | 6 |
+| `simulator.py` | test_simulator | 4 |
+
+**剩余缺口：** RNEA vs Pinocchio 对比、FreeJoint 浮动基座 ABA 旋转项、`forward_kinematics` 位姿正确性独立测试。
+
+---
+
+
 
 ### Decision: Simulator.step() orchestration order
 

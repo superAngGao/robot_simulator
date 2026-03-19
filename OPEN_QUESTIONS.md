@@ -95,10 +95,15 @@ Pinocchio issue #1388 曾在此处有 bug。
 ## Infrastructure
 
 **Q10 — Unit tests are missing** ✅ RESOLVED
-Tests added across Phase 2a/2b/2c:
-- `tests/test_free_fall.py` — analytic free-fall vs ABA (2 tests)
-- `tests/test_body_velocities.py` — body velocity API (4 tests)
-- `tests/test_urdf_loader.py` — URDF loader (6 tests)
-- `tests/test_simulator.py` — Simulator orchestrator (4 tests)
-Total: 16 tests, all passing.
+Tests added across Phase 2a/2b/2c + session 2 补全：
+- `tests/test_free_fall.py` — 解析自由落体 vs ABA（2 tests）
+- `tests/test_body_velocities.py` — body velocity API（4 tests）
+- `tests/test_urdf_loader.py` — URDF loader（6 tests）
+- `tests/test_simulator.py` — Simulator 编排（4 tests）
+- `tests/test_contact.py` — PenaltyContactModel（9 tests）
+- `tests/test_joint_limits.py` — 关节限位 + 阻尼（14 tests）
+- `tests/test_aba_vs_pinocchio.py` — ABA vs Pinocchio（5 tests）
+- `tests/test_self_collision.py` — AABB 自碰撞（13 tests）
+- `tests/test_integrator.py` — SemiImplicitEuler + RK4（11 tests）
+Total: 68 tests，全部通过。
 → Moved to REFLECTIONS.md.

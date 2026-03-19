@@ -1,6 +1,6 @@
 # Robot Simulator — Progress Tracker
 
-> Last updated: 2026-03-19
+> Last updated: 2026-03-19 (session 2)
 > Reference plan: [PLAN.md](./PLAN.md)
 
 ---
@@ -10,7 +10,7 @@
 | Phase | 状态 | 完成度 |
 |-------|------|--------|
 | Phase 1 — Basic Physics + Simple Rendering | ✅ 完成（含修复） | 100% |
-| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 37% (2a+2b+2c ✅) |
+| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 40% (2a+2b+2c ✅, 测试补全 ✅) |
 | Phase 3 — High-Fidelity Rendering          | ⬜ 未开始 | 0% |
 | Phase 4 — Domain Randomization             | ⬜ 未开始 | 0% |
 | Phase 5 — Sim-to-Real Validation           | ⬜ 未开始 | 0% |
@@ -102,6 +102,27 @@
 - [x] `simulator.py` — `Simulator(model, integrator)`：自动调用 `passive_torques()`、contact、self-collision、integrator
 - [x] `examples/simple_quadruped.py` — 改用 `Simulator`，删除手动步骤循环和 `joint_limit_torques()` 调用
 - [x] `tests/test_simulator.py` — 4 个单元测试（valid state、passive torques、manual loop 对比、swap integrator）
+
+### 测试补全 ✅（2026-03-19 session 2）
+
+新增 52 个测试（总计 68 个），覆盖所有 physics/ 核心模块：
+
+| 测试文件 | 测试数 | 覆盖内容 |
+|----------|--------|----------|
+| `test_contact.py` | 9 | 法向力方向/大小/线性比例、摩擦、阻尼、active_contacts |
+| `test_joint_limits.py` | 14 | 限位内零力矩、超限恢复力矩符号/大小、单向阻尼、粘性阻尼、passive_torques 聚合 |
+| `test_aba_vs_pinocchio.py` | 5 | ABA 与 Pinocchio 对比（单摆×3、双摆×2，atol=1e-8） |
+| `test_self_collision.py` | 13 | 分离无力、相邻体排除、力方向/大小、Newton 第三定律、阻尼、build_pairs、旋转 AABB、NullSelfCollision |
+| `test_integrator.py` | 11 | 无效 dt、输出形状、自由落体精度（解析对比）、RK4 精度优于半隐式、能量守恒、NaN 检测、simulate()、四元数归一化 |
+
+**同期修复的两个 Bug（Pinocchio 对比发现）：**
+
+| Bug | 修复 |
+|-----|------|
+| `SpatialTransform` 使用 Plücker 约定（r 在子坐标系），与 SE3 语义不符 | 统一改为 SE3 约定：`apply_velocity=[R.T@ω; R.T@(v+ω×r)]`，`apply_force=[R@τ+r×(R@f); R@f]`，`compose: r=r1+R1@r2` |
+| ABA Pass 3 根节点重力未变换到 body frame | 改为 `a_p = Xup_i.apply_velocity(-a_gravity)` |
+
+两个修复对现有测试向后兼容（所有已有 X_tree 均为 R=I，两种约定等价）。
 
 ### 2d — RL environment (Layer 3/4)
 
