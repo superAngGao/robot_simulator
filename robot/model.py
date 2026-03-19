@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from numpy.typing import NDArray
+
 from physics.collision import SelfCollisionModel
 from physics.contact import ContactModel
 from physics.geometry import BodyCollisionGeometry
@@ -35,3 +37,4 @@ class RobotModel:
     actuated_joint_names: list[str] = field(default_factory=list)
     contact_body_names: list[str] = field(default_factory=list)
     geometries: list[BodyCollisionGeometry] = field(default_factory=list)
+    effort_limits: NDArray | None = None  # shape (nu,), per actuated_joint_names order

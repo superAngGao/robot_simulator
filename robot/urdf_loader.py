@@ -66,6 +66,7 @@ class _JointData:
     limit_upper: float
     damping: float
     friction: float
+    effort: float = 0.0  # from <limit effort="..."/>, 0 = unspecified
 
 
 @dataclass
@@ -213,9 +214,11 @@ def _parse_urdf(path: str) -> _URDFData:
         if limit_elem is not None:
             limit_lower = float(limit_elem.get("lower", "-inf"))
             limit_upper = float(limit_elem.get("upper", "inf"))
+            effort = float(limit_elem.get("effort", 0.0))
         else:
             limit_lower = -np.inf
             limit_upper = np.inf
+            effort = 0.0
 
         dynamics = j_elem.find("dynamics")
         damping = float(dynamics.get("damping", 0.0)) if dynamics is not None else 0.0
@@ -240,6 +243,7 @@ def _parse_urdf(path: str) -> _URDFData:
                 limit_upper=limit_upper,
                 damping=damping,
                 friction=friction,
+                effort=effort,
             )
         )
         child_links.add(child_link)
@@ -404,6 +408,11 @@ def _build_model(
         b.joint.name for b in tree.bodies if b.joint.nv > 0 and not isinstance(b.joint, FreeJoint)
     ]
 
+    # --- 7. Effort limits (None if all zero / unspecified) ---
+    joint_effort: dict[str, float] = {jd.name: jd.effort for jd in data.joints}
+    efforts = np.array([joint_effort.get(name, 0.0) for name in actuated_joint_names], dtype=np.float64)
+    effort_limits = efforts if np.any(efforts > 0) else None
+
     return RobotModel(
         tree=tree,
         contact_model=contact_model,
@@ -411,6 +420,7 @@ def _build_model(
         actuated_joint_names=actuated_joint_names,
         contact_body_names=contact_body_names,
         geometries=geometries,
+        effort_limits=effort_limits,
     )
 
 
