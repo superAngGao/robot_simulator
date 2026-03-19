@@ -389,8 +389,8 @@ class RobotTreeNumpy(RobotTreeBase):
 
             if body.parent < 0:
                 # Featherstone (2008) §7.3: set base acceleration to -a_gravity
-                # so that gravity is implicitly included in all body accelerations.
-                a_p = -a_gravity
+                # expressed in the root body's own frame via Xup (parent→child).
+                a_p = Xup_i.apply_velocity(-a_gravity)
             else:
                 a_p = Xup_i.apply_velocity(a[body.parent])
 

@@ -183,38 +183,53 @@ class SpatialTransform:
     # ------------------------------------------------------------------
 
     def apply_velocity(self, v: Vec6) -> Vec6:
-        """Transform a spatial velocity vector: v_B = X @ v_A."""
+        """Transform a spatial velocity from parent frame to child frame.
+
+        Convention: R is child→parent rotation, r is child origin in parent frame.
+        SE3 formula: omega_child = R.T @ omega_parent
+                     v_child     = R.T @ (v_parent + omega_parent × r)
+        """
         R, r = self.R, self.r
         omega = v[:3]
         vel = v[3:]
         return np.concatenate(
             [
-                R @ omega,
-                R @ (vel - np.cross(r, omega)),
+                R.T @ omega,
+                R.T @ (vel + np.cross(omega, r)),
             ]
         )
 
     def apply_force(self, f: Vec6) -> Vec6:
-        """Transform a spatial force vector (dual): f_A = X^T @ f_B."""
+        """Transform a spatial force from child frame to parent frame.
+
+        Convention: R is child→parent rotation, r is child origin in parent frame.
+        SE3 formula: f_parent   = R @ f_child
+                     tau_parent = R @ tau_child + r × (R @ f_child)
+        """
         R, r = self.R, self.r
         tau = f[:3]
         frc = f[3:]
+        f_parent = R @ frc
         return np.concatenate(
             [
-                R.T @ tau + np.cross(r, R.T @ frc),
-                R.T @ frc,
+                R @ tau + np.cross(r, f_parent),
+                f_parent,
             ]
         )
 
     def inverse(self) -> "SpatialTransform":
-        """Return the inverse transform (B→A)."""
+        """Return the inverse transform (child→parent becomes parent→child)."""
         Rt = self.R.T
         return SpatialTransform(Rt, -(Rt @ self.r))
 
     def compose(self, other: "SpatialTransform") -> "SpatialTransform":
-        """Compose transforms: self * other  (apply other first, then self)."""
+        """Compose transforms: self * other  (apply other first, then self).
+
+        SE3 formula: R = self.R @ other.R
+                     r = self.r + self.R @ other.r
+        """
         R = self.R @ other.R
-        r = other.r + other.R.T @ self.r
+        r = self.r + self.R @ other.r
         return SpatialTransform(R, r)
 
     def __matmul__(self, other: "SpatialTransform") -> "SpatialTransform":
