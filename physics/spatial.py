@@ -166,12 +166,17 @@ class SpatialTransform:
     # ------------------------------------------------------------------
 
     def matrix(self) -> Mat6:
-        """Return the 6x6 Plücker transform matrix."""
-        R, r = self.R, self.r
+        """Return the 6x6 spatial velocity transform matrix.
+
+        Satisfies: matrix() @ v == apply_velocity(v)
+        and:       matrix().T @ f == apply_force(f)
+        """
+        E = self.R.T  # parent→child rotation
+        r = self.r
         X = np.zeros((6, 6), dtype=np.float64)
-        X[:3, :3] = R
-        X[3:, :3] = -R @ skew(r)
-        X[3:, 3:] = R
+        X[:3, :3] = E
+        X[3:, :3] = -E @ skew(r)
+        X[3:, 3:] = E
         return X
 
     def matrix_dual(self) -> Mat6:

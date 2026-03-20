@@ -248,7 +248,7 @@ class RobotTreeNumpy(RobotTreeBase):
 
             if body.parent < 0:
                 v[body.index] = vJ
-                a[body.index] = X_up.apply_velocity(a_gravity) + S @ qddot_i + cJ
+                a[body.index] = X_up.apply_velocity(-a_gravity) + S @ qddot_i + cJ
             else:
                 v_p = v[body.parent]
                 v[body.index] = X_up.apply_velocity(v_p) + vJ

@@ -103,7 +103,7 @@
 - [x] `examples/simple_quadruped.py` — 改用 `Simulator`，删除手动步骤循环和 `joint_limit_torques()` 调用
 - [x] `tests/test_simulator.py` — 4 个单元测试（valid state、passive torques、manual loop 对比、swap integrator）
 
-### 测试补全 ✅（2026-03-19 session 2）
+### 测试补全 第一轮 ✅（2026-03-19 session 2）
 
 新增 52 个测试（总计 68 个），覆盖所有 physics/ 核心模块：
 
@@ -123,6 +123,33 @@
 | ABA Pass 3 根节点重力未变换到 body frame | 改为 `a_p = Xup_i.apply_velocity(-a_gravity)` |
 
 两个修复对现有测试向后兼容（所有已有 X_tree 均为 R=I，两种约定等价）。
+
+### 测试补全 第二轮 ✅（2026-03-20 session 4）
+
+新增 98 个测试（总计 166 个），覆盖 Layer 0 基础层和此前零覆盖的模块：
+
+| 测试文件 | 测试数 | 覆盖内容 |
+|----------|--------|----------|
+| `test_spatial.py` | 39 | skew/rot_x/y/z/quat 转换（含 Pinocchio 对比）、SpatialTransform apply_velocity/apply_force/compose/inverse（含 Pinocchio SE3 对比）、matrix()一致性、SpatialInertia matrix/add（含 Pinocchio Inertia 对比）、spatial cross 恒等式、**非零旋转 X_tree 的 ABA 对比**（验证 matrix() 修复） |
+| `test_joints.py` | 31 | PrismaticJoint（transform/S/damping/任意轴）、FixedJoint（0-DOF/offset）、FreeJoint（transform/integrate_q/norm 保持）、RevoluteJoint 任意轴 |
+| `test_robot_tree.py` | 13 | FK（零位/单关节/链式组合）、RNEA（零重力/静平衡/ABA roundtrip/Pinocchio 对比/非零旋转 X_tree）、防御性检查（未 finalize/重复 add/body_by_name） |
+| `test_terrain.py` | 6 | FlatTerrain height_at/normal_at、HeightmapTerrain NotImplementedError |
+| `test_geometry.py` | 9 | Box/Sphere/Cylinder/Mesh half_extents、BodyCollisionGeometry 多 shape max/空 shape |
+
+**同期修复的两个 Bug：**
+
+| Bug | 修复 |
+|-----|------|
+| `spatial.py:matrix()` 用 R 而非 R.T，与 SE3 约定不一致 | 改为 `E = R.T`，使 `matrix() @ v == apply_velocity(v)` 和 `matrix().T @ f == apply_force(f)` 成立。修复前 ABA 惯量传递在 X_tree 有非零旋转时会算错（潜在 bug，此前所有 X_tree 均 R=I 因此未暴露） |
+| `robot_tree.py:rnea()` 根节点重力符号错误 | `a_gravity` → `-a_gravity`（与 ABA 一致）。RNEA 输出一直是错的但此前无测试覆盖 |
+
+**尚未覆盖的低优先测试（留待后续）：**
+
+- `rl_env/controllers.py` — TorqueController（零测试）
+- `rl_env/obs_terms.py` — 各 term 函数无独立测试
+- `rl_env/base_env.py` — init_noise_scale、action_clip、episode_length 截断等边界情况
+
+**总测试数：166（全部通过，不含 rl_env 的 6 个需 gymnasium 依赖）**
 
 ### 2d — RL environment (Layer 3/4) ✅
 

@@ -5,6 +5,35 @@ Updated at the end of each development session.
 
 ---
 
+## 2026-03-20 (session 4) — 测试补全与 SE3 规范统一
+
+### Bug: `spatial.py:matrix()` 与 SE3 约定不一致
+
+`matrix()` 使用 `R`（child→parent）构造 6×6 矩阵，但 SE3 约定下速度变换矩阵应使用
+`E = R.T`（parent→child）。修复后满足两个关键性质：
+- `matrix() @ v == apply_velocity(v)`
+- `matrix().T @ f == apply_force(f)`
+
+此 bug 在 ABA Pass 2 惯量传递 `X^T @ I @ X` 中使用，当 X_tree 有非零旋转时会算错。
+此前所有测试和 URDF 均使用 R=I 的 X_tree（PROGRESS.md 已注明），因此未暴露。
+新增 `test_spatial.py::TestABAWithRotatedXTree` 验证修复（对比 Pinocchio，atol=1e-8）。
+
+### Bug: `robot_tree.py:rnea()` 根节点重力符号错误
+
+RNEA Pass 1 根节点加速度初始化使用 `a_gravity` 而非 `-a_gravity`。
+Featherstone §5.3 明确要求初始化为 `-a_gravity`（等效于地面以 g 加速上升）。
+ABA 中已正确使用 `-a_gravity`，但 RNEA 从未被独立测试因此一直是错的。
+新增 `test_robot_tree.py::TestRNEA` 验证修复（含 ABA-RNEA roundtrip 和 Pinocchio 对比）。
+
+### 发现: Pinocchio 使用 `[linear; angular]` 向量顺序
+
+Pinocchio 的 `Motion.np` 和 `Force.np` 返回 `[linear(3); angular(3)]`，
+Isaac Lab 也使用相同顺序。我们使用 Featherstone 原著约定 `[angular(3); linear(3)]`。
+测试中通过 `_P6` 置换矩阵转换。已记录为 Q15（OPEN_QUESTIONS.md），
+建议在测试充分后统一改为 `[linear; angular]` 与工业标准对齐。
+
+---
+
 ## 2026-03-19 (session 3) — Phase 2d RL Environment Layer
 
 ### Decision: term 函数接收整个 env，从缓存属性读状态

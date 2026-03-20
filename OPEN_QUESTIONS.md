@@ -99,6 +99,16 @@ URDF 允许惯量张量在任意旋转的 CoM frame 里定义（非零 rpy）。
 - 待定：是否需要将张量旋转到 link frame（`I_link = R @ I_com @ R.T`）
 - 参考：Pinocchio 和 Drake 都做了完整旋转变换
 
+**Q15 — 空间向量顺序约定 `[angular; linear]` vs `[linear; angular]`**
+当前代码使用 Featherstone 约定 `[angular(3); linear(3)]`。
+Isaac Lab 和 Pinocchio 均使用 `[linear(3); angular(3)]`。
+- 当前：内部一致，Pinocchio 对比测试中用 `_P6` 置换矩阵转换
+- 改动影响：`spatial.py`、`robot_tree.py`、`contact.py`、`collision.py`、`obs_terms.py` 中
+  所有 `v[:3]`/`v[3:]` 索引需反转，改动面大
+- 建议：在测试覆盖充分后（已完成 166 个测试）再统一改为 `[linear; angular]`，
+  与 Isaac Lab / Pinocchio 对齐，减少未来对接摩擦
+- Blocking: nothing for Phase 2e. 可在 GPU backend 实现前或后统一。
+
 **Q12 — Fixed joint 合并优化（未来）**
 当前每个 link 保留独立 Body，fixed joint 不合并。
 若未来做合并优化（减少 ABA 计算量），需注意平行轴定理的正确应用：
