@@ -67,7 +67,7 @@ def test_normal_force_upward():
 
     # Transform back to world to check direction
     f_world = X.apply_force(f_body)
-    F_z = f_world[5]  # spatial force: [torque(3), force(3)], force z = index 5
+    F_z = f_world[2]  # spatial force: [force(3), torque(3)], force z = index 2
     assert F_z > 0.0, f"Expected upward normal force, got F_z={F_z}"
 
 
@@ -81,7 +81,7 @@ def test_normal_force_magnitude():
 
     forces = model.compute_forces([X], [v], num_bodies=1)
     f_world = X.apply_force(forces[0])
-    F_z = f_world[5]
+    F_z = f_world[2]
 
     expected = k * depth
     assert abs(F_z - expected) < 1e-6, f"Expected {expected}, got {F_z}"
@@ -99,7 +99,7 @@ def test_normal_force_proportional_to_depth():
         X = _identity_transform(pos=(0.0, 0.0, -d))
         f_body = model.compute_forces([X], [v], num_bodies=1)[0]
         f_world = X.apply_force(f_body)
-        forces_z.append(f_world[5])
+        forces_z.append(f_world[2])
 
     for i in range(1, len(depths)):
         ratio_depth = depths[i] / depths[0]
@@ -115,11 +115,11 @@ def test_friction_opposes_slip():
 
     # Body moving in +x direction → friction should be in -x
     v = np.zeros(6, dtype=np.float64)
-    v[3] = 1.0  # linear velocity in body frame x (= world x, identity orientation)
+    v[0] = 1.0  # linear velocity in body frame x (= world x, identity orientation)
 
     forces = model.compute_forces([X], [v], num_bodies=1)
     f_world = X.apply_force(forces[0])
-    F_x = f_world[3]  # world-frame x force
+    F_x = f_world[0]  # world-frame x force
     assert F_x < 0.0, f"Friction should oppose +x slip, got F_x={F_x}"
 
 
@@ -132,7 +132,7 @@ def test_zero_friction_at_zero_slip():
 
     forces = model.compute_forces([X], [v], num_bodies=1)
     f_world = X.apply_force(forces[0])
-    F_x, F_y = f_world[3], f_world[4]
+    F_x, F_y = f_world[0], f_world[1]
 
     # With slip_eps=1e-6 and zero slip, tangential force ≈ 0
     assert abs(F_x) < 1e-3, f"Expected ~0 friction in x, got {F_x}"
@@ -149,13 +149,13 @@ def test_damping_reduces_force_on_approach():
     # Static contact
     v_static = _zero_velocity()
     f_static = model.compute_forces([X], [v_static], num_bodies=1)[0]
-    F_z_static = X.apply_force(f_static)[5]
+    F_z_static = X.apply_force(f_static)[2]
 
     # Approaching (downward = negative z velocity in world)
     v_approach = np.zeros(6, dtype=np.float64)
-    v_approach[5] = -1.0  # linear z velocity in body frame (identity orientation)
+    v_approach[2] = -1.0  # linear z velocity in body frame (identity orientation)
     f_approach = model.compute_forces([X], [v_approach], num_bodies=1)[0]
-    F_z_approach = X.apply_force(f_approach)[5]
+    F_z_approach = X.apply_force(f_approach)[2]
 
     assert F_z_approach > F_z_static, (
         f"Approaching contact should increase normal force: {F_z_approach} vs {F_z_static}"

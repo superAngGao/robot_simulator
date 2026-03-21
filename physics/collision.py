@@ -239,8 +239,8 @@ class AABBSelfCollision(SelfCollisionModel):
 
             # Optional velocity damping along the contact direction
             if v_body_list is not None:
-                vi_world = Xi.R @ v_body_list[bi][3:]  # linear vel of body i in world
-                vj_world = Xj.R @ v_body_list[bj][3:]
+                vi_world = Xi.R @ v_body_list[bi][:3]  # linear vel of body i in world
+                vj_world = Xj.R @ v_body_list[bj][:3]
                 v_rel = np.dot(vi_world - vj_world, direction)
                 if v_rel < 0.0:  # bodies approaching → add damping
                     F_mag -= self.b_contact * v_rel
@@ -248,8 +248,8 @@ class AABBSelfCollision(SelfCollisionModel):
             F_world = direction * F_mag
 
             # Spatial force: zero torque (applied at body origin)
-            f_sw_i = np.concatenate([np.zeros(3), F_world])
-            f_sw_j = np.concatenate([np.zeros(3), -F_world])
+            f_sw_i = np.concatenate([F_world, np.zeros(3)])
+            f_sw_j = np.concatenate([-F_world, np.zeros(3)])
 
             forces[bi] += Xi.inverse().apply_force(f_sw_i)
             forces[bj] += Xj.inverse().apply_force(f_sw_j)

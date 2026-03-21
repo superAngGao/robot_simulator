@@ -59,7 +59,7 @@ restructure so the dependency flows downward only.
 ## Code Conventions
 
 - **Physics variables**: single-letter names are acceptable (`I`, `R`, `q`, `v`, `f`).
-- **Spatial vectors**: `[angular; linear]` ordering (Featherstone convention).
+- **Spatial vectors**: `[linear; angular]` ordering (Pinocchio / Isaac Lab convention).
 - **New physics modules**: must include a docstring citing the reference equation/section.
 - **No type annotations required**, but add them to new public APIs.
 

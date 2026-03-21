@@ -53,12 +53,12 @@ class TestPrismaticJoint:
         np.testing.assert_allclose(X.R, np.eye(3), atol=ATOL)
 
     def test_motion_subspace(self):
-        """S has linear component = axis, angular = 0."""
+        """S has linear component = axis ([:3]), angular = 0 ([3:])."""
         j = PrismaticJoint("p", axis=Axis.Z)
         S = j.motion_subspace(np.array([0.0]))
         assert S.shape == (6, 1)
-        np.testing.assert_allclose(S[:3, 0], [0, 0, 0], atol=ATOL)
-        np.testing.assert_allclose(S[3:, 0], [0, 0, 1], atol=ATOL)
+        np.testing.assert_allclose(S[:3, 0], [0, 0, 1], atol=ATOL)
+        np.testing.assert_allclose(S[3:, 0], [0, 0, 0], atol=ATOL)
 
     def test_bias_acceleration_zero(self):
         j = PrismaticJoint("p", axis=Axis.X)
@@ -183,7 +183,7 @@ class TestFreeJoint:
         """Quaternion norm stays 1 after integration."""
         j = FreeJoint()
         q = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
-        qdot = np.array([0.5, -0.3, 1.0, 0.1, 0.2, -0.5])
+        qdot = np.array([0.1, 0.2, -0.5, 0.5, -0.3, 1.0])  # [v; omega]
         q_new = j.integrate_q(q, qdot, dt=0.01)
         quat_norm = np.linalg.norm(q_new[:4])
         assert abs(quat_norm - 1.0) < 1e-10
@@ -192,7 +192,7 @@ class TestFreeJoint:
         """Only angular velocity, no linear -> position unchanged."""
         j = FreeJoint()
         q = np.array([1.0, 0.0, 0.0, 0.0, 5.0, 6.0, 7.0])
-        qdot = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0])  # omega_x only
+        qdot = np.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0])  # omega_x only
         q_new = j.integrate_q(q, qdot, dt=0.01)
         np.testing.assert_allclose(q_new[4:], [5.0, 6.0, 7.0], atol=ATOL)
 
@@ -200,7 +200,7 @@ class TestFreeJoint:
         """Only linear velocity -> quaternion unchanged (up to normalization)."""
         j = FreeJoint()
         q = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-        qdot = np.array([0.0, 0.0, 0.0, 1.0, 2.0, 3.0])
+        qdot = np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0])  # [v; omega=0]
         dt = 0.1
         q_new = j.integrate_q(q, qdot, dt)
         np.testing.assert_allclose(q_new[:4], [1, 0, 0, 0], atol=ATOL)

@@ -132,7 +132,7 @@ def test_semi_implicit_free_fall_accuracy():
         q, qdot = integ.step(tree, q, qdot, tau)
 
     z_sim = q[6]  # pz in FreeJoint q layout
-    vz_sim = qdot[5]  # vz in FreeJoint v layout
+    vz_sim = qdot[2]  # vz in FreeJoint v layout [vx,vy,vz,ωx,ωy,ωz]
     z_ref, vz_ref = _free_fall_analytic(g, t_end)
 
     assert abs(z_sim - z_ref) < 1e-3, f"z error too large: {abs(z_sim - z_ref):.4f}"
@@ -154,7 +154,7 @@ def test_rk4_free_fall_accuracy():
         q, qdot = integ.step(tree, q, qdot, tau)
 
     z_sim = q[6]
-    vz_sim = qdot[5]
+    vz_sim = qdot[2]
     z_ref, vz_ref = _free_fall_analytic(g, t_end)
 
     assert abs(z_sim - z_ref) < 1e-6, f"RK4 z error too large: {abs(z_sim - z_ref):.2e}"
@@ -294,9 +294,9 @@ def test_freejoint_quaternion_stays_normalised():
     """After 500 steps, FreeJoint quaternion norm stays within 1e-6 of 1."""
     tree = _make_free_body()
     q, qdot = tree.default_state()
-    # Give it some angular velocity
-    qdot[0] = 1.0  # wx
-    qdot[1] = 0.5  # wy
+    # Give it some angular velocity ([vx,vy,vz,ωx,ωy,ωz])
+    qdot[3] = 1.0  # wx
+    qdot[4] = 0.5  # wy
     tau = np.zeros(tree.nv)
     integ = SemiImplicitEuler(dt=1e-3)
 

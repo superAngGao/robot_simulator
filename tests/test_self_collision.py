@@ -106,8 +106,8 @@ def test_force_pushes_bodies_apart_x():
     # Body 0 should be pushed in -x (world), body 1 in +x
     f0_world = X[0].apply_force(forces[0])
     f1_world = X[1].apply_force(forces[1])
-    assert f0_world[3] < 0.0, f"Body 0 should be pushed -x, got {f0_world[3]}"
-    assert f1_world[3] > 0.0, f"Body 1 should be pushed +x, got {f1_world[3]}"
+    assert f0_world[0] < 0.0, f"Body 0 should be pushed -x, got {f0_world[0]}"
+    assert f1_world[0] > 0.0, f"Body 1 should be pushed +x, got {f1_world[0]}"
 
 
 def test_force_pushes_bodies_apart_z():
@@ -119,8 +119,8 @@ def test_force_pushes_bodies_apart_z():
 
     f0_world = X[0].apply_force(forces[0])
     f1_world = X[1].apply_force(forces[1])
-    assert f0_world[5] < 0.0, f"Body 0 should be pushed -z, got {f0_world[5]}"
-    assert f1_world[5] > 0.0, f"Body 1 should be pushed +z, got {f1_world[5]}"
+    assert f0_world[2] < 0.0, f"Body 0 should be pushed -z, got {f0_world[2]}"
+    assert f1_world[2] > 0.0, f"Body 1 should be pushed +z, got {f1_world[2]}"
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +139,7 @@ def test_force_magnitude_proportional_to_depth():
         v = [_zero_vel(), _zero_vel()]
         forces = sc.compute_forces(X, v, num_bodies=2)
         f0_world = X[0].apply_force(forces[0])
-        F_mag = abs(f0_world[3])
+        F_mag = abs(f0_world[0])
         assert abs(F_mag - k * depth) < 1e-6, f"depth={depth}: expected {k * depth}, got {F_mag}"
 
 
@@ -157,7 +157,7 @@ def test_newtons_third_law():
 
     f0_world = X[0].apply_force(forces[0])
     f1_world = X[1].apply_force(forces[1])
-    np.testing.assert_allclose(f0_world[3:], -f1_world[3:], atol=1e-10)
+    np.testing.assert_allclose(f0_world[:3], -f1_world[:3], atol=1e-10)
 
 
 # ---------------------------------------------------------------------------
@@ -173,13 +173,13 @@ def test_damping_increases_force_when_approaching():
 
     v_static = [_zero_vel(), _zero_vel()]
     f_static = sc.compute_forces(X, v_static, num_bodies=2)
-    F_static = abs(X[0].apply_force(f_static[0])[3])
+    F_static = abs(X[0].apply_force(f_static[0])[0])
 
     # body 0 moving +x (toward body 1), body 1 stationary → approaching
     v_approach = [_zero_vel(), _zero_vel()]
-    v_approach[0][3] = 1.0  # linear x velocity in body frame
+    v_approach[0][0] = 1.0  # linear x velocity in body frame
     f_approach = sc.compute_forces(X, v_approach, num_bodies=2)
-    F_approach = abs(X[0].apply_force(f_approach[0])[3])
+    F_approach = abs(X[0].apply_force(f_approach[0])[0])
 
     assert F_approach > F_static, f"Approaching should increase force: {F_approach} vs {F_static}"
 
@@ -192,13 +192,13 @@ def test_damping_not_applied_when_separating():
 
     v_static = [_zero_vel(), _zero_vel()]
     f_static = sc.compute_forces(X, v_static, num_bodies=2)
-    F_static = abs(X[0].apply_force(f_static[0])[3])
+    F_static = abs(X[0].apply_force(f_static[0])[0])
 
     # body 0 moving -x (away from body 1) → separating
     v_sep = [_zero_vel(), _zero_vel()]
-    v_sep[0][3] = -1.0
+    v_sep[0][0] = -1.0
     f_sep = sc.compute_forces(X, v_sep, num_bodies=2)
-    F_sep = abs(X[0].apply_force(f_sep[0])[3])
+    F_sep = abs(X[0].apply_force(f_sep[0])[0])
 
     assert abs(F_sep - F_static) < 1e-10, f"Separating should not change force: {F_sep} vs {F_static}"
 

@@ -95,8 +95,8 @@ class ContactPoint:
         Uses the rigid-body velocity formula:
             v_point = v_linear + ω × r_point
         """
-        omega = X_world.R @ v_body[:3]  # angular vel in world
-        v_lin = X_world.R @ v_body[3:]  # linear vel of body origin in world
+        v_lin = X_world.R @ v_body[:3]  # linear vel of body origin in world
+        omega = X_world.R @ v_body[3:]  # angular vel in world
         r_world = X_world.R @ self.position
         return v_lin + np.cross(omega, r_world)
 
@@ -222,8 +222,8 @@ class PenaltyContactModel(ContactModel):
 
             torque_world = np.cross(r_world, F_world)
 
-            # Spatial force in world frame = [torque; force]
-            f_spatial_world = np.concatenate([torque_world, F_world])
+            # Spatial force in world frame = [force; torque]
+            f_spatial_world = np.concatenate([F_world, torque_world])
             # Transform to body frame: X_world maps body→world,
             # so X_world.inverse() maps world→body.
             f_spatial_body = X.inverse().apply_force(f_spatial_world)

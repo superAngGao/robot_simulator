@@ -15,12 +15,12 @@ import torch
 
 def base_lin_vel(env, **params) -> torch.Tensor:
     """Linear velocity of the root body in body frame. Shape (3,)."""
-    return torch.tensor(env.v_bodies[env.root_body_idx][3:6], dtype=torch.float32)
+    return torch.tensor(env.v_bodies[env.root_body_idx][:3], dtype=torch.float32)
 
 
 def base_ang_vel(env, **params) -> torch.Tensor:
     """Angular velocity of the root body in body frame. Shape (3,)."""
-    return torch.tensor(env.v_bodies[env.root_body_idx][:3], dtype=torch.float32)
+    return torch.tensor(env.v_bodies[env.root_body_idx][3:6], dtype=torch.float32)
 
 
 def base_orientation(env, **params) -> torch.Tensor:

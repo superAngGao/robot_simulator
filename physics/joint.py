@@ -151,8 +151,8 @@ class RevoluteJoint(Joint):
                 raise ValueError("Joint axis vector must be non-zero.")
             self._axis_vec = k / norm
         self._S: NDArray[np.float64] = np.zeros((6, 1), dtype=np.float64)
-        # Motion subspace: pure rotation about axis (angular component only)
-        self._S[:3, 0] = self._axis_vec
+        # Motion subspace: pure rotation about axis (angular component in [3:])
+        self._S[3:, 0] = self._axis_vec
         self.q_min = float(q_min)
         self.q_max = float(q_max)
         self.k_limit = float(k_limit)
@@ -253,8 +253,8 @@ class PrismaticJoint(Joint):
                 raise ValueError("Joint axis vector must be non-zero.")
             self._axis_vec = k / norm
         self._S: NDArray[np.float64] = np.zeros((6, 1), dtype=np.float64)
-        # Motion subspace: pure translation (linear component only)
-        self._S[3:, 0] = self._axis_vec
+        # Motion subspace: pure translation (linear component in [:3])
+        self._S[:3, 0] = self._axis_vec
         self.damping = float(damping)
 
     def transform(self, q: NDArray[np.float64]) -> SpatialTransform:
@@ -329,7 +329,7 @@ class FreeJoint(Joint):
         q = [qw, qx, qy, qz, x, y, z]   (quaternion + translation)
 
     Velocity parameterisation (nv = 6):
-        qdot = [ωx, ωy, ωz, vx, vy, vz]  (spatial velocity in world frame)
+        qdot = [vx, vy, vz, ωx, ωy, ωz]  (spatial velocity, [linear; angular])
     """
 
     nq = 7
@@ -370,8 +370,8 @@ class FreeJoint(Joint):
         dt: float,
     ) -> NDArray[np.float64]:
         """Integrate quaternion state (avoids naive Euler on quaternions)."""
-        omega = qdot[:3]
-        vel = qdot[3:]
+        vel = qdot[:3]
+        omega = qdot[3:]
         qw, qx, qy, qz = q[:4]
         # Quaternion derivative: q̇ = 0.5 * Ω(ω) @ q
         dq = 0.5 * np.array(

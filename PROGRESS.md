@@ -143,13 +143,35 @@
 | `spatial.py:matrix()` 用 R 而非 R.T，与 SE3 约定不一致 | 改为 `E = R.T`，使 `matrix() @ v == apply_velocity(v)` 和 `matrix().T @ f == apply_force(f)` 成立。修复前 ABA 惯量传递在 X_tree 有非零旋转时会算错（潜在 bug，此前所有 X_tree 均 R=I 因此未暴露） |
 | `robot_tree.py:rnea()` 根节点重力符号错误 | `a_gravity` → `-a_gravity`（与 ABA 一致）。RNEA 输出一直是错的但此前无测试覆盖 |
 
-**尚未覆盖的低优先测试（留待后续）：**
-
-- `rl_env/controllers.py` — TorqueController（零测试）
-- `rl_env/obs_terms.py` — 各 term 函数无独立测试
-- `rl_env/base_env.py` — init_noise_scale、action_clip、episode_length 截断等边界情况
-
 **总测试数：166（全部通过，不含 rl_env 的 6 个需 gymnasium 依赖）**
+
+### Q15 空间向量约定统一 + rl_env 测试补全 ✅（2026-03-21 session 5）
+
+**Q15 — 空间向量顺序约定统一为 `[linear; angular]`**
+
+将全部 6D 空间向量从 Featherstone 约定 `[angular(3); linear(3)]` 改为 Pinocchio / Isaac Lab 约定 `[linear(3); angular(3)]`。改动覆盖：
+
+| 文件 | 改动 |
+|------|------|
+| `physics/spatial.py` | matrix(), apply_velocity(), apply_force(), SpatialInertia.matrix(), spatial_cross_velocity(), gravity_spatial() |
+| `physics/joint.py` | RevoluteJoint._S, PrismaticJoint._S, FreeJoint.integrate_q() |
+| `physics/contact.py` | ContactPoint.world_velocity(), compute_forces() 空间力构造 |
+| `physics/collision.py` | 线性速度提取, 空间力构造 |
+| `rl_env/obs_terms.py` | base_lin_vel, base_ang_vel 索引 |
+| 所有测试文件 | 移除 `_P6` 置换矩阵，直接与 Pinocchio 对比；更新所有空间向量索引 |
+
+**rl_env 测试补全（+20 个新测试）**
+
+| 覆盖内容 | 测试数 |
+|----------|--------|
+| TorqueController（pass-through + effort clip） | 2 |
+| PDController（zero state、damping） | 2 |
+| obs_terms 各 term 函数（shape、dtype、零值） | 9 |
+| Env action_clip / episode truncation / init_noise / reset step count | 4 |
+| VecEnv reset shape | 1 |
+| ObsManager + velocity terms / uniform noise | 2 |
+
+**总测试数：192（全部通过）**
 
 ### 2d — RL environment (Layer 3/4) ✅
 

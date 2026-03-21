@@ -6,10 +6,13 @@ Spatial vectors combine rotational and translational components into a unified
 6D representation, enabling compact and efficient multi-body dynamics.
 
 Conventions:
-  - Spatial velocity:  v = [ω; v]  (angular first, then linear)
-  - Spatial force:     f = [τ; f]  (torque first, then force)
+  - Spatial velocity:  v = [v; ω]  (linear first, then angular)
+  - Spatial force:     f = [f; τ]  (force first, then torque)
   - Coordinate frames: right-handed, z-up
   - Rotation matrices: R such that v_b = R @ v_a transforms from frame a to b
+
+Note: This matches Pinocchio and Isaac Lab convention ([linear; angular]).
+      Featherstone's original text uses [angular; linear].
 
 References:
   Featherstone, R. (2008). Rigid Body Dynamics Algorithms. Springer.
@@ -126,9 +129,10 @@ class SpatialTransform:
       - R : 3x3 rotation matrix  (columns of R are axes of A expressed in B)
       - r : 3D translation vector (origin of A expressed in B)
 
-    The 6x6 Plücker transform matrix is:
-        X = [ R,       0  ]
-            [ -R@skew(r), R ]
+    The 6x6 Plücker transform matrix ([linear; angular] convention) is:
+        X = [ E,  -E@skew(r) ]
+            [ 0,   E         ]
+    where E = R.T.
 
     Applied to spatial velocity:   v_B = X @ v_A
     Applied to spatial force:      f_A = X.T @ f_B  (dual transform)
@@ -170,12 +174,16 @@ class SpatialTransform:
 
         Satisfies: matrix() @ v == apply_velocity(v)
         and:       matrix().T @ f == apply_force(f)
+
+        Layout ([linear; angular] convention):
+            X = [ E,  -E@skew(r) ]
+                [ 0,   E         ]
         """
         E = self.R.T  # parent→child rotation
         r = self.r
         X = np.zeros((6, 6), dtype=np.float64)
         X[:3, :3] = E
-        X[3:, :3] = -E @ skew(r)
+        X[:3, 3:] = -E @ skew(r)
         X[3:, 3:] = E
         return X
 
@@ -191,16 +199,16 @@ class SpatialTransform:
         """Transform a spatial velocity from parent frame to child frame.
 
         Convention: R is child→parent rotation, r is child origin in parent frame.
-        SE3 formula: omega_child = R.T @ omega_parent
-                     v_child     = R.T @ (v_parent + omega_parent × r)
+        SE3 formula: v_child     = R.T @ (v_parent + omega_parent × r)
+                     omega_child = R.T @ omega_parent
         """
         R, r = self.R, self.r
-        omega = v[:3]
-        vel = v[3:]
+        vel = v[:3]
+        omega = v[3:]
         return np.concatenate(
             [
-                R.T @ omega,
                 R.T @ (vel + np.cross(omega, r)),
+                R.T @ omega,
             ]
         )
 
@@ -212,13 +220,13 @@ class SpatialTransform:
                      tau_parent = R @ tau_child + r × (R @ f_child)
         """
         R, r = self.R, self.r
-        tau = f[:3]
-        frc = f[3:]
+        frc = f[:3]
+        tau = f[3:]
         f_parent = R @ frc
         return np.concatenate(
             [
-                R @ tau + np.cross(r, f_parent),
                 f_parent,
+                R @ tau + np.cross(r, f_parent),
             ]
         )
 
@@ -252,9 +260,9 @@ class SpatialTransform:
 class SpatialInertia:
     """Spatial (6x6) inertia matrix of a rigid body.
 
-    Expressed at the body's center of mass frame:
-        I_spatial = [ I_com,      0    ]
-                    [   0,    m * E_3  ]
+    Expressed at the body's center of mass frame ([linear; angular] convention):
+        I_spatial = [ m * E_3,    0    ]
+                    [   0,    I_com    ]
 
     where I_com is the 3x3 rotational inertia about the CoM.
 
@@ -304,20 +312,21 @@ class SpatialInertia:
     # ------------------------------------------------------------------
 
     def matrix(self) -> Mat6:
-        """Return the 6x6 spatial inertia matrix expressed at body origin."""
+        """Return the 6x6 spatial inertia matrix expressed at body origin.
+
+        Layout ([linear; angular] convention):
+            M = [ m*I3,     m*C.T      ]
+                [ m*C,  I + m*(C@C.T)  ]
+        """
         m = self.mass
         c = self.com
         I = self.inertia
         C = skew(c)
-        top_left = I + m * (C @ C.T)  # shifted inertia (parallel axis)
-        top_right = m * C
-        bot_left = m * C.T
-        bot_right = m * np.eye(3)
         M = np.zeros((6, 6), dtype=np.float64)
-        M[:3, :3] = top_left
-        M[:3, 3:] = top_right
-        M[3:, :3] = bot_left
-        M[3:, 3:] = bot_right
+        M[:3, :3] = m * np.eye(3)
+        M[:3, 3:] = m * C.T
+        M[3:, :3] = m * C
+        M[3:, 3:] = I + m * (C @ C.T)
         return M
 
     def __add__(self, other: "SpatialInertia") -> "SpatialInertia":
@@ -354,18 +363,17 @@ def spatial_cross_velocity(v: Vec6) -> Mat6:
         vcross @ u == spatial_cross(v, u)
 
     Used in the equation of motion:  f = I*a + v x* (I*v)
+
+    Layout ([linear; angular] convention):
+        [ skew(ω),  skew(v) ]
+        [ 0,        skew(ω) ]
     """
-    omega = v[:3]
-    vel = v[3:]
-    top_left = skew(omega)
-    top_right = np.zeros((3, 3))
-    bot_left = skew(vel)
-    bot_right = skew(omega)
+    vel = v[:3]
+    omega = v[3:]
     M = np.zeros((6, 6), dtype=np.float64)
-    M[:3, :3] = top_left
-    M[:3, 3:] = top_right
-    M[3:, :3] = bot_left
-    M[3:, 3:] = bot_right
+    M[:3, :3] = skew(omega)
+    M[:3, 3:] = skew(vel)
+    M[3:, 3:] = skew(omega)
     return M
 
 
@@ -379,5 +387,8 @@ def spatial_cross_force(v: Vec6) -> Mat6:
 
 
 def gravity_spatial(g: float = 9.81) -> Vec6:
-    """Spatial gravity vector (acceleration of free fall, z-up convention)."""
-    return np.array([0.0, 0.0, 0.0, 0.0, 0.0, -g], dtype=np.float64)
+    """Spatial gravity vector (acceleration of free fall, z-up convention).
+
+    Layout: [linear(3); angular(3)] = [0, 0, -g, 0, 0, 0].
+    """
+    return np.array([0.0, 0.0, -g, 0.0, 0.0, 0.0], dtype=np.float64)

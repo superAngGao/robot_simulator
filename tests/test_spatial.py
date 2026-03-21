@@ -41,29 +41,8 @@ from physics.spatial import (
 ATOL = 1e-12
 
 # ---------------------------------------------------------------------------
-# Pinocchio uses [linear; angular] while we use [angular; linear].
-# These helpers convert between the two layouts.
+# After Q15, we use [linear; angular] — same as Pinocchio. No permutation needed.
 # ---------------------------------------------------------------------------
-
-# 6x6 permutation matrix swapping the two 3-blocks
-_P6 = np.zeros((6, 6), dtype=np.float64)
-_P6[:3, 3:] = np.eye(3)
-_P6[3:, :3] = np.eye(3)
-
-
-def _to_pin_vec(v):
-    """Our [angular; linear] -> Pinocchio [linear; angular]."""
-    return _P6 @ v
-
-
-def _from_pin_vec(v):
-    """Pinocchio [linear; angular] -> our [angular; linear]."""
-    return _P6 @ v  # P is its own inverse
-
-
-def _from_pin_mat(M):
-    """Pinocchio 6x6 matrix -> our ordering."""
-    return _P6 @ M @ _P6
 
 
 # ---------------------------------------------------------------------------
@@ -240,15 +219,15 @@ class TestSpatialTransformBasic:
         """Pure translation: omega unchanged (R=I), v gets omega x r term."""
         r = np.array([1.0, 2.0, 3.0])
         X = SpatialTransform.from_translation(r)
-        omega = np.array([0.0, 0.0, 1.0])
         v_lin = np.array([1.0, 0.0, 0.0])
-        v = np.concatenate([omega, v_lin])
+        omega = np.array([0.0, 0.0, 1.0])
+        v = np.concatenate([v_lin, omega])
         v_out = X.apply_velocity(v)
-        # R=I, so omega_out = omega
-        np.testing.assert_allclose(v_out[:3], omega, atol=ATOL)
-        # v_out = v_lin + omega x r
+        # v_out[:3] = v_lin + omega x r
         expected_v = v_lin + np.cross(omega, r)
-        np.testing.assert_allclose(v_out[3:], expected_v, atol=ATOL)
+        np.testing.assert_allclose(v_out[:3], expected_v, atol=ATOL)
+        # R=I, so omega_out = omega
+        np.testing.assert_allclose(v_out[3:], omega, atol=ATOL)
 
     def test_apply_force_inverse_roundtrip(self):
         """X.apply_force(X.inverse().apply_force(f)) should NOT be identity.
@@ -310,30 +289,28 @@ class TestSpatialTransformVsPinocchio:
     def test_apply_velocity_vs_actInv(self):
         """Our apply_velocity == Pinocchio SE3.actInv(Motion).
 
-        Pinocchio uses [linear; angular] layout, we use [angular; linear].
+        Both use [linear; angular] layout after Q15.
         """
         np.random.seed(20)
         for _ in range(10):
             X = _random_transform()
             v = np.random.randn(6)
             ours = X.apply_velocity(v)
-            v_pin = _to_pin_vec(v)
-            pin_result = self._to_pin(X).actInv(pin.Motion(v_pin)).np.ravel()
-            np.testing.assert_allclose(ours, _from_pin_vec(pin_result), atol=ATOL)
+            pin_result = self._to_pin(X).actInv(pin.Motion(v)).np.ravel()
+            np.testing.assert_allclose(ours, pin_result, atol=ATOL)
 
     def test_apply_force_vs_act(self):
         """Our apply_force == Pinocchio SE3.act(Force).
 
-        Pinocchio uses [linear; angular] layout, we use [angular; linear].
+        Both use [linear; angular] layout after Q15.
         """
         np.random.seed(21)
         for _ in range(10):
             X = _random_transform()
             f = np.random.randn(6)
             ours = X.apply_force(f)
-            f_pin = _to_pin_vec(f)
-            pin_result = self._to_pin(X).act(pin.Force(f_pin)).np.ravel()
-            np.testing.assert_allclose(ours, _from_pin_vec(pin_result), atol=ATOL)
+            pin_result = self._to_pin(X).act(pin.Force(f)).np.ravel()
+            np.testing.assert_allclose(ours, pin_result, atol=ATOL)
 
     def test_compose_vs_pinocchio(self):
         """Our compose matches Pinocchio SE3 multiplication."""
@@ -414,7 +391,7 @@ class TestSpatialInertiaVsPinocchio:
     def test_matrix_vs_pinocchio(self):
         """Our SpatialInertia.matrix() matches Pinocchio Inertia.matrix().
 
-        Pinocchio uses [linear; angular] ordering, we use [angular; linear].
+        Both use [linear; angular] ordering after Q15.
         """
         mass = 2.5
         inertia = np.diag([0.1, 0.2, 0.3])
@@ -422,7 +399,7 @@ class TestSpatialInertiaVsPinocchio:
 
         ours = SpatialInertia(mass, inertia, com).matrix()
         pin_I = pin.Inertia(mass, com, inertia)
-        np.testing.assert_allclose(ours, _from_pin_mat(pin_I.matrix()), atol=ATOL)
+        np.testing.assert_allclose(ours, pin_I.matrix(), atol=ATOL)
 
     def test_matrix_zero_com(self):
         """With com=0, matrix should be block-diagonal."""
@@ -431,7 +408,7 @@ class TestSpatialInertiaVsPinocchio:
         com = np.zeros(3)
         ours = SpatialInertia(mass, inertia, com).matrix()
         pin_I = pin.Inertia(mass, com, inertia)
-        np.testing.assert_allclose(ours, _from_pin_mat(pin_I.matrix()), atol=ATOL)
+        np.testing.assert_allclose(ours, pin_I.matrix(), atol=ATOL)
 
 
 # ===========================================================================
@@ -453,9 +430,9 @@ class TestSpatialCross:
         np.testing.assert_allclose(spatial_cross_force(v), -spatial_cross_velocity(v).T, atol=ATOL)
 
     def test_gravity_spatial(self):
-        """gravity_spatial(9.81) == [0,0,0, 0,0,-9.81]."""
+        """gravity_spatial(9.81) == [0,0,-9.81, 0,0,0]."""
         g = gravity_spatial(9.81)
-        np.testing.assert_allclose(g, [0, 0, 0, 0, 0, -9.81], atol=ATOL)
+        np.testing.assert_allclose(g, [0, 0, -9.81, 0, 0, 0], atol=ATOL)
 
 
 # ===========================================================================
