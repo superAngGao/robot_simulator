@@ -82,8 +82,16 @@ robot_simulator/
 │   ├── collision.py       # Layer 1: SelfCollisionModel(ABC) + AABBSelfCollision
 │   │                      #   (replaces self_collision.py in Phase 2)
 │   ├── integrator.py      # Layer 1: Semi-implicit Euler / RK4
-│   └── warp_kernels/      # Layer 1 (Phase 2): GPU backend
-│       └── robot_tree_warp.py  # RobotTreeWarp(RobotTreeBase) — batched ABA/FK
+│   └── backends/           # Layer 1 (Phase 2): GPU backends
+│       ├── __init__.py     #   get_backend("warp"|"tilelang") factory
+│       ├── warp/           #   NVIDIA Warp backend
+│       │   ├── robot_tree_warp.py   # RobotTreeWarp(RobotTreeBase)
+│       │   ├── contact_warp.py      # Warp contact kernels
+│       │   └── collision_warp.py    # Warp self-collision kernels
+│       └── tilelang/       #   TileLang backend
+│           ├── robot_tree_tl.py     # RobotTreeTileLang(RobotTreeBase)
+│           ├── contact_tl.py        # TileLang contact kernels
+│           └── collision_tl.py      # TileLang self-collision kernels
 │
 ├── robot/                 # Robot Description axis
 │   ├── model.py           # RobotModel dataclass
@@ -106,7 +114,7 @@ robot_simulator/
 │   ├── managers.py        # TermManager(ABC) + ObsManager + RewardManager(stub)
 │   │                      #   + TerminationManager(stub)
 │   ├── base_env.py        # Layer 3: Gymnasium-compatible single env
-│   └── vec_env.py         # Layer 4: parallel VecEnv (Warp-backed, true GPU parallel)
+│   └── vec_env.py         # Layer 4: parallel VecEnv (torch.Tensor on CUDA, backend-agnostic)
 │
 ├── deploy/                # Phase 5 (deferred)
 │   ├── policy_export.py
@@ -123,7 +131,8 @@ robot_simulator/
 | Layer | Technology | Notes |
 |---|---|---|
 | Phase 1 physics | Python + NumPy | Validate correctness first |
-| Phase 2 physics | NVIDIA Warp / CUDA | GPU parallelism for RL training |
+| Phase 2 physics | NVIDIA Warp + TileLang | Dual GPU backends, benchmarked against each other |
+| Tensor format | PyTorch (torch.Tensor) | Unified data format; zero-copy interop with backends via DLPack |
 | Rendering (early) | matplotlib 3D | Quick visualization |
 | Rendering (later) | Vulkan + ray tracing | Sim-to-Real visual fidelity |
 | RL training | PyTorch + RL Games / SB3 | |
@@ -154,9 +163,11 @@ Deliverables:
 
 ### Phase 2 — GPU Acceleration + Parallel Environments
 
-Architecture decisions confirmed in REFLECTIONS.md (2026-03-17):
-- **Warp backend**: Option B — `RobotTreeWarp(RobotTreeBase)` + `RobotTreeNumpy(RobotTreeBase)`; NumPy baseline kept for correctness checks.
-- **VecEnv parallelism**: Warp kernels batched over N envs (`dim=N`), not Python-level for-loop.
+Architecture decisions confirmed in REFLECTIONS.md (2026-03-17), updated 2026-03-22:
+- **Dual GPU backends**: Warp + TileLang, both implementing `RobotTreeBase(ABC)`; NumPy baseline kept for correctness checks.
+- **Unified data format**: `torch.Tensor` on CUDA throughout VecEnv/managers. GPU backends receive tensors via zero-copy (Warp: `wp.from_torch()`; TileLang: DLPack).
+- **Backend selection**: `physics/backends/get_backend("warp"|"tilelang")` factory; upper layers are backend-agnostic.
+- **VecEnv parallelism**: GPU kernels batched over N envs (`dim=N`), not Python-level for-loop.
 - **Obs/Action space**: Manager + term-function pattern (Isaac Lab style); `ObsManager` fully implemented, Reward/Termination as stubs.
 - **Simulator placement**: Top-level `simulator.py` (not inside `physics/`).
 
@@ -201,12 +212,38 @@ Architecture decisions confirmed in REFLECTIONS.md (2026-03-17):
 - [ ] `rl_env/base_env.py` — `Env(model, cfg)`, Gymnasium interface
 - [ ] `rl_env/vec_env.py` — `VecEnv`: holds Warp arrays directly, no Python env-loop
 
-#### 2e — GPU backend
+#### 2e — GPU backends (Warp + TileLang)
 
-- [ ] `physics/warp_kernels/robot_tree_warp.py` — `RobotTreeWarp(RobotTreeBase)`: batched ABA + FK (Warp kernel, `dim=N`)
-- [ ] Warp contact and self-collision kernels
-- [ ] Numerical validation: Warp output vs NumPy baseline (same input, tolerance check)
-- [ ] Benchmark: steps/s throughput, Phase 1 NumPy vs Phase 2 Warp (1 / 100 / 1000 envs)
+**统一数据格式**：`torch.Tensor` on CUDA。VecEnv、ObsManager、RewardManager 全部持有 PyTorch tensor。
+GPU 后端通过零拷贝接收 tensor（Warp: `wp.from_torch()`; TileLang: DLPack），避免 host-device 拷贝。
+
+**后端接口**：`physics/backends/__init__.py` 提供 `get_backend(name)` 工厂函数，返回对应的
+`RobotTree` 子类 + `ContactModel` + `CollisionModel`。上层代码（Simulator、VecEnv）不感知具体后端。
+
+Warp 后端：
+- [ ] `physics/backends/warp/robot_tree_warp.py` — `RobotTreeWarp(RobotTreeBase)`: batched ABA + FK (Warp kernel, `dim=N`)
+- [ ] `physics/backends/warp/contact_warp.py` — Warp contact kernel
+- [ ] `physics/backends/warp/collision_warp.py` — Warp self-collision kernel
+
+TileLang 后端：
+- [ ] `physics/backends/tilelang/robot_tree_tl.py` — `RobotTreeTileLang(RobotTreeBase)`: batched ABA + FK
+- [ ] `physics/backends/tilelang/contact_tl.py` — TileLang contact kernel
+- [ ] `physics/backends/tilelang/collision_tl.py` — TileLang self-collision kernel
+
+共用：
+- [ ] `physics/backends/__init__.py` — `get_backend()` 工厂函数 + 后端注册
+- [ ] Numerical validation: Warp / TileLang output vs NumPy baseline (same input, tolerance check)
+- [ ] Benchmark: steps/s throughput, NumPy vs Warp vs TileLang (1 / 100 / 1000 envs)
+
+#### 2f — High-fidelity contact modeling
+
+当前 penalty 单点接触仅适用于快速原型验证。精确仿真需要升级为：
+
+- [ ] **多点接触**：每个接触体定义多个接触点（如足底 4 角点），替代当前单点模型
+- [ ] **凸体碰撞检测**：实现 GJK/EPA 算法，支持凸形状（box, sphere, cylinder, convex mesh）之间的穿透深度和接触面片计算
+- [ ] **约束求解器（LCP）**：替代 penalty 弹簧阻尼模型，用基于约束的接触求解（Signorini 条件 + Coulomb 摩擦锥），消除参数调优依赖
+- [ ] **接触点离散化**：将 GJK/EPA 求得的接触面片离散为多个接触点，输入约束求解器
+- [ ] GPU 加速：GJK/EPA + LCP 的 Warp kernel 实现
 
 ### Phase 3 — High-Fidelity Rendering + Sensor Simulation
 - Vulkan renderer with ray tracing
