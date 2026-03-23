@@ -98,6 +98,18 @@ class TestAABBTreeBroadPhase:
         pairs = bp.query_pairs({(0, 1)})
         assert len(pairs) == 0
 
+    def test_empty_input(self):
+        bp = AABBTreeBroadPhase()
+        bp.update([])
+        pairs = bp.query_pairs(set())
+        assert len(pairs) == 0
+
+    def test_single_body(self):
+        bp = AABBTreeBroadPhase()
+        bp.update([(0, AABB(np.zeros(3), np.ones(3)))])
+        pairs = bp.query_pairs(set())
+        assert len(pairs) == 0
+
     def test_consistent_with_brute_force(self):
         """AABB tree should find same pairs as brute force."""
         np.random.seed(42)

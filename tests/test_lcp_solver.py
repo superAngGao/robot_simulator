@@ -123,6 +123,57 @@ class TestPGSSolver:
         total_z = impulses[0][2]
         assert total_z > 0
 
+    def test_body_body_collision(self):
+        """Two bodies colliding (neither is ground)."""
+        solver = PGSContactSolver(max_iter=50)
+        c = ContactConstraint(
+            body_i=0, body_j=1,
+            point=np.array([0.5, 0, 0.0]),
+            normal=np.array([1, 0, 0.0]),  # push apart along X
+            tangent1=np.zeros(3), tangent2=np.zeros(3),
+            depth=0.05, mu=0.3,
+        )
+        # Body 0 moving right, body 1 moving left
+        body_v = [
+            np.array([1.0, 0, 0, 0, 0, 0]),
+            np.array([-1.0, 0, 0, 0, 0, 0]),
+        ]
+        body_X = [
+            SpatialTransform.from_translation(np.array([0, 0, 0])),
+            SpatialTransform.from_translation(np.array([1, 0, 0])),
+        ]
+        inv_mass = [1.0, 1.0]
+        inv_inertia = [np.eye(3), np.eye(3)]
+
+        impulses = solver.solve([c], body_v, body_X, inv_mass, inv_inertia, dt=1e-3)
+        # Normal points from j(1) to i(0) in +X direction
+        # Body 0 (body_i) gets pushed in +X (normal direction)
+        # Body 1 (body_j) gets pushed in -X (opposite)
+        assert impulses[0][0] > 0, f"Body i should get +X impulse, got {impulses[0][0]}"
+        assert impulses[1][0] < 0, f"Body j should get -X impulse, got {impulses[1][0]}"
+
+    def test_pgs_convergence(self):
+        """More iterations should give better result."""
+        c = ContactConstraint(
+            body_i=0, body_j=-1,
+            point=np.array([0, 0, 0.0]),
+            normal=np.array([0, 0, 1.0]),
+            tangent1=np.zeros(3), tangent2=np.zeros(3),
+            depth=0.01, mu=0.5,
+        )
+        body_v = [np.array([0.5, 0, -2.0, 0.1, 0, 0])]
+        body_X = [SpatialTransform.from_translation(np.array([0, 0, 0.5]))]
+
+        results = []
+        for max_iter in [1, 5, 30, 100]:
+            solver = PGSContactSolver(max_iter=max_iter)
+            imp = solver.solve([c], body_v, body_X, [1.0], [np.eye(3)], dt=1e-3)
+            results.append(imp[0][2])
+
+        # Impulse should stabilize as iterations increase
+        # Last two should be very close (converged)
+        assert abs(results[-1] - results[-2]) < abs(results[1] - results[0]) + 1e-10
+
     def test_warm_starting(self):
         """Second solve with same contacts should converge faster."""
         solver = PGSContactSolver(max_iter=5)  # Very few iterations

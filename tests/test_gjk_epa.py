@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from physics.geometry import BoxShape, CylinderShape, SphereShape
+from physics.geometry import BoxShape, CapsuleShape, CylinderShape, SphereShape
 from physics.gjk_epa import ContactManifold, gjk, gjk_epa_query, ground_contact_query
 from physics.spatial import SpatialTransform
 
@@ -140,6 +140,30 @@ class TestGroundContact:
         # Lowest point at z = 0.3 - 0.5 = -0.2, depth = 0.2
         assert abs(result.depth - 0.2) < ATOL
 
+    def test_capsule_on_ground(self):
+        cap = CapsuleShape(0.3, 1.0)
+        pose = SpatialTransform.from_translation(np.array([0, 0, 0.6]))
+        result = ground_contact_query(cap, pose, ground_z=0.0)
+        # Lowest: 0.6 - 0.5 - 0.3 = -0.2, depth = 0.2
+        assert result is not None
+        assert abs(result.depth - 0.2) < 0.02
+
+    def test_cylinder_on_ground(self):
+        cyl = CylinderShape(0.5, 2.0)
+        pose = SpatialTransform.from_translation(np.array([0, 0, 0.8]))
+        result = ground_contact_query(cyl, pose, ground_z=0.0)
+        # Lowest: 0.8 - 1.0 = -0.2, depth = 0.2
+        assert result is not None
+        assert abs(result.depth - 0.2) < ATOL
+
+    def test_nonzero_ground_z(self):
+        sphere = SphereShape(0.5)
+        pose = SpatialTransform.from_translation(np.array([0, 0, 1.3]))
+        # Ground at z=1.0: lowest = 1.3-0.5=0.8, depth = 1.0-0.8 = 0.2
+        result = ground_contact_query(sphere, pose, ground_z=1.0)
+        assert result is not None
+        assert abs(result.depth - 0.2) < ATOL
+
     def test_rotated_box(self):
         box = BoxShape((2, 1, 1))
         # 45 degree rotation around Y
@@ -152,3 +176,62 @@ class TestGroundContact:
         result = ground_contact_query(box, pose, ground_z=0.0)
         # Rotated box corner extends further down
         assert result is not None or result is None  # depends on height
+
+
+class TestGJKEdgeCases:
+    def test_identical_position(self):
+        """Two shapes at same position should intersect."""
+        box = BoxShape((1, 1, 1))
+        pose = SpatialTransform.from_translation(np.zeros(3))
+        hit, _ = gjk(box, pose, box, pose)
+        assert hit
+
+    def test_barely_touching(self):
+        """Spheres just touching (distance = 2*r) should not penetrate."""
+        sphere = SphereShape(1.0)
+        pose_a = SpatialTransform.from_translation(np.array([0, 0, 0]))
+        pose_b = SpatialTransform.from_translation(np.array([2.001, 0, 0]))
+        hit, _ = gjk(sphere, pose_a, sphere, pose_b)
+        assert not hit
+
+    def test_rotated_boxes_overlap(self):
+        """Two boxes, one rotated 45 degrees, should still detect overlap."""
+        box = BoxShape((2, 2, 2))
+        pose_a = SpatialTransform.from_translation(np.zeros(3))
+        R45 = np.array([
+            [np.cos(np.pi/4), -np.sin(np.pi/4), 0],
+            [np.sin(np.pi/4), np.cos(np.pi/4), 0],
+            [0, 0, 1],
+        ])
+        pose_b = SpatialTransform(R45, np.array([1.2, 0, 0]))
+        hit, _ = gjk(box, pose_a, box, pose_b)
+        assert hit
+
+    def test_rotated_box_epa_depth(self):
+        """EPA should give correct depth for rotated overlap."""
+        box = BoxShape((2, 2, 2))
+        pose_a = SpatialTransform.from_translation(np.zeros(3))
+        R45 = np.array([
+            [np.cos(np.pi/4), -np.sin(np.pi/4), 0],
+            [np.sin(np.pi/4), np.cos(np.pi/4), 0],
+            [0, 0, 1],
+        ])
+        pose_b = SpatialTransform(R45, np.array([1.0, 0, 0]))
+        result = gjk_epa_query(box, pose_a, box, pose_b)
+        assert result is not None
+        assert result.depth > 0
+
+    def test_capsule_sphere_overlap(self):
+        cap = CapsuleShape(0.5, 2.0)
+        sphere = SphereShape(0.5)
+        pose_a = SpatialTransform.from_translation(np.zeros(3))
+        pose_b = SpatialTransform.from_translation(np.array([0.8, 0, 0]))
+        result = gjk_epa_query(cap, pose_a, sphere, pose_b)
+        assert result is not None
+        assert result.depth > 0
+
+    def test_capsule_support_in_gjk(self):
+        """Capsule support_point should work for GJK queries."""
+        cap = CapsuleShape(0.3, 1.0)
+        s = cap.support_point(np.array([1, 1, 1]))
+        assert np.all(np.isfinite(s))

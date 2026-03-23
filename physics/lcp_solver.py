@@ -161,28 +161,43 @@ class PGSContactSolver:
                     )
 
         # ── Build full Delassus operator W = J M⁻¹ Jᵀ (n_rows × n_rows) ──
-        # W[r1, r2] = J_i[r1]^T @ M_i^{-1} @ J_i[r2] + J_j[r1]^T @ M_j^{-1} @ J_j[r2]
-        # where M^{-1} = diag(1/m * I3, I_inv) for each body
+        # For each body b, accumulate: W += J_b^T M_b^{-1} J_b
+        # where J_b has non-zero rows only for contacts involving body b.
         W = np.zeros((n_rows, n_rows))
 
+        # Group contact rows by body
+        body_contact_rows: dict[int, list[int]] = {}  # body_idx → [row indices]
         for ci, c in enumerate(contacts):
-            for bi, J_b in [(c.body_i, J_body_i), (c.body_j, J_body_j)]:
+            for bi in [c.body_i, c.body_j]:
                 if bi < 0:
                     continue
-                # M_inv for body bi: [inv_mass * I3, 0; 0, inv_inertia]
-                m_inv = inv_mass[bi]
-                I_inv = inv_inertia[bi]
+                if bi not in body_contact_rows:
+                    body_contact_rows[bi] = []
+                body_contact_rows[bi].extend(range(ci * 3, ci * 3 + 3))
 
-                for r1 in range(ci * 3, ci * 3 + 3):
-                    j1_lin = J_b[r1, :3]
-                    j1_ang = J_b[r1, 3:]
-                    # M_inv @ J[r1] = [m_inv * j1_lin; I_inv @ j1_ang]
-                    Minv_j1_lin = m_inv * j1_lin
-                    Minv_j1_ang = I_inv @ j1_ang
+        for bi, rows in body_contact_rows.items():
+            m_inv = inv_mass[bi]
+            I_inv = inv_inertia[bi]
 
-                    for r2 in range(n_rows):
-                        j2 = J_b[r2]
-                        W[r1, r2] += j2[:3] @ Minv_j1_lin + j2[3:] @ Minv_j1_ang
+            # Determine which Jacobian array to use per row
+            # (J_body_i if bi == contact.body_i, J_body_j if bi == contact.body_j)
+            J_rows = np.zeros((len(rows), 6))
+            for ri, r in enumerate(rows):
+                ci = r // 3
+                c = contacts[ci]
+                if c.body_i == bi:
+                    J_rows[ri] = J_body_i[r]
+                else:
+                    J_rows[ri] = J_body_j[r]
+
+            # W contribution: J_rows^T @ M_inv @ J_rows (symmetric)
+            for ri1, r1 in enumerate(rows):
+                j1_lin = J_rows[ri1, :3]
+                j1_ang = J_rows[ri1, 3:]
+                Minv_j1 = np.concatenate([m_inv * j1_lin, I_inv @ j1_ang])
+
+                for ri2, r2 in enumerate(rows):
+                    W[r1, r2] += J_rows[ri2] @ Minv_j1
 
         # Add CFM to diagonal (regularization)
         for i in range(n_rows):
