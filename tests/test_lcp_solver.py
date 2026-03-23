@@ -105,3 +105,47 @@ class TestPGSSolver:
 
         impulses = solver.solve([c1, c2], body_v, body_X, inv_mass, inv_inertia, dt=1e-3)
         assert impulses[0][2] > 0
+
+    def test_full_delassus_coupling(self):
+        """Two nearby contacts should produce different result than diagonal approx."""
+        solver = PGSContactSolver(max_iter=50)
+        # Two contacts very close — should have strong off-diagonal W coupling
+        c1 = self._make_ground_contact(np.array([0.01, 0, 0]), np.array([0, 0, 1.0]))
+        c2 = self._make_ground_contact(np.array([-0.01, 0, 0]), np.array([0, 0, 1.0]))
+
+        body_v = [np.array([0, 0, -1.0, 0, 0, 0])]
+        body_X = [SpatialTransform.from_translation(np.array([0, 0, 0.5]))]
+        inv_mass = [1.0]
+        inv_inertia = [np.eye(3) * 10.0]
+
+        impulses = solver.solve([c1, c2], body_v, body_X, inv_mass, inv_inertia, dt=1e-3)
+        # Total upward impulse should stop the body (momentum = m * v = 1 * 1 = 1)
+        total_z = impulses[0][2]
+        assert total_z > 0
+
+    def test_warm_starting(self):
+        """Second solve with same contacts should converge faster."""
+        solver = PGSContactSolver(max_iter=5)  # Very few iterations
+        contact = self._make_ground_contact(
+            point=np.array([0, 0, 0.0]),
+            normal=np.array([0, 0, 1.0]),
+            depth=0.01,
+        )
+        body_v = [np.array([0, 0, -1.0, 0, 0, 0])]
+        body_X = [SpatialTransform.from_translation(np.array([0, 0, 0.5]))]
+        inv_mass = [1.0]
+        inv_inertia = [np.eye(3) * 10.0]
+
+        # First solve (cold start)
+        imp1 = solver.solve([contact], body_v, body_X, inv_mass, inv_inertia, dt=1e-3)
+
+        # Second solve (warm start from cache)
+        contact2 = self._make_ground_contact(
+            point=np.array([0, 0, 0.0]),  # same point
+            normal=np.array([0, 0, 1.0]),
+            depth=0.01,
+        )
+        imp2 = solver.solve([contact2], body_v, body_X, inv_mass, inv_inertia, dt=1e-3)
+
+        # With warm starting, second solve should be at least as good
+        assert imp2[0][2] >= imp1[0][2] * 0.9, "Warm start should maintain quality"

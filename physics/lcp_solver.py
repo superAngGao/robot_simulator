@@ -9,23 +9,29 @@ The velocity-level formulation:
   v_contact = v_free + W @ lambda
   where:
     v_free  = contact velocity without constraint forces
-    W       = J @ M^{-1} @ J^T   (Delassus operator)
-    lambda  = constraint impulses [normal; tangent_x; tangent_y]
+    W       = J @ M^{-1} @ J^T   (full Delassus operator)
+    lambda  = constraint impulses [normal; tangent_x; tangent_y] per contact
 
-PGS iterates:
-  for each contact i:
-    lambda_n_i = project_positive(lambda_n_i - W_nn^{-1} * (v_n_i + ...))
-    lambda_t_i = project_friction_cone(lambda_t_i - ..., mu * lambda_n_i)
+PGS iterates over the full W matrix (not diagonal approximation):
+  for each constraint row i:
+    residual_i = v_free_i + sum_j(W_ij * lambda_j) + bias_i
+    delta = -residual_i / W_ii
+    lambda_i += delta
+    lambda_i = project(lambda_i)  # Signorini / friction cone
+
+Warm starting: reuse lambda from previous step as initial guess,
+matched by contact ID (body pair + proximity).
 
 References:
   Catto (2005) — Iterative Dynamics with Temporal Coherence (GDC)
   Erleben (2007) — Velocity-based shock propagation
-  MuJoCo: similar PGS with warm-starting
+  Bullet: btSequentialImpulseConstraintSolver (full row updates)
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 from numpy.typing import NDArray
@@ -60,49 +66,38 @@ def _build_contact_frame(normal: Vec3) -> tuple[Vec3, Vec3]:
     return t1, t2
 
 
-def _contact_jacobian_body(
+def _compute_contact_jacobian_row(
+    direction: Vec3,
     point: Vec3,
-    normal: Vec3,
     body_origin: Vec3,
     body_R: NDArray,
-) -> NDArray:
-    """Compute the contact Jacobian row for one body.
+) -> Vec6:
+    """Compute one row of the contact Jacobian for one body.
 
-    Maps body spatial velocity (6,) [lin; ang] to contact-frame velocity (scalar).
-    J_n = n^T @ [R, -R @ skew(r_local)]  for normal direction.
+    Maps body spatial velocity [lin; ang] (body frame) to
+    contact velocity along `direction` (world frame).
 
-    Returns (3, 6) matrix: rows for [normal, tangent1, tangent2].
+    Returns J_row (6,) such that v_contact_dir = J_row @ v_body.
     """
+    # v_point_world = R @ v_lin_body + (R @ omega_body) × r_world
+    # dot(d, v_point) = d^T R v_lin + d^T (R omega × r)
+    #                 = d^T R v_lin + (r × d)^T R omega
+    #                 = (R^T d)^T v_lin + (R^T (r × d))^T omega
     r_world = point - body_origin
-    # v_contact_world = v_lin_world + omega_world × r_world
-    # v_lin_world = R @ v_lin_body, omega_world = R @ omega_body
-    # v_contact_world = R @ v_lin_body + (R @ omega_body) × r_world
-    #                 = R @ v_lin_body + R @ (omega_body × (R^T @ r_world))
-    # Hmm, simpler: in world frame,
-    # v_contact = J @ v_spatial_body
-    # where J[d, :3] = n_d^T @ R (linear part)
-    #       J[d, 3:] = n_d^T @ (r_world × R)  hmm...
-    #
-    # Actually: v_point_world = R @ v_body_lin + cross(R @ omega_body, r_world)
-    # dot(n, v_point) = n^T R v_lin + n^T (R omega) × r
-    #                 = n^T R v_lin + (r × n)^T R omega
-    #
-    # J_lin = n^T @ R  (1×3 → maps body lin vel to contact normal vel)
-    # J_ang = (r × n)^T @ R  (1×3 → maps body ang vel)
-    # Full row: [J_lin, J_ang] = (1, 6)
-
-    # This is NOT needed for the simplified approach below.
-    pass
+    rxd = np.cross(r_world, direction)
+    J_lin = body_R.T @ direction  # (3,) in body frame
+    J_ang = body_R.T @ rxd  # (3,) in body frame
+    return np.concatenate([J_lin, J_ang])
 
 
 class PGSContactSolver:
-    """Projected Gauss-Seidel LCP solver for contact dynamics.
+    """Projected Gauss-Seidel LCP solver with full Delassus matrix.
 
     Args:
-        max_iter     : Maximum PGS iterations.
-        tolerance    : Convergence tolerance on velocity residual.
-        erp          : Error Reduction Parameter (Baumgarte stabilization).
-        cfm          : Constraint Force Mixing (regularization).
+        max_iter : Maximum PGS iterations.
+        tolerance: Convergence tolerance on impulse change.
+        erp      : Error Reduction Parameter (Baumgarte stabilization).
+        cfm      : Constraint Force Mixing (regularization).
     """
 
     def __init__(
@@ -116,11 +111,13 @@ class PGSContactSolver:
         self.tolerance = tolerance
         self.erp = erp
         self.cfm = cfm
+        # Warm starting cache: (body_i, body_j) → list of (point, lambda_3)
+        self._warm_cache: dict[tuple[int, int], list[tuple[Vec3, NDArray]]] = {}
 
     def solve(
         self,
         contacts: list[ContactConstraint],
-        body_v: list[Vec6],  # spatial velocities in body frame, per body
+        body_v: list[Vec6],  # spatial velocities in body frame
         body_X_world: list,  # SpatialTransform per body
         inv_mass: list[float],  # 1/mass per body (0 for ground)
         inv_inertia: list[NDArray],  # 3x3 inverse inertia per body (zeros for ground)
@@ -128,41 +125,70 @@ class PGSContactSolver:
     ) -> list[Vec6]:
         """Solve contact constraints and return spatial impulses per body.
 
-        Returns: list of Vec6 impulses in body frame (to be applied as forces/dt).
+        Returns: list of Vec6 impulses in body frame.
         """
         nc = len(contacts)
-        if nc == 0:
-            return [np.zeros(6) for _ in body_v]
-
         num_bodies = len(body_v)
+        if nc == 0:
+            self._warm_cache.clear()
+            return [np.zeros(6) for _ in range(num_bodies)]
 
         # Build contact frames
         for c in contacts:
             c.tangent1, c.tangent2 = _build_contact_frame(c.normal)
 
-        # Initialize impulses: 3 per contact (normal, tangent1, tangent2)
-        impulses = np.zeros(nc * 3)
+        n_rows = nc * 3  # 3 constraint rows per contact (normal + 2 tangent)
 
-        # Precompute effective mass for each contact direction
-        # For a simple approximation: W_ii ≈ 1/m_eff where
-        # m_eff = 1/(1/m_i + 1/m_j + angular terms)
-        w_diag = np.zeros(nc * 3)  # diagonal of Delassus operator
+        # ── Build full Jacobian J (n_rows × 6*num_bodies) ──
+        # Stored as sparse: for each row, we store J_i and J_j (6-vectors for body_i and body_j)
+        J_body_i = np.zeros((n_rows, 6))  # Jacobian for body_i
+        J_body_j = np.zeros((n_rows, 6))  # Jacobian for body_j
+
         for ci, c in enumerate(contacts):
-            for d, direction in enumerate([c.normal, c.tangent1, c.tangent2]):
-                m_eff = 0.0
-                for bi in [c.body_i, c.body_j]:
-                    if bi < 0:
-                        continue
-                    m_eff += inv_mass[bi]
-                    # Angular contribution: r × n decomposition
-                    r = c.point - body_X_world[bi].r
-                    rxn = np.cross(r, direction)
-                    # Approximate: angular contribution = rxn^T @ I_inv @ rxn
-                    m_eff += rxn @ inv_inertia[bi] @ rxn
-                w_diag[ci * 3 + d] = m_eff + self.cfm
+            directions = [c.normal, c.tangent1, c.tangent2]
+            for d_idx, direction in enumerate(directions):
+                row = ci * 3 + d_idx
+                if c.body_i >= 0:
+                    J_body_i[row] = _compute_contact_jacobian_row(
+                        direction, c.point, body_X_world[c.body_i].r,
+                        body_X_world[c.body_i].R,
+                    )
+                if c.body_j >= 0:
+                    J_body_j[row] = -_compute_contact_jacobian_row(
+                        direction, c.point, body_X_world[c.body_j].r,
+                        body_X_world[c.body_j].R,
+                    )
 
-        # Compute free velocity at each contact point
-        v_free = np.zeros(nc * 3)
+        # ── Build full Delassus operator W = J M⁻¹ Jᵀ (n_rows × n_rows) ──
+        # W[r1, r2] = J_i[r1]^T @ M_i^{-1} @ J_i[r2] + J_j[r1]^T @ M_j^{-1} @ J_j[r2]
+        # where M^{-1} = diag(1/m * I3, I_inv) for each body
+        W = np.zeros((n_rows, n_rows))
+
+        for ci, c in enumerate(contacts):
+            for bi, J_b in [(c.body_i, J_body_i), (c.body_j, J_body_j)]:
+                if bi < 0:
+                    continue
+                # M_inv for body bi: [inv_mass * I3, 0; 0, inv_inertia]
+                m_inv = inv_mass[bi]
+                I_inv = inv_inertia[bi]
+
+                for r1 in range(ci * 3, ci * 3 + 3):
+                    j1_lin = J_b[r1, :3]
+                    j1_ang = J_b[r1, 3:]
+                    # M_inv @ J[r1] = [m_inv * j1_lin; I_inv @ j1_ang]
+                    Minv_j1_lin = m_inv * j1_lin
+                    Minv_j1_ang = I_inv @ j1_ang
+
+                    for r2 in range(n_rows):
+                        j2 = J_b[r2]
+                        W[r1, r2] += j2[:3] @ Minv_j1_lin + j2[3:] @ Minv_j1_ang
+
+        # Add CFM to diagonal (regularization)
+        for i in range(n_rows):
+            W[i, i] += self.cfm
+
+        # ── Compute free velocity at contacts ──
+        v_free = np.zeros(n_rows)
         for ci, c in enumerate(contacts):
             v_contact = np.zeros(3)
             for bi, sign in [(c.body_i, 1.0), (c.body_j, -1.0)]:
@@ -180,57 +206,81 @@ class PGSContactSolver:
             v_free[ci * 3 + 1] = np.dot(v_contact, c.tangent1)
             v_free[ci * 3 + 2] = np.dot(v_contact, c.tangent2)
 
-        # Baumgarte stabilization: bias pushes contact velocity positive (away from penetration)
-        bias = np.zeros(nc * 3)
+        # Baumgarte bias
+        bias = np.zeros(n_rows)
         for ci, c in enumerate(contacts):
             bias[ci * 3] = -self.erp / dt * c.depth
 
-        # Precompute velocity change per unit impulse for each contact direction
-        # v_change[ci*3+d] = effect on own contact velocity from own impulse
-        # (diagonal approximation of Delassus operator)
+        # ── Warm starting: initialize lambda from cache ──
+        lambdas = np.zeros(n_rows)
+        for ci, c in enumerate(contacts):
+            key = (min(c.body_i, c.body_j), max(c.body_i, c.body_j))
+            if key in self._warm_cache:
+                # Find closest cached contact point
+                best_dist = 0.05  # max match distance [m]
+                best_lam = None
+                for cached_pt, cached_lam in self._warm_cache[key]:
+                    dist = np.linalg.norm(c.point - cached_pt)
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_lam = cached_lam
+                if best_lam is not None:
+                    lambdas[ci * 3: ci * 3 + 3] = best_lam
 
-        # PGS iterations
-        # Track accumulated velocity delta from all impulses
-        v_delta = np.zeros(nc * 3)
-
+        # ── PGS iterations (full row updates) ──
         for iteration in range(self.max_iter):
             max_delta = 0.0
 
             for ci, c in enumerate(contacts):
-                # Current contact velocity = free + delta from all impulses
-                # Normal direction
+                # Normal
                 idx_n = ci * 3
-                old_n = impulses[idx_n]
-                v_current_n = v_free[idx_n] + w_diag[idx_n] * old_n + bias[idx_n]
-                new_n = old_n - v_current_n / w_diag[idx_n]
-                new_n = max(0.0, new_n)  # Signorini projection
-                delta_n = new_n - old_n
-                impulses[idx_n] = new_n
-                max_delta = max(max_delta, abs(delta_n))
+                old_n = lambdas[idx_n]
+                # residual = v_free + W[row, :] @ lambda + bias
+                residual_n = v_free[idx_n] + W[idx_n] @ lambdas + bias[idx_n]
+                delta_n = -residual_n / W[idx_n, idx_n]
+                new_n = max(0.0, old_n + delta_n)
+                lambdas[idx_n] = new_n
+                max_delta = max(max_delta, abs(new_n - old_n))
 
-                # Tangent directions (friction)
-                max_friction = c.mu * impulses[idx_n]
-                for d in [1, 2]:
-                    idx_t = ci * 3 + d
-                    old_t = impulses[idx_t]
-                    v_current_t = v_free[idx_t] + w_diag[idx_t] * old_t
-                    new_t = old_t - v_current_t / w_diag[idx_t]
-                    new_t = np.clip(new_t, -max_friction, max_friction)
-                    impulses[idx_t] = new_t
-                    max_delta = max(max_delta, abs(new_t - old_t))
+                # Tangent 1
+                idx_t1 = ci * 3 + 1
+                old_t1 = lambdas[idx_t1]
+                residual_t1 = v_free[idx_t1] + W[idx_t1] @ lambdas + bias[idx_t1]
+                delta_t1 = -residual_t1 / W[idx_t1, idx_t1]
+                max_f = c.mu * lambdas[idx_n]
+                new_t1 = np.clip(old_t1 + delta_t1, -max_f, max_f)
+                lambdas[idx_t1] = new_t1
+                max_delta = max(max_delta, abs(new_t1 - old_t1))
+
+                # Tangent 2
+                idx_t2 = ci * 3 + 2
+                old_t2 = lambdas[idx_t2]
+                residual_t2 = v_free[idx_t2] + W[idx_t2] @ lambdas + bias[idx_t2]
+                delta_t2 = -residual_t2 / W[idx_t2, idx_t2]
+                new_t2 = np.clip(old_t2 + delta_t2, -max_f, max_f)
+                lambdas[idx_t2] = new_t2
+                max_delta = max(max_delta, abs(new_t2 - old_t2))
 
             if max_delta < self.tolerance:
                 break
 
-        # Convert impulses to spatial forces per body
+        # ── Update warm start cache ──
+        self._warm_cache.clear()
+        for ci, c in enumerate(contacts):
+            key = (min(c.body_i, c.body_j), max(c.body_i, c.body_j))
+            lam = lambdas[ci * 3: ci * 3 + 3].copy()
+            if key not in self._warm_cache:
+                self._warm_cache[key] = []
+            self._warm_cache[key].append((c.point.copy(), lam))
+
+        # ── Convert impulses to spatial forces per body ──
         body_impulses = [np.zeros(6) for _ in range(num_bodies)]
 
         for ci, c in enumerate(contacts):
-            # World-frame impulse
             J_world = (
-                impulses[ci * 3] * c.normal
-                + impulses[ci * 3 + 1] * c.tangent1
-                + impulses[ci * 3 + 2] * c.tangent2
+                lambdas[ci * 3] * c.normal
+                + lambdas[ci * 3 + 1] * c.tangent1
+                + lambdas[ci * 3 + 2] * c.tangent2
             )
 
             for bi, sign in [(c.body_i, 1.0), (c.body_j, -1.0)]:
@@ -240,10 +290,7 @@ class PGSContactSolver:
                 f_world = sign * J_world
                 r = c.point - X.r
                 torque_world = np.cross(r, f_world)
-                # Convert to body frame
-                f_body = X.R.T @ f_world
-                torque_body = X.R.T @ torque_world
-                body_impulses[bi][:3] += f_body
-                body_impulses[bi][3:] += torque_body
+                body_impulses[bi][:3] += X.R.T @ f_world
+                body_impulses[bi][3:] += X.R.T @ torque_world
 
         return body_impulses
