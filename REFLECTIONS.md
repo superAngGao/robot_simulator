@@ -5,6 +5,54 @@ Updated at the end of each development session.
 
 ---
 
+## 2026-03-23 (session 6) — Phase 2e GPU 后端 + Phase 2g CRBA
+
+### Decision: BatchBackend ABC + 4 GPU 后端架构
+
+VecEnv 通过 `BatchBackend(ABC)` 委托给后端，`get_backend(name)` 工厂选择。
+`StaticRobotData` 将 RobotModel 展平为连续数组供 GPU 使用。
+
+4 个后端实现并 benchmark：NumPy (CPU fallback) → TileLang → Warp → CUDA (fused)。
+CUDA fused kernel 最快（4136x vs NumPy @ N=1000），因为全物理步在单 kernel 内完成。
+
+### Decision: CRBA 作为 ABA 的替代前向动力学
+
+实现了 8 种前向动力学路径（见 PROGRESS.md）。核心发现：
+
+**Fused scalar Cholesky 在 nv ≤ 64 时接近 ABA**（0.96x @ nv=30），
+但 **cuSOLVER tensor core 路径反而更慢**（3 次 kernel launch + H 矩阵 global memory
+读写的开销大于 tensor core 在 30×30~64×64 矩阵上的加速）。
+
+**Tensor core (wgmma) 不适用于小矩阵的原因：**
+1. wgmma M 维度最小 64，nv < 64 需要 pad，浪费计算
+2. wgmma 需要 128 threads (warp group) 协作，但树遍历是 1 thread/env
+3. 改为 128 threads/env 会导致 FK/RNEA 阶段 127 线程空闲，occupancy 灾难
+
+**结论：** 对于当前目标（四足/人形，nv=10-30），CUDA ABA fused kernel 是最优选择。
+CRBA + tensor core 的真正价值在 nv ≥ 128 或分组策略下才能体现。
+
+### Lesson: TileLang DSL 的关键限制
+
+1. `T.alloc_fragment` 不支持任意元素索引 → 改用 `T.alloc_local`
+2. `T.Serial` 循环内的标量不可变 → 用 `T.alloc_local([1])` 包装累加器
+3. `@T.prim_func` 注解在 global scope 求值 → 模块全局变量注入
+4. `@T.macro` 无 `T.Kernel` = inline 辅助函数（类似 `@wp.func`）
+
+### Lesson: Kernel fusion 的定量影响
+
+同一算法 (CRBA)，不同 fusion 程度的性能差异（nv=30, N=8192）：
+
+| Fusion 程度 | 实现 | steps/s |
+|-------------|------|---------|
+| 无 fusion（PyTorch 逐操作） | BatchedCRBA | ~130K |
+| 部分 fusion（TileLang FK+ABA kernel + PyTorch） | TileLang | ~879K |
+| **完全 fusion（单 CUDA kernel）** | CUDA CRBA-scalar | **1,583K** |
+
+完全 fusion 比无 fusion 快 **12x**，主要消除了 Python loop overhead 和
+intermediate tensor 分配/释放。
+
+---
+
 ## 2026-03-20 (session 4) — 测试补全与 SE3 规范统一
 
 ### Bug: `spatial.py:matrix()` 与 SE3 约定不一致

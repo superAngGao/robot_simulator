@@ -229,10 +229,37 @@ CUDA 性能最优原因：全物理步融合为单 kernel launch，零 inter-ker
 
 **目标**：为中大型机器人（nv > 20）实现 CRBA 前向动力学，利用 tensor core 的密集矩阵运算优势。
 
-计划分三阶段：
-1. 标准 CRBA（CPU NumPy）— 质量矩阵计算 + Cholesky 求解
-2. Batched Cholesky GPU — `torch.linalg.cholesky_solve`（cuSOLVER → tensor core）
-3. 分组 CRBA — 子树分解 + 块稀疏 Schur complement
+**已完成（2g-1 + 2g-2）：**
+
+- [x] `RobotTreeNumpy.crba(q) → H` — 质量矩阵（composite inertia，Pinocchio 对比验证 atol=1e-8）
+- [x] `RobotTreeNumpy.forward_dynamics_crba()` — H⁻¹(τ-C) via Cholesky（CRBA == ABA, atol=1e-10）
+- [x] `BatchedCRBA` — PyTorch GPU 批量 CRBA（`torch.linalg.cholesky_solve`）
+- [x] `physics_step_crba_kernel` — CUDA fused CRBA（标量 Cholesky 在 kernel 内）
+- [x] `crba_build_kernel` + `integrate_kernel` — split path for cuSOLVER tensor core Cholesky
+- [x] 16 个 CRBA 测试 + Pinocchio 对比
+
+**8 个前向动力学实现：**
+
+| # | 方法 | 选择 | nv=30 N=8192 |
+|---|------|------|-------------|
+| 1 | NumPy ABA | `tree.aba()` | ~530/s |
+| 2 | NumPy CRBA | `tree.forward_dynamics_crba()` | — |
+| 3 | Warp ABA | `backend="warp"` | 750K/s |
+| 4 | TileLang ABA | `backend="tilelang"` | 879K/s |
+| 5 | **CUDA ABA fused** | `backend="cuda"` | **1,657K/s** |
+| 6 | CUDA CRBA-scalar fused | `backend="cuda_crba"` | 1,583K/s |
+| 7 | CUDA CRBA-TC (split+cuSOLVER) | `backend="cuda_crba_tc"` | 710K/s |
+| 8 | BatchedCRBA (PyTorch) | `BatchedCRBA` module | ~130K/s |
+
+**关键发现：**
+- nv ≤ 64 时 **fused scalar Cholesky (#6) 接近 ABA (#5)**（0.96x @ nv=30）
+- cuSOLVER tensor core (#7) 因 3 次 kernel launch + H 矩阵 global memory 访问反而更慢
+- wgmma 的 M=64 最小维度对 nv < 64 的 H 矩阵不友好，需要 pad 浪费计算
+- Tensor core 真正受益需要 nv ≥ 128 或分组策略（Phase 2g-3）
+
+**2g-3 分组 CRBA — ⬜ 待定**
+
+**总测试数：267（全部通过）**
 
 ---
 
