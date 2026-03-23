@@ -259,7 +259,512 @@ def get_fk_kernel(N, nb, nq, nv):
 
 
 # ---------------------------------------------------------------------------
-# PyTorch spatial math helpers (used by ABA in tilelang_backend.py)
+# ABA kernel
+# ---------------------------------------------------------------------------
+
+
+def _build_aba_kernel_impl():
+    """Build the ABA kernel using current module globals."""
+    N = _this_module._N
+    nb = _this_module._nb
+    nq = _this_module._nq
+    nv = _this_module._nv
+
+    @tilelang.jit(out_idx=[4])
+    def kernel():
+
+        @T.macro
+        def mat66_mul_vec6(M, v, out):
+            for i in T.Parallel(6):
+                out[i] = 0.0
+            for i in T.Parallel(6):
+                for k in T.Serial(6):
+                    out[i] += M[i, k] * v[k]
+
+        @T.macro
+        def cross3(a, b, out):
+            out[0] = a[1] * b[2] - a[2] * b[1]
+            out[1] = a[2] * b[0] - a[0] * b[2]
+            out[2] = a[0] * b[1] - a[1] * b[0]
+
+        @T.macro
+        def transform_vel(R, r, v_in, v_out):
+            _tmp = T.alloc_local([3], "float32")
+            _wxr = T.alloc_local([3], "float32")
+            _w = T.alloc_local([3], "float32")
+            _l = T.alloc_local([3], "float32")
+            for d in T.Parallel(3):
+                _l[d] = v_in[d]
+                _w[d] = v_in[d + 3]
+            cross3(_w, r, _wxr)
+            for d in T.Parallel(3):
+                _tmp[d] = _l[d] + _wxr[d]
+            for i in T.Parallel(3):
+                v_out[i] = 0.0
+                v_out[i + 3] = 0.0
+            for i in T.Parallel(3):
+                for k in T.Serial(3):
+                    v_out[i] += R[k, i] * _tmp[k]
+                    v_out[i + 3] += R[k, i] * _w[k]
+
+        @T.macro
+        def transform_force(R, r, f_in, f_out):
+            _Rf = T.alloc_local([3], "float32")
+            _Rt = T.alloc_local([3], "float32")
+            _rxRf = T.alloc_local([3], "float32")
+            for i in T.Parallel(3):
+                _Rf[i] = 0.0
+                _Rt[i] = 0.0
+            for i in T.Parallel(3):
+                for k in T.Serial(3):
+                    _Rf[i] += R[i, k] * f_in[k]
+                    _Rt[i] += R[i, k] * f_in[k + 3]
+            cross3(r, _Rf, _rxRf)
+            for d in T.Parallel(3):
+                f_out[d] = _Rf[d]
+                f_out[d + 3] = _Rt[d] + _rxRf[d]
+
+        @T.macro
+        def spatial_cross_force_mv(v, Iv, out):
+            """v ×* Iv: [[skew(w),0],[skew(vl),skew(w)]] @ Iv"""
+            _vl = T.alloc_local([3], "float32")
+            _va = T.alloc_local([3], "float32")
+            _fl = T.alloc_local([3], "float32")
+            _fa = T.alloc_local([3], "float32")
+            _t1 = T.alloc_local([3], "float32")
+            _t2 = T.alloc_local([3], "float32")
+            _t3 = T.alloc_local([3], "float32")
+            for d in T.Parallel(3):
+                _vl[d] = v[d]
+                _va[d] = v[d + 3]
+                _fl[d] = Iv[d]
+                _fa[d] = Iv[d + 3]
+            cross3(_va, _fl, _t1)
+            cross3(_vl, _fl, _t2)
+            cross3(_va, _fa, _t3)
+            for d in T.Parallel(3):
+                out[d] = _t1[d]
+                out[d + 3] = _t2[d] + _t3[d]
+
+        @T.macro
+        def spatial_cross_vel_mv(v, u, out):
+            """v ×_vel u: [[skew(w),skew(vl)],[0,skew(w)]] @ u"""
+            _vl = T.alloc_local([3], "float32")
+            _va = T.alloc_local([3], "float32")
+            _ul = T.alloc_local([3], "float32")
+            _ua = T.alloc_local([3], "float32")
+            _t1 = T.alloc_local([3], "float32")
+            _t2 = T.alloc_local([3], "float32")
+            _t3 = T.alloc_local([3], "float32")
+            for d in T.Parallel(3):
+                _vl[d] = v[d]
+                _va[d] = v[d + 3]
+                _ul[d] = u[d]
+                _ua[d] = u[d + 3]
+            cross3(_va, _ul, _t1)
+            cross3(_vl, _ua, _t2)
+            cross3(_va, _ua, _t3)
+            for d in T.Parallel(3):
+                out[d] = _t1[d] + _t2[d]
+                out[d + 3] = _t3[d]
+
+        @T.macro
+        def build_X6(R, r, X6):
+            """Build 6x6 Plücker velocity transform matrix. E=R^T."""
+            for i, j in T.Parallel(6, 6):
+                X6[i, j] = 0.0
+            for i, j in T.Parallel(3, 3):
+                X6[i, j] = R[j, i]           # top-left: E
+                X6[i + 3, j + 3] = R[j, i]   # bottom-right: E
+            # top-right: -E @ skew(r)
+            _K = T.alloc_local([3, 3], "float32")
+            for a, b in T.Parallel(3, 3):
+                _K[a, b] = 0.0
+            _K[0, 1] = -r[2]
+            _K[0, 2] = r[1]
+            _K[1, 0] = r[2]
+            _K[1, 2] = -r[0]
+            _K[2, 0] = -r[1]
+            _K[2, 1] = r[0]
+            for i in T.Parallel(3):
+                for j in T.Serial(3):
+                    X6[i, j + 3] = 0.0
+                    for k in T.Serial(3):
+                        X6[i, j + 3] += -R[k, i] * _K[k, j]
+
+        @T.prim_func
+        def aba_main(
+            q: T.Tensor([_N, _nq], "float32"),
+            qdot: T.Tensor([_N, _nv], "float32"),
+            tau_total: T.Tensor([_N, _nv], "float32"),
+            ext_forces: T.Tensor([_N, _nb, 6], "float32"),
+            # output
+            qddot: T.Tensor([_N, _nv], "float32"),
+            # static
+            jtype: T.Tensor([_nb], "int32"),
+            jaxis: T.Tensor([_nb, 3], "float32"),
+            pidx: T.Tensor([_nb], "int32"),
+            vstart: T.Tensor([_nb], "int32"),
+            vlen: T.Tensor([_nb], "int32"),
+            I_mat: T.Tensor([_nb, 6, 6], "float32"),
+            X_up_R: T.Tensor([_N, _nb, 3, 3], "float32"),
+            X_up_r: T.Tensor([_N, _nb, 3], "float32"),
+            gravity_val: T.float32,
+        ):
+            with T.Kernel(N, threads=1) as env_id:
+                # Per-body scratch
+                v_arr = T.alloc_local([nb, 6], "float32")
+                c_arr = T.alloc_local([nb, 6], "float32")
+                IA = T.alloc_local([nb, 6, 6], "float32")
+                pA = T.alloc_local([nb, 6], "float32")
+                a_arr = T.alloc_local([nb, 6], "float32")
+                # Per-body ABA pass 2 storage
+                U_arr = T.alloc_local([nb, 6], "float32")  # for 1-DOF
+                Dinv_arr = T.alloc_local([nb], "float32")   # scalar for 1-DOF
+                u_arr = T.alloc_local([nb], "float32")      # scalar for 1-DOF
+                # FreeJoint storage (body 0 only typically)
+                U6_arr = T.alloc_local([6, 6], "float32")
+                u6_arr = T.alloc_local([6], "float32")
+                IA6_for_solve = T.alloc_local([6, 6], "float32")
+
+                # Temporaries
+                vi = T.alloc_local([6], "float32")
+                ci = T.alloc_local([6], "float32")
+                vJ = T.alloc_local([6], "float32")
+                Iv = T.alloc_local([6], "float32")
+                pA_i = T.alloc_local([6], "float32")
+                ax = T.alloc_local([3], "float32")
+                S_col = T.alloc_local([6], "float32")
+                U_i = T.alloc_local([6], "float32")
+                tmp6 = T.alloc_local([6], "float32")
+                tmp6b = T.alloc_local([6], "float32")
+                R_up = T.alloc_local([3, 3], "float32")
+                r_up = T.alloc_local([3], "float32")
+                X6 = T.alloc_local([6, 6], "float32")
+                X6T = T.alloc_local([6, 6], "float32")
+                IA_A = T.alloc_local([6, 6], "float32")
+                pA_A = T.alloc_local([6], "float32")
+                IA_tmp = T.alloc_local([6, 6], "float32")
+                IA_parent = T.alloc_local([6, 6], "float32")
+                pA_parent = T.alloc_local([6], "float32")
+
+                # Zero init
+                for i in T.Serial(nb):
+                    for d in T.Serial(6):
+                        v_arr[i, d] = 0.0
+                        c_arr[i, d] = 0.0
+                        pA[i, d] = 0.0
+                        a_arr[i, d] = 0.0
+                    for a in T.Serial(6):
+                        for b in T.Serial(6):
+                            IA[i, a, b] = 0.0
+                    U_arr[i, 0] = 0.0  # only first element used for 1-DOF
+                    Dinv_arr[i] = 0.0
+                    u_arr[i] = 0.0
+                for d in T.Serial(nv):
+                    qddot[env_id, d] = 0.0
+
+                # =============== Pass 1: forward — velocities & bias forces ===============
+                for i in T.Serial(nb):
+                    jt = jtype[i]
+                    vs = vstart[i]
+                    vl = vlen[i]
+                    pid = pidx[i]
+
+                    for d in T.Serial(3):
+                        ax[d] = jaxis[i, d]
+                    for a, b in T.Parallel(3, 3):
+                        R_up[a, b] = X_up_R[env_id, i, a, b]
+                    for d in T.Parallel(3):
+                        r_up[d] = X_up_r[env_id, i, d]
+
+                    # vJ = S @ qdot
+                    for d in T.Parallel(6):
+                        vJ[d] = 0.0
+                    if jt == 1:  # REVOLUTE
+                        for d in T.Serial(3):
+                            vJ[d + 3] = ax[d] * qdot[env_id, vs]
+                    if jt == 2:  # PRISMATIC
+                        for d in T.Serial(3):
+                            vJ[d] = ax[d] * qdot[env_id, vs]
+                    if jt == 0:  # FREE
+                        for d in T.Serial(6):
+                            vJ[d] = qdot[env_id, vs + d]
+
+                    if pid < 0:
+                        for d in T.Parallel(6):
+                            v_arr[i, d] = vJ[d]
+                            c_arr[i, d] = 0.0
+                    else:
+                        # Load parent velocity
+                        for d in T.Serial(6):
+                            tmp6[d] = v_arr[pid, d]
+                        transform_vel(R_up, r_up, tmp6, vi)
+                        for d in T.Parallel(6):
+                            v_arr[i, d] = vi[d] + vJ[d]
+                        # c = v ×_vel vJ
+                        for d in T.Serial(6):
+                            vi[d] = v_arr[i, d]
+                        spatial_cross_vel_mv(vi, vJ, ci)
+                        for d in T.Parallel(6):
+                            c_arr[i, d] = ci[d]
+
+                    # IA = I_body
+                    for a, b in T.Parallel(6, 6):
+                        IA[i, a, b] = I_mat[i, a, b]
+
+                    # pA = v ×* (I @ v) - ext_forces
+                    for d in T.Serial(6):
+                        vi[d] = v_arr[i, d]
+                    for a, b in T.Parallel(6, 6):
+                        IA_tmp[a, b] = I_mat[i, a, b]
+                    mat66_mul_vec6(IA_tmp, vi, Iv)
+                    spatial_cross_force_mv(vi, Iv, pA_i)
+                    for d in T.Parallel(6):
+                        pA[i, d] = pA_i[d] - ext_forces[env_id, i, d]
+
+                # =============== Pass 2: backward — articulated inertias ===============
+                for idx in T.Serial(nb):
+                    i = nb - 1 - idx  # reverse
+                    jt = jtype[i]
+                    vs = vstart[i]
+                    vl = vlen[i]
+                    pid = pidx[i]
+
+                    for d in T.Serial(3):
+                        ax[d] = jaxis[i, d]
+
+                    # Load IA[i], pA[i], c[i]
+                    for a, b in T.Parallel(6, 6):
+                        IA_A[a, b] = IA[i, a, b]
+                    for d in T.Parallel(6):
+                        pA_i[d] = pA[i, d]
+                        ci[d] = c_arr[i, d]
+
+                    if vl > 0:
+                        if jt == 1 or jt == 2:  # 1-DOF joints
+                            # Build S column
+                            for d in T.Parallel(6):
+                                S_col[d] = 0.0
+                            if jt == 1:
+                                for d in T.Serial(3):
+                                    S_col[d + 3] = ax[d]
+                            if jt == 2:
+                                for d in T.Serial(3):
+                                    S_col[d] = ax[d]
+
+                            # U = IA @ S
+                            mat66_mul_vec6(IA_A, S_col, U_i)
+                            # D = S^T @ U (scalar dot)
+                            D_buf = T.alloc_local([1], "float32")
+                            D_buf[0] = 0.0
+                            for d in T.Serial(6):
+                                D_buf[0] += S_col[d] * U_i[d]
+                            D_inv_buf = T.alloc_local([1], "float32")
+                            D_inv_buf[0] = 1.0 / D_buf[0]
+                            # u = tau - S^T @ pA
+                            u_buf = T.alloc_local([1], "float32")
+                            u_buf[0] = tau_total[env_id, vs]
+                            for d in T.Serial(6):
+                                u_buf[0] -= S_col[d] * pA_i[d]
+
+                            # Store for pass 3
+                            for d in T.Parallel(6):
+                                U_arr[i, d] = U_i[d]
+                            Dinv_arr[i] = D_inv_buf[0]
+                            u_arr[i] = u_buf[0]
+
+                            # IA_A = IA - U @ U^T * D_inv
+                            for a, b in T.Parallel(6, 6):
+                                IA_A[a, b] = IA[i, a, b] - U_i[a] * U_i[b] * D_inv_buf[0]
+
+                            # pA_A = pA + IA_A @ c + U * D_inv * u
+                            mat66_mul_vec6(IA_A, ci, tmp6)
+                            for d in T.Parallel(6):
+                                pA_A[d] = pA_i[d] + tmp6[d] + U_i[d] * D_inv_buf[0] * u_buf[0]
+
+                        if jt == 0:  # FREE (6-DOF)
+                            # S = I, U = IA, D = IA
+                            # u = tau - pA
+                            for d in T.Serial(6):
+                                u6_arr[d] = tau_total[env_id, vs + d] - pA_i[d]
+                            # Store IA for pass 3
+                            for a, b in T.Parallel(6, 6):
+                                IA6_for_solve[a, b] = IA[i, a, b]
+                            # IA_A = 0
+                            for a, b in T.Parallel(6, 6):
+                                IA_A[a, b] = 0.0
+                            # pA_A = pA + u
+                            for d in T.Parallel(6):
+                                pA_A[d] = pA_i[d] + u6_arr[d]
+                    else:
+                        # Fixed joint: IA_A = IA, pA_A = pA + IA @ c
+                        mat66_mul_vec6(IA_A, ci, tmp6)
+                        for d in T.Parallel(6):
+                            pA_A[d] = pA_i[d] + tmp6[d]
+
+                    # Propagate to parent
+                    if pid >= 0:
+                        for a, b in T.Parallel(3, 3):
+                            R_up[a, b] = X_up_R[env_id, i, a, b]
+                        for d in T.Parallel(3):
+                            r_up[d] = X_up_r[env_id, i, d]
+
+                        # IA[parent] += X^T @ IA_A @ X
+                        build_X6(R_up, r_up, X6)
+                        for a, b in T.Parallel(6, 6):
+                            X6T[a, b] = X6[b, a]
+                        # tmp = IA_A @ X6
+                        for a, b in T.Parallel(6, 6):
+                            IA_tmp[a, b] = 0.0
+                        for a, b in T.Parallel(6, 6):
+                            for k in T.Serial(6):
+                                IA_tmp[a, b] += IA_A[a, k] * X6[k, b]
+                        # contrib = X6T @ tmp
+                        for a, b in T.Parallel(6, 6):
+                            IA_parent[a, b] = 0.0
+                        for a, b in T.Parallel(6, 6):
+                            for k in T.Serial(6):
+                                IA_parent[a, b] += X6T[a, k] * IA_tmp[k, b]
+                        for a, b in T.Parallel(6, 6):
+                            IA[pid, a, b] += IA_parent[a, b]
+
+                        # pA[parent] += X_up.apply_force(pA_A)
+                        transform_force(R_up, r_up, pA_A, tmp6)
+                        for d in T.Parallel(6):
+                            pA[pid, d] += tmp6[d]
+
+                # =============== Pass 3: forward — accelerations ===============
+                for i in T.Serial(nb):
+                    jt = jtype[i]
+                    vs = vstart[i]
+                    vl = vlen[i]
+                    pid = pidx[i]
+
+                    for d in T.Serial(3):
+                        ax[d] = jaxis[i, d]
+                    for a, b in T.Parallel(3, 3):
+                        R_up[a, b] = X_up_R[env_id, i, a, b]
+                    for d in T.Parallel(3):
+                        r_up[d] = X_up_r[env_id, i, d]
+
+                    # a_p
+                    if pid < 0:
+                        # -a_gravity in body frame
+                        neg_grav = T.alloc_local([6], "float32")
+                        neg_grav[0] = 0.0
+                        neg_grav[1] = 0.0
+                        neg_grav[2] = gravity_val  # -(-g) = g
+                        neg_grav[3] = 0.0
+                        neg_grav[4] = 0.0
+                        neg_grav[5] = 0.0
+                        transform_vel(R_up, r_up, neg_grav, tmp6)
+                    else:
+                        for d in T.Serial(6):
+                            vi[d] = a_arr[pid, d]
+                        transform_vel(R_up, r_up, vi, tmp6)
+
+                    # apc = a_p + c
+                    for d in T.Parallel(6):
+                        ci[d] = c_arr[i, d]
+                        tmp6b[d] = tmp6[d] + ci[d]
+
+                    if vl > 0:
+                        if jt == 1 or jt == 2:
+                            for d in T.Parallel(6):
+                                S_col[d] = 0.0
+                            if jt == 1:
+                                for d in T.Serial(3):
+                                    S_col[d + 3] = ax[d]
+                            if jt == 2:
+                                for d in T.Serial(3):
+                                    S_col[d] = ax[d]
+
+                            for d in T.Serial(6):
+                                U_i[d] = U_arr[i, d]
+                            D_inv_val = Dinv_arr[i]
+                            u_val = u_arr[i]
+
+                            # qddot = Dinv * (u - U^T @ apc)
+                            UT_apc_buf = T.alloc_local([1], "float32")
+                            UT_apc_buf[0] = 0.0
+                            for d in T.Serial(6):
+                                UT_apc_buf[0] += U_i[d] * tmp6b[d]
+                            D_inv_val = Dinv_arr[i]
+                            u_val = u_arr[i]
+                            qddot_buf = T.alloc_local([1], "float32")
+                            qddot_buf[0] = D_inv_val * (u_val - UT_apc_buf[0])
+                            qddot[env_id, vs] = qddot_buf[0]
+
+                            # a = apc + S * qddot
+                            for d in T.Parallel(6):
+                                a_arr[i, d] = tmp6b[d] + S_col[d] * qddot_buf[0]
+
+                        if jt == 0:  # FREE
+                            # Solve IA @ qdd = u - IA @ apc
+                            mat66_mul_vec6(IA6_for_solve, tmp6b, tmp6)
+                            rhs = T.alloc_local([6], "float32")
+                            for d in T.Parallel(6):
+                                rhs[d] = u6_arr[d] - tmp6[d]
+
+                            # 6x6 Gaussian elimination (no pivoting, IA is SPD)
+                            aug = T.alloc_local([6, 7], "float32")
+                            for a in T.Serial(6):
+                                for b in T.Serial(6):
+                                    aug[a, b] = IA6_for_solve[a, b]
+                                aug[a, 6] = rhs[a]
+
+                            factor_buf = T.alloc_local([1], "float32")
+                            for col in T.Serial(6):
+                                for row in T.Serial(6):
+                                    if row > col:
+                                        factor_buf[0] = aug[row, col] / aug[col, col]
+                                        for k in T.Serial(7):
+                                            aug[row, k] -= factor_buf[0] * aug[col, k]
+
+                            # Back substitution
+                            qdd = T.alloc_local([6], "float32")
+                            for d in T.Parallel(6):
+                                qdd[d] = 0.0
+                            s_buf = T.alloc_local([1], "float32")
+                            for ri in T.Serial(6):
+                                row = 5 - ri
+                                s_buf[0] = aug[row, 6]
+                                for k in T.Serial(6):
+                                    if k > row:
+                                        s_buf[0] -= aug[row, k] * qdd[k]
+                                qdd[row] = s_buf[0] / aug[row, row]
+
+                            for d in T.Parallel(6):
+                                qddot[env_id, vs + d] = qdd[d]
+                                a_arr[i, d] = tmp6b[d] + qdd[d]
+                    else:
+                        for d in T.Parallel(6):
+                            a_arr[i, d] = tmp6b[d]
+
+        return aba_main
+
+    return kernel
+
+
+_aba_cache: dict[tuple, object] = {}
+
+
+def get_aba_kernel(N, nb, nq, nv):
+    """Get or compile an ABA kernel for the given dimensions."""
+    key = ("aba", N, nb, nq, nv)
+    if key not in _aba_cache:
+        _this_module._N = N
+        _this_module._nb = nb
+        _this_module._nq = nq
+        _this_module._nv = nv
+        jit_impl = _build_aba_kernel_impl()
+        _aba_cache[key] = jit_impl()
+    return _aba_cache[key]
+
+
+# ---------------------------------------------------------------------------
+# PyTorch spatial math helpers (used by contact/collision in tilelang_backend.py)
 # ---------------------------------------------------------------------------
 
 

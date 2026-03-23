@@ -24,6 +24,7 @@ from ..static_data import (
     StaticRobotData,
 )
 from .kernels_tl import (
+    get_aba_kernel,
     get_fk_kernel,
     quat_to_rot_torch,
     rodrigues_torch,
@@ -470,6 +471,21 @@ class TileLangBatchBackend(BatchBackend):
     # ------------------------------------------------------------------
 
     def _compute_aba(self, tau_total, ext_forces):
+        s = self._static
+        N = self._num_envs
+        aba_kernel = get_aba_kernel(N, s.nb, s.nq, s.nv)
+        result = aba_kernel(
+            self._q, self._qdot, tau_total, ext_forces,
+            self._joint_type, self._joint_axis, self._parent_idx,
+            self._v_idx_start, self._v_idx_len,
+            self._inertia_mat,
+            self._X_up_R, self._X_up_r,
+            float(s.gravity),
+        )
+        return result
+
+    def _compute_aba_pytorch(self, tau_total, ext_forces):
+        """PyTorch reference ABA (kept for debugging)."""
         s = self._static
         N = self._num_envs
         nb = s.nb
