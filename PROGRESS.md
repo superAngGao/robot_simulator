@@ -199,16 +199,23 @@
 - [x] `physics/backends/warp/scratch.py` — `ABABatchScratch` 预分配 GPU 缓冲区
 - [x] `rl_env/vec_env.py` — 重构为使用 `BatchBackend`（默认 `backend="numpy"`，向后兼容）
 - [x] `rl_env/vec_env.py` — `BatchedObsManager` 用于 `(N, obs_dim)` 批量观测
-- [x] 数值验证：Warp (float32) vs NumPy (float64)，单步 atol=1e-4，50 步 atol=5e-3
-- [x] Benchmark：
+- [x] `physics/backends/tilelang/tilelang_backend.py` — `TileLangBatchBackend(BatchBackend)` PyTorch CUDA 张量操作
+- [x] `physics/backends/tilelang/kernels_tl.py` — 空间代数辅助函数（PyTorch 批量化）
+- [x] 数值验证：Warp/TileLang (float32) vs NumPy (float64)，单步 atol=1e-4，50 步 atol=5e-3
+- [x] Benchmark（三后端对比）：
 
 | Backend | N=1 | N=10 | N=100 | N=1000 |
 |---------|-----|------|-------|--------|
-| NumPy | 511 steps/s | 523 | 529 | 539 |
-| Warp (H200) | 1,934 | 19,104 | 159,759 | 886,119 |
-| Speedup | 3.8x | 37x | 302x | **1,643x** |
+| NumPy | 536 steps/s | 549 | 553 | 563 |
+| TileLang (H200) | 71 | 700 | 6,772 | 68,039 |
+| Warp (H200) | 1,782 | 18,881 | 158,888 | 870,976 |
 
-**总测试数：240（全部通过）**
+| vs NumPy | N=1 | N=10 | N=100 | N=1000 |
+|----------|-----|------|-------|--------|
+| TileLang | 0.1x | 1.3x | 12x | **121x** |
+| Warp | 3.3x | 34x | 287x | **1,547x** |
+
+**总测试数：246（全部通过）**
 
 ---
 
