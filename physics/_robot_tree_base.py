@@ -87,3 +87,28 @@ class RobotTreeBase(ABC):
     @abstractmethod
     def body_by_name(self, name: str) -> "Body":
         """Return the Body object with the given name."""
+
+    # ------------------------------------------------------------------
+    # CRBA (optional — concrete implementations may override)
+    # ------------------------------------------------------------------
+
+    def crba(self, q: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Compute the joint-space mass matrix H (nv x nv) via CRBA.
+
+        Reference: Featherstone (2008) §6.2.
+        """
+        raise NotImplementedError("CRBA not implemented for this backend.")
+
+    def forward_dynamics_crba(
+        self,
+        q: NDArray[np.float64],
+        qdot: NDArray[np.float64],
+        tau: NDArray[np.float64],
+        external_forces=None,
+    ) -> NDArray[np.float64]:
+        """Forward dynamics via CRBA: qddot = H^{-1} (tau - C).
+
+        Equivalent to ABA but uses dense matrix factorisation.
+        Better suited for GPU tensor-core acceleration on larger robots.
+        """
+        raise NotImplementedError("CRBA forward dynamics not implemented for this backend.")

@@ -486,6 +486,115 @@ class RobotTreeNumpy(RobotTreeBase):
                 tau[body.v_idx] = j.compute_damping_torque(qdot[body.v_idx])
         return tau
 
+    # ------------------------------------------------------------------
+    # CRBA — Composite Rigid Body Algorithm  (mass matrix)
+    # ------------------------------------------------------------------
+
+    def crba(
+        self,
+        q: NDArray[np.float64],
+    ) -> NDArray[np.float64]:
+        """Compute the joint-space mass matrix H (nv, nv) via CRBA.
+
+        The Composite Rigid Body Algorithm computes H by:
+          1. Backward pass: accumulate composite spatial inertias
+             IC[i] = I[i], then for children: IC[parent] += X^T IC[child] X
+          2. Forward pass: for each body with DOF, compute
+             H[i,i] = S_i^T IC[i] S_i (diagonal block),
+             then propagate F = IC[i] S_i up the tree to fill off-diagonals.
+
+        H is symmetric positive definite.
+
+        Reference: Featherstone (2008) §6.2, Algorithm 6.2.
+
+        Returns:
+            H : (nv, nv) joint-space mass matrix.
+        """
+        self._check_finalized()
+        n = self.num_bodies
+
+        # Compute X_up for each body (same as FK/ABA Pass 1)
+        X_up = [None] * n
+        for body in self._bodies:
+            X_J = body.joint.transform(self._q_of(body, q))
+            X_up[body.index] = body.X_tree @ X_J
+
+        # --- Backward pass: composite inertias ---
+        IC = [body.inertia.matrix().copy() for body in self._bodies]
+
+        for body in reversed(self._bodies):
+            if body.parent >= 0:
+                Xup_i = X_up[body.index]
+                X6 = Xup_i.matrix()  # 6x6 Plücker transform
+                IC[body.parent] += X6.T @ IC[body.index] @ X6
+
+        # --- Build H ---
+        H = np.zeros((self.nv, self.nv), dtype=np.float64)
+
+        for body in self._bodies:
+            q_i = self._q_of(body, q)
+            S_i = body.joint.motion_subspace(q_i)
+            nv_i = S_i.shape[1]
+            if nv_i == 0:
+                continue
+
+            vi = body.v_idx
+
+            # Diagonal block: H[i,i] = S_i^T @ IC[i] @ S_i
+            F = IC[body.index] @ S_i  # (6, nv_i)
+            H[vi, vi] = S_i.T @ F     # (nv_i, nv_i)
+
+            # Off-diagonal: propagate F up the tree
+            # F is the spatial force at body i due to unit acceleration at joint i
+            j = body.index
+            while self._bodies[j].parent >= 0:
+                F = X_up[j].apply_force(F) if F.ndim == 1 else np.column_stack(
+                    [X_up[j].apply_force(F[:, c]) for c in range(F.shape[1])]
+                )
+                j = self._bodies[j].parent
+                parent_body = self._bodies[j]
+                S_j = parent_body.joint.motion_subspace(self._q_of(parent_body, q))
+                nv_j = S_j.shape[1]
+                if nv_j > 0:
+                    vj = parent_body.v_idx
+                    block = S_j.T @ F  # (nv_j, nv_i)
+                    H[vj, vi] = block
+                    H[vi, vj] = block.T  # symmetry
+
+        return H
+
+    def forward_dynamics_crba(
+        self,
+        q: NDArray[np.float64],
+        qdot: NDArray[np.float64],
+        tau: NDArray[np.float64],
+        external_forces=None,
+    ) -> NDArray[np.float64]:
+        """Forward dynamics via CRBA: qddot = H^{-1} (tau - C).
+
+        Steps:
+          1. H = crba(q)                        — mass matrix
+          2. C = rnea(q, qdot, 0, ext_forces)   — bias forces (Coriolis + gravity)
+          3. qddot = solve(H, tau - C)           — Cholesky
+
+        Reference: Featherstone (2008) §6.3.
+
+        Returns:
+            qddot : (nv,) generalised accelerations.
+        """
+        self._check_finalized()
+
+        H = self.crba(q)
+        C = self.rnea(q, qdot, np.zeros(self.nv), external_forces)
+        rhs = tau - C
+
+        # Cholesky solve (H is SPD)
+        L = np.linalg.cholesky(H)
+        y = np.linalg.solve(L, rhs)
+        qddot = np.linalg.solve(L.T, y)
+
+        return qddot
+
     def __repr__(self) -> str:
         return f"RobotTreeNumpy(bodies={self.num_bodies}, nq={self.nq}, nv={self.nv})"
 
