@@ -131,7 +131,7 @@ robot_simulator/
 | Layer | Technology | Notes |
 |---|---|---|
 | Phase 1 physics | Python + NumPy | Validate correctness first |
-| Phase 2 physics | NVIDIA Warp + TileLang | Dual GPU backends, benchmarked against each other |
+| Phase 2 physics | NVIDIA Warp + TileLang + CUDA C++ | 4 GPU backends (NumPy/Warp/TileLang/CUDA), benchmarked |
 | Tensor format | PyTorch (torch.Tensor) | Unified data format; zero-copy interop with backends via DLPack |
 | Rendering (early) | matplotlib 3D | Quick visualization |
 | Rendering (later) | Vulkan + ray tracing | Sim-to-Real visual fidelity |
@@ -163,10 +163,10 @@ Deliverables:
 
 ### Phase 2 — GPU Acceleration + Parallel Environments
 
-Architecture decisions confirmed in REFLECTIONS.md (2026-03-17), updated 2026-03-22:
-- **Dual GPU backends**: Warp + TileLang, both implementing `RobotTreeBase(ABC)`; NumPy baseline kept for correctness checks.
-- **Unified data format**: `torch.Tensor` on CUDA throughout VecEnv/managers. GPU backends receive tensors via zero-copy (Warp: `wp.from_torch()`; TileLang: DLPack).
-- **Backend selection**: `physics/backends/get_backend("warp"|"tilelang")` factory; upper layers are backend-agnostic.
+Architecture decisions confirmed in REFLECTIONS.md (2026-03-17), updated 2026-03-23:
+- **4 GPU backends**: NumPy (CPU fallback) + Warp + TileLang + raw CUDA C++, all implementing `BatchBackend(ABC)`.
+- **Unified data format**: `torch.Tensor` on CUDA throughout VecEnv/managers. GPU backends receive tensors via zero-copy (Warp: `wp.from_torch()`; TileLang: DLPack; CUDA: `data_ptr<float>()`).
+- **Backend selection**: `physics/backends/get_backend("numpy"|"warp"|"tilelang"|"cuda")` factory; upper layers are backend-agnostic.
 - **VecEnv parallelism**: GPU kernels batched over N envs (`dim=N`), not Python-level for-loop.
 - **Obs/Action space**: Manager + term-function pattern (Isaac Lab style); `ObsManager` fully implemented, Reward/Termination as stubs.
 - **Simulator placement**: Top-level `simulator.py` (not inside `physics/`).
@@ -212,28 +212,31 @@ Architecture decisions confirmed in REFLECTIONS.md (2026-03-17), updated 2026-03
 - [ ] `rl_env/base_env.py` — `Env(model, cfg)`, Gymnasium interface
 - [ ] `rl_env/vec_env.py` — `VecEnv`: holds Warp arrays directly, no Python env-loop
 
-#### 2e — GPU backends (Warp + TileLang)
+#### 2e — GPU backends ✅ DONE
 
-**统一数据格式**：`torch.Tensor` on CUDA。VecEnv、ObsManager、RewardManager 全部持有 PyTorch tensor。
-GPU 后端通过零拷贝接收 tensor（Warp: `wp.from_torch()`; TileLang: DLPack），避免 host-device 拷贝。
+**架构**：`BatchBackend(ABC)` + `StepResult` dataclass。VecEnv 通过 `get_backend(name)` 工厂选择后端，
+上层代码完全不感知具体后端。`StaticRobotData` 将 `RobotModel` 展平为连续数组供 GPU 使用。
 
-**后端接口**：`physics/backends/__init__.py` 提供 `get_backend(name)` 工厂函数，返回对应的
-`RobotTree` 子类 + `ContactModel` + `CollisionModel`。上层代码（Simulator、VecEnv）不感知具体后端。
+四个后端已实现并通过数值验证（float32 vs float64，atol=1e-4）：
 
-Warp 后端：
-- [ ] `physics/backends/warp/robot_tree_warp.py` — `RobotTreeWarp(RobotTreeBase)`: batched ABA + FK (Warp kernel, `dim=N`)
-- [ ] `physics/backends/warp/contact_warp.py` — Warp contact kernel
-- [ ] `physics/backends/warp/collision_warp.py` — Warp self-collision kernel
+| 后端 | 实现方式 | N=1000 steps/s | vs NumPy |
+|------|----------|----------------|----------|
+| NumPy | Python for-loop (CPU) | 533 | 1x |
+| TileLang | TileLang kernel (FK+ABA) + PyTorch (contact/integration) | 438,700 | 823x |
+| Warp | 7 个 @wp.kernel (FK/ABA/contact/collision/integration) | 750,363 | 1,408x |
+| **CUDA** | **单融合 CUDA C++ kernel** (全物理步) | **2,204,524** | **4,136x** |
 
-TileLang 后端：
-- [ ] `physics/backends/tilelang/robot_tree_tl.py` — `RobotTreeTileLang(RobotTreeBase)`: batched ABA + FK
-- [ ] `physics/backends/tilelang/contact_tl.py` — TileLang contact kernel
-- [ ] `physics/backends/tilelang/collision_tl.py` — TileLang self-collision kernel
-
-共用：
-- [ ] `physics/backends/__init__.py` — `get_backend()` 工厂函数 + 后端注册
-- [ ] Numerical validation: Warp / TileLang output vs NumPy baseline (same input, tolerance check)
-- [ ] Benchmark: steps/s throughput, NumPy vs Warp vs TileLang (1 / 100 / 1000 envs)
+文件结构：
+```
+physics/backends/
+├── __init__.py              # get_backend() 工厂
+├── batch_backend.py         # BatchBackend(ABC), StepResult
+├── static_data.py           # StaticRobotData
+├── numpy_loop.py            # NumpyLoopBackend
+├── warp/                    # Warp: spatial_warp.py, kernels.py, warp_backend.py, scratch.py
+├── tilelang/                # TileLang: kernels_tl.py (FK+ABA kernel), tilelang_backend.py
+└── cuda/                    # CUDA C++: kernels.cu, cuda_backend.py
+```
 
 #### 2f — High-fidelity contact modeling
 
@@ -244,6 +247,82 @@ TileLang 后端：
 - [ ] **约束求解器（LCP）**：替代 penalty 弹簧阻尼模型，用基于约束的接触求解（Signorini 条件 + Coulomb 摩擦锥），消除参数调优依赖
 - [ ] **接触点离散化**：将 GJK/EPA 求得的接触面片离散为多个接触点，输入约束求解器
 - [ ] GPU 加速：GJK/EPA + LCP 的 Warp kernel 实现
+
+#### 2g — CRBA + Tensor Core 加速（密集矩阵前向动力学）
+
+**动机**：当前所有 GPU 后端使用 ABA（O(n) 顺序算法），每步仅做 6×6 标量运算，
+无法利用 tensor core。对于中大型机器人（nv > 20），CRBA 将前向动力学转化为
+**密集矩阵运算**（nv × nv），可以充分发挥 tensor core 的吞吐优势。
+
+**算法：Composite Rigid Body Algorithm (CRBA)**
+
+```
+1. 计算关节空间质量矩阵 H (nv × nv)
+   - 通过 composite inertia 从叶到根传播
+   - H 对称正定，只需计算上三角
+
+2. 计算偏置力 C = RNEA(q, qdot, 0) — 科里奥利力 + 重力
+
+3. 求解前向动力学
+   qddot = H^{-1} @ (tau - C + J^T @ f_ext)
+
+   通过 Cholesky 分解求解：
+   L @ L^T = H
+   qddot = L^{-T} @ L^{-1} @ rhs
+```
+
+**GPU 优势（对比 ABA）**：
+
+| 维度 | ABA | CRBA |
+|------|-----|------|
+| 复杂度 | O(n) | O(n²) + O(nv³) |
+| 运算类型 | 6×6 标量 (sequential) | nv×nv 密集矩阵 (parallel) |
+| Tensor core | ✗ 无法使用 | ✓ Cholesky / matmul |
+| 适用范围 | nv < 20 (四足) | nv > 20 (人形、多指手) |
+| GPU 并行度 | 仅跨环境 N | 跨环境 N × 矩阵内并行 |
+
+**分组策略（大型机器人优化）**：
+
+对于 nv > 50 的复杂机器人，将运动学树分解为子树组，每组独立计算局部质量矩阵，
+通过 Schur complement 处理组间耦合：
+
+```
+完整机器人 (nv=50+)
+├── 躯干组 (nv_local=6)      → H_trunk (6×6)
+├── 左臂组 (nv_local=7)      → H_LA (7×7)
+├── 右臂组 (nv_local=7)      → H_RA (7×7)
+├── 左腿组 (nv_local=6)      → H_LL (6×6)
+├── 右腿组 (nv_local=6)      → H_RL (6×6)
+└── 组间耦合 → 块稀疏 Schur complement
+```
+
+每组规模对齐 tensor core tile size（16/32），避免全矩阵 O(n²) 开销。
+本质上是 Featherstone Divide-and-Conquer Algorithm 的 GPU-native 变体。
+
+**实现计划**：
+
+Phase 2g-1: 标准 CRBA（CPU NumPy）
+- [ ] `physics/robot_tree.py` — `RobotTreeNumpy.crba(q) -> H`（质量矩阵计算）
+- [ ] `physics/robot_tree.py` — `RobotTreeNumpy.forward_dynamics_crba(q, qdot, tau, ext) -> qddot`
+- [ ] 数值验证：CRBA 输出 vs ABA 输出（相同输入，应完全一致）
+- [ ] 测试：`tests/test_crba.py`
+
+Phase 2g-2: Batched Cholesky GPU 加速
+- [ ] `physics/backends/` — 在现有后端中添加 CRBA 路径
+- [ ] 使用 `torch.linalg.cholesky_solve` batched 版本（cuSOLVER → tensor core on Hopper）
+- [ ] Benchmark：ABA vs CRBA 在不同 nv（10/20/30/50）和 N（1/100/1000）下的性能对比
+- [ ] 自动选择策略：nv < 阈值用 ABA，nv ≥ 阈值用 CRBA
+
+Phase 2g-3: 分组 CRBA（大型机器人）
+- [ ] 子树分组 API：用户指定或自动分割
+- [ ] 块对角 H 计算 + 组间 Schur complement
+- [ ] TileLang / CUDA kernel 实现组内 matmul（对齐 tensor core tile）
+
+**参考文献**：
+- Featherstone (2008) §6 — CRBA 算法
+- Featherstone (1999) — Divide-and-Conquer Algorithm for O(n log n) parallel dynamics
+- Carpentier et al. (2019) — Pinocchio: `crba()` 实现
+- NVIDIA cuSOLVER batched Cholesky — Hopper tensor core 支持
 
 ### Phase 3 — High-Fidelity Rendering + Sensor Simulation
 - Vulkan renderer with ray tracing
@@ -266,7 +345,12 @@ TileLang 后端：
 ## Key References
 
 - Featherstone, R. — *Rigid Body Dynamics Algorithms* (2008)
+  - Ch.6: CRBA (Composite Rigid Body Algorithm)
+  - Ch.7: ABA (Articulated Body Algorithm)
+- Featherstone, R. — "A Divide-and-Conquer Articulated Body Algorithm" (1999)
 - Spatial algebra: http://royfeatherstone.org/spatial/index.html
+- Carpentier et al. — "The Pinocchio C++ Library" (2019): `crba()`, `aba()` reference
 - Penalty-based contact: Mirtich & Canny (1995)
 - Sim-to-Real: OpenAI "Learning Dexterous In-Hand Manipulation" (2019)
 - Isaac Lab: https://isaac-sim.github.io/IsaacLab/
+- NVIDIA cuSOLVER: batched Cholesky on Hopper tensor cores

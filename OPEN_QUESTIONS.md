@@ -115,6 +115,24 @@ Pinocchio issue #1388 曾在此处有 bug。
 
 ---
 
+## GPU Dynamics Algorithms
+
+**Q16 — CRBA vs ABA：GPU 上的前向动力学算法选择**
+
+当前所有 GPU 后端使用 ABA（O(n)，顺序标量运算），tensor core 完全空闲。
+CRBA 将前向动力学转化为密集矩阵问题（nv × nv），可利用 tensor core。
+
+设计问题：
+- **ABA/CRBA 自动切换阈值**：nv 多大时 CRBA 的 O(n²+nv³) 矩阵开销被 tensor core
+  吞吐弥补？需要在不同 nv (10/20/30/50) 和 N (100/1000/4096) 下实测。
+- **分组策略**：大型机器人的子树分割应自动还是手动？自动分割的启发式
+  （平衡组大小 vs 最小化组间耦合边数）？
+- **精度**：CRBA Cholesky 在 float32 下的数值稳定性？对于 nv=50 的 H 矩阵
+  条件数是否需要 float64 或混合精度？
+- 参考：Pinocchio 同时实现了 `aba()` 和 `crba()`，Drake 的 `CalcMassMatrix()` 也是 CRBA。
+
+---
+
 ## Infrastructure
 
 **Q10 — Unit tests are missing** ✅ RESOLVED

@@ -10,7 +10,7 @@
 | Phase | 状态 | 完成度 |
 |-------|------|--------|
 | Phase 1 — Basic Physics + Simple Rendering | ✅ 完成（含修复） | 100% |
-| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 80% (2a+2b+2c+2d+2e ✅) |
+| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 85% (2a-2e ✅, 2f+2g ⬜) |
 | Phase 3 — High-Fidelity Rendering          | ⬜ 未开始 | 0% |
 | Phase 4 — Domain Randomization             | ⬜ 未开始 | 0% |
 | Phase 5 — Sim-to-Real Validation           | ⬜ 未开始 | 0% |
@@ -207,15 +207,32 @@
 | Backend | N=1 | N=10 | N=100 | N=1000 |
 |---------|-----|------|-------|--------|
 | NumPy | 536 steps/s | 549 | 553 | 563 |
-| TileLang (H200) | 71 | 700 | 6,772 | 68,039 |
-| Warp (H200) | 1,782 | 18,881 | 158,888 | 870,976 |
+| TileLang (H200, TL kernel) | 507 | 4,964 | 47,991 | 438,700 |
+| Warp (H200) | 1,908 | 18,734 | 156,827 | 750,363 |
+| CUDA C++ (H200) | 6,114 | 59,721 | 446,915 | 2,204,524 |
 
 | vs NumPy | N=1 | N=10 | N=100 | N=1000 |
 |----------|-----|------|-------|--------|
-| TileLang | 0.1x | 1.3x | 12x | **121x** |
-| Warp | 3.3x | 34x | 287x | **1,547x** |
+| TileLang | 1.0x | 9.6x | 93x | **823x** |
+| Warp | 3.7x | 34x | 295x | **1,408x** |
+| **CUDA** | **12x** | **113x** | **840x** | **4,136x** |
 
-**总测试数：246（全部通过）**
+CUDA 性能最优原因：全物理步融合为单 kernel launch，零 inter-kernel overhead。
+
+**总测试数：251（全部通过）**
+
+### 2f — High-fidelity contact modeling ⬜
+
+（见 PLAN.md）
+
+### 2g — CRBA + Tensor Core 加速 ⬜
+
+**目标**：为中大型机器人（nv > 20）实现 CRBA 前向动力学，利用 tensor core 的密集矩阵运算优势。
+
+计划分三阶段：
+1. 标准 CRBA（CPU NumPy）— 质量矩阵计算 + Cholesky 求解
+2. Batched Cholesky GPU — `torch.linalg.cholesky_solve`（cuSOLVER → tensor core）
+3. 分组 CRBA — 子树分解 + 块稀疏 Schur complement
 
 ---
 
