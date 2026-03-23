@@ -24,6 +24,7 @@ from ..static_data import (
     StaticRobotData,
 )
 from .kernels_tl import (
+    get_fk_kernel,
     quat_to_rot_torch,
     rodrigues_torch,
     spatial_cross_force_torch,
@@ -66,13 +67,13 @@ class TileLangBatchBackend(BatchBackend):
         self._static = s
 
         # Upload static data to GPU as torch tensors
-        self._joint_type = torch.from_numpy(s.joint_type).to(device)
+        self._joint_type = torch.from_numpy(s.joint_type).int().to(device)
         self._joint_axis = torch.from_numpy(s.joint_axis).to(device)
-        self._parent_idx = torch.from_numpy(s.parent_idx).long().to(device)
-        self._q_idx_start = torch.from_numpy(s.q_idx_start).long().to(device)
-        self._q_idx_len = torch.from_numpy(s.q_idx_len).long().to(device)
-        self._v_idx_start = torch.from_numpy(s.v_idx_start).long().to(device)
-        self._v_idx_len = torch.from_numpy(s.v_idx_len).long().to(device)
+        self._parent_idx = torch.from_numpy(s.parent_idx).int().to(device)
+        self._q_idx_start = torch.from_numpy(s.q_idx_start).int().to(device)
+        self._q_idx_len = torch.from_numpy(s.q_idx_len).int().to(device)
+        self._v_idx_start = torch.from_numpy(s.v_idx_start).int().to(device)
+        self._v_idx_len = torch.from_numpy(s.v_idx_len).int().to(device)
         self._X_tree_R = torch.from_numpy(s.X_tree_R).to(device)
         self._X_tree_r = torch.from_numpy(s.X_tree_r).to(device)
         self._inertia_mat = torch.from_numpy(s.inertia_mat).to(device)
@@ -218,88 +219,32 @@ class TileLangBatchBackend(BatchBackend):
         return self._static.nb
 
     # ------------------------------------------------------------------
-    # FK + body velocities (PyTorch batched, sequential over bodies)
+    # FK + body velocities (TileLang kernel)
     # ------------------------------------------------------------------
 
     def _run_fk(self):
         s = self._static
         N = self._num_envs
-
-        for i in range(s.nb):
-            jtype = int(self._joint_type[i])
-            qs = int(self._q_idx_start[i])
-            ql = int(self._q_idx_len[i])
-            vs = int(self._v_idx_start[i])
-            vl = int(self._v_idx_len[i])
-            pid = int(self._parent_idx[i])
-
-            # Joint transform
-            R_J, r_J = self._joint_transform(jtype, i, qs, ql)
-
-            # X_up = X_tree @ X_J
-            R_tree = self._X_tree_R[i]  # (3, 3)
-            r_tree = self._X_tree_r[i]  # (3,)
-            R_tree_N = R_tree.unsqueeze(0).expand(N, -1, -1)
-            r_tree_N = r_tree.unsqueeze(0).expand(N, -1)
-
-            R_up = torch.bmm(R_tree_N, R_J)
-            r_up = r_tree_N + torch.bmm(R_tree_N, r_J.unsqueeze(-1)).squeeze(-1)
-
-            self._X_up_R[:, i] = R_up
-            self._X_up_r[:, i] = r_up
-
-            # X_world
-            if pid < 0:
-                self._X_world_R[:, i] = R_up
-                self._X_world_r[:, i] = r_up
-            else:
-                R_p = self._X_world_R[:, pid]
-                r_p = self._X_world_r[:, pid]
-                self._X_world_R[:, i] = torch.bmm(R_p, R_up)
-                self._X_world_r[:, i] = r_p + torch.bmm(R_p, r_up.unsqueeze(-1)).squeeze(-1)
-
-            # Body velocity
-            if vl > 0:
-                vJ = self._joint_vJ(jtype, i, vs, vl)
-            else:
-                vJ = torch.zeros(N, 6, device=self._device)
-
-            if pid < 0:
-                self._v_bodies[:, i] = vJ
-            else:
-                v_parent = self._v_bodies[:, pid]
-                v_xformed = transform_velocity_torch(R_up, r_up, v_parent)
-                self._v_bodies[:, i] = v_xformed + vJ
-
-    def _joint_transform(self, jtype, body_idx, qs, ql):
-        """Compute joint transform R_J, r_J for all envs. Returns (N,3,3), (N,3)."""
-        N = self._num_envs
-        if jtype == JOINT_REVOLUTE:
-            axis = self._joint_axis[body_idx]  # (3,)
-            angle = self._q[:, qs]  # (N,)
-            R_J = rodrigues_torch(axis, angle)
-            r_J = torch.zeros(N, 3, device=self._device)
-        elif jtype == JOINT_PRISMATIC:
-            axis = self._joint_axis[body_idx]
-            d = self._q[:, qs]  # (N,)
-            R_J = torch.eye(3, device=self._device).unsqueeze(0).expand(N, -1, -1).contiguous()
-            r_J = axis.unsqueeze(0) * d.unsqueeze(-1)
-        elif jtype == JOINT_FREE:
-            quat = self._q[:, qs:qs+4]  # (N, 4)
-            pos = self._q[:, qs+4:qs+7]  # (N, 3)
-            R_J = quat_to_rot_torch(quat)
-            r_J = pos
-        else:  # JOINT_FIXED
-            R_J = torch.eye(3, device=self._device).unsqueeze(0).expand(N, -1, -1).contiguous()
-            r_J = torch.zeros(N, 3, device=self._device)
-        return R_J, r_J
+        fk_kernel = get_fk_kernel(N, s.nb, s.nq, s.nv)
+        result = fk_kernel(
+            self._q, self._qdot,
+            self._joint_type, self._joint_axis, self._parent_idx,
+            self._q_idx_start, self._q_idx_len,
+            self._v_idx_start, self._v_idx_len,
+            self._X_tree_R, self._X_tree_r,
+        )
+        self._X_world_R = result[0]
+        self._X_world_r = result[1]
+        self._X_up_R = result[2]
+        self._X_up_r = result[3]
+        self._v_bodies = result[4]
 
     def _joint_vJ(self, jtype, body_idx, vs, vl):
         """Compute vJ = S @ qdot for all envs. Returns (N, 6)."""
         N = self._num_envs
         if jtype == JOINT_REVOLUTE:
-            axis = self._joint_axis[body_idx]  # (3,)
-            qd = self._qdot[:, vs:vs+1]  # (N, 1)
+            axis = self._joint_axis[body_idx]
+            qd = self._qdot[:, vs:vs+1]
             vJ = torch.zeros(N, 6, device=self._device)
             vJ[:, 3:] = axis.unsqueeze(0) * qd
         elif jtype == JOINT_PRISMATIC:
