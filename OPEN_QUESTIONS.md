@@ -135,6 +135,22 @@ Pinocchio issue #1388 曾在此处有 bug。
 
 ---
 
+## Collision / Contact
+
+**Q17 — BVH 三角 Mesh 碰撞（Phase 3 延后）**
+
+Phase 2f 使用 GJK/EPA 处理凸形状（Box/Sphere/Cylinder/ConvexMesh），非凸 mesh
+通过凸分解预处理。直接的三角 mesh 碰撞检测延后到 Phase 3：
+
+- **BVH 加速结构**：AABB/OBB 层次包围盒树，加速三角 mesh 查询
+- **三角-凸体 narrowphase**：GJK 求解凸 shape 与单个三角形的最近距离
+- **三角-三角碰撞**：仅在双方都是 mesh 时需要（罕见，大部分机器人 link 是凸的）
+- **参考实现**：Bullet `btBvhTriangleMeshShape`、coal/hpp-fcl BVH、PhysX GPU mesh
+- **触发条件**：当用户加载带 `<mesh>` 碰撞几何的 URDF 且无凸分解可用时
+- 当前：MeshShape 存 filename，碰撞检测跳过（Q7）
+
+---
+
 ## Infrastructure
 
 **Q10 — Unit tests are missing** ✅ RESOLVED
