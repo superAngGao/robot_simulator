@@ -5,7 +5,28 @@ Updated at the end of each development session.
 
 ---
 
-## 2026-03-23 (session 6) — Phase 2e GPU 后端 + Phase 2g CRBA
+## 2026-03-23 (session 6) — Phase 2e GPU + Phase 2g CRBA + Phase 2f Contact
+
+### Phase 2f: 高保真接触系统
+
+**实现的组件**：GJK/EPA 碰撞检测、PGS LCP 约束求解器（完整 Delassus + warm starting）、
+LCPContactModel（ContactModel ABC 实现）、CapsuleShape、关节 Coulomb 摩擦、AABB Tree broad-phase。
+
+**Bug 发现与修复**：Delassus 矩阵 `W = J M⁻¹ Jᵀ` 构建中，Jacobian 行按 contact 索引存储，
+但在计算 W 时跨 contact 的行引用了错误 body 的 Jacobian。修复为按 body 分组 Jacobian 行，
+仅在同 body 行之间计算 W 贡献。测试覆盖补全时发现此 bug（多 body LCP 测试）。
+
+**Warm starting 设计决策**：采用 Bullet 方案（body-local 坐标匹配，2cm 阈值），
+而非 PhysX 方案（EPA feature index 精确匹配）。原因：当前 GJK/EPA 不返回 feature info，
+local 坐标方案对所有碰撞类型通用。Feature index 升级路径记录在 Q18。
+
+**接触系统 vs 主流项目差距分析**：与 MuJoCo/Bullet/Drake/PhysX 对比，
+识别出 10 项差距（Q18），已完成 6 项（Delassus、warm start、Capsule、持久化、broad-phase、restitution），
+剩余 4 项（碰撞过滤、接触维度、隐式积分、同 body geom 过滤）为后续优化。
+
+---
+
+### Phase 2e/2g:
 
 ### Decision: BatchBackend ABC + 4 GPU 后端架构
 

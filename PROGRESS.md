@@ -10,7 +10,7 @@
 | Phase | 状态 | 完成度 |
 |-------|------|--------|
 | Phase 1 — Basic Physics + Simple Rendering | ✅ 完成（含修复） | 100% |
-| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 85% (2a-2e ✅, 2f+2g ⬜) |
+| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 92% (2a-2e ✅, 2f 🔄, 2g ✅) |
 | Phase 3 — High-Fidelity Rendering          | ⬜ 未开始 | 0% |
 | Phase 4 — Domain Randomization             | ⬜ 未开始 | 0% |
 | Phase 5 — Sim-to-Real Validation           | ⬜ 未开始 | 0% |
@@ -221,9 +221,58 @@ CUDA 性能最优原因：全物理步融合为单 kernel launch，零 inter-ker
 
 **总测试数：251（全部通过）**
 
-### 2f — High-fidelity contact modeling ⬜
+### 2f — High-fidelity contact modeling 🔄
 
-（见 PLAN.md）
+**已完成：**
+
+- [x] **GJK/EPA 凸体碰撞检测** — `physics/gjk_epa.py`
+  - `support_point()` for Box/Sphere/Cylinder/Capsule
+  - `gjk()` 交叉测试 + `epa()` 穿透深度/法线
+  - `gjk_epa_query()` 形状间 + `ground_contact_query()` 地面
+  - 23 tests（含旋转、边界情况、Capsule-Sphere）
+
+- [x] **PGS LCP 约束求解器** — `physics/lcp_solver.py`
+  - 完整 Delassus 矩阵 `W = J M⁻¹ Jᵀ`（非对角近似）
+  - 接触 Jacobian `_compute_contact_jacobian_row()`
+  - Warm starting（body-local 坐标匹配，2cm 阈值）
+  - Signorini (λₙ ≥ 0) + Coulomb 摩擦锥投影
+  - Baumgarte 稳定化 (ERP/CFM) + Newton 弹性碰撞 (restitution)
+  - 11 tests（含 body-body 碰撞、PGS 收敛性）
+
+- [x] **LCPContactModel** — `physics/contact.py`
+  - `ContactModel` ABC 的约束求解实现，可替代 `PenaltyContactModel`
+  - 集成 GJK/EPA + PGS，`add_contact_body(idx, shape, name)` API
+  - 12 tests
+
+- [x] **CapsuleShape** — `physics/geometry.py`
+  - 球-线段 Minkowski sum，`support_point()` 支持 GJK
+  - 6 tests
+
+- [x] **关节 Coulomb 摩擦** — `physics/joint.py`
+  - `RevoluteJoint.friction` 参数（从 URDF `<dynamics friction>` 解析）
+  - `compute_friction_torque()` tanh 平滑近似
+  - 集成到 `passive_torques()`
+  - 6 tests + URDF 端到端验证
+
+- [x] **Broad-phase AABB Tree** — `physics/broad_phase.py`
+  - `BruteForceBroadPhase` O(n²) + `AABBTreeBroadPhase` O(n log n)
+  - 顶层按最长轴分割，递归树-树查询
+  - 13 tests
+
+- [x] **集成测试** — `tests/test_contact_integration.py`
+  - GJK→LCP 完整管线、多 body、Penalty vs LCP 对比、URDF friction 端到端
+  - 5 tests
+
+**Phase 2f 测试：64 个，全部通过**
+
+**待完成（Q18 剩余项）：**
+
+- [ ] LCPContactModel 接入 Simulator.step() 管线
+- [ ] 碰撞过滤掩码（位掩码 / 显式排除）
+- [ ] 接触维度控制（1D/3D/4D/6D）
+- [ ] 同 body 多 geom 过滤
+- [ ] 隐式接触积分
+- [ ] GPU 加速（GJK/EPA + LCP CUDA kernel）
 
 ### 2g — CRBA + Tensor Core 加速 ⬜
 
@@ -265,7 +314,21 @@ CUDA 性能最优原因：全物理步融合为单 kernel launch，零 inter-ker
 - [x] 验证：grouped == monolithic CRBA == ABA（四足/人形/链式，atol=1e-10）
 - [ ] CUDA fused grouped CRBA kernel — 留作 nv > 50 分支机器人优化时实现
 
-**总测试数：267（全部通过）**
+**Phase 2g 测试数：26（CRBA + grouped Schur）**
+
+---
+
+**Phase 2 总测试数：349（全部通过）**
+
+**Phase 2 实现总览（2026-03-23）：**
+
+| 类别 | 实现数 | 说明 |
+|------|--------|------|
+| 前向动力学 | 10 | ABA×5后端 + CRBA×3(mono/grouped/batched) + Grouped Schur + CUDA CRBA-TC |
+| 接触模型 | 3 | Penalty + Null + LCP (GJK/EPA + PGS) |
+| 碰撞检测 | 3 | AABB broad + GJK/EPA narrow + ground contact |
+| 碰撞形状 | 5 | Box + Sphere + Cylinder + Capsule + Mesh(stub) |
+| GPU 后端 | 4 | NumPy + Warp + TileLang + CUDA |
 
 ---
 
