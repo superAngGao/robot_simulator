@@ -51,10 +51,12 @@ class CudaBatchBackend(BatchBackend):
         cfg: "EnvCfg",
         num_envs: int,
         device: str = "cuda:0",
+        dynamics: str = "aba",  # "aba" or "crba"
     ) -> None:
         self._device = device
         self._cfg = cfg
         self._num_envs = num_envs
+        self._dynamics = dynamics
         self._cuda = _get_cuda_module()
 
         s = StaticRobotData.from_model(model)
@@ -126,7 +128,8 @@ class CudaBatchBackend(BatchBackend):
         actions = actions.to(device=self._device, dtype=torch.float32)
         action_clip = self._cfg.action_clip if self._cfg.action_clip is not None else -1.0
 
-        results = self._cuda.physics_step(
+        step_fn = self._cuda.physics_step_crba if self._dynamics == "crba" else self._cuda.physics_step
+        results = step_fn(
             self._q, self._qdot, actions,
             self._joint_type, self._joint_axis,
             self._parent_idx, self._q_idx_start, self._q_idx_len,
