@@ -211,16 +211,20 @@ class PGSContactSolver:
         for ci, c in enumerate(contacts):
             bias[ci * 3] = -self.erp / dt * c.depth
 
-        # ── Warm starting: initialize lambda from cache ──
+        # ── Warm starting: match by body-local coordinates (Bullet approach) ──
         lambdas = np.zeros(n_rows)
         for ci, c in enumerate(contacts):
             key = (min(c.body_i, c.body_j), max(c.body_i, c.body_j))
             if key in self._warm_cache:
-                # Find closest cached contact point
-                best_dist = 0.05  # max match distance [m]
+                # Compute contact point in body_i local frame (or world for ground)
+                if c.body_i >= 0:
+                    local_pt = body_X_world[c.body_i].R.T @ (c.point - body_X_world[c.body_i].r)
+                else:
+                    local_pt = c.point  # ground: world coords are stable
+                best_dist = 0.02  # match threshold in local coords [m]
                 best_lam = None
-                for cached_pt, cached_lam in self._warm_cache[key]:
-                    dist = np.linalg.norm(c.point - cached_pt)
+                for cached_local, cached_lam in self._warm_cache[key]:
+                    dist = np.linalg.norm(local_pt - cached_local)
                     if dist < best_dist:
                         best_dist = dist
                         best_lam = cached_lam
@@ -264,14 +268,18 @@ class PGSContactSolver:
             if max_delta < self.tolerance:
                 break
 
-        # ── Update warm start cache ──
+        # ── Update warm start cache (store in body-local coordinates) ──
         self._warm_cache.clear()
         for ci, c in enumerate(contacts):
             key = (min(c.body_i, c.body_j), max(c.body_i, c.body_j))
             lam = lambdas[ci * 3: ci * 3 + 3].copy()
+            if c.body_i >= 0:
+                local_pt = body_X_world[c.body_i].R.T @ (c.point - body_X_world[c.body_i].r)
+            else:
+                local_pt = c.point.copy()
             if key not in self._warm_cache:
                 self._warm_cache[key] = []
-            self._warm_cache[key].append((c.point.copy(), lam))
+            self._warm_cache[key].append((local_pt.copy(), lam))
 
         # ── Convert impulses to spatial forces per body ──
         body_impulses = [np.zeros(6) for _ in range(num_bodies)]

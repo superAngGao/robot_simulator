@@ -155,7 +155,10 @@ Phase 2f 已实现 GJK/EPA + PGS LCP + 关节 Coulomb 摩擦。与 MuJoCo/Bullet
    `support_point()` 易实现：两端球心 + 半径。
 
 4. **接触持久化 (manifold cache)** — 帧间保持接触点，避免抖动。
-   Bullet 用 4 点 manifold + 最远点替换策略。
+   当前用 Bullet 方案（body-local 坐标距离匹配，阈值 2cm）。
+   未来可升级为 PhysX 方案（EPA 返回 feature index：面/边/顶点 ID，精确匹配无阈值）。
+   需要改 EPA 记录穿透方向对应的 simplex feature pair。
+   参考：PhysX `PxContactPair::extractContacts` feature index、Bullet `btPersistentManifold`。
 
 5. **Broad-phase 空间加速** — 当前自碰撞是 O(n²) 全对检测。
    空间哈希 / Dynamic AABB Tree (DBVT) 可降到 O(n log n)。
