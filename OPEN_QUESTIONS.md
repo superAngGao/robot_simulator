@@ -137,6 +137,34 @@ Pinocchio issue #1388 曾在此处有 bug。
 
 ## Collision / Contact
 
+**Q18 — 接触系统与主流项目的差距（Phase 2f 后续优化）**
+
+Phase 2f 已实现 GJK/EPA + PGS LCP + 关节 Coulomb 摩擦。与 MuJoCo/Bullet/Drake 对比，
+剩余的关键差距按优先级：
+
+1. **完整 Delassus 矩阵** — 当前 PGS 只用对角 `W_ii`，忽略接触点间耦合。
+   多点接触（如 box 四角着地）时收敛慢、精度低。
+   需要构建完整 `W = J M⁻¹ Jᵀ`，其中 J 是接触 Jacobian。
+   参考：MuJoCo `mj_makeConstraint` + CG solver、Bullet `btSequentialImpulseConstraintSolver`。
+
+2. **Warm starting** — 上一步的 LCP 解作为下一步初始值。
+   PGS 迭代从 ~30 降到 ~3-5。实现简单：缓存 `lambda[]`，按接触 ID 匹配。
+   参考：Bullet `btPersistentManifold::m_appliedImpulse`。
+
+3. **Capsule 形状** — 几乎所有腿部 URDF 用 capsule（球+圆柱+球）。
+   `support_point()` 易实现：两端球心 + 半径。
+
+4. **接触持久化 (manifold cache)** — 帧间保持接触点，避免抖动。
+   Bullet 用 4 点 manifold + 最远点替换策略。
+
+5. **Broad-phase 空间加速** — 当前自碰撞是 O(n²) 全对检测。
+   空间哈希 / Dynamic AABB Tree (DBVT) 可降到 O(n log n)。
+
+6. **弹性碰撞 (restitution)** — PGS 中 `e * v_n_prev` 项已预留但未实现。
+
+7. **隐式接触积分** — 当前是显式（先算力再积分），MuJoCo/Drake 用隐式
+   （接触约束与动力学耦合求解），数值稳定性更好。
+
 **Q17 — BVH 三角 Mesh 碰撞（Phase 3 延后）**
 
 Phase 2f 使用 GJK/EPA 处理凸形状（Box/Sphere/Cylinder/ConvexMesh），非凸 mesh

@@ -238,15 +238,32 @@ physics/backends/
 └── cuda/                    # CUDA C++: kernels.cu, cuda_backend.py
 ```
 
-#### 2f — High-fidelity contact modeling
+#### 2f — High-fidelity contact modeling 🔄
 
-当前 penalty 单点接触仅适用于快速原型验证。精确仿真需要升级为：
+**已完成：**
+- [x] **GJK/EPA 凸体碰撞检测**：`physics/gjk_epa.py`，支持 Box/Sphere/Cylinder
+  - `support_point()` 方法 added to all convex shapes
+  - `gjk_epa_query()` 形状间碰撞 + `ground_contact_query()` 地面碰撞
+  - `ContactManifold` 数据结构（body pair、normal、depth、points[]）
+- [x] **PGS LCP 约束求解器**：`physics/lcp_solver.py`
+  - `ContactConstraint`（接触点 + 法线 + 切线 + 摩擦系数）
+  - Signorini 条件（lambda_n ≥ 0）+ Coulomb 摩擦锥投影
+  - Baumgarte 稳定化（ERP/CFM）
+  - 对角 Delassus 近似（W_ii）
+- [x] **关节 Coulomb 摩擦**：`RevoluteJoint.friction` 参数
+  - 从 URDF `<dynamics friction="..."/>` 解析（此前被忽略）
+  - `compute_friction_torque()` 平滑 tanh 近似
+  - 集成到 `passive_torques()`
 
-- [ ] **多点接触**：每个接触体定义多个接触点（如足底 4 角点），替代当前单点模型
-- [ ] **凸体碰撞检测**：实现 GJK/EPA 算法，支持凸形状（box, sphere, cylinder, convex mesh）之间的穿透深度和接触面片计算
-- [ ] **约束求解器（LCP）**：替代 penalty 弹簧阻尼模型，用基于约束的接触求解（Signorini 条件 + Coulomb 摩擦锥），消除参数调优依赖
-- [ ] **接触点离散化**：将 GJK/EPA 求得的接触面片离散为多个接触点，输入约束求解器
-- [ ] GPU 加速：GJK/EPA + LCP 的 Warp kernel 实现
+**待完成（Q18 差距清单）：**
+- [ ] `LCPContactModel(ContactModel)` — 将 GJK/EPA + PGS 集成到 Simulator 管线
+- [ ] **完整 Delassus 矩阵** `W = J M⁻¹ Jᵀ`（替代当前对角近似）
+- [ ] **Warm starting** — 缓存上一步 lambda，帧间持久化
+- [ ] **Capsule 形状** + `support_point()`
+- [ ] **接触持久化 (manifold cache)**
+- [ ] **Broad-phase 空间加速**（Dynamic AABB Tree / 空间哈希）
+- [ ] **弹性碰撞 (restitution)**
+- [ ] GPU 加速：GJK/EPA + LCP 的 CUDA kernel
 
 #### 2g — CRBA + Tensor Core 加速（密集矩阵前向动力学）
 
