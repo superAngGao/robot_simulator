@@ -238,12 +238,13 @@ CUDA 性能最优原因：全物理步融合为单 kernel launch，零 inter-ker
 - [x] `crba_build_kernel` + `integrate_kernel` — split path for cuSOLVER tensor core Cholesky
 - [x] 16 个 CRBA 测试 + Pinocchio 对比
 
-**8 个前向动力学实现：**
+**9 个前向动力学实现：**
 
 | # | 方法 | 选择 | nv=30 N=8192 |
 |---|------|------|-------------|
 | 1 | NumPy ABA | `tree.aba()` | ~530/s |
 | 2 | NumPy CRBA | `tree.forward_dynamics_crba()` | — |
+| 2b | **NumPy Grouped CRBA** | `tree.forward_dynamics_grouped_crba()` | — |
 | 3 | Warp ABA | `backend="warp"` | 750K/s |
 | 4 | TileLang ABA | `backend="tilelang"` | 879K/s |
 | 5 | **CUDA ABA fused** | `backend="cuda"` | **1,657K/s** |
@@ -257,7 +258,12 @@ CUDA 性能最优原因：全物理步融合为单 kernel launch，零 inter-ker
 - wgmma 的 M=64 最小维度对 nv < 64 的 H 矩阵不友好，需要 pad 浪费计算
 - Tensor core 真正受益需要 nv ≥ 128 或分组策略（Phase 2g-3）
 
-**2g-3 分组 CRBA — ⬜ 待定**
+**2g-3 分组 CRBA — ✅ CPU 参考实现 (CUDA kernel 留作后续优化)**
+
+- [x] `auto_detect_groups()` — 自动分支点检测（多子节点 body 为切割点）
+- [x] `forward_dynamics_grouped_crba()` — 层次化 Schur complement（limb 并行 Cholesky → root Schur → 回代）
+- [x] 验证：grouped == monolithic CRBA == ABA（四足/人形/链式，atol=1e-10）
+- [ ] CUDA fused grouped CRBA kernel — 留作 nv > 50 分支机器人优化时实现
 
 **总测试数：267（全部通过）**
 
