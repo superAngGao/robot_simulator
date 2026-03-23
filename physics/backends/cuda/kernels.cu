@@ -1438,9 +1438,443 @@ std::vector<torch::Tensor> integrate_step(
     return {qn,vn};
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Fused Grouped Schur CRBA kernel
+//
+// Same as physics_step_crba_kernel but replaces full nv×nv Cholesky with:
+//   1. Per-limb Cholesky (K independent small solves)
+//   2. Schur complement to root
+//   3. Root Cholesky (nv_root × nv_root, typically 6×6)
+//   4. Back-substitute each limb
+//
+// Group metadata passed as arrays:
+//   root_v_indices[nv_root]      — which v-indices belong to root
+//   limb_v_offsets[ngroups+1]    — start/end into limb_v_indices
+//   limb_v_indices[total_limb_nv] — v-indices for all limbs concatenated
+// ─────────────────────────────────────────────────────────────────────────────
+
+#define MAX_GROUPS 8
+#define MAX_NV_LIMB 32
+#define MAX_NV_ROOT 16
+
+// Small in-register Cholesky + solve
+__device__ void small_cholesky_solve(float* H, float* rhs, float* out, int n) {
+    // In-place Cholesky: H -> L (lower triangular)
+    for (int j = 0; j < n; j++) {
+        for (int k = 0; k < j; k++) {
+            float s = H[j*n+k];
+            for (int m = 0; m < k; m++) s -= H[j*n+m] * H[k*n+m];
+            H[j*n+k] = s / H[k*n+k];
+        }
+        float s = H[j*n+j];
+        for (int k = 0; k < j; k++) s -= H[j*n+k] * H[j*n+k];
+        H[j*n+j] = sqrtf(s);
+    }
+    // Forward: L y = rhs
+    float y[MAX_NV_LIMB];
+    for (int i = 0; i < n; i++) {
+        float s = rhs[i];
+        for (int k = 0; k < i; k++) s -= H[i*n+k] * y[k];
+        y[i] = s / H[i*n+i];
+    }
+    // Back: L^T out = y
+    for (int i = n-1; i >= 0; i--) {
+        float s = y[i];
+        for (int k = i+1; k < n; k++) s -= H[k*n+i] * out[k];
+        out[i] = s / H[i*n+i];
+    }
+}
+
+__global__ void physics_step_grouped_schur_kernel(
+    float* __restrict__ q, float* __restrict__ qdot,
+    const float* __restrict__ actions,
+    const int* __restrict__ joint_type, const float* __restrict__ joint_axis,
+    const int* __restrict__ parent_idx,
+    const int* __restrict__ q_idx_start, const int* __restrict__ q_idx_len,
+    const int* __restrict__ v_idx_start, const int* __restrict__ v_idx_len,
+    const float* __restrict__ X_tree_R, const float* __restrict__ X_tree_r,
+    const float* __restrict__ inertia_mat,
+    const float* __restrict__ q_min_arr, const float* __restrict__ q_max_arr,
+    const float* __restrict__ k_limit_arr, const float* __restrict__ b_limit_arr,
+    const float* __restrict__ damping_arr,
+    const int* __restrict__ actuated_q_idx, const int* __restrict__ actuated_v_idx,
+    const float* __restrict__ effort_limits,
+    const float* __restrict__ contact_body_idx_f, const float* __restrict__ contact_local_pos,
+    // Group metadata
+    const int* __restrict__ root_v_indices, int nv_root,
+    const int* __restrict__ limb_v_offsets, // [ngroups+1]
+    const int* __restrict__ limb_v_indices, // [total_limb_nv]
+    int ngroups,
+    // Scalar params
+    int N_envs, int nb, int nq, int nv, int nu, int nc,
+    int has_effort_limits,
+    float dt, float gravity,
+    float kp, float kd, float action_scale, float action_clip,
+    float ck, float cb_val, float cmu, float ceps, float cgz,
+    // Outputs
+    float* __restrict__ q_new, float* __restrict__ qdot_new,
+    float* __restrict__ X_world_R_out, float* __restrict__ X_world_r_out,
+    float* __restrict__ v_bodies_out, int* __restrict__ contact_mask_out
+) {
+    int env_id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (env_id >= N_envs) return;
+
+    float* q_e = q + env_id * nq;
+    float* qdot_e = qdot + env_id * nv;
+    const float* act_e = actions + env_id * nu;
+
+    // ── Tau (same as other CRBA kernels) ──
+    float tau[MAX_NV];
+    for(int j=0;j<nv;j++) tau[j]=0.f;
+    for(int i=0;i<nb;i++){
+        int jt=joint_type[i];
+        if(jt==JOINT_REVOLUTE){int vs_=v_idx_start[i],qs_=q_idx_start[i];
+            float angle=q_e[qs_],omega=qdot_e[vs_],t=0.f;
+            if(angle<q_min_arr[i])t=k_limit_arr[i]*(q_min_arr[i]-angle)-b_limit_arr[i]*fminf(omega,0.f);
+            else if(angle>q_max_arr[i])t=-(k_limit_arr[i]*(angle-q_max_arr[i])+b_limit_arr[i]*fmaxf(omega,0.f));
+            tau[vs_]=t-damping_arr[i]*omega;
+        }else if(jt==JOINT_PRISMATIC)tau[v_idx_start[i]]=-damping_arr[i]*qdot_e[v_idx_start[i]];
+    }
+    for(int j=0;j<nu;j++){
+        float act=act_e[j];if(action_clip>0.f)act=fmaxf(-action_clip,fminf(action_clip,act));
+        int qi=actuated_q_idx[j],vi=actuated_v_idx[j];
+        float tv=kp*(q_e[qi]+act*action_scale-q_e[qi])-kd*qdot_e[vi];
+        if(has_effort_limits)tv=fmaxf(-effort_limits[j],fminf(effort_limits[j],tv));
+        tau[vi]+=tv;
+    }
+
+    // ── FK ──
+    Mat33 Xup_R[MAX_BODIES]; Vec3 Xup_r[MAX_BODIES];
+    Mat33 Xw_R[MAX_BODIES]; Vec3 Xw_r[MAX_BODIES];
+    Vec6 vb[MAX_BODIES];
+    for(int i=0;i<nb;i++){
+        int jt=joint_type[i],qs_=q_idx_start[i],vs_=v_idx_start[i],vl_=v_idx_len[i],pid=parent_idx[i];
+        Vec3 ax={joint_axis[i*3],joint_axis[i*3+1],joint_axis[i*3+2]};
+        Mat33 RJ=mat33_identity();Vec3 rJ={0,0,0};
+        if(jt==JOINT_REVOLUTE)RJ=rodrigues(ax,q_e[qs_]);
+        else if(jt==JOINT_PRISMATIC)rJ=vec3_scale(ax,q_e[qs_]);
+        else if(jt==JOINT_FREE){RJ=quat_to_rot(q_e[qs_],q_e[qs_+1],q_e[qs_+2],q_e[qs_+3]);rJ={q_e[qs_+4],q_e[qs_+5],q_e[qs_+6]};}
+        Mat33 Rt;for(int a=0;a<9;a++)Rt.m[a]=X_tree_R[i*9+a];
+        Vec3 rt={X_tree_r[i*3],X_tree_r[i*3+1],X_tree_r[i*3+2]};
+        Xup_R[i]=mat33_mul(Rt,RJ);Xup_r[i]=vec3_add(rt,mat33_vec3_mul(Rt,rJ));
+        if(pid<0){Xw_R[i]=Xup_R[i];Xw_r[i]=Xup_r[i];}
+        else{Xw_R[i]=mat33_mul(Xw_R[pid],Xup_R[i]);Xw_r[i]=vec3_add(Xw_r[pid],mat33_vec3_mul(Xw_R[pid],Xup_r[i]));}
+        Vec6 vJ={{0,0,0,0,0,0}};
+        if(jt==JOINT_REVOLUTE){float qd=qdot_e[vs_];vJ.v[3]=ax.x*qd;vJ.v[4]=ax.y*qd;vJ.v[5]=ax.z*qd;}
+        else if(jt==JOINT_PRISMATIC){float qd=qdot_e[vs_];vJ.v[0]=ax.x*qd;vJ.v[1]=ax.y*qd;vJ.v[2]=ax.z*qd;}
+        else if(jt==JOINT_FREE){for(int d=0;d<6;d++)vJ.v[d]=qdot_e[vs_+d];}
+        if(pid<0)vb[i]=vJ;
+        else{Vec6 vx=transform_velocity(Xup_R[i],Xup_r[i],vb[pid]);for(int d=0;d<6;d++)vb[i].v[d]=vx.v[d]+vJ.v[d];}
+    }
+
+    // ── Contact ──
+    Vec6 ext[MAX_BODIES];for(int i=0;i<nb;i++)for(int d=0;d<6;d++)ext[i].v[d]=0.f;
+    int*cm=contact_mask_out+env_id*nc;for(int c=0;c<nc;c++)cm[c]=0;
+    for(int c=0;c<nc;c++){
+        int bi=__float2int_rn(contact_body_idx_f[c]);
+        Vec3 lp={contact_local_pos[c*3],contact_local_pos[c*3+1],contact_local_pos[c*3+2]};
+        Vec3 pw=vec3_add(mat33_vec3_mul(Xw_R[bi],lp),Xw_r[bi]);
+        float depth=cgz-pw.z;
+        if(depth>0.f){cm[c]=1;
+            Vec3 rlw=mat33_vec3_mul(Xw_R[bi],lp);
+            Vec3 vl=mat33_vec3_mul(Xw_R[bi],{vb[bi].v[0],vb[bi].v[1],vb[bi].v[2]});
+            Vec3 ow=mat33_vec3_mul(Xw_R[bi],{vb[bi].v[3],vb[bi].v[4],vb[bi].v[5]});
+            Vec3 vel=vec3_add(vl,cross3(ow,rlw));
+            float Fn=fmaxf(0.f,ck*depth-cb_val*vel.z);
+            float sn=sqrtf(vel.x*vel.x+vel.y*vel.y+ceps*ceps);
+            Vec3 Fw={-cmu*Fn*vel.x/sn,-cmu*Fn*vel.y/sn,Fn};
+            Vec3 tw=cross3(vec3_sub(pw,Xw_r[bi]),Fw);
+            Vec6 fw={{Fw.x,Fw.y,Fw.z,tw.x,tw.y,tw.z}};
+            Mat33 Ri=mat33_transpose(Xw_R[bi]);Vec3 ri=vec3_neg(mat33_vec3_mul(Ri,Xw_r[bi]));
+            Vec6 fb=transform_force(Ri,ri,fw);for(int d=0;d<6;d++)ext[bi].v[d]+=fb.v[d];
+        }
+    }
+
+    // ── CRBA H build (same as monolithic) ──
+    float IC[MAX_BODIES*36];
+    for(int i=0;i<nb;i++)for(int a=0;a<36;a++)IC[i*36+a]=inertia_mat[i*36+a];
+    for(int idx=0;idx<nb;idx++){int i=nb-1-idx;int pid=parent_idx[i];
+        if(pid>=0)XtMX_add(Xup_R[i],Xup_r[i],&IC[i*36],&IC[pid*36]);}
+
+    float H[MAX_NV*MAX_NV];
+    for(int a=0;a<nv*nv;a++)H[a]=0.f;
+    for(int i=0;i<nb;i++){
+        int jt=joint_type[i],vs_=v_idx_start[i],vl_=v_idx_len[i];
+        if(vl_==0)continue;
+        Vec3 ax={joint_axis[i*3],joint_axis[i*3+1],joint_axis[i*3+2]};
+        float F[6*6];
+        if(jt==JOINT_REVOLUTE||jt==JOINT_PRISMATIC){
+            float S[6]={0,0,0,0,0,0};
+            if(jt==JOINT_REVOLUTE){S[3]=ax.x;S[4]=ax.y;S[5]=ax.z;}else{S[0]=ax.x;S[1]=ax.y;S[2]=ax.z;}
+            for(int r=0;r<6;r++){float s=0;for(int k=0;k<6;k++)s+=IC[i*36+r*6+k]*S[k];F[r]=s;}
+            float d=0;for(int dd=0;dd<6;dd++)d+=S[dd]*F[dd];H[vs_*nv+vs_]=d;
+        }else if(jt==JOINT_FREE){
+            for(int r=0;r<6;r++)for(int c=0;c<6;c++)F[r*6+c]=IC[i*36+r*6+c];
+            for(int a=0;a<6;a++)for(int b=0;b<6;b++)H[(vs_+a)*nv+(vs_+b)]=F[a*6+b];
+        }
+        int j=i;
+        while(parent_idx[j]>=0){
+            apply_force_cols(Xup_R[j],Xup_r[j],F,vl_);j=parent_idx[j];
+            int jt_j=joint_type[j],vs_j=v_idx_start[j],vl_j=v_idx_len[j];
+            if(vl_j>0){Vec3 ax_j={joint_axis[j*3],joint_axis[j*3+1],joint_axis[j*3+2]};
+                if(jt_j==JOINT_REVOLUTE||jt_j==JOINT_PRISMATIC){
+                    float Sj[6]={0,0,0,0,0,0};
+                    if(jt_j==JOINT_REVOLUTE){Sj[3]=ax_j.x;Sj[4]=ax_j.y;Sj[5]=ax_j.z;}
+                    else{Sj[0]=ax_j.x;Sj[1]=ax_j.y;Sj[2]=ax_j.z;}
+                    for(int c=0;c<vl_;c++){float s=0;for(int d=0;d<6;d++)s+=Sj[d]*F[d*vl_+c];
+                        H[vs_j*nv+(vs_+c)]=s;H[(vs_+c)*nv+vs_j]=s;}
+                }else if(jt_j==JOINT_FREE){
+                    for(int a=0;a<6;a++)for(int c=0;c<vl_;c++){float v=F[a*vl_+c];
+                        H[(vs_j+a)*nv+(vs_+c)]=v;H[(vs_+c)*nv+(vs_j+a)]=v;}
+                }
+            }
+        }
+    }
+
+    // ── RNEA bias → rhs ──
+    Vec6 rv[MAX_BODIES],ra[MAX_BODIES],rf[MAX_BODIES];
+    Vec6 ng={{0,0,gravity,0,0,0}};
+    for(int i=0;i<nb;i++){
+        int jt=joint_type[i],vs_=v_idx_start[i],vl_=v_idx_len[i],pid=parent_idx[i];
+        Vec3 ax={joint_axis[i*3],joint_axis[i*3+1],joint_axis[i*3+2]};
+        Vec6 vJ={{0,0,0,0,0,0}};
+        if(jt==JOINT_REVOLUTE){float qd=qdot_e[vs_];vJ.v[3]=ax.x*qd;vJ.v[4]=ax.y*qd;vJ.v[5]=ax.z*qd;}
+        else if(jt==JOINT_PRISMATIC){float qd=qdot_e[vs_];vJ.v[0]=ax.x*qd;vJ.v[1]=ax.y*qd;vJ.v[2]=ax.z*qd;}
+        else if(jt==JOINT_FREE){for(int d=0;d<6;d++)vJ.v[d]=qdot_e[vs_+d];}
+        if(pid<0){rv[i]=vJ;ra[i]=transform_velocity(Xup_R[i],Xup_r[i],ng);}
+        else{Vec6 vx=transform_velocity(Xup_R[i],Xup_r[i],rv[pid]);for(int d=0;d<6;d++)rv[i].v[d]=vx.v[d]+vJ.v[d];
+            Vec6 ax2=transform_velocity(Xup_R[i],Xup_r[i],ra[pid]);Vec6 cv=spatial_cross_vel(rv[i],vJ);
+            for(int d=0;d<6;d++)ra[i].v[d]=ax2.v[d]+cv.v[d];}
+        Vec6 Iv=mat66_mul_vec6(*(Mat66*)&inertia_mat[i*36],rv[i]);
+        Vec6 Ia=mat66_mul_vec6(*(Mat66*)&inertia_mat[i*36],ra[i]);
+        Vec6 vxIv=spatial_cross_force(rv[i],Iv);
+        for(int d=0;d<6;d++)rf[i].v[d]=Ia.v[d]+vxIv.v[d]-ext[i].v[d];
+    }
+    float rhs[MAX_NV];
+    for(int j=0;j<nv;j++)rhs[j]=tau[j];
+    for(int idx=0;idx<nb;idx++){int i=nb-1-idx;
+        int jt=joint_type[i],vs_=v_idx_start[i],vl_=v_idx_len[i],pid=parent_idx[i];
+        Vec3 ax={joint_axis[i*3],joint_axis[i*3+1],joint_axis[i*3+2]};
+        if(vl_>0){if(jt==JOINT_REVOLUTE||jt==JOINT_PRISMATIC){
+                float S[6]={0,0,0,0,0,0};if(jt==JOINT_REVOLUTE){S[3]=ax.x;S[4]=ax.y;S[5]=ax.z;}
+                else{S[0]=ax.x;S[1]=ax.y;S[2]=ax.z;}
+                float t=0;for(int d=0;d<6;d++)t+=S[d]*rf[i].v[d];rhs[vs_]-=t;
+            }else if(jt==JOINT_FREE){for(int d=0;d<6;d++)rhs[vs_+d]-=rf[i].v[d];}
+        }
+        if(pid>=0){Vec6 fp=transform_force(Xup_R[i],Xup_r[i],rf[i]);for(int d=0;d<6;d++)rf[pid].v[d]+=fp.v[d];}
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // GROUPED SCHUR SOLVE (replaces full Cholesky)
+    // ══════════════════════════════════════════════════════════════════
+
+    float qddot[MAX_NV];
+    for(int j=0;j<nv;j++) qddot[j]=0.f;
+
+    if (ngroups == 0) {
+        // No groups → fall back to full Cholesky (chain robot)
+        float H_copy[MAX_NV*MAX_NV];
+        for(int a=0;a<nv*nv;a++) H_copy[a]=H[a];
+        small_cholesky_solve(H_copy, rhs, qddot, nv);
+    } else {
+        // Step 1: Schur complement S = H_rr - Σ H_rl H_ll⁻¹ H_lr
+        float S[MAX_NV_ROOT * MAX_NV_ROOT];
+        float rhs_r[MAX_NV_ROOT];
+
+        // Extract H_rr and rhs_r
+        for(int a=0;a<nv_root;a++){
+            rhs_r[a] = rhs[root_v_indices[a]];
+            for(int b=0;b<nv_root;b++)
+                S[a*nv_root+b] = H[root_v_indices[a]*nv + root_v_indices[b]];
+        }
+
+        // For each limb group: factor, compute Schur contribution
+        for(int g=0;g<ngroups;g++){
+            int lstart = limb_v_offsets[g];
+            int lend = limb_v_offsets[g+1];
+            int nv_l = lend - lstart;
+            if(nv_l == 0) continue;
+
+            // Extract H_ll (nv_l × nv_l)
+            float H_ll[MAX_NV_LIMB * MAX_NV_LIMB];
+            for(int a=0;a<nv_l;a++)
+                for(int b=0;b<nv_l;b++)
+                    H_ll[a*nv_l+b] = H[limb_v_indices[lstart+a]*nv + limb_v_indices[lstart+b]];
+
+            // Extract H_rl (nv_root × nv_l) and rhs_l
+            float H_rl[MAX_NV_ROOT * MAX_NV_LIMB];
+            float rhs_l[MAX_NV_LIMB];
+            for(int a=0;a<nv_root;a++)
+                for(int b=0;b<nv_l;b++)
+                    H_rl[a*nv_l+b] = H[root_v_indices[a]*nv + limb_v_indices[lstart+b]];
+            for(int b=0;b<nv_l;b++)
+                rhs_l[b] = rhs[limb_v_indices[lstart+b]];
+
+            // Factor H_ll (in-place Cholesky → L_l)
+            for(int j=0;j<nv_l;j++){
+                for(int k=0;k<j;k++){
+                    float s=H_ll[j*nv_l+k];
+                    for(int m=0;m<k;m++) s-=H_ll[j*nv_l+m]*H_ll[k*nv_l+m];
+                    H_ll[j*nv_l+k]=s/H_ll[k*nv_l+k];
+                }
+                float s=H_ll[j*nv_l+j];
+                for(int k=0;k<j;k++) s-=H_ll[j*nv_l+k]*H_ll[j*nv_l+k];
+                H_ll[j*nv_l+j]=sqrtf(s);
+            }
+
+            // Compute H_ll⁻¹ H_lr (nv_l × nv_root): solve L L^T X = H_lr column by column
+            float Hinv_Hlr[MAX_NV_LIMB * MAX_NV_ROOT];
+            for(int col=0;col<nv_root;col++){
+                // Forward: L y = H_lr[:, col]
+                float y[MAX_NV_LIMB];
+                for(int i=0;i<nv_l;i++){
+                    float s = H_rl[col*nv_l+i]; // H_lr[i,col] = H_rl[col,i]
+                    for(int k=0;k<i;k++) s-=H_ll[i*nv_l+k]*y[k];
+                    y[i]=s/H_ll[i*nv_l+i];
+                }
+                // Back: L^T x = y
+                for(int i=nv_l-1;i>=0;i--){
+                    float s=y[i];
+                    for(int k=i+1;k<nv_l;k++) s-=H_ll[k*nv_l+i]*Hinv_Hlr[k*nv_root+col];
+                    Hinv_Hlr[i*nv_root+col]=s/H_ll[i*nv_l+i];
+                }
+            }
+
+            // S -= H_rl @ Hinv_Hlr = H_rl @ H_ll⁻¹ @ H_lr
+            for(int a=0;a<nv_root;a++)
+                for(int b=0;b<nv_root;b++){
+                    float s=0;
+                    for(int k=0;k<nv_l;k++) s+=H_rl[a*nv_l+k]*Hinv_Hlr[k*nv_root+b];
+                    S[a*nv_root+b]-=s;
+                }
+
+            // rhs_r -= H_rl @ H_ll⁻¹ @ rhs_l
+            // Solve H_ll⁻¹ rhs_l
+            float Hinv_rhs[MAX_NV_LIMB];
+            // Forward
+            float y2[MAX_NV_LIMB];
+            for(int i=0;i<nv_l;i++){
+                float s=rhs_l[i];
+                for(int k=0;k<i;k++) s-=H_ll[i*nv_l+k]*y2[k];
+                y2[i]=s/H_ll[i*nv_l+i];
+            }
+            for(int i=nv_l-1;i>=0;i--){
+                float s=y2[i];
+                for(int k=i+1;k<nv_l;k++) s-=H_ll[k*nv_l+i]*Hinv_rhs[k];
+                Hinv_rhs[i]=s/H_ll[i*nv_l+i];
+            }
+            for(int a=0;a<nv_root;a++){
+                float s=0;
+                for(int k=0;k<nv_l;k++) s+=H_rl[a*nv_l+k]*Hinv_rhs[k];
+                rhs_r[a]-=s;
+            }
+        }
+
+        // Step 2-3: Solve root: S @ qddot_r = rhs_r
+        float qddot_r[MAX_NV_ROOT];
+        for(int j=0;j<nv_root;j++) qddot_r[j]=0.f;
+        {
+            float S_copy[MAX_NV_ROOT*MAX_NV_ROOT];
+            for(int a=0;a<nv_root*nv_root;a++) S_copy[a]=S[a];
+            small_cholesky_solve(S_copy, rhs_r, qddot_r, nv_root);
+        }
+        for(int a=0;a<nv_root;a++) qddot[root_v_indices[a]] = qddot_r[a];
+
+        // Step 4: Back-substitute each limb
+        for(int g=0;g<ngroups;g++){
+            int lstart=limb_v_offsets[g], lend=limb_v_offsets[g+1], nv_l=lend-lstart;
+            if(nv_l==0)continue;
+
+            // Re-extract H_ll (need fresh copy since we factored in-place above)
+            float H_ll2[MAX_NV_LIMB*MAX_NV_LIMB];
+            for(int a=0;a<nv_l;a++)
+                for(int b=0;b<nv_l;b++)
+                    H_ll2[a*nv_l+b]=H[limb_v_indices[lstart+a]*nv+limb_v_indices[lstart+b]];
+
+            // rhs_l' = rhs_l - H_lr @ qddot_r
+            float rhs_l2[MAX_NV_LIMB];
+            for(int a=0;a<nv_l;a++){
+                rhs_l2[a]=rhs[limb_v_indices[lstart+a]];
+                for(int b=0;b<nv_root;b++)
+                    rhs_l2[a]-=H[limb_v_indices[lstart+a]*nv+root_v_indices[b]]*qddot_r[b];
+            }
+
+            float qddot_l[MAX_NV_LIMB];
+            for(int j=0;j<nv_l;j++) qddot_l[j]=0.f;
+            small_cholesky_solve(H_ll2, rhs_l2, qddot_l, nv_l);
+            for(int a=0;a<nv_l;a++) qddot[limb_v_indices[lstart+a]]=qddot_l[a];
+        }
+    }
+
+    // ── Integration ──
+    float* qn=q_new+env_id*nq; float* vn=qdot_new+env_id*nv;
+    for(int j=0;j<nv;j++) vn[j]=qdot_e[j]+dt*qddot[j];
+    for(int i=0;i<nb;i++){
+        int jt=joint_type[i],qs_=q_idx_start[i],ql_=q_idx_len[i],vs_=v_idx_start[i],vl_=v_idx_len[i];
+        if(jt==JOINT_FREE){
+            float qw=q_e[qs_],qx=q_e[qs_+1],qy=q_e[qs_+2],qz=q_e[qs_+3];
+            float wx=vn[vs_+3],wy=vn[vs_+4],wz=vn[vs_+5];
+            float dw=.5f*(-qx*wx-qy*wy-qz*wz),dx=.5f*(qw*wx+qy*wz-qz*wy);
+            float dy=.5f*(qw*wy-qx*wz+qz*wx),dz=.5f*(qw*wz+qx*wy-qy*wx);
+            float nw=qw+dw*dt,nx=qx+dx*dt,ny=qy+dy*dt,nz=qz+dz*dt;
+            float n=sqrtf(nw*nw+nx*nx+ny*ny+nz*nz);
+            qn[qs_]=nw/n;qn[qs_+1]=nx/n;qn[qs_+2]=ny/n;qn[qs_+3]=nz/n;
+            qn[qs_+4]=q_e[qs_+4]+dt*vn[vs_];qn[qs_+5]=q_e[qs_+5]+dt*vn[vs_+1];qn[qs_+6]=q_e[qs_+6]+dt*vn[vs_+2];
+        }else if(vl_>0){for(int k=0;k<ql_;k++)qn[qs_+k]=q_e[qs_+k]+dt*vn[vs_+k];}
+    }
+    // FK output
+    for(int i=0;i<nb;i++){
+        float*Ro=X_world_R_out+(env_id*nb+i)*9;float*ro=X_world_r_out+(env_id*nb+i)*3;float*vo=v_bodies_out+(env_id*nb+i)*6;
+        for(int a=0;a<9;a++)Ro[a]=Xw_R[i].m[a];
+        ro[0]=Xw_r[i].x;ro[1]=Xw_r[i].y;ro[2]=Xw_r[i].z;
+        for(int d=0;d<6;d++)vo[d]=vb[i].v[d];
+    }
+}
+
+// C++ wrapper
+std::vector<torch::Tensor> physics_step_grouped_schur(
+    torch::Tensor q, torch::Tensor qdot, torch::Tensor actions,
+    torch::Tensor jtype, torch::Tensor jaxis, torch::Tensor pidx,
+    torch::Tensor qs, torch::Tensor ql, torch::Tensor vs, torch::Tensor vl,
+    torch::Tensor tR, torch::Tensor tr, torch::Tensor Imat,
+    torch::Tensor qmin, torch::Tensor qmax, torch::Tensor klim, torch::Tensor blim, torch::Tensor damp,
+    torch::Tensor aqi, torch::Tensor avi, torch::Tensor elim,
+    torch::Tensor cbi, torch::Tensor clp,
+    // Group metadata
+    torch::Tensor root_v_idx, int nv_root,
+    torch::Tensor limb_v_offsets, torch::Tensor limb_v_indices, int ngroups,
+    // Scalars
+    int N, int nb, int nq, int nv, int nu, int nc, int hel,
+    float dt, float grav, float kp, float kd, float ascale, float aclip,
+    float ck, float cb_val, float cmu, float ceps, float cgz
+) {
+    auto of=torch::TensorOptions().dtype(torch::kFloat32).device(q.device());
+    auto oi=torch::TensorOptions().dtype(torch::kInt32).device(q.device());
+    auto qn=torch::zeros({N,nq},of),vn=torch::zeros({N,nv},of);
+    auto XwR=torch::zeros({N,nb,3,3},of),Xwr=torch::zeros({N,nb,3},of);
+    auto vbo=torch::zeros({N,nb,6},of);auto cmo=torch::zeros({N,nc},oi);
+    int th=256,bl=(N+th-1)/th;
+    physics_step_grouped_schur_kernel<<<bl,th>>>(
+        q.data_ptr<float>(),qdot.data_ptr<float>(),actions.data_ptr<float>(),
+        jtype.data_ptr<int>(),jaxis.data_ptr<float>(),pidx.data_ptr<int>(),
+        qs.data_ptr<int>(),ql.data_ptr<int>(),vs.data_ptr<int>(),vl.data_ptr<int>(),
+        tR.data_ptr<float>(),tr.data_ptr<float>(),Imat.data_ptr<float>(),
+        qmin.data_ptr<float>(),qmax.data_ptr<float>(),klim.data_ptr<float>(),
+        blim.data_ptr<float>(),damp.data_ptr<float>(),
+        aqi.data_ptr<int>(),avi.data_ptr<int>(),elim.data_ptr<float>(),
+        cbi.data_ptr<float>(),clp.data_ptr<float>(),
+        root_v_idx.data_ptr<int>(),nv_root,
+        limb_v_offsets.data_ptr<int>(),limb_v_indices.data_ptr<int>(),ngroups,
+        N,nb,nq,nv,nu,nc,hel,dt,grav,kp,kd,ascale,aclip,ck,cb_val,cmu,ceps,cgz,
+        qn.data_ptr<float>(),vn.data_ptr<float>(),
+        XwR.data_ptr<float>(),Xwr.data_ptr<float>(),vbo.data_ptr<float>(),cmo.data_ptr<int>());
+    return {qn,vn,XwR,Xwr,vbo,cmo};
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("physics_step", &physics_step, "Batched physics step ABA (CUDA)");
     m.def("physics_step_crba", &physics_step_crba, "Batched physics step CRBA scalar Cholesky (CUDA)");
+    m.def("physics_step_grouped_schur", &physics_step_grouped_schur, "Batched physics step grouped Schur CRBA (CUDA)");
     m.def("crba_build", &crba_build, "CRBA H+rhs build (CUDA)");
     m.def("integrate_step", &integrate_step, "Integration (CUDA)");
     m.def("fk_only", &fk_only, "FK only (CUDA)");

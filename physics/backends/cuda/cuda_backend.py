@@ -59,6 +59,9 @@ class CudaBatchBackend(BatchBackend):
         self._dynamics = dynamics
         self._cuda = _get_cuda_module()
 
+        # Group metadata for grouped Schur (computed lazily)
+        self._group_data = None
+
         s = StaticRobotData.from_model(model)
         self._static = s
 
@@ -128,6 +131,8 @@ class CudaBatchBackend(BatchBackend):
         actions = actions.to(device=self._device, dtype=torch.float32)
         action_clip = self._cfg.action_clip if self._cfg.action_clip is not None else -1.0
 
+        if self._dynamics == "grouped_schur":
+            return self._step_grouped_schur(actions, action_clip)
         if self._dynamics == "crba_tc":
             return self._step_crba_tc(actions, action_clip)
 
@@ -213,6 +218,118 @@ class CudaBatchBackend(BatchBackend):
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _get_group_data(self):
+        """Compute and cache group metadata for grouped Schur."""
+        if self._group_data is not None:
+            return self._group_data
+
+        from physics.robot_tree import RobotTreeNumpy
+        # We need the tree to call auto_detect_groups
+        # Reconstruct minimal tree from static data to get grouping
+        s = self._static
+        # Use a simpler approach: detect groups from parent_idx + children
+        parent_np = s.parent_idx
+        nb = s.nb
+        children = [[] for _ in range(nb)]
+        for i in range(nb):
+            p = int(parent_np[i])
+            if p >= 0:
+                children[p].append(i)
+
+        # Find branch points and subtrees
+        root_bodies = []
+        limb_groups = []
+        in_limb = set()
+
+        def get_desc(bi):
+            sub = [bi]
+            stack = list(children[bi])
+            while stack:
+                j = stack.pop()
+                sub.append(j)
+                stack.extend(children[j])
+            return sub
+
+        for i in range(nb):
+            if i in in_limb:
+                continue
+            if len(children[i]) > 1:
+                root_bodies.append(i)
+                for ci in children[i]:
+                    sub = get_desc(ci)
+                    limb_groups.append(sub)
+                    in_limb.update(sub)
+            elif i not in in_limb:
+                root_bodies.append(i)
+
+        # Build v-index arrays
+        v_start = s.v_idx_start
+        v_len = s.v_idx_len
+
+        root_v = []
+        for bi in root_bodies:
+            for j in range(int(v_len[bi])):
+                root_v.append(int(v_start[bi]) + j)
+        root_v = np.array(root_v, dtype=np.int32)
+
+        limb_v_all = []
+        limb_offsets = [0]
+        for group in limb_groups:
+            for bi in group:
+                for j in range(int(v_len[bi])):
+                    limb_v_all.append(int(v_start[bi]) + j)
+            limb_offsets.append(len(limb_v_all))
+        limb_v_all = np.array(limb_v_all, dtype=np.int32)
+        limb_offsets = np.array(limb_offsets, dtype=np.int32)
+
+        self._group_data = {
+            "root_v": torch.from_numpy(root_v).int().to(self._device),
+            "nv_root": len(root_v),
+            "limb_v_offsets": torch.from_numpy(limb_offsets).int().to(self._device),
+            "limb_v_indices": torch.from_numpy(limb_v_all).int().to(self._device) if len(limb_v_all) > 0 else torch.zeros(1, dtype=torch.int32, device=self._device),
+            "ngroups": len(limb_groups),
+        }
+        return self._group_data
+
+    def _step_grouped_schur(self, actions, action_clip):
+        """CRBA with fused grouped Schur complement kernel."""
+        s = self._static
+        N = self._num_envs
+        gd = self._get_group_data()
+
+        results = self._cuda.physics_step_grouped_schur(
+            self._q, self._qdot, actions,
+            self._joint_type, self._joint_axis, self._parent_idx,
+            self._q_idx_start, self._q_idx_len, self._v_idx_start, self._v_idx_len,
+            self._X_tree_R, self._X_tree_r, self._inertia_mat,
+            self._q_min, self._q_max, self._k_limit, self._b_limit, self._damping,
+            self._actuated_q_idx, self._actuated_v_idx, self._effort_limits,
+            self._contact_body_idx, self._contact_local_pos,
+            gd["root_v"], gd["nv_root"],
+            gd["limb_v_offsets"], gd["limb_v_indices"], gd["ngroups"],
+            N, s.nb, s.nq, s.nv, s.nu, s.nc, self._has_effort_limits,
+            self._cfg.dt, s.gravity,
+            self._cfg.kp, self._cfg.kd, self._cfg.action_scale, action_clip,
+            s.contact_k_normal, s.contact_b_normal, s.contact_mu, s.contact_slip_eps, s.contact_ground_z,
+        )
+        q_new, qdot_new, X_world_R, X_world_r, v_bodies, contact_mask = results
+        self._q = q_new
+        self._qdot = qdot_new
+
+        fk = self._cuda.fk_only(
+            self._q, self._qdot,
+            self._joint_type, self._joint_axis, self._parent_idx,
+            self._q_idx_start, self._v_idx_start, self._v_idx_len,
+            self._X_tree_R, self._X_tree_r, N, s.nb, s.nq, s.nv,
+        )
+        X_world_R, X_world_r, v_bodies = fk
+        X_flat = torch.cat([X_world_R.reshape(N, s.nb, 9), X_world_r], dim=-1)
+        return StepResult(
+            q=self._q.cpu(), qdot=self._qdot.cpu(),
+            X_world=X_flat.cpu(), v_bodies=v_bodies.cpu(),
+            contact_mask=contact_mask.bool().cpu(),
+        )
 
     def _step_crba_tc(self, actions, action_clip):
         """CRBA with tensor-core Cholesky: split kernel + torch.linalg.cholesky_solve."""
