@@ -52,6 +52,7 @@ class ContactConstraint:
     tangent2: Vec3  # friction direction 2
     depth: float  # penetration (positive)
     mu: float  # friction coefficient
+    restitution: float = 0.0  # coefficient of restitution [0,1]
 
 
 def _build_contact_frame(normal: Vec3) -> tuple[Vec3, Vec3]:
@@ -206,10 +207,21 @@ class PGSContactSolver:
             v_free[ci * 3 + 1] = np.dot(v_contact, c.tangent1)
             v_free[ci * 3 + 2] = np.dot(v_contact, c.tangent2)
 
-        # Baumgarte bias
+        # Baumgarte bias + restitution
+        # PGS solves: v_free + W*lambda + bias >= 0, lambda >= 0
+        # Baumgarte: bias = -erp/dt * depth (negative, pushes velocity positive)
+        # Restitution: target v_n = -e * v_incoming → bias -= e * v_free_n
+        #   (v_free_n < 0 for incoming, so -e*v_free_n > 0, making bias more negative
+        #    which drives lambda larger)
         bias = np.zeros(n_rows)
         for ci, c in enumerate(contacts):
-            bias[ci * 3] = -self.erp / dt * c.depth
+            baumgarte = -self.erp / dt * c.depth
+            restitution_bias = 0.0
+            if c.restitution > 0.0 and v_free[ci * 3] < -0.01:
+                # Newton restitution: v_after = -e * v_before
+                # bias -= e * v_free (v_free < 0, so this makes bias more negative)
+                restitution_bias = c.restitution * v_free[ci * 3]  # negative
+            bias[ci * 3] = baumgarte + restitution_bias
 
         # ── Warm starting: match by body-local coordinates (Bullet approach) ──
         lambdas = np.zeros(n_rows)

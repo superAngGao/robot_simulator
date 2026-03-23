@@ -285,3 +285,124 @@ class NullContactModel(ContactModel):
 
     def __repr__(self) -> str:
         return "NullContactModel()"
+
+
+# ---------------------------------------------------------------------------
+# LCP constraint-based contact model
+# ---------------------------------------------------------------------------
+
+
+class LCPContactModel(ContactModel):
+    """Constraint-based contact using GJK/EPA + PGS LCP solver.
+
+    For each registered contact body, queries ground penetration via
+    ``ground_contact_query`` and builds ``ContactConstraint`` objects.
+    Solves the LCP with full Delassus matrix and warm starting.
+
+    Args:
+        mu           : Coulomb friction coefficient.
+        restitution  : Coefficient of restitution [0, 1].
+        terrain      : Terrain object for ground height queries.
+        solver_kwargs: Forwarded to PGSContactSolver (max_iter, erp, cfm).
+    """
+
+    def __init__(
+        self,
+        mu: float = 0.8,
+        restitution: float = 0.0,
+        terrain: "Terrain | None" = None,
+        **solver_kwargs,
+    ) -> None:
+        from .gjk_epa import ground_contact_query
+        from .lcp_solver import PGSContactSolver
+
+        self._mu = mu
+        self._restitution = restitution
+        self._terrain = terrain if terrain is not None else FlatTerrain(0.0)
+        self._solver = PGSContactSolver(**solver_kwargs)
+        self._ground_query = ground_contact_query
+        self._contact_bodies: List[tuple[int, str, "CollisionShape"]] = []
+        # (body_index, name, shape)
+
+    def add_contact_body(
+        self, body_index: int, shape: "CollisionShape", name: str = ""
+    ) -> None:
+        """Register a body with its collision shape for ground contact."""
+        self._contact_bodies.append((body_index, name, shape))
+
+    def compute_forces(
+        self,
+        X_world_list: List[SpatialTransform],
+        v_body_list: List[Vec6],
+        num_bodies: int,
+    ) -> List[Vec6]:
+        from .lcp_solver import ContactConstraint
+
+        contacts = []
+        for body_idx, name, shape in self._contact_bodies:
+            X = X_world_list[body_idx]
+            manifold = self._ground_query(
+                shape, X,
+                ground_z=self._terrain.height_at(X.r[0], X.r[1]),
+            )
+            if manifold is not None:
+                for pt in manifold.points:
+                    contacts.append(ContactConstraint(
+                        body_i=body_idx,
+                        body_j=-1,
+                        point=pt,
+                        normal=manifold.normal.copy(),
+                        tangent1=np.zeros(3),
+                        tangent2=np.zeros(3),
+                        depth=manifold.depth,
+                        mu=self._mu,
+                        restitution=self._restitution,
+                    ))
+
+        if not contacts:
+            return [np.zeros(6, dtype=np.float64) for _ in range(num_bodies)]
+
+        # Build mass data for solver
+        # Approximate: use body inertia from spatial inertia matrix
+        # For now, use unit mass (the solver works with any M_inv)
+        inv_mass = []
+        inv_inertia = []
+        for bi in range(num_bodies):
+            inv_mass.append(1.0)  # placeholder — should come from tree
+            inv_inertia.append(np.eye(3) * 1.0)
+
+        impulses = self._solver.solve(
+            contacts, v_body_list, X_world_list,
+            inv_mass, inv_inertia, dt=1e-3,
+        )
+
+        # Convert impulses to forces (impulse / dt approximation)
+        # Note: the LCP solver returns impulses; for the ABA ext_forces
+        # interface we scale by 1/dt to get forces
+        forces = [np.zeros(6, dtype=np.float64) for _ in range(num_bodies)]
+        for bi in range(num_bodies):
+            forces[bi] = impulses[bi] / 1e-3  # TODO: pass dt properly
+
+        return forces
+
+    def active_contacts(
+        self,
+        X_world_list: List[SpatialTransform],
+    ) -> List[tuple[str, Vec3]]:
+        active = []
+        for body_idx, name, shape in self._contact_bodies:
+            X = X_world_list[body_idx]
+            manifold = self._ground_query(
+                shape, X,
+                ground_z=self._terrain.height_at(X.r[0], X.r[1]),
+            )
+            if manifold is not None:
+                for pt in manifold.points:
+                    active.append((name, pt))
+        return active
+
+    def __repr__(self) -> str:
+        return (
+            f"LCPContactModel(bodies={len(self._contact_bodies)}, "
+            f"mu={self._mu}, e={self._restitution})"
+        )

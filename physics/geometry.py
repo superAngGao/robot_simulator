@@ -107,6 +107,46 @@ class CylinderShape(CollisionShape):
         return np.array([sx, sy, sz], dtype=np.float64)
 
 
+class CapsuleShape(CollisionShape):
+    """Capsule (sphere-swept line segment) aligned with local Z axis.
+
+    Geometry: two hemispheres of radius r at z = ±length/2, connected
+    by a cylinder of radius r. Total height = length + 2*radius.
+    """
+
+    def __init__(self, radius: float, length: float) -> None:
+        self._radius = float(radius)
+        self._length = float(length)
+
+    @property
+    def radius(self) -> float:
+        return self._radius
+
+    @property
+    def length(self) -> float:
+        return self._length
+
+    def half_extents_approx(self) -> NDArray[np.float64]:
+        r = self._radius
+        return np.array([r, r, self._length / 2.0 + r], dtype=np.float64)
+
+    def support_point(self, direction: NDArray[np.float64]) -> NDArray[np.float64]:
+        # Capsule = Minkowski sum of line segment + sphere
+        # support = segment_support + sphere_support
+        # Segment along Z: support = sign(dz) * half_length * [0,0,1]
+        half_len = self._length / 2.0
+        if abs(direction[2]) < 1e-12:
+            seg_z = 0.0
+        else:
+            seg_z = half_len if direction[2] > 0 else -half_len
+        seg = np.array([0.0, 0.0, seg_z])
+        # Sphere: radius * normalize(direction)
+        n = np.linalg.norm(direction)
+        if n < 1e-12:
+            return seg + np.array([self._radius, 0.0, 0.0])
+        return seg + (direction / n) * self._radius
+
+
 class MeshShape(CollisionShape):
     """Mesh geometry (Phase 3 stub)."""
 
