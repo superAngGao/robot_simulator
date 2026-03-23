@@ -58,7 +58,7 @@ def get_backend(
                 "Install with: pip install tilelang torch"
             ) from e
         return TileLangBatchBackend(model, cfg, num_envs)
-    elif name in ("cuda", "cuda_crba"):
+    elif name in ("cuda", "cuda_crba", "cuda_crba_tc"):
         try:
             from .cuda.cuda_backend import CudaBatchBackend
         except Exception as e:
@@ -66,7 +66,12 @@ def get_backend(
                 "CUDA backend requires PyTorch with CUDA and a C++ compiler. "
                 f"Error: {e}"
             ) from e
-        dynamics = "crba" if name == "cuda_crba" else "aba"
+        if name == "cuda_crba_tc":
+            dynamics = "crba_tc"
+        elif name == "cuda_crba":
+            dynamics = "crba"
+        else:
+            dynamics = "aba"
         return CudaBatchBackend(model, cfg, num_envs, dynamics=dynamics)
     else:
         raise ValueError(

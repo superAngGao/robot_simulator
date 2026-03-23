@@ -128,6 +128,9 @@ class CudaBatchBackend(BatchBackend):
         actions = actions.to(device=self._device, dtype=torch.float32)
         action_clip = self._cfg.action_clip if self._cfg.action_clip is not None else -1.0
 
+        if self._dynamics == "crba_tc":
+            return self._step_crba_tc(actions, action_clip)
+
         step_fn = self._cuda.physics_step_crba if self._dynamics == "crba" else self._cuda.physics_step
         results = step_fn(
             self._q, self._qdot, actions,
@@ -210,6 +213,56 @@ class CudaBatchBackend(BatchBackend):
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _step_crba_tc(self, actions, action_clip):
+        """CRBA with tensor-core Cholesky: split kernel + torch.linalg.cholesky_solve."""
+        s = self._static
+        N = self._num_envs
+
+        # Kernel 1: fused FK + CRBA(H) + RNEA(C) → H, rhs, FK cache
+        results = self._cuda.crba_build(
+            self._q, self._qdot, actions,
+            self._joint_type, self._joint_axis, self._parent_idx,
+            self._q_idx_start, self._q_idx_len, self._v_idx_start, self._v_idx_len,
+            self._X_tree_R, self._X_tree_r, self._inertia_mat,
+            self._q_min, self._q_max, self._k_limit, self._b_limit, self._damping,
+            self._actuated_q_idx, self._actuated_v_idx, self._effort_limits,
+            self._contact_body_idx, self._contact_local_pos,
+            N, s.nb, s.nq, s.nv, s.nu, s.nc, self._has_effort_limits,
+            s.gravity, self._cfg.kp, self._cfg.kd, self._cfg.action_scale, action_clip,
+            s.contact_k_normal, s.contact_b_normal, s.contact_mu, s.contact_slip_eps, s.contact_ground_z,
+        )
+        H, rhs, X_world_R, X_world_r, v_bodies, contact_mask = results
+
+        # Cholesky solve via cuSOLVER (uses wgmma on Hopper)
+        L = torch.linalg.cholesky(H)
+        qddot = torch.cholesky_solve(rhs.unsqueeze(-1), L).squeeze(-1)
+
+        # Kernel 2: integration
+        int_results = self._cuda.integrate_step(
+            self._q, self._qdot, qddot,
+            self._joint_type, self._q_idx_start, self._q_idx_len,
+            self._v_idx_start, self._v_idx_len,
+            self._cfg.dt, N, s.nb, s.nq, s.nv,
+        )
+        self._q, self._qdot = int_results[0], int_results[1]
+
+        # Re-run FK
+        fk = self._cuda.fk_only(
+            self._q, self._qdot,
+            self._joint_type, self._joint_axis, self._parent_idx,
+            self._q_idx_start, self._v_idx_start, self._v_idx_len,
+            self._X_tree_R, self._X_tree_r,
+            N, s.nb, s.nq, s.nv,
+        )
+        X_world_R, X_world_r, v_bodies = fk
+
+        X_flat = torch.cat([X_world_R.reshape(N, s.nb, 9), X_world_r], dim=-1)
+        return StepResult(
+            q=self._q.cpu(), qdot=self._qdot.cpu(),
+            X_world=X_flat.cpu(), v_bodies=v_bodies.cpu(),
+            contact_mask=contact_mask.bool().cpu(),
+        )
 
     def _run_fk_and_build(self) -> StepResult:
         s = self._static

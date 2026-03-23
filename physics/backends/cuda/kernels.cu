@@ -18,7 +18,7 @@
 #define JOINT_FIXED 3
 
 // Max bodies per robot (compile-time bound for stack arrays)
-#define MAX_BODIES 32
+#define MAX_BODIES 64
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Inline device helpers
@@ -725,7 +725,7 @@ std::vector<torch::Tensor> fk_only(
 // Fused CRBA kernel: FK + CRBA(H) + RNEA(C) + Cholesky solve, single launch
 // ─────────────────────────────────────────────────────────────────────────────
 
-#define MAX_NV 48
+#define MAX_NV 64
 
 // 6x6 matrix multiply into flat array region
 __device__ void mat66_mul_to(const float* A, const float* B, float* C) {
@@ -1146,8 +1146,302 @@ std::vector<torch::Tensor> physics_step_crba(
     return {q_new, qdot_new, X_world_R_out, X_world_r_out, v_bodies_out, contact_mask_out};
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Tensor Core CRBA: split into H-build kernel + cuSOLVER Cholesky + integrate
+//
+// Kernel 1 (crba_build_kernel): fused FK + CRBA(H) + RNEA(C)
+//   → outputs H[N,nv,nv], rhs[N,nv], FK cache
+//   1 thread per env, all tree-traversal fused
+//
+// Cholesky solve done on host via torch.linalg.cholesky_solve
+//   → cuSOLVER internally uses wgmma on Hopper for batched factorization
+//
+// Kernel 2 (integrate_kernel): semi-implicit Euler
+//   1 thread per env
+// ─────────────────────────────────────────────────────────────────────────────
+
+__global__ void crba_build_kernel(
+    const float* __restrict__ q,
+    const float* __restrict__ qdot,
+    const float* __restrict__ actions,
+    const int* __restrict__ joint_type,
+    const float* __restrict__ joint_axis,
+    const int* __restrict__ parent_idx,
+    const int* __restrict__ q_idx_start,
+    const int* __restrict__ q_idx_len,
+    const int* __restrict__ v_idx_start,
+    const int* __restrict__ v_idx_len,
+    const float* __restrict__ X_tree_R,
+    const float* __restrict__ X_tree_r,
+    const float* __restrict__ inertia_mat,
+    const float* __restrict__ q_min_arr, const float* __restrict__ q_max_arr,
+    const float* __restrict__ k_limit_arr, const float* __restrict__ b_limit_arr,
+    const float* __restrict__ damping_arr,
+    const int* __restrict__ actuated_q_idx, const int* __restrict__ actuated_v_idx,
+    const float* __restrict__ effort_limits,
+    const float* __restrict__ contact_body_idx_f, const float* __restrict__ contact_local_pos,
+    int N_envs, int nb, int nq, int nv, int nu, int nc,
+    int has_effort_limits,
+    float gravity, float kp, float kd, float action_scale, float action_clip,
+    float ck, float cb, float cmu, float ceps, float cgz,
+    // Outputs
+    float* __restrict__ H_out,           // (N, nv, nv)
+    float* __restrict__ rhs_out,         // (N, nv)
+    float* __restrict__ X_world_R_out,   // (N, nb, 3, 3)
+    float* __restrict__ X_world_r_out,   // (N, nb, 3)
+    float* __restrict__ v_bodies_out,    // (N, nb, 6)
+    int* __restrict__ contact_mask_out   // (N, nc)
+) {
+    int env_id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (env_id >= N_envs) return;
+
+    const float* q_e = q + env_id * nq;
+    const float* qdot_e = qdot + env_id * nv;
+    const float* act_e = actions + env_id * nu;
+
+    // ── Passive torques + PD ──
+    float tau[MAX_NV];
+    for (int j=0;j<nv;j++) tau[j]=0.f;
+    for (int i=0;i<nb;i++){
+        int jt=joint_type[i];
+        if(jt==JOINT_REVOLUTE){
+            int vs=v_idx_start[i],qs=q_idx_start[i];
+            float angle=q_e[qs],omega=qdot_e[vs],t=0.f;
+            if(angle<q_min_arr[i])t=k_limit_arr[i]*(q_min_arr[i]-angle)-b_limit_arr[i]*fminf(omega,0.f);
+            else if(angle>q_max_arr[i])t=-(k_limit_arr[i]*(angle-q_max_arr[i])+b_limit_arr[i]*fmaxf(omega,0.f));
+            tau[vs]=t-damping_arr[i]*omega;
+        }else if(jt==JOINT_PRISMATIC) tau[v_idx_start[i]]=-damping_arr[i]*qdot_e[v_idx_start[i]];
+    }
+    for(int j=0;j<nu;j++){
+        float act=act_e[j]; if(action_clip>0.f)act=fmaxf(-action_clip,fminf(action_clip,act));
+        int qi=actuated_q_idx[j],vi=actuated_v_idx[j];
+        float tv=kp*(q_e[qi]+act*action_scale-q_e[qi])-kd*qdot_e[vi];
+        if(has_effort_limits)tv=fmaxf(-effort_limits[j],fminf(effort_limits[j],tv));
+        tau[vi]+=tv;
+    }
+
+    // ── FK ──
+    Mat33 Xup_R[MAX_BODIES]; Vec3 Xup_r[MAX_BODIES];
+    Mat33 Xw_R[MAX_BODIES]; Vec3 Xw_r[MAX_BODIES];
+    Vec6 vb[MAX_BODIES];
+    for(int i=0;i<nb;i++){
+        int jt=joint_type[i],qs=q_idx_start[i],vs=v_idx_start[i],vl=v_idx_len[i],pid=parent_idx[i];
+        Vec3 ax={joint_axis[i*3],joint_axis[i*3+1],joint_axis[i*3+2]};
+        Mat33 RJ=mat33_identity();Vec3 rJ={0,0,0};
+        if(jt==JOINT_REVOLUTE)RJ=rodrigues(ax,q_e[qs]);
+        else if(jt==JOINT_PRISMATIC)rJ=vec3_scale(ax,q_e[qs]);
+        else if(jt==JOINT_FREE){RJ=quat_to_rot(q_e[qs],q_e[qs+1],q_e[qs+2],q_e[qs+3]);rJ={q_e[qs+4],q_e[qs+5],q_e[qs+6]};}
+        Mat33 Rt;for(int a=0;a<9;a++)Rt.m[a]=X_tree_R[i*9+a];
+        Vec3 rt={X_tree_r[i*3],X_tree_r[i*3+1],X_tree_r[i*3+2]};
+        Xup_R[i]=mat33_mul(Rt,RJ);Xup_r[i]=vec3_add(rt,mat33_vec3_mul(Rt,rJ));
+        if(pid<0){Xw_R[i]=Xup_R[i];Xw_r[i]=Xup_r[i];}
+        else{Xw_R[i]=mat33_mul(Xw_R[pid],Xup_R[i]);Xw_r[i]=vec3_add(Xw_r[pid],mat33_vec3_mul(Xw_R[pid],Xup_r[i]));}
+        Vec6 vJ={{0,0,0,0,0,0}};
+        if(jt==JOINT_REVOLUTE){float qd=qdot_e[vs];vJ.v[3]=ax.x*qd;vJ.v[4]=ax.y*qd;vJ.v[5]=ax.z*qd;}
+        else if(jt==JOINT_PRISMATIC){float qd=qdot_e[vs];vJ.v[0]=ax.x*qd;vJ.v[1]=ax.y*qd;vJ.v[2]=ax.z*qd;}
+        else if(jt==JOINT_FREE){for(int d=0;d<6;d++)vJ.v[d]=qdot_e[vs+d];}
+        if(pid<0)vb[i]=vJ;
+        else{Vec6 vx=transform_velocity(Xup_R[i],Xup_r[i],vb[pid]);for(int d=0;d<6;d++)vb[i].v[d]=vx.v[d]+vJ.v[d];}
+    }
+
+    // ── Contact ──
+    Vec6 ext[MAX_BODIES]; for(int i=0;i<nb;i++)for(int d=0;d<6;d++)ext[i].v[d]=0.f;
+    int*cm=contact_mask_out+env_id*nc;for(int c=0;c<nc;c++)cm[c]=0;
+    for(int c=0;c<nc;c++){
+        int bi=__float2int_rn(contact_body_idx_f[c]);
+        Vec3 lp={contact_local_pos[c*3],contact_local_pos[c*3+1],contact_local_pos[c*3+2]};
+        Vec3 pw=vec3_add(mat33_vec3_mul(Xw_R[bi],lp),Xw_r[bi]);
+        float depth=cgz-pw.z;
+        if(depth>0.f){cm[c]=1;
+            Vec3 rlw=mat33_vec3_mul(Xw_R[bi],lp);
+            Vec3 vl=mat33_vec3_mul(Xw_R[bi],{vb[bi].v[0],vb[bi].v[1],vb[bi].v[2]});
+            Vec3 ow=mat33_vec3_mul(Xw_R[bi],{vb[bi].v[3],vb[bi].v[4],vb[bi].v[5]});
+            Vec3 vel=vec3_add(vl,cross3(ow,rlw));
+            float Fn=fmaxf(0.f,ck*depth-cb*vel.z);
+            float sn=sqrtf(vel.x*vel.x+vel.y*vel.y+ceps*ceps);
+            Vec3 Fw={-cmu*Fn*vel.x/sn,-cmu*Fn*vel.y/sn,Fn};
+            Vec3 tw=cross3(vec3_sub(pw,Xw_r[bi]),Fw);
+            Vec6 fw={{Fw.x,Fw.y,Fw.z,tw.x,tw.y,tw.z}};
+            Mat33 Ri=mat33_transpose(Xw_R[bi]);Vec3 ri=vec3_neg(mat33_vec3_mul(Ri,Xw_r[bi]));
+            Vec6 fb=transform_force(Ri,ri,fw);for(int d=0;d<6;d++)ext[bi].v[d]+=fb.v[d];
+        }
+    }
+
+    // ── CRBA: composite inertias + H build ──
+    float IC[MAX_BODIES*36];
+    for(int i=0;i<nb;i++)for(int a=0;a<36;a++)IC[i*36+a]=inertia_mat[i*36+a];
+    for(int idx=0;idx<nb;idx++){int i=nb-1-idx;int pid=parent_idx[i];
+        if(pid>=0)XtMX_add(Xup_R[i],Xup_r[i],&IC[i*36],&IC[pid*36]);}
+
+    float* H = H_out + env_id * nv * nv;
+    for(int a=0;a<nv*nv;a++)H[a]=0.f;
+    for(int i=0;i<nb;i++){
+        int jt=joint_type[i],vs=v_idx_start[i],vl=v_idx_len[i];
+        if(vl==0)continue;
+        Vec3 ax={joint_axis[i*3],joint_axis[i*3+1],joint_axis[i*3+2]};
+        float F[6*6];
+        if(jt==JOINT_REVOLUTE||jt==JOINT_PRISMATIC){
+            float S[6]={0,0,0,0,0,0};
+            if(jt==JOINT_REVOLUTE){S[3]=ax.x;S[4]=ax.y;S[5]=ax.z;}
+            else{S[0]=ax.x;S[1]=ax.y;S[2]=ax.z;}
+            for(int r=0;r<6;r++){float s=0;for(int k=0;k<6;k++)s+=IC[i*36+r*6+k]*S[k];F[r]=s;}
+            float d=0;for(int dd=0;dd<6;dd++)d+=S[dd]*F[dd];H[vs*nv+vs]=d;
+        }else if(jt==JOINT_FREE){
+            for(int r=0;r<6;r++)for(int c=0;c<6;c++)F[r*6+c]=IC[i*36+r*6+c];
+            for(int a=0;a<6;a++)for(int b=0;b<6;b++)H[(vs+a)*nv+(vs+b)]=F[a*6+b];
+        }
+        int j=i;
+        while(parent_idx[j]>=0){
+            apply_force_cols(Xup_R[j],Xup_r[j],F,vl);j=parent_idx[j];
+            int jt_j=joint_type[j],vs_j=v_idx_start[j],vl_j=v_idx_len[j];
+            if(vl_j>0){
+                Vec3 ax_j={joint_axis[j*3],joint_axis[j*3+1],joint_axis[j*3+2]};
+                if(jt_j==JOINT_REVOLUTE||jt_j==JOINT_PRISMATIC){
+                    float Sj[6]={0,0,0,0,0,0};
+                    if(jt_j==JOINT_REVOLUTE){Sj[3]=ax_j.x;Sj[4]=ax_j.y;Sj[5]=ax_j.z;}
+                    else{Sj[0]=ax_j.x;Sj[1]=ax_j.y;Sj[2]=ax_j.z;}
+                    for(int c=0;c<vl;c++){float s=0;for(int d=0;d<6;d++)s+=Sj[d]*F[d*vl+c];
+                        H[vs_j*nv+(vs+c)]=s;H[(vs+c)*nv+vs_j]=s;}
+                }else if(jt_j==JOINT_FREE){
+                    for(int a=0;a<6;a++)for(int c=0;c<vl;c++){
+                        float v=F[a*vl+c];H[(vs_j+a)*nv+(vs+c)]=v;H[(vs+c)*nv+(vs_j+a)]=v;}
+                }
+            }
+        }
+    }
+
+    // ── RNEA bias → rhs = tau - C ──
+    Vec6 rv[MAX_BODIES],ra[MAX_BODIES],rf[MAX_BODIES];
+    Vec6 ng={{0,0,gravity,0,0,0}};
+    for(int i=0;i<nb;i++){
+        int jt=joint_type[i],vs=v_idx_start[i],vl=v_idx_len[i],pid=parent_idx[i];
+        Vec3 ax={joint_axis[i*3],joint_axis[i*3+1],joint_axis[i*3+2]};
+        Vec6 vJ={{0,0,0,0,0,0}};
+        if(jt==JOINT_REVOLUTE){float qd=qdot_e[vs];vJ.v[3]=ax.x*qd;vJ.v[4]=ax.y*qd;vJ.v[5]=ax.z*qd;}
+        else if(jt==JOINT_PRISMATIC){float qd=qdot_e[vs];vJ.v[0]=ax.x*qd;vJ.v[1]=ax.y*qd;vJ.v[2]=ax.z*qd;}
+        else if(jt==JOINT_FREE){for(int d=0;d<6;d++)vJ.v[d]=qdot_e[vs+d];}
+        if(pid<0){rv[i]=vJ;ra[i]=transform_velocity(Xup_R[i],Xup_r[i],ng);}
+        else{Vec6 vx=transform_velocity(Xup_R[i],Xup_r[i],rv[pid]);for(int d=0;d<6;d++)rv[i].v[d]=vx.v[d]+vJ.v[d];
+            Vec6 ax2=transform_velocity(Xup_R[i],Xup_r[i],ra[pid]);Vec6 cv=spatial_cross_vel(rv[i],vJ);
+            for(int d=0;d<6;d++)ra[i].v[d]=ax2.v[d]+cv.v[d];}
+        Vec6 Iv=mat66_mul_vec6(*(Mat66*)&inertia_mat[i*36],rv[i]);
+        Vec6 Ia=mat66_mul_vec6(*(Mat66*)&inertia_mat[i*36],ra[i]);
+        Vec6 vxIv=spatial_cross_force(rv[i],Iv);
+        for(int d=0;d<6;d++)rf[i].v[d]=Ia.v[d]+vxIv.v[d]-ext[i].v[d];
+    }
+    float* rhs = rhs_out + env_id * nv;
+    for(int j=0;j<nv;j++)rhs[j]=tau[j];
+    for(int idx=0;idx<nb;idx++){int i=nb-1-idx;
+        int jt=joint_type[i],vs=v_idx_start[i],vl=v_idx_len[i],pid=parent_idx[i];
+        Vec3 ax={joint_axis[i*3],joint_axis[i*3+1],joint_axis[i*3+2]};
+        if(vl>0){if(jt==JOINT_REVOLUTE||jt==JOINT_PRISMATIC){
+                float S[6]={0,0,0,0,0,0};if(jt==JOINT_REVOLUTE){S[3]=ax.x;S[4]=ax.y;S[5]=ax.z;}
+                else{S[0]=ax.x;S[1]=ax.y;S[2]=ax.z;}
+                float t=0;for(int d=0;d<6;d++)t+=S[d]*rf[i].v[d];rhs[vs]-=t;
+            }else if(jt==JOINT_FREE){for(int d=0;d<6;d++)rhs[vs+d]-=rf[i].v[d];}
+        }
+        if(pid>=0){Vec6 fp=transform_force(Xup_R[i],Xup_r[i],rf[i]);for(int d=0;d<6;d++)rf[pid].v[d]+=fp.v[d];}
+    }
+
+    // ── Write FK cache ──
+    for(int i=0;i<nb;i++){
+        float*Ro=X_world_R_out+(env_id*nb+i)*9;float*ro=X_world_r_out+(env_id*nb+i)*3;float*vo=v_bodies_out+(env_id*nb+i)*6;
+        for(int a=0;a<9;a++)Ro[a]=Xw_R[i].m[a];
+        ro[0]=Xw_r[i].x;ro[1]=Xw_r[i].y;ro[2]=Xw_r[i].z;
+        for(int d=0;d<6;d++)vo[d]=vb[i].v[d];
+    }
+}
+
+__global__ void integrate_kernel(
+    const float* __restrict__ q,
+    const float* __restrict__ qdot,
+    const float* __restrict__ qddot,
+    const int* __restrict__ joint_type,
+    const int* __restrict__ q_idx_start,
+    const int* __restrict__ q_idx_len,
+    const int* __restrict__ v_idx_start,
+    const int* __restrict__ v_idx_len,
+    float dt, int N_envs, int nb, int nq, int nv,
+    float* __restrict__ q_new,
+    float* __restrict__ qdot_new
+) {
+    int env_id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (env_id >= N_envs) return;
+    const float* q_e=q+env_id*nq; const float* v_e=qdot+env_id*nv; const float* a_e=qddot+env_id*nv;
+    float* qn=q_new+env_id*nq; float* vn=qdot_new+env_id*nv;
+    for(int j=0;j<nv;j++)vn[j]=v_e[j]+dt*a_e[j];
+    for(int i=0;i<nb;i++){
+        int jt=joint_type[i],qs=q_idx_start[i],ql=q_idx_len[i],vs=v_idx_start[i],vl=v_idx_len[i];
+        if(jt==JOINT_FREE){
+            float qw=q_e[qs],qx=q_e[qs+1],qy=q_e[qs+2],qz=q_e[qs+3];
+            float wx=vn[vs+3],wy=vn[vs+4],wz=vn[vs+5];
+            float dw=.5f*(-qx*wx-qy*wy-qz*wz),dx=.5f*(qw*wx+qy*wz-qz*wy);
+            float dy=.5f*(qw*wy-qx*wz+qz*wx),dz=.5f*(qw*wz+qx*wy-qy*wx);
+            float nw=qw+dw*dt,nx=qx+dx*dt,ny=qy+dy*dt,nz=qz+dz*dt;
+            float n=sqrtf(nw*nw+nx*nx+ny*ny+nz*nz);
+            qn[qs]=nw/n;qn[qs+1]=nx/n;qn[qs+2]=ny/n;qn[qs+3]=nz/n;
+            qn[qs+4]=q_e[qs+4]+dt*vn[vs];qn[qs+5]=q_e[qs+5]+dt*vn[vs+1];qn[qs+6]=q_e[qs+6]+dt*vn[vs+2];
+        }else if(vl>0){for(int k=0;k<ql;k++)qn[qs+k]=q_e[qs+k]+dt*vn[vs+k];}
+    }
+}
+
+// C++ wrappers for tensor-core CRBA path
+std::vector<torch::Tensor> crba_build(
+    torch::Tensor q, torch::Tensor qdot, torch::Tensor actions,
+    torch::Tensor jtype, torch::Tensor jaxis, torch::Tensor pidx,
+    torch::Tensor qs, torch::Tensor ql, torch::Tensor vs, torch::Tensor vl,
+    torch::Tensor tR, torch::Tensor tr, torch::Tensor Imat,
+    torch::Tensor qmin, torch::Tensor qmax, torch::Tensor klim, torch::Tensor blim, torch::Tensor damp,
+    torch::Tensor aqi, torch::Tensor avi, torch::Tensor elim,
+    torch::Tensor cbi, torch::Tensor clp,
+    int N, int nb, int nq, int nv, int nu, int nc, int hel,
+    float grav, float kp, float kd, float ascale, float aclip,
+    float ck, float cb, float cmu, float ceps, float cgz
+) {
+    auto of = torch::TensorOptions().dtype(torch::kFloat32).device(q.device());
+    auto oi = torch::TensorOptions().dtype(torch::kInt32).device(q.device());
+    auto H = torch::zeros({N,nv,nv},of);
+    auto rhs = torch::zeros({N,nv},of);
+    auto XwR = torch::zeros({N,nb,3,3},of);
+    auto Xwr = torch::zeros({N,nb,3},of);
+    auto vbo = torch::zeros({N,nb,6},of);
+    auto cmo = torch::zeros({N,nc},oi);
+    int th=256,bl=(N+th-1)/th;
+    crba_build_kernel<<<bl,th>>>(
+        q.data_ptr<float>(),qdot.data_ptr<float>(),actions.data_ptr<float>(),
+        jtype.data_ptr<int>(),jaxis.data_ptr<float>(),pidx.data_ptr<int>(),
+        qs.data_ptr<int>(),ql.data_ptr<int>(),vs.data_ptr<int>(),vl.data_ptr<int>(),
+        tR.data_ptr<float>(),tr.data_ptr<float>(),Imat.data_ptr<float>(),
+        qmin.data_ptr<float>(),qmax.data_ptr<float>(),klim.data_ptr<float>(),
+        blim.data_ptr<float>(),damp.data_ptr<float>(),
+        aqi.data_ptr<int>(),avi.data_ptr<int>(),elim.data_ptr<float>(),
+        cbi.data_ptr<float>(),clp.data_ptr<float>(),
+        N,nb,nq,nv,nu,nc,hel,grav,kp,kd,ascale,aclip,ck,cb,cmu,ceps,cgz,
+        H.data_ptr<float>(),rhs.data_ptr<float>(),
+        XwR.data_ptr<float>(),Xwr.data_ptr<float>(),vbo.data_ptr<float>(),cmo.data_ptr<int>());
+    return {H,rhs,XwR,Xwr,vbo,cmo};
+}
+
+std::vector<torch::Tensor> integrate_step(
+    torch::Tensor q, torch::Tensor qdot, torch::Tensor qddot,
+    torch::Tensor jtype, torch::Tensor qs, torch::Tensor ql, torch::Tensor vs, torch::Tensor vl,
+    float dt, int N, int nb, int nq, int nv
+) {
+    auto of = torch::TensorOptions().dtype(torch::kFloat32).device(q.device());
+    auto qn=torch::zeros({N,nq},of), vn=torch::zeros({N,nv},of);
+    int th=256,bl=(N+th-1)/th;
+    integrate_kernel<<<bl,th>>>(
+        q.data_ptr<float>(),qdot.data_ptr<float>(),qddot.data_ptr<float>(),
+        jtype.data_ptr<int>(),qs.data_ptr<int>(),ql.data_ptr<int>(),
+        vs.data_ptr<int>(),vl.data_ptr<int>(),dt,N,nb,nq,nv,
+        qn.data_ptr<float>(),vn.data_ptr<float>());
+    return {qn,vn};
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("physics_step", &physics_step, "Batched physics step ABA (CUDA)");
-    m.def("physics_step_crba", &physics_step_crba, "Batched physics step CRBA (CUDA)");
+    m.def("physics_step_crba", &physics_step_crba, "Batched physics step CRBA scalar Cholesky (CUDA)");
+    m.def("crba_build", &crba_build, "CRBA H+rhs build (CUDA)");
+    m.def("integrate_step", &integrate_step, "Integration (CUDA)");
     m.def("fk_only", &fk_only, "FK only (CUDA)");
 }
