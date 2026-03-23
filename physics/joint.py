@@ -139,6 +139,7 @@ class RevoluteJoint(Joint):
         k_limit: float = 5_000.0,
         b_limit: float = 50.0,
         damping: float = 0.0,
+        friction: float = 0.0,
     ) -> None:
         super().__init__(name)
         self.axis = axis
@@ -158,6 +159,7 @@ class RevoluteJoint(Joint):
         self.k_limit = float(k_limit)
         self.b_limit = float(b_limit)
         self.damping = float(damping)
+        self.friction = float(friction)
 
     def transform(self, q: NDArray[np.float64]) -> SpatialTransform:
         # Rodrigues' rotation formula: R = I cosθ + sinθ [k]× + (1−cosθ) k kᵀ
@@ -210,6 +212,19 @@ class RevoluteJoint(Joint):
     def compute_damping_torque(self, qdot: NDArray[np.float64]) -> float:
         """Return viscous damping torque: −damping × qdot."""
         return -self.damping * float(qdot[0])
+
+    def compute_friction_torque(self, qdot: NDArray[np.float64]) -> float:
+        """Return Coulomb friction torque: smooth approximation via tanh.
+
+        τ = -friction * tanh(qdot / eps)
+
+        Smooth transition from static to kinetic friction around qdot ≈ 0.
+        eps controls the width of the stiction zone (default 0.01 rad/s).
+        """
+        if self.friction == 0.0:
+            return 0.0
+        eps = 0.01  # stiction zone half-width [rad/s]
+        return -self.friction * np.tanh(float(qdot[0]) / eps)
 
     def default_q(self) -> NDArray[np.float64]:
         return np.zeros(1, dtype=np.float64)

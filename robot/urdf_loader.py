@@ -317,6 +317,7 @@ def _build_model(
                     q_min=jd.limit_lower,
                     q_max=jd.limit_upper,
                     damping=jd.damping,
+                    friction=jd.friction,
                 )
             elif jtype == "prismatic":
                 joint = PrismaticJoint(jd.name, axis=jd.axis, damping=jd.damping)

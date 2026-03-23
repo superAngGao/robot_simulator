@@ -479,9 +479,11 @@ class RobotTreeNumpy(RobotTreeBase):
         for body in self._bodies:
             j = body.joint
             if isinstance(j, _Rev):
-                tau[body.v_idx] = j.compute_limit_torque(
-                    q[body.q_idx], qdot[body.v_idx]
-                ) + j.compute_damping_torque(qdot[body.v_idx])
+                tau[body.v_idx] = (
+                    j.compute_limit_torque(q[body.q_idx], qdot[body.v_idx])
+                    + j.compute_damping_torque(qdot[body.v_idx])
+                    + j.compute_friction_torque(qdot[body.v_idx])
+                )
             elif isinstance(j, _Pris):
                 tau[body.v_idx] = j.compute_damping_torque(qdot[body.v_idx])
         return tau
