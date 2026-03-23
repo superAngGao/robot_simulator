@@ -10,7 +10,7 @@
 | Phase | 状态 | 完成度 |
 |-------|------|--------|
 | Phase 1 — Basic Physics + Simple Rendering | ✅ 完成（含修复） | 100% |
-| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 60% (2a+2b+2c+2d ✅) |
+| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 80% (2a+2b+2c+2d+2e ✅) |
 | Phase 3 — High-Fidelity Rendering          | ⬜ 未开始 | 0% |
 | Phase 4 — Domain Randomization             | ⬜ 未开始 | 0% |
 | Phase 5 — Sim-to-Real Validation           | ⬜ 未开始 | 0% |
@@ -188,12 +188,27 @@
 
 **总测试数：74（全部通过）**
 
-### 2e — GPU backend
+### 2e — GPU backend ✅
 
-- [ ] `physics/warp_kernels/robot_tree_warp.py` — `RobotTreeWarp(RobotTreeBase)`：批量 ABA + FK（`dim=N`）
-- [ ] Warp contact 和 self-collision kernel
-- [ ] 数值验证：Warp 输出 vs NumPy baseline（相同输入，容差检查）
-- [ ] Benchmark：steps/s，Phase 1 NumPy vs Phase 2 Warp（1 / 100 / 1000 envs）
+- [x] `physics/backends/batch_backend.py` — `BatchBackend(ABC)` + `StepResult` dataclass
+- [x] `physics/backends/static_data.py` — `StaticRobotData.from_model()` 将 RobotModel 展平为连续数组
+- [x] `physics/backends/numpy_loop.py` — `NumpyLoopBackend(BatchBackend)` CPU for-loop 后备
+- [x] `physics/backends/warp/spatial_warp.py` — 全部空间代数 `@wp.func` 设备函数（rodrigues、transform、cross 等）
+- [x] `physics/backends/warp/kernels.py` — 7 个 `@wp.kernel`：FK、passive_torques、PD controller、contact、collision、ABA、integrate
+- [x] `physics/backends/warp/warp_backend.py` — `WarpBatchBackend(BatchBackend)` 编排所有 kernel
+- [x] `physics/backends/warp/scratch.py` — `ABABatchScratch` 预分配 GPU 缓冲区
+- [x] `rl_env/vec_env.py` — 重构为使用 `BatchBackend`（默认 `backend="numpy"`，向后兼容）
+- [x] `rl_env/vec_env.py` — `BatchedObsManager` 用于 `(N, obs_dim)` 批量观测
+- [x] 数值验证：Warp (float32) vs NumPy (float64)，单步 atol=1e-4，50 步 atol=5e-3
+- [x] Benchmark：
+
+| Backend | N=1 | N=10 | N=100 | N=1000 |
+|---------|-----|------|-------|--------|
+| NumPy | 511 steps/s | 523 | 529 | 539 |
+| Warp (H200) | 1,934 | 19,104 | 159,759 | 886,119 |
+| Speedup | 3.8x | 37x | 302x | **1,643x** |
+
+**总测试数：240（全部通过）**
 
 ---
 
