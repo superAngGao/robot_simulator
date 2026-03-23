@@ -191,7 +191,7 @@ def test_vec_env_step():
     vec = VecEnv(model, cfg, num_envs=4)
     vec.reset()
 
-    nu = len(vec.envs[0].actuated_q_indices)
+    nu = len(model.actuated_joint_names)
     actions = torch.zeros(4, nu, dtype=torch.float32)
     obs, rew, term, trunc, info = vec.step(actions)
 
