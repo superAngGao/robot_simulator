@@ -117,19 +117,21 @@ Pinocchio issue #1388 曾在此处有 bug。
 
 ## GPU Dynamics Algorithms
 
-**Q16 — CRBA vs ABA：GPU 上的前向动力学算法选择**
+**Q16 — CRBA vs ABA：GPU 上的前向动力学算法选择** 🔄 部分解决
 
-当前所有 GPU 后端使用 ABA（O(n)，顺序标量运算），tensor core 完全空闲。
-CRBA 将前向动力学转化为密集矩阵问题（nv × nv），可利用 tensor core。
+**已解决**：
+- ABA/CRBA 自动切换阈值：实测结果 — fused scalar CRBA 在 nv=30 时达 ABA 的 0.96x，
+  在 nv=62 时为 0.56x。**对于 nv ≤ 64 的机器人，fused ABA 仍是最优选择。**
+- cuSOLVER tensor core（wgmma）路径：因 3 次 kernel launch + global memory H 访问，
+  比 fused scalar Cholesky 更慢。wgmma M=64 最小维度对 nv < 64 不友好。
+- 精度：float32 scalar Cholesky 在 nv=62 下稳定，与 ABA 吻合 atol=1e-4 (float32 vs float64)。
 
-设计问题：
-- **ABA/CRBA 自动切换阈值**：nv 多大时 CRBA 的 O(n²+nv³) 矩阵开销被 tensor core
-  吞吐弥补？需要在不同 nv (10/20/30/50) 和 N (100/1000/4096) 下实测。
-- **分组策略**：大型机器人的子树分割应自动还是手动？自动分割的启发式
-  （平衡组大小 vs 最小化组间耦合边数）？
-- **精度**：CRBA Cholesky 在 float32 下的数值稳定性？对于 nv=50 的 H 矩阵
-  条件数是否需要 float64 或混合精度？
-- 参考：Pinocchio 同时实现了 `aba()` 和 `crba()`，Drake 的 `CalcMassMatrix()` 也是 CRBA。
+**未解决 — 分组策略（Phase 2g-3，潜在优化）**：
+- 决定使用**自动分支点检测**（多子节点 body 为切割点，每个子树一组）
+- 层次化 Schur complement 求解（limb 并行 Cholesky → root Schur → 回代）
+- 理论 FLOPs 减少显著（四足 18x），但实际 GPU 上小矩阵 Cholesky 开销可能抵消
+- **何时实现**：当目标机器人 nv > 30 且有明确分支结构时值得实现
+- 当 nv_limb ≥ 16 时，各 limb 的 Cholesky 可走 tensor core（wgmma tile 对齐）
 
 ---
 

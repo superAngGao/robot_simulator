@@ -283,40 +283,59 @@ physics/backends/
 
 **分组策略（大型机器人优化）**：
 
-对于 nv > 50 的复杂机器人，将运动学树分解为子树组，每组独立计算局部质量矩阵，
-通过 Schur complement 处理组间耦合：
+对于分支结构机器人，H 矩阵有天然块结构——不同子树（limb）之间的耦合为零，
+只有 root-limb 耦合存在。利用此结构可以用层次化 Schur complement 替代全矩阵 Cholesky。
+
+**自动分支点检测**：从 `parent_idx[]` 自动找多子节点 body 作为切割点，
+每个子树自成一组，无需用户指定。单链机器人（无分支）退化为标准 CRBA。
 
 ```
-完整机器人 (nv=50+)
-├── 躯干组 (nv_local=6)      → H_trunk (6×6)
-├── 左臂组 (nv_local=7)      → H_LA (7×7)
-├── 右臂组 (nv_local=7)      → H_RA (7×7)
-├── 左腿组 (nv_local=6)      → H_LL (6×6)
-├── 右腿组 (nv_local=6)      → H_RL (6×6)
-└── 组间耦合 → 块稀疏 Schur complement
+H 的块结构（四足为例）：
+H = [H_rr   H_rl₁  H_rl₂  H_rl₃  H_rl₄]     r = root (nv=6)
+    [H_l₁r  H_l₁l₁  0      0      0    ]     l₁ = FL leg (nv=3)
+    [H_l₂r  0       H_l₂l₂  0      0    ]     l₂ = FR leg (nv=3)
+    [H_l₃r  0       0      H_l₃l₃  0    ]     l₃ = RL leg (nv=3)
+    [H_l₄r  0       0      0      H_l₄l₄]     l₄ = RR leg (nv=3)
+
+关键性质：H_li_lj = 0 (i≠j) — 非祖先关节无耦合
 ```
 
-每组规模对齐 tensor core tile size（16/32），避免全矩阵 O(n²) 开销。
-本质上是 Featherstone Divide-and-Conquer Algorithm 的 GPU-native 变体。
+**层次化 Schur complement 求解**：
+
+```
+Step 1: 每个 limb 独立 Cholesky — L_i L_iᵀ = H_lili     [K 个并行, O(nv_limb³)]
+Step 2: Schur complement — S = H_rr - Σᵢ H_rli H_lili⁻¹ H_lir  [O(K × nv_root × nv_limb²)]
+Step 3: 解 root — S @ qddot_r = rhs_r'                    [O(nv_root³), 通常 6×6]
+Step 4: 回代每个 limb — qddot_li = H_lili⁻¹(rhs_li - H_lir @ qddot_r)  [K 个并行]
+```
+
+总复杂度：O(K × nv_limb³ + nv_root³) vs 全矩阵 O(nv³)。
+四足例：4×3³ + 6³ = 108+216 = 324 FLOPs vs 18³ = 5832 FLOPs（**18x 减少**）。
+
+**Tensor core 对齐（未来优化）**：组大小 pad 到 16 对齐 wgmma tile，
+或合并小组（如两个 nv=3 的 limb 合并为 nv=6）。当 nv_limb ≥ 16 时
+单组 Cholesky 可走 tensor core，此时层次 Schur 的每个 Step 1 并行任务都能用 wgmma。
 
 **实现计划**：
 
-Phase 2g-1: 标准 CRBA（CPU NumPy）
-- [ ] `physics/robot_tree.py` — `RobotTreeNumpy.crba(q) -> H`（质量矩阵计算）
-- [ ] `physics/robot_tree.py` — `RobotTreeNumpy.forward_dynamics_crba(q, qdot, tau, ext) -> qddot`
-- [ ] 数值验证：CRBA 输出 vs ABA 输出（相同输入，应完全一致）
-- [ ] 测试：`tests/test_crba.py`
+Phase 2g-1: 标准 CRBA（CPU NumPy）✅
+- [x] `physics/robot_tree.py` — `RobotTreeNumpy.crba(q) -> H`
+- [x] `physics/robot_tree.py` — `RobotTreeNumpy.forward_dynamics_crba(q, qdot, tau, ext) -> qddot`
+- [x] 数值验证：CRBA == ABA（atol=1e-10），Pinocchio 对比（atol=1e-8）
+- [x] 测试：`tests/test_crba.py`（13 tests）
 
-Phase 2g-2: Batched Cholesky GPU 加速
-- [ ] `physics/backends/` — 在现有后端中添加 CRBA 路径
-- [ ] 使用 `torch.linalg.cholesky_solve` batched 版本（cuSOLVER → tensor core on Hopper）
-- [ ] Benchmark：ABA vs CRBA 在不同 nv（10/20/30/50）和 N（1/100/1000）下的性能对比
-- [ ] 自动选择策略：nv < 阈值用 ABA，nv ≥ 阈值用 CRBA
+Phase 2g-2: GPU CRBA（多种实现）✅
+- [x] `BatchedCRBA` — PyTorch batched（`torch.linalg.cholesky_solve`）
+- [x] `physics_step_crba_kernel` — CUDA fused（标量 Cholesky in-kernel）
+- [x] `crba_build_kernel` + cuSOLVER — split path（tensor core Cholesky）
+- [x] Benchmark：8 种实现对比（见 PROGRESS.md）
 
-Phase 2g-3: 分组 CRBA（大型机器人）
-- [ ] 子树分组 API：用户指定或自动分割
-- [ ] 块对角 H 计算 + 组间 Schur complement
-- [ ] TileLang / CUDA kernel 实现组内 matmul（对齐 tensor core tile）
+Phase 2g-3: 分组 CRBA + 层次 Schur（⬜ 潜在优化）
+- [ ] `auto_detect_groups(bodies)` — 自动分支点检测
+- [ ] `grouped_crba(q)` + `forward_dynamics_grouped_crba()` — CPU 参考实现
+- [ ] CUDA fused grouped CRBA kernel（Schur complement in-kernel）
+- [ ] Benchmark：grouped vs monolithic vs ABA 在 nv=30/46/62, N=1024/4096/8192
+- [ ] 当 nv_limb ≥ 16 时启用 tensor core 加速 Step 1（wgmma）
 
 **参考文献**：
 - Featherstone (2008) §6 — CRBA 算法
