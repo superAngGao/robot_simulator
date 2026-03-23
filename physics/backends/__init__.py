@@ -58,5 +58,17 @@ def get_backend(
                 "Install with: pip install tilelang torch"
             ) from e
         return TileLangBatchBackend(model, cfg, num_envs)
+    elif name == "cuda":
+        try:
+            from .cuda.cuda_backend import CudaBatchBackend
+        except Exception as e:
+            raise ImportError(
+                "CUDA backend requires PyTorch with CUDA and a C++ compiler. "
+                f"Error: {e}"
+            ) from e
+        return CudaBatchBackend(model, cfg, num_envs)
     else:
-        raise ValueError(f"Unknown backend: {name!r}. Choose 'numpy', 'warp', or 'tilelang'.")
+        raise ValueError(
+            f"Unknown backend: {name!r}. "
+            "Choose 'numpy', 'warp', 'tilelang', or 'cuda'."
+        )
