@@ -280,14 +280,35 @@ CUDA 性能最优原因：全物理步融合为单 kernel launch，零 inter-ker
   - `load_urdf()` 新增 `collision_exclude_pairs` 参数
   - 21 tests（standalone + AABB 集成 + load_urdf 集成）
 
-**Phase 2f 测试：97 个，全部通过**
+- [x] **condim 1/3/4/6 接触维度** — `physics/solvers/pgs_solver.py`
+  - ContactConstraint 新增 condim/mu_spin/mu_roll 字段
+  - PGS 改为 variable-width rows + per-condim 锥投影
+  - 新增 `_compute_angular_jacobian_row()` 用于 spin/rolling（纯角速度）
+  - LCPContactModel 支持 per-body condim 覆盖
+  - 17 tests
+
+- [x] **Jacobi PGS 求解器** — `physics/solvers/jacobi_pgs.py`（新建）
+  - GPU-friendly 并行变体：全行读旧 buffer、写新 buffer（double buffer）
+  - relaxation factor ω，与 serial PGS 收敛到同一解
+  - 10 tests（含 PGS 一致性验证）
+
+- [x] **ADMM 求解器** — `physics/solvers/admm.py`（新建）
+  - 隐式接触兼容：Step 1 线性系统 Cholesky 预分解 + Step 2 锥投影 + Step 3 对偶更新
+  - 圆锥摩擦投影（几何精确 Coulomb 锥，vs PGS 的 box clamp 近似）
+  - 12 tests（含锥投影单元测试 + PGS 方向一致性）
+
+- [x] **Reference 测试体系**
+  - `test_solver_reference.py`：21 tests — 解析 LCP（手算 Delassus + 互补条件），3 求解器 × 7 场景
+  - `test_trajectory_vs_bullet.py`：7 tests — PyBullet PGS 多步轨迹对比（L2 < 0.5mm）
+  - `test_complex_scenarios.py`：7 tests — 斜抛球撞粗糙竖直墙 vs PyBullet（600 步）
+
+**Phase 2f 测试：164 个，全部通过**
 
 **待完成（Q18 剩余项）：**
 
-- [ ] 接触维度控制（1D/3D/4D/6D）
 - [ ] 同 body 多 geom 过滤
-- [ ] 隐式接触积分
-- [ ] GPU 加速（GJK/EPA + LCP CUDA kernel）
+- [ ] GPU 接触求解器 kernel（Jacobi PGS / ADMM → Warp/CUDA）
+- [ ] 通用接触管线（静态环境几何 + body-body LCP 接入 Simulator）
 
 ### 2g — CRBA + Tensor Core 加速 ⬜
 
@@ -333,7 +354,7 @@ CUDA 性能最优原因：全物理步融合为单 kernel launch，零 inter-ker
 
 ---
 
-**Phase 2 总测试数：382（全部通过）**
+**Phase 2 总测试数：456（全部通过）**
 
 **Phase 2 实现总览（2026-03-23）：**
 

@@ -5,7 +5,46 @@ Updated at the end of each development session.
 
 ---
 
-## 2026-03-24 (session 7) — LCP Simulator integration + CollisionFilter
+## 2026-03-24 (session 7) — LCP pipeline + CollisionFilter + condim + solvers + reference tests
+
+### condim 设计决策
+
+采用 MuJoCo 风格耦合求解（variable-width constraint rows），而非 Bullet 风格后处理。
+原因：后处理与隐式积分不兼容（扭转/滚动修正在 LCP 求解外，破坏隐式耦合）。
+MuJoCo 的 GPU 后端 MJX 在 GPU 上用 uniform condim（全局取 max）+ Jacobi PGS。
+
+### 求解器架构
+
+三个求解器共享 `ContactConstraint` + 锥投影 + Jacobian 函数，只差迭代方式：
+- PGS (GS)：串行逐行，收敛快（30 iter），CPU 适用
+- Jacobi PGS：全行并行 double buffer，收敛慢（~2x iter），GPU 适用
+- ADMM：线性系统预分解 + 锥投影，天然隐式接触，GPU 适用
+
+ADMM 与 PGS 的 impulse 绝对值不匹配（不同公式），但物理行为一致（方向、边界）。
+ADMM 的圆锥投影比 PGS 的 box clamp 更几何精确。
+
+### Reference testing 教训
+
+1. MuJoCo 不能做 hard LCP reference（soft constraint 模型根本不同）。
+2. Bullet 不能做单步 impulse reference（erp=0 关掉求解器）。
+3. Bullet 可做多步轨迹 reference：球体落地 L2 < 0.5mm，撞墙场景定性一致。
+4. 解析 LCP（手算 Delassus 矩阵）是唯一精确的单步 reference。
+
+### 发现的显式接触局限
+
+斜抛球撞粗糙墙测试暴露：显式接触的 per-step 摩擦边界在多步接触中累积，
+总摩擦超过单步 Coulomb 限。Bullet 的 velocity-level 求解无此问题。
+这是 ADMM 隐式积分的核心优势之一。
+
+### 功能差距审查
+
+与 MuJoCo/Bullet/Drake 对比，最关键的缺失是通用接触管线（静态环境 + body-body LCP）。
+GJK/EPA 和 LCP 求解器都已就绪，但 Simulator.step() 只调用 ground_contact_query。
+下一步应将 GJK/EPA 窄相 + BroadPhase 集成为通用管线。
+
+---
+
+### LCP Simulator integration + CollisionFilter
 
 ### LCPContactModel 接入 Simulator.step()
 
