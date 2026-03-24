@@ -336,6 +336,9 @@ class LCPContactModel(ContactModel):
         self,
         mu: float = 0.8,
         restitution: float = 0.0,
+        condim: int = 3,
+        mu_spin: float = 0.0,
+        mu_roll: float = 0.0,
         terrain: "Terrain | None" = None,
         collision_filter: "CollisionFilter | None" = None,
         **solver_kwargs,
@@ -345,16 +348,41 @@ class LCPContactModel(ContactModel):
 
         self._mu = mu
         self._restitution = restitution
+        self._condim = condim
+        self._mu_spin = mu_spin
+        self._mu_roll = mu_roll
         self._terrain = terrain if terrain is not None else FlatTerrain(0.0)
         self._collision_filter = collision_filter
         self._solver = PGSContactSolver(**solver_kwargs)
         self._ground_query = ground_contact_query
-        self._contact_bodies: List[tuple[int, str, "CollisionShape"]] = []
-        # (body_index, name, shape)
+        # (body_index, name, shape, condim, mu, mu_spin, mu_roll)
+        self._contact_bodies: List[tuple[int, str, "CollisionShape", int, float, float, float]] = []
 
-    def add_contact_body(self, body_index: int, shape: "CollisionShape", name: str = "") -> None:
-        """Register a body with its collision shape for ground contact."""
-        self._contact_bodies.append((body_index, name, shape))
+    def add_contact_body(
+        self,
+        body_index: int,
+        shape: "CollisionShape",
+        name: str = "",
+        condim: int | None = None,
+        mu: float | None = None,
+        mu_spin: float | None = None,
+        mu_roll: float | None = None,
+    ) -> None:
+        """Register a body with its collision shape for ground contact.
+
+        Per-body condim/friction overrides the model-level defaults.
+        """
+        self._contact_bodies.append(
+            (
+                body_index,
+                name,
+                shape,
+                condim if condim is not None else self._condim,
+                mu if mu is not None else self._mu,
+                mu_spin if mu_spin is not None else self._mu_spin,
+                mu_roll if mu_roll is not None else self._mu_roll,
+            )
+        )
 
     def compute_forces(
         self,
@@ -370,7 +398,7 @@ class LCPContactModel(ContactModel):
         step_dt = dt if dt is not None else 1e-3
 
         contacts = []
-        for body_idx, name, shape in self._contact_bodies:
+        for body_idx, name, shape, cdim, mu, mu_s, mu_r in self._contact_bodies:
             X = X_world_list[body_idx]
             manifold = self._ground_query(
                 shape,
@@ -388,7 +416,10 @@ class LCPContactModel(ContactModel):
                             tangent1=np.zeros(3),
                             tangent2=np.zeros(3),
                             depth=manifold.depth,
-                            mu=self._mu,
+                            mu=mu,
+                            condim=cdim,
+                            mu_spin=mu_s,
+                            mu_roll=mu_r,
                             restitution=self._restitution,
                         )
                     )
@@ -439,7 +470,7 @@ class LCPContactModel(ContactModel):
         X_world_list: List[SpatialTransform],
     ) -> List[tuple[str, Vec3]]:
         active = []
-        for body_idx, name, shape in self._contact_bodies:
+        for body_idx, name, shape, *_ in self._contact_bodies:
             X = X_world_list[body_idx]
             manifold = self._ground_query(
                 shape,

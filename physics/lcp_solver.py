@@ -1,57 +1,73 @@
 """
 LCP contact solver using Projected Gauss-Seidel (PGS).
 
-Solves the contact Linear Complementarity Problem:
-  0 <= lambda_n  perp  v_n >= 0       (Signorini: no penetration)
-  |lambda_t| <= mu * lambda_n          (Coulomb friction cone)
+Solves the contact Linear Complementarity Problem with variable contact
+dimensions (MuJoCo condim semantics):
 
-The velocity-level formulation:
-  v_contact = v_free + W @ lambda
-  where:
-    v_free  = contact velocity without constraint forces
-    W       = J @ M^{-1} @ J^T   (full Delassus operator)
-    lambda  = constraint impulses [normal; tangent_x; tangent_y] per contact
+  condim=1: normal only (frictionless)
+  condim=3: normal + 2 tangent (Coulomb sliding friction)        [default]
+  condim=4: normal + 2 tangent + 1 spin (torsional friction)
+  condim=6: normal + 2 tangent + 1 spin + 2 rolling friction
 
-PGS iterates over the full W matrix (not diagonal approximation):
-  for each constraint row i:
-    residual_i = v_free_i + sum_j(W_ij * lambda_j) + bias_i
-    delta = -residual_i / W_ii
-    lambda_i += delta
-    lambda_i = project(lambda_i)  # Signorini / friction cone
+Constraint rows per contact:
+  - Normal:   v_n >= 0, lambda_n >= 0                (Signorini)
+  - Tangent:  |lambda_t| <= mu * lambda_n            (Coulomb cone)
+  - Spin:     |lambda_s| <= mu_spin * lambda_n
+  - Rolling:  |lambda_r| <= mu_roll * lambda_n
 
-Warm starting: reuse lambda from previous step as initial guess,
-matched by contact ID (body pair + proximity).
+Sliding Jacobian (normal/tangent): maps spatial velocity to linear
+contact velocity along a direction d:
+  v_d = d^T (v_lin_world + omega_world x r)
+
+Angular Jacobian (spin/rolling): maps spatial velocity to angular
+contact velocity along a direction d:
+  omega_d = d^T omega_world
 
 References:
   Catto (2005) — Iterative Dynamics with Temporal Coherence (GDC)
   Erleben (2007) — Velocity-based shock propagation
+  MuJoCo docs — Contact parameters (condim, friction triple)
   Bullet: btSequentialImpulseConstraintSolver (full row updates)
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
 
-from .gjk_epa import ContactManifold
 from .spatial import Vec3, Vec6
+
+CONDIM_VALID = (1, 3, 4, 6)
 
 
 @dataclass
 class ContactConstraint:
-    """One contact point ready for LCP solving."""
+    """One contact point ready for LCP solving.
+
+    Attributes:
+        condim: Contact dimension (1, 3, 4, or 6).
+            1 = normal only (frictionless)
+            3 = normal + 2 tangent (default)
+            4 = normal + 2 tangent + torsional spin
+            6 = normal + 2 tangent + torsional spin + 2 rolling
+        mu:       Sliding (tangent) friction coefficient.
+        mu_spin:  Torsional friction coefficient (condim >= 4).
+        mu_roll:  Rolling friction coefficient (condim == 6).
+    """
 
     body_i: int  # body index (-1 for ground)
     body_j: int  # body index (-1 for ground)
     point: Vec3  # world position
     normal: Vec3  # from j to i (unit)
-    tangent1: Vec3  # friction direction 1
-    tangent2: Vec3  # friction direction 2
+    tangent1: Vec3  # friction direction 1 (set by solver)
+    tangent2: Vec3  # friction direction 2 (set by solver)
     depth: float  # penetration (positive)
-    mu: float  # friction coefficient
+    mu: float  # sliding friction coefficient
+    condim: int = 3
+    mu_spin: float = 0.0  # torsional friction
+    mu_roll: float = 0.0  # rolling friction
     restitution: float = 0.0  # coefficient of restitution [0,1]
 
 
@@ -67,32 +83,48 @@ def _build_contact_frame(normal: Vec3) -> tuple[Vec3, Vec3]:
     return t1, t2
 
 
-def _compute_contact_jacobian_row(
+def _compute_linear_jacobian_row(
     direction: Vec3,
     point: Vec3,
     body_origin: Vec3,
     body_R: NDArray,
 ) -> Vec6:
-    """Compute one row of the contact Jacobian for one body.
+    """Jacobian row mapping body spatial velocity to linear contact velocity.
 
-    Maps body spatial velocity [lin; ang] (body frame) to
-    contact velocity along `direction` (world frame).
+    v_contact_dir = direction^T (v_lin_world + omega_world x r)
 
-    Returns J_row (6,) such that v_contact_dir = J_row @ v_body.
+    Returns J_row (6,) in body frame: v_contact_dir = J_row @ v_body.
     """
-    # v_point_world = R @ v_lin_body + (R @ omega_body) × r_world
-    # dot(d, v_point) = d^T R v_lin + d^T (R omega × r)
-    #                 = d^T R v_lin + (r × d)^T R omega
-    #                 = (R^T d)^T v_lin + (R^T (r × d))^T omega
     r_world = point - body_origin
     rxd = np.cross(r_world, direction)
-    J_lin = body_R.T @ direction  # (3,) in body frame
-    J_ang = body_R.T @ rxd  # (3,) in body frame
+    J_lin = body_R.T @ direction
+    J_ang = body_R.T @ rxd
+    return np.concatenate([J_lin, J_ang])
+
+
+def _compute_angular_jacobian_row(
+    direction: Vec3,
+    body_R: NDArray,
+) -> Vec6:
+    """Jacobian row mapping body spatial velocity to angular contact velocity.
+
+    omega_contact_dir = direction^T (R @ omega_body)
+
+    Used for spin (direction=normal) and rolling (direction=tangent).
+    No moment arm contribution — pure angular.
+
+    Returns J_row (6,) in body frame.
+    """
+    J_lin = np.zeros(3)
+    J_ang = body_R.T @ direction
     return np.concatenate([J_lin, J_ang])
 
 
 class PGSContactSolver:
-    """Projected Gauss-Seidel LCP solver with full Delassus matrix.
+    """Projected Gauss-Seidel LCP solver with variable condim support.
+
+    Supports condim 1/3/4/6 per contact. Constraint rows per contact
+    vary: 1, 3, 4, or 6 rows respectively.
 
     Args:
         max_iter : Maximum PGS iterations.
@@ -112,22 +144,18 @@ class PGSContactSolver:
         self.tolerance = tolerance
         self.erp = erp
         self.cfm = cfm
-        # Warm starting cache: (body_i, body_j) → list of (point, lambda_3)
         self._warm_cache: dict[tuple[int, int], list[tuple[Vec3, NDArray]]] = {}
 
     def solve(
         self,
         contacts: list[ContactConstraint],
-        body_v: list[Vec6],  # spatial velocities in body frame
-        body_X_world: list,  # SpatialTransform per body
-        inv_mass: list[float],  # 1/mass per body (0 for ground)
-        inv_inertia: list[NDArray],  # 3x3 inverse inertia per body (zeros for ground)
+        body_v: list[Vec6],
+        body_X_world: list,
+        inv_mass: list[float],
+        inv_inertia: list[NDArray],
         dt: float,
     ) -> list[Vec6]:
-        """Solve contact constraints and return spatial impulses per body.
-
-        Returns: list of Vec6 impulses in body frame.
-        """
+        """Solve contact constraints and return spatial impulses per body."""
         nc = len(contacts)
         num_bodies = len(body_v)
         if nc == 0:
@@ -138,75 +166,117 @@ class PGSContactSolver:
         for c in contacts:
             c.tangent1, c.tangent2 = _build_contact_frame(c.normal)
 
-        n_rows = nc * 3  # 3 constraint rows per contact (normal + 2 tangent)
+        # ── Row offset mapping (variable rows per contact) ──
+        row_offsets = []  # row_offsets[ci] = start row for contact ci
+        offset = 0
+        for c in contacts:
+            row_offsets.append(offset)
+            offset += c.condim
+        n_rows = offset
 
-        # ── Build full Jacobian J (n_rows × 6*num_bodies) ──
-        # Stored as sparse: for each row, we store J_i and J_j (6-vectors for body_i and body_j)
-        J_body_i = np.zeros((n_rows, 6))  # Jacobian for body_i
-        J_body_j = np.zeros((n_rows, 6))  # Jacobian for body_j
+        # ── Build Jacobian rows ──
+        # For each row, store which direction and whether it's linear or angular
+        J_body_i = np.zeros((n_rows, 6))
+        J_body_j = np.zeros((n_rows, 6))
 
         for ci, c in enumerate(contacts):
-            directions = [c.normal, c.tangent1, c.tangent2]
-            for d_idx, direction in enumerate(directions):
-                row = ci * 3 + d_idx
+            base = row_offsets[ci]
+
+            # Row 0: normal (linear)
+            directions_linear = [c.normal]
+            if c.condim >= 3:
+                directions_linear.extend([c.tangent1, c.tangent2])
+
+            for d_idx, direction in enumerate(directions_linear):
+                row = base + d_idx
                 if c.body_i >= 0:
-                    J_body_i[row] = _compute_contact_jacobian_row(
-                        direction, c.point, body_X_world[c.body_i].r,
+                    J_body_i[row] = _compute_linear_jacobian_row(
+                        direction,
+                        c.point,
+                        body_X_world[c.body_i].r,
                         body_X_world[c.body_i].R,
                     )
                 if c.body_j >= 0:
-                    J_body_j[row] = -_compute_contact_jacobian_row(
-                        direction, c.point, body_X_world[c.body_j].r,
+                    J_body_j[row] = -_compute_linear_jacobian_row(
+                        direction,
+                        c.point,
+                        body_X_world[c.body_j].r,
                         body_X_world[c.body_j].R,
                     )
 
-        # ── Build full Delassus operator W = J M⁻¹ Jᵀ (n_rows × n_rows) ──
-        # For each body b, accumulate: W += J_b^T M_b^{-1} J_b
-        # where J_b has non-zero rows only for contacts involving body b.
+            # Row 3: spin about normal (angular) — condim >= 4
+            if c.condim >= 4:
+                row = base + 3
+                if c.body_i >= 0:
+                    J_body_i[row] = _compute_angular_jacobian_row(
+                        c.normal,
+                        body_X_world[c.body_i].R,
+                    )
+                if c.body_j >= 0:
+                    J_body_j[row] = -_compute_angular_jacobian_row(
+                        c.normal,
+                        body_X_world[c.body_j].R,
+                    )
+
+            # Rows 4-5: rolling about tangent1, tangent2 (angular) — condim == 6
+            if c.condim >= 6:
+                for t_idx, tang in enumerate([c.tangent1, c.tangent2]):
+                    row = base + 4 + t_idx
+                    if c.body_i >= 0:
+                        J_body_i[row] = _compute_angular_jacobian_row(
+                            tang,
+                            body_X_world[c.body_i].R,
+                        )
+                    if c.body_j >= 0:
+                        J_body_j[row] = -_compute_angular_jacobian_row(
+                            tang,
+                            body_X_world[c.body_j].R,
+                        )
+
+        # ── Build full Delassus W = J M⁻¹ Jᵀ ──
         W = np.zeros((n_rows, n_rows))
 
-        # Group contact rows by body
-        body_contact_rows: dict[int, list[int]] = {}  # body_idx → [row indices]
+        body_contact_rows: dict[int, list[int]] = {}
         for ci, c in enumerate(contacts):
+            base = row_offsets[ci]
             for bi in [c.body_i, c.body_j]:
                 if bi < 0:
                     continue
                 if bi not in body_contact_rows:
                     body_contact_rows[bi] = []
-                body_contact_rows[bi].extend(range(ci * 3, ci * 3 + 3))
+                body_contact_rows[bi].extend(range(base, base + c.condim))
 
         for bi, rows in body_contact_rows.items():
             m_inv = inv_mass[bi]
             I_inv = inv_inertia[bi]
 
-            # Determine which Jacobian array to use per row
-            # (J_body_i if bi == contact.body_i, J_body_j if bi == contact.body_j)
             J_rows = np.zeros((len(rows), 6))
             for ri, r in enumerate(rows):
-                ci = r // 3
+                # Find which contact this row belongs to
+                ci = _row_to_contact(r, row_offsets, nc)
                 c = contacts[ci]
                 if c.body_i == bi:
                     J_rows[ri] = J_body_i[r]
                 else:
                     J_rows[ri] = J_body_j[r]
 
-            # W contribution: J_rows^T @ M_inv @ J_rows (symmetric)
             for ri1, r1 in enumerate(rows):
                 j1_lin = J_rows[ri1, :3]
                 j1_ang = J_rows[ri1, 3:]
                 Minv_j1 = np.concatenate([m_inv * j1_lin, I_inv @ j1_ang])
-
                 for ri2, r2 in enumerate(rows):
                     W[r1, r2] += J_rows[ri2] @ Minv_j1
 
-        # Add CFM to diagonal (regularization)
         for i in range(n_rows):
             W[i, i] += self.cfm
 
-        # ── Compute free velocity at contacts ──
+        # ── Free velocity ──
         v_free = np.zeros(n_rows)
         for ci, c in enumerate(contacts):
+            base = row_offsets[ci]
+            # Relative point velocity (world frame)
             v_contact = np.zeros(3)
+            omega_contact = np.zeros(3)
             for bi, sign in [(c.body_i, 1.0), (c.body_j, -1.0)]:
                 if bi < 0:
                     continue
@@ -215,40 +285,43 @@ class PGSContactSolver:
                 v_lin_w = X.R @ v_b[:3]
                 omega_w = X.R @ v_b[3:]
                 r = c.point - X.r
-                v_point = v_lin_w + np.cross(omega_w, r)
-                v_contact += sign * v_point
+                v_contact += sign * (v_lin_w + np.cross(omega_w, r))
+                omega_contact += sign * omega_w
 
-            v_free[ci * 3 + 0] = np.dot(v_contact, c.normal)
-            v_free[ci * 3 + 1] = np.dot(v_contact, c.tangent1)
-            v_free[ci * 3 + 2] = np.dot(v_contact, c.tangent2)
+            # Linear rows
+            v_free[base] = np.dot(v_contact, c.normal)
+            if c.condim >= 3:
+                v_free[base + 1] = np.dot(v_contact, c.tangent1)
+                v_free[base + 2] = np.dot(v_contact, c.tangent2)
+            # Spin row
+            if c.condim >= 4:
+                v_free[base + 3] = np.dot(omega_contact, c.normal)
+            # Rolling rows
+            if c.condim >= 6:
+                v_free[base + 4] = np.dot(omega_contact, c.tangent1)
+                v_free[base + 5] = np.dot(omega_contact, c.tangent2)
 
-        # Baumgarte bias + restitution
-        # PGS solves: v_free + W*lambda + bias >= 0, lambda >= 0
-        # Baumgarte: bias = -erp/dt * depth (negative, pushes velocity positive)
-        # Restitution: target v_n = -e * v_incoming → bias -= e * v_free_n
-        #   (v_free_n < 0 for incoming, so -e*v_free_n > 0, making bias more negative
-        #    which drives lambda larger)
+        # ── Baumgarte bias + restitution (normal row only) ──
         bias = np.zeros(n_rows)
         for ci, c in enumerate(contacts):
+            base = row_offsets[ci]
             baumgarte = -self.erp / dt * c.depth
             restitution_bias = 0.0
-            if c.restitution > 0.0 and v_free[ci * 3] < -0.01:
-                # Newton restitution: v_after = -e * v_before
-                # bias -= e * v_free (v_free < 0, so this makes bias more negative)
-                restitution_bias = c.restitution * v_free[ci * 3]  # negative
-            bias[ci * 3] = baumgarte + restitution_bias
+            if c.restitution > 0.0 and v_free[base] < -0.01:
+                restitution_bias = c.restitution * v_free[base]
+            bias[base] = baumgarte + restitution_bias
 
-        # ── Warm starting: match by body-local coordinates (Bullet approach) ──
+        # ── Warm starting ──
         lambdas = np.zeros(n_rows)
         for ci, c in enumerate(contacts):
+            base = row_offsets[ci]
             key = (min(c.body_i, c.body_j), max(c.body_i, c.body_j))
             if key in self._warm_cache:
-                # Compute contact point in body_i local frame (or world for ground)
                 if c.body_i >= 0:
                     local_pt = body_X_world[c.body_i].R.T @ (c.point - body_X_world[c.body_i].r)
                 else:
-                    local_pt = c.point  # ground: world coords are stable
-                best_dist = 0.02  # match threshold in local coords [m]
+                    local_pt = c.point
+                best_dist = 0.02
                 best_lam = None
                 for cached_local, cached_lam in self._warm_cache[key]:
                     dist = np.linalg.norm(local_pt - cached_local)
@@ -256,50 +329,59 @@ class PGSContactSolver:
                         best_dist = dist
                         best_lam = cached_lam
                 if best_lam is not None:
-                    lambdas[ci * 3: ci * 3 + 3] = best_lam
+                    # Copy as many elements as min(cached, current) condim
+                    n_copy = min(len(best_lam), c.condim)
+                    lambdas[base : base + n_copy] = best_lam[:n_copy]
 
-        # ── PGS iterations (full row updates) ──
+        # ── PGS iterations ──
         for iteration in range(self.max_iter):
             max_delta = 0.0
 
             for ci, c in enumerate(contacts):
-                # Normal
-                idx_n = ci * 3
-                old_n = lambdas[idx_n]
-                # residual = v_free + W[row, :] @ lambda + bias
-                residual_n = v_free[idx_n] + W[idx_n] @ lambdas + bias[idx_n]
-                delta_n = -residual_n / W[idx_n, idx_n]
-                new_n = max(0.0, old_n + delta_n)
-                lambdas[idx_n] = new_n
+                base = row_offsets[ci]
+
+                # Normal (row 0): lambda_n >= 0
+                old_n = lambdas[base]
+                residual = v_free[base] + W[base] @ lambdas + bias[base]
+                delta = -residual / W[base, base]
+                new_n = max(0.0, old_n + delta)
+                lambdas[base] = new_n
                 max_delta = max(max_delta, abs(new_n - old_n))
 
-                # Tangent 1
-                idx_t1 = ci * 3 + 1
-                old_t1 = lambdas[idx_t1]
-                residual_t1 = v_free[idx_t1] + W[idx_t1] @ lambdas + bias[idx_t1]
-                delta_t1 = -residual_t1 / W[idx_t1, idx_t1]
-                max_f = c.mu * lambdas[idx_n]
-                new_t1 = np.clip(old_t1 + delta_t1, -max_f, max_f)
-                lambdas[idx_t1] = new_t1
-                max_delta = max(max_delta, abs(new_t1 - old_t1))
+                if c.condim >= 3:
+                    # Tangent 1 (row 1): |lambda_t1| <= mu * lambda_n
+                    _pgs_box_row(
+                        base + 1, c.mu * new_n, lambdas, v_free, W, bias, max_delta_ref := [max_delta]
+                    )
+                    max_delta = max_delta_ref[0]
 
-                # Tangent 2
-                idx_t2 = ci * 3 + 2
-                old_t2 = lambdas[idx_t2]
-                residual_t2 = v_free[idx_t2] + W[idx_t2] @ lambdas + bias[idx_t2]
-                delta_t2 = -residual_t2 / W[idx_t2, idx_t2]
-                new_t2 = np.clip(old_t2 + delta_t2, -max_f, max_f)
-                lambdas[idx_t2] = new_t2
-                max_delta = max(max_delta, abs(new_t2 - old_t2))
+                    # Tangent 2 (row 2)
+                    _pgs_box_row(base + 2, c.mu * new_n, lambdas, v_free, W, bias, max_delta_ref)
+                    max_delta = max_delta_ref[0]
+
+                if c.condim >= 4:
+                    # Spin (row 3): |lambda_s| <= mu_spin * lambda_n
+                    _pgs_box_row(base + 3, c.mu_spin * new_n, lambdas, v_free, W, bias, max_delta_ref)
+                    max_delta = max_delta_ref[0]
+
+                if c.condim >= 6:
+                    # Rolling 1 (row 4): |lambda_r1| <= mu_roll * lambda_n
+                    _pgs_box_row(base + 4, c.mu_roll * new_n, lambdas, v_free, W, bias, max_delta_ref)
+                    max_delta = max_delta_ref[0]
+
+                    # Rolling 2 (row 5)
+                    _pgs_box_row(base + 5, c.mu_roll * new_n, lambdas, v_free, W, bias, max_delta_ref)
+                    max_delta = max_delta_ref[0]
 
             if max_delta < self.tolerance:
                 break
 
-        # ── Update warm start cache (store in body-local coordinates) ──
+        # ── Update warm start cache ──
         self._warm_cache.clear()
         for ci, c in enumerate(contacts):
+            base = row_offsets[ci]
             key = (min(c.body_i, c.body_j), max(c.body_i, c.body_j))
-            lam = lambdas[ci * 3: ci * 3 + 3].copy()
+            lam = lambdas[base : base + c.condim].copy()
             if c.body_i >= 0:
                 local_pt = body_X_world[c.body_i].R.T @ (c.point - body_X_world[c.body_i].r)
             else:
@@ -312,20 +394,56 @@ class PGSContactSolver:
         body_impulses = [np.zeros(6) for _ in range(num_bodies)]
 
         for ci, c in enumerate(contacts):
-            J_world = (
-                lambdas[ci * 3] * c.normal
-                + lambdas[ci * 3 + 1] * c.tangent1
-                + lambdas[ci * 3 + 2] * c.tangent2
-            )
+            base = row_offsets[ci]
+
+            # Linear impulse (normal + tangent)
+            J_world_linear = lambdas[base] * c.normal
+            if c.condim >= 3:
+                J_world_linear += lambdas[base + 1] * c.tangent1
+                J_world_linear += lambdas[base + 2] * c.tangent2
+
+            # Angular impulse (spin + rolling)
+            J_world_angular = np.zeros(3)
+            if c.condim >= 4:
+                J_world_angular += lambdas[base + 3] * c.normal
+            if c.condim >= 6:
+                J_world_angular += lambdas[base + 4] * c.tangent1
+                J_world_angular += lambdas[base + 5] * c.tangent2
 
             for bi, sign in [(c.body_i, 1.0), (c.body_j, -1.0)]:
                 if bi < 0:
                     continue
                 X = body_X_world[bi]
-                f_world = sign * J_world
+                f_world = sign * J_world_linear
                 r = c.point - X.r
-                torque_world = np.cross(r, f_world)
+                torque_world = np.cross(r, f_world) + sign * J_world_angular
                 body_impulses[bi][:3] += X.R.T @ f_world
                 body_impulses[bi][3:] += X.R.T @ torque_world
 
         return body_impulses
+
+
+def _pgs_box_row(
+    idx: int,
+    limit: float,
+    lambdas: NDArray,
+    v_free: NDArray,
+    W: NDArray,
+    bias: NDArray,
+    max_delta_ref: list[float],
+) -> None:
+    """One PGS update for a box-constrained row: |lambda| <= limit."""
+    old = lambdas[idx]
+    residual = v_free[idx] + W[idx] @ lambdas + bias[idx]
+    delta = -residual / W[idx, idx]
+    new = np.clip(old + delta, -limit, limit)
+    lambdas[idx] = new
+    max_delta_ref[0] = max(max_delta_ref[0], abs(new - old))
+
+
+def _row_to_contact(row: int, row_offsets: list[int], nc: int) -> int:
+    """Find the contact index that owns a given row."""
+    for ci in range(nc - 1, -1, -1):
+        if row >= row_offsets[ci]:
+            return ci
+    return 0
