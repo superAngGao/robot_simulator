@@ -344,7 +344,7 @@ class LCPContactModel(ContactModel):
         **solver_kwargs,
     ) -> None:
         from .gjk_epa import ground_contact_query
-        from .lcp_solver import PGSContactSolver
+        from .solvers.pgs_solver import PGSContactSolver
 
         self._mu = mu
         self._restitution = restitution
@@ -393,7 +393,7 @@ class LCPContactModel(ContactModel):
         dt: float | None = None,
         tree: "RobotTree | None" = None,
     ) -> List[Vec6]:
-        from .lcp_solver import ContactConstraint
+        from .solvers.pgs_solver import ContactConstraint
 
         step_dt = dt if dt is not None else 1e-3
 
