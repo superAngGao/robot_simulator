@@ -1,23 +1,22 @@
 """
-Tests for Simulator (Layer 2 orchestrator).
+Tests for Simulator with Scene API.
 
 Uses a single free-floating body (no contact, no self-collision) to keep
-tests fast and dependency-free. Pattern mirrors test_free_fall.py.
+tests fast and dependency-free. Validates the new Scene-based Simulator.
 """
 
 import numpy as np
 
-from physics.collision import NullSelfCollision
-from physics.contact import NullContactModel
 from physics.integrator import RK4, SemiImplicitEuler
 from physics.joint import FreeJoint
 from physics.robot_tree import Body, RobotTree
 from physics.spatial import SpatialInertia, SpatialTransform
 from robot.model import RobotModel
+from scene import Scene
 from simulator import Simulator
 
 
-def _make_model(gravity: float = 9.81) -> RobotModel:
+def _make_scene(gravity: float = 9.81):
     """Single free-floating body, 1 kg, unit inertia, no contact."""
     tree = RobotTree(gravity=gravity)
     body = Body(
@@ -30,15 +29,12 @@ def _make_model(gravity: float = 9.81) -> RobotModel:
     )
     tree.add_body(body)
     tree.finalize()
-    return RobotModel(
-        tree=tree,
-        contact_model=NullContactModel(),
-        self_collision=NullSelfCollision(),
-    )
+    model = RobotModel(tree=tree)
+    return Scene.single_robot(model)
 
 
-def _initial_state(model: RobotModel, z0: float = 1.0):
-    tree = model.tree
+def _initial_state(scene, z0: float = 1.0):
+    tree = scene.robots["main"].tree
     q, qdot = tree.default_state()
     q[3] = 1.0  # qw = 1 (identity quaternion)
     q[6] = z0  # pz
@@ -50,12 +46,12 @@ def _initial_state(model: RobotModel, z0: float = 1.0):
 
 def test_step_returns_valid_state():
     """Single step: output shapes correct and all values finite."""
-    model = _make_model()
-    sim = Simulator(model, SemiImplicitEuler(dt=2e-4))
-    q, qdot = _initial_state(model)
-    tau = np.zeros(model.tree.nv)
+    scene = _make_scene()
+    sim = Simulator(scene, SemiImplicitEuler(dt=2e-4))
+    q, qdot = _initial_state(scene)
+    tau = np.zeros(scene.robots["main"].tree.nv)
 
-    q_new, qdot_new = sim.step(q, qdot, tau)
+    q_new, qdot_new = sim.step_single(q, qdot, tau)
 
     assert q_new.shape == q.shape
     assert qdot_new.shape == qdot.shape
@@ -68,27 +64,21 @@ def test_passive_torques_applied():
 
     For a free body with no revolute joints, passive_torques is zero, so
     we verify the result matches a manual call that explicitly adds zeros.
-    The key invariant: sim.step(q, qdot, tau) == integrator.step(tree, q, qdot,
-    tau + passive_torques, ext_forces).
     """
-    model = _make_model()
+    scene = _make_scene()
     integrator = SemiImplicitEuler(dt=2e-4)
-    sim = Simulator(model, integrator)
-    tree = model.tree
+    sim = Simulator(scene, integrator)
+    tree = scene.robots["main"].tree
 
-    q, qdot = _initial_state(model)
+    q, qdot = _initial_state(scene)
     tau = np.zeros(tree.nv)
 
-    q_sim, qdot_sim = sim.step(q.copy(), qdot.copy(), tau.copy())
+    q_sim, qdot_sim = sim.step_single(q.copy(), qdot.copy(), tau.copy())
 
-    # Manual equivalent
+    # Manual equivalent (no contacts, no collision → zero ext_forces)
     tau_passive = tree.passive_torques(q, qdot)
     tau_total = tau + tau_passive
-    X_world = tree.forward_kinematics(q)
-    v_bodies = tree.body_velocities(q, qdot)
-    contact_forces = model.contact_model.compute_forces(X_world, v_bodies, tree.num_bodies)
-    sc_forces = model.self_collision.compute_forces(X_world, v_bodies, tree.num_bodies)
-    ext_forces = [cf + scf for cf, scf in zip(contact_forces, sc_forces)]
+    ext_forces = [np.zeros(6) for _ in range(tree.num_bodies)]
     q_manual, qdot_manual = integrator.step(tree, q, qdot, tau_total, ext_forces)
 
     np.testing.assert_allclose(q_sim, q_manual, atol=1e-14)
@@ -97,28 +87,24 @@ def test_passive_torques_applied():
 
 def test_matches_manual_loop():
     """Simulator over 100 steps must exactly match a manual step loop."""
-    model = _make_model()
+    scene = _make_scene()
     integrator = SemiImplicitEuler(dt=2e-4)
-    sim = Simulator(model, integrator)
-    tree = model.tree
+    sim = Simulator(scene, integrator)
+    tree = scene.robots["main"].tree
 
-    q0, qdot0 = _initial_state(model)
+    q0, qdot0 = _initial_state(scene)
     tau = np.zeros(tree.nv)
 
     # Simulator path
     q_s, qdot_s = q0.copy(), qdot0.copy()
     for _ in range(100):
-        q_s, qdot_s = sim.step(q_s, qdot_s, tau)
+        q_s, qdot_s = sim.step_single(q_s, qdot_s, tau)
 
-    # Manual path
+    # Manual path (no contacts → zero ext_forces)
     q_m, qdot_m = q0.copy(), qdot0.copy()
     for _ in range(100):
         tau_passive = tree.passive_torques(q_m, qdot_m)
-        X_world = tree.forward_kinematics(q_m)
-        v_bodies = tree.body_velocities(q_m, qdot_m)
-        cf = model.contact_model.compute_forces(X_world, v_bodies, tree.num_bodies)
-        scf = model.self_collision.compute_forces(X_world, v_bodies, tree.num_bodies)
-        ext = [a + b for a, b in zip(cf, scf)]
+        ext = [np.zeros(6) for _ in range(tree.num_bodies)]
         q_m, qdot_m = integrator.step(tree, q_m, qdot_m, tau + tau_passive, ext)
 
     np.testing.assert_allclose(q_s, q_m, atol=1e-12)
@@ -126,14 +112,14 @@ def test_matches_manual_loop():
 
 
 def test_swap_integrator():
-    """Simulator with RK4 integrator must run without error and return finite state."""
-    model = _make_model()
-    sim = Simulator(model, RK4(dt=2e-4))
-    q, qdot = _initial_state(model)
-    tau = np.zeros(model.tree.nv)
+    """Simulator with RK4 integrator must run without error."""
+    scene = _make_scene()
+    sim = Simulator(scene, RK4(dt=2e-4))
+    q, qdot = _initial_state(scene)
+    tau = np.zeros(scene.robots["main"].tree.nv)
 
     for _ in range(50):
-        q, qdot = sim.step(q, qdot, tau)
+        q, qdot = sim.step_single(q, qdot, tau)
 
     assert np.all(np.isfinite(q))
     assert np.all(np.isfinite(qdot))

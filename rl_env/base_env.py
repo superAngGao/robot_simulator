@@ -136,7 +136,13 @@ class Env(gym.Env):
         tree = self.model.tree
         self.X_world = tree.forward_kinematics(self.q)
         self.v_bodies = tree.body_velocities(self.q, self.qdot)
-        self.active_contacts = self.model.contact_model.active_contacts(self.X_world)
+        # active_contacts: legacy field for obs_terms.contact_mask
+        # With Scene architecture, contact detection moves to CollisionPipeline.
+        # For backward compat, return empty list if contact_model not present.
+        if hasattr(self.model, "contact_model"):
+            self.active_contacts = self.model.contact_model.active_contacts(self.X_world)
+        else:
+            self.active_contacts = []
 
     # ------------------------------------------------------------------
     # Gymnasium API

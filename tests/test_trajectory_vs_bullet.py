@@ -41,14 +41,13 @@ try:
 except ImportError:
     HAS_BULLET = False
 
-from physics.collision import NullSelfCollision
-from physics.contact import LCPContactModel
-from physics.geometry import SphereShape
+from physics.geometry import BodyCollisionGeometry, ShapeInstance, SphereShape
 from physics.integrator import SemiImplicitEuler
 from physics.joint import FreeJoint
 from physics.robot_tree import Body, RobotTreeNumpy
 from physics.spatial import SpatialInertia, SpatialTransform
 from robot.model import RobotModel
+from scene import Scene
 from simulator import Simulator
 
 pytestmark = pytest.mark.skipif(not HAS_BULLET, reason="pybullet not installed")
@@ -94,7 +93,7 @@ def _bullet_trajectory():
 
 
 def _our_lcp_trajectory():
-    """Run our LCP Simulator and return (z, vz) arrays."""
+    """Run our Scene-based Simulator and return (z, vz) arrays."""
     tree = RobotTreeNumpy(gravity=9.81)
     b = Body(
         name="ball",
@@ -107,10 +106,13 @@ def _our_lcp_trajectory():
     tree.add_body(b)
     tree.finalize()
 
-    lcp = LCPContactModel(mu=0.5, condim=3, max_iter=30, erp=0.2)
-    lcp.add_contact_body(0, SphereShape(RADIUS), "ball")
-    model = RobotModel(tree=tree, contact_model=lcp, self_collision=NullSelfCollision())
-    sim = Simulator(model, SemiImplicitEuler(dt=DT))
+    model = RobotModel(
+        tree=tree,
+        contact_body_names=["ball"],
+        geometries=[BodyCollisionGeometry(0, [ShapeInstance(SphereShape(RADIUS))])],
+    )
+    scene = Scene.single_robot(model)
+    sim = Simulator(scene, SemiImplicitEuler(dt=DT))
 
     q, qdot = tree.default_state()
     q[3] = 1.0
@@ -122,7 +124,7 @@ def _our_lcp_trajectory():
     for i in range(N_STEPS):
         z[i] = q[6]
         vz[i] = qdot[2]
-        q, qdot = sim.step(q, qdot, tau)
+        q, qdot = sim.step_single(q, qdot, tau)
     return z, vz
 
 

@@ -23,8 +23,6 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from physics.collision import NullSelfCollision
-from physics.contact import ContactParams, ContactPoint, NullContactModel, PenaltyContactModel
 from physics.joint import FreeJoint, RevoluteJoint
 from physics.robot_tree import Body, RobotTreeNumpy
 from physics.spatial import SpatialInertia, SpatialTransform
@@ -71,18 +69,10 @@ def _make_model(with_contacts=False) -> RobotModel:
     tree.add_body(link2)
     tree.finalize()
 
-    if with_contacts:
-        contact_model = PenaltyContactModel(ContactParams(k_normal=1000.0, b_normal=100.0))
-        contact_model.add_contact_point(ContactPoint(body_index=2, position=np.zeros(3), name="foot"))
-        contact_body_names = ["foot"]
-    else:
-        contact_model = NullContactModel()
-        contact_body_names = []
+    contact_body_names = ["foot"] if with_contacts else []
 
     return RobotModel(
         tree=tree,
-        contact_model=contact_model,
-        self_collision=NullSelfCollision(),
         actuated_joint_names=["j1", "j2"],
         contact_body_names=contact_body_names,
     )

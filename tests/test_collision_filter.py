@@ -251,47 +251,45 @@ class TestLoadURDFCollisionFilter:
         return f.name
 
     def test_collision_filter_created(self):
-        """load_urdf should always create a CollisionFilter on the model."""
-        from robot import load_urdf
+        """load_urdf_scene should create a CollisionFilter on the Scene."""
+        from robot import load_urdf_scene
 
         path = self._write_urdf()
         try:
-            model = load_urdf(path, floating_base=True, contact_links=[])
+            scene = load_urdf_scene(path, floating_base=True, contact_links=[])
         finally:
             os.unlink(path)
 
-        assert model.collision_filter is not None
-        assert isinstance(model.collision_filter, CollisionFilter)
+        assert scene.collision_filter is not None
+        assert isinstance(scene.collision_filter, CollisionFilter)
 
     def test_parent_child_auto_excluded(self):
-        """Parent-child pairs should be auto-excluded in the filter."""
-        from robot import load_urdf
+        """Parent-child pairs should be auto-excluded in the Scene filter."""
+        from robot import load_urdf_scene
 
         path = self._write_urdf()
         try:
-            model = load_urdf(path, floating_base=True, contact_links=[])
+            scene = load_urdf_scene(path, floating_base=True, contact_links=[])
         finally:
             os.unlink(path)
 
-        f = model.collision_filter
-        tree = model.tree
-        # base→arm_L and base→arm_R are parent-child
+        f = scene.collision_filter
+        tree = scene.robots["main"].tree
         base_idx = next(b.index for b in tree.bodies if b.name == "base")
         arm_l_idx = next(b.index for b in tree.bodies if b.name == "arm_L")
         arm_r_idx = next(b.index for b in tree.bodies if b.name == "arm_R")
 
         assert not f.should_collide(base_idx, arm_l_idx)
         assert not f.should_collide(base_idx, arm_r_idx)
-        # arm_L vs arm_R are non-adjacent → should collide by default
         assert f.should_collide(arm_l_idx, arm_r_idx)
 
     def test_explicit_exclude_pairs(self):
         """collision_exclude_pairs should add extra exclusions."""
-        from robot import load_urdf
+        from robot import load_urdf_scene
 
         path = self._write_urdf()
         try:
-            model = load_urdf(
+            scene = load_urdf_scene(
                 path,
                 floating_base=True,
                 contact_links=[],
@@ -300,21 +298,21 @@ class TestLoadURDFCollisionFilter:
         finally:
             os.unlink(path)
 
-        f = model.collision_filter
-        tree = model.tree
+        f = scene.collision_filter
+        tree = scene.robots["main"].tree
         arm_l_idx = next(b.index for b in tree.bodies if b.name == "arm_L")
         arm_r_idx = next(b.index for b in tree.bodies if b.name == "arm_R")
 
         assert not f.should_collide(arm_l_idx, arm_r_idx)
 
-    def test_exclude_reduces_self_collision_pairs(self):
-        """Excluding arm_L-arm_R should reduce self-collision pairs."""
-        from robot import load_urdf
+    def test_exclude_reduces_filter_pairs(self):
+        """Excluding arm_L-arm_R should reduce collision-eligible pairs."""
+        from robot import load_urdf_scene
 
         path = self._write_urdf()
         try:
-            model_no_excl = load_urdf(path, floating_base=True, contact_links=[])
-            model_excl = load_urdf(
+            scene_no = load_urdf_scene(path, floating_base=True, contact_links=[])
+            scene_ex = load_urdf_scene(
                 path,
                 floating_base=True,
                 contact_links=[],
@@ -323,15 +321,15 @@ class TestLoadURDFCollisionFilter:
         finally:
             os.unlink(path)
 
-        assert model_excl.self_collision.num_pairs < model_no_excl.self_collision.num_pairs
+        assert scene_ex.collision_filter.num_excluded > scene_no.collision_filter.num_excluded
 
     def test_invalid_link_in_exclude_warns(self):
         """Non-existent link name in collision_exclude_pairs should warn, not crash."""
-        from robot import load_urdf
+        from robot import load_urdf_scene
 
         path = self._write_urdf()
         try:
-            model = load_urdf(
+            scene = load_urdf_scene(
                 path,
                 floating_base=True,
                 contact_links=[],
@@ -340,5 +338,4 @@ class TestLoadURDFCollisionFilter:
         finally:
             os.unlink(path)
 
-        # Should still build successfully
-        assert model.collision_filter is not None
+        assert scene.collision_filter is not None

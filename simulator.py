@@ -27,7 +27,7 @@ from physics.spatial import SpatialTransform
 from robot.model import RobotModel
 
 if TYPE_CHECKING:
-    from scene import Scene
+    pass
 
 
 class Simulator:
@@ -41,31 +41,42 @@ class Simulator:
 
     def __init__(
         self,
-        scene: "Scene",
+        scene_or_model,
         integrator: Integrator,
         solver=None,
     ) -> None:
-        self.scene = scene
+        # Auto-wrap RobotModel into Scene for backward compatibility
+        if isinstance(scene_or_model, RobotModel):
+            from scene import Scene
+
+            scene_or_model = Scene.single_robot(scene_or_model)
+
+        self.scene = scene_or_model
         self.integrator = integrator
-        self.solver = solver or PGSContactSolver(
-            **scene.solver_kwargs if scene.solver_kwargs else {"max_iter": 30}
-        )
-        self.pipeline = CollisionPipeline(scene)
+        kw = self.scene.solver_kwargs if self.scene.solver_kwargs else {"max_iter": 30}
+        self.solver = solver or PGSContactSolver(**kw)
+        self.pipeline = CollisionPipeline(self.scene)
 
-    def step(
-        self,
-        states: dict[str, tuple[NDArray, NDArray]],
-        taus: dict[str, NDArray],
-    ) -> dict[str, tuple[NDArray, NDArray]]:
-        """Advance all robots by one time step.
+    def step(self, states_or_q, taus_or_qdot=None, tau_single=None):
+        """Advance the simulation by one time step.
 
-        Args:
-            states : {robot_name: (q, qdot)} for each robot in the scene.
-            taus   : {robot_name: tau} actuator torques for each robot.
-
-        Returns:
-            {robot_name: (q_new, qdot_new)} for each robot.
+        Two calling conventions:
+          Multi-robot:  step({"a": (q,qdot)}, {"a": tau}) → {"a": (q,qdot)}
+          Single-robot: step(q, qdot, tau) → (q, qdot)   [backward compat]
         """
+        # Detect single-robot backward-compat call: step(q, qdot, tau)
+        if tau_single is not None:
+            return self.step_single(states_or_q, taus_or_qdot, tau_single)
+        if not isinstance(states_or_q, dict):
+            # Assume step(q, qdot, tau) with tau=taus_or_qdot... but 2 args
+            # This shouldn't happen in new code; raise for clarity
+            raise TypeError(
+                "step() requires either step(states_dict, taus_dict) or "
+                "step(q, qdot, tau). Use step_single() for single-robot."
+            )
+
+        states = states_or_q
+        taus = taus_or_qdot
         reg = self.scene.registry
         dt = self.integrator.dt
 

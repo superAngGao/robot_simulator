@@ -146,15 +146,10 @@ def test_arbitrary_axis():
 
 
 def test_contact_links():
-    """contact_links specified → contact_model has corresponding ContactPoint."""
+    """contact_links specified → contact_body_names populated."""
     path = _write_urdf(_two_link_urdf())
     try:
-        from physics.contact import PenaltyContactModel
-
         model = load_urdf(path, floating_base=True, contact_links=["child"])
-        assert isinstance(model.contact_model, PenaltyContactModel)
-        assert len(model.contact_model.contact_points) == 1
-        assert model.contact_model.contact_points[0].name == "child"
         assert "child" in model.contact_body_names
     finally:
         os.unlink(path)

@@ -14,8 +14,9 @@ import torch
 
 from physics.integrator import SemiImplicitEuler
 from physics.joint import FreeJoint
-from simulator import Simulator
 
+# NumpyLoopBackend uses direct penalty contact (matching GPU kernels),
+# not the Scene-based Simulator.
 from .batch_backend import BatchBackend, StepResult
 from .static_data import StaticRobotData
 
@@ -47,17 +48,51 @@ class NumpyLoopBackend(BatchBackend):
 
         tree = model.tree
 
-        # Build one simulator per env (shared model, own integrator)
-        self._sims = [
-            Simulator(model, SemiImplicitEuler(cfg.dt))
-            for _ in range(num_envs)
-        ]
+        # Per-env integrator (penalty contact, matching GPU backends)
+        self._integrators = [SemiImplicitEuler(cfg.dt) for _ in range(num_envs)]
+
+        # Build penalty contact model from static data (matches GPU kernel)
+        from physics.contact import ContactParams, ContactPoint, PenaltyContactModel
+
+        s = self._static
+        self._penalty_contact = PenaltyContactModel(
+            ContactParams(
+                k_normal=s.contact_k_normal,
+                b_normal=s.contact_b_normal,
+                mu=s.contact_mu,
+                slip_eps=s.contact_slip_eps,
+                ground_z=s.contact_ground_z,
+            )
+        )
+        for ci in range(s.nc):
+            self._penalty_contact.add_contact_point(
+                ContactPoint(
+                    body_index=int(s.contact_body_idx[ci]),
+                    position=s.contact_local_pos[ci].astype(np.float64),
+                    name=f"contact_{ci}",
+                )
+            )
+
+        # Build self-collision model from static data
+        from physics.collision import AABBSelfCollision, BodyAABB, NullSelfCollision
+
+        if len(s.collision_body_idx) > 0:
+            sc = AABBSelfCollision(k_contact=s.collision_k, b_contact=s.collision_b)
+            for ci_sc in range(len(s.collision_body_idx)):
+                sc.add_body(
+                    BodyAABB(
+                        int(s.collision_body_idx[ci_sc]),
+                        s.collision_half_ext[ci_sc].astype(np.float64),
+                    )
+                )
+            parent_list = [b.parent for b in tree.bodies]
+            sc.build_pairs(parent_list)
+            self._self_collision = sc
+        else:
+            self._self_collision = NullSelfCollision()
 
         # Build controllers
-        self._controllers = [
-            self._make_controller(model, cfg, tree)
-            for _ in range(num_envs)
-        ]
+        self._controllers = [self._make_controller(model, cfg, tree) for _ in range(num_envs)]
 
         # Batched state (numpy)
         self._q = np.zeros((num_envs, tree.nq), dtype=np.float64)
@@ -75,9 +110,7 @@ class NumpyLoopBackend(BatchBackend):
             self._q[i] = q0.copy()
             self._qdot[i] = qdot0.copy()
             if init_noise_scale > 0:
-                self._q[i] += np.random.uniform(
-                    -init_noise_scale, init_noise_scale, q0.shape
-                )
+                self._q[i] += np.random.uniform(-init_noise_scale, init_noise_scale, q0.shape)
 
         return self._build_result()
 
@@ -92,9 +125,7 @@ class NumpyLoopBackend(BatchBackend):
             self._q[idx] = q0.copy()
             self._qdot[idx] = qdot0.copy()
             if init_noise_scale > 0:
-                self._q[idx] += np.random.uniform(
-                    -init_noise_scale, init_noise_scale, q0.shape
-                )
+                self._q[idx] += np.random.uniform(-init_noise_scale, init_noise_scale, q0.shape)
 
     def step_batch(self, actions: torch.Tensor) -> StepResult:
         actions_np = actions.detach().cpu().numpy()
@@ -106,15 +137,24 @@ class NumpyLoopBackend(BatchBackend):
                 action = np.clip(action, -self._cfg.action_clip, self._cfg.action_clip)
 
             tau = self._controllers[i].compute(action, self._q[i], self._qdot[i])
-            self._q[i], self._qdot[i] = self._sims[i].step(
-                self._q[i], self._qdot[i], tau
+
+            # Penalty contact step (matches GPU backend kernels)
+            tree = self._model.tree
+            tau_passive = tree.passive_torques(self._q[i], self._qdot[i])
+            tau_total = tau + tau_passive
+            X_world = tree.forward_kinematics(self._q[i])
+            v_bodies = tree.body_velocities(self._q[i], self._qdot[i])
+            contact_f = self._penalty_contact.compute_forces(X_world, v_bodies, tree.num_bodies)
+            sc_f = self._self_collision.compute_forces(X_world, v_bodies, tree.num_bodies)
+            ext_f = [cf + sf for cf, sf in zip(contact_f, sc_f)]
+            self._q[i], self._qdot[i] = self._integrators[i].step(
+                tree, self._q[i], self._qdot[i], tau_total, ext_f
             )
 
         return self._build_result()
 
     def get_obs_data(self, result: StepResult) -> dict[str, torch.Tensor]:
         s = self._static
-        N = self._num_envs
 
         # Extract root body velocity from v_bodies
         base_lin_vel = result.v_bodies[:, s.root_body_idx, :3]  # (N, 3)
@@ -179,23 +219,20 @@ class NumpyLoopBackend(BatchBackend):
             v_bodies = tree.body_velocities(self._q[i], self._qdot[i])
 
             for j, (X, v) in enumerate(zip(X_world, v_bodies)):
-                X_world_t[i, j, :9] = torch.from_numpy(
-                    X.R.astype(np.float32).flatten()
-                )
-                X_world_t[i, j, 9:] = torch.from_numpy(
-                    X.r.astype(np.float32)
-                )
+                X_world_t[i, j, :9] = torch.from_numpy(X.R.astype(np.float32).flatten())
+                X_world_t[i, j, 9:] = torch.from_numpy(X.r.astype(np.float32))
                 v_bodies_t[i, j] = torch.from_numpy(v.astype(np.float32))
 
-            # Contact mask
-            active = self._model.contact_model.active_contacts(X_world)
-            active_names = {name for name, _ in active}
-            from physics.contact import PenaltyContactModel
+            # Contact mask (legacy: uses contact_model if available)
+            if hasattr(self._model, "contact_model"):
+                active = self._model.contact_model.active_contacts(X_world)
+                active_names = {name for name, _ in active}
+                from physics.contact import PenaltyContactModel
 
-            if isinstance(self._model.contact_model, PenaltyContactModel):
-                for ci, cp in enumerate(self._model.contact_model.contact_points):
-                    if cp.name in active_names:
-                        contact_mask_t[i, ci] = True
+                if isinstance(self._model.contact_model, PenaltyContactModel):
+                    for ci, cp in enumerate(self._model.contact_model.contact_points):
+                        if cp.name in active_names:
+                            contact_mask_t[i, ci] = True
 
         return StepResult(
             q=torch.from_numpy(self._q.astype(np.float32)),
@@ -212,10 +249,7 @@ class NumpyLoopBackend(BatchBackend):
         if cfg.controller is not None:
             return cfg.controller
 
-        actuated_bodies = [
-            b for b in tree.bodies
-            if b.joint.nv > 0 and not isinstance(b.joint, FreeJoint)
-        ]
+        actuated_bodies = [b for b in tree.bodies if b.joint.nv > 0 and not isinstance(b.joint, FreeJoint)]
         actuated_q_indices = np.array(
             [i for b in actuated_bodies for i in range(b.q_idx.start, b.q_idx.stop)],
             dtype=np.intp,
