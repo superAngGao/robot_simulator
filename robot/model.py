@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from numpy.typing import NDArray
 
 from physics.collision import SelfCollisionModel
+from physics.collision_filter import CollisionFilter
 from physics.contact import ContactModel
 from physics.geometry import BodyCollisionGeometry
 from physics.robot_tree import RobotTreeNumpy
@@ -25,6 +26,7 @@ class RobotModel:
         tree                 : Kinematic tree (bodies, joints, ABA/FK).
         contact_model        : Ground-contact model (penalty or null).
         self_collision       : Self-collision model (AABB or null).
+        collision_filter     : Collision filter (bitmask + exclude pairs).
         actuated_joint_names : Names of joints with nv > 0 and not FreeJoint.
         contact_body_names   : Body names used as contact points.
         geometries           : All BodyCollisionGeometry objects (one per link
@@ -34,6 +36,7 @@ class RobotModel:
     tree: RobotTreeNumpy
     contact_model: ContactModel
     self_collision: SelfCollisionModel
+    collision_filter: CollisionFilter | None = None
     actuated_joint_names: list[str] = field(default_factory=list)
     contact_body_names: list[str] = field(default_factory=list)
     geometries: list[BodyCollisionGeometry] = field(default_factory=list)

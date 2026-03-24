@@ -21,7 +21,14 @@ import numpy as np
 from numpy.typing import NDArray
 
 from physics.collision import AABBSelfCollision, NullSelfCollision, SelfCollisionModel
-from physics.contact import ContactParams, ContactPoint, NullContactModel, PenaltyContactModel
+from physics.collision_filter import CollisionFilter
+from physics.contact import (
+    ContactParams,
+    ContactPoint,
+    LCPContactModel,
+    NullContactModel,
+    PenaltyContactModel,
+)
 from physics.geometry import (
     BodyCollisionGeometry,
     BoxShape,
@@ -268,6 +275,8 @@ def _build_model(
     self_collision_links: Optional[list[str]],
     collision_method: str,
     contact_params: Optional[ContactParams],
+    contact_method: str,
+    collision_exclude_pairs: Optional[list[tuple[str, str]]],
     gravity: float,
 ) -> RobotModel:
     # --- 1. BFS topological sort ---
@@ -367,28 +376,65 @@ def _build_model(
             )
         )
 
-    # --- 4. Contact model ---
+    # --- 4. Collision filter ---
+    parent_list = [b.parent for b in tree.bodies]
+    coll_filter = CollisionFilter(num_bodies=tree.num_bodies)
+    coll_filter.auto_exclude_adjacent(parent_list)
+    if collision_exclude_pairs:
+        for ln_a, ln_b in collision_exclude_pairs:
+            if ln_a not in link_to_body_idx:
+                log.warning("collision_exclude_pairs: link %r not found; skipping.", ln_a)
+                continue
+            if ln_b not in link_to_body_idx:
+                log.warning("collision_exclude_pairs: link %r not found; skipping.", ln_b)
+                continue
+            coll_filter.exclude_pair(link_to_body_idx[ln_a], link_to_body_idx[ln_b])
+
+    # --- 5. Contact model ---
     params = contact_params or ContactParams()
     if contact_links:
-        contact_model = PenaltyContactModel(params=params)
-        for link_name in contact_links:
-            if link_name not in link_to_body_idx:
-                log.warning("contact_links: link %r not found in URDF; skipping.", link_name)
-                continue
-            cp = ContactPoint(
-                body_index=link_to_body_idx[link_name],
-                position=np.zeros(3, dtype=np.float64),
-                name=link_name,
+        valid_contact_links = [ln for ln in contact_links if ln in link_to_body_idx]
+        for ln in contact_links:
+            if ln not in link_to_body_idx:
+                log.warning("contact_links: link %r not found in URDF; skipping.", ln)
+
+        if contact_method == "penalty":
+            contact_model = PenaltyContactModel(params=params)
+            for link_name in valid_contact_links:
+                cp = ContactPoint(
+                    body_index=link_to_body_idx[link_name],
+                    position=np.zeros(3, dtype=np.float64),
+                    name=link_name,
+                )
+                contact_model.add_contact_point(cp)
+        elif contact_method == "lcp":
+            lcp_model = LCPContactModel(
+                mu=params.mu,
+                restitution=0.0,
+                terrain=None,  # default FlatTerrain(0)
+                collision_filter=coll_filter,
+                max_iter=30,
             )
-            contact_model.add_contact_point(cp)
-        contact_body_names = [ln for ln in contact_links if ln in link_to_body_idx]
+            # Build a geometry lookup: body_index → BodyCollisionGeometry
+            geom_by_body = {g.body_index: g for g in geometries}
+            for link_name in valid_contact_links:
+                bi = link_to_body_idx[link_name]
+                if bi in geom_by_body and geom_by_body[bi].shapes:
+                    # Use the first primitive shape
+                    shape = geom_by_body[bi].shapes[0].shape
+                else:
+                    # No collision geometry — use a small sphere (point-like)
+                    shape = SphereShape(0.01)
+                lcp_model.add_contact_body(bi, shape, link_name)
+            contact_model = lcp_model
+        else:
+            raise ValueError(f"Unsupported contact_method {contact_method!r}; use 'penalty' or 'lcp'.")
+        contact_body_names = valid_contact_links
     else:
         contact_model = NullContactModel()
         contact_body_names = []
 
-    # --- 5. Self-collision model ---
-    parent_list = [b.parent for b in tree.bodies]
-
+    # --- 6. Self-collision model ---
     if collision_method != "aabb":
         raise ValueError(f"Unsupported collision_method {collision_method!r}; only 'aabb' is supported.")
 
@@ -400,16 +446,20 @@ def _build_model(
         sc_geoms = geometries  # all non-mesh bodies
 
     if sc_geoms:
-        self_collision: SelfCollisionModel = AABBSelfCollision.from_geometries(sc_geoms, parent_list)
+        self_collision: SelfCollisionModel = AABBSelfCollision.from_geometries(
+            sc_geoms,
+            parent_list,
+            collision_filter=coll_filter,
+        )
     else:
         self_collision = NullSelfCollision()
 
-    # --- 6. Actuated joint names ---
+    # --- 7. Actuated joint names ---
     actuated_joint_names = [
         b.joint.name for b in tree.bodies if b.joint.nv > 0 and not isinstance(b.joint, FreeJoint)
     ]
 
-    # --- 7. Effort limits (None if all zero / unspecified) ---
+    # --- 8. Effort limits (None if all zero / unspecified) ---
     joint_effort: dict[str, float] = {jd.name: jd.effort for jd in data.joints}
     efforts = np.array([joint_effort.get(name, 0.0) for name in actuated_joint_names], dtype=np.float64)
     effort_limits = efforts if np.any(efforts > 0) else None
@@ -418,6 +468,7 @@ def _build_model(
         tree=tree,
         contact_model=contact_model,
         self_collision=self_collision,
+        collision_filter=coll_filter,
         actuated_joint_names=actuated_joint_names,
         contact_body_names=contact_body_names,
         geometries=geometries,
@@ -437,25 +488,33 @@ def load_urdf(
     self_collision_links: Optional[list[str]] = None,
     collision_method: str = "aabb",
     contact_params: Optional[ContactParams] = None,
+    contact_method: str = "penalty",
+    collision_exclude_pairs: Optional[list[tuple[str, str]]] = None,
     gravity: float = 9.81,
 ) -> RobotModel:
     """Parse a URDF file and return a fully-constructed RobotModel.
 
     Args:
-        urdf_path            : Path to the .urdf file.
-        floating_base        : If True, root link gets a FreeJoint (6 DOF).
-                               If False, root link is fixed to the world.
-        contact_links        : Link names to register as contact points.
-                               None → no contact model (NullContactModel).
-        self_collision_links : Link names to include in self-collision.
-                               None → all links with non-mesh geometry.
-        collision_method     : Broad-phase algorithm. Only "aabb" supported.
-        contact_params       : ContactParams for the penalty model.
-                               None → default ContactParams().
-        gravity              : Gravitational acceleration [m/s²].
+        urdf_path               : Path to the .urdf file.
+        floating_base           : If True, root link gets a FreeJoint (6 DOF).
+                                  If False, root link is fixed to the world.
+        contact_links           : Link names to register as contact points.
+                                  None → no contact model (NullContactModel).
+        self_collision_links    : Link names to include in self-collision.
+                                  None → all links with non-mesh geometry.
+        collision_method        : Broad-phase algorithm. Only "aabb" supported.
+        contact_params          : ContactParams for the penalty model (also
+                                  supplies ``mu`` for the LCP model).
+                                  None → default ContactParams().
+        contact_method          : "penalty" (spring-damper) or "lcp" (GJK/EPA + PGS).
+        collision_exclude_pairs : List of ``(link_a, link_b)`` name pairs to
+                                  exclude from collision detection.  Parent-child
+                                  pairs are always excluded automatically.
+        gravity                 : Gravitational acceleration [m/s²].
 
     Returns:
-        RobotModel with tree, contact_model, self_collision, and metadata.
+        RobotModel with tree, contact_model, self_collision, collision_filter,
+        and metadata.
     """
     data = _parse_urdf(urdf_path)
     return _build_model(
@@ -465,5 +524,7 @@ def load_urdf(
         self_collision_links=self_collision_links,
         collision_method=collision_method,
         contact_params=contact_params,
+        contact_method=contact_method,
+        collision_exclude_pairs=collision_exclude_pairs,
         gravity=gravity,
     )

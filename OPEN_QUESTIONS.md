@@ -168,11 +168,10 @@ Phase 2f 已实现 GJK/EPA + PGS LCP + 关节 Coulomb 摩擦。与 MuJoCo/Bullet
 7. **隐式接触积分** — 当前是显式（先算力再积分），MuJoCo/Drake 用隐式
    （接触约束与动力学耦合求解），数值稳定性更好。
 
-8. **碰撞过滤掩码** — 当前仅硬编码排除 parent-child 对。主流项目支持：
-   - 位掩码过滤（MuJoCo `conaffinity/contype`、Bullet `filter group/mask`）
-   - 显式排除声明（Drake `CollisionFilterDeclaration`）
-   - 可编程回调（PhysX `PxFilterShader`）
-   参考：Drake SceneGraph 最系统化——自动排除同 body + 相邻 body，用户可追加。
+8. ~~**碰撞过滤掩码**~~ ✅ RESOLVED — `physics/collision_filter.py` 实现了三层过滤：
+   auto-exclude（parent-child）、bitmask（group/mask uint32）、explicit exclude set。
+   集成到 `AABBSelfCollision`、`LCPContactModel`、`load_urdf(collision_exclude_pairs=...)`。
+   参考：Drake CollisionFilterDeclaration + MuJoCo contype/conaffinity。
 
 9. **接触维度控制** — MuJoCo `condim` 可选 1D（仅法向）/3D（+摩擦）/4D（+扭转摩擦）/6D（+滚动摩擦）。
    当前我们固定 3D（normal + 2 tangent）。

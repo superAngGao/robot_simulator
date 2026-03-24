@@ -5,6 +5,46 @@ Updated at the end of each development session.
 
 ---
 
+## 2026-03-24 (session 7) — LCP Simulator integration + CollisionFilter
+
+### LCPContactModel 接入 Simulator.step()
+
+**问题**：LCPContactModel 之前使用占位质量（inv_mass=1.0, inv_inertia=I）和硬编码 dt=1e-3，
+无法通过 Simulator 管线获取真实物理参数。
+
+**设计决策**：扩展 `ContactModel.compute_forces()` ABC 新增 `dt` 和 `tree` 可选 kwargs。
+PenaltyContactModel / NullContactModel 接受并忽略。LCPContactModel 从 `tree.bodies[i].inertia`
+提取真实质量和惯量张量，使用平行轴定理将 CoM 惯量转换为 body origin 惯量。
+
+**替代方案考虑**：
+- 方案 A：`pre_step(tree, dt)` hook — 过度设计，两个信息完全可以在 compute_forces 传入
+- 方案 B：LCPContactModel 构造时绑定 tree 引用 — 但 dt 仍需每步传，不如统一
+
+**load_urdf 集成**：新增 `contact_method="lcp"` 参数。LCP 模式自动从 BodyCollisionGeometry
+查找碰撞形状注册到 LCPContactModel；无碰撞几何的 link 降级为 0.01m 小球。
+
+### CollisionFilter 碰撞过滤掩码
+
+**设计决策**：独立 `physics/collision_filter.py`，三层过滤取交集：
+1. Auto-exclude：parent-child 自动排除（kinematic tree 遍历一次性计算）
+2. Bitmask：per-body group/mask uint32，双向检查 `group_i & mask_j != 0`
+3. Explicit exclude：用户声明的 (i,j) pair set
+
+**参考对标**：
+- Drake `CollisionFilterDeclaration`（auto + explicit），最系统化
+- MuJoCo `contype/conaffinity`（bitmask 双向），最简洁
+- Bullet `filter group/mask`（bitmask 单向），我们改为双向
+
+**集成点**：
+- `AABBSelfCollision.build_pairs(collision_filter=...)` — pair generation 阶段
+- `LCPContactModel(collision_filter=...)` — 为 body-body 接触预留
+- `load_urdf(collision_exclude_pairs=[("arm_L","arm_R")])` — 用户 API
+
+**性能考虑**：filter 是静态的（build 时一次性计算），`should_collide()` 是 O(1) 查询
+（set lookup + 两次位运算），不影响运行时性能。
+
+---
+
 ## 2026-03-23 (session 6) — Phase 2e GPU + Phase 2g CRBA + Phase 2f Contact
 
 ### Phase 2f: 高保真接触系统

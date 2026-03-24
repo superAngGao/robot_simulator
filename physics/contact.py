@@ -30,12 +30,17 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List
+from typing import TYPE_CHECKING, List
 
 import numpy as np
 
 from .spatial import SpatialTransform, Vec3, Vec6
 from .terrain import FlatTerrain, Terrain
+
+if TYPE_CHECKING:
+    from .collision_filter import CollisionFilter
+    from .geometry import CollisionShape
+    from .robot_tree import RobotTree
 
 # ---------------------------------------------------------------------------
 # Contact parameters
@@ -115,8 +120,18 @@ class ContactModel(ABC):
         X_world_list: List[SpatialTransform],
         v_body_list: List[Vec6],
         num_bodies: int,
+        *,
+        dt: float | None = None,
+        tree: "RobotTree | None" = None,
     ) -> List[Vec6]:
         """Compute spatial contact forces for all bodies.
+
+        Args:
+            X_world_list : World-frame transforms for each body (from FK).
+            v_body_list  : Spatial velocities in body frame for each body.
+            num_bodies   : Total number of bodies in the tree.
+            dt           : Integration time step [s] (needed by LCP models).
+            tree         : Robot tree (needed by LCP models for mass properties).
 
         Returns:
             List of spatial force vectors (6,) in body frame, one per body.
@@ -173,6 +188,9 @@ class PenaltyContactModel(ContactModel):
         X_world_list: List[SpatialTransform],
         v_body_list: List[Vec6],
         num_bodies: int,
+        *,
+        dt: float | None = None,
+        tree: "RobotTree | None" = None,
     ) -> List[Vec6]:
         """Compute spatial contact forces for all bodies.
 
@@ -180,6 +198,8 @@ class PenaltyContactModel(ContactModel):
             X_world_list : World-frame transforms for each body (from FK).
             v_body_list  : Spatial velocities in body frame for each body.
             num_bodies   : Total number of bodies in the tree.
+            dt           : Unused (accepted for interface compatibility).
+            tree         : Unused (accepted for interface compatibility).
 
         Returns:
             List of spatial force vectors (6,) in body frame, one per body.
@@ -274,6 +294,9 @@ class NullContactModel(ContactModel):
         X_world_list: List[SpatialTransform],
         v_body_list: List[Vec6],
         num_bodies: int,
+        *,
+        dt: float | None = None,
+        tree: "RobotTree | None" = None,
     ) -> List[Vec6]:
         return [np.zeros(6, dtype=np.float64) for _ in range(num_bodies)]
 
@@ -300,10 +323,13 @@ class LCPContactModel(ContactModel):
     Solves the LCP with full Delassus matrix and warm starting.
 
     Args:
-        mu           : Coulomb friction coefficient.
-        restitution  : Coefficient of restitution [0, 1].
-        terrain      : Terrain object for ground height queries.
-        solver_kwargs: Forwarded to PGSContactSolver (max_iter, erp, cfm).
+        mu               : Coulomb friction coefficient.
+        restitution      : Coefficient of restitution [0, 1].
+        terrain          : Terrain object for ground height queries.
+        collision_filter : Optional CollisionFilter for body-body contact
+                           filtering.  Ground contacts (body vs ground)
+                           are never filtered.
+        solver_kwargs    : Forwarded to PGSContactSolver (max_iter, erp, cfm).
     """
 
     def __init__(
@@ -311,6 +337,7 @@ class LCPContactModel(ContactModel):
         mu: float = 0.8,
         restitution: float = 0.0,
         terrain: "Terrain | None" = None,
+        collision_filter: "CollisionFilter | None" = None,
         **solver_kwargs,
     ) -> None:
         from .gjk_epa import ground_contact_query
@@ -319,14 +346,13 @@ class LCPContactModel(ContactModel):
         self._mu = mu
         self._restitution = restitution
         self._terrain = terrain if terrain is not None else FlatTerrain(0.0)
+        self._collision_filter = collision_filter
         self._solver = PGSContactSolver(**solver_kwargs)
         self._ground_query = ground_contact_query
         self._contact_bodies: List[tuple[int, str, "CollisionShape"]] = []
         # (body_index, name, shape)
 
-    def add_contact_body(
-        self, body_index: int, shape: "CollisionShape", name: str = ""
-    ) -> None:
+    def add_contact_body(self, body_index: int, shape: "CollisionShape", name: str = "") -> None:
         """Register a body with its collision shape for ground contact."""
         self._contact_bodies.append((body_index, name, shape))
 
@@ -335,53 +361,76 @@ class LCPContactModel(ContactModel):
         X_world_list: List[SpatialTransform],
         v_body_list: List[Vec6],
         num_bodies: int,
+        *,
+        dt: float | None = None,
+        tree: "RobotTree | None" = None,
     ) -> List[Vec6]:
         from .lcp_solver import ContactConstraint
+
+        step_dt = dt if dt is not None else 1e-3
 
         contacts = []
         for body_idx, name, shape in self._contact_bodies:
             X = X_world_list[body_idx]
             manifold = self._ground_query(
-                shape, X,
+                shape,
+                X,
                 ground_z=self._terrain.height_at(X.r[0], X.r[1]),
             )
             if manifold is not None:
                 for pt in manifold.points:
-                    contacts.append(ContactConstraint(
-                        body_i=body_idx,
-                        body_j=-1,
-                        point=pt,
-                        normal=manifold.normal.copy(),
-                        tangent1=np.zeros(3),
-                        tangent2=np.zeros(3),
-                        depth=manifold.depth,
-                        mu=self._mu,
-                        restitution=self._restitution,
-                    ))
+                    contacts.append(
+                        ContactConstraint(
+                            body_i=body_idx,
+                            body_j=-1,
+                            point=pt,
+                            normal=manifold.normal.copy(),
+                            tangent1=np.zeros(3),
+                            tangent2=np.zeros(3),
+                            depth=manifold.depth,
+                            mu=self._mu,
+                            restitution=self._restitution,
+                        )
+                    )
 
         if not contacts:
             return [np.zeros(6, dtype=np.float64) for _ in range(num_bodies)]
 
-        # Build mass data for solver
-        # Approximate: use body inertia from spatial inertia matrix
-        # For now, use unit mass (the solver works with any M_inv)
+        # Build per-body inverse mass/inertia from tree
         inv_mass = []
         inv_inertia = []
-        for bi in range(num_bodies):
-            inv_mass.append(1.0)  # placeholder — should come from tree
-            inv_inertia.append(np.eye(3) * 1.0)
+        if tree is not None:
+            for bi in range(num_bodies):
+                body = tree.bodies[bi]
+                m = body.inertia.mass
+                I_com = body.inertia.inertia  # 3x3 about CoM, body frame
+                c = body.inertia.com
+                # Parallel axis theorem: I_origin = I_com + m*(|c|^2*I - c*c^T)
+                I_origin = I_com + m * (np.dot(c, c) * np.eye(3) - np.outer(c, c))
+                inv_mass.append(1.0 / m if m > 1e-10 else 0.0)
+                try:
+                    inv_inertia.append(np.linalg.inv(I_origin))
+                except np.linalg.LinAlgError:
+                    inv_inertia.append(np.zeros((3, 3)))
+        else:
+            # Fallback: unit mass (standalone usage without tree)
+            for _ in range(num_bodies):
+                inv_mass.append(1.0)
+                inv_inertia.append(np.eye(3))
 
         impulses = self._solver.solve(
-            contacts, v_body_list, X_world_list,
-            inv_mass, inv_inertia, dt=1e-3,
+            contacts,
+            v_body_list,
+            X_world_list,
+            inv_mass,
+            inv_inertia,
+            dt=step_dt,
         )
 
-        # Convert impulses to forces (impulse / dt approximation)
-        # Note: the LCP solver returns impulses; for the ABA ext_forces
-        # interface we scale by 1/dt to get forces
+        # Convert impulses to forces (impulse / dt)
         forces = [np.zeros(6, dtype=np.float64) for _ in range(num_bodies)]
         for bi in range(num_bodies):
-            forces[bi] = impulses[bi] / 1e-3  # TODO: pass dt properly
+            forces[bi] = impulses[bi] / step_dt
 
         return forces
 
@@ -393,7 +442,8 @@ class LCPContactModel(ContactModel):
         for body_idx, name, shape in self._contact_bodies:
             X = X_world_list[body_idx]
             manifold = self._ground_query(
-                shape, X,
+                shape,
+                X,
                 ground_z=self._terrain.height_at(X.r[0], X.r[1]),
             )
             if manifold is not None:
@@ -402,7 +452,4 @@ class LCPContactModel(ContactModel):
         return active
 
     def __repr__(self) -> str:
-        return (
-            f"LCPContactModel(bodies={len(self._contact_bodies)}, "
-            f"mu={self._mu}, e={self._restitution})"
-        )
+        return f"LCPContactModel(bodies={len(self._contact_bodies)}, mu={self._mu}, e={self._restitution})"

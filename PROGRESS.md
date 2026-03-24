@@ -1,6 +1,6 @@
 # Robot Simulator — Progress Tracker
 
-> Last updated: 2026-03-19 (session 3)
+> Last updated: 2026-03-24 (session 7)
 > Reference plan: [PLAN.md](./PLAN.md)
 
 ---
@@ -10,7 +10,7 @@
 | Phase | 状态 | 完成度 |
 |-------|------|--------|
 | Phase 1 — Basic Physics + Simple Rendering | ✅ 完成（含修复） | 100% |
-| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 92% (2a-2e ✅, 2f 🔄, 2g ✅) |
+| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 95% (2a-2e ✅, 2f 🔄, 2g ✅) |
 | Phase 3 — High-Fidelity Rendering          | ⬜ 未开始 | 0% |
 | Phase 4 — Domain Randomization             | ⬜ 未开始 | 0% |
 | Phase 5 — Sim-to-Real Validation           | ⬜ 未开始 | 0% |
@@ -263,12 +263,27 @@ CUDA 性能最优原因：全物理步融合为单 kernel launch，零 inter-ker
   - GJK→LCP 完整管线、多 body、Penalty vs LCP 对比、URDF friction 端到端
   - 5 tests
 
-**Phase 2f 测试：64 个，全部通过**
+**Phase 2f 测试（窄相+求解器+形状+摩擦+broad-phase+集成）：64 个**
+
+- [x] **LCPContactModel 接入 Simulator.step()** — `physics/contact.py` + `simulator.py`
+  - `ContactModel.compute_forces()` ABC 新增 `dt`、`tree` 可选参数
+  - LCPContactModel 从 tree 提取真实质量/惯量（含平行轴定理）
+  - Simulator 自动传 `dt` 和 `tree` 给接触模型
+  - `load_urdf()` 新增 `contact_method="lcp"` 选项
+  - 12 tests（单步/多步/两体/URDF LCP/Penalty vs LCP）
+
+- [x] **碰撞过滤掩码** — `physics/collision_filter.py`（新建）
+  - `CollisionFilter`：auto-exclude（parent-child）+ bitmask（group/mask uint32）+ explicit exclude set
+  - `should_collide(i, j)` 查询，三种机制取交集
+  - 集成到 `AABBSelfCollision.build_pairs()` 和 `LCPContactModel`
+  - `RobotModel.collision_filter` 字段
+  - `load_urdf()` 新增 `collision_exclude_pairs` 参数
+  - 21 tests（standalone + AABB 集成 + load_urdf 集成）
+
+**Phase 2f 测试：97 个，全部通过**
 
 **待完成（Q18 剩余项）：**
 
-- [ ] LCPContactModel 接入 Simulator.step() 管线
-- [ ] 碰撞过滤掩码（位掩码 / 显式排除）
 - [ ] 接触维度控制（1D/3D/4D/6D）
 - [ ] 同 body 多 geom 过滤
 - [ ] 隐式接触积分
@@ -318,7 +333,7 @@ CUDA 性能最优原因：全物理步融合为单 kernel launch，零 inter-ker
 
 ---
 
-**Phase 2 总测试数：349（全部通过）**
+**Phase 2 总测试数：382（全部通过）**
 
 **Phase 2 实现总览（2026-03-23）：**
 

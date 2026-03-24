@@ -9,6 +9,7 @@ from .collision import (
     NullSelfCollision,
     SelfCollisionModel,
 )
+from .collision_filter import CollisionFilter
 from .contact import (
     ContactModel,
     ContactParams,
@@ -91,6 +92,7 @@ __all__ = [
     "AABBSelfCollision",
     "SelfCollisionModel",
     "NullSelfCollision",
+    "CollisionFilter",
     # geometry
     "CollisionShape",
     "BoxShape",

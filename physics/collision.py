@@ -34,6 +34,7 @@ from numpy.typing import NDArray
 from .spatial import SpatialTransform, Vec6
 
 if TYPE_CHECKING:
+    from .collision_filter import CollisionFilter
     from .geometry import BodyCollisionGeometry
 
 
@@ -153,34 +154,50 @@ class AABBSelfCollision(SelfCollisionModel):
         """Register a body's AABB."""
         self._aabbs.append(babb)
 
-    def build_pairs(self, parent_list: List[int]) -> None:
+    def build_pairs(
+        self,
+        parent_list: List[int],
+        collision_filter: "CollisionFilter | None" = None,
+    ) -> None:
         """Build the list of collision candidate pairs.
 
-        Adjacent pairs (direct parent-child in the kinematic tree) are
-        excluded because those bodies are geometrically attached and will
-        always "overlap" near their joint.
+        When a ``CollisionFilter`` is provided, it is used to decide which
+        pairs to keep (bitmask + explicit excludes + auto parent-child).
+        Otherwise falls back to the legacy behaviour of excluding only
+        direct parent-child pairs from the kinematic tree.
 
         Args:
-            parent_list: ``parent_list[i]`` is the parent body index of
-                         body *i* in the tree (-1 for the root body).
+            parent_list      : ``parent_list[i]`` is the parent body index
+                               of body *i* in the tree (-1 for the root).
+            collision_filter : Optional CollisionFilter with bitmask and
+                               explicit-exclude rules already configured.
         """
-        # Build adjacency set (undirected edges in the kinematic tree)
-        adjacent: Set[Tuple[int, int]] = set()
-        for child_idx, parent_idx in enumerate(parent_list):
-            if parent_idx >= 0:
-                a = min(child_idx, parent_idx)
-                b = max(child_idx, parent_idx)
-                adjacent.add((a, b))
-
         n = len(self._aabbs)
         self._pairs = []
-        for i in range(n):
-            for j in range(i + 1, n):
-                bi = self._aabbs[i].body_index
-                bj = self._aabbs[j].body_index
-                edge = (min(bi, bj), max(bi, bj))
-                if edge not in adjacent:
-                    self._pairs.append((i, j))
+
+        if collision_filter is not None:
+            for i in range(n):
+                for j in range(i + 1, n):
+                    bi = self._aabbs[i].body_index
+                    bj = self._aabbs[j].body_index
+                    if collision_filter.should_collide(bi, bj):
+                        self._pairs.append((i, j))
+        else:
+            # Legacy: exclude only direct parent-child adjacency
+            adjacent: Set[Tuple[int, int]] = set()
+            for child_idx, parent_idx in enumerate(parent_list):
+                if parent_idx >= 0:
+                    a = min(child_idx, parent_idx)
+                    b = max(child_idx, parent_idx)
+                    adjacent.add((a, b))
+
+            for i in range(n):
+                for j in range(i + 1, n):
+                    bi = self._aabbs[i].body_index
+                    bj = self._aabbs[j].body_index
+                    edge = (min(bi, bj), max(bi, bj))
+                    if edge not in adjacent:
+                        self._pairs.append((i, j))
 
     # ------------------------------------------------------------------
     # Force computation
@@ -265,19 +282,21 @@ class AABBSelfCollision(SelfCollisionModel):
         cls,
         geometries: "List[BodyCollisionGeometry]",
         parent_list: List[int],
+        collision_filter: "CollisionFilter | None" = None,
         **kwargs,
     ) -> "AABBSelfCollision":
         """Construct from BodyCollisionGeometry objects.
 
         Args:
-            geometries  : One BodyCollisionGeometry per body to include.
-            parent_list : parent_list[i] is the parent body index of body i.
-            **kwargs    : Forwarded to ``__init__`` (e.g. k_contact, b_contact).
+            geometries       : One BodyCollisionGeometry per body to include.
+            parent_list      : parent_list[i] is the parent body index of body i.
+            collision_filter : Optional CollisionFilter (bitmask + excludes).
+            **kwargs         : Forwarded to ``__init__`` (e.g. k_contact, b_contact).
         """
         obj = cls(**kwargs)
         for geom in geometries:
             obj.add_body(BodyAABB(geom.body_index, geom.aabb_half_extents()))
-        obj.build_pairs(parent_list)
+        obj.build_pairs(parent_list, collision_filter)
         return obj
 
     # ------------------------------------------------------------------

@@ -53,7 +53,13 @@ class Simulator:
         X_world = tree.forward_kinematics(q)
         v_bodies = tree.body_velocities(q, qdot)
 
-        contact_forces = self.model.contact_model.compute_forces(X_world, v_bodies, tree.num_bodies)
+        contact_forces = self.model.contact_model.compute_forces(
+            X_world,
+            v_bodies,
+            tree.num_bodies,
+            dt=self.integrator.dt,
+            tree=tree,
+        )
         sc_forces = self.model.self_collision.compute_forces(X_world, v_bodies, tree.num_bodies)
 
         ext_forces = [cf + scf for cf, scf in zip(contact_forces, sc_forces)]
