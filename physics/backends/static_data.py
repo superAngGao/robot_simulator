@@ -78,40 +78,26 @@ class StaticRobotData:
     contact_ground_z: float = 0.0
 
     # -- Self-collision --
-    collision_body_idx: NDArray[np.int32] = field(
-        default_factory=lambda: np.zeros(0, dtype=np.int32)
-    )
+    collision_body_idx: NDArray[np.int32] = field(default_factory=lambda: np.zeros(0, dtype=np.int32))
     collision_half_ext: NDArray[np.float32] = field(
         default_factory=lambda: np.zeros((0, 3), dtype=np.float32)
     )
-    collision_pair_i: NDArray[np.int32] = field(
-        default_factory=lambda: np.zeros(0, dtype=np.int32)
-    )
-    collision_pair_j: NDArray[np.int32] = field(
-        default_factory=lambda: np.zeros(0, dtype=np.int32)
-    )
+    collision_pair_i: NDArray[np.int32] = field(default_factory=lambda: np.zeros(0, dtype=np.int32))
+    collision_pair_j: NDArray[np.int32] = field(default_factory=lambda: np.zeros(0, dtype=np.int32))
     collision_k: float = 2000.0
     collision_b: float = 100.0
 
     # -- Controller indices --
-    actuated_q_indices: NDArray[np.int32] = field(
-        default_factory=lambda: np.zeros(0, dtype=np.int32)
-    )
-    actuated_v_indices: NDArray[np.int32] = field(
-        default_factory=lambda: np.zeros(0, dtype=np.int32)
-    )
+    actuated_q_indices: NDArray[np.int32] = field(default_factory=lambda: np.zeros(0, dtype=np.int32))
+    actuated_v_indices: NDArray[np.int32] = field(default_factory=lambda: np.zeros(0, dtype=np.int32))
     effort_limits: NDArray[np.float32] | None = None  # (nu,) or None
 
     # -- Gravity --
     gravity: float = 9.81
 
     # -- Default state --
-    default_q: NDArray[np.float32] = field(
-        default_factory=lambda: np.zeros(0, dtype=np.float32)
-    )
-    default_qdot: NDArray[np.float32] = field(
-        default_factory=lambda: np.zeros(0, dtype=np.float32)
-    )
+    default_q: NDArray[np.float32] = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
+    default_qdot: NDArray[np.float32] = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
 
     # -- Root body index (for observation slicing) --
     root_body_idx: int = 0
@@ -171,60 +157,97 @@ class StaticRobotData:
             elif isinstance(j, FixedJoint):
                 joint_type[i] = JOINT_FIXED
 
-        # -- Contact points --
-        from physics.contact import PenaltyContactModel
+        # -- Contact points (derived from contact_body_names + geometries) --
+        # GPU backends use penalty contact at body origins for named contact links
+        contact_body_names = set(model.contact_body_names)
+        contact_bodies = [b for b in bodies if b.name in contact_body_names]
+        nc = len(contact_bodies)
+        contact_body_idx = (
+            np.array([b.index for b in contact_bodies], dtype=np.int32)
+            if nc > 0
+            else np.zeros(0, dtype=np.int32)
+        )
+        contact_local_pos = np.zeros((max(nc, 0), 3), dtype=np.float32)
+        # Default penalty contact params (GPU backends use these)
+        contact_params = dict(
+            contact_k_normal=5000.0,
+            contact_b_normal=500.0,
+            contact_mu=0.8,
+            contact_slip_eps=1e-3,
+            contact_ground_z=0.0,
+        )
+        # Override from model if old-style contact_model exists (backward compat)
+        if hasattr(model, "contact_model"):
+            from physics.contact import PenaltyContactModel
 
-        nc = 0
-        contact_body_idx = np.zeros(0, dtype=np.int32)
-        contact_local_pos = np.zeros((0, 3), dtype=np.float32)
-        contact_params = {}
+            if isinstance(model.contact_model, PenaltyContactModel):
+                cps = model.contact_model.contact_points
+                nc = len(cps)
+                contact_body_idx = np.array([cp.body_index for cp in cps], dtype=np.int32)
+                contact_local_pos = np.array([cp.position for cp in cps], dtype=np.float32).reshape(nc, 3)
+                p = model.contact_model.params
+                contact_params = dict(
+                    contact_k_normal=p.k_normal,
+                    contact_b_normal=p.b_normal,
+                    contact_mu=p.mu,
+                    contact_slip_eps=p.slip_eps,
+                    contact_ground_z=p.ground_z,
+                )
 
-        if isinstance(model.contact_model, PenaltyContactModel):
-            cps = model.contact_model.contact_points
-            nc = len(cps)
-            contact_body_idx = np.array([cp.body_index for cp in cps], dtype=np.int32)
-            contact_local_pos = np.array(
-                [cp.position for cp in cps], dtype=np.float32
-            ).reshape(nc, 3)
-            p = model.contact_model.params
-            contact_params = dict(
-                contact_k_normal=p.k_normal,
-                contact_b_normal=p.b_normal,
-                contact_mu=p.mu,
-                contact_slip_eps=p.slip_eps,
-                contact_ground_z=p.ground_z,
-            )
-
-        # -- Self-collision --
+        # -- Self-collision (derived from geometries + parent list) --
         from physics.collision import AABBSelfCollision
 
         collision_kwargs = {}
-        if isinstance(model.self_collision, AABBSelfCollision):
-            sc = model.self_collision
+        # Override from model if old-style self_collision exists (backward compat)
+        if hasattr(model, "self_collision"):
+            from physics.collision import AABBSelfCollision as _ASC
+
+            if isinstance(model.self_collision, _ASC):
+                sc = model.self_collision
+                aabbs = sc._aabbs
+                pairs = sc._pairs
+                collision_kwargs = dict(
+                    collision_body_idx=np.array([a.body_index for a in aabbs], dtype=np.int32),
+                    collision_half_ext=np.array([a.half_extents for a in aabbs], dtype=np.float32).reshape(
+                        len(aabbs), 3
+                    )
+                    if aabbs
+                    else np.zeros((0, 3), dtype=np.float32),
+                    collision_pair_i=np.array([p[0] for p in pairs], dtype=np.int32)
+                    if pairs
+                    else np.zeros(0, dtype=np.int32),
+                    collision_pair_j=np.array([p[1] for p in pairs], dtype=np.int32)
+                    if pairs
+                    else np.zeros(0, dtype=np.int32),
+                    collision_k=sc.k_contact,
+                    collision_b=sc.b_contact,
+                )
+
+        if not collision_kwargs and model.geometries:
+            # Build from geometries directly
+            parent_list = [b.parent for b in bodies]
+            sc = AABBSelfCollision.from_geometries(model.geometries, parent_list)
             aabbs = sc._aabbs
             pairs = sc._pairs
             collision_kwargs = dict(
-                collision_body_idx=np.array(
-                    [a.body_index for a in aabbs], dtype=np.int32
-                ),
-                collision_half_ext=np.array(
-                    [a.half_extents for a in aabbs], dtype=np.float32
-                ).reshape(len(aabbs), 3) if aabbs else np.zeros((0, 3), dtype=np.float32),
-                collision_pair_i=np.array(
-                    [p[0] for p in pairs], dtype=np.int32
-                ) if pairs else np.zeros(0, dtype=np.int32),
-                collision_pair_j=np.array(
-                    [p[1] for p in pairs], dtype=np.int32
-                ) if pairs else np.zeros(0, dtype=np.int32),
-                collision_k=sc.k_contact,
-                collision_b=sc.b_contact,
+                collision_body_idx=np.array([a.body_index for a in aabbs], dtype=np.int32),
+                collision_half_ext=np.array([a.half_extents for a in aabbs], dtype=np.float32).reshape(
+                    len(aabbs), 3
+                )
+                if aabbs
+                else np.zeros((0, 3), dtype=np.float32),
+                collision_pair_i=np.array([p[0] for p in pairs], dtype=np.int32)
+                if pairs
+                else np.zeros(0, dtype=np.int32),
+                collision_pair_j=np.array([p[1] for p in pairs], dtype=np.int32)
+                if pairs
+                else np.zeros(0, dtype=np.int32),
+                collision_k=2000.0,
+                collision_b=100.0,
             )
 
         # -- Controller indices --
-        actuated_bodies = [
-            b for b in bodies
-            if b.joint.nv > 0 and not isinstance(b.joint, FreeJoint)
-        ]
+        actuated_bodies = [b for b in bodies if b.joint.nv > 0 and not isinstance(b.joint, FreeJoint)]
         actuated_q_indices = np.array(
             [i for b in actuated_bodies for i in range(b.q_idx.start, b.q_idx.stop)],
             dtype=np.int32,

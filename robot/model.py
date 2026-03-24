@@ -1,8 +1,8 @@
 """
-RobotModel dataclass — top-level container for a loaded robot description.
+RobotModel dataclass — robot description (tree + geometry + metadata).
 
-Bundles the kinematic tree, contact model, self-collision model, and
-metadata produced by load_urdf() or manual construction.
+Pure robot description: does NOT contain contact/collision models.
+Those are managed at the Scene level by CollisionPipeline.
 """
 
 from __future__ import annotations
@@ -11,9 +11,6 @@ from dataclasses import dataclass, field
 
 from numpy.typing import NDArray
 
-from physics.collision import SelfCollisionModel
-from physics.collision_filter import CollisionFilter
-from physics.contact import ContactModel
 from physics.geometry import BodyCollisionGeometry
 from physics.robot_tree import RobotTreeNumpy
 
@@ -24,20 +21,15 @@ class RobotModel:
 
     Attributes:
         tree                 : Kinematic tree (bodies, joints, ABA/FK).
-        contact_model        : Ground-contact model (penalty or null).
-        self_collision       : Self-collision model (AABB or null).
-        collision_filter     : Collision filter (bitmask + exclude pairs).
         actuated_joint_names : Names of joints with nv > 0 and not FreeJoint.
-        contact_body_names   : Body names used as contact points.
-        geometries           : All BodyCollisionGeometry objects (one per link
-                               that has non-mesh collision shapes).
+        contact_body_names   : Body names designated as contact points.
+        geometries           : BodyCollisionGeometry objects (one per link
+                               with non-mesh collision shapes).
+        effort_limits        : Per actuated-joint effort limits, shape (nu,).
     """
 
     tree: RobotTreeNumpy
-    contact_model: ContactModel
-    self_collision: SelfCollisionModel
-    collision_filter: CollisionFilter | None = None
     actuated_joint_names: list[str] = field(default_factory=list)
     contact_body_names: list[str] = field(default_factory=list)
     geometries: list[BodyCollisionGeometry] = field(default_factory=list)
-    effort_limits: NDArray | None = None  # shape (nu,), per actuated_joint_names order
+    effort_limits: NDArray | None = None

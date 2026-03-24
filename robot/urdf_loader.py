@@ -4,6 +4,10 @@ URDF loader — two-phase parser that translates a URDF file into a RobotModel.
 Phase 1: _parse_urdf()  — XML → internal _URDFData dataclasses (no physics).
 Phase 2: _build_model() — _URDFData → physics/ instances → RobotModel.
 
+load_urdf() returns a RobotModel (pure robot description).
+load_urdf_scene() returns a Scene wrapping the RobotModel with terrain
+and collision configuration.
+
 References:
   ROS URDF specification: https://wiki.ros.org/urdf/XML
   Featherstone (2008) §4 — joint models and tree construction.
@@ -20,15 +24,6 @@ from typing import Optional
 import numpy as np
 from numpy.typing import NDArray
 
-from physics.collision import AABBSelfCollision, NullSelfCollision, SelfCollisionModel
-from physics.collision_filter import CollisionFilter
-from physics.contact import (
-    ContactParams,
-    ContactPoint,
-    LCPContactModel,
-    NullContactModel,
-    PenaltyContactModel,
-)
 from physics.geometry import (
     BodyCollisionGeometry,
     BoxShape,
@@ -73,7 +68,7 @@ class _JointData:
     limit_upper: float
     damping: float
     friction: float
-    effort: float = 0.0  # from <limit effort="..."/>, 0 = unspecified
+    effort: float = 0.0
 
 
 @dataclass
@@ -88,120 +83,99 @@ class _URDFData:
 # ---------------------------------------------------------------------------
 
 
-def _parse_xyz(elem: Optional[ET.Element], attr: str = "xyz") -> NDArray[np.float64]:
-    if elem is None:
-        return np.zeros(3, dtype=np.float64)
-    val = elem.get(attr, "0 0 0")
-    return np.array([float(x) for x in val.split()], dtype=np.float64)
+def _parse_rpy(elem):
+    if elem is not None:
+        return np.array([float(x) for x in elem.get("rpy", "0 0 0").split()], dtype=np.float64)
+    return np.zeros(3, dtype=np.float64)
 
 
-def _parse_rpy(elem: Optional[ET.Element]) -> NDArray[np.float64]:
-    if elem is None:
-        return np.zeros(3, dtype=np.float64)
-    val = elem.get("rpy", "0 0 0")
-    return np.array([float(x) for x in val.split()], dtype=np.float64)
+def _parse_xyz(elem):
+    if elem is not None:
+        return np.array([float(x) for x in elem.get("xyz", "0 0 0").split()], dtype=np.float64)
+    return np.zeros(3, dtype=np.float64)
 
 
-def _parse_inertia_matrix(inertia_elem: Optional[ET.Element]) -> NDArray[np.float64]:
-    """Parse <inertia ixx=... ixy=... .../> into a 3x3 symmetric matrix."""
-    if inertia_elem is None:
-        return 1e-6 * np.eye(3, dtype=np.float64)
-    ixx = float(inertia_elem.get("ixx", 1e-6))
-    ixy = float(inertia_elem.get("ixy", 0.0))
-    ixz = float(inertia_elem.get("ixz", 0.0))
-    iyy = float(inertia_elem.get("iyy", 1e-6))
-    iyz = float(inertia_elem.get("iyz", 0.0))
-    izz = float(inertia_elem.get("izz", 1e-6))
-    return np.array([[ixx, ixy, ixz], [ixy, iyy, iyz], [ixz, iyz, izz]], dtype=np.float64)
-
-
-def _parse_collision_shapes(link_elem: ET.Element) -> list[ShapeInstance]:
-    shapes: list[ShapeInstance] = []
-    for col in link_elem.findall("collision"):
-        origin = col.find("origin")
-        xyz = _parse_xyz(origin)
-        rpy = _parse_rpy(origin)
-        geom = col.find("geometry")
+def _parse_collision_shapes(link_elem) -> list[ShapeInstance]:
+    shapes = []
+    for col_elem in link_elem.findall("collision"):
+        origin = col_elem.find("origin")
+        origin_xyz = _parse_xyz(origin)
+        origin_rpy = _parse_rpy(origin)
+        geom = col_elem.find("geometry")
         if geom is None:
             continue
         shape = None
         box = geom.find("box")
         if box is not None:
-            size = tuple(float(x) for x in box.get("size", "0.1 0.1 0.1").split())
-            shape = BoxShape(size)  # type: ignore[arg-type]
+            size = np.array([float(x) for x in box.get("size", "0 0 0").split()])
+            shape = BoxShape(tuple(size))
         sphere = geom.find("sphere")
         if sphere is not None:
-            shape = SphereShape(float(sphere.get("radius", 0.05)))
-        cylinder = geom.find("cylinder")
-        if cylinder is not None:
-            shape = CylinderShape(
-                float(cylinder.get("radius", 0.05)),
-                float(cylinder.get("length", 0.1)),
-            )
+            shape = SphereShape(float(sphere.get("radius", "0")))
+        cyl = geom.find("cylinder")
+        if cyl is not None:
+            shape = CylinderShape(float(cyl.get("radius", "0")), float(cyl.get("length", "0")))
         mesh = geom.find("mesh")
         if mesh is not None:
-            filename = mesh.get("filename", "")
-            shape = MeshShape(filename)
+            shape = MeshShape(mesh.get("filename", ""))
         if shape is not None:
-            shapes.append(ShapeInstance(shape=shape, origin_xyz=xyz, origin_rpy=rpy))
+            shapes.append(ShapeInstance(shape=shape, origin_xyz=origin_xyz, origin_rpy=origin_rpy))
     return shapes
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 — XML parsing
+# Phase 1 — parse XML
 # ---------------------------------------------------------------------------
 
 
-def _parse_urdf(path: str) -> _URDFData:
-    """Parse a URDF file into internal dataclasses. No physics objects created."""
-    tree = ET.parse(path)
+def _parse_urdf(urdf_path: str) -> _URDFData:
+    tree = ET.parse(urdf_path)
     root = tree.getroot()
 
-    # --- Links ---
     links: dict[str, _LinkData] = {}
     for link_elem in root.findall("link"):
-        name = link_elem.get("name", "")
+        name = link_elem.get("name")
         inertial = link_elem.find("inertial")
-        if inertial is None:
-            log.warning("Link %r has no <inertial> element; using placeholder mass 1e-6 kg.", name)
-            mass = 1e-6
-            inertia_3x3 = 1e-6 * np.eye(3, dtype=np.float64)
-            com_xyz = np.zeros(3, dtype=np.float64)
-            com_rpy = np.zeros(3, dtype=np.float64)
-        else:
-            mass_elem = inertial.find("mass")
-            mass = float(mass_elem.get("value", 1e-6)) if mass_elem is not None else 1e-6
+        if inertial is not None:
+            mass = float(inertial.find("mass").get("value", "0"))
             origin = inertial.find("origin")
             com_xyz = _parse_xyz(origin)
             com_rpy = _parse_rpy(origin)
-            if np.any(np.abs(com_rpy) > 1e-9):
-                log.warning(
-                    "Link %r has non-zero <inertial><origin rpy>; inertia tensor used as-is (Q11).",
-                    name,
+            ie = inertial.find("inertia")
+            if ie is not None:
+                ixx = float(ie.get("ixx", "0"))
+                ixy = float(ie.get("ixy", "0"))
+                ixz = float(ie.get("ixz", "0"))
+                iyy = float(ie.get("iyy", "0"))
+                iyz = float(ie.get("iyz", "0"))
+                izz = float(ie.get("izz", "0"))
+                inertia_3x3 = np.array(
+                    [
+                        [ixx, ixy, ixz],
+                        [ixy, iyy, iyz],
+                        [ixz, iyz, izz],
+                    ],
+                    dtype=np.float64,
                 )
-            inertia_3x3 = _parse_inertia_matrix(inertial.find("inertia"))
+            else:
+                inertia_3x3 = np.zeros((3, 3), dtype=np.float64)
+        else:
+            log.warning("Link %r has no <inertial>; using placeholder mass 1e-6 kg.", name)
+            mass = 1e-6
+            com_xyz = np.zeros(3, dtype=np.float64)
+            com_rpy = np.zeros(3, dtype=np.float64)
+            inertia_3x3 = np.eye(3, dtype=np.float64) * 1e-9
 
         collision_shapes = _parse_collision_shapes(link_elem)
-        links[name] = _LinkData(
-            name=name,
-            mass=mass,
-            inertia_3x3=inertia_3x3,
-            com_xyz=com_xyz,
-            com_rpy=com_rpy,
-            collision_shapes=collision_shapes,
-        )
+        links[name] = _LinkData(name, mass, inertia_3x3, com_xyz, com_rpy, collision_shapes)
 
-    # --- Joints ---
     joints: list[_JointData] = []
     child_links: set[str] = set()
     for j_elem in root.findall("joint"):
-        jname = j_elem.get("name", "")
-        jtype = j_elem.get("type", "fixed")
-        parent_elem = j_elem.find("parent")
-        child_elem = j_elem.find("child")
-        parent_link = parent_elem.get("link", "") if parent_elem is not None else ""
-        child_link = child_elem.get("link", "") if child_elem is not None else ""
-
+        jname = j_elem.get("name")
+        jtype = j_elem.get("type")
+        parent_link = j_elem.find("parent").get("link")
+        child_link = j_elem.find("child").get("link")
         origin = j_elem.find("origin")
         origin_xyz = _parse_xyz(origin)
         origin_rpy = _parse_rpy(origin)
@@ -231,7 +205,6 @@ def _parse_urdf(path: str) -> _URDFData:
         damping = float(dynamics.get("damping", 0.0)) if dynamics is not None else 0.0
         friction = float(dynamics.get("friction", 0.0)) if dynamics is not None else 0.0
 
-        # continuous → treat as revolute with no limits
         if jtype == "continuous":
             jtype = "revolute"
             limit_lower = -np.inf
@@ -255,7 +228,6 @@ def _parse_urdf(path: str) -> _URDFData:
         )
         child_links.add(child_link)
 
-    # Root link = the one that never appears as a child
     root_candidates = [name for name in links if name not in child_links]
     if len(root_candidates) != 1:
         raise ValueError(f"Expected exactly one root link, found: {root_candidates}")
@@ -264,7 +236,7 @@ def _parse_urdf(path: str) -> _URDFData:
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 — build physics objects
+# Phase 2 — build RobotModel (pure robot, no contact/collision models)
 # ---------------------------------------------------------------------------
 
 
@@ -272,11 +244,6 @@ def _build_model(
     data: _URDFData,
     floating_base: bool,
     contact_links: Optional[list[str]],
-    self_collision_links: Optional[list[str]],
-    collision_method: str,
-    contact_params: Optional[ContactParams],
-    contact_method: str,
-    collision_exclude_pairs: Optional[list[tuple[str, str]]],
     gravity: float,
 ) -> RobotModel:
     # --- 1. BFS topological sort ---
@@ -293,7 +260,6 @@ def _build_model(
         for jd in children_map[link_name]:
             queue.append(jd.child)
 
-    # Map link name → joint data (for non-root links)
     link_to_joint: dict[str, _JointData] = {jd.child: jd for jd in data.joints}
 
     # --- 2. Build tree ---
@@ -317,7 +283,6 @@ def _build_model(
                 r=jd.origin_xyz,
             )
             parent_idx = link_to_body_idx[jd.parent]
-
             jtype = jd.jtype
             if jtype in ("revolute",):
                 joint = RevoluteJoint(
@@ -332,13 +297,13 @@ def _build_model(
                 joint = PrismaticJoint(jd.name, axis=jd.axis, damping=jd.damping)
             elif jtype == "floating":
                 joint = FreeJoint(jd.name)
-            else:  # fixed (and any unknown type)
+            else:
                 joint = FixedJoint(jd.name)
 
         inertia = SpatialInertia(ld.mass, ld.inertia_3x3, ld.com_xyz)
         body = Body(
             name=link_name,
-            index=0,  # will be set by add_body
+            index=0,
             joint=joint,
             inertia=inertia,
             X_tree=X_tree,
@@ -349,7 +314,7 @@ def _build_model(
 
     tree.finalize()
 
-    # --- 3. Collision geometries (skip MeshShape bodies) ---
+    # --- 3. Collision geometries ---
     geometries: list[BodyCollisionGeometry] = []
     for link_name in bfs_order:
         ld = data.links[link_name]
@@ -358,16 +323,10 @@ def _build_model(
         has_mesh = any(isinstance(s.shape, MeshShape) for s in ld.collision_shapes)
         non_mesh = [s for s in ld.collision_shapes if not isinstance(s.shape, MeshShape)]
         if has_mesh and not non_mesh:
-            log.warning(
-                "Link %r has only MeshShape collision geometry; skipping from collision model (Q7).",
-                link_name,
-            )
+            log.warning("Link %r has only MeshShape; skipping (Q7).", link_name)
             continue
         if has_mesh:
-            log.warning(
-                "Link %r has mixed mesh/primitive collision; using only primitive shapes.",
-                link_name,
-            )
+            log.warning("Link %r has mixed mesh/primitive; using primitives only.", link_name)
         shapes_to_use = non_mesh if non_mesh else ld.collision_shapes
         geometries.append(
             BodyCollisionGeometry(
@@ -376,99 +335,27 @@ def _build_model(
             )
         )
 
-    # --- 4. Collision filter ---
-    parent_list = [b.parent for b in tree.bodies]
-    coll_filter = CollisionFilter(num_bodies=tree.num_bodies)
-    coll_filter.auto_exclude_adjacent(parent_list)
-    if collision_exclude_pairs:
-        for ln_a, ln_b in collision_exclude_pairs:
-            if ln_a not in link_to_body_idx:
-                log.warning("collision_exclude_pairs: link %r not found; skipping.", ln_a)
-                continue
-            if ln_b not in link_to_body_idx:
-                log.warning("collision_exclude_pairs: link %r not found; skipping.", ln_b)
-                continue
-            coll_filter.exclude_pair(link_to_body_idx[ln_a], link_to_body_idx[ln_b])
-
-    # --- 5. Contact model ---
-    params = contact_params or ContactParams()
-    if contact_links:
-        valid_contact_links = [ln for ln in contact_links if ln in link_to_body_idx]
-        for ln in contact_links:
-            if ln not in link_to_body_idx:
-                log.warning("contact_links: link %r not found in URDF; skipping.", ln)
-
-        if contact_method == "penalty":
-            contact_model = PenaltyContactModel(params=params)
-            for link_name in valid_contact_links:
-                cp = ContactPoint(
-                    body_index=link_to_body_idx[link_name],
-                    position=np.zeros(3, dtype=np.float64),
-                    name=link_name,
-                )
-                contact_model.add_contact_point(cp)
-        elif contact_method == "lcp":
-            lcp_model = LCPContactModel(
-                mu=params.mu,
-                restitution=0.0,
-                terrain=None,  # default FlatTerrain(0)
-                collision_filter=coll_filter,
-                max_iter=30,
-            )
-            # Build a geometry lookup: body_index → BodyCollisionGeometry
-            geom_by_body = {g.body_index: g for g in geometries}
-            for link_name in valid_contact_links:
-                bi = link_to_body_idx[link_name]
-                if bi in geom_by_body and geom_by_body[bi].shapes:
-                    # Use the first primitive shape
-                    shape = geom_by_body[bi].shapes[0].shape
-                else:
-                    # No collision geometry — use a small sphere (point-like)
-                    shape = SphereShape(0.01)
-                lcp_model.add_contact_body(bi, shape, link_name)
-            contact_model = lcp_model
-        else:
-            raise ValueError(f"Unsupported contact_method {contact_method!r}; use 'penalty' or 'lcp'.")
-        contact_body_names = valid_contact_links
-    else:
-        contact_model = NullContactModel()
-        contact_body_names = []
-
-    # --- 6. Self-collision model ---
-    if collision_method != "aabb":
-        raise ValueError(f"Unsupported collision_method {collision_method!r}; only 'aabb' is supported.")
-
-    if self_collision_links is not None:
-        sc_geoms = [
-            g for g in geometries if any(tree.bodies[g.body_index].name == ln for ln in self_collision_links)
-        ]
-    else:
-        sc_geoms = geometries  # all non-mesh bodies
-
-    if sc_geoms:
-        self_collision: SelfCollisionModel = AABBSelfCollision.from_geometries(
-            sc_geoms,
-            parent_list,
-            collision_filter=coll_filter,
-        )
-    else:
-        self_collision = NullSelfCollision()
-
-    # --- 7. Actuated joint names ---
+    # --- 4. Actuated joints ---
     actuated_joint_names = [
         b.joint.name for b in tree.bodies if b.joint.nv > 0 and not isinstance(b.joint, FreeJoint)
     ]
 
-    # --- 8. Effort limits (None if all zero / unspecified) ---
+    # --- 5. Effort limits ---
     joint_effort: dict[str, float] = {jd.name: jd.effort for jd in data.joints}
     efforts = np.array([joint_effort.get(name, 0.0) for name in actuated_joint_names], dtype=np.float64)
     effort_limits = efforts if np.any(efforts > 0) else None
 
+    # --- 6. Contact body names ---
+    contact_body_names = []
+    if contact_links:
+        for ln in contact_links:
+            if ln in link_to_body_idx:
+                contact_body_names.append(ln)
+            else:
+                log.warning("contact_links: link %r not found; skipping.", ln)
+
     return RobotModel(
         tree=tree,
-        contact_model=contact_model,
-        self_collision=self_collision,
-        collision_filter=coll_filter,
         actuated_joint_names=actuated_joint_names,
         contact_body_names=contact_body_names,
         geometries=geometries,
@@ -485,46 +372,52 @@ def load_urdf(
     urdf_path: str,
     floating_base: bool = True,
     contact_links: Optional[list[str]] = None,
-    self_collision_links: Optional[list[str]] = None,
-    collision_method: str = "aabb",
-    contact_params: Optional[ContactParams] = None,
-    contact_method: str = "penalty",
-    collision_exclude_pairs: Optional[list[tuple[str, str]]] = None,
     gravity: float = 9.81,
 ) -> RobotModel:
-    """Parse a URDF file and return a fully-constructed RobotModel.
+    """Parse a URDF file and return a RobotModel.
 
-    Args:
-        urdf_path               : Path to the .urdf file.
-        floating_base           : If True, root link gets a FreeJoint (6 DOF).
-                                  If False, root link is fixed to the world.
-        contact_links           : Link names to register as contact points.
-                                  None → no contact model (NullContactModel).
-        self_collision_links    : Link names to include in self-collision.
-                                  None → all links with non-mesh geometry.
-        collision_method        : Broad-phase algorithm. Only "aabb" supported.
-        contact_params          : ContactParams for the penalty model (also
-                                  supplies ``mu`` for the LCP model).
-                                  None → default ContactParams().
-        contact_method          : "penalty" (spring-damper) or "lcp" (GJK/EPA + PGS).
-        collision_exclude_pairs : List of ``(link_a, link_b)`` name pairs to
-                                  exclude from collision detection.  Parent-child
-                                  pairs are always excluded automatically.
-        gravity                 : Gravitational acceleration [m/s²].
-
-    Returns:
-        RobotModel with tree, contact_model, self_collision, collision_filter,
-        and metadata.
+    The RobotModel contains the kinematic tree, collision geometries,
+    and joint metadata. Contact/collision models are managed at the
+    Scene level — use load_urdf_scene() for a ready-to-simulate Scene.
     """
     data = _parse_urdf(urdf_path)
-    return _build_model(
-        data,
-        floating_base=floating_base,
-        contact_links=contact_links,
-        self_collision_links=self_collision_links,
-        collision_method=collision_method,
-        contact_params=contact_params,
-        contact_method=contact_method,
-        collision_exclude_pairs=collision_exclude_pairs,
-        gravity=gravity,
-    )
+    return _build_model(data, floating_base, contact_links, gravity)
+
+
+def load_urdf_scene(
+    urdf_path: str,
+    floating_base: bool = True,
+    contact_links: Optional[list[str]] = None,
+    collision_exclude_pairs: Optional[list[tuple[str, str]]] = None,
+    gravity: float = 9.81,
+    solver_type: str = "pgs",
+    **solver_kwargs,
+):
+    """Parse a URDF and return a ready-to-simulate Scene.
+
+    Convenience function that wraps load_urdf() + Scene.single_robot().
+    """
+    from scene import Scene
+
+    model = load_urdf(urdf_path, floating_base, contact_links, gravity)
+    scene = Scene(
+        robots={"main": model},
+        solver_type=solver_type,
+        solver_kwargs=solver_kwargs,
+    ).build()
+
+    # Apply user-specified collision exclusions
+    if collision_exclude_pairs:
+        tree = model.tree
+        for ln_a, ln_b in collision_exclude_pairs:
+            idx_a = next((b.index for b in tree.bodies if b.name == ln_a), None)
+            idx_b = next((b.index for b in tree.bodies if b.name == ln_b), None)
+            if idx_a is None:
+                log.warning("collision_exclude_pairs: link %r not found.", ln_a)
+                continue
+            if idx_b is None:
+                log.warning("collision_exclude_pairs: link %r not found.", ln_b)
+                continue
+            scene.collision_filter.exclude_pair(idx_a, idx_b)
+
+    return scene
