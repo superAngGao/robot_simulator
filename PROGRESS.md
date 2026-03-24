@@ -354,17 +354,26 @@ CUDA 性能最优原因：全物理步融合为单 kernel launch，零 inter-ker
 
 ---
 
-**Phase 2 总测试数：456（全部通过）**
+**Phase 2 总测试数：492（全部通过）**
 
-**Phase 2 实现总览（2026-03-23）：**
+**Phase 2 实现总览（2026-03-24 session 7 更新）：**
 
 | 类别 | 实现数 | 说明 |
 |------|--------|------|
 | 前向动力学 | 10 | ABA×5后端 + CRBA×3(mono/grouped/batched) + Grouped Schur + CUDA CRBA-TC |
-| 接触模型 | 3 | Penalty + Null + LCP (GJK/EPA + PGS) |
-| 碰撞检测 | 3 | AABB broad + GJK/EPA narrow + ground contact |
+| 接触求解器 | 3+2 | PGS + Jacobi PGS + ADMM（CPU 参考）+ PGS-SI/ADMM-C（待实现） |
+| 接触维度 | condim 1/3/4/6 | MuJoCo 风格，variable rows + per-condim 锥投影 |
+| 碰撞检测 | 4 | AABB broad + GJK/EPA narrow + ground + **CollisionPipeline 统一管线** |
 | 碰撞形状 | 5 | Box + Sphere + Cylinder + Capsule + Mesh(stub) |
+| 碰撞过滤 | 1 | CollisionFilter（bitmask + explicit exclude + auto parent-child） |
+| 场景管理 | 1 | **Scene + BodyRegistry + StaticGeometry + 多机器人** |
 | GPU 后端 | 4 | NumPy + Warp + TileLang + CUDA |
+| Reference tests | 3 | 解析LCP + Bullet轨迹 + 复杂场景（斜抛撞墙） |
+
+**下一步**（见 Q21）：
+- [ ] PGS + split impulse（Bullet 路线，解决 PGS 发散）
+- [ ] ADMM + 合规接触 + 自适应ρ（MuJoCo 路线，提升精度）
+- [ ] GPU kernel：Jacobi-PGS-SI + ADMM-TC（tensor core Cholesky）
 
 ---
 
