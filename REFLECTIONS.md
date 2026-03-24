@@ -19,10 +19,20 @@ Updated at the end of each development session.
 验证了之前设计 ADMM 的决策正确。轨迹与 Bullet 定性一致（球不穿墙，最终稳定），
 但 ADMM 减速更温和（~30 步 vs Bullet 的 1 步），导致 L2 position ~0.12m。
 
-### 决策
+### 算法改进方案讨论
 
-Simulator 默认求解器应在 ADMM GPU kernel 完成后切换为 ADMM。
-当前保持 PGS 默认（向后兼容），用户可手动 `solver=ADMMContactSolver(...)` 传入。
+评估了 10 种改进方案后，确定两条路线各补一块：
+- PGS + split impulse（Bullet 方案）→ GPU Jacobi-PGS-SI
+- ADMM + 合规接触 + 自适应ρ（MuJoCo 方向）→ GPU ADMM-TC（tensor core Cholesky）
+
+不做的方案：TGS（与 GPU Jacobi 矛盾）、velocity clamping（hack）、
+位置级互补（重写量太大，Newton 精化是替代）。
+
+最终 5 个求解器：PGS（参考）、PGS-SI（CPU）、Jacobi-PGS-SI（GPU/RL）、
+ADMM-C（CPU/高精度）、ADMM-TC（GPU/高精度）。
+
+**关键 insight**：Cholesky 并行度不低——batched Cholesky 是 tensor core 的理想场景。
+Phase 2g 已验证。ADMM GPU 的瓶颈不是并行度而是分解成本，tensor core 正好解决。
 
 ---
 
