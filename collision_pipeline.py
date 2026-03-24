@@ -31,6 +31,8 @@ from physics.gjk_epa import gjk_epa_query, ground_contact_query
 from physics.solvers.pgs_solver import ContactConstraint
 from physics.spatial import SpatialTransform, Vec6
 
+_MIN_NORMAL_NORM = 1e-8  # reject contacts with degenerate normals
+
 if TYPE_CHECKING:
     from scene import Scene
 
@@ -63,6 +65,9 @@ class CollisionPipeline:
         """
         contacts: list[ContactConstraint] = []
 
+        def _valid_normal(n):
+            return np.linalg.norm(n) > _MIN_NORMAL_NORM
+
         scene = self._scene
         reg = scene.registry
         filt = scene.collision_filter
@@ -78,7 +83,7 @@ class CollisionPipeline:
                 shape = geom.shapes[0].shape
                 gz = scene.terrain.height_at(X.r[0], X.r[1])
                 manifold = ground_contact_query(shape, X, ground_z=gz)
-                if manifold is not None:
+                if manifold is not None and _valid_normal(manifold.normal):
                     for pt in manifold.points:
                         contacts.append(
                             ContactConstraint(
@@ -109,7 +114,7 @@ class CollisionPipeline:
                     if filt is not None and not filt.should_collide(gid, sgid):
                         continue
                     manifold = gjk_epa_query(shape_body, X_body, sg.shape, sg.pose)
-                    if manifold is not None:
+                    if manifold is not None and _valid_normal(manifold.normal):
                         for pt in manifold.points:
                             contacts.append(
                                 ContactConstraint(
@@ -147,7 +152,7 @@ class CollisionPipeline:
                 if filt is not None and not filt.should_collide(gid_i, gid_j):
                     continue
                 manifold = gjk_epa_query(shape_i, X_i, shape_j, X_j)
-                if manifold is not None:
+                if manifold is not None and _valid_normal(manifold.normal):
                     for pt in manifold.points:
                         contacts.append(
                             ContactConstraint(

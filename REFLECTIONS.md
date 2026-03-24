@@ -5,6 +5,27 @@ Updated at the end of each development session.
 
 ---
 
+## 2026-03-24 (session 7, part 3) — PGS 发散发现 + ADMM 验证
+
+### PGS Baumgarte 多步接触发散
+
+两球撞墙场景暴露严重稳定性问题：PGS + ERP 在球持续接触墙面时速度发散（3480 m/s）。
+根本原因：ERP 位置修正通过 force chain 传递，在持续接触中形成正反馈。
+所有生产级引擎都不单独使用 Baumgarte ERP——Bullet 用 split impulse，MuJoCo 用隐式积分。
+
+### ADMM 验证成功
+
+同一场景使用 ADMM 求解器完全稳定。ADMM 的隐式耦合天然阻止振荡，
+验证了之前设计 ADMM 的决策正确。轨迹与 Bullet 定性一致（球不穿墙，最终稳定），
+但 ADMM 减速更温和（~30 步 vs Bullet 的 1 步），导致 L2 position ~0.12m。
+
+### 决策
+
+Simulator 默认求解器应在 ADMM GPU kernel 完成后切换为 ADMM。
+当前保持 PGS 默认（向后兼容），用户可手动 `solver=ADMMContactSolver(...)` 传入。
+
+---
+
 ## 2026-03-24 (session 7, part 2) — Scene architecture design
 
 ### 设计决策：Scene + CollisionPipeline + 多机器人

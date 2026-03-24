@@ -73,7 +73,12 @@ class ContactConstraint:
 
 def _build_contact_frame(normal: Vec3) -> tuple[Vec3, Vec3]:
     """Build orthonormal tangent vectors for a contact normal."""
-    n = normal / np.linalg.norm(normal)
+    norm = np.linalg.norm(normal)
+    if norm < 1e-12:
+        # Degenerate: fallback to z-up
+        n = np.array([0.0, 0.0, 1.0])
+    else:
+        n = normal / norm
     if abs(n[0]) < 0.9:
         t1 = np.cross(n, np.array([1, 0, 0]))
     else:
@@ -343,7 +348,10 @@ class PGSContactSolver:
                 # Normal (row 0): lambda_n >= 0
                 old_n = lambdas[base]
                 residual = v_free[base] + W[base] @ lambdas + bias[base]
-                delta = -residual / W[base, base]
+                w_diag = W[base, base]
+                if w_diag < 1e-12:
+                    continue  # degenerate constraint, skip
+                delta = -residual / w_diag
                 new_n = max(0.0, old_n + delta)
                 lambdas[base] = new_n
                 max_delta = max(max_delta, abs(new_n - old_n))
@@ -434,8 +442,11 @@ def _pgs_box_row(
 ) -> None:
     """One PGS update for a box-constrained row: |lambda| <= limit."""
     old = lambdas[idx]
+    w_diag = W[idx, idx]
+    if w_diag < 1e-12:
+        return  # degenerate
     residual = v_free[idx] + W[idx] @ lambdas + bias[idx]
-    delta = -residual / W[idx, idx]
+    delta = -residual / w_diag
     new = np.clip(old + delta, -limit, limit)
     lambdas[idx] = new
     max_delta_ref[0] = max(max_delta_ref[0], abs(new - old))
