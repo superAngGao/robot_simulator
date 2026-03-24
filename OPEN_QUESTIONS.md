@@ -205,34 +205,50 @@ GPU Jacobi PGS + ADMM 求解器实现完成后，需要一次认真的重构：
 - `physics/solvers/` 接口验证（PGS / Jacobi PGS / ADMM 统一 ABC）
 - **触发条件**：GPU ADMM kernel 完成且测试通过后
 
-**Q20 — 与主流项目的功能差距（2026-03-24 session 7 审查）**
+**Q20 — 与主流项目的功能差距 → Scene 重构方案已确定**
 
-与 MuJoCo/Bullet/Drake 对比，按阻塞程度排序的关键缺失：
+与 MuJoCo/Bullet/Drake/Isaac Lab 对比审查后，确定以下重构方案：
 
-**P0 — 阻塞常见仿真场景：**
+**已决定的 Scene 架构（解决 P0 #1 和 P1 #6）：**
 
-1. **通用接触管线**（静态环境几何 + body-body LCP 接入 Simulator）
-   - 当前只有水平地面接触（`ground_contact_query`）。墙壁、斜面、障碍物需手动构造 ContactConstraint。
-   - GJK/EPA body-body 碰撞检测已有，但未接入 `Simulator.step()`。
-   - **解法**：将 GJK/EPA 窄相 + BroadPhase 集成为通用接触管线，静态几何作为 mass=∞ 的 body。
-   - 参考：MuJoCo worldbody `<geom>`、Bullet `loadURDF` static、Drake SceneGraph。
+引入 `Scene` 容器 + `CollisionPipeline` + `BodyRegistry`，一步到位支持多机器人。
 
-2. **力/力矩传感器** — 力控和 sim-to-real 基础。从 ABA 关节力矩中提取即可。
-   参考：MuJoCo `<sensor type="force">`、Drake `ForceSensor`。
+核心数据结构：
+```
+Scene
+  ├─ robots: dict[str, RobotModel]        # 多个有名字的机器人
+  ├─ static_geometries: list[StaticGeometry]  # 墙壁/障碍物（shape+pose，无质量）
+  ├─ terrain: Terrain                      # 地面/地形
+  ├─ collision_filter: CollisionFilter      # 统一过滤
+  └─ _registry: BodyRegistry               # 全局索引 ↔ (robot_name, local_idx)
+```
 
-**P1 — 重要但有替代方案：**
+关键设计决策（参考 Isaac Lab `InteractiveScene`）：
+- **Scene 包含 RobotModel，而非 RobotModel 包含碰撞** — RobotModel 回归纯粹（tree + geometries + metadata），碰撞管理在 Scene 层。`contact_model` 和 `self_collision` 字段从 RobotModel 移除。
+- **静态几何是独立类型** `StaticGeometry`（shape + pose + friction），不是 mass=∞ 的 Body — 不参与 ABA，不需要关节/积分。参考 PhysX `PxRigidStatic`。
+- **多机器人现在实现** — 动力学 per-robot 独立（各自 ABA），碰撞全局统一（一个 CollisionPipeline）。BodyRegistry 管理全局索引映射。
+- **API 风格**：dict，`sim.step({"robot_a": (q, qdot)}, {"robot_a": tau})`。单机器人有便捷包装 `Simulator.from_model()` + `step_single()`。
 
-3. Heightmap 地形 — stub 存在（`HeightmapTerrain`），未实现。影响户外场景。
-4. Mesh 碰撞 — stub 存在（`MeshShape`），未实现。影响复杂形状。
-5. 球关节（3-DOF rotation）— 影响肩/髋精确建模。当前用 3 个 revolute 近似。
-6. 多物体场景 — Simulator 只能一个 RobotModel。影响抓取/多机器人。
+碰撞管线流程：
+```
+CollisionPipeline.detect(scene, all_X, all_v) → list[ContactConstraint]
+  1. robot-body vs terrain       (ground_contact_query)
+  2. robot-body vs static_geom   (gjk_epa_query)
+  3. robot-body vs robot-body    (broad_phase + collision_filter + gjk_epa_query)
+```
 
-**P2 — 长期完善：**
+文件变化：
+- 新建：`scene.py`（Scene, StaticGeometry, BodyRegistry）、`collision_pipeline.py`
+- 改：`simulator.py`（step 用 CollisionPipeline）、`robot/model.py`（移除 contact_model/self_collision）
+- 改：所有引用旧字段的 test
 
-7. MJCF 格式加载器 — 很多 RL benchmark 用 MJCF。
-8. 状态快照/恢复 — RL checkpoint 需要。
-9. 电机模型（力矩限/速度限在动力学层面）。
-10. 腱/线缆 — 灵巧手。
+**剩余 P0/P1/P2 项（Scene 不解决的）：**
+
+2. 力/力矩传感器 — 从 ABA 关节力矩提取。
+3. Heightmap 地形 — 实现 HeightmapTerrain。
+4. Mesh 碰撞 — 实现 MeshShape + BVH。
+5. 球关节 — 新关节类型。
+7-10. 长期完善项（MJCF、状态快照、电机模型、腱）。
 
 ---
 

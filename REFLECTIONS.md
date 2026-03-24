@@ -5,6 +5,39 @@ Updated at the end of each development session.
 
 ---
 
+## 2026-03-24 (session 7, part 2) — Scene architecture design
+
+### 设计决策：Scene + CollisionPipeline + 多机器人
+
+**问题**：Simulator 只能仿真一个 RobotModel，没有静态环境几何（墙壁、障碍物），
+ContactModel 和 SelfCollisionModel 是两条独立管线。
+
+**方案评估**：
+
+| 方案 | 描述 | 结论 |
+|------|------|------|
+| A: 扩展 RobotModel | 加 static_bodies[] | 职责膨胀，不采用 |
+| B: 新建 Scene 容器 | Scene 持有 robots + env | **采用**，参考 Isaac Lab InteractiveScene |
+| C: 静态几何作 mass=∞ Body | 统一进 tree | 影响 ABA，不采用 |
+
+**为什么现在做多机器人而非以后**：
+- Scene 是一次性设计——以后加多机器人会是第二次破坏性重构
+- 额外工程量 ~100 行（BodyRegistry + for 循环）
+- 抓取场景需要多机器人（机械臂 + 自由物体 = 两个 "robot"）
+
+**参考项目**：
+- Isaac Lab `InteractiveScene`：dict[str, Articulation] + dict[str, RigidObject] + terrain
+- MuJoCo：所有 body 在同一列表，碰撞不区分自碰撞和环境碰撞
+- Drake：SceneGraph 管理所有几何体，碰撞查询返回统一 ContactResults
+- Bullet：static body 是 mass=0 的 btRigidBody（我们选择独立 StaticGeometry 类型更干净）
+
+**破坏性变更**：
+- RobotModel 移除 contact_model 和 self_collision 字段
+- Simulator.step() 签名改变
+- 所有引用旧字段的 test 需要重写
+
+---
+
 ## 2026-03-24 (session 7) — LCP pipeline + CollisionFilter + condim + solvers + reference tests
 
 ### condim 设计决策
