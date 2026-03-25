@@ -22,12 +22,13 @@ from numpy.typing import NDArray
 
 from collision_pipeline import CollisionPipeline
 from physics.integrator import Integrator
+from physics.solvers.mujoco_qp import MuJoCoStyleSolver
 from physics.solvers.pgs_solver import PGSContactSolver
 from physics.spatial import SpatialTransform
 from robot.model import RobotModel
 
 if TYPE_CHECKING:
-    pass
+    from physics.implicit_contact_step import ImplicitContactStep
 
 
 class Simulator:
@@ -56,6 +57,11 @@ class Simulator:
         kw = self.scene.solver_kwargs if self.scene.solver_kwargs else {"max_iter": 30}
         self.solver = solver or PGSContactSolver(**kw)
         self.pipeline = CollisionPipeline(self.scene)
+        # MuJoCo-style path: direct contact force integration (no round-trip)
+        self._mujoco_style = isinstance(self.solver, MuJoCoStyleSolver)
+        if self._mujoco_style:
+            from physics.implicit_contact_step import ImplicitContactStep
+            self._implicit_step = ImplicitContactStep(self.integrator.dt, self.solver)
 
     def step(self, states_or_q, taus_or_qdot=None, tau_single=None):
         """Advance the simulation by one time step.
@@ -102,7 +108,11 @@ class Simulator:
         # ── 2. Unified collision detection ──
         contacts = self.pipeline.detect(all_X, all_v)
 
-        # ── 3. Solve constraints ──
+        # ── Branch: MuJoCo-style (direct) vs legacy (impulse round-trip) ──
+        if self._mujoco_style:
+            return self._step_mujoco_style(states, taus, contacts, reg)
+
+        # ── 3. Solve constraints (legacy path) ──
         if contacts:
             inv_mass, inv_inertia = self.pipeline.gather_mass_properties()
             impulses_global = self.solver.solve(contacts, all_v, all_X, inv_mass, inv_inertia, dt=dt)
@@ -124,6 +134,68 @@ class Simulator:
 
             tau_total = tau + tree.passive_torques(q, qdot)
             q_new, qdot_new = self.integrator.step(tree, q, qdot, tau_total, ext_forces)
+            new_states[name] = (q_new, qdot_new)
+
+        # ── 5. Apply split-impulse position corrections (if solver provides them) ──
+        if hasattr(self.solver, "position_corrections"):
+            pos_corr = self.solver.position_corrections
+            for name, model in self.scene.robots.items():
+                q_new, qdot_new = new_states[name]
+                offset = reg.robot_offset[name]
+                tree = model.tree
+                for i in range(tree.num_bodies):
+                    pc = pos_corr[offset + i]
+                    if pc[0] == 0.0 and pc[1] == 0.0 and pc[2] == 0.0:
+                        continue
+                    body = tree.bodies[i]
+                    # Apply world-frame position correction to FreeJoint translation
+                    if body.joint.nq == 7:  # FreeJoint
+                        qs = body.q_idx.start if isinstance(body.q_idx, slice) else body.q_idx[0]
+                        q_new[qs + 4 : qs + 7] += pc
+                new_states[name] = (q_new, qdot_new)
+
+        return new_states
+
+    def _step_mujoco_style(self, states, taus, contacts, reg):
+        """MuJoCo-style path: solver force → ABA → integrate (no round-trip).
+
+        Each robot is stepped independently with its own contacts filtered
+        from the global contact list.
+        """
+        new_states: dict[str, tuple[NDArray, NDArray]] = {}
+
+        for name, model in self.scene.robots.items():
+            q, qdot = states[name]
+            tau = taus[name]
+            tree = model.tree
+            offset = reg.robot_offset[name]
+            nb = tree.num_bodies
+
+            # Filter contacts for this robot
+            robot_contacts = []
+            for c in contacts:
+                # Contact involves this robot if body_i or body_j is in its range
+                bi_local = c.body_i - offset if 0 <= c.body_i - offset < nb else -1
+                bj_local = c.body_j - offset if 0 <= c.body_j - offset < nb else -1
+                if bi_local >= 0 or bj_local >= 0:
+                    # Remap global body indices to local
+                    from physics.solvers.pgs_solver import ContactConstraint
+                    cc = ContactConstraint(
+                        body_i=bi_local if bi_local >= 0 else -1,
+                        body_j=bj_local if bj_local >= 0 else -1,
+                        point=c.point, normal=c.normal,
+                        tangent1=c.tangent1, tangent2=c.tangent2,
+                        depth=c.depth, mu=c.mu, condim=c.condim,
+                        mu_spin=c.mu_spin, mu_roll=c.mu_roll,
+                        restitution=c.restitution,
+                        erp=c.erp, slop=c.slop,
+                    )
+                    robot_contacts.append(cc)
+
+            tau_total = tau + tree.passive_torques(q, qdot)
+            q_new, qdot_new = self._implicit_step.step(
+                tree, q, qdot, tau_total, contacts=robot_contacts
+            )
             new_states[name] = (q_new, qdot_new)
 
         return new_states

@@ -489,6 +489,128 @@ class RobotTreeNumpy(RobotTreeBase):
         return tau
 
     # ------------------------------------------------------------------
+    # Contact Jacobian (joint-space)
+    # ------------------------------------------------------------------
+
+    def contact_jacobian(
+        self,
+        q: NDArray[np.float64],
+        body_idx: int,
+        point_world: NDArray[np.float64],
+    ) -> NDArray[np.float64]:
+        """Compute the 3 x nv positional Jacobian of a world-frame point.
+
+        Maps generalised velocities to the point's linear velocity in world:
+            v_point_world = J @ qdot
+
+        For each joint j on the kinematic chain from body to root, the
+        contribution is:
+
+          Revolute/Prismatic: J[:, v_idx_j] = (R_j @ S_j)[:3]  (linear part)
+                              + cross(axis_world, point - joint_origin)  (moment arm)
+
+        More precisely, using the spatial velocity transform:
+            v_body_world = R @ v_body
+            v_point = v_lin + omega x r
+
+        Reference: Siciliano et al. (2009) §3.3 — Geometric Jacobian.
+
+        Args:
+            q         : Generalised positions (nq,).
+            body_idx  : Index of the body the point is attached to.
+            point_world: Point position in world frame (3,).
+
+        Returns:
+            J : (3, nv) Jacobian matrix.
+        """
+        self._check_finalized()
+        X_world = self.forward_kinematics(q)
+
+        J = np.zeros((3, self.nv), dtype=np.float64)
+
+        # Walk from body_idx to root, accumulating each joint's contribution
+        i = body_idx
+        while i >= 0:
+            body = self._bodies[i]
+            nv_j = body.joint.nv
+            if nv_j > 0:
+                q_j = self._q_of(body, q)
+                S_j = body.joint.motion_subspace(q_j)  # (6, nv_j) in body frame
+                R_j = X_world[i].R  # body-to-world rotation
+                origin_j = X_world[i].r  # joint/body origin in world
+                r = point_world - origin_j  # moment arm in world
+
+                for k in range(nv_j):
+                    s = S_j[:, k]  # (6,) spatial motion in body frame
+                    # Transform to world frame
+                    s_lin_world = R_j @ s[:3]   # linear component
+                    s_ang_world = R_j @ s[3:]   # angular component
+                    # Point velocity = v_lin + omega x r
+                    v_col = s_lin_world + np.cross(s_ang_world, r)
+                    v_start = body.v_idx.start if isinstance(body.v_idx, slice) else body.v_idx[0]
+                    J[:, v_start + k] = v_col
+
+            i = body.parent
+
+        return J
+
+    def contact_jacobian_batch(
+        self,
+        q: NDArray[np.float64],
+        X_world: list,
+        contacts_body_point: list,
+    ) -> NDArray[np.float64]:
+        """Compute contact Jacobian for multiple contact points.
+
+        Args:
+            q                  : Generalised positions (nq,).
+            X_world            : Pre-computed FK transforms (from forward_kinematics).
+            contacts_body_point: List of (body_idx, point_world, n_rows) tuples.
+                                 n_rows is the condim of this contact.
+
+        Returns:
+            J : (total_rows, nv) Jacobian. For each contact, rows are:
+                row 0: normal direction
+                (Tangent directions are set by the solver, not here.)
+                This method only computes the positional Jacobian per contact;
+                the solver constructs directional rows as J_dir = direction @ J_pos.
+        """
+        self._check_finalized()
+        total_rows = sum(nr for _, _, nr in contacts_body_point)
+        J = np.zeros((total_rows, self.nv), dtype=np.float64)
+
+        row = 0
+        for body_idx, point_world, n_rows in contacts_body_point:
+            # 3 x nv positional Jacobian for this contact point
+            J_pos = np.zeros((3, self.nv), dtype=np.float64)
+            i = body_idx
+            while i >= 0:
+                body = self._bodies[i]
+                nv_j = body.joint.nv
+                if nv_j > 0:
+                    q_j = self._q_of(body, q)
+                    S_j = body.joint.motion_subspace(q_j)
+                    R_j = X_world[i].R
+                    origin_j = X_world[i].r
+                    r = point_world - origin_j
+                    for k in range(nv_j):
+                        s = S_j[:, k]
+                        s_lin_w = R_j @ s[:3]
+                        s_ang_w = R_j @ s[3:]
+                        v_start = body.v_idx.start if isinstance(body.v_idx, slice) else body.v_idx[0]
+                        J_pos[:, v_start + k] = s_lin_w + np.cross(s_ang_w, r)
+                    i = body.parent
+                else:
+                    i = body.parent
+
+            # Store: the solver will project J_pos onto contact directions
+            # For now, store the full 3xnv block (up to n_rows rows used by solver)
+            J[row : row + min(3, n_rows), :] = J_pos[: min(3, n_rows), :]
+            row += n_rows
+
+        return J
+
+    # ------------------------------------------------------------------
     # CRBA — Composite Rigid Body Algorithm  (mass matrix)
     # ------------------------------------------------------------------
 

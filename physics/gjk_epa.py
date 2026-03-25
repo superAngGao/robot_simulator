@@ -389,21 +389,31 @@ def ground_contact_query(
     shape: CollisionShape,
     pose: SpatialTransform,
     ground_z: float = 0.0,
+    margin: float = 0.0,
 ) -> Optional[ContactManifold]:
     """Test a convex shape against a ground plane at z=ground_z.
 
     Simplified: projects shape vertices (support points in -Z direction)
     below ground plane to find contact.
 
-    Returns ContactManifold if penetrating, None if separated.
+    Args:
+        shape    : Convex collision shape.
+        pose     : World-frame pose of the shape.
+        ground_z : Ground plane height.
+        margin   : Detection margin [m]. When > 0, contacts are detected
+                   before penetration (distance < margin). Returned depth
+                   can be negative (gap, no penetration yet).
+
+    Returns:
+        ContactManifold if within margin, None if separated beyond margin.
     """
     # Find lowest point of shape
     d_local = pose.R.T @ np.array([0.0, 0.0, -1.0])
     s_local = shape.support_point(d_local)
     s_world = pose.R @ s_local + pose.r
 
-    depth = ground_z - s_world[2]
-    if depth <= 0:
+    depth = ground_z - s_world[2]  # positive = penetrating
+    if depth <= -margin:
         return None
 
     normal = np.array([0.0, 0.0, 1.0])

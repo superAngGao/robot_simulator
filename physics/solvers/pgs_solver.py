@@ -69,6 +69,8 @@ class ContactConstraint:
     mu_spin: float = 0.0  # torsional friction
     mu_roll: float = 0.0  # rolling friction
     restitution: float = 0.0  # coefficient of restitution [0,1]
+    erp: float | None = None  # per-contact ERP override (None = use solver default)
+    slop: float | None = None  # per-contact slop override (None = use solver default)
 
 
 def _build_contact_frame(normal: Vec3) -> tuple[Vec3, Vec3]:
@@ -310,7 +312,8 @@ class PGSContactSolver:
         bias = np.zeros(n_rows)
         for ci, c in enumerate(contacts):
             base = row_offsets[ci]
-            baumgarte = -self.erp / dt * c.depth
+            erp = c.erp if c.erp is not None else self.erp
+            baumgarte = -erp / dt * c.depth
             restitution_bias = 0.0
             if c.restitution > 0.0 and v_free[base] < -0.01:
                 restitution_bias = c.restitution * v_free[base]

@@ -186,7 +186,8 @@ class JacobiPGSContactSolver:
         bias = np.zeros(n_rows)
         for ci, c in enumerate(contacts):
             base = row_offsets[ci]
-            baumgarte = -self.erp / dt * c.depth
+            erp = c.erp if c.erp is not None else self.erp
+            baumgarte = -erp / dt * c.depth
             restitution_bias = 0.0
             if c.restitution > 0.0 and v_free[base] < -0.01:
                 restitution_bias = c.restitution * v_free[base]

@@ -13,6 +13,15 @@ be pre-factored once (Cholesky) and reused for all ADMM iterations.
 This solver naturally implements implicit contact integration: the
 velocity update in Step 1 already accounts for the contact constraints.
 
+Optional compliant contact mode (contact_stiffness/contact_damping):
+  Replaces Baumgarte ERP with spring-damper penetration response,
+  eliminating the dt^{-1} amplification that causes divergence.
+  Equivalent to MuJoCo solref/solimp compliance model.
+
+Optional adaptive rho (adaptive_rho=True):
+  Boyd et al. (2011) scheme: adjusts rho based on primal/dual residual
+  ratio, automatically tuning convergence for different contact stiffness.
+
 References:
   Boyd et al. (2011) — Distributed Optimization and Statistical Learning
     via the Alternating Direction Method of Multipliers
@@ -83,11 +92,20 @@ class ADMMContactSolver:
     """ADMM contact solver with condim support.
 
     Args:
-        max_iter : Maximum ADMM iterations.
-        tolerance: Primal residual convergence tolerance.
-        rho      : ADMM penalty parameter (larger = faster but less stable).
-        erp      : Error Reduction Parameter (Baumgarte stabilization).
-        cfm      : Constraint Force Mixing (regularization).
+        max_iter          : Maximum ADMM iterations.
+        tolerance         : Primal residual convergence tolerance.
+        rho               : ADMM penalty parameter (larger = faster but less stable).
+        erp               : Error Reduction Parameter (Baumgarte stabilization).
+                            Ignored when contact_stiffness is set (compliant mode).
+        cfm               : Constraint Force Mixing (regularization).
+        contact_stiffness : Compliant contact stiffness [1/s^2]. When set,
+                            replaces Baumgarte ERP with spring-damper response.
+        contact_damping   : Compliant contact damping [1/s]. Defaults to
+                            2*sqrt(stiffness) (critical damping) when stiffness
+                            is set and damping is None.
+        adaptive_rho      : Enable Boyd et al. (2011) adaptive rho.
+        rho_scale         : Primal/dual residual ratio threshold (default 10).
+        rho_factor        : Rho multiplier/divisor per adaptation (default 2).
     """
 
     def __init__(
@@ -97,12 +115,25 @@ class ADMMContactSolver:
         rho: float = 1.0,
         erp: float = 0.2,
         cfm: float = 1e-6,
+        contact_stiffness: float | None = None,
+        contact_damping: float | None = None,
+        adaptive_rho: bool = False,
+        rho_scale: float = 10.0,
+        rho_factor: float = 2.0,
     ) -> None:
         self.max_iter = max_iter
         self.tolerance = tolerance
         self.rho = rho
         self.erp = erp
         self.cfm = cfm
+        self.contact_stiffness = contact_stiffness
+        if contact_stiffness is not None and contact_damping is None:
+            self.contact_damping = 2.0 * np.sqrt(contact_stiffness)
+        else:
+            self.contact_damping = contact_damping or 0.0
+        self.adaptive_rho = adaptive_rho
+        self.rho_scale = rho_scale
+        self.rho_factor = rho_factor
         self._warm_cache: dict[tuple[int, int], list[tuple[Vec3, NDArray]]] = {}
 
     def solve(
@@ -203,23 +234,43 @@ class ADMMContactSolver:
         for bi in range(num_bodies):
             v_bar[bi * 6 : bi * 6 + 6] = body_v[bi]
 
-        # ── Baumgarte bias (in constraint space) ──
+        # ── Bias (constraint space) ──
         bias = np.zeros(n_rows)
         v_free_contact = J @ v_bar
+
         for ci, c in enumerate(contacts):
             base = row_offsets[ci]
-            baumgarte = self.erp / dt * c.depth  # positive, pushes normal velocity up
-            restitution_bias = 0.0
+            if self.contact_stiffness is not None:
+                # Compliant mode: spring-damper bias (normalized by impedance)
+                #   F = k * depth - d * v_n   (standard spring-damper)
+                #   bias = (k * depth - d * v_n) / (k * dt + d)
+                #
+                # The -d*v_n term provides BIDIRECTIONAL damping:
+                #   v_n < 0 (approaching): bias increases (pushes harder)
+                #   v_n > 0 (departing):   bias decreases (reduces overcorrection)
+                # This is critical for settling — without it, the solver
+                # overcorrects and the body oscillates.
+                k = self.contact_stiffness
+                d = self.contact_damping
+                impedance = k * dt + d
+                v_n = v_free_contact[base]  # + = departing, - = approaching
+                if impedance > 1e-12:
+                    bias[base] = (k * c.depth - d * v_n) / impedance
+                else:
+                    bias[base] = 0.0
+            else:
+                # Hard mode: Baumgarte ERP
+                erp = c.erp if c.erp is not None else self.erp
+                baumgarte = erp / dt * c.depth
+                bias[base] = baumgarte
+            # Restitution (both modes)
             if c.restitution > 0.0 and v_free_contact[base] < -0.01:
-                restitution_bias = -c.restitution * v_free_contact[base]
-            bias[base] = baumgarte + restitution_bias
+                bias[base] += -c.restitution * v_free_contact[base]
 
-        # ── Pre-factor A = M + rho * J^T J (constant across iterations) ──
+        # ── Pre-factor A = M + rho * J^T J ──
         rho = self.rho
         JtJ = J.T @ J
-        A = M + rho * JtJ
-        # Add CFM regularization
-        A += self.cfm * np.eye(n_body_dofs)
+        A = M + rho * JtJ + self.cfm * np.eye(n_body_dofs)
         A_chol = np.linalg.cholesky(A)
 
         # ── Initialize ADMM variables ──
@@ -251,15 +302,14 @@ class ADMMContactSolver:
 
         for iteration in range(self.max_iter):
             # Step 1: v⁺ = A⁻¹ (M v̄ + rho * Jᵀ (s - u + bias_scaled))
-            # bias_scaled shifts the target: we want Jv >= -bias (penetration correction)
             rhs = Mv_bar + rho * J.T @ (s - u + bias / rho)
-            # Solve A v = rhs via Cholesky: A = L L^T, solve L y = rhs, then L^T v = y
             y = np.linalg.solve(A_chol, rhs)
             v_new = np.linalg.solve(A_chol.T, y)
 
             # Step 2: s = proj_K(J v⁺ + u)
             Jv = J @ v_new
             z = Jv + u
+            s_old = s.copy()
             s_new = np.zeros(n_rows)
             for ci, c in enumerate(contacts):
                 base = row_offsets[ci]
@@ -268,9 +318,23 @@ class ADMMContactSolver:
             # Step 3: u = u + Jv - s
             u = u + Jv - s_new
 
-            # Convergence check: primal residual ||Jv - s||
+            # Convergence check
             primal_residual = np.linalg.norm(Jv - s_new)
+            dual_residual = np.linalg.norm(rho * J.T @ (s_new - s_old))
             s = s_new
+
+            # Adaptive rho (Boyd et al. 2011)
+            if self.adaptive_rho and iteration < self.max_iter - 1:
+                need_refactor = False
+                if primal_residual > self.rho_scale * max(dual_residual, 1e-20):
+                    rho *= self.rho_factor
+                    need_refactor = True
+                elif dual_residual > self.rho_scale * max(primal_residual, 1e-20):
+                    rho /= self.rho_factor
+                    need_refactor = True
+                if need_refactor:
+                    A = M + rho * JtJ + self.cfm * np.eye(n_body_dofs)
+                    A_chol = np.linalg.cholesky(A)
 
             if primal_residual < self.tolerance:
                 break

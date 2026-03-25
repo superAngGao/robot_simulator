@@ -258,11 +258,24 @@ if dual_residual > 10 * primal_residual: ρ /= 2, 重分解 A
 
 ### 实施顺序
 
-1. PGS + split impulse（~50 行，解决 PGS 发散）
-2. ADMM 合规接触 + 自适应ρ（~130 行，提升 ADMM 精度）
+1. ~~PGS + split impulse（~50 行，解决 PGS 发散）~~ ✅ 2026-03-25
+2. ~~ADMM 合规接触 + 自适应ρ（~130 行，提升 ADMM 精度）~~ ✅ 2026-03-25
 3. GPU Jacobi PGS + split impulse kernel
 4. GPU ADMM-TC kernel（batched Cholesky + tensor core）
 5. （长期）ADMM + Newton 精化
+
+**已完成实现（2026-03-25）：**
+
+- `physics/solvers/pgs_split_impulse.py` — `PGSSplitImpulseSolver`
+  - 委托 PGS(erp=0) 做速度求解，位置修正独立计算
+  - 位置修正通过 `position_corrections` 属性暴露给 Simulator
+  - Simulator 自动对 FreeJoint body 应用位置修正
+  - 26 个测试（含 ball-wall 不发散验证 + 解析 LCP 对比 + 位置修正单元测试）
+
+- `physics/solvers/admm.py` — `ADMMContactSolver` 新增参数：
+  - `contact_stiffness`/`contact_damping`：阻抗归一化弹簧-阻尼 bias，替代 Baumgarte ERP
+  - `adaptive_rho`：Boyd 2011 方案，primal/dual 残差比触发 ρ 缩放 + Cholesky 重分解
+  - 向后兼容：默认参数行为不变
 
 ---
 
