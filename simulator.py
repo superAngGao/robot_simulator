@@ -57,11 +57,11 @@ class Simulator:
         kw = self.scene.solver_kwargs if self.scene.solver_kwargs else {"max_iter": 30}
         self.solver = solver or PGSContactSolver(**kw)
         self.pipeline = CollisionPipeline(self.scene)
-        # MuJoCo-style path: direct contact force integration (no round-trip)
-        self._mujoco_style = isinstance(self.solver, MuJoCoStyleSolver)
-        if self._mujoco_style:
-            from physics.implicit_contact_step import ImplicitContactStep
-            self._implicit_step = ImplicitContactStep(self.integrator.dt, self.solver)
+        # Direct integration path: available for ALL constraint solvers
+        # (eliminates impulse->force->ABA round-trip)
+        self._use_direct_path = isinstance(self.solver, (MuJoCoStyleSolver,))
+        # Can also be enabled for PGS/PGS-SI/Jacobi via use_direct_step=True
+        self._implicit_step = None
 
     def step(self, states_or_q, taus_or_qdot=None, tau_single=None):
         """Advance the simulation by one time step.
@@ -108,9 +108,9 @@ class Simulator:
         # ── 2. Unified collision detection ──
         contacts = self.pipeline.detect(all_X, all_v)
 
-        # ── Branch: MuJoCo-style (direct) vs legacy (impulse round-trip) ──
-        if self._mujoco_style:
-            return self._step_mujoco_style(states, taus, contacts, reg)
+        # ── Branch: direct path (no round-trip) vs legacy ──
+        if self._use_direct_path:
+            return self._step_direct(states, taus, contacts, reg)
 
         # ── 3. Solve constraints (legacy path) ──
         if contacts:
@@ -156,12 +156,15 @@ class Simulator:
 
         return new_states
 
-    def _step_mujoco_style(self, states, taus, contacts, reg):
-        """MuJoCo-style path: solver force → ABA → integrate (no round-trip).
+    def _step_direct(self, states, taus, contacts, reg):
+        """Direct path: solver operates on predicted state (no round-trip).
 
-        Each robot is stepped independently with its own contacts filtered
-        from the global contact list.
+        Works for ALL solver types (MuJoCoStyle, PGS, PGS-SI, Jacobi, ADMM).
         """
+        if self._implicit_step is None:
+            from physics.implicit_contact_step import ImplicitContactStep
+            self._implicit_step = ImplicitContactStep(self.integrator.dt, self.solver)
+
         new_states: dict[str, tuple[NDArray, NDArray]] = {}
 
         for name, model in self.scene.robots.items():
@@ -171,14 +174,12 @@ class Simulator:
             offset = reg.robot_offset[name]
             nb = tree.num_bodies
 
-            # Filter contacts for this robot
+            # Filter contacts for this robot (remap global -> local indices)
             robot_contacts = []
             for c in contacts:
-                # Contact involves this robot if body_i or body_j is in its range
                 bi_local = c.body_i - offset if 0 <= c.body_i - offset < nb else -1
                 bj_local = c.body_j - offset if 0 <= c.body_j - offset < nb else -1
                 if bi_local >= 0 or bj_local >= 0:
-                    # Remap global body indices to local
                     from physics.solvers.pgs_solver import ContactConstraint
                     cc = ContactConstraint(
                         body_i=bi_local if bi_local >= 0 else -1,
