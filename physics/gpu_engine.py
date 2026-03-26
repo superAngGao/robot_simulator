@@ -273,7 +273,16 @@ class GpuEngine(PhysicsEngine):
             outputs=[sol.v_predicted],
         )
 
-        # 5. FK on predicted velocity → body_v_pred
+        # 5. Compute predicted body velocities
+        #    We only need body_v at predicted qdot. Skip full FK — just recompute
+        #    body velocities using the existing X_world from step 2.
+        #    This avoids overwriting X_world_R/r which collision needs.
+        #    For now, use a dedicated velocity-only computation via the FK kernel
+        #    writing to a temporary X buffer.
+        _tmp_XR = wp.zeros_like(sc.X_world_R)
+        _tmp_Xr = wp.zeros_like(sc.X_world_r)
+        _tmp_XupR = wp.zeros_like(sc.X_up_R)
+        _tmp_Xupr = wp.zeros_like(sc.X_up_r)
         wp.launch(
             batched_fk_body_vel,
             dim=N,
@@ -292,7 +301,7 @@ class GpuEngine(PhysicsEngine):
                 self._gpu_X_tree_r,
                 s.nb,
             ],
-            outputs=[sc.X_world_R, sc.X_world_r, sc.X_up_R, sc.X_up_r, sol.v_bodies_pred],
+            outputs=[_tmp_XR, _tmp_Xr, _tmp_XupR, _tmp_Xupr, sol.v_bodies_pred],
         )
 
         # 6. Collision detection (ground + body-body)

@@ -49,6 +49,11 @@ def batched_detect_all_contacts(
             contact_point[env_id, c, d] = 0.0
 
     # ── Ground contacts ──
+    # For spherical bodies, contact_local_pos encodes the offset from body
+    # origin to the contact surface. The lowest point is computed using
+    # the offset MAGNITUDE (radius) along the ground normal, independent
+    # of body rotation. This avoids the problem where a rotating body's
+    # fixed contact point swings above the ground.
     for c in range(nc_ground):
         bi = contact_body_idx[c]
         local_pos = wp.vec3(
@@ -56,32 +61,25 @@ def batched_detect_all_contacts(
             contact_local_pos[c, 1],
             contact_local_pos[c, 2],
         )
-        R = wp.mat33(
-            X_world_R[env_id, bi, 0, 0],
-            X_world_R[env_id, bi, 0, 1],
-            X_world_R[env_id, bi, 0, 2],
-            X_world_R[env_id, bi, 1, 0],
-            X_world_R[env_id, bi, 1, 1],
-            X_world_R[env_id, bi, 1, 2],
-            X_world_R[env_id, bi, 2, 0],
-            X_world_R[env_id, bi, 2, 1],
-            X_world_R[env_id, bi, 2, 2],
-        )
         r = wp.vec3(
             X_world_r[env_id, bi, 0],
             X_world_r[env_id, bi, 1],
             X_world_r[env_id, bi, 2],
         )
-        pos_world = R * local_pos + r
-        depth = ground_z - pos_world[2]
+
+        # Use offset magnitude as radius, project along ground normal (z-axis)
+        radius = wp.length(local_pos)
+        lowest_z = r[2] - radius  # lowest point of sphere
+        depth = ground_z - lowest_z
 
         if depth > 0.0:
             contact_depth[env_id, c] = depth
             contact_normal[env_id, c, 0] = 0.0
             contact_normal[env_id, c, 1] = 0.0
             contact_normal[env_id, c, 2] = 1.0
-            contact_point[env_id, c, 0] = pos_world[0]
-            contact_point[env_id, c, 1] = pos_world[1]
+            # Contact point at lowest point of sphere
+            contact_point[env_id, c, 0] = r[0]
+            contact_point[env_id, c, 1] = r[1]
             contact_point[env_id, c, 2] = ground_z
             contact_bi[env_id, c] = bi
             contact_bj[env_id, c] = -1  # ground
