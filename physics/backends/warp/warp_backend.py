@@ -431,10 +431,10 @@ class WarpBatchBackend(BatchBackend):
             ],
             outputs=[
                 sc.X_world_R,
-                sc.X_world_r,  # X_world stays same (same q)
-                sol.v_bodies_pred,
+                sc.X_world_r,
                 sc.X_up_R,
                 sc.X_up_r,
+                sol.v_bodies_pred,
             ],
         )
 

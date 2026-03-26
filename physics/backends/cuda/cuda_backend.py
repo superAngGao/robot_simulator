@@ -91,10 +91,15 @@ class CudaBatchBackend(BatchBackend):
             self._effort_limits = torch.zeros(max(s.nu, 1), device=device)
 
         # Contact (body_idx as float for kernel simplicity)
-        self._contact_body_idx = torch.from_numpy(
-            s.contact_body_idx.astype(np.float32)
-        ).to(device)
+        self._contact_body_idx = torch.from_numpy(s.contact_body_idx.astype(np.float32)).to(device)
         self._contact_local_pos = torch.from_numpy(s.contact_local_pos).to(device)
+
+        # Constraint solver
+        self._contact_solver = getattr(cfg, "contact_solver", "penalty")
+        if self._contact_solver == "jacobi_pgs_si":
+            self._contact_body_idx_long = torch.from_numpy(s.contact_body_idx).long().to(device)
+            self._inv_mass = torch.from_numpy(s.inv_mass_per_body).to(device)
+            self._inv_inertia = torch.from_numpy(s.inv_inertia_per_body).to(device)
 
         # State
         N = num_envs
@@ -112,9 +117,7 @@ class CudaBatchBackend(BatchBackend):
         self._q[:] = self._default_q.unsqueeze(0).expand(N, -1)
         self._qdot[:] = self._default_qdot.unsqueeze(0).expand(N, -1)
         if init_noise_scale > 0:
-            self._q += torch.empty_like(self._q).uniform_(
-                -init_noise_scale, init_noise_scale
-            )
+            self._q += torch.empty_like(self._q).uniform_(-init_noise_scale, init_noise_scale)
         return self._run_fk_and_build()
 
     def reset_envs(self, env_ids: torch.Tensor, init_noise_scale: float = 0.0) -> None:
@@ -131,6 +134,9 @@ class CudaBatchBackend(BatchBackend):
         actions = actions.to(device=self._device, dtype=torch.float32)
         action_clip = self._cfg.action_clip if self._cfg.action_clip is not None else -1.0
 
+        if self._contact_solver == "jacobi_pgs_si":
+            return self._step_jacobi_pgs_si(actions, action_clip)
+
         if self._dynamics == "grouped_schur":
             return self._step_grouped_schur(actions, action_clip)
         if self._dynamics == "crba_tc":
@@ -138,20 +144,47 @@ class CudaBatchBackend(BatchBackend):
 
         step_fn = self._cuda.physics_step_crba if self._dynamics == "crba" else self._cuda.physics_step
         results = step_fn(
-            self._q, self._qdot, actions,
-            self._joint_type, self._joint_axis,
-            self._parent_idx, self._q_idx_start, self._q_idx_len,
-            self._v_idx_start, self._v_idx_len,
-            self._X_tree_R, self._X_tree_r, self._inertia_mat,
-            self._q_min, self._q_max, self._k_limit, self._b_limit, self._damping,
-            self._actuated_q_idx, self._actuated_v_idx, self._effort_limits,
-            self._contact_body_idx, self._contact_local_pos,
-            N, s.nb, s.nq, s.nv, s.nu, s.nc,
+            self._q,
+            self._qdot,
+            actions,
+            self._joint_type,
+            self._joint_axis,
+            self._parent_idx,
+            self._q_idx_start,
+            self._q_idx_len,
+            self._v_idx_start,
+            self._v_idx_len,
+            self._X_tree_R,
+            self._X_tree_r,
+            self._inertia_mat,
+            self._q_min,
+            self._q_max,
+            self._k_limit,
+            self._b_limit,
+            self._damping,
+            self._actuated_q_idx,
+            self._actuated_v_idx,
+            self._effort_limits,
+            self._contact_body_idx,
+            self._contact_local_pos,
+            N,
+            s.nb,
+            s.nq,
+            s.nv,
+            s.nu,
+            s.nc,
             self._has_effort_limits,
-            self._cfg.dt, s.gravity,
-            self._cfg.kp, self._cfg.kd, self._cfg.action_scale, action_clip,
-            s.contact_k_normal, s.contact_b_normal,
-            s.contact_mu, s.contact_slip_eps, s.contact_ground_z,
+            self._cfg.dt,
+            s.gravity,
+            self._cfg.kp,
+            self._cfg.kd,
+            self._cfg.action_scale,
+            action_clip,
+            s.contact_k_normal,
+            s.contact_b_normal,
+            s.contact_mu,
+            s.contact_slip_eps,
+            s.contact_ground_z,
         )
         q_new, qdot_new, X_world_R, X_world_r, v_bodies, contact_mask = results
 
@@ -160,18 +193,30 @@ class CudaBatchBackend(BatchBackend):
 
         # Re-run FK on new state for observation cache
         fk_results = self._cuda.fk_only(
-            self._q, self._qdot,
-            self._joint_type, self._joint_axis, self._parent_idx,
-            self._q_idx_start, self._v_idx_start, self._v_idx_len,
-            self._X_tree_R, self._X_tree_r,
-            N, s.nb, s.nq, s.nv,
+            self._q,
+            self._qdot,
+            self._joint_type,
+            self._joint_axis,
+            self._parent_idx,
+            self._q_idx_start,
+            self._v_idx_start,
+            self._v_idx_len,
+            self._X_tree_R,
+            self._X_tree_r,
+            N,
+            s.nb,
+            s.nq,
+            s.nv,
         )
         X_world_R, X_world_r, v_bodies = fk_results
 
-        X_world_flat = torch.cat([
-            X_world_R.reshape(N, s.nb, 9),
-            X_world_r,
-        ], dim=-1)
+        X_world_flat = torch.cat(
+            [
+                X_world_R.reshape(N, s.nb, 9),
+                X_world_r,
+            ],
+            dim=-1,
+        )
 
         return StepResult(
             q=self._q.cpu(),
@@ -180,6 +225,243 @@ class CudaBatchBackend(BatchBackend):
             v_bodies=v_bodies.cpu(),
             contact_mask=contact_mask.bool().cpu(),
         )
+
+    # ------------------------------------------------------------------
+    # Jacobi-PGS-SI constraint solver (PyTorch ops + CUDA FK)
+    # ------------------------------------------------------------------
+
+    def _step_jacobi_pgs_si(self, actions, action_clip):
+        """Constraint solver path using PyTorch ops for solver, CUDA FK for transforms."""
+        from ..tilelang.kernels_tl import transform_force_torch
+        from ..torch_solver import jacobi_pgs_si_step
+
+        s = self._static
+        N = self._num_envs
+        dt = self._cfg.dt
+        nc, nb, nv = s.nc, s.nb, s.nv
+
+        # 1-3. Passive torques + PD controller + tau_total
+        #    Use the fused CUDA kernel for one step with penalty, capture tau_total
+        #    Actually, we need tau_total only. Build it manually:
+        # Passive torques (PyTorch, same as TileLang)
+        tau_passive = torch.zeros(N, nv, device=self._device)
+        for i in range(nb):
+            jtype = int(self._joint_type[i])
+            if jtype == 1:  # REVOLUTE
+                vs = int(self._v_idx_start[i])
+                qs = int(self._q_idx_start[i])
+                q_val = self._q[:, qs]
+                qdot_val = self._qdot[:, vs]
+                qmin = float(self._q_min[i])
+                qmax = float(self._q_max[i])
+                k_lim = float(self._k_limit[i])
+                b_lim = float(self._b_limit[i])
+                damp = float(self._damping[i])
+                # Joint limit penalty
+                pen_lo = torch.clamp(qmin - q_val, min=0.0)
+                pen_hi = torch.clamp(q_val - qmax, min=0.0)
+                tau_lim = k_lim * pen_lo - b_lim * torch.clamp(qdot_val, max=0.0) * (pen_lo > 0).float()
+                tau_lim = (
+                    tau_lim - k_lim * pen_hi - b_lim * torch.clamp(qdot_val, min=0.0) * (pen_hi > 0).float()
+                )
+                tau_damp = -damp * qdot_val
+                tau_passive[:, vs] = tau_lim + tau_damp
+
+        # PD controller
+        tau_action = torch.zeros(N, nv, device=self._device)
+        for j in range(s.nu):
+            qi = int(self._actuated_q_idx[j])
+            vi = int(self._actuated_v_idx[j])
+            target = self._q[:, qi] + self._cfg.action_scale * actions[:, j]
+            tau_action[:, vi] = self._cfg.kp * (target - self._q[:, qi]) - self._cfg.kd * self._qdot[:, vi]
+
+        tau_smooth = tau_action + tau_passive
+
+        # 4. FK (using CUDA kernel)
+        fk_results = self._cuda.fk_only(
+            self._q,
+            self._qdot,
+            self._joint_type,
+            self._joint_axis,
+            self._parent_idx,
+            self._q_idx_start,
+            self._v_idx_start,
+            self._v_idx_len,
+            torch.from_numpy(s.X_tree_R.reshape(s.nb, 9).astype(np.float32)).to(self._device),
+            torch.from_numpy(s.X_tree_r.astype(np.float32)).to(self._device),
+            N,
+            nb,
+            s.nq,
+            nv,
+        )
+        X_world_R = fk_results[0].reshape(N, nb, 3, 3)
+        X_world_r = fk_results[1]
+        X_up_R = fk_results[2].reshape(N, nb, 3, 3)
+        X_up_r = fk_results[3]
+        v_bodies = fk_results[4]
+
+        # 5. ABA (unconstrained) — use PyTorch ABA from TileLang
+        ext_zero = torch.zeros(N, nb, 6, device=self._device)
+        # Simple ABA via inverse dynamics approach: a_u = H^{-1} (tau - C)
+        # For simplicity, use RNEA for bias + CRBA for H, or just run ABA loop
+        # Actually, reuse the CUDA fk_only + compute ABA in PyTorch
+        # This is the same as TileLang's _compute_aba_pytorch
+        a_u = self._compute_aba_pytorch(tau_smooth, ext_zero, X_up_R, X_up_r, v_bodies)
+
+        # 6. Predicted velocity
+        v_predicted = self._qdot + dt * a_u
+
+        # 7. FK on predicted velocity
+        fk_pred = self._cuda.fk_only(
+            self._q,
+            v_predicted,
+            self._joint_type,
+            self._joint_axis,
+            self._parent_idx,
+            self._q_idx_start,
+            self._v_idx_start,
+            self._v_idx_len,
+            torch.from_numpy(s.X_tree_R.reshape(s.nb, 9).astype(np.float32)).to(self._device),
+            torch.from_numpy(s.X_tree_r.astype(np.float32)).to(self._device),
+            N,
+            nb,
+            s.nq,
+            nv,
+        )
+        v_bodies_pred = fk_pred[4]
+
+        # 8. Ground contact detection
+        contact_depth = torch.zeros(N, nc, device=self._device)
+        contact_active = torch.zeros(N, nc, dtype=torch.bool, device=self._device)
+        contact_point_world = torch.zeros(N, nc, 3, device=self._device)
+        for c in range(nc):
+            bi = int(self._contact_body_idx_long[c])
+            R = X_world_R[:, bi]
+            r = X_world_r[:, bi]
+            local_pos = self._contact_local_pos[c]
+            pos_world = torch.bmm(R, local_pos.unsqueeze(-1)).squeeze(-1) + r
+            depth = s.contact_ground_z - pos_world[:, 2]
+            contact_depth[:, c] = depth
+            contact_point_world[:, c] = pos_world
+            contact_active[:, c] = depth > 0.0
+
+        # 9-12. Solver + impulse conversion
+        gen_impulse, pos_corr, _ = jacobi_pgs_si_step(
+            self._q,
+            self._qdot,
+            tau_smooth,
+            X_world_R,
+            X_world_r,
+            X_up_R,
+            X_up_r,
+            v_bodies_pred,
+            contact_depth,
+            contact_active,
+            contact_point_world,
+            contact_body_idx=self._contact_body_idx_long,
+            contact_local_pos=self._contact_local_pos,
+            inv_mass=self._inv_mass,
+            inv_inertia=self._inv_inertia,
+            joint_type=self._joint_type,
+            joint_axis=self._joint_axis,
+            parent_idx=self._parent_idx,
+            v_idx_start=self._v_idx_start,
+            q_idx_start=self._q_idx_start,
+            mu=s.contact_mu,
+            cfm=s.contact_cfm,
+            erp=s.contact_erp_pos,
+            slop=s.contact_slop,
+            omega=s.solver_omega,
+            max_iter=s.solver_max_iter,
+            nc=nc,
+            nb=nb,
+            nv=nv,
+            dt=dt,
+            device=self._device,
+            transform_force_fn=transform_force_torch,
+        )
+
+        # 13. ABA trick: dqdot = H⁻¹ @ gen_impulse
+        dqdot_over_dt = self._compute_aba_pytorch(
+            gen_impulse / dt, ext_zero, X_up_R, X_up_r, torch.zeros_like(v_bodies)
+        )
+        dqdot = dqdot_over_dt * dt
+
+        # 14. Integration
+        self._qdot = v_predicted + dqdot
+        q_new = self._q.clone()
+        for i in range(nb):
+            jtype = int(self._joint_type[i])
+            qs = int(self._q_idx_start[i])
+            vs = int(self._v_idx_start[i])
+            if jtype == 0:  # FREE
+                qw, qx, qy, qz = self._q[:, qs], self._q[:, qs + 1], self._q[:, qs + 2], self._q[:, qs + 3]
+                wx, wy, wz = self._qdot[:, vs + 3], self._qdot[:, vs + 4], self._qdot[:, vs + 5]
+                dqw = 0.5 * (-wx * qx - wy * qy - wz * qz)
+                dqx = 0.5 * (wx * qw + wz * qy - wy * qz)
+                dqy = 0.5 * (wy * qw - wz * qx + wx * qz)
+                dqz = 0.5 * (wz * qw + wy * qx - wx * qy)
+                nqw, nqx, nqy, nqz = qw + dt * dqw, qx + dt * dqx, qy + dt * dqy, qz + dt * dqz
+                norm = torch.sqrt(nqw**2 + nqx**2 + nqy**2 + nqz**2).clamp(min=1e-10)
+                q_new[:, qs] = nqw / norm
+                q_new[:, qs + 1] = nqx / norm
+                q_new[:, qs + 2] = nqy / norm
+                q_new[:, qs + 3] = nqz / norm
+                q_new[:, qs + 4] = self._q[:, qs + 4] + dt * self._qdot[:, vs] + pos_corr[:, i, 0]
+                q_new[:, qs + 5] = self._q[:, qs + 5] + dt * self._qdot[:, vs + 1] + pos_corr[:, i, 1]
+                q_new[:, qs + 6] = self._q[:, qs + 6] + dt * self._qdot[:, vs + 2] + pos_corr[:, i, 2]
+            elif jtype == 1 or jtype == 2:  # REVOLUTE or PRISMATIC
+                q_new[:, qs] = self._q[:, qs] + dt * self._qdot[:, vs]
+        self._q = q_new
+
+        return self._run_fk_and_build()
+
+    def _compute_aba_pytorch(self, tau, ext_forces, X_up_R, X_up_r, v_bodies):
+        """PyTorch ABA forward dynamics (for solver path)."""
+        from ..tilelang.kernels_tl import (
+            spatial_cross_force_torch,
+        )
+
+        s = self._static
+        N = self._num_envs
+        nb, nv = s.nb, s.nv
+
+        # Pass 1: velocities and bias forces
+        v = v_bodies.clone()
+        pA = torch.zeros(N, nb, 6, device=self._device)
+
+        # Gravity spatial vector
+        g = torch.zeros(6, device=self._device)
+        g[2] = -s.gravity  # linear z = -g
+
+        for i in range(nb):
+            # For ABA Pass 1 we just need pA = v×*(Iv) - f_ext
+            I_i = self._inertia_mat[i].reshape(6, 6)
+            Iv = torch.matmul(v[:, i].unsqueeze(1), I_i.T).squeeze(1)
+            pA[:, i] = spatial_cross_force_torch(v[:, i], Iv) - ext_forces[:, i]
+
+        # Pass 2: articulated inertias (simplified for single-body case)
+        IA = torch.zeros(N, nb, 6, 6, device=self._device)
+        for i in range(nb):
+            IA[:, i] = self._inertia_mat[i].reshape(6, 6).unsqueeze(0).expand(N, -1, -1)
+
+        # For multi-body, full ABA is needed. For single free body, shortcut:
+        if nb == 1 and int(self._joint_type[0]) == 0:  # Single FreeJoint
+            # qddot = I⁻¹ @ (tau - pA + g_force)
+            I_inv = torch.linalg.inv(IA[:, 0])
+            rhs = tau[:, :6] - pA[:, 0]
+            # Add gravity contribution
+            I_0 = IA[:, 0]
+            g_force = torch.matmul(I_0, g.unsqueeze(0).expand(N, -1).unsqueeze(-1)).squeeze(-1)
+            qddot = torch.matmul(I_inv, (rhs + g_force).unsqueeze(-1)).squeeze(-1)
+            result = torch.zeros(N, nv, device=self._device)
+            result[:, :6] = qddot
+            return result
+
+        # General case: fall back to full ABA (would need full implementation)
+        # For now, use simple H⁻¹ approach
+        # This is a simplified placeholder — full ABA PyTorch would be needed for multi-body
+        raise NotImplementedError("CUDA solver path requires single free body for now")
 
     def get_obs_data(self, result: StepResult) -> dict[str, torch.Tensor]:
         s = self._static
@@ -224,7 +506,6 @@ class CudaBatchBackend(BatchBackend):
         if self._group_data is not None:
             return self._group_data
 
-        from physics.robot_tree import RobotTreeNumpy
         # We need the tree to call auto_detect_groups
         # Reconstruct minimal tree from static data to get grouping
         s = self._static
@@ -287,7 +568,9 @@ class CudaBatchBackend(BatchBackend):
             "root_v": torch.from_numpy(root_v).int().to(self._device),
             "nv_root": len(root_v),
             "limb_v_offsets": torch.from_numpy(limb_offsets).int().to(self._device),
-            "limb_v_indices": torch.from_numpy(limb_v_all).int().to(self._device) if len(limb_v_all) > 0 else torch.zeros(1, dtype=torch.int32, device=self._device),
+            "limb_v_indices": torch.from_numpy(limb_v_all).int().to(self._device)
+            if len(limb_v_all) > 0
+            else torch.zeros(1, dtype=torch.int32, device=self._device),
             "ngroups": len(limb_groups),
         }
         return self._group_data
@@ -299,35 +582,80 @@ class CudaBatchBackend(BatchBackend):
         gd = self._get_group_data()
 
         results = self._cuda.physics_step_grouped_schur(
-            self._q, self._qdot, actions,
-            self._joint_type, self._joint_axis, self._parent_idx,
-            self._q_idx_start, self._q_idx_len, self._v_idx_start, self._v_idx_len,
-            self._X_tree_R, self._X_tree_r, self._inertia_mat,
-            self._q_min, self._q_max, self._k_limit, self._b_limit, self._damping,
-            self._actuated_q_idx, self._actuated_v_idx, self._effort_limits,
-            self._contact_body_idx, self._contact_local_pos,
-            gd["root_v"], gd["nv_root"],
-            gd["limb_v_offsets"], gd["limb_v_indices"], gd["ngroups"],
-            N, s.nb, s.nq, s.nv, s.nu, s.nc, self._has_effort_limits,
-            self._cfg.dt, s.gravity,
-            self._cfg.kp, self._cfg.kd, self._cfg.action_scale, action_clip,
-            s.contact_k_normal, s.contact_b_normal, s.contact_mu, s.contact_slip_eps, s.contact_ground_z,
+            self._q,
+            self._qdot,
+            actions,
+            self._joint_type,
+            self._joint_axis,
+            self._parent_idx,
+            self._q_idx_start,
+            self._q_idx_len,
+            self._v_idx_start,
+            self._v_idx_len,
+            self._X_tree_R,
+            self._X_tree_r,
+            self._inertia_mat,
+            self._q_min,
+            self._q_max,
+            self._k_limit,
+            self._b_limit,
+            self._damping,
+            self._actuated_q_idx,
+            self._actuated_v_idx,
+            self._effort_limits,
+            self._contact_body_idx,
+            self._contact_local_pos,
+            gd["root_v"],
+            gd["nv_root"],
+            gd["limb_v_offsets"],
+            gd["limb_v_indices"],
+            gd["ngroups"],
+            N,
+            s.nb,
+            s.nq,
+            s.nv,
+            s.nu,
+            s.nc,
+            self._has_effort_limits,
+            self._cfg.dt,
+            s.gravity,
+            self._cfg.kp,
+            self._cfg.kd,
+            self._cfg.action_scale,
+            action_clip,
+            s.contact_k_normal,
+            s.contact_b_normal,
+            s.contact_mu,
+            s.contact_slip_eps,
+            s.contact_ground_z,
         )
         q_new, qdot_new, X_world_R, X_world_r, v_bodies, contact_mask = results
         self._q = q_new
         self._qdot = qdot_new
 
         fk = self._cuda.fk_only(
-            self._q, self._qdot,
-            self._joint_type, self._joint_axis, self._parent_idx,
-            self._q_idx_start, self._v_idx_start, self._v_idx_len,
-            self._X_tree_R, self._X_tree_r, N, s.nb, s.nq, s.nv,
+            self._q,
+            self._qdot,
+            self._joint_type,
+            self._joint_axis,
+            self._parent_idx,
+            self._q_idx_start,
+            self._v_idx_start,
+            self._v_idx_len,
+            self._X_tree_R,
+            self._X_tree_r,
+            N,
+            s.nb,
+            s.nq,
+            s.nv,
         )
         X_world_R, X_world_r, v_bodies = fk
         X_flat = torch.cat([X_world_R.reshape(N, s.nb, 9), X_world_r], dim=-1)
         return StepResult(
-            q=self._q.cpu(), qdot=self._qdot.cpu(),
-            X_world=X_flat.cpu(), v_bodies=v_bodies.cpu(),
+            q=self._q.cpu(),
+            qdot=self._qdot.cpu(),
+            X_world=X_flat.cpu(),
+            v_bodies=v_bodies.cpu(),
             contact_mask=contact_mask.bool().cpu(),
         )
 
@@ -338,16 +666,46 @@ class CudaBatchBackend(BatchBackend):
 
         # Kernel 1: fused FK + CRBA(H) + RNEA(C) → H, rhs, FK cache
         results = self._cuda.crba_build(
-            self._q, self._qdot, actions,
-            self._joint_type, self._joint_axis, self._parent_idx,
-            self._q_idx_start, self._q_idx_len, self._v_idx_start, self._v_idx_len,
-            self._X_tree_R, self._X_tree_r, self._inertia_mat,
-            self._q_min, self._q_max, self._k_limit, self._b_limit, self._damping,
-            self._actuated_q_idx, self._actuated_v_idx, self._effort_limits,
-            self._contact_body_idx, self._contact_local_pos,
-            N, s.nb, s.nq, s.nv, s.nu, s.nc, self._has_effort_limits,
-            s.gravity, self._cfg.kp, self._cfg.kd, self._cfg.action_scale, action_clip,
-            s.contact_k_normal, s.contact_b_normal, s.contact_mu, s.contact_slip_eps, s.contact_ground_z,
+            self._q,
+            self._qdot,
+            actions,
+            self._joint_type,
+            self._joint_axis,
+            self._parent_idx,
+            self._q_idx_start,
+            self._q_idx_len,
+            self._v_idx_start,
+            self._v_idx_len,
+            self._X_tree_R,
+            self._X_tree_r,
+            self._inertia_mat,
+            self._q_min,
+            self._q_max,
+            self._k_limit,
+            self._b_limit,
+            self._damping,
+            self._actuated_q_idx,
+            self._actuated_v_idx,
+            self._effort_limits,
+            self._contact_body_idx,
+            self._contact_local_pos,
+            N,
+            s.nb,
+            s.nq,
+            s.nv,
+            s.nu,
+            s.nc,
+            self._has_effort_limits,
+            s.gravity,
+            self._cfg.kp,
+            self._cfg.kd,
+            self._cfg.action_scale,
+            action_clip,
+            s.contact_k_normal,
+            s.contact_b_normal,
+            s.contact_mu,
+            s.contact_slip_eps,
+            s.contact_ground_z,
         )
         H, rhs, X_world_R, X_world_r, v_bodies, contact_mask = results
 
@@ -357,27 +715,47 @@ class CudaBatchBackend(BatchBackend):
 
         # Kernel 2: integration
         int_results = self._cuda.integrate_step(
-            self._q, self._qdot, qddot,
-            self._joint_type, self._q_idx_start, self._q_idx_len,
-            self._v_idx_start, self._v_idx_len,
-            self._cfg.dt, N, s.nb, s.nq, s.nv,
+            self._q,
+            self._qdot,
+            qddot,
+            self._joint_type,
+            self._q_idx_start,
+            self._q_idx_len,
+            self._v_idx_start,
+            self._v_idx_len,
+            self._cfg.dt,
+            N,
+            s.nb,
+            s.nq,
+            s.nv,
         )
         self._q, self._qdot = int_results[0], int_results[1]
 
         # Re-run FK
         fk = self._cuda.fk_only(
-            self._q, self._qdot,
-            self._joint_type, self._joint_axis, self._parent_idx,
-            self._q_idx_start, self._v_idx_start, self._v_idx_len,
-            self._X_tree_R, self._X_tree_r,
-            N, s.nb, s.nq, s.nv,
+            self._q,
+            self._qdot,
+            self._joint_type,
+            self._joint_axis,
+            self._parent_idx,
+            self._q_idx_start,
+            self._v_idx_start,
+            self._v_idx_len,
+            self._X_tree_R,
+            self._X_tree_r,
+            N,
+            s.nb,
+            s.nq,
+            s.nv,
         )
         X_world_R, X_world_r, v_bodies = fk
 
         X_flat = torch.cat([X_world_R.reshape(N, s.nb, 9), X_world_r], dim=-1)
         return StepResult(
-            q=self._q.cpu(), qdot=self._qdot.cpu(),
-            X_world=X_flat.cpu(), v_bodies=v_bodies.cpu(),
+            q=self._q.cpu(),
+            qdot=self._qdot.cpu(),
+            X_world=X_flat.cpu(),
+            v_bodies=v_bodies.cpu(),
             contact_mask=contact_mask.bool().cpu(),
         )
 
@@ -385,16 +763,23 @@ class CudaBatchBackend(BatchBackend):
         s = self._static
         N = self._num_envs
         fk = self._cuda.fk_only(
-            self._q, self._qdot,
-            self._joint_type, self._joint_axis, self._parent_idx,
-            self._q_idx_start, self._v_idx_start, self._v_idx_len,
-            self._X_tree_R, self._X_tree_r,
-            N, s.nb, s.nq, s.nv,
+            self._q,
+            self._qdot,
+            self._joint_type,
+            self._joint_axis,
+            self._parent_idx,
+            self._q_idx_start,
+            self._v_idx_start,
+            self._v_idx_len,
+            self._X_tree_R,
+            self._X_tree_r,
+            N,
+            s.nb,
+            s.nq,
+            s.nv,
         )
         X_world_R, X_world_r, v_bodies = fk
-        X_world_flat = torch.cat([
-            X_world_R.reshape(N, s.nb, 9), X_world_r
-        ], dim=-1)
+        X_world_flat = torch.cat([X_world_R.reshape(N, s.nb, 9), X_world_r], dim=-1)
         return StepResult(
             q=self._q.cpu(),
             qdot=self._qdot.cpu(),
