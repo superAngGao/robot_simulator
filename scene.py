@@ -149,6 +149,20 @@ class Scene:
 
         return self
 
+    def build_merged(self):
+        """Build a MergedModel from all robots in the scene.
+
+        Merges all robots into a single multi-root kinematic tree.
+        Returns a MergedModel with unified state indexing.
+        """
+        from physics.merged_model import merge_models
+
+        return merge_models(
+            robots=self.robots,
+            terrain=self.terrain,
+            collision_filter=self.collision_filter,
+        )
+
     @property
     def registry(self) -> BodyRegistry:
         if self._registry is None:
