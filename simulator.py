@@ -37,12 +37,18 @@ if TYPE_CHECKING:
 
 
 class Simulator:
-    """Multi-robot scene simulator with unified collision pipeline.
+    """Multi-robot scene simulator.
+
+    Supports two modes:
+      1. Legacy (per-robot StepPipeline + CollisionPipeline) — default
+      2. Engine (MergedModel + PhysicsEngine) — when engine= is provided
 
     Args:
         scene_or_model : Built Scene or single RobotModel (auto-wrapped).
         integrator     : Any Integrator instance (for dt extraction).
         solver         : Contact solver. If None, uses PGS(max_iter=30).
+        engine         : PhysicsEngine instance (CpuEngine or GpuEngine).
+                         If provided, uses MergedModel path instead of legacy.
     """
 
     def __init__(
@@ -50,6 +56,7 @@ class Simulator:
         scene_or_model,
         integrator: "Integrator",
         solver=None,
+        engine=None,
     ) -> None:
         # Auto-wrap RobotModel into Scene for backward compatibility
         if isinstance(scene_or_model, RobotModel):
@@ -59,11 +66,17 @@ class Simulator:
 
         self.scene = scene_or_model
         self.integrator = integrator
+
+        # Engine mode (MergedModel + PhysicsEngine)
+        self._engine = engine
+        self._merged = None
+        if engine is not None:
+            self._merged = engine.merged
+
+        # Legacy mode (per-robot StepPipeline)
         kw = self.scene.solver_kwargs if self.scene.solver_kwargs else {"max_iter": 30}
         self.solver = solver or PGSContactSolver(**kw)
         self.collision_pipeline = CollisionPipeline(self.scene)
-
-        # Build the rigid body dynamics pipeline
         wrapped_solver = wrap_solver(self.solver)
         self._pipeline = StepPipeline(
             dt=integrator.dt,
@@ -89,6 +102,10 @@ class Simulator:
                 "step() requires either step(states_dict, taus_dict) or "
                 "step(q, qdot, tau). Use step_single() for single-robot."
             )
+
+        # Engine mode: use MergedModel + PhysicsEngine
+        if self._engine is not None and self._merged is not None:
+            return self._step_engine(states_or_q, taus_or_qdot)
 
         states = states_or_q
         taus = taus_or_qdot
@@ -136,6 +153,32 @@ class Simulator:
             # Store force state
             if self._pipeline.last_force_state is not None:
                 self._last_force_states[name] = self._pipeline.last_force_state
+
+        return new_states
+
+    def _step_engine(self, states_dict, taus_dict):
+        """Step using PhysicsEngine on MergedModel."""
+        merged = self._merged
+        slices = merged.robot_slices
+
+        # Assemble merged q, qdot, tau from per-robot dicts
+        q_merged = np.zeros(merged.nq)
+        qdot_merged = np.zeros(merged.nv)
+        tau_merged = np.zeros(merged.nv)
+
+        for name, rs in slices.items():
+            q_r, qdot_r = states_dict[name]
+            q_merged[rs.q_slice] = q_r
+            qdot_merged[rs.v_slice] = qdot_r
+            tau_merged[rs.v_slice] = taus_dict[name]
+
+        # Step engine
+        out = self._engine.step(q_merged, qdot_merged, tau_merged, dt=self.integrator.dt)
+
+        # Split back to per-robot
+        new_states = {}
+        for name, rs in slices.items():
+            new_states[name] = (out.q_new[rs.q_slice], out.qdot_new[rs.v_slice])
 
         return new_states
 
