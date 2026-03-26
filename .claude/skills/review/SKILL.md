@@ -43,6 +43,16 @@ Run linter:
 ruff check $(git diff --staged --name-only | grep '\.py$' | tr '\n' ' ')
 ```
 
+### Step 3.5: MANIFEST.md staleness check
+
+Compare the current changes against `MANIFEST.md`. Flag as `⚠ MANIFEST STALE` if any of:
+- A new phase was completed or started
+- Architecture changed (new pipeline, new layer, new subsystem)
+- Solver matrix changed (new solver added or retired)
+- Test count changed significantly (new module with dedicated test file)
+
+If stale, update `MANIFEST.md` before proceeding.
+
 ### Step 4: Report
 
 Output a structured report:

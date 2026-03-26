@@ -89,7 +89,19 @@ relevant row, read the project detail, then proceed.
 
 ## Reference Files
 
+- **MANIFEST.md** — project overview (architecture, solvers, progress, key files)
 - **PLAN.md** — full roadmap and architecture
 - **PROGRESS.md** — current status per phase
 - **REFLECTIONS.md** — decisions and lessons learned
 - **repo_list.md** — API reference for all modules
+
+## MANIFEST.md Maintenance
+
+`MANIFEST.md` is the high-level project overview for humans. Update it when:
+- A new phase is completed or started
+- Architecture changes (new layers, new pipelines, new subsystems)
+- Solver matrix changes (new solver added or retired)
+- Test count changes significantly (new module with tests)
+
+Do NOT update on every commit — only at milestones. The `/review` skill
+checks whether MANIFEST.md is stale.

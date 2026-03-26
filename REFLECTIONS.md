@@ -5,6 +5,93 @@ Updated at the end of each development session.
 
 ---
 
+## 2026-03-26 (session 9) — 力系统重构设计 + ADMM 收敛修复
+
+### 力系统重构：ForceState + DynamicsCache + StepPipeline
+
+**问题**：力的来源散落（gravity 隐式、passive 手动加、contact 6 种 solver 格式各异），
+聚合点分散（simulator.py、implicit_contact_step.py、integrator.py），大量重复计算
+（FK 2-3 次、ABA 2 次、CRBA 重复），不可观测（无法回答"此步每个 body 受什么力"）。
+
+**参考对比**：
+- MuJoCo: 命名 qfrc_* 字段 + 两阶段管线（smooth → constraint）✅ 最清晰
+- Isaac Gym: flat tensor 布局 + 瞬态力（每帧重置）✅ GPU 最友好
+- Drake: MultibodyForces 双表示（generalized + spatial）✅ 灵活但无 GPU
+- Bullet: OOP 累加器，世界坐标系 ✗ GPU 不友好
+- Pinocchio: 纯算法库，无力聚合 ✗ 用户负担重
+
+**决策：MuJoCo 命名分解 + Isaac flat tensor 布局。**
+
+核心架构：
+```
+阶段 1（全并行）: qfrc_passive + qfrc_actuator + qfrc_applied + qfrc_external → tau_smooth → qacc_smooth
+阶段 2（约束）:   solver(qacc_smooth, contacts) → qacc
+积分:             integrator(q, qdot, qacc) → (q_new, qdot_new)
+```
+
+**关键设计决策**：
+1. **接触力不与其他力同层** — 约束求解器需要先看到无约束加速度 `qacc_smooth`，因果依赖决定两阶段分离
+2. **积分器不处理力** — 只做 `(q, qdot, qacc) → (q_new, qdot_new)`
+3. **所有力源统一输出 `(nv,)` generalized** — 新接口 `ForceSource.compute() → (nv,)`
+4. **所有约束求解器统一输出 `qacc`** — 新接口 `ConstraintSolver.solve() → (nv,)`
+5. **DynamicsCache 共享中间结果** — FK/body_v/H/L 算一次，全链路复用
+
+**ABA vs CRBA 分工**：
+- CRBA = 主路径（有接触时，M 和 L 被碰撞全链条共用）
+- ABA = 快速路径（无接触帧，O(n) 直出 qacc）
+- CRBA 是 GPU 热路径（密集矩阵 → tensor core 甜区）
+- Phase 2g 实测：nv=30 时 CRBA 0.96x ABA，约束场景 CRBA 综合更优（省掉重复计算）
+
+**消除的重复计算**：
+- FK: 3 次 → 1 次（cache.X_world）
+- body_v: 2 次 → 1 次（cache.body_v）
+- CRBA + ABA 各自算质量矩阵 → 1 次 CRBA
+- MuJoCo 路径第 2 次 ABA → `qacc = qacc_smooth + cho_solve(L, J^T@f)`
+
+**预留的力源接口**：
+- 执行器模型（电机动力学、齿轮比、PD 伺服）→ `qfrc_actuator`
+- 外部 body wrench（风、推力）→ `xfrc_applied` 世界坐标系 → `J^T@f → qfrc_external`
+- 弹簧/腱（跨 body 弹性连接）→ `qfrc_spring`
+- 流体力（粘性阻力、升力）→ `qfrc_fluid`
+- Penalty contact 降级为特殊 ConstraintSolver（不迭代，直接 depth×k）
+
+**退役的类**：ImplicitContactStep、LCPContactModel、PenaltyContactModel、NullContactModel
+
+---
+
+### MuJoCoStyleSolver ADMM 收敛修复
+
+### 问题：50kg 重球 ADMM 收敛不足
+
+`test_heavy_ball_matches_mujoco`（50kg 球 vs MuJoCo 参考轨迹）L2=2.37mm，超过 0.1mm 阈值。
+诊断过程：先怀疑 b/k 公式错误，查证 MuJoCo 源码（`engine_core_constraint.c`）后确认
+公式正确（`B = 2/(dmax*tc)`, `K = 1/(dmax²*tc²*dr²)`，`dmax = solimp[1]`）。
+
+实际根因：**ADMM 50 次迭代对大质量物体收敛不够**。大质量 → 小 A_ii → R 更主导 →
+ADMM 需要更多迭代。实测：50 iter → 2.37mm, 200 iter → 0.06mm, 500 iter → 0.0001mm。
+
+### 解决方案：Warmstart + 自适应 rho
+
+1. **Warmstart**：缓存上一步的 f/s/u，接触数匹配时复用为初始值。
+   MuJoCo 也做 warmstart（`data.efc_force` 持久化）。
+2. **自适应 rho**（Boyd et al. 2011 §3.4.1）：
+   - `primal_res > mu * dual_res` → `rho *= tau`（加强约束共识）
+   - `dual_res > mu * primal_res` → `rho /= tau`（加强目标函数）
+   - 默认 `mu=10, tau=2`
+   - 需要重新 Cholesky 分解 `(A+R+rho*I)`
+
+修复后 50 次迭代足够：所有 20 个 MuJoCo QP 测试通过（含 50kg 球）。
+
+### GPU 并行性考虑
+
+- **Warmstart**：每个环境独立维护 `_prev_f/s/u`，不影响并行性。
+- **自适应 rho**：引入条件分支（环境级粒度），GPU 上可用 `where()` 替代 if 消除 warp divergence。
+  也可在 GPU 路径用 `adaptive_rho=False` + warmstart（warmstart 本身已大幅提速收敛）。
+- **Cholesky 重分解**：自适应 rho 变化时需重新分解。GPU 上小矩阵（contact < 20）的
+  分解成本低，但频繁重分解仍是开销。固定 rho + warmstart 是 GPU 路径更友好的方案。
+
+---
+
 ## 2026-03-24 (session 7, part 3) — PGS 发散发现 + ADMM 验证
 
 ### PGS Baumgarte 多步接触发散
