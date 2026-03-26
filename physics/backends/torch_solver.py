@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import torch
 
-from ..static_data import JOINT_FREE, JOINT_PRISMATIC, JOINT_REVOLUTE
+from .static_data import JOINT_FREE, JOINT_PRISMATIC, JOINT_REVOLUTE
 
 
 def jacobi_pgs_si_step(

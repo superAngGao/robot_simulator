@@ -222,7 +222,7 @@ class TileLangBatchBackend(BatchBackend):
             R = self._X_world_R[:, bi]  # (N, 3, 3)
             r = self._X_world_r[:, bi]  # (N, 3)
             local_pos = self._contact_local_pos[c]  # (3,)
-            pos_world = torch.bmm(R, local_pos.unsqueeze(-1)).squeeze(-1) + r  # (N, 3)
+            pos_world = (R @ local_pos.unsqueeze(-1)).squeeze(-1) + r  # (N, 3)
             depth = s.contact_ground_z - pos_world[:, 2]  # (N,)
             contact_depth[:, c] = depth
             contact_point_world[:, c] = pos_world
@@ -385,11 +385,14 @@ class TileLangBatchBackend(BatchBackend):
                 f_parent = transform_force_torch(R_up, r_up, f_i)
                 f_prop[:, pi] += f_parent
 
-        # 12. ABA trick: dqdot = H⁻¹ @ gen_impulse via ABA(q, 0, gen_impulse/dt) * dt
+        # 12. ABA trick: dqdot = H⁻¹ @ gen_impulse
+        #     ABA includes gravity, so subtract it: dqdot = (ABA(tau=impulse/dt) - ABA(tau=0)) * dt
         old_qdot2 = self._qdot.clone()
         self._qdot.zero_()
-        dqdot_over_dt = self._compute_aba(gen_impulse / dt, ext_zero)  # a = H⁻¹ @ (gen_impulse/dt)
-        dqdot = dqdot_over_dt * dt
+        tau_zero = torch.zeros(N, nv, device=self._device)
+        a_with_impulse = self._compute_aba(gen_impulse / dt, ext_zero)
+        a_gravity_only = self._compute_aba(tau_zero, ext_zero)
+        dqdot = (a_with_impulse - a_gravity_only) * dt
         self._qdot = old_qdot2
 
         # 13. Position correction (split impulse)

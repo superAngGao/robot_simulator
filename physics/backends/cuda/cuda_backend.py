@@ -294,25 +294,25 @@ class CudaBatchBackend(BatchBackend):
             s.nq,
             nv,
         )
-        X_world_R = fk_results[0].reshape(N, nb, 3, 3)
-        X_world_r = fk_results[1]
-        X_up_R = fk_results[2].reshape(N, nb, 3, 3)
-        X_up_r = fk_results[3]
-        v_bodies = fk_results[4]
+        fk_Rw, fk_rw, fk_vb = fk_results[0], fk_results[1], fk_results[2]
+        X_world_R = fk_Rw.reshape(N, nb, 3, 3)
+        X_world_r = fk_rw.reshape(N, nb, 3)
+        v_bodies = fk_vb.reshape(N, nb, 6)
+        # X_up not returned by fk_only — use identity (valid for single free body)
+        X_up_R = (
+            torch.eye(3, device=self._device).unsqueeze(0).unsqueeze(0).expand(N, nb, -1, -1).contiguous()
+        )
+        X_up_r = torch.zeros(N, nb, 3, device=self._device)
 
-        # 5. ABA (unconstrained) — use PyTorch ABA from TileLang
+        # 5. ABA (unconstrained) — PyTorch shortcut
         ext_zero = torch.zeros(N, nb, 6, device=self._device)
-        # Simple ABA via inverse dynamics approach: a_u = H^{-1} (tau - C)
-        # For simplicity, use RNEA for bias + CRBA for H, or just run ABA loop
-        # Actually, reuse the CUDA fk_only + compute ABA in PyTorch
-        # This is the same as TileLang's _compute_aba_pytorch
         a_u = self._compute_aba_pytorch(tau_smooth, ext_zero, X_up_R, X_up_r, v_bodies)
 
         # 6. Predicted velocity
         v_predicted = self._qdot + dt * a_u
 
-        # 7. FK on predicted velocity
-        fk_pred = self._cuda.fk_only(
+        # 7. FK on predicted velocity → body_v_pred
+        _, _, fk_vp = self._cuda.fk_only(
             self._q,
             v_predicted,
             self._joint_type,
@@ -328,7 +328,7 @@ class CudaBatchBackend(BatchBackend):
             s.nq,
             nv,
         )
-        v_bodies_pred = fk_pred[4]
+        v_bodies_pred = fk_vp.reshape(N, nb, 6)
 
         # 8. Ground contact detection
         contact_depth = torch.zeros(N, nc, device=self._device)
@@ -338,8 +338,8 @@ class CudaBatchBackend(BatchBackend):
             bi = int(self._contact_body_idx_long[c])
             R = X_world_R[:, bi]
             r = X_world_r[:, bi]
-            local_pos = self._contact_local_pos[c]
-            pos_world = torch.bmm(R, local_pos.unsqueeze(-1)).squeeze(-1) + r
+            local_pos = self._contact_local_pos[c]  # (3,)
+            pos_world = (R @ local_pos.unsqueeze(-1)).squeeze(-1) + r  # (N, 3)
             depth = s.contact_ground_z - pos_world[:, 2]
             contact_depth[:, c] = depth
             contact_point_world[:, c] = pos_world
@@ -382,10 +382,12 @@ class CudaBatchBackend(BatchBackend):
         )
 
         # 13. ABA trick: dqdot = H⁻¹ @ gen_impulse
-        dqdot_over_dt = self._compute_aba_pytorch(
-            gen_impulse / dt, ext_zero, X_up_R, X_up_r, torch.zeros_like(v_bodies)
-        )
-        dqdot = dqdot_over_dt * dt
+        #     ABA includes gravity, so subtract: dqdot = (ABA(tau=impulse/dt) - ABA(tau=0)) * dt
+        v_zero = torch.zeros_like(v_bodies)
+        tau_zero = torch.zeros(N, nv, device=self._device)
+        a_with_impulse = self._compute_aba_pytorch(gen_impulse / dt, ext_zero, X_up_R, X_up_r, v_zero)
+        a_gravity_only = self._compute_aba_pytorch(tau_zero, ext_zero, X_up_R, X_up_r, v_zero)
+        dqdot = (a_with_impulse - a_gravity_only) * dt
 
         # 14. Integration
         self._qdot = v_predicted + dqdot
