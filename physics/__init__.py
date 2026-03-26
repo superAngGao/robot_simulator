@@ -1,5 +1,5 @@
 """
-physics — Spatial algebra, joint models, articulated body dynamics, contact.
+physics — Rigid body dynamics pipeline, spatial algebra, joint models, contact.
 """
 
 from ._robot_tree_base import RobotTreeBase
@@ -10,6 +10,8 @@ from .collision import (
     SelfCollisionModel,
 )
 from .collision_filter import CollisionFilter
+from .constraint_solver import ConstraintSolver, NullConstraintSolver
+from .constraint_solvers import AccelLevelAdapter, VelocityLevelAdapter, wrap_solver
 from .contact import (
     ContactModel,
     ContactParams,
@@ -17,6 +19,8 @@ from .contact import (
     NullContactModel,
     PenaltyContactModel,
 )
+from .dynamics_cache import DynamicsCache, ForceState
+from .force_source import ForceSource, PassiveForceSource
 from .geometry import (
     BodyCollisionGeometry,
     BoxShape,
@@ -49,9 +53,21 @@ from .spatial import (
     spatial_cross_force,
     spatial_cross_velocity,
 )
+from .step_pipeline import StepPipeline
 from .terrain import FlatTerrain, HeightmapTerrain, Terrain
 
 __all__ = [
+    # === New pipeline (Phase 2h) ===
+    "StepPipeline",
+    "DynamicsCache",
+    "ForceState",
+    "ForceSource",
+    "PassiveForceSource",
+    "ConstraintSolver",
+    "NullConstraintSolver",
+    "AccelLevelAdapter",
+    "VelocityLevelAdapter",
+    "wrap_solver",
     # spatial
     "SpatialTransform",
     "SpatialInertia",
@@ -77,13 +93,13 @@ __all__ = [
     "RobotTreeNumpy",
     "RobotTreeBase",
     "KinematicState",
-    # contact
+    # contact (legacy — use ConstraintSolver + CollisionPipeline instead)
     "ContactParams",
     "ContactPoint",
     "ContactModel",
     "PenaltyContactModel",
     "NullContactModel",
-    # integrators
+    # integrators (legacy — StepPipeline integrates inline)
     "SemiImplicitEuler",
     "RK4",
     "simulate",

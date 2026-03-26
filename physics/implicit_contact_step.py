@@ -56,8 +56,9 @@ class ImplicitContactStep(Integrator):
     def __init__(self, dt: float, solver) -> None:
         super().__init__(dt)
         self.solver = solver
-        from .solvers.mujoco_qp import MuJoCoStyleSolver
-        self._accel_level = isinstance(solver, MuJoCoStyleSolver)
+        from .solvers.mujoco_qp import ADMMQPSolver
+
+        self._accel_level = isinstance(solver, ADMMQPSolver)
 
     def step(
         self,
@@ -129,17 +130,13 @@ class ImplicitContactStep(Integrator):
         inv_mass, inv_inertia = self._gather_mass(tree)
 
         # 5. Solve on predicted velocities
-        impulses = self.solver.solve(
-            contacts, body_v_pred, X_world, inv_mass, inv_inertia, dt=self.dt
-        )
+        impulses = self.solver.solve(contacts, body_v_pred, X_world, inv_mass, inv_inertia, dt=self.dt)
 
         # 6. Convert body-frame impulses to joint-space velocity correction
         #    Δqdot = H^{-1} @ generalized_impulse
         #    where generalized_impulse = Σ J_body_i^T @ impulse_i
         qdot_new = v_predicted.copy()
-        gen_impulse = self._impulses_to_generalized(
-            tree, q, qdot, X_world, impulses, contacts
-        )
+        gen_impulse = self._impulses_to_generalized(tree, q, qdot, X_world, impulses, contacts)
         if gen_impulse is not None:
             # H^{-1} @ gen_impulse via ABA trick:
             # ABA(q, 0, gen_impulse/dt, 0) * dt = H^{-1} @ gen_impulse
@@ -177,7 +174,6 @@ class ImplicitContactStep(Integrator):
 
         Same forward recursion as tree.body_velocities() but with arbitrary qdot.
         """
-        from .spatial import SpatialTransform
         n = tree.num_bodies
         v = [np.zeros(6) for _ in range(n)]
         for body in tree.bodies:

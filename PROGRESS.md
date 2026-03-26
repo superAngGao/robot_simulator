@@ -1,6 +1,6 @@
 # Robot Simulator — Progress Tracker
 
-> Last updated: 2026-03-25 (session 8)
+> Last updated: 2026-03-26 (session 10)
 > Reference plan: [PLAN.md](./PLAN.md)
 
 ---
@@ -10,7 +10,7 @@
 | Phase | 状态 | 完成度 |
 |-------|------|--------|
 | Phase 1 — Basic Physics + Simple Rendering | ✅ 完成（含修复） | 100% |
-| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 95% (2a-2e ✅, 2f 🔄, 2g ✅) |
+| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 95% (2a-2e ✅, 2f 🔄, 2g ✅, 2h ✅) |
 | Phase 3 — High-Fidelity Rendering          | ⬜ 未开始 | 0% |
 | Phase 4 — Domain Randomization             | ⬜ 未开始 | 0% |
 | Phase 5 — Sim-to-Real Validation           | ⬜ 未开始 | 0% |
@@ -361,7 +361,7 @@ CUDA 性能最优原因：全物理步融合为单 kernel launch，零 inter-ker
 | 类别 | 实现数 | 说明 |
 |------|--------|------|
 | 前向动力学 | 10 | ABA×5后端 + CRBA×3(mono/grouped/batched) + Grouped Schur + CUDA CRBA-TC |
-| 接触求解器 | **5** | PGS + **PGS-SI** + Jacobi PGS + **ADMM-C** + ADMM |
+| 接触求解器 | **6** | PGS + **PGS-SI** + Jacobi PGS + **ADMM-C** + ADMM + **MuJoCo QP** |
 | 接触维度 | condim 1/3/4/6 | MuJoCo 风格，variable rows + per-condim 锥投影 |
 | 碰撞检测 | 4 | AABB broad + GJK/EPA narrow + ground + **CollisionPipeline 统一管线** |
 | 碰撞形状 | 5 | Box + Sphere + Cylinder + Capsule + Mesh(stub) |

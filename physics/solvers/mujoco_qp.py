@@ -1,5 +1,5 @@
 """
-MuJoCo-style acceleration-level contact QP with R-regularization.
+ADMM-QP: acceleration-level contact QP with R-regularization.
 
 Solves the dual constrained dynamics QP:
 
@@ -12,16 +12,20 @@ where:
     a_u_c = J @ a_u              (unconstrained constraint-space acceleration)
     a_ref = -b*v_c - k*d(r)*r   (spring-damper reference acceleration)
 
-Key differences from our velocity-level ADMM:
+Key differences from the velocity-level ADMM (ADMMContactSolver):
     1. Acceleration level — forces, not impulses
     2. Joint-space A via CRBA — captures inertia coupling
     3. R regularization — QP strictly convex, unique stable equilibrium
     4. Self-adaptive R — scales with A_ii, no manual tuning per robot
+    5. Warmstarting — reuses previous solution for faster convergence
+    6. Adaptive rho — residual balancing per Boyd et al. (2011) §3.4.1
+
+GPU lineage: ADMMQPSolver (CPU) → ADMM-TC (GPU tensor core batched Cholesky).
 
 References:
     Todorov (2014) — Convex and analytically-invertible dynamics
     MuJoCo docs — Computation / Solver / Constraint model
-    Boyd et al. (2011) — ADMM
+    Boyd et al. (2011) — ADMM, §3.4.1 (varying penalty parameter)
 """
 
 from __future__ import annotations
@@ -29,12 +33,11 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
-from ..spatial import Vec6
 from .pgs_solver import ContactConstraint, _build_contact_frame
 
 
-class MuJoCoStyleSolver:
-    """Acceleration-level contact QP with MuJoCo-compatible compliance.
+class ADMMQPSolver:
+    """Acceleration-level contact QP with self-adaptive compliance.
 
     Args:
         max_iter  : Maximum ADMM iterations.
@@ -56,12 +59,26 @@ class MuJoCoStyleSolver:
         rho: float = 1.0,
         solref: tuple[float, float] = (0.02, 1.0),
         solimp: tuple[float, float, float, float, float] = (0.9, 0.95, 0.001, 0.5, 2),
+        warmstart: bool = True,
+        adaptive_rho: bool = True,
+        rho_adapt_mu: float = 10.0,
+        rho_adapt_tau: float = 2.0,
     ) -> None:
         self.max_iter = max_iter
         self.tolerance = tolerance
         self.rho = rho
         self.solref = solref
         self.solimp = solimp
+        self.warmstart = warmstart
+        # Adaptive rho parameters (Boyd et al. 2011 §3.4.1)
+        self.adaptive_rho = adaptive_rho
+        self._rho_adapt_mu = rho_adapt_mu  # residual ratio threshold
+        self._rho_adapt_tau = rho_adapt_tau  # scaling factor
+        # Warmstart state from previous solve
+        self._prev_n_rows: int = 0
+        self._prev_f: NDArray | None = None
+        self._prev_s: NDArray | None = None
+        self._prev_u: NDArray | None = None
         # Populated after each solve
         self.last_jacobian: NDArray | None = None
         self.last_forces: NDArray | None = None
@@ -108,7 +125,7 @@ class MuJoCoStyleSolver:
         n_rows = offset
 
         # ── Build joint-space contact Jacobian J (n_rows x nv) ──
-        X_world = tree.forward_kinematics(q)
+        tree.forward_kinematics(q)  # ensure FK is up-to-date for contact_jacobian
         J = np.zeros((n_rows, nv))
 
         for ci, c in enumerate(contacts):
@@ -188,21 +205,24 @@ class MuJoCoStyleSolver:
         AR = A + R
         rhs_const = -(a_u_c - a_ref)  # = a_ref - a_u_c
 
-        # Pre-factor (A + R + rho*I)
-        ARrho = AR + self.rho * np.eye(n_rows)
-        try:
-            ARrho_chol = np.linalg.cholesky(ARrho)
-        except np.linalg.LinAlgError:
-            ARrho += 1e-6 * np.eye(n_rows)
-            ARrho_chol = np.linalg.cholesky(ARrho)
+        rho = self.rho
 
-        f = np.zeros(n_rows)
-        s = np.zeros(n_rows)
-        u = np.zeros(n_rows)
+        # Warmstart: reuse previous ADMM variables if contact count matches
+        if self.warmstart and self._prev_f is not None and self._prev_n_rows == n_rows:
+            f = self._prev_f.copy()
+            s = self._prev_s.copy()
+            u = self._prev_u.copy()
+        else:
+            f = np.zeros(n_rows)
+            s = np.zeros(n_rows)
+            u = np.zeros(n_rows)
+
+        # Factor (A + R + rho*I) — will be re-factored if rho changes
+        ARrho_chol = self._factor_ARrho(AR, rho, n_rows)
 
         for iteration in range(self.max_iter):
             # Step 1: f-update — (AR + rho*I) f = rhs_const + rho*(s - u)
-            rhs = rhs_const + self.rho * (s - u)
+            rhs = rhs_const + rho * (s - u)
             y = np.linalg.solve(ARrho_chol, rhs)
             f_new = np.linalg.solve(ARrho_chol.T, y)
 
@@ -212,19 +232,44 @@ class MuJoCoStyleSolver:
             # Step 3: dual update
             u = u + f_new - s_new
 
-            # Convergence: both primal AND dual residual must be small
-            # (primal alone can be zero on iteration 1 when f is already feasible,
-            #  but the solution hasn't converged yet due to rho*I regularization)
+            # Residuals
             primal_res = np.linalg.norm(f_new - s_new)
-            dual_res = np.linalg.norm(self.rho * (s_new - s))
+            dual_res = np.linalg.norm(rho * (s_new - s))
             f, s = f_new, s_new
 
             if primal_res < self.tolerance and dual_res < self.tolerance:
                 break
 
+            # Adaptive rho (Boyd et al. 2011 §3.4.1)
+            if self.adaptive_rho:
+                if primal_res > self._rho_adapt_mu * dual_res:
+                    rho *= self._rho_adapt_tau
+                    u /= self._rho_adapt_tau  # rescale dual variable
+                    ARrho_chol = self._factor_ARrho(AR, rho, n_rows)
+                elif dual_res > self._rho_adapt_mu * primal_res:
+                    rho /= self._rho_adapt_tau
+                    u *= self._rho_adapt_tau
+                    ARrho_chol = self._factor_ARrho(AR, rho, n_rows)
+
+        # Save state for warmstarting next solve
+        self._prev_n_rows = n_rows
+        self._prev_f = f.copy()
+        self._prev_s = s.copy()
+        self._prev_u = u.copy()
+
         self.last_jacobian = J
         self.last_forces = f
         return f, J
+
+    @staticmethod
+    def _factor_ARrho(AR: NDArray, rho: float, n: int) -> NDArray:
+        """Cholesky factor of (AR + rho*I)."""
+        M = AR + rho * np.eye(n)
+        try:
+            return np.linalg.cholesky(M)
+        except np.linalg.LinAlgError:
+            M += 1e-6 * np.eye(n)
+            return np.linalg.cholesky(M)
 
     def _impedance(self, depth: float) -> float:
         """Compute impedance d(r) from solimp parameters.
@@ -280,3 +325,7 @@ class MuJoCoStyleSolver:
                 s[base + 4] = np.clip(z[base + 4], -limit_r, limit_r)
                 s[base + 5] = np.clip(z[base + 5], -limit_r, limit_r)
         return s
+
+
+# Backward-compat alias (deprecated)
+MuJoCoStyleSolver = ADMMQPSolver

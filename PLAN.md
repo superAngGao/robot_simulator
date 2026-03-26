@@ -38,9 +38,9 @@ Isaac Sim is a powerful industrial tool, but we build our own because:
 │  Layer 2: Simulator  (single-env step, auto-manages      │
 │  passive forces; wraps Layer 1 + contact + self-collision)│
 ├──────────────────────────────────────────────────────────┤
-│  Layer 1: Physics Core  (backend-agnostic algorithms)    │
-│  physics/{joint, robot_tree, contact, self_collision,    │
-│           integrator}  —  NumPy now, Warp in Phase 2     │
+│  Layer 1: Physics Core  (rigid body dynamics pipeline)    │
+│  physics/{robot_tree, step_pipeline, solvers/,           │
+│           joint, contact, collision}  —  NumPy + GPU     │
 ├──────────────────────────────────────────────────────────┤
 │  Layer 0: Math Primitives                                │
 │  physics/spatial.py  —  pure spatial algebra, no physics │
@@ -359,6 +359,50 @@ Phase 2g-3: 分组 CRBA + 层次 Schur（⬜ 潜在优化）
 - Featherstone (1999) — Divide-and-Conquer Algorithm for O(n log n) parallel dynamics
 - Carpentier et al. (2019) — Pinocchio: `crba()` 实现
 - NVIDIA cuSOLVER batched Cholesky — Hopper tensor core 支持
+
+#### 2h — Force system refactor (StepPipeline) 🔄
+
+**动机**：力的来源散落（gravity 隐式、passive 手动加、contact 6 种 solver 格式各异），
+聚合点分散，大量重复计算（FK 2-3 次、ABA 2 次），不可观测（无法回答"此步每个 body 受什么力"）。
+
+**架构**：MuJoCo 两阶段管线（mj_step1 smooth + mj_step2 constraint）：
+- `StepPipeline`: `ForceSource[]` → `tau_smooth` → `qacc_smooth` → `ConstraintSolver` → `qacc` → integrate
+- `DynamicsCache`: FK/body_v/H/L 算一次，全链路复用
+- `ForceState`: 每步力分解的可观测性（qfrc_passive, qfrc_actuator, qacc_smooth, qacc）
+- 积分内联在管线中（semi-implicit Euler），不是独立抽象 — 不同物理子系统各自积分
+
+**文件**：
+- 新建：`dynamics_cache.py`, `force_source.py`, `constraint_solver.py`, `constraint_solvers.py`,
+  `dynamics_utils.py`, `step_pipeline.py`
+- 改名：`mujoco_qp.py` → `admm_qp.py` (`MuJoCoStyleSolver` → `ADMMQPSolver`)
+- 修改：`simulator.py`, `robot_tree.py`, `integrator.py`, `__init__.py`
+- 废弃：`implicit_contact_step.py`, `contact.py` (LCP/Null/Penalty ContactModel)
+
+**求解器层级**：
+- 公开 API: `PGSSplitImpulseSolver` (CPU RL), `ADMMQPSolver` (CPU precision)
+- 内部: `PGSContactSolver` (PGS-SI 委托)
+- GPU 预留: `JacobiPGSContactSolver`, `ADMMContactSolver`
+- 废弃: `LCPContactModel`, `PenaltyContactModel`, `NullContactModel`
+
+#### 2i — GPU solver development ⬜
+
+**两条 GPU 求解器路线**（对应 CPU 的 PGS-SI 和 ADMM-QP）：
+
+| 求解器 | 算法 | GPU 策略 | 适用 |
+|--------|------|---------|------|
+| **Jacobi-PGS-SI** | Jacobi PGS + split impulse | 全行并行，无数据依赖 | 大规模 RL (N=1000+) |
+| **ADMM-TC** | ADMM-QP + tensor core batched Cholesky | A=(M+ρJᵀJ) 预分解，迭代内三角求解 | 高精度 GPU 仿真 |
+
+Jacobi-PGS-SI (GPU fast path):
+- 基于现有 `JacobiPGSContactSolver`，加入 split impulse（位置修正独立，不走 force chain）
+- 目标：N=4096 envs, 30 contacts/env, <1ms per step
+
+ADMM-TC (GPU precision path):
+- 基于现有 `ADMMQPSolver`，Cholesky 分解走 tensor core
+- `A = H + ρJᵀJ` 每步分解一次（N 个独立矩阵 batched Cholesky）
+- 迭代内只做三角求解 `L⁻ᵀL⁻¹rhs`（O(nv²) per env）
+- Phase 2g 已验证 batched Cholesky 在 GPU 上可行
+- 固定 rho + warmstart（GPU 更友好，避免条件分支重分解）
 
 ### Phase 3 — High-Fidelity Rendering + Sensor Simulation
 - Vulkan renderer with ray tracing

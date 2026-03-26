@@ -489,6 +489,35 @@ class RobotTreeNumpy(RobotTreeBase):
         return tau
 
     # ------------------------------------------------------------------
+    # Configuration integration
+    # ------------------------------------------------------------------
+
+    def integrate_q(
+        self,
+        q: NDArray[np.float64],
+        qdot: NDArray[np.float64],
+        dt: float,
+    ) -> NDArray[np.float64]:
+        """Integrate configuration: q_new = q ⊕ (qdot * dt).
+
+        Handles FreeJoint quaternion integration correctly (exponential map
+        + renormalization). All other joints use simple Euler: q + qdot*dt.
+        """
+        self._check_finalized()
+        from .joint import FreeJoint as _Free
+
+        q_new = q.copy()
+        for body in self._bodies:
+            j = body.joint
+            if j.nq == 0:
+                continue
+            if isinstance(j, _Free):
+                q_new[body.q_idx] = j.integrate_q(q[body.q_idx], qdot[body.v_idx], dt)
+            else:
+                q_new[body.q_idx] = q[body.q_idx] + qdot[body.v_idx] * dt
+        return q_new
+
+    # ------------------------------------------------------------------
     # Contact Jacobian (joint-space)
     # ------------------------------------------------------------------
 
@@ -543,8 +572,8 @@ class RobotTreeNumpy(RobotTreeBase):
                 for k in range(nv_j):
                     s = S_j[:, k]  # (6,) spatial motion in body frame
                     # Transform to world frame
-                    s_lin_world = R_j @ s[:3]   # linear component
-                    s_ang_world = R_j @ s[3:]   # angular component
+                    s_lin_world = R_j @ s[:3]  # linear component
+                    s_ang_world = R_j @ s[3:]  # angular component
                     # Point velocity = v_lin + omega x r
                     v_col = s_lin_world + np.cross(s_ang_world, r)
                     v_start = body.v_idx.start if isinstance(body.v_idx, slice) else body.v_idx[0]
@@ -666,14 +695,16 @@ class RobotTreeNumpy(RobotTreeBase):
 
             # Diagonal block: H[i,i] = S_i^T @ IC[i] @ S_i
             F = IC[body.index] @ S_i  # (6, nv_i)
-            H[vi, vi] = S_i.T @ F     # (nv_i, nv_i)
+            H[vi, vi] = S_i.T @ F  # (nv_i, nv_i)
 
             # Off-diagonal: propagate F up the tree
             # F is the spatial force at body i due to unit acceleration at joint i
             j = body.index
             while self._bodies[j].parent >= 0:
-                F = X_up[j].apply_force(F) if F.ndim == 1 else np.column_stack(
-                    [X_up[j].apply_force(F[:, c]) for c in range(F.shape[1])]
+                F = (
+                    X_up[j].apply_force(F)
+                    if F.ndim == 1
+                    else np.column_stack([X_up[j].apply_force(F[:, c]) for c in range(F.shape[1])])
                 )
                 j = self._bodies[j].parent
                 parent_body = self._bodies[j]
@@ -858,7 +889,7 @@ class RobotTreeNumpy(RobotTreeBase):
 
         limb_chol = []  # L factors
         limb_rhs = []
-        limb_Hrl = []   # coupling blocks
+        limb_Hrl = []  # coupling blocks
 
         for limb_v in limb_v_list:
             if len(limb_v) == 0:
@@ -869,7 +900,7 @@ class RobotTreeNumpy(RobotTreeBase):
 
             H_ll = H[np.ix_(limb_v, limb_v)]  # (nv_l, nv_l)
             H_rl = H[np.ix_(root_v, limb_v)]  # (nv_r, nv_l)
-            H_lr = H_rl.T                      # (nv_l, nv_r) = H_rl^T (symmetry)
+            H_lr = H_rl.T  # (nv_l, nv_r) = H_rl^T (symmetry)
             rhs_l = rhs[limb_v]
 
             # Factor limb
@@ -899,9 +930,7 @@ class RobotTreeNumpy(RobotTreeBase):
         qddot = np.zeros(self.nv, dtype=np.float64)
         qddot[root_v] = qddot_r
 
-        for limb_v, L_l, rhs_l, H_rl in zip(
-            limb_v_list, limb_chol, limb_rhs, limb_Hrl
-        ):
+        for limb_v, L_l, rhs_l, H_rl in zip(limb_v_list, limb_chol, limb_rhs, limb_Hrl):
             if L_l is None:
                 continue
             H_lr = H_rl.T
