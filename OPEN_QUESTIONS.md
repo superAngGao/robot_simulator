@@ -137,6 +137,33 @@ Pinocchio issue #1388 曾在此处有 bug。
 
 ## Collision / Contact
 
+**Q23 — GPU 多体求解器角速度发散（Phase 2i blocking bug）**
+
+GpuEngine 的 Jacobi-PGS-SI 在 MergedModel 含两个 FreeJoint 根体时，第二个体（body index ≥ 1）
+的角速度无界增长，最终 NaN。单体场景完全正常（L2 vs CPU = 0.004mm）。
+
+**症状**：
+- 两球落地：Ball B（body 1）角速度从 0 增长到 ~400 rad/s（500 步）→ NaN（~874 步）
+- Ball A（body 0）始终稳定
+- CPU CpuEngine 同场景无此问题
+
+**已排除的原因**：
+- 碰撞检测正确（单独测试通过，深度/法线/active 正确）
+- X_world 不被覆盖（FK 步骤不影响）
+- contact_local_pos 正确上传到 GPU
+- 球面碰撞已修复（用半径而非旋转变换的固定点）
+
+**疑似根因**：
+- Warp ABA kernel 或 impulse-to-generalized kernel（solver_kernels_v2）对第二根体的处理有偏差
+- 可能是 ABA Pass 3 对 body index ≥ 1 的根体的 `a_parent` 初始化、或 `X_up` transform 在
+  multi-root 场景下的行为与单 root 不同
+- 或者 RNEA backward pass 在两个独立子树间泄漏了 impulse
+- **需要**：逐步对比 CPU ABA 和 GPU ABA 对同一 (q, qdot, tau) 的 qddot 输出
+
+**影响**：阻塞多机器人 GPU 仿真、两球测试。单机器人 GPU 场景不受影响。
+
+---
+
 **Q18 — 接触系统与主流项目的差距（Phase 2f 后续优化）**
 
 Phase 2f 已实现 GJK/EPA + PGS LCP + 关节 Coulomb 摩擦。与 MuJoCo/Bullet/Drake 对比，

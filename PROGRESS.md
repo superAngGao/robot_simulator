@@ -1,6 +1,6 @@
 # Robot Simulator — Progress Tracker
 
-> Last updated: 2026-03-26 (session 10)
+> Last updated: 2026-03-26 (session 10, late)
 > Reference plan: [PLAN.md](./PLAN.md)
 
 ---
@@ -10,7 +10,7 @@
 | Phase | 状态 | 完成度 |
 |-------|------|--------|
 | Phase 1 — Basic Physics + Simple Rendering | ✅ 完成（含修复） | 100% |
-| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 95% (2a-2e ✅, 2f 🔄, 2g ✅, 2h ✅) |
+| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 95% (2a-2e ✅, 2f 🔄, 2g ✅, 2h ✅, 2i 🔄) |
 | Phase 3 — High-Fidelity Rendering          | ⬜ 未开始 | 0% |
 | Phase 4 — Domain Randomization             | ⬜ 未开始 | 0% |
 | Phase 5 — Sim-to-Real Validation           | ⬜ 未开始 | 0% |

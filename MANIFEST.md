@@ -87,6 +87,18 @@ Output:               ForceState (可观测力分解)
 | 2i — GPU 求解器 (Jacobi-PGS-SI, ADMM-TC) | ⬜ 下一步 |
 | 3-5 — 渲染 / 域随机化 / sim-to-real | ⬜ |
 
+## 当前架构重构（PhysicsEngine 统一）
+
+CPU/GPU 已统一到 PhysicsEngine 接口：
+```
+Scene.build_merged() → MergedModel（多 robot 合并为单一多根树）
+  → PhysicsEngine.step(q, qdot, tau) → StepOutput
+    ├─ CpuEngine: StepPipeline + GJK/EPA 碰撞
+    └─ GpuEngine: Warp 碰撞 + solver kernel（Jacobi-PGS-SI）
+```
+
+**Blocking bug**: GPU 多体角速度发散（body index ≥ 1），见 Q23。单体 GPU 正常。
+
 ## 设计原则
 
 - **physics/ 是未来独立库** — 不依赖上层，可单独发布
