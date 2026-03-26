@@ -39,5 +39,7 @@ class EnvCfg:
     action_clip: float | None = None  # None = no clip
     # Reset randomisation
     init_noise_scale: float = 0.0  # 0 = no noise
+    # Contact solver: "penalty" (spring-damper) or "jacobi_pgs_si" (constraint)
+    contact_solver: str = "penalty"
     # Custom controller (None → auto-build PDController)
     controller: Any | None = None

@@ -99,6 +99,21 @@ class StaticRobotData:
     default_q: NDArray[np.float32] = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
     default_qdot: NDArray[np.float32] = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
 
+    # -- Per-body inverse mass/inertia (for constraint solvers) --
+    inv_mass_per_body: NDArray[np.float32] = field(
+        default_factory=lambda: np.zeros(0, dtype=np.float32)
+    )  # (nb,) scalar 1/m
+    inv_inertia_per_body: NDArray[np.float32] = field(
+        default_factory=lambda: np.zeros((0, 3, 3), dtype=np.float32)
+    )  # (nb, 3, 3) inverse rotational inertia at body origin
+
+    # -- Constraint solver parameters --
+    contact_cfm: float = 1e-6  # Constraint Force Mixing (regularization)
+    contact_erp_pos: float = 0.8  # Position correction ERP (split impulse)
+    contact_slop: float = 0.005  # Allowed penetration before correction [m]
+    solver_max_iter: int = 60  # Jacobi PGS iteration count
+    solver_omega: float = 0.7  # Jacobi relaxation factor
+
     # -- Root body index (for observation slicing) --
     root_body_idx: int = 0
     root_q_start: int = 0
@@ -246,6 +261,22 @@ class StaticRobotData:
                 collision_b=100.0,
             )
 
+        # -- Per-body inverse mass/inertia (for constraint solver) --
+        inv_mass_per_body = np.zeros(nb, dtype=np.float32)
+        inv_inertia_per_body = np.zeros((nb, 3, 3), dtype=np.float32)
+        for i, body in enumerate(bodies):
+            m = body.inertia.mass
+            if m > 1e-10:
+                inv_mass_per_body[i] = 1.0 / m
+                I_com = body.inertia.inertia  # (3,3) at CoM
+                c = body.inertia.com  # CoM offset
+                # Parallel axis theorem: I_origin = I_com + m*(|c|²I - ccᵀ)
+                I_origin = I_com + m * (np.dot(c, c) * np.eye(3) - np.outer(c, c))
+                try:
+                    inv_inertia_per_body[i] = np.linalg.inv(I_origin).astype(np.float32)
+                except np.linalg.LinAlgError:
+                    pass  # stays zero
+
         # -- Controller indices --
         actuated_bodies = [b for b in bodies if b.joint.nv > 0 and not isinstance(b.joint, FreeJoint)]
         actuated_q_indices = np.array(
@@ -294,6 +325,8 @@ class StaticRobotData:
             contact_local_pos=contact_local_pos,
             **contact_params,
             **collision_kwargs,
+            inv_mass_per_body=inv_mass_per_body,
+            inv_inertia_per_body=inv_inertia_per_body,
             actuated_q_indices=actuated_q_indices,
             actuated_v_indices=actuated_v_indices,
             effort_limits=effort_limits,
