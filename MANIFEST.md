@@ -1,7 +1,7 @@
 # Robot Simulator — Project Manifest
 
 > 从零构建的刚体物理仿真器，面向 sim-to-real 腿足机器人 RL 训练。
-> Last updated: 2026-03-26 (session 10)
+> Last updated: 2026-03-27 (session 11)
 
 ## 一句话
 
@@ -12,7 +12,7 @@
 ```
 Layer 4  VecEnv              GPU 并行 RL 训练 (N=4096, torch.Tensor on CUDA)
 Layer 3  Env                 Gymnasium 接口 + ObsManager + 域随机化(stub)
-Layer 2  Simulator           多机器人编排: Scene → CollisionPipeline → per-robot StepPipeline
+Layer 2  Simulator           多机器人编排: Scene → CollisionPipeline → PhysicsEngine
 Layer 1  Physics Core        刚体动力学管线 (StepPipeline → ForceSource → ConstraintSolver → integrate)
 Layer 0  Math                空间代数 (6D Plücker, [linear; angular] 约定)
 ```
@@ -38,12 +38,24 @@ Output:               ForceState (可观测力分解)
 
 ## 求解器
 
-| 求解器 | 级别 | 平台 | 定位 |
-|--------|------|------|------|
-| **PGSSplitImpulseSolver** | velocity | CPU | RL 训练快速路径 |
-| **ADMMQPSolver** | acceleration | CPU | 高精度，与 MuJoCo 匹配 |
-| Jacobi-PGS-SI (待做) | velocity | GPU | 大规模 RL |
-| ADMM-TC (待做) | acceleration | GPU | tensor core 高精度 |
+| 求解器 | 级别 | 平台 | 定位 | vs MuJoCo |
+|--------|------|------|------|-----------|
+| **PGSSplitImpulseSolver** | velocity | CPU | RL 训练快速路径 | x=18.5mm z=3.8mm |
+| **ADMMQPSolver** | acceleration | CPU | 高精度 MuJoCo 对标 | **x=0.8mm z=0.3mm** |
+| **Jacobi-PGS-SI** | velocity | GPU (Warp) | 大规模 RL (N=4096) | ~18mm |
+| ADMM-TC (待做) | acceleration | GPU | tensor core 高精度 | — |
+
+## GPU 碰撞检测
+
+GpuEngine 使用解析碰撞函数（shape type dispatch），不依赖 GJK/EPA：
+
+| 碰撞对 | GPU 状态 |
+|--------|---------|
+| Sphere/Capsule/Box/Cylinder vs Ground | ✅ 解析 @wp.func |
+| Sphere-Sphere, Sphere-Capsule, Capsule-Capsule, Sphere-Box | ✅ 解析 @wp.func |
+| Capsule-Box, Box-Box | ⬜ fallback 球近似 |
+| ConvexHull (凸分解) | ⬜ 待几何系统升级 |
+| Mesh (BVH) | ⬜ 待 wp.Mesh 集成 |
 
 ## GPU 后端
 
@@ -64,15 +76,18 @@ Output:               ForceState (可观测力分解)
 | `physics/robot_tree.py` | 运动学树: FK, ABA, CRBA, RNEA, integrate_q |
 | `physics/solvers/mujoco_qp.py` | ADMMQPSolver (acceleration-level QP) |
 | `physics/solvers/pgs_split_impulse.py` | PGS + split impulse |
-| `collision_pipeline.py` | GJK/EPA 统一碰撞检测 |
+| `physics/backends/warp/analytical_collision.py` | GPU 解析碰撞函数 (14 个 @wp.func) |
+| `physics/gpu_engine.py` | GPU 物理引擎 (Warp kernel 管线) |
+| `physics/cpu_engine.py` | CPU 物理引擎 (GJK/EPA 地面 + 球近似 body-body) |
+| `collision_pipeline.py` | GJK/EPA 统一碰撞检测 (Scene legacy path) |
 | `simulator.py` | 多机器人编排 |
 | `robot/urdf_loader.py` | URDF → RobotModel |
 | `rl_env/vec_env.py` | GPU 并行 VecEnv |
 
 ## 规模
 
-- **542 个测试**，全部通过
-- physics/ ~20 个模块，~5000 行核心代码
+- **585 个测试**，全部通过
+- physics/ ~25 个模块，~6000 行核心代码
 - 支持多机器人场景 + 静态几何 + 碰撞过滤
 
 ## 进度
@@ -81,23 +96,23 @@ Output:               ForceState (可观测力分解)
 |-------|------|
 | 1 — CPU 物理核心 | ✅ |
 | 2a-2e — 重构 + URDF + Simulator + RL env + GPU 后端 | ✅ |
-| 2f — 高精度接触 (GJK/EPA + 5 求解器) | ✅ |
+| 2f — 高精度接触 (GJK/EPA + 6 求解器) | ✅ |
 | 2g — CRBA + tensor core | ✅ |
 | 2h — 力系统重构 (StepPipeline) | ✅ |
-| 2i — GPU 求解器 (Jacobi-PGS-SI, ADMM-TC) | ⬜ 下一步 |
+| 2i — PhysicsEngine 统一 (CpuEngine + GpuEngine) | ✅ |
+| 2j — GPU 解析碰撞 + MuJoCo 亚毫米对标 | ✅ |
+| ADMM-TC GPU + GpuEngine dispatch | ⬜ 下一步 |
 | 3-5 — 渲染 / 域随机化 / sim-to-real | ⬜ |
 
-## 当前架构重构（PhysicsEngine 统一）
+## PhysicsEngine 统一
 
 CPU/GPU 已统一到 PhysicsEngine 接口：
 ```
 Scene.build_merged() → MergedModel（多 robot 合并为单一多根树）
   → PhysicsEngine.step(q, qdot, tau) → StepOutput
-    ├─ CpuEngine: StepPipeline + GJK/EPA 碰撞
-    └─ GpuEngine: Warp 碰撞 + solver kernel（Jacobi-PGS-SI）
+    ├─ CpuEngine: GJK/EPA ground + sphere body-body + PGS-SI/ADMMQPSolver
+    └─ GpuEngine: 解析碰撞 kernel + Jacobi-PGS-SI (Warp)
 ```
-
-**Blocking bug**: GPU 多体角速度发散（body index ≥ 1），见 Q23。单体 GPU 正常。
 
 ## 设计原则
 
@@ -105,3 +120,4 @@ Scene.build_merged() → MergedModel（多 robot 合并为单一多根树）
 - **积分器属于物理子系统** — 不同物理（刚体/柔体/流体）各自积分
 - **MuJoCo 命名 + Isaac flat tensor 布局** — qfrc_*, ForceState 可观测
 - **每个求解器输出 qacc (nv,)** — 统一接口，不管内部是 acceleration 还是 velocity level
+- **ContactBuffer 解耦碰撞与求解** — 碰撞检测和约束求解通过统一 buffer 格式正交组合
