@@ -137,30 +137,18 @@ Pinocchio issue #1388 曾在此处有 bug。
 
 ## Collision / Contact
 
-**Q23 — GPU 多体求解器角速度发散（Phase 2i blocking bug）**
+**Q23 — GPU 多体求解器角速度发散** ✅ RESOLVED (2026-03-27)
 
-GpuEngine 的 Jacobi-PGS-SI 在 MergedModel 含两个 FreeJoint 根体时，第二个体（body index ≥ 1）
-的角速度无界增长，最终 NaN。单体场景完全正常（L2 vs CPU = 0.004mm）。
+**根因**：`solver_kernels_v2.py` 中 body-body 接触的 `J_body_j` 缺少取反。
+CPU 正确写 `J_body_j = -J_compute(...)`，GPU 错误写 `J_body_j = +J_compute(...)`。
+约束变成了绝对速度而非相对速度，导致 PGS 解出错误的 lambda 方向。
 
-**症状**：
-- 两球落地：Ball B（body 1）角速度从 0 增长到 ~400 rad/s（500 步）→ NaN（~874 步）
-- Ball A（body 0）始终稳定
-- CPU CpuEngine 同场景无此问题
+**附带修复**：
+- `static_data.py`：`body_collision_radius` 从 `collision_shapes` 读取实际半径（原先硬编码 0.05）
+- `cpu_engine.py`：body-body 碰撞检测用 `half_extents_approx()` 而非不存在的 `half_extents` 属性
 
-**已排除的原因**：
-- 碰撞检测正确（单独测试通过，深度/法线/active 正确）
-- X_world 不被覆盖（FK 步骤不影响）
-- contact_local_pos 正确上传到 GPU
-- 球面碰撞已修复（用半径而非旋转变换的固定点）
-
-**疑似根因**：
-- Warp ABA kernel 或 impulse-to-generalized kernel（solver_kernels_v2）对第二根体的处理有偏差
-- 可能是 ABA Pass 3 对 body index ≥ 1 的根体的 `a_parent` 初始化、或 `X_up` transform 在
-  multi-root 场景下的行为与单 root 不同
-- 或者 RNEA backward pass 在两个独立子树间泄漏了 impulse
-- **需要**：逐步对比 CPU ABA 和 GPU ABA 对同一 (q, qdot, tau) 的 qddot 输出
-
-**影响**：阻塞多机器人 GPU 仿真、两球测试。单机器人 GPU 场景不受影响。
+**测试**：`test_gpu_multibody.py` 新增 6 个测试（CPU vs GPU 对比、角速度不发散、body-body 碰撞、地面着陆）
+→ Moved to REFLECTIONS.md.
 
 ---
 

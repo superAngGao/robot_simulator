@@ -205,17 +205,17 @@ def batched_build_W_vfree_v2(
                 J_body_i[env_id, row, 4] = J_ang_i[1]
                 J_body_i[env_id, row, 5] = J_ang_i[2]
 
-            # J_j: body j contribution (negative — opposing direction)
+            # J_j: body j contribution (negated — relative velocity = v_i - v_j)
             if bj >= 0:
                 J_lin_j = Rt_j * direction
                 rxd_j = wp.cross(r_arm_j, direction)
                 J_ang_j = Rt_j * rxd_j
-                J_body_j[env_id, row, 0] = J_lin_j[0]
-                J_body_j[env_id, row, 1] = J_lin_j[1]
-                J_body_j[env_id, row, 2] = J_lin_j[2]
-                J_body_j[env_id, row, 3] = J_ang_j[0]
-                J_body_j[env_id, row, 4] = J_ang_j[1]
-                J_body_j[env_id, row, 5] = J_ang_j[2]
+                J_body_j[env_id, row, 0] = -J_lin_j[0]
+                J_body_j[env_id, row, 1] = -J_lin_j[1]
+                J_body_j[env_id, row, 2] = -J_lin_j[2]
+                J_body_j[env_id, row, 3] = -J_ang_j[0]
+                J_body_j[env_id, row, 4] = -J_ang_j[1]
+                J_body_j[env_id, row, 5] = -J_ang_j[2]
 
             row_bi[env_id, row] = bi
             row_bj[env_id, row] = bj

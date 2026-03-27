@@ -127,18 +127,9 @@ class CpuEngine(PhysicsEngine):
             X_i = X_world[bi]
             X_j = X_world[bj]
 
-            # Simple sphere approximation for now
-            # Use half-extent average as sphere radius
-            r_i = (
-                np.mean(shape_i.shapes[0].shape.half_extents)
-                if hasattr(shape_i.shapes[0].shape, "half_extents")
-                else 0.05
-            )
-            r_j = (
-                np.mean(shape_j.shapes[0].shape.half_extents)
-                if hasattr(shape_j.shapes[0].shape, "half_extents")
-                else 0.05
-            )
+            # Sphere approximation: use mean of half-extents as collision radius
+            r_i = float(np.mean(shape_i.shapes[0].shape.half_extents_approx()))
+            r_j = float(np.mean(shape_j.shapes[0].shape.half_extents_approx()))
 
             diff = X_i.r - X_j.r
             dist = np.linalg.norm(diff)

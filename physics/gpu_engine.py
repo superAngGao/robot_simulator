@@ -18,7 +18,7 @@ import numpy as np
 import warp as wp
 
 from .backends.static_data import StaticRobotData
-from .backends.warp.collision_kernels import batched_detect_all_contacts
+from .backends.warp.collision_kernels import batched_detect_analytical
 from .backends.warp.kernels import (
     batched_aba,
     batched_fk_body_vel,
@@ -134,6 +134,8 @@ class GpuEngine(PhysicsEngine):
         self._gpu_inv_mass = wp.array(s.inv_mass_per_body, dtype=wp.float32, device=device)
         self._gpu_inv_inertia = wp.array(s.inv_inertia_per_body, dtype=wp.float32, device=device)
         self._gpu_body_radius = wp.array(s.body_collision_radius, dtype=wp.float32, device=device)
+        self._gpu_shape_type = wp.array(s.body_shape_type, dtype=wp.int32, device=device)
+        self._gpu_shape_params = wp.array(s.body_shape_params, dtype=wp.float32, device=device)
 
         # Body-body collision pairs
         if n_pairs > 0:
@@ -304,16 +306,17 @@ class GpuEngine(PhysicsEngine):
             outputs=[_tmp_XR, _tmp_Xr, _tmp_XupR, _tmp_Xupr, sol.v_bodies_pred],
         )
 
-        # 6. Collision detection (ground + body-body)
+        # 6. Collision detection (ground + body-body) — analytical shape dispatch
         wp.launch(
-            batched_detect_all_contacts,
+            batched_detect_analytical,
             dim=N,
             device=self._device,
             inputs=[
                 sc.X_world_R,
                 sc.X_world_r,
+                self._gpu_shape_type,
+                self._gpu_shape_params,
                 self._gpu_contact_body_idx,
-                self._gpu_contact_local_pos,
                 s.contact_ground_z,
                 self._nc_ground,
                 self._gpu_pair_bi,

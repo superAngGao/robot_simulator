@@ -1,6 +1,6 @@
 # Robot Simulator — Progress Tracker
 
-> Last updated: 2026-03-26 (session 10, late)
+> Last updated: 2026-03-27 (session 11)
 > Reference plan: [PLAN.md](./PLAN.md)
 
 ---
@@ -354,7 +354,25 @@ CUDA 性能最优原因：全物理步融合为单 kernel launch，零 inter-ker
 
 ---
 
-**Phase 2 总测试数：518（全部通过）**
+### Q23 修复 + GPU 多体测试 ✅（2026-03-27 session 11）
+
+**Bug 修复：**
+
+| Bug | 修复 |
+|-----|------|
+| `solver_kernels_v2.py` J_body_j 缺少取反 | 6 处赋值加 `-` 号，匹配 CPU PGS 的 `J=[J_i, -J_j]` |
+| `static_data.py` body_collision_radius 硬编码 0.05 | 从 `collision_shapes[].half_extents_approx()` 读取实际值 |
+| `cpu_engine.py` body-body 碰撞半径用不存在的 `half_extents` | 改用 `half_extents_approx()` 方法 |
+
+**新增测试（`test_gpu_multibody.py`，6 个）：**
+- CPU vs GPU 自由落体对比（两独立球）
+- 第二根体角速度不发散（500 步稳定性）
+- 相向运动两球碰撞反弹
+- body-body 碰撞 500 步 NaN 检查
+- CPU vs GPU body-body 一致性
+- 两球地面着陆稳定
+
+**Phase 2 总测试数：548（全部通过）**
 
 **Phase 2 实现总览（2026-03-25 session 8 更新）：**
 

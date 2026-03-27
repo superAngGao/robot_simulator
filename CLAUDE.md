@@ -54,7 +54,7 @@ restructure so the dependency flows downward only.
 - **Contact forces**: applied via `X.inverse().apply_force()` (body frame), NOT `X.apply_force()`.
 - **Contact point** position: foot body origin = true foot tip (NOT calf origin).
 - **Semi-implicit Euler**: `dt = 2e-4 s` with `k_normal = 3000`. Larger dt diverges.
-- **FreeJoint q layout**: `[qx, qy, qz, qw, px, py, pz]` (quaternion first).
+- **FreeJoint q layout**: `[qw, qx, qy, qz, px, py, pz]` (scalar-first quaternion).
 
 ## Code Conventions
 

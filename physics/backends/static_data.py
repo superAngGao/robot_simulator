@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy.typing import NDArray
 
+from physics.geometry import BoxShape, CapsuleShape, CylinderShape, SphereShape
 from physics.joint import (
     FixedJoint,
     FreeJoint,
@@ -29,6 +30,13 @@ JOINT_FREE = 0
 JOINT_REVOLUTE = 1
 JOINT_PRISMATIC = 2
 JOINT_FIXED = 3
+
+# Shape type enum values (used in GPU collision kernels)
+SHAPE_NONE = 0
+SHAPE_SPHERE = 1
+SHAPE_BOX = 2
+SHAPE_CYLINDER = 3
+SHAPE_CAPSULE = 4
 
 
 @dataclass
@@ -116,7 +124,16 @@ class StaticRobotData:
     )  # (n_pairs,) global body index
     body_collision_radius: NDArray[np.float32] = field(
         default_factory=lambda: np.zeros(0, dtype=np.float32)
-    )  # (nb,) collision sphere radius per body
+    )  # (nb,) collision sphere radius per body (legacy, kept for backward compat)
+
+    # -- Per-body collision shape descriptors (for analytical GPU collision) --
+    body_shape_type: NDArray[np.int32] = field(
+        default_factory=lambda: np.zeros(0, dtype=np.int32)
+    )  # (nb,) 0=None, 1=Sphere, 2=Box, 3=Cylinder, 4=Capsule
+    body_shape_params: NDArray[np.float32] = field(
+        default_factory=lambda: np.zeros((0, 4), dtype=np.float32)
+    )  # (nb, 4) packed shape params: Sphere=[r,0,0,0], Box=[hx,hy,hz,0],
+    #   Cylinder=[r,hl,0,0], Capsule=[r,hl,0,0]
 
     # -- Constraint solver parameters --
     contact_cfm: float = 1e-6  # Constraint Force Mixing (regularization)
@@ -379,6 +396,32 @@ class StaticRobotData:
         inv_mass_per_body = np.zeros(nb, dtype=np.float32)
         inv_inertia_per_body = np.zeros((nb, 3, 3), dtype=np.float32)
         body_coll_radius = np.full(nb, 0.05, dtype=np.float32)  # default sphere radius
+        body_shape_type = np.zeros(nb, dtype=np.int32)  # SHAPE_NONE by default
+        body_shape_params = np.zeros((nb, 4), dtype=np.float32)
+
+        # Populate collision shape data from actual geometry
+        if merged.collision_shapes:
+            for i, geom in enumerate(merged.collision_shapes):
+                if geom is None or not geom.shapes:
+                    continue
+                shape = geom.shapes[0].shape
+                he = shape.half_extents_approx()
+                body_coll_radius[i] = float(np.mean(he))
+
+                if isinstance(shape, SphereShape):
+                    body_shape_type[i] = SHAPE_SPHERE
+                    body_shape_params[i, 0] = shape.radius
+                elif isinstance(shape, BoxShape):
+                    body_shape_type[i] = SHAPE_BOX
+                    body_shape_params[i, :3] = (shape._size / 2.0).astype(np.float32)
+                elif isinstance(shape, CylinderShape):
+                    body_shape_type[i] = SHAPE_CYLINDER
+                    body_shape_params[i, 0] = shape._radius
+                    body_shape_params[i, 1] = shape._length / 2.0
+                elif isinstance(shape, CapsuleShape):
+                    body_shape_type[i] = SHAPE_CAPSULE
+                    body_shape_params[i, 0] = shape.radius
+                    body_shape_params[i, 1] = shape.length / 2.0
 
         for i, body in enumerate(bodies):
             j = body.joint
@@ -495,6 +538,8 @@ class StaticRobotData:
             collision_pair_body_i=coll_bi,
             collision_pair_body_j=coll_bj,
             body_collision_radius=body_coll_radius,
+            body_shape_type=body_shape_type,
+            body_shape_params=body_shape_params,
             inv_mass_per_body=inv_mass_per_body,
             inv_inertia_per_body=inv_inertia_per_body,
             actuated_q_indices=actuated_q_indices,
