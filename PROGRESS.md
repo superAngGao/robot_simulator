@@ -1,6 +1,6 @@
 # Robot Simulator — Progress Tracker
 
-> Last updated: 2026-03-27 (session 11)
+> Last updated: 2026-03-27 (session 11, late)
 > Reference plan: [PLAN.md](./PLAN.md)
 
 ---
@@ -10,7 +10,7 @@
 | Phase | 状态 | 完成度 |
 |-------|------|--------|
 | Phase 1 — Basic Physics + Simple Rendering | ✅ 完成（含修复） | 100% |
-| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 95% (2a-2e ✅, 2f 🔄, 2g ✅, 2h ✅, 2i 🔄) |
+| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 97% (2a-2i ✅, 2j 解析碰撞 ✅, 剩余: ADMM-TC GPU + dispatch) |
 | Phase 3 — High-Fidelity Rendering          | ⬜ 未开始 | 0% |
 | Phase 4 — Domain Randomization             | ⬜ 未开始 | 0% |
 | Phase 5 — Sim-to-Real Validation           | ⬜ 未开始 | 0% |
@@ -372,16 +372,41 @@ CUDA 性能最优原因：全物理步融合为单 kernel launch，零 inter-ker
 - CPU vs GPU body-body 一致性
 - 两球地面着陆稳定
 
-**Phase 2 总测试数：548（全部通过）**
+### 2j — GPU 解析碰撞 + MuJoCo 精度对标 ✅（2026-03-27 session 11 后半）
 
-**Phase 2 实现总览（2026-03-25 session 8 更新）：**
+**GPU 解析碰撞检测：**
+
+- [x] `analytical_collision.py` — 14 个 `@wp.func`：
+  - Ground: sphere, capsule, box, cylinder vs 平面
+  - Body-body: sphere-sphere, sphere-capsule, capsule-capsule, sphere-box
+  - Helpers: segment-segment 最近点、box support point
+- [x] `collision_kernels.py` — `batched_detect_analytical` kernel，shape type dispatch
+- [x] `static_data.py` — `body_shape_type (int32[nb])` + `body_shape_params (float32[nb,4])` GPU 数组
+- [x] `gpu_engine.py` — 切换到解析碰撞 kernel
+- [x] `cpu_engine.py` — 地面碰撞改用 GJK/EPA（z 精度从 63mm → 3.8mm）
+- [x] 20 个 GPU 解析碰撞对比测试
+
+**MuJoCo 精度对标（两球两墙场景）：**
+
+| 求解器 | vs MuJoCo x L2 | vs MuJoCo z L2 | 最终 Δz |
+|--------|----------------|----------------|---------|
+| PGS-SI (radius=0) | 18.5 mm | 62.9 mm | 212 mm |
+| PGS-SI (GJK/EPA) | 18.5 mm | 3.8 mm | 0.8 mm |
+| **ADMMQPSolver** | **0.8 mm** | **0.3 mm** | **0.4 mm** |
+
+- [x] 16 个 MuJoCo 对比测试（11 PGS-SI + 5 ADMM 亚毫米精度验证）
+
+**Phase 2 总测试数：585（全部通过）**
+
+**Phase 2 实现总览（2026-03-27 session 11 更新）：**
 
 | 类别 | 实现数 | 说明 |
 |------|--------|------|
 | 前向动力学 | 10 | ABA×5后端 + CRBA×3(mono/grouped/batched) + Grouped Schur + CUDA CRBA-TC |
-| 接触求解器 | **6** | PGS + **PGS-SI** + Jacobi PGS + **ADMM-C** + ADMM + **MuJoCo QP** |
+| 接触求解器 | **6** | PGS + **PGS-SI** + Jacobi PGS + **ADMM-C** + ADMM + **ADMMQPSolver** |
 | 接触维度 | condim 1/3/4/6 | MuJoCo 风格，variable rows + per-condim 锥投影 |
-| 碰撞检测 | 4 | AABB broad + GJK/EPA narrow + ground + **CollisionPipeline 统一管线** |
+| GPU 碰撞 | **解析 + 球近似** | 4 shape × ground + 4 body-body 解析 @wp.func + fallback 球近似 |
+| CPU 碰撞 | GJK/EPA + 球近似 | ground: GJK/EPA（精确），body-body: 球近似 |
 | 碰撞形状 | 5 | Box + Sphere + Cylinder + Capsule + Mesh(stub) |
 | 碰撞过滤 | 1 | CollisionFilter（bitmask + explicit exclude + auto parent-child） |
 | 场景管理 | 1 | **Scene + BodyRegistry + StaticGeometry + 多机器人** |

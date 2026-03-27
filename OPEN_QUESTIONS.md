@@ -355,6 +355,40 @@ CollisionPipeline.detect(scene, all_X, all_v) → list[ContactConstraint]
 5. 球关节 — 新关节类型。
 7-10. 长期完善项（MJCF、状态快照、电机模型、腱）。
 
+**Q24 — GpuEngine dispatch 重构**
+
+当前 GpuEngine 硬编码 Warp + Jacobi-PGS-SI。需要 dispatch 机制支持：
+- dynamics: aba / crba
+- collision: sphere / analytical / gjk_gpu (未来)
+- solver: jacobi_pgs_si / admm_tc (未来)
+- backend: warp / cuda
+
+**触发条件**：ADMM-TC GPU 实现完成后。详见 memory `project_gpu_engine_dispatch.md`。
+
+**Q25 — PGS 摩擦力通过力臂产生假角速度**
+
+解析碰撞正确计算接触点位置后（接触点在地面，球心在 z=radius 处），
+PGS 在零切向速度时仍产生微小摩擦力，通过 r_arm=radius 的力臂产生转矩，
+导致球体角速度缓慢增长。
+
+- 当前影响：多球地面场景数千步后角速度发散 → NaN
+- 根因：PGS 对零速度的摩擦力不够严格归零（float32 数值噪声被放大）
+- 可能修复：摩擦力死区（|v_tangential| < ε 时跳过摩擦行）、或更大 CFM
+- ADMMQPSolver 无此问题（隐式求解天然抑制数值噪声）
+
+**Q26 — 几何系统重构（凸分解前提）**
+
+MeshShape 是空壳，无 ConvexHullShape，origin_xyz 被忽略，每个 body 只用 shapes[0]。
+凸分解（V-HACD → GPU GJK）的前提是升级几何管理体系。
+详见 memory `project_geometry_refactor.md`。
+
+**Q27 — 多物理子系统接口**
+
+ForceSource/ConstraintSolver 绑死 RobotTreeNumpy，无法接入柔体/布料/流体。
+需要 PhysicsSubsystem ABC + CouplingImpulse 接口。
+详见 memory `project_multiphysics_architecture.md`。
+暂不实现——等第一个非刚体子系统需求出现时再做。
+
 ---
 
 ## Performance / Optimization
