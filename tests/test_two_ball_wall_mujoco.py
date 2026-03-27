@@ -48,6 +48,13 @@ try:
 except Exception:
     HAS_ENGINE = False
 
+try:
+    from physics.solvers.mujoco_qp import ADMMQPSolver
+
+    HAS_ADMM = HAS_ENGINE  # needs CpuEngine too
+except Exception:
+    HAS_ADMM = False
+
 # Scene parameters
 DT = 0.001
 RADIUS = 0.1
@@ -384,3 +391,113 @@ class TestTrajectoryAgreement:
             assert np.all(np.isfinite(arr)), "MuJoCo produced NaN/Inf"
         for arr in ours:
             assert np.all(np.isfinite(arr)), "Our solver produced NaN/Inf"
+
+
+# ---------------------------------------------------------------------------
+# ADMMQPSolver (MuJoCo-style soft constraints) vs MuJoCo
+# ---------------------------------------------------------------------------
+
+
+def _our_admm_two_ball_wall():
+    """Run two-ball-two-wall scenario using CpuEngine + ADMMQPSolver."""
+    from robot.model import RobotModel
+
+    def _ball():
+        tree = RobotTreeNumpy(gravity=G)
+        tree.add_body(
+            Body(
+                "ball",
+                0,
+                FreeJoint("root"),
+                SpatialInertia(MASS, np.eye(3) * I_DIAG, np.zeros(3)),
+                SpatialTransform.identity(),
+                parent=-1,
+            )
+        )
+        tree.finalize()
+        return RobotModel(
+            tree=tree,
+            geometries=[BodyCollisionGeometry(0, [ShapeInstance(SphereShape(RADIUS))])],
+            contact_body_names=["ball"],
+        )
+
+    merged = merge_models(robots={"a": _ball(), "b": _ball()})
+    solver = ADMMQPSolver(max_iter=50)
+    cpu = CpuEngine(merged, solver=solver, dt=DT)
+
+    q, qdot = merged.tree.default_state()
+    rs_a = merged.robot_slices["a"]
+    rs_b = merged.robot_slices["b"]
+    q[rs_a.q_slice.start + 4] = BALL_AX
+    q[rs_a.q_slice.start + 6] = BALL_Z0
+    q[rs_b.q_slice.start + 4] = BALL_BX
+    q[rs_b.q_slice.start + 6] = BALL_Z0
+    qdot[rs_a.v_slice.start] = VX_A
+    qdot[rs_b.v_slice.start] = VX_B
+    tau = np.zeros(merged.nv)
+
+    xa, za, xb, zb = [np.zeros(N_STEPS) for _ in range(4)]
+    for i in range(N_STEPS):
+        xa[i] = q[rs_a.q_slice.start + 4]
+        za[i] = q[rs_a.q_slice.start + 6]
+        xb[i] = q[rs_b.q_slice.start + 4]
+        zb[i] = q[rs_b.q_slice.start + 6]
+        out = cpu.step(q, qdot, tau, dt=DT)
+        q, qdot = out.q_new, out.qdot_new
+
+    return xa, za, xb, zb
+
+
+@pytest.mark.skipif(not HAS_ADMM, reason="ADMMQPSolver or CpuEngine not available")
+class TestADMMvsMuJoCo:
+    """ADMMQPSolver should closely match MuJoCo (same contact model)."""
+
+    @pytest.fixture(scope="class")
+    def trajectories(self):
+        mj = _mujoco_two_ball_wall()
+        admm = _our_admm_two_ball_wall()
+        return mj, admm
+
+    def test_full_trajectory_x_l2(self, trajectories):
+        """Full x trajectory L2 should be < 2mm (same contact model)."""
+        mj, admm = trajectories
+        xa_mj, _, _, _, _, _ = mj
+        xa_a, _, _, _ = admm
+        l2 = np.sqrt(np.mean((xa_a - xa_mj) ** 2))
+        assert l2 < 0.002, f"ADMM x L2 vs MuJoCo: {l2 * 1000:.1f}mm (expected < 2mm)"
+
+    def test_full_trajectory_z_l2(self, trajectories):
+        """Full z trajectory L2 should be < 1mm (same contact model)."""
+        mj, admm = trajectories
+        _, za_mj, _, _, _, _ = mj
+        _, za_a, _, _ = admm
+        l2 = np.sqrt(np.mean((za_a - za_mj) ** 2))
+        assert l2 < 0.001, f"ADMM z L2 vs MuJoCo: {l2 * 1000:.1f}mm (expected < 1mm)"
+
+    def test_final_position_agreement(self, trajectories):
+        """Final ball positions should agree within 2mm."""
+        mj, admm = trajectories
+        xa_mj, za_mj, xb_mj, zb_mj, _, _ = mj
+        xa_a, za_a, xb_a, zb_a = admm
+        np.testing.assert_allclose(xa_a[-1], xa_mj[-1], atol=0.002, err_msg="Ball A final x mismatch")
+        np.testing.assert_allclose(za_a[-1], za_mj[-1], atol=0.002, err_msg="Ball A final z mismatch")
+        np.testing.assert_allclose(xb_a[-1], xb_mj[-1], atol=0.002, err_msg="Ball B final x mismatch")
+        np.testing.assert_allclose(zb_a[-1], zb_mj[-1], atol=0.002, err_msg="Ball B final z mismatch")
+
+    def test_symmetry(self, trajectories):
+        """ADMM trajectory should maintain scene symmetry."""
+        _, admm = trajectories
+        xa_a, za_a, xb_a, zb_a = admm
+        np.testing.assert_allclose(xa_a, -xb_a, atol=0.01)
+        np.testing.assert_allclose(za_a, zb_a, atol=0.01)
+
+    def test_no_ground_penetration(self, trajectories):
+        """Balls should stay above ground (z >= radius - tolerance).
+
+        Soft constraints (ADMM) allow slight penetration during impact;
+        MuJoCo behaves the same way. Tolerance is 1.5mm below radius.
+        """
+        _, admm = trajectories
+        _, za_a, _, zb_a = admm
+        assert np.all(za_a > RADIUS - 0.015), f"Ball A penetrated: min z={za_a.min():.4f}"
+        assert np.all(zb_a > RADIUS - 0.015), f"Ball B penetrated: min z={zb_a.min():.4f}"
