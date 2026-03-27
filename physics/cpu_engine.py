@@ -16,6 +16,7 @@ from .constraint_solvers import wrap_solver
 from .dynamics_cache import DynamicsCache
 from .engine import PhysicsEngine, StepOutput
 from .force_source import PassiveForceSource
+from .gjk_epa import ground_contact_query
 from .solvers.pgs_solver import ContactConstraint
 from .solvers.pgs_split_impulse import PGSSplitImpulseSolver
 from .step_pipeline import StepPipeline
@@ -87,57 +88,57 @@ class CpuEngine(PhysicsEngine):
         )
 
     def _detect_contacts(self, cache: DynamicsCache) -> List[ContactConstraint]:
-        """Detect all contacts: body-ground + body-body."""
+        """Detect all contacts using GJK/EPA: body-ground + body-body."""
         contacts: List[ContactConstraint] = []
         merged = self.merged
         X_world = cache.X_world
         terrain = merged.terrain
 
-        # 1. Ground contacts (at registered contact points)
-        for body_idx, local_pos in merged.contact_points:
+        # 1. Ground contacts (GJK/EPA per body with collision geometry)
+        for body_idx, _local_pos in merged.contact_points:
+            geom = merged.collision_shapes[body_idx] if body_idx < len(merged.collision_shapes) else None
+            if geom is None or not geom.shapes:
+                continue
+            shape = geom.shapes[0].shape
             X = X_world[body_idx]
-            pos_world = X.R @ local_pos + X.r
-            depth = terrain.height_at(pos_world[0], pos_world[1]) - pos_world[2]
-
-            if depth > 0:
-                contact_pt = np.array(
-                    [pos_world[0], pos_world[1], terrain.height_at(pos_world[0], pos_world[1])]
-                )
-                contacts.append(
-                    ContactConstraint(
-                        body_i=body_idx,
-                        body_j=-1,
-                        point=contact_pt,
-                        normal=np.array([0.0, 0.0, 1.0]),
-                        tangent1=np.zeros(3),
-                        tangent2=np.zeros(3),
-                        depth=depth,
-                        mu=0.8,
-                        condim=3,
+            gz = terrain.height_at(X.r[0], X.r[1])
+            manifold = ground_contact_query(shape, X, ground_z=gz)
+            if manifold is not None and manifold.depth > 1e-10:
+                for pt in manifold.points:
+                    contacts.append(
+                        ContactConstraint(
+                            body_i=body_idx,
+                            body_j=-1,
+                            point=pt,
+                            normal=manifold.normal.copy(),
+                            tangent1=np.zeros(3),
+                            tangent2=np.zeros(3),
+                            depth=manifold.depth,
+                            mu=0.8,
+                            condim=3,
+                        )
                     )
-                )
 
-        # 2. Body-body contacts (from collision pairs)
+        # 2. Body-body contacts (analytical sphere approximation)
+        # Note: GJK/EPA has poor depth accuracy for deep sphere-sphere penetration
+        # (EPA returns ~0.00003 for actual 0.05 overlap). Analytical sphere approx
+        # is more reliable for body-body until per-shape analytical functions are
+        # ported to CPU.
         for bi, bj in merged.collision_pairs:
             shape_i = merged.collision_shapes[bi]
             shape_j = merged.collision_shapes[bj]
-            if shape_i is None or shape_j is None:
+            if shape_i is None or shape_j is None or not shape_i.shapes or not shape_j.shapes:
                 continue
 
-            X_i = X_world[bi]
-            X_j = X_world[bj]
-
-            # Sphere approximation: use mean of half-extents as collision radius
             r_i = float(np.mean(shape_i.shapes[0].shape.half_extents_approx()))
             r_j = float(np.mean(shape_j.shapes[0].shape.half_extents_approx()))
-
-            diff = X_i.r - X_j.r
+            diff = X_world[bi].r - X_world[bj].r
             dist = np.linalg.norm(diff)
             overlap = (r_i + r_j) - dist
 
             if overlap > 0 and dist > 1e-10:
-                normal = diff / dist  # from j to i
-                contact_pt = X_j.r + normal * r_j
+                normal = diff / dist
+                contact_pt = X_world[bj].r + normal * r_j
                 contacts.append(
                     ContactConstraint(
                         body_i=bi,
