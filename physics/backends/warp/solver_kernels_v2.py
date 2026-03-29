@@ -286,6 +286,124 @@ def batched_build_W_vfree_v2(
 
 
 @wp.kernel
+def batched_compute_v_current(
+    X_world_R: wp.array(dtype=wp.float32, ndim=4),
+    X_world_r: wp.array3d(dtype=wp.float32),
+    v_bodies: wp.array3d(dtype=wp.float32),  # (N, nb, 6) — CURRENT (not predicted)
+    contact_active: wp.array2d(dtype=wp.int32),
+    contact_normal: wp.array3d(dtype=wp.float32),
+    contact_point: wp.array3d(dtype=wp.float32),
+    contact_bi: wp.array2d(dtype=wp.int32),
+    contact_bj: wp.array2d(dtype=wp.int32),
+    max_contacts: int,
+    max_rows: int,
+    # Output
+    v_current: wp.array2d(dtype=wp.float32),  # (N, max_rows)
+):
+    """Compute current (non-predicted) constraint velocity v_c = J @ qdot.
+
+    Same contact-frame projection as batched_build_W_vfree_v2, but using
+    current body velocities (step 2) instead of predicted velocities (step 5).
+    """
+    env_id = wp.tid()
+
+    for r in range(max_rows):
+        v_current[env_id, r] = 0.0
+
+    for c in range(max_contacts):
+        if contact_active[env_id, c] == 0:
+            continue
+
+        bi = contact_bi[env_id, c]
+        bj = contact_bj[env_id, c]
+        base = c * CONDIM
+
+        normal = wp.vec3(
+            contact_normal[env_id, c, 0],
+            contact_normal[env_id, c, 1],
+            contact_normal[env_id, c, 2],
+        )
+        frame = _build_tangent_frame(normal)
+        t1 = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2])
+        t2 = wp.vec3(frame[1, 0], frame[1, 1], frame[1, 2])
+        cp = wp.vec3(
+            contact_point[env_id, c, 0],
+            contact_point[env_id, c, 1],
+            contact_point[env_id, c, 2],
+        )
+
+        # Body i contact velocity (current, not predicted)
+        if bi >= 0:
+            R_i = wp.mat33(
+                X_world_R[env_id, bi, 0, 0],
+                X_world_R[env_id, bi, 0, 1],
+                X_world_R[env_id, bi, 0, 2],
+                X_world_R[env_id, bi, 1, 0],
+                X_world_R[env_id, bi, 1, 1],
+                X_world_R[env_id, bi, 1, 2],
+                X_world_R[env_id, bi, 2, 0],
+                X_world_R[env_id, bi, 2, 1],
+                X_world_R[env_id, bi, 2, 2],
+            )
+            r_i = wp.vec3(X_world_r[env_id, bi, 0], X_world_r[env_id, bi, 1], X_world_r[env_id, bi, 2])
+            r_arm_i = cp - r_i
+            v_body_i = vec6f(
+                v_bodies[env_id, bi, 0],
+                v_bodies[env_id, bi, 1],
+                v_bodies[env_id, bi, 2],
+                v_bodies[env_id, bi, 3],
+                v_bodies[env_id, bi, 4],
+                v_bodies[env_id, bi, 5],
+            )
+            v_lin_i = R_i * vec6_linear(v_body_i)
+            omega_i = R_i * vec6_angular(v_body_i)
+            v_contact_i = v_lin_i + wp.cross(omega_i, r_arm_i)
+        else:
+            v_contact_i = wp.vec3(0.0, 0.0, 0.0)
+
+        # Body j contact velocity
+        if bj >= 0:
+            R_j = wp.mat33(
+                X_world_R[env_id, bj, 0, 0],
+                X_world_R[env_id, bj, 0, 1],
+                X_world_R[env_id, bj, 0, 2],
+                X_world_R[env_id, bj, 1, 0],
+                X_world_R[env_id, bj, 1, 1],
+                X_world_R[env_id, bj, 1, 2],
+                X_world_R[env_id, bj, 2, 0],
+                X_world_R[env_id, bj, 2, 1],
+                X_world_R[env_id, bj, 2, 2],
+            )
+            r_j = wp.vec3(X_world_r[env_id, bj, 0], X_world_r[env_id, bj, 1], X_world_r[env_id, bj, 2])
+            r_arm_j = cp - r_j
+            v_body_j = vec6f(
+                v_bodies[env_id, bj, 0],
+                v_bodies[env_id, bj, 1],
+                v_bodies[env_id, bj, 2],
+                v_bodies[env_id, bj, 3],
+                v_bodies[env_id, bj, 4],
+                v_bodies[env_id, bj, 5],
+            )
+            v_lin_j = R_j * vec6_linear(v_body_j)
+            omega_j = R_j * vec6_angular(v_body_j)
+            v_contact_j = v_lin_j + wp.cross(omega_j, r_arm_j)
+        else:
+            v_contact_j = wp.vec3(0.0, 0.0, 0.0)
+
+        v_rel = v_contact_i - v_contact_j
+
+        for d_idx in range(CONDIM):
+            row = base + d_idx
+            if d_idx == 0:
+                direction = normal
+            elif d_idx == 1:
+                direction = t1
+            else:
+                direction = t2
+            v_current[env_id, row] = wp.dot(direction, v_rel)
+
+
+@wp.kernel
 def batched_impulse_to_gen_v2(
     lambdas: wp.array2d(dtype=wp.float32),
     contact_active: wp.array2d(dtype=wp.int32),

@@ -172,10 +172,11 @@ def _cone_project_all(
 # ---------------------------------------------------------------------------
 @wp.kernel
 def batched_admm_solve(
-    # -- From step 7 (W build) --
+    # -- From step 7 (W build) + step 7b (v_current) --
     W: wp.array(dtype=wp.float32, ndim=3),  # (N, max_rows, max_rows)
     W_diag: wp.array(dtype=wp.float32, ndim=2),  # (N, max_rows)
-    v_free: wp.array(dtype=wp.float32, ndim=2),  # (N, max_rows)
+    v_free: wp.array(dtype=wp.float32, ndim=2),  # (N, max_rows) = J @ v_predicted
+    v_current: wp.array(dtype=wp.float32, ndim=2),  # (N, max_rows) = J @ qdot
     # -- From step 6 (collision) --
     contact_active: wp.array(dtype=wp.int32, ndim=2),  # (N, max_contacts)
     contact_depth: wp.array(dtype=wp.float32, ndim=2),  # (N, max_contacts)
@@ -256,20 +257,26 @@ def batched_admm_solve(
         for k in range(CONDIM):
             R_diag[env, base + k] = ratio * wp.abs(W_diag[env, base + k])
 
-        # rhs_const = -v_free + dt * a_ref(v_free)  (velocity-space QP)
+        # Exact velocity-space rhs_const using separated v_c and v_free:
         #
-        # The -v_free base term cancels the predicted velocity (which includes
-        # gravity). The dt*a_ref term adds compliance spring-damper correction.
-        # At equilibrium (v_c=0): rhs = dt*g + dt*k*d*depth, which correctly
-        # balances gravity through the contact impulse.
+        #   rhs = dt * a_ref(v_c) - (v_free - v_c)
+        #       = dt * (-b*v_c + k*d*depth) - v_free + v_c   [normal]
+        #       = dt * (-b*v_c)             - v_free + v_c   [tangent]
+        #
+        # This is exact — no v_c ≈ v_free approximation. At equilibrium
+        # (v_c=0): rhs = dt*k*d*depth + dt*g (gravity from v_free = -dt*g).
+        # During impact (v_c=-2): rhs = dt*(-b*(-2)+k*d*depth) - (-2.002)+(-2)
+        #                             ≈ dt*(a_ref - a_uc), matching CPU ADMM.
+        vc_n = v_current[env, base]
         vf_n = v_free[env, base]
-        rhs_const[env, base] = -vf_n + dt * (-b_coeff * vf_n + k_coeff * d_imp * depth_c)
+        rhs_const[env, base] = dt * (-b_coeff * vc_n + k_coeff * d_imp * depth_c) - vf_n + vc_n
         for k in range(1, CONDIM):
+            vc_t = v_current[env, base + k]
             vf_t = v_free[env, base + k]
-            rhs_const[env, base + k] = -vf_t + dt * (-b_coeff * vf_t)
+            rhs_const[env, base + k] = dt * (-b_coeff * vc_t) - vf_t + vc_t
 
     # ── 3. Build AR_rho = W + diag(R_diag) + rho*I ──
-    reg = float(1.0e-6)
+    reg = float(1.0e-4)
     for i in range(n_active_rows):
         for j in range(n_active_rows):
             AR_rho[env, i, j] = W[env, i, j]

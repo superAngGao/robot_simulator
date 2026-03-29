@@ -33,6 +33,7 @@ from .backends.warp.solver_kernels import (
 )
 from .backends.warp.solver_kernels_v2 import (
     batched_build_W_vfree_v2,
+    batched_compute_v_current,
     batched_impulse_to_gen_v2,
 )
 from .backends.warp.solver_scratch import SolverScratch
@@ -391,7 +392,27 @@ class GpuEngine(PhysicsEngine):
 
         # 8. Constraint solver dispatch
         if self._solver == "admm":
-            # ADMM solve (single kernel)
+            # 7b. Compute current (non-predicted) constraint velocity v_c
+            wp.launch(
+                batched_compute_v_current,
+                dim=N,
+                device=self._device,
+                inputs=[
+                    sc.X_world_R,
+                    sc.X_world_r,
+                    sc.v_bodies,  # step-2 body velocities (current, not predicted)
+                    self._contact_active,
+                    self._contact_normal,
+                    self._contact_point,
+                    self._contact_bi,
+                    self._contact_bj,
+                    self._max_contacts,
+                    self._max_rows,
+                ],
+                outputs=[sol.v_current],
+            )
+
+            # 8a. ADMM solve (single kernel)
             sol.lambdas.zero_()
             wp.launch(
                 self._batched_admm_solve,
@@ -401,6 +422,7 @@ class GpuEngine(PhysicsEngine):
                     sol.W,
                     sol.W_diag,
                     sol.v_free,
+                    sol.v_current,
                     self._contact_active,
                     self._contact_depth,
                     s.contact_mu,
