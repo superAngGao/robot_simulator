@@ -50,6 +50,7 @@ class GpuEngine(PhysicsEngine):
         num_envs : Number of parallel environments.
         device   : CUDA device string.
         dt       : Default time step [s].
+        solver   : Constraint solver ("jacobi_pgs_si" or "admm").
     """
 
     def __init__(
@@ -58,12 +59,14 @@ class GpuEngine(PhysicsEngine):
         num_envs: int = 1,
         device: str = "cuda:0",
         dt: float = 2e-4,
+        solver: str = "jacobi_pgs_si",
     ) -> None:
         super().__init__(merged)
         wp.init()
         self._device = device
         self._num_envs = num_envs
         self._dt = dt
+        self._solver = solver
 
         # Build static data from merged model
         s = StaticRobotData.from_merged(merged)
@@ -93,7 +96,19 @@ class GpuEngine(PhysicsEngine):
             nc=max_contacts,
             max_rows=max_rows,
             device=device,
+            solver=solver,
         )
+
+        # ADMM solver parameters
+        if solver == "admm":
+            from .backends.warp.admm_kernels import batched_admm_solve
+
+            self._batched_admm_solve = batched_admm_solve
+            self._admm_rho = 1.0
+            self._admm_iters = 30
+            self._admm_warmstart = True
+            self._admm_solref = (0.02, 1.0)  # (timeconst, dampratio)
+            self._admm_solimp = (0.9, 0.95, 0.001, 0.5, 2.0)
 
         # Additional collision buffers
         self._contact_normal = wp.zeros((num_envs, max_contacts, 3), dtype=wp.float32, device=device)
@@ -158,6 +173,13 @@ class GpuEngine(PhysicsEngine):
         qdot_np = np.tile(self._default_qdot, (N, 1)).astype(np.float32)
         wp.copy(sc.q, wp.array(q_np, dtype=wp.float32, device=self._device))
         wp.copy(sc.qdot, wp.array(qdot_np, dtype=wp.float32, device=self._device))
+        # Clear ADMM warmstart state
+        if self._solver == "admm":
+            sol = self._solver_scratch
+            sol.admm_f_prev.zero_()
+            sol.admm_s_prev.zero_()
+            sol.admm_u_prev.zero_()
+            sol.admm_prev_n_active.zero_()
 
     def step(self, q=None, qdot=None, tau=None, dt=None):
         """One physics step. If q/qdot/tau not given, uses internal state."""
@@ -367,28 +389,73 @@ class GpuEngine(PhysicsEngine):
             ],
         )
 
-        # 8. Jacobi PGS iterations
-        sol.lambdas.zero_()
-        sol.lambdas_old.zero_()
-        for _ in range(s.solver_max_iter):
-            wp.copy(sol.lambdas_old, sol.lambdas)
+        # 8. Constraint solver dispatch
+        if self._solver == "admm":
+            # ADMM solve (single kernel)
+            sol.lambdas.zero_()
             wp.launch(
-                batched_jacobi_pgs_step,
+                self._batched_admm_solve,
                 dim=N,
                 device=self._device,
                 inputs=[
                     sol.W,
                     sol.W_diag,
                     sol.v_free,
-                    sol.lambdas_old,
                     self._contact_active,
+                    self._contact_depth,
                     s.contact_mu,
-                    s.solver_omega,
+                    self._admm_rho,
+                    dt,
+                    self._admm_solref[0],
+                    self._admm_solref[1],
+                    self._admm_solimp[0],
+                    self._admm_solimp[1],
+                    self._admm_solimp[2],
+                    self._admm_solimp[3],
+                    self._admm_solimp[4],
                     self._max_contacts,
                     self._max_rows,
+                    self._admm_iters,
+                    1 if self._admm_warmstart else 0,
+                    sol.admm_prev_n_active,
+                    sol.admm_f_prev,
+                    sol.admm_s_prev,
+                    sol.admm_u_prev,
+                    sol.admm_AR_rho,
+                    sol.admm_L,
+                    sol.admm_R_diag,
+                    sol.admm_f,
+                    sol.admm_s,
+                    sol.admm_u,
+                    sol.admm_rhs,
+                    sol.admm_tmp,
+                    sol.admm_rhs_const,
                 ],
                 outputs=[sol.lambdas],
             )
+        else:
+            # Jacobi PGS iterations (default)
+            sol.lambdas.zero_()
+            sol.lambdas_old.zero_()
+            for _ in range(s.solver_max_iter):
+                wp.copy(sol.lambdas_old, sol.lambdas)
+                wp.launch(
+                    batched_jacobi_pgs_step,
+                    dim=N,
+                    device=self._device,
+                    inputs=[
+                        sol.W,
+                        sol.W_diag,
+                        sol.v_free,
+                        sol.lambdas_old,
+                        self._contact_active,
+                        s.contact_mu,
+                        s.solver_omega,
+                        self._max_contacts,
+                        self._max_rows,
+                    ],
+                    outputs=[sol.lambdas],
+                )
 
         # 9. Impulse → generalized (body-body aware)
         wp.launch(
@@ -468,25 +535,28 @@ class GpuEngine(PhysicsEngine):
             outputs=[sol.dqdot],
         )
 
-        # 11. Position correction
-        from .backends.warp.solver_kernels import batched_position_correction
+        # 11. Position correction (PGS only — ADMM handles via compliance)
+        if self._solver == "admm":
+            sol.pos_corrections.zero_()
+        else:
+            from .backends.warp.solver_kernels import batched_position_correction
 
-        wp.launch(
-            batched_position_correction,
-            dim=N,
-            device=self._device,
-            inputs=[
-                self._contact_active,
-                self._contact_depth,
-                self._gpu_contact_body_idx,
-                self._gpu_inv_mass,
-                s.contact_erp_pos,
-                s.contact_slop,
-                self._nc_ground,
-                s.nb,  # only ground contacts get position correction
-            ],
-            outputs=[sol.pos_corrections],
-        )
+            wp.launch(
+                batched_position_correction,
+                dim=N,
+                device=self._device,
+                inputs=[
+                    self._contact_active,
+                    self._contact_depth,
+                    self._gpu_contact_body_idx,
+                    self._gpu_inv_mass,
+                    s.contact_erp_pos,
+                    s.contact_slop,
+                    self._nc_ground,
+                    s.nb,  # only ground contacts get position correction
+                ],
+                outputs=[sol.pos_corrections],
+            )
 
         # 12. Integration
         wp.launch(

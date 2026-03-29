@@ -1,8 +1,7 @@
 """
-Pre-allocated GPU scratch buffers for the Jacobi-PGS-SI constraint solver.
+Pre-allocated GPU scratch buffers for constraint solvers (Jacobi-PGS-SI / ADMM).
 
-Extends ABABatchScratch with solver-specific arrays. Only allocated when
-the Warp backend is configured with contact_solver="jacobi_pgs_si".
+Extends ABABatchScratch with solver-specific arrays.
 """
 
 from __future__ import annotations
@@ -11,7 +10,7 @@ import warp as wp
 
 
 class SolverScratch:
-    """Pre-allocated GPU buffers for batched Jacobi-PGS-SI solver.
+    """Pre-allocated GPU buffers for batched constraint solvers.
 
     Args:
         N        : Number of environments.
@@ -21,6 +20,7 @@ class SolverScratch:
         nc       : Number of contact points.
         max_rows : Maximum constraint rows (nc * condim, typically nc * 3).
         device   : Warp device string.
+        solver   : Solver type ("jacobi_pgs_si" or "admm").
     """
 
     def __init__(
@@ -32,6 +32,7 @@ class SolverScratch:
         nc: int,
         max_rows: int,
         device: str = "cuda:0",
+        solver: str = "jacobi_pgs_si",
     ) -> None:
         self.N = N
         self.nb = nb
@@ -74,3 +75,20 @@ class SolverScratch:
         self.J_body = wp.zeros((N, max_rows, 6), dtype=wp.float32, device=device)
         # Which body each row belongs to
         self.row_body_idx = wp.zeros((N, max_rows), dtype=wp.int32, device=device)
+
+        # -- ADMM solver arrays (allocated only when solver="admm") --
+        if solver == "admm":
+            self.admm_AR_rho = wp.zeros((N, max_rows, max_rows), dtype=wp.float32, device=device)
+            self.admm_L = wp.zeros((N, max_rows, max_rows), dtype=wp.float32, device=device)
+            self.admm_R_diag = wp.zeros((N, max_rows), dtype=wp.float32, device=device)
+            self.admm_f = wp.zeros((N, max_rows), dtype=wp.float32, device=device)
+            self.admm_s = wp.zeros((N, max_rows), dtype=wp.float32, device=device)
+            self.admm_u = wp.zeros((N, max_rows), dtype=wp.float32, device=device)
+            self.admm_rhs = wp.zeros((N, max_rows), dtype=wp.float32, device=device)
+            self.admm_tmp = wp.zeros((N, max_rows), dtype=wp.float32, device=device)
+            self.admm_rhs_const = wp.zeros((N, max_rows), dtype=wp.float32, device=device)
+            # Warmstart persistence across timesteps
+            self.admm_f_prev = wp.zeros((N, max_rows), dtype=wp.float32, device=device)
+            self.admm_s_prev = wp.zeros((N, max_rows), dtype=wp.float32, device=device)
+            self.admm_u_prev = wp.zeros((N, max_rows), dtype=wp.float32, device=device)
+            self.admm_prev_n_active = wp.zeros((N,), dtype=wp.int32, device=device)
