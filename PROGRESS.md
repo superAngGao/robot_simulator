@@ -1,6 +1,6 @@
 # Robot Simulator — Progress Tracker
 
-> Last updated: 2026-03-27 (session 11, late)
+> Last updated: 2026-03-30 (session 12)
 > Reference plan: [PLAN.md](./PLAN.md)
 
 ---
@@ -10,7 +10,7 @@
 | Phase | 状态 | 完成度 |
 |-------|------|--------|
 | Phase 1 — Basic Physics + Simple Rendering | ✅ 完成（含修复） | 100% |
-| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 97% (2a-2i ✅, 2j 解析碰撞 ✅, 剩余: ADMM-TC GPU + dispatch) |
+| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 99% (2a-2k ✅, 剩余: 多体 ADMM 稳定性 Q28) |
 | Phase 3 — High-Fidelity Rendering          | ⬜ 未开始 | 0% |
 | Phase 4 — Domain Randomization             | ⬜ 未开始 | 0% |
 | Phase 5 — Sim-to-Real Validation           | ⬜ 未开始 | 0% |
@@ -396,14 +396,42 @@ CUDA 性能最优原因：全物理步融合为单 kernel launch，零 inter-ker
 
 - [x] 16 个 MuJoCo 对比测试（11 PGS-SI + 5 ADMM 亚毫米精度验证）
 
-**Phase 2 总测试数：585（全部通过）**
+### 2k — GPU ADMM 求解器 + solver dispatch ✅（2026-03-30 session 12）
 
-**Phase 2 实现总览（2026-03-27 session 11 更新）：**
+- [x] `admm_kernels.py` — velocity-level ADMM Warp kernel
+  - in-kernel scalar Cholesky（n_rows × n_rows，Phase 2g 证明最优）
+  - MuJoCo solimp/solref compliance 模型
+  - 锥投影（normal ≥ 0, ||tangent|| ≤ μ·normal）
+  - 跨步 warmstart（f, s, u 持久化）
+- [x] `solver_kernels_v2.py` — `batched_compute_v_current` kernel（v_c = J @ qdot）
+- [x] `solver_scratch.py` — ADMM scratch 数组（AR_rho, L, R_diag, f/s/u, warmstart）
+- [x] `gpu_engine.py` — `solver` 参数 dispatch（`"jacobi_pgs_si"` | `"admm"`）
+- [x] 精确 rhs_const = dt·a_ref(v_c) - (v_free - v_c)（需要分离的 v_c 和 v_free）
+- [x] 32 个测试（行为 + 组件验证 + MuJoCo 对标）
+
+**MuJoCo 对标（单球落地, dt=2e-4, 5000 步）：**
+
+| 指标 | GPU ADMM | CPU ADMM | MuJoCo |
+|------|---------|---------|--------|
+| z-L2 轨迹误差 | **0.0003 mm** | 0.0000 mm | — |
+| 稳态位置误差 | -0.3671 mm | -0.3672 mm | -0.3672 mm |
+| 最大穿透 | 14.63 mm | ~14.6 mm | 14.63 mm |
+
+**关键 bug 修复历程**：
+1. rhs_const = dt·(-b·v_free + k·d·depth) → 稳态差 3.85mm（`v_c ≈ v_free` 近似在平衡态失效）
+2. rhs_const = -v_free + dt·(...) → 动态太硬，44x 过强（`-v_free` 主导了 compliance）
+3. rhs_const = dt·a_ref(v_c) - (v_free - v_c) → **精确匹配**（需要独立的 v_c kernel）
+
+**已知限制**：多体同时接触发散（Q28），body-level vs joint-space Delassus 近似（Q29）
+
+**Phase 2 总测试数：616（全部通过）**
+
+**Phase 2 实现总览（2026-03-30 session 12 更新）：**
 
 | 类别 | 实现数 | 说明 |
 |------|--------|------|
 | 前向动力学 | 10 | ABA×5后端 + CRBA×3(mono/grouped/batched) + Grouped Schur + CUDA CRBA-TC |
-| 接触求解器 | **6** | PGS + **PGS-SI** + Jacobi PGS + **ADMM-C** + ADMM + **ADMMQPSolver** |
+| 接触求解器 | **7** | PGS + **PGS-SI** + Jacobi PGS + **ADMM-C** + ADMM + **ADMMQPSolver** + **GPU ADMM** |
 | 接触维度 | condim 1/3/4/6 | MuJoCo 风格，variable rows + per-condim 锥投影 |
 | GPU 碰撞 | **解析 + 球近似** | 4 shape × ground + 4 body-body 解析 @wp.func + fallback 球近似 |
 | CPU 碰撞 | GJK/EPA + 球近似 | ground: GJK/EPA（精确），body-body: 球近似 |
@@ -417,8 +445,9 @@ CUDA 性能最优原因：全物理步融合为单 kernel launch，零 inter-ker
 - [x] PGS + split impulse — `PGSSplitImpulseSolver`（解决 PGS 发散）
 - [x] ADMM + 合规接触 + 自适应ρ（`ADMMContactSolver` 新参数）
 
-**下一步**（见 Q21）：
-- [ ] GPU kernel：Jacobi-PGS-SI + ADMM-TC（tensor core Cholesky）
+**下一步**：
+- [ ] Q28：多体同时接触 ADMM 发散修复
+- [ ] Q29：joint-space Delassus 升级（铰接体精度）
 
 ---
 
