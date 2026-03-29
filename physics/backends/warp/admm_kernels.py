@@ -256,15 +256,17 @@ def batched_admm_solve(
         for k in range(CONDIM):
             R_diag[env, base + k] = ratio * wp.abs(W_diag[env, base + k])
 
-        # rhs_const = dt * (a_ref - a_uc)  converted to velocity space
-        # a_ref = -b * v_c + k * d * depth; approximate v_c ≈ v_free
-        # rhs_const_vel ≈ dt * (-b * v_free + k * d * depth) for normal
-        # rhs_const_vel ≈ dt * (-b * v_free) for tangent
+        # rhs_const = -v_free + dt * a_ref(v_free)  (velocity-space QP)
+        #
+        # The -v_free base term cancels the predicted velocity (which includes
+        # gravity). The dt*a_ref term adds compliance spring-damper correction.
+        # At equilibrium (v_c=0): rhs = dt*g + dt*k*d*depth, which correctly
+        # balances gravity through the contact impulse.
         vf_n = v_free[env, base]
-        rhs_const[env, base] = dt * (-b_coeff * vf_n + k_coeff * d_imp * depth_c)
+        rhs_const[env, base] = -vf_n + dt * (-b_coeff * vf_n + k_coeff * d_imp * depth_c)
         for k in range(1, CONDIM):
             vf_t = v_free[env, base + k]
-            rhs_const[env, base + k] = dt * (-b_coeff * vf_t)
+            rhs_const[env, base + k] = -vf_t + dt * (-b_coeff * vf_t)
 
     # ── 3. Build AR_rho = W + diag(R_diag) + rho*I ──
     reg = float(1.0e-6)
