@@ -8,6 +8,10 @@ ignore = [
     "E741",  # ambiguous variable names (common in physics: I, l, etc.)
 ]
 
+[tool.ruff.lint.per-file-ignores]
+"tests/integration/simulator/test_static_data.py" = ["E501"]  # inline URDF XML
+"tests/integration/contact_pipeline/test_lcp_contact_model.py" = ["E501"]  # long assertion messages
+
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
