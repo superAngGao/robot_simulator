@@ -10,8 +10,6 @@ Key differences from solver_kernels.py:
 import warp as wp
 
 from .spatial_warp import (
-    inverse_transform_R,
-    inverse_transform_r,
     transform_force_wp,
     vec6_angular,
     vec6_from_two_vec3,
@@ -480,10 +478,13 @@ def batched_impulse_to_gen_v2(
             r_i = wp.vec3(X_world_r[env_id, bi, 0], X_world_r[env_id, bi, 1], X_world_r[env_id, bi, 2])
             r_arm_i = cp - r_i
             torque_i = wp.cross(r_arm_i, F_world)
-            Rinv_i = inverse_transform_R(R_i)
-            rinv_i = inverse_transform_r(R_i, r_i)
-            f_w_i = vec6_from_two_vec3(F_world, torque_i)
-            f_b_i = transform_force_wp(Rinv_i, rinv_i, f_w_i)
+            # Wrench is already at body origin in world frame; only rotate
+            # to body frame. Do NOT use full Plücker transform_force_wp
+            # which would double-count the moment arm via rinv × F.
+            Rt_i = wp.transpose(R_i)
+            f_b_lin_i = Rt_i * F_world
+            f_b_ang_i = Rt_i * torque_i
+            f_b_i = vec6_from_two_vec3(f_b_lin_i, f_b_ang_i)
             for d in range(6):
                 body_impulses[env_id, bi, d] = body_impulses[env_id, bi, d] + f_b_i[d]
 
@@ -504,10 +505,10 @@ def batched_impulse_to_gen_v2(
             r_arm_j = cp - r_j
             neg_F = wp.vec3(-F_world[0], -F_world[1], -F_world[2])
             torque_j = wp.cross(r_arm_j, neg_F)
-            Rinv_j = inverse_transform_R(R_j)
-            rinv_j = inverse_transform_r(R_j, r_j)
-            f_w_j = vec6_from_two_vec3(neg_F, torque_j)
-            f_b_j = transform_force_wp(Rinv_j, rinv_j, f_w_j)
+            Rt_j = wp.transpose(R_j)
+            f_b_lin_j = Rt_j * neg_F
+            f_b_ang_j = Rt_j * torque_j
+            f_b_j = vec6_from_two_vec3(f_b_lin_j, f_b_ang_j)
             for d in range(6):
                 body_impulses[env_id, bj, d] = body_impulses[env_id, bj, d] + f_b_j[d]
 
