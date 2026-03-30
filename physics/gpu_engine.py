@@ -19,8 +19,13 @@ import warp as wp
 
 from .backends.static_data import StaticRobotData
 from .backends.warp.collision_kernels import batched_detect_analytical
+from .backends.warp.crba_kernels import (
+    batched_apply_contact_impulse,
+    batched_build_W_joint_space,
+    batched_contact_jacobian,
+    batched_crba_rnea_cholesky,
+)
 from .backends.warp.kernels import (
-    batched_aba,
     batched_fk_body_vel,
     batched_passive_torques,
 )
@@ -29,12 +34,6 @@ from .backends.warp.solver_kernels import (
     batched_constraint_integrate,
     batched_jacobi_pgs_step,
     batched_predicted_velocity,
-    batched_scale_array,
-)
-from .backends.warp.solver_kernels_v2 import (
-    batched_build_W_vfree_v2,
-    batched_compute_v_current,
-    batched_impulse_to_gen_v2,
 )
 from .backends.warp.solver_scratch import SolverScratch
 from .engine import PhysicsEngine, StepOutput
@@ -253,41 +252,37 @@ class GpuEngine(PhysicsEngine):
             outputs=[sc.X_world_R, sc.X_world_r, sc.X_up_R, sc.X_up_r, sc.v_bodies],
         )
 
-        # 3. ABA (unconstrained, ext_forces=0)
-        sol.ext_forces_zero.zero_()
-        sc.qddot.zero_()
+        # 3. CRBA + RNEA + Cholesky + smooth dynamics (replaces ABA)
         wp.launch(
-            batched_aba,
+            batched_crba_rnea_cholesky,
             dim=N,
             device=self._device,
             inputs=[
                 sc.q,
                 sc.qdot,
                 sc.tau_total,
-                sol.ext_forces_zero,
                 self._gpu_joint_type,
                 self._gpu_joint_axis,
                 self._gpu_parent_idx,
                 self._gpu_q_idx_start,
-                self._gpu_q_idx_len,
                 self._gpu_v_idx_start,
                 self._gpu_v_idx_len,
                 self._gpu_inertia_mat,
-                s.gravity,
-                s.nb,
                 sc.X_up_R,
                 sc.X_up_r,
-                sc.aba_v,
-                sc.aba_c,
-                sc.aba_IA,
-                sc.aba_pA,
-                sc.aba_a,
-                sc.aba_U,
-                sc.aba_Dinv,
-                sc.aba_u,
+                s.gravity,
+                s.nb,
+                s.nv,
+                sc.IC,
+                sc.rnea_v,
+                sc.rnea_a,
+                sc.rnea_f,
+                sol.chol_tmp,
             ],
-            outputs=[sc.qddot],
+            outputs=[sol.H, sol.L_H, sol.C_bias, sol.qacc_smooth],
         )
+        # qacc_smooth → sc.qddot for predicted velocity computation
+        wp.copy(sc.qddot, sol.qacc_smooth)
 
         # 4. Predicted velocity
         wp.launch(
@@ -298,38 +293,7 @@ class GpuEngine(PhysicsEngine):
             outputs=[sol.v_predicted],
         )
 
-        # 5. Compute predicted body velocities
-        #    We only need body_v at predicted qdot. Skip full FK — just recompute
-        #    body velocities using the existing X_world from step 2.
-        #    This avoids overwriting X_world_R/r which collision needs.
-        #    For now, use a dedicated velocity-only computation via the FK kernel
-        #    writing to a temporary X buffer.
-        _tmp_XR = wp.zeros_like(sc.X_world_R)
-        _tmp_Xr = wp.zeros_like(sc.X_world_r)
-        _tmp_XupR = wp.zeros_like(sc.X_up_R)
-        _tmp_Xupr = wp.zeros_like(sc.X_up_r)
-        wp.launch(
-            batched_fk_body_vel,
-            dim=N,
-            device=self._device,
-            inputs=[
-                sc.q,
-                sol.v_predicted,
-                self._gpu_joint_type,
-                self._gpu_joint_axis,
-                self._gpu_parent_idx,
-                self._gpu_q_idx_start,
-                self._gpu_q_idx_len,
-                self._gpu_v_idx_start,
-                self._gpu_v_idx_len,
-                self._gpu_X_tree_R,
-                self._gpu_X_tree_r,
-                s.nb,
-            ],
-            outputs=[_tmp_XR, _tmp_Xr, _tmp_XupR, _tmp_Xupr, sol.v_bodies_pred],
-        )
-
-        # 6. Collision detection (ground + body-body) — analytical shape dispatch
+        # 5. Collision detection (ground + body-body) — analytical shape dispatch
         wp.launch(
             batched_detect_analytical,
             dim=N,
@@ -358,60 +322,57 @@ class GpuEngine(PhysicsEngine):
             ],
         )
 
-        # 7. Build W + v_free (body-body aware)
+        # 6. Contact Jacobian (joint-space, Q29)
         wp.launch(
-            batched_build_W_vfree_v2,
+            batched_contact_jacobian,
             dim=N,
             device=self._device,
             inputs=[
+                sc.q,
                 sc.X_world_R,
                 sc.X_world_r,
-                sol.v_bodies_pred,
                 self._contact_active,
                 self._contact_normal,
                 self._contact_point,
                 self._contact_bi,
                 self._contact_bj,
-                self._gpu_inv_mass,
-                self._gpu_inv_inertia,
-                s.contact_mu,
+                self._gpu_joint_type,
+                self._gpu_joint_axis,
+                self._gpu_parent_idx,
+                self._gpu_v_idx_start,
+                self._gpu_v_idx_len,
+                self._max_contacts,
+                self._max_rows,
+                s.nv,
+            ],
+            outputs=[sol.J_joint],
+        )
+
+        # 7. Build W (joint-space Delassus) + v_free + v_current
+        wp.launch(
+            batched_build_W_joint_space,
+            dim=N,
+            device=self._device,
+            inputs=[
+                sol.J_joint,
+                sol.L_H,
+                sol.v_predicted,
+                sc.qdot,
+                self._contact_active,
                 s.contact_cfm,
                 self._max_contacts,
                 self._max_rows,
+                s.nv,
+                sol.HinvJt,
+                sol.chol_tmp,
+                sol.C_bias,  # reuse as rhs_col temp (already consumed)
+                sol.qacc_smooth,  # reuse as sol_col temp (already consumed)
             ],
-            outputs=[
-                sol.W,
-                sol.W_diag,
-                sol.v_free,
-                sol.J_body,
-                self._J_body_j,
-                self._row_bi,
-                self._row_bj,
-            ],
+            outputs=[sol.W, sol.W_diag, sol.v_free, sol.v_current],
         )
 
         # 8. Constraint solver dispatch
         if self._solver == "admm":
-            # 7b. Compute current (non-predicted) constraint velocity v_c
-            wp.launch(
-                batched_compute_v_current,
-                dim=N,
-                device=self._device,
-                inputs=[
-                    sc.X_world_R,
-                    sc.X_world_r,
-                    sc.v_bodies,  # step-2 body velocities (current, not predicted)
-                    self._contact_active,
-                    self._contact_normal,
-                    self._contact_point,
-                    self._contact_bi,
-                    self._contact_bj,
-                    self._max_contacts,
-                    self._max_rows,
-                ],
-                outputs=[sol.v_current],
-            )
-
             # 8a. ADMM solve (single kernel)
             sol.lambdas.zero_()
             wp.launch(
@@ -479,81 +440,22 @@ class GpuEngine(PhysicsEngine):
                     outputs=[sol.lambdas],
                 )
 
-        # 9. Impulse → generalized (body-body aware)
+        # 9. Apply contact impulse: dqdot = H⁻¹ Jᵀ λ (Q29 joint-space)
         wp.launch(
-            batched_impulse_to_gen_v2,
+            batched_apply_contact_impulse,
             dim=N,
             device=self._device,
             inputs=[
                 sol.lambdas,
+                sol.J_joint,
+                sol.L_H,
                 self._contact_active,
-                self._contact_normal,
-                self._contact_point,
-                self._contact_bi,
-                self._contact_bj,
-                sc.X_world_R,
-                sc.X_world_r,
-                sc.X_up_R,
-                sc.X_up_r,
-                self._gpu_joint_type,
-                self._gpu_joint_axis,
-                self._gpu_parent_idx,
-                self._gpu_v_idx_start,
                 self._max_contacts,
-                s.nb,
+                self._max_rows,
                 s.nv,
+                sol.gen_impulse,
+                sol.chol_tmp,
             ],
-            outputs=[sol.body_impulses, sol.gen_impulse],
-        )
-
-        # 10. ABA trick: dqdot = H⁻¹ @ gen_impulse (gravity=0)
-        wp.launch(
-            batched_scale_array,
-            dim=N,
-            device=self._device,
-            inputs=[sol.gen_impulse, 1.0 / dt, s.nv],
-            outputs=[sol.dqdot],
-        )
-        sol.qdot_zero.zero_()
-        sol.ext_forces_zero.zero_()
-        sc.qddot.zero_()
-        wp.launch(
-            batched_aba,
-            dim=N,
-            device=self._device,
-            inputs=[
-                sc.q,
-                sol.qdot_zero,
-                sol.dqdot,
-                sol.ext_forces_zero,
-                self._gpu_joint_type,
-                self._gpu_joint_axis,
-                self._gpu_parent_idx,
-                self._gpu_q_idx_start,
-                self._gpu_q_idx_len,
-                self._gpu_v_idx_start,
-                self._gpu_v_idx_len,
-                self._gpu_inertia_mat,
-                0.0,
-                s.nb,  # gravity=0 for H⁻¹ trick
-                sc.X_up_R,
-                sc.X_up_r,
-                sc.aba_v,
-                sc.aba_c,
-                sc.aba_IA,
-                sc.aba_pA,
-                sc.aba_a,
-                sc.aba_U,
-                sc.aba_Dinv,
-                sc.aba_u,
-            ],
-            outputs=[sc.qddot],
-        )
-        wp.launch(
-            batched_scale_array,
-            dim=N,
-            device=self._device,
-            inputs=[sc.qddot, dt, s.nv],
             outputs=[sol.dqdot],
         )
 

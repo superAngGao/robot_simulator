@@ -161,28 +161,23 @@ class TestQuadrupedFreeFallGpuVsCpu:
 class TestQuadrupedContactGpuVsCpu:
     """GPU vs CPU for quadruped landing on ground — full contact pipeline."""
 
-    def test_base_settles_above_ground(self):
-        """GPU quadruped should settle to a stable height.
-
-        NOTE: GPU uses body-level Delassus which cannot couple contact forces
-        to revolute joints when leg offsets are collinear with the force
-        (Q29 — the RNEA cross product r × F = 0). This causes joints to
-        stay frozen and the base to settle ~120mm lower than CPU.
-        This is a known limitation, not a bug. Fix requires joint-space
-        Delassus on GPU (Q29).
-        """
+    def test_settling_height_matches_cpu(self):
+        """GPU settling height should match CPU within 2mm (Q29 fixed)."""
         model, _ = build_quadruped(contact=True)
         merged = merge_models(robots={"quad": model})
         q, qdot = merged.tree.default_state()
         q[6] = 0.45
 
+        q_cpu, _ = _run_cpu(merged, q, qdot, 5000)
         q_gpu, _ = _run_gpu(merged, q, qdot, 5000)
 
-        z_final = np.mean(q_gpu[-500:, 6])
-        # GPU settles lower (~0.30) than CPU (~0.42) due to Q29.
-        # Just verify it's above ground and stable.
-        assert z_final > 0.1, f"GPU base too low: z={z_final:.4f}"
-        assert z_final < 0.5, f"GPU base too high: z={z_final:.4f}"
+        z_cpu_final = np.mean(q_cpu[-500:, 6])
+        z_gpu_final = np.mean(q_gpu[-500:, 6])
+        diff_mm = abs(z_gpu_final - z_cpu_final) * 1000
+
+        assert diff_mm < 2.0, (
+            f"Settling height: GPU={z_gpu_final:.4f} CPU={z_cpu_final:.4f} diff={diff_mm:.1f}mm"
+        )
 
     def test_gpu_no_nan(self):
         """GPU must not produce NaN during quadruped landing."""
@@ -274,8 +269,7 @@ class TestQuadrupedLongHorizonGpu:
         assert np.all(np.isfinite(qdot_traj)), "NaN velocity in 10k-step ADMM"
         # Should settle
         z_final = np.mean(q_traj[-1000:, 6])
-        # Q29: GPU body-level Delassus settles lower than CPU (~0.27 vs 0.42)
-        assert 0.1 < z_final < 0.5, f"Unexpected final z={z_final:.4f}"
+        assert 0.38 < z_final < 0.46, f"Unexpected final z={z_final:.4f}"
 
     def test_10k_steps_pgs_stable(self):
         """Jacobi-PGS-SI solver: 10000 steps without NaN."""
