@@ -418,24 +418,39 @@ RNEA 回溯的子→父 Plücker 变换保持不变。
 场景：简易四足（13 body, 8 revolute, 8.4kg）从 z=0.45m 落地，ADMM solver, dt=2e-4。
 稳态 base z：我们 0.419749，MuJoCo 0.418893，差 856µm。
 
-**误差分解**：
+**验证结果**：Delassus A_nn、质量矩阵 H、接触 Jacobian J 三者完全一致（ratio=1.0）。
+差异全部来自 compliance 正则化 R 的计算方式不同。
 
-| 来源 | 贡献 | 说明 |
-|------|------|------|
-| 积分器差 | ~180µm | semi-implicit vs explicit Euler，free-fall 阶段累积 |
-| compliance 平衡点 | ~680µm | 两边穿透深度不同：我们 0.25mm vs MuJoCo 1.11mm |
+**R 的公式差异（根因）**：
 
-**compliance 平衡点差异**：
-- 平衡方程 `(A+R)f = k·d·depth + g`，其中 R=(1-d)/d·A, d=impedance(depth)
-- 我们：depth=0.25mm → d=0.906（solimp sigmoid 中间区）
-- MuJoCo：depth=1.11mm → d=0.95（solimp 饱和区）
-- 从 MuJoCo 稳态启动我们的 sim → 仍回到 z=0.419749（不是路径依赖）
-- 根因：solver 实现差异（dense Cholesky vs sparse LDL, direct vs CG 迭代）
-  导致同一 solimp 参数下收敛到不同的自洽平衡点
+| | 我们 (per-row) | MuJoCo (per-contact) |
+|---|---|---|
+| 公式 | `R_i = (1-d)/d × A_ii` | R = 常数（所有 condim 行共享） |
+| R 值 (法向) | 0.016 | 0.141 |
+| 穿透深度 | 0.25mm | 1.11mm |
+| 穿透是否依赖结构 | **否**（A 在平衡方程中抵消） | 是（∝ 1/A_nn） |
 
-**结论**：非 bug。两边都正确支撑重力、稳定收敛。0.86mm 差异可接受。
-**优先级**：P3（可观测但不影响训练）
-**潜在优化**：用线性 compliance（d=const）或更紧的 solimp_width 可缩小差异。
+**推导**（Todorov 2014, MuJoCo 论文）：
+
+设计目标：让 d ∈ [0,1] 控制约束满足比例 `a_i = d × rhs_i`。
+反推 R：`A_ii/(A_ii + R_i) = d` → `R_i = A_ii × (1-d)/d`。
+
+per-row R 代入后：`(A+R)_ii = A_ii/d`，穿透深度 = `(1-d)g/(kd²)`，
+A 被消掉 → 穿透不依赖机器人质量/结构，仅由 compliance 参数(d,k)决定。
+对刚体仿真，这是合理的——穿透是数值产物，应尽量小且一致。
+
+MuJoCo 实现与论文推导不同：实现用 per-contact 常数 R，论文推导是 per-row。
+per-contact R 让穿透 ∝ 有效质量，更适合模拟柔性接触面（solref/solimp 的双重用途）。
+
+**参考**：
+- Todorov (2014): per-row R 推导（我们的实现忠于此）
+- MuJoCo 实现：per-contact R（工程简化）
+- Levenberg-Marquardt：λ×diag(JᵀJ)（相同的 diagonal preconditioning 思路）
+- Bullet/ODE：常数 CFM（per-contact，不缩放）
+
+**结论**：非 bug，是建模选择差异。对刚体仿真，我们的 per-row 方案穿透更小(0.25 vs 1.1mm)、
+条件数更可控、忠于原始论文推导。不修改。
+**优先级**：P4（已充分理解，不影响功能）
 
 ---
 
