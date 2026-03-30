@@ -403,15 +403,20 @@ RNEA 回溯的子→父 Plücker 变换保持不变。
 **测试**：`test_q28_friction_divergence.py` 4 个测试（两球稳定性 + 单球角速度 + MuJoCo 精度回归）
 → Moved to REFLECTIONS.md.
 
-**Q29 — GPU ADMM body-level vs joint-space Delassus**
+**Q29 — GPU ADMM body-level vs joint-space Delassus** ✅ RESOLVED (2026-03-30)
 
-当前 GPU ADMM 使用 body-level Delassus W = Σ J_body_k M_k⁻¹ J_body_k^T，
-对 FreeJoint 自由体精确（匹配 MuJoCo 到 0.3µm），对铰接体近似。
+**问题**：body-level Delassus 无法将接触力耦合到铰接关节。当腿段偏移与接触力
+共线时（r × F = 0），RNEA 回溯给关节零力矩 → 关节冻结 → 四足稳态高度差 120mm。
 
-- 铰接体精度影响：未量化（需要四足机器人测试）
-- 升级方案：计算 joint-space Jacobian J (n_rows × nv) 和 H = CRBA(q)，
-  然后 A = J H⁻¹ Jᵀ（需要新 kernel）
-- **触发条件**：RL 训练中铰接体接触精度不足时
+**修复**：用 CRBA+Cholesky 全局替换 ABA+body-level 管线。新流程：
+  1. CRBA → H, RNEA → C, Cholesky(H) → L（一次分解）
+  2. qacc_smooth = L⁻ᵀ L⁻¹(tau-C)（复用 L，替代 ABA）
+  3. W = J L⁻ᵀ L⁻¹ Jᵀ（joint-space Delassus，复用 L）
+  4. dqdot = L⁻ᵀ L⁻¹(Jᵀλ)（复用 L，替代 RNEA backward + ABA H⁻¹）
+
+**结果**：GPU 四足 z=0.4198 vs CPU z=0.4197（0.1mm 差距，之前 120mm）。
+FK 从 3 次降到 1 次，ABA 完全消除。644 测试通过。
+→ Moved to REFLECTIONS.md.
 
 **Q30 — CPU ADMM vs MuJoCo 稳态穿透深度差 0.86mm** (2026-03-30)
 

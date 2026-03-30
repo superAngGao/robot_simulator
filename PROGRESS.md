@@ -1,6 +1,6 @@
 # Robot Simulator — Progress Tracker
 
-> Last updated: 2026-03-30 (session 12)
+> Last updated: 2026-03-30 (session 13)
 > Reference plan: [PLAN.md](./PLAN.md)
 
 ---
@@ -10,7 +10,7 @@
 | Phase | 状态 | 完成度 |
 |-------|------|--------|
 | Phase 1 — Basic Physics + Simple Rendering | ✅ 完成（含修复） | 100% |
-| Phase 2 — GPU Acceleration + Parallel Envs | 🔄 进行中 | 99% (2a-2k ✅, 剩余: 多体 ADMM 稳定性 Q28) |
+| Phase 2 — GPU Acceleration + Parallel Envs | ✅ 完成 | 100% (Q28+Q29 resolved) |
 | Phase 3 — High-Fidelity Rendering          | ⬜ 未开始 | 0% |
 | Phase 4 — Domain Randomization             | ⬜ 未开始 | 0% |
 | Phase 5 — Sim-to-Real Validation           | ⬜ 未开始 | 0% |
@@ -422,32 +422,46 @@ CUDA 性能最优原因：全物理步融合为单 kernel launch，零 inter-ker
 2. rhs_const = -v_free + dt·(...) → 动态太硬，44x 过强（`-v_free` 主导了 compliance）
 3. rhs_const = dt·a_ref(v_c) - (v_free - v_c) → **精确匹配**（需要独立的 v_c kernel）
 
-**已知限制**：多体同时接触发散（Q28），body-level vs joint-space Delassus 近似（Q29）
+**Phase 2 总测试数：644（全部通过）**
 
-**Phase 2 总测试数：616（全部通过）**
-
-**Phase 2 实现总览（2026-03-30 session 12 更新）：**
+**Phase 2 实现总览（2026-03-30 session 13 更新）：**
 
 | 类别 | 实现数 | 说明 |
 |------|--------|------|
-| 前向动力学 | 10 | ABA×5后端 + CRBA×3(mono/grouped/batched) + Grouped Schur + CUDA CRBA-TC |
-| 接触求解器 | **7** | PGS + **PGS-SI** + Jacobi PGS + **ADMM-C** + ADMM + **ADMMQPSolver** + **GPU ADMM** |
+| 前向动力学 | 10 | ABA×5后端 + **CRBA+Cholesky GPU**(Q29) + CRBA×3 + Grouped Schur + CUDA CRBA-TC |
+| 接触求解器 | **7** | PGS + PGS-SI + Jacobi PGS + ADMM-C + ADMM + ADMMQPSolver + GPU ADMM |
 | 接触维度 | condim 1/3/4/6 | MuJoCo 风格，variable rows + per-condim 锥投影 |
-| GPU 碰撞 | **解析 + 球近似** | 4 shape × ground + 4 body-body 解析 @wp.func + fallback 球近似 |
-| CPU 碰撞 | GJK/EPA + 球近似 | ground: GJK/EPA（精确），body-body: 球近似 |
+| GPU Delassus | **joint-space** | W = J H⁻¹ Jᵀ via CRBA+Cholesky（替代 body-level） |
+| GPU 碰撞 | 解析 + 球近似 | 4 shape × ground + 4 body-body 解析 @wp.func |
+| CPU 碰撞 | GJK/EPA + 球近似 | ground: GJK/EPA，body-body: 球近似 |
 | 碰撞形状 | 5 | Box + Sphere + Cylinder + Capsule + Mesh(stub) |
 | 碰撞过滤 | 1 | CollisionFilter（bitmask + explicit exclude + auto parent-child） |
-| 场景管理 | 1 | **Scene + BodyRegistry + StaticGeometry + 多机器人** |
+| 场景管理 | 1 | Scene + BodyRegistry + StaticGeometry + 多机器人 |
 | GPU 后端 | 4 | NumPy + Warp + TileLang + CUDA |
-| Reference tests | 4 | 解析LCP + Bullet轨迹 + 复杂场景 + **PGS-SI/ADMM-C 验证** |
+| **验证测试** | **32** | CPU vs MuJoCo (单/双摆+四足+两四足碰撞) + GPU vs CPU (四足) |
 
-**已完成（Q21 #1 + #2）：**
-- [x] PGS + split impulse — `PGSSplitImpulseSolver`（解决 PGS 发散）
-- [x] ADMM + 合规接触 + 自适应ρ（`ADMMContactSolver` 新参数）
+### Session 13 — Q28/Q29 修复 + 端到端验证 (2026-03-30)
 
-**下一步**：
-- [ ] Q28：多体同时接触 ADMM 发散修复
-- [ ] Q29：joint-space Delassus 升级（铰接体精度）
+**Q28 修复**：`batched_impulse_to_gen_v2` 力矩双重计算（Plücker + 手动 cross）。
+改用纯旋转。同时修复 Q25（摩擦力矩 2x → 1x）。
+
+**Q29 修复**：GPU pipeline 从 ABA+body-level Delassus 全面切换到 CRBA+Cholesky+joint-space Delassus。
+  - 新 kernel: `crba_kernels.py`（CRBA+RNEA+Cholesky、contact Jacobian、W build、impulse apply）
+  - 一次 Cholesky(H) 三重复用：smooth dynamics + Delassus + impulse
+  - FK 从 3 次降到 1 次，ABA 完全消除
+  - 四足 GPU z=0.4198 vs CPU z=0.4197（0.1mm，之前 120mm）
+
+**测试重构**：49 个测试文件迁移到 5 层目录（unit/integration/gpu/reference/validation）。
+
+**验证测试**（32 个新测试）：
+  - CPU 纯动力学 vs MuJoCo：单摆/双摆/四足自由落体（13 tests，关节角 atol < 1e-3）
+  - CPU 接触 vs MuJoCo：四足落地 ADMM/PGS（12 tests，稳态差 0.86mm）
+  - 两四足碰撞 vs MuJoCo：26 bodies, 45 collision pairs（7 tests）
+  - GPU vs CPU 四足：自由落体 + 接触 + 10k 步稳定性（11 tests）
+
+**Q30 分析**：CPU vs MuJoCo 0.86mm 差异来自 compliance R 公式差异（per-row vs per-contact），
+源于 Todorov 2014 论文推导 vs MuJoCo 实现差异。我们的 per-row R 穿透更小（0.25 vs 1.1mm），
+对刚体仿真更优。不修改。
 
 ---
 
