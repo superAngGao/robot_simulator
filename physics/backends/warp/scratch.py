@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import warp as wp
 
-from .spatial_warp import mat66f, vec6f
-
 
 class ABABatchScratch:
     """Pre-allocated GPU buffers for batched ABA + FK.
@@ -25,9 +23,7 @@ class ABABatchScratch:
         device : Warp device string.
     """
 
-    def __init__(
-        self, N: int, nb: int, nq: int, nv: int, nc: int, device: str = "cuda:0"
-    ) -> None:
+    def __init__(self, N: int, nb: int, nq: int, nv: int, nc: int, device: str = "cuda:0") -> None:
         self.N = N
         self.nb = nb
         self.nq = nq
@@ -73,3 +69,9 @@ class ABABatchScratch:
         # -- New state (after integration) --
         self.q_new = wp.zeros((N, nq), dtype=wp.float32, device=device)
         self.qdot_new = wp.zeros((N, nv), dtype=wp.float32, device=device)
+
+        # -- CRBA scratch (Q29 joint-space Delassus pipeline) --
+        self.IC = wp.zeros((N, nb, 6, 6), dtype=wp.float32, device=device)
+        self.rnea_v = wp.zeros((N, nb, 6), dtype=wp.float32, device=device)
+        self.rnea_a = wp.zeros((N, nb, 6), dtype=wp.float32, device=device)
+        self.rnea_f = wp.zeros((N, nb, 6), dtype=wp.float32, device=device)

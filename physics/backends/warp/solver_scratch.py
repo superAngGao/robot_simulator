@@ -76,6 +76,15 @@ class SolverScratch:
         # Which body each row belongs to
         self.row_body_idx = wp.zeros((N, max_rows), dtype=wp.int32, device=device)
 
+        # -- Joint-space Delassus pipeline (Q29) --
+        self.H = wp.zeros((N, nv, nv), dtype=wp.float32, device=device)
+        self.L_H = wp.zeros((N, nv, nv), dtype=wp.float32, device=device)
+        self.C_bias = wp.zeros((N, nv), dtype=wp.float32, device=device)
+        self.qacc_smooth = wp.zeros((N, nv), dtype=wp.float32, device=device)
+        self.J_joint = wp.zeros((N, max_rows, nv), dtype=wp.float32, device=device)
+        self.HinvJt = wp.zeros((N, nv, max_rows), dtype=wp.float32, device=device)
+        self.chol_tmp = wp.zeros((N, nv), dtype=wp.float32, device=device)
+
         # -- ADMM solver arrays (allocated only when solver="admm") --
         if solver == "admm":
             # Current constraint velocity v_c = J @ qdot (before prediction)
