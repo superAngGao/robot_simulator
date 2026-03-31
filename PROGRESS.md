@@ -1,6 +1,6 @@
 # Robot Simulator — Progress Tracker
 
-> Last updated: 2026-03-30 (session 13)
+> Last updated: 2026-03-31 (session 14)
 > Reference plan: [PLAN.md](./PLAN.md)
 
 ---
@@ -462,6 +462,48 @@ CUDA 性能最优原因：全物理步融合为单 kernel launch，零 inter-ker
 **Q30 分析**：CPU vs MuJoCo 0.86mm 差异来自 compliance R 公式差异（per-row vs per-contact），
 源于 Todorov 2014 论文推导 vs MuJoCo 实现差异。我们的 per-row R 穿透更小（0.25 vs 1.1mm），
 对刚体仿真更优。不修改。
+
+### Session 14 — 遗留清理 + 求解器重构 + 精度排查 (2026-03-31)
+
+**遗留代码清理：**
+- [x] `examples/simple_quadruped.py` 迁移到 Scene API（修复失效导入 + 旧 RobotModel API）
+- [x] `test_self_collision.py` 添加 docstring 说明（AABBSelfCollision 仍被 GPU backends 使用）
+
+**求解器调度重构（方案 A — 保守清理）：**
+- [x] 删除 `ADMMContactSolver` (physics/solvers/admm.py) — 死代码，GPU 用 Warp kernel
+- [x] 删除 `JacobiPGSContactSolver` (physics/solvers/jacobi_pgs.py) — 死代码，GPU 用 Warp kernel
+- [x] 重命名 `mujoco_qp.py` → `admm_qp.py`
+- [x] Simulator 默认求解器从 PGS 改为 PGS-SI（与 CpuEngine 一致）
+- [x] 删除 25 个死代码测试，更新跨求解器一致性测试
+
+**GPU vs CPU 精度排查：**
+
+之前报告的 "GPU vs CPU 0.176mm 差异" 经排查确认**不是精度问题**：
+
+| 对比 | 差异 | 根因 |
+|------|------|------|
+| CpuEngine vs GpuEngine（同一 MergedModel 路径） | 0.001 mm | float32 精度正常 |
+| Simulator vs Engine（不同求解器配置） | 0.175 mm | ADMMContactSolver vs ADMMQPSolver 的 compliance 不同 |
+| 同一 ADMMQPSolver，Simulator vs CpuEngine | 0.000 mm | 完全一致 |
+
+CPU f32 截断实验：CPU f64 vs CPU f32 只差 0.008mm，进一步确认差异来自求解器，非精度。
+
+**清理后求解器矩阵：**
+
+| 求解器 | 平台 | 文件 |
+|--------|------|------|
+| ADMMQPSolver | CPU (precision) | `solvers/admm_qp.py` |
+| PGSSplitImpulseSolver | CPU (RL) | `solvers/pgs_split_impulse.py` |
+| GPU ADMM kernel | GPU (precision) | `backends/warp/admm_kernels.py` |
+| GPU Jacobi-PGS-SI kernel | GPU (RL, 默认) | `backends/warp/solver_kernels.py` |
+
+**文档更新：**
+- [x] `repo_list.md` 全面重写（从 Phase 1 的 5 模块更新到 30+ 模块完整 API 参考）
+- [x] `MANIFEST.md` 修正文件名和测试数
+- [x] `PLAN.md` 求解器矩阵更新
+- [x] `PROGRESS.md` + `REFLECTIONS.md` 补 session 14
+
+**Phase 2 总测试数：619（全部通过，较 session 13 的 644 减少 25 个死代码测试）**
 
 ---
 

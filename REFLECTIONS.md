@@ -5,6 +5,53 @@ Updated at the end of each development session.
 
 ---
 
+## 2026-03-31 (session 14) — 遗留清理 + 求解器重构 + 精度排查
+
+### 求解器调度混乱的根因与修复
+
+**问题发现**：排查 "GPU vs CPU 0.176mm 差异" 时发现差异不是精度问题，而是
+之前的对比实验无意中用了两个不同的 ADMM 求解器——`ADMMContactSolver`（velocity-level，
+stiffness/damping compliance）和 `ADMMQPSolver`（acceleration-level，solref/solimp）。
+
+**根因分析**：代码库中有 7 个求解器类，但只有 4 个被生产代码使用：
+- `ADMMContactSolver` 和 `JacobiPGSContactSolver` 最初为 GPU 预留，但 GPU 最终
+  用 Warp kernel 直接实现（`admm_kernels.py` 和 `solver_kernels.py`），导致这两个类
+  成为死代码，却仍从 `__init__.py` 导出，容易被测试和对比实验误用。
+- `Simulator` 默认用 PGS（max_iter=30），而 `CpuEngine` 默认用 PGS-SI（max_iter=60），
+  同一个求解器 ABC 下两个默认行为不一致。
+
+**修复（方案 A，保守清理）**：
+1. 删除 `admm.py` 和 `jacobi_pgs.py`（-688 行）
+2. `mujoco_qp.py` → `admm_qp.py`（命名更准确）
+3. Simulator 默认改为 PGS-SI（与 CpuEngine 一致）
+
+**决策理由**：
+- 不做方案 B（GPU 走 ConstraintSolver ABC）——GPU kernel 是高度融合的 Warp 代码，
+  强行抽象成 ABC 接口会增加复杂度，没有实际收益。GPU dispatch 继续用字符串。
+- 保留 `MuJoCoStyleSolver` 别名——向后兼容，最终会在 2.0 移除。
+
+### GPU vs CPU 精度验证结论
+
+| 对比 | 差异 | 结论 |
+|------|------|------|
+| CpuEngine vs GpuEngine（同算法） | 0.001 mm / 5000步 | float32 精度正常，无 bug |
+| CPU f64 vs CPU f32 截断 | 0.008 mm | 精度损失极小 |
+| 纯动力学（无接触）GPU vs CPU | 0.21 µm / 1000步 | 完全一致 |
+
+**教训**：对比实验必须确保两条路径用完全相同的求解器实例，否则 compliance 模型差异
+会被误解为精度问题。删除死代码是最好的预防措施。
+
+### 文档债务清理
+
+`repo_list.md` 自 session 1 (2026-03-16) 以来从未更新，只覆盖 Phase 1 的 5 个模块。
+全面重写后覆盖 30+ 模块的完整 API 参考。
+
+**教训**：CLAUDE.md 的 "After Every Change" 规则要求更新 PROGRESS.md 和 REFLECTIONS.md，
+但没有要求更新 repo_list.md。应在 MANIFEST.md 维护规则中加入 repo_list.md——
+当新增模块或删除模块时更新。
+
+---
+
 ## 2026-03-26 (session 9) — 力系统重构设计 + ADMM 收敛修复
 
 ### 力系统重构：ForceState + DynamicsCache + StepPipeline

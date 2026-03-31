@@ -378,11 +378,12 @@ Phase 2g-3: 分组 CRBA + 层次 Schur（⬜ 潜在优化）
 - 修改：`simulator.py`, `robot_tree.py`, `integrator.py`, `__init__.py`
 - 废弃：`implicit_contact_step.py`, `contact.py` (LCP/Null/Penalty ContactModel)
 
-**求解器层级**：
+**求解器层级**（session 14 清理后）：
 - 公开 API: `PGSSplitImpulseSolver` (CPU RL), `ADMMQPSolver` (CPU precision)
 - 内部: `PGSContactSolver` (PGS-SI 委托)
-- GPU 预留: `JacobiPGSContactSolver`, `ADMMContactSolver`
+- GPU: Warp kernel 直接实现 (solver_kernels.py + admm_kernels.py)
 - 废弃: `LCPContactModel`, `PenaltyContactModel`, `NullContactModel`
+- 已删除: `ADMMContactSolver`, `JacobiPGSContactSolver` (死代码，session 14)
 
 #### 2i — GPU solver development ⬜
 
@@ -393,12 +394,14 @@ Phase 2g-3: 分组 CRBA + 层次 Schur（⬜ 潜在优化）
 | **Jacobi-PGS-SI** | Jacobi PGS + split impulse | 全行并行，无数据依赖 | 大规模 RL (N=1000+) |
 | **ADMM-TC** | ADMM-QP + tensor core batched Cholesky | A=(M+ρJᵀJ) 预分解，迭代内三角求解 | 高精度 GPU 仿真 |
 
-Jacobi-PGS-SI (GPU fast path):
-- 基于现有 `JacobiPGSContactSolver`，加入 split impulse（位置修正独立，不走 force chain）
-- 目标：N=4096 envs, 30 contacts/env, <1ms per step
+Jacobi-PGS-SI (GPU fast path): ✅ 已实现
+- Warp kernel `solver_kernels.py`，全行并行 + split impulse
+- GpuEngine `solver="jacobi_pgs_si"` (默认)
 
-ADMM-TC (GPU precision path):
-- 基于现有 `ADMMQPSolver`，Cholesky 分解走 tensor core
+ADMM-TC (GPU precision path): ✅ 已实现
+- Warp kernel `admm_kernels.py`，in-kernel scalar Cholesky + 锥投影
+- GpuEngine `solver="admm"`
+- 基于 `ADMMQPSolver` 的 solref/solimp compliance 模型
 - `A = H + ρJᵀJ` 每步分解一次（N 个独立矩阵 batched Cholesky）
 - 迭代内只做三角求解 `L⁻ᵀL⁻¹rhs`（O(nv²) per env）
 - Phase 2g 已验证 batched Cholesky 在 GPU 上可行
