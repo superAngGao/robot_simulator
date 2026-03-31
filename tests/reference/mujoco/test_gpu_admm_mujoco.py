@@ -122,7 +122,7 @@ def _cpu_admm_ball_drop(n_steps, z0=0.3, dt=DT):
     from physics.geometry import SphereShape
     from physics.gjk_epa import ground_contact_query
     from physics.implicit_contact_step import ImplicitContactStep
-    from physics.solvers.mujoco_qp import MuJoCoStyleSolver
+    from physics.solvers.admm_qp import MuJoCoStyleSolver
     from physics.solvers.pgs_solver import ContactConstraint
 
     tree = RobotTreeNumpy(gravity=G)

@@ -26,7 +26,8 @@ from collision_pipeline import CollisionPipeline
 from physics.constraint_solvers import wrap_solver
 from physics.dynamics_cache import DynamicsCache
 from physics.force_source import PassiveForceSource
-from physics.solvers.pgs_solver import ContactConstraint, PGSContactSolver
+from physics.solvers.pgs_solver import ContactConstraint
+from physics.solvers.pgs_split_impulse import PGSSplitImpulseSolver
 from physics.spatial import SpatialTransform
 from physics.step_pipeline import StepPipeline
 from robot.model import RobotModel
@@ -46,7 +47,7 @@ class Simulator:
     Args:
         scene_or_model : Built Scene or single RobotModel (auto-wrapped).
         integrator     : Any Integrator instance (for dt extraction).
-        solver         : Contact solver. If None, uses PGS(max_iter=30).
+        solver         : Contact solver. If None, uses PGS-SI (split impulse).
         engine         : PhysicsEngine instance (CpuEngine or GpuEngine).
                          If provided, uses MergedModel path instead of legacy.
     """
@@ -74,8 +75,8 @@ class Simulator:
             self._merged = engine.merged
 
         # Legacy mode (per-robot StepPipeline)
-        kw = self.scene.solver_kwargs if self.scene.solver_kwargs else {"max_iter": 30}
-        self.solver = solver or PGSContactSolver(**kw)
+        kw = self.scene.solver_kwargs if self.scene.solver_kwargs else {}
+        self.solver = solver or PGSSplitImpulseSolver(max_iter=60, erp=0.8, slop=0.005, **kw)
         self.collision_pipeline = CollisionPipeline(self.scene)
         wrapped_solver = wrap_solver(self.solver)
         self._pipeline = StepPipeline(

@@ -106,7 +106,7 @@ class VelocityLevelAdapter(ConstraintSolver):
 
 def wrap_solver(solver) -> ConstraintSolver:
     """Auto-wrap a legacy solver into the ConstraintSolver interface."""
-    from .solvers.mujoco_qp import ADMMQPSolver
+    from .solvers.admm_qp import ADMMQPSolver
 
     if isinstance(solver, ConstraintSolver):
         return solver

@@ -48,7 +48,7 @@ except ImportError:
 
 try:
     from physics.cpu_engine import CpuEngine
-    from physics.solvers.mujoco_qp import ADMMQPSolver
+    from physics.solvers.admm_qp import ADMMQPSolver
 
     HAS_ENGINE = True
 except Exception:

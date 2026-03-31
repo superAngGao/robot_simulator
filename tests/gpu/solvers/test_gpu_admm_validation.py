@@ -228,7 +228,7 @@ class TestImpedanceFunction:
     def test_impedance_values(self):
         """Compare GPU and CPU impedance for several depth values."""
         try:
-            from physics.solvers.mujoco_qp import ADMMQPSolver
+            from physics.solvers.admm_qp import ADMMQPSolver
         except ImportError:
             pytest.skip("ADMMQPSolver not available")
 

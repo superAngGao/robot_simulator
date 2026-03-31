@@ -37,8 +37,6 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from physics.solvers.admm import ADMMContactSolver
-from physics.solvers.jacobi_pgs import JacobiPGSContactSolver
 from physics.solvers.pgs_solver import ContactConstraint, PGSContactSolver
 from physics.spatial import SpatialTransform
 
@@ -79,8 +77,6 @@ def _all_solvers():
     """Return (name, solver) pairs for parametrized testing."""
     return [
         ("PGS", PGSContactSolver(max_iter=50, erp=0.0, cfm=1e-8)),
-        ("Jacobi", JacobiPGSContactSolver(max_iter=200, omega=0.7, erp=0.0, cfm=1e-8)),
-        ("ADMM", ADMMContactSolver(max_iter=100, rho=1000.0, erp=0.0, cfm=1e-8)),
     ]
 
 
@@ -249,48 +245,3 @@ class TestSpinSaturated:
             mu_spin=0.001,
         )
         assert abs(v_after[5] - 49.5) < 0.5, f"omega_z={v_after[5]:.2f}, expected ~49.5 (saturated)"
-
-    def test_jacobi_spin_saturated(self):
-        solver = JacobiPGSContactSolver(max_iter=200, omega=0.7, erp=0.0, cfm=1e-8)
-        v_after, _ = _solve_and_get_velocity(
-            solver,
-            np.array([0, 0, -2.0, 0, 0, 50.0]),
-            condim=4,
-            mu_spin=0.001,
-        )
-        assert abs(v_after[5] - 49.5) < 0.5
-
-
-# ---------------------------------------------------------------------------
-# Test 6: PGS == Jacobi PGS (internal consistency)
-# ---------------------------------------------------------------------------
-
-
-class TestPGSJacobiConsistency:
-    """PGS and Jacobi PGS solve the same LCP → must converge to same solution.
-
-    Reference: internal cross-validation (not external).
-    Rationale: Jacobi PGS is mathematically equivalent to GS-PGS with
-    sufficient iterations. Agreement validates the parallel implementation
-    without needing an external reference.
-    """
-
-    @pytest.mark.parametrize(
-        "v_init",
-        [
-            np.array([0, 0, -2.0, 0, 0, 0]),
-            np.array([2.0, 0, -2.0, 0, 0, 0]),
-            np.array([1.0, 1.0, -3.0, 2.0, -1.0, 4.0]),
-        ],
-        ids=["vertical", "lateral", "combined"],
-    )
-    def test_velocity_agreement(self, v_init):
-        pgs = PGSContactSolver(max_iter=50, erp=0.0, cfm=1e-8)
-        jac = JacobiPGSContactSolver(max_iter=300, omega=0.7, erp=0.0, cfm=1e-8)
-
-        v_pgs, _ = _solve_and_get_velocity(pgs, v_init, condim=3)
-        v_jac, _ = _solve_and_get_velocity(jac, v_init, condim=3)
-
-        np.testing.assert_allclose(
-            v_pgs, v_jac, atol=1e-2, err_msg=f"PGS vs Jacobi mismatch for v_init={v_init}"
-        )

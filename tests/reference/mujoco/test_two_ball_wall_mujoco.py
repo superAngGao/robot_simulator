@@ -49,7 +49,7 @@ except Exception:
     HAS_ENGINE = False
 
 try:
-    from physics.solvers.mujoco_qp import ADMMQPSolver
+    from physics.solvers.admm_qp import ADMMQPSolver
 
     HAS_ADMM = HAS_ENGINE  # needs CpuEngine too
 except Exception:

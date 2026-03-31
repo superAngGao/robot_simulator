@@ -56,7 +56,7 @@ class ImplicitContactStep(Integrator):
     def __init__(self, dt: float, solver) -> None:
         super().__init__(dt)
         self.solver = solver
-        from .solvers.mujoco_qp import ADMMQPSolver
+        from .solvers.admm_qp import ADMMQPSolver
 
         self._accel_level = isinstance(solver, ADMMQPSolver)
 

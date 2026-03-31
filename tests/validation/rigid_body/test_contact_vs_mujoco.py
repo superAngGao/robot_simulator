@@ -37,7 +37,7 @@ except ImportError:
 
 try:
     from physics.cpu_engine import CpuEngine
-    from physics.solvers.mujoco_qp import ADMMQPSolver
+    from physics.solvers.admm_qp import ADMMQPSolver
     from physics.solvers.pgs_split_impulse import PGSSplitImpulseSolver
 
     HAS_ENGINE = True

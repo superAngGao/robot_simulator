@@ -27,7 +27,7 @@ from ..models import DT, build_quadruped
 try:
     from physics.cpu_engine import CpuEngine
     from physics.gpu_engine import GpuEngine
-    from physics.solvers.mujoco_qp import ADMMQPSolver
+    from physics.solvers.admm_qp import ADMMQPSolver
 
     HAS_ENGINES = True
 except Exception:

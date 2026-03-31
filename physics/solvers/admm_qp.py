@@ -12,7 +12,7 @@ where:
     a_u_c = J @ a_u              (unconstrained constraint-space acceleration)
     a_ref = -b*v_c - k*d(r)*r   (spring-damper reference acceleration)
 
-Key differences from the velocity-level ADMM (ADMMContactSolver):
+Key properties:
     1. Acceleration level — forces, not impulses
     2. Joint-space A via CRBA — captures inertia coupling
     3. R regularization — QP strictly convex, unique stable equilibrium
@@ -20,7 +20,7 @@ Key differences from the velocity-level ADMM (ADMMContactSolver):
     5. Warmstarting — reuses previous solution for faster convergence
     6. Adaptive rho — residual balancing per Boyd et al. (2011) §3.4.1
 
-GPU lineage: ADMMQPSolver (CPU) → ADMM-TC (GPU tensor core batched Cholesky).
+GPU lineage: ADMMQPSolver (CPU) → GPU ADMM kernel (physics/backends/warp/admm_kernels.py).
 
 References:
     Todorov (2014) — Convex and analytically-invertible dynamics

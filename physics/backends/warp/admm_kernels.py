@@ -13,7 +13,7 @@ The kernel reuses the Delassus matrix W and free velocity v_free from
 batched_build_W_vfree_v2 (step 7), and outputs lambdas consumed by
 batched_impulse_to_gen_v2 (step 9).
 
-Reference: physics/solvers/mujoco_qp.py (CPU ADMMQPSolver)
+Reference: physics/solvers/admm_qp.py (CPU ADMMQPSolver)
 """
 
 import warp as wp
@@ -23,7 +23,7 @@ CONDIM = wp.constant(3)
 
 # ---------------------------------------------------------------------------
 # Helper: MuJoCo piecewise power-law sigmoid impedance
-# Ref: mujoco_qp.py:274-295, MuJoCo engine_core_constraint.c
+# Ref: admm_qp.py:274-295, MuJoCo engine_core_constraint.c
 # ---------------------------------------------------------------------------
 @wp.func
 def _impedance(

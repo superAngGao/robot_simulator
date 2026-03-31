@@ -24,7 +24,6 @@ import pytest
 from physics.integrator import SemiImplicitEuler
 from physics.joint import FreeJoint
 from physics.robot_tree import Body, RobotTreeNumpy
-from physics.solvers.admm import ADMMContactSolver
 from physics.solvers.pgs_solver import ContactConstraint, PGSContactSolver
 from physics.solvers.pgs_split_impulse import PGSSplitImpulseSolver
 from physics.spatial import SpatialInertia, SpatialTransform
@@ -368,143 +367,8 @@ class TestPositionCorrections:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestADMMCompliantNormal:
-    """ADMM-C normal collision: compliant contact should still arrest velocity."""
-
-    def test_vz_near_zero(self):
-        solver = ADMMContactSolver(
-            max_iter=100,
-            rho=1000.0,
-            cfm=1e-8,
-            contact_stiffness=10000.0,
-        )
-        v_after, _ = _solve_and_get_velocity(solver, np.array([0, 0, -2.0, 0, 0, 0]))
-        # Compliant with high stiffness: v_z should be near 0
-        assert abs(v_after[2]) < 0.5, f"ADMM-C vz={v_after[2]:.4f}, expected near 0"
-
-    def test_compliant_softer_than_hard(self):
-        """Lower stiffness produces larger residual velocity (softer contact)."""
-        hard = ADMMContactSolver(max_iter=100, rho=1000.0, erp=0.0, cfm=1e-8)
-        soft = ADMMContactSolver(
-            max_iter=100,
-            rho=1000.0,
-            cfm=1e-8,
-            contact_stiffness=50.0,  # very low stiffness
-            contact_damping=5.0,
-        )
-        v_init = np.array([0, 0, -2.0, 0, 0, 0])
-        v_hard, _ = _solve_and_get_velocity(hard, v_init)
-        v_soft, _ = _solve_and_get_velocity(soft, v_init)
-
-        # Soft contact should leave more residual velocity (less correction)
-        assert abs(v_soft[2]) > abs(v_hard[2]) - 0.01, f"soft vz={v_soft[2]:.4f}, hard vz={v_hard[2]:.4f}"
-
-    def test_high_stiffness_approaches_hard(self):
-        """Very high stiffness compliant contact approaches hard contact."""
-        hard = ADMMContactSolver(max_iter=100, rho=1000.0, erp=0.0, cfm=1e-8)
-        stiff = ADMMContactSolver(
-            max_iter=100,
-            rho=1000.0,
-            cfm=1e-8,
-            contact_stiffness=1e8,  # very stiff
-        )
-        v_init = np.array([0, 0, -2.0, 0, 0, 0])
-        v_hard, _ = _solve_and_get_velocity(hard, v_init)
-        v_stiff, _ = _solve_and_get_velocity(stiff, v_init)
-
-        np.testing.assert_allclose(v_hard[:3], v_stiff[:3], atol=0.5)
-
-
-class TestADMMCompliantFriction:
-    """ADMM-C friction: compliant contact should still handle friction."""
-
-    def test_friction_sticking(self):
-        solver = ADMMContactSolver(
-            max_iter=100,
-            rho=1000.0,
-            cfm=1e-8,
-            contact_stiffness=10000.0,
-        )
-        v_after, _ = _solve_and_get_velocity(solver, np.array([2.0, 0, -2.0, 0, 0, 0]))
-        v_contact_x = v_after[0] + (-0.1) * v_after[4]
-        assert abs(v_contact_x) < 0.2, f"ADMM-C contact vx={v_contact_x:.4f}"
-
-
-class TestADMMCompliantNoDivergence:
-    """ADMM-C should NOT diverge on the ball-wall scenario."""
-
-    def test_admm_c_ball_wall_bounded(self):
-        solver = ADMMContactSolver(
-            max_iter=50,
-            rho=100.0,
-            cfm=1e-4,
-            contact_stiffness=5000.0,
-        )
-        _, _, vx, vz = _sim_ball_wall(solver, n_steps=300)
-        max_speed = max(np.max(np.abs(vx)), np.max(np.abs(vz)))
-        assert max_speed < 50.0, f"ADMM-C diverged: max speed = {max_speed:.1f} m/s"
-
-
 # ═══════════════════════════════════════════════════════════════════════════
-# 5. ADMM Adaptive Rho
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class TestAdaptiveRho:
-    """Adaptive rho should converge for the same or fewer iterations."""
-
-    def test_adaptive_converges(self):
-        """Adaptive rho should solve without error."""
-        solver = ADMMContactSolver(
-            max_iter=100,
-            rho=0.1,
-            cfm=1e-8,
-            adaptive_rho=True,
-            rho_scale=10.0,
-            rho_factor=2.0,
-        )
-        v_after, _ = _solve_and_get_velocity(solver, np.array([0, 0, -2.0, 0, 0, 0]))
-        assert abs(v_after[2]) < 0.5, f"Adaptive ADMM vz={v_after[2]:.4f}"
-
-    def test_bad_initial_rho_rescued(self):
-        """Even with very bad initial rho, adaptive converges better than fixed."""
-        adaptive = ADMMContactSolver(
-            max_iter=300,
-            rho=0.001,
-            cfm=1e-8,
-            adaptive_rho=True,
-            rho_factor=4.0,
-        )
-        fixed = ADMMContactSolver(
-            max_iter=300,
-            rho=0.001,
-            cfm=1e-8,
-            adaptive_rho=False,
-        )
-        v_init = np.array([0, 0, -2.0, 0, 0, 0])
-        v_adaptive, _ = _solve_and_get_velocity(adaptive, v_init)
-        v_fixed, _ = _solve_and_get_velocity(fixed, v_init)
-
-        # Adaptive should do strictly better than fixed with bad rho
-        assert abs(v_adaptive[2]) < abs(v_fixed[2]), (
-            f"adaptive vz={v_adaptive[2]:.4f}, fixed vz={v_fixed[2]:.4f}"
-        )
-
-    def test_adaptive_compliant_combined(self):
-        """Adaptive rho + compliant contact should work together."""
-        solver = ADMMContactSolver(
-            max_iter=100,
-            rho=10.0,
-            cfm=1e-8,
-            contact_stiffness=10000.0,
-            adaptive_rho=True,
-        )
-        v_after, _ = _solve_and_get_velocity(solver, np.array([0, 0, -2.0, 0, 0, 0]))
-        assert abs(v_after[2]) < 0.5, f"vz={v_after[2]:.4f}"
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 6. Cross-Solver Consistency
+# 5. Cross-Solver Consistency
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -536,16 +400,6 @@ class TestCrossSolverConsistency:
         solvers = [
             ("PGS", PGSContactSolver(max_iter=50, erp=0.0, cfm=1e-8)),
             ("PGS-SI", PGSSplitImpulseSolver(max_iter=50, cfm=1e-8)),
-            ("ADMM", ADMMContactSolver(max_iter=100, rho=1000.0, erp=0.0, cfm=1e-8)),
-            (
-                "ADMM-C",
-                ADMMContactSolver(
-                    max_iter=100,
-                    rho=1000.0,
-                    cfm=1e-8,
-                    contact_stiffness=100000.0,
-                ),
-            ),
         ]
         results = {}
         for name, solver in solvers:

@@ -326,7 +326,7 @@ class TestGpuAdmmVsCpuAdmm:
 
         try:
             from physics.cpu_engine import CpuEngine
-            from physics.solvers.mujoco_qp import ADMMQPSolver
+            from physics.solvers.admm_qp import ADMMQPSolver
         except Exception:
             pytest.skip("CpuEngine or ADMMQPSolver not available")
 

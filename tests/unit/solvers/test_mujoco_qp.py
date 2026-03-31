@@ -19,7 +19,7 @@ from physics.gjk_epa import ground_contact_query
 from physics.implicit_contact_step import ImplicitContactStep
 from physics.joint import Axis, FreeJoint, RevoluteJoint
 from physics.robot_tree import Body, RobotTreeNumpy
-from physics.solvers.mujoco_qp import MuJoCoStyleSolver
+from physics.solvers.admm_qp import MuJoCoStyleSolver
 from physics.solvers.pgs_solver import ContactConstraint
 from physics.spatial import SpatialInertia, SpatialTransform
 
