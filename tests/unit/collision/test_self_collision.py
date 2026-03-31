@@ -1,6 +1,12 @@
 """
 Unit tests for AABBSelfCollision and NullSelfCollision.
 
+These test the penalty-based AABB self-collision model directly (not through
+CollisionPipeline). AABBSelfCollision is still used by GPU backends
+(static_data.py, numpy_loop.py) for the penalty contact path.
+For GJK/EPA-based collision through CollisionPipeline, see
+tests/unit/collision/test_collision_pipeline.py.
+
 Tests cover:
   - No force when AABBs are separated
   - No force when bodies are adjacent (parent-child excluded)

@@ -21,16 +21,17 @@ the calf tip via a FixedJoint with offset [0, 0, -CALF_LENGTH].  The contact
 point is placed at the foot body's origin, giving geometrically accurate
 ground contact (zero error vs. Phase 1's 0.2 m offset).
 
-Fixes vs. Phase 1
------------------
-1. Foot body at calf tip — contact point is now geometrically correct.
-2. Joint limits on all revolute joints (penalty spring-damper).
-3. AABB self-collision detection — legs cannot penetrate the torso.
+Architecture
+------------
+Uses Scene + CollisionPipeline (Phase 2 API):
+  - RobotModel with BodyCollisionGeometry (foot spheres + calf cylinders)
+  - Scene.single_robot() wraps model with terrain + collision filter
+  - Simulator uses CollisionPipeline for unified ground/self-collision detection
 
 Run
 ---
-    python -m robot_simulator.examples.simple_quadruped
-    python -m robot_simulator.examples.simple_quadruped --save out.gif
+    python examples/simple_quadruped.py
+    python examples/simple_quadruped.py --save out.gif
 """
 
 from __future__ import annotations
@@ -39,24 +40,25 @@ import argparse
 
 import numpy as np
 
-from robot.model import RobotModel
-from robot_simulator.physics import (
-    AABBSelfCollision,
+from physics import (
     Axis,
     Body,
-    BodyAABB,
-    ContactParams,
-    ContactPoint,
+    BodyCollisionGeometry,
+    BoxShape,
+    CylinderShape,
     FixedJoint,
     FreeJoint,
-    PenaltyContactModel,
     RevoluteJoint,
     RobotTree,
     SemiImplicitEuler,
+    ShapeInstance,
     SpatialInertia,
     SpatialTransform,
+    SphereShape,
 )
-from robot_simulator.rendering import RobotViewer
+from rendering import RobotViewer
+from robot.model import RobotModel
+from scene import Scene
 from simulator import Simulator
 
 # ---------------------------------------------------------------------------
@@ -103,8 +105,8 @@ B_LIMIT = 50.0  # N·m·s / rad
 # ---------------------------------------------------------------------------
 
 
-def build_quadruped() -> tuple[RobotTree, PenaltyContactModel, AABBSelfCollision]:
-    """Construct the quadruped RobotTree, ContactModel, and self-collision model."""
+def build_quadruped() -> RobotModel:
+    """Construct the quadruped RobotModel with collision geometries."""
     tree = RobotTree(gravity=9.81)
 
     # --- Torso (root, floating base) ---
@@ -119,23 +121,13 @@ def build_quadruped() -> tuple[RobotTree, PenaltyContactModel, AABBSelfCollision
     )
     torso_idx = tree.add_body(torso)
 
-    contact_model = PenaltyContactModel(
-        ContactParams(
-            k_normal=1_000.0,
-            b_normal=300.0,
-            mu=0.7,
+    geometries = [
+        BodyCollisionGeometry(
+            torso_idx,
+            [ShapeInstance(BoxShape(TORSO_SIZE))],
         )
-    )
-
-    self_collision = AABBSelfCollision(k_contact=3_000.0, b_contact=150.0)
-
-    # Torso AABB: half the torso box dimensions
-    self_collision.add_body(
-        BodyAABB(
-            body_index=torso_idx,
-            half_extents=np.array([TORSO_SIZE[0] / 2, TORSO_SIZE[1] / 2, TORSO_SIZE[2] / 2]),
-        )
-    )
+    ]
+    contact_body_names = []
 
     # --- Leg inertias ---
     thigh_inertia = SpatialInertia.from_cylinder(THIGH_MASS, 0.02, THIGH_LENGTH)
@@ -219,30 +211,25 @@ def build_quadruped() -> tuple[RobotTree, PenaltyContactModel, AABBSelfCollision
         )
         foot_idx = tree.add_body(foot)
 
-        # Contact point at foot body origin (= geometric foot tip)
-        contact_model.add_contact_point(
-            ContactPoint(
-                body_index=foot_idx,
-                position=np.zeros(3),
-                name=f"{leg_name}_foot",
-            )
-        )
+        # Foot collision sphere (for ground contact via CollisionPipeline)
+        geometries.append(BodyCollisionGeometry(foot_idx, [ShapeInstance(SphereShape(FOOT_RADIUS))]))
+        contact_body_names.append(f"{leg_name}_foot")
 
-        # AABB for calf only (thinner than torso, relevant for body penetration)
-        self_collision.add_body(
-            BodyAABB(
-                body_index=calf_idx,
-                half_extents=np.array([0.02, 0.02, CALF_LENGTH / 2]),
+        # Calf collision cylinder (for self-collision)
+        geometries.append(
+            BodyCollisionGeometry(
+                calf_idx,
+                [ShapeInstance(CylinderShape(radius=0.02, length=CALF_LENGTH))],
             )
         )
 
     tree.finalize()
 
-    # Build collision pairs after all bodies are registered
-    parent_list = [b.parent for b in tree.bodies]
-    self_collision.build_pairs(parent_list)
-
-    return tree, contact_model, self_collision
+    return RobotModel(
+        tree=tree,
+        geometries=geometries,
+        contact_body_names=contact_body_names,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -288,12 +275,13 @@ def standing_state(tree: RobotTree) -> tuple[np.ndarray, np.ndarray]:
 
 def main(save_path: str | None = None) -> None:
     print("Building quadruped...")
-    tree, contact_model, self_collision = build_quadruped()
-    model = RobotModel(tree=tree, contact_model=contact_model, self_collision=self_collision)
+    model = build_quadruped()
+    tree = model.tree
+    scene = Scene.single_robot(model)
     print(tree)
     print(f"  nq={tree.nq}, nv={tree.nv}")
-    print(f"  Contact points : {[cp.name for cp in contact_model.contact_points]}")
-    print(f"  Self-collision : {self_collision}")
+    print(f"  Contact bodies : {model.contact_body_names}")
+    print(f"  Collision geoms: {len(model.geometries)}")
 
     q, qdot = standing_state(tree)
 
@@ -314,7 +302,7 @@ def main(save_path: str | None = None) -> None:
     n_steps = int(duration / dt)
 
     print(f"\nSimulating {duration}s at dt={dt}s ({n_steps} steps)...")
-    sim = Simulator(model, SemiImplicitEuler(dt))
+    sim = Simulator(scene, SemiImplicitEuler(dt))
 
     times = np.zeros(n_steps)
     qs = np.zeros((n_steps, tree.nq))
@@ -324,13 +312,12 @@ def main(save_path: str | None = None) -> None:
         qs[i] = q
 
         tau = controller(times[i], q, qdot)
-        q, qdot = sim.step(q, qdot, tau)
+        q, qdot = sim.step_single(q, qdot, tau)
 
         if i % 200 == 0:
             torso = tree.body_by_name("torso")
             z = q[torso.q_idx][6]
-            active = contact_model.active_contacts(tree.forward_kinematics(q))
-            print(f"  t={times[i]:.2f}s  torso_z={z:.3f}m  contacts={[c[0] for c in active]}")
+            print(f"  t={times[i]:.2f}s  torso_z={z:.3f}m")
 
     print("\nRendering animation...")
     viewer = RobotViewer(
@@ -344,7 +331,7 @@ def main(save_path: str | None = None) -> None:
         times[::stride],
         qs[::stride],
         interval=20,
-        title="Quadruped — passive drop test (foot bodies + joint limits + AABB)",
+        title="Quadruped — passive drop test (Scene + CollisionPipeline)",
         show=save_path is None,
         save_path=save_path,
     )
