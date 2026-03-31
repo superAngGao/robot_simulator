@@ -280,3 +280,120 @@ class TestMassProperties:
         # Static body (global id 1) has inv_mass = 0
         assert inv_mass[1] == 0.0
         assert np.allclose(inv_inertia[1], np.zeros((3, 3)))
+
+
+# ---------------------------------------------------------------------------
+# Multi-shape per body
+# ---------------------------------------------------------------------------
+
+
+class TestMultiShape:
+    """Verify CollisionPipeline handles multiple shapes per body with offsets."""
+
+    def test_two_shapes_both_contact_ground(self):
+        """Body at z=0.15 with two spheres at different offsets: both should hit ground."""
+        tree = RobotTreeNumpy(gravity=9.81)
+        tree.add_body(
+            Body(
+                name="base",
+                index=0,
+                joint=FreeJoint("root"),
+                inertia=SpatialInertia(mass=1.0, inertia=np.eye(3) * 0.01, com=np.zeros(3)),
+                X_tree=SpatialTransform.identity(),
+                parent=-1,
+            )
+        )
+        tree.finalize()
+
+        # Two spheres (r=0.1) at offsets [0,0,-0.05] and [0.2,0,-0.05]
+        model = RobotModel(
+            tree=tree,
+            geometries=[
+                BodyCollisionGeometry(
+                    0,
+                    [
+                        ShapeInstance(SphereShape(0.1), origin_xyz=np.array([0, 0, -0.05])),
+                        ShapeInstance(SphereShape(0.1), origin_xyz=np.array([0.2, 0, -0.05])),
+                    ],
+                )
+            ],
+        )
+        scene = Scene.single_robot(model)
+        pipeline = CollisionPipeline(scene)
+
+        # Body at z=0.15 → shape centers at z=0.10 → sphere bottom at z=0.0 → just touching
+        q, _ = tree.default_state()
+        q[6] = 0.12  # slightly below → both should penetrate
+        X_world = tree.forward_kinematics(q)
+        all_X = list(X_world)
+        all_v = [np.zeros(6)]
+
+        contacts = pipeline.detect(all_X, all_v)
+        # Should have contacts from BOTH shapes
+        assert len(contacts) >= 2, f"Expected >=2 contacts, got {len(contacts)}"
+
+    def test_offset_shape_contacts_ground(self):
+        """Shape offset moves sphere into ground even though body origin is high."""
+        tree = RobotTreeNumpy(gravity=9.81)
+        tree.add_body(
+            Body(
+                name="base",
+                index=0,
+                joint=FreeJoint("root"),
+                inertia=SpatialInertia(mass=1.0, inertia=np.eye(3) * 0.01, com=np.zeros(3)),
+                X_tree=SpatialTransform.identity(),
+                parent=-1,
+            )
+        )
+        tree.finalize()
+
+        # Sphere (r=0.1) at offset [0,0,-0.5] — body at z=0.5 → shape center at z=0.0
+        model = RobotModel(
+            tree=tree,
+            geometries=[
+                BodyCollisionGeometry(
+                    0,
+                    [ShapeInstance(SphereShape(0.1), origin_xyz=np.array([0, 0, -0.5]))],
+                )
+            ],
+        )
+        scene = Scene.single_robot(model)
+        pipeline = CollisionPipeline(scene)
+
+        q, _ = tree.default_state()
+        q[6] = 0.5  # body at z=0.5, shape center at z=0.0 → penetrating
+        X_world = tree.forward_kinematics(q)
+        all_X = list(X_world)
+        all_v = [np.zeros(6)]
+
+        contacts = pipeline.detect(all_X, all_v)
+        assert len(contacts) >= 1, "Offset shape should produce ground contact"
+        assert contacts[0].depth > 0.05
+
+    def test_no_offset_no_contact(self):
+        """Without offset, same body at z=0.5 should NOT contact ground (sphere r=0.1)."""
+        tree = RobotTreeNumpy(gravity=9.81)
+        tree.add_body(
+            Body(
+                name="base",
+                index=0,
+                joint=FreeJoint("root"),
+                inertia=SpatialInertia(mass=1.0, inertia=np.eye(3) * 0.01, com=np.zeros(3)),
+                X_tree=SpatialTransform.identity(),
+                parent=-1,
+            )
+        )
+        tree.finalize()
+
+        model = RobotModel(
+            tree=tree,
+            geometries=[BodyCollisionGeometry(0, [ShapeInstance(SphereShape(0.1))])],
+        )
+        scene = Scene.single_robot(model)
+        pipeline = CollisionPipeline(scene)
+
+        q, _ = tree.default_state()
+        q[6] = 0.5
+        X_world = tree.forward_kinematics(q)
+        contacts = pipeline.detect(list(X_world), [np.zeros(6)])
+        assert len(contacts) == 0

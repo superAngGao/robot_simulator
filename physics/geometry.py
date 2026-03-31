@@ -14,9 +14,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy.typing import NDArray
+
+if TYPE_CHECKING:
+    from .spatial import SpatialTransform
 
 # ---------------------------------------------------------------------------
 # Abstract shape base
@@ -147,14 +151,62 @@ class CapsuleShape(CollisionShape):
         return seg + (direction / n) * self._radius
 
 
-class MeshShape(CollisionShape):
-    """Mesh geometry (Phase 3 stub)."""
+class ConvexHullShape(CollisionShape):
+    """Convex hull defined by a vertex cloud.
 
-    def __init__(self, filename: str) -> None:
-        self.filename = filename
+    Used as the output format for convex decomposition (V-HACD / CoACD).
+    Reference: van den Bergen (2003) §4.3 — GJK support mapping.
+    """
+
+    def __init__(self, vertices: NDArray[np.float64]) -> None:
+        v = np.asarray(vertices, dtype=np.float64)
+        if v.ndim != 2 or v.shape[1] != 3 or v.shape[0] < 4:
+            raise ValueError(f"ConvexHullShape requires (N>=4, 3) vertices, got {v.shape}")
+        self._vertices = v
+
+    @property
+    def vertices(self) -> NDArray[np.float64]:
+        return self._vertices
 
     def half_extents_approx(self) -> NDArray[np.float64]:
-        raise NotImplementedError("MeshShape AABB not yet implemented (Phase 3)")
+        return np.max(np.abs(self._vertices), axis=0)
+
+    def support_point(self, direction: NDArray[np.float64]) -> NDArray[np.float64]:
+        dots = self._vertices @ direction
+        return self._vertices[np.argmax(dots)].copy()
+
+
+class MeshShape(CollisionShape):
+    """Mesh geometry with optional vertex data.
+
+    When vertices are provided, supports GJK queries (support_point) and
+    AABB computation. When only a filename is given (no vertices loaded),
+    these operations raise NotImplementedError.
+    """
+
+    def __init__(self, filename: str, vertices: NDArray[np.float64] | None = None) -> None:
+        self.filename = filename
+        self._vertices: NDArray[np.float64] | None = None
+        if vertices is not None:
+            v = np.asarray(vertices, dtype=np.float64)
+            if v.ndim != 2 or v.shape[1] != 3:
+                raise ValueError(f"MeshShape vertices must be (N, 3), got {v.shape}")
+            self._vertices = v
+
+    @property
+    def vertices(self) -> NDArray[np.float64] | None:
+        return self._vertices
+
+    def half_extents_approx(self) -> NDArray[np.float64]:
+        if self._vertices is None:
+            raise NotImplementedError("MeshShape AABB requires loaded vertices")
+        return np.max(np.abs(self._vertices), axis=0)
+
+    def support_point(self, direction: NDArray[np.float64]) -> NDArray[np.float64]:
+        if self._vertices is None:
+            raise NotImplementedError("MeshShape support_point requires loaded vertices")
+        dots = self._vertices @ direction
+        return self._vertices[np.argmax(dots)].copy()
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +222,23 @@ class ShapeInstance:
     origin_xyz: NDArray[np.float64] = field(default_factory=lambda: np.zeros(3, dtype=np.float64))
     origin_rpy: NDArray[np.float64] = field(default_factory=lambda: np.zeros(3, dtype=np.float64))
 
+    def world_pose(self, X_body: "SpatialTransform") -> "SpatialTransform":
+        """Compose body world-frame transform with this shape's local offset.
+
+        Returns X_body directly if offset is zero (fast path).
+        """
+        from .spatial import SpatialTransform as _ST
+
+        if np.all(self.origin_xyz == 0) and np.all(self.origin_rpy == 0):
+            return X_body
+        X_offset = _ST.from_rpy(
+            self.origin_rpy[0],
+            self.origin_rpy[1],
+            self.origin_rpy[2],
+            r=self.origin_xyz,
+        )
+        return X_body.compose(X_offset)
+
 
 @dataclass
 class BodyCollisionGeometry:
@@ -184,8 +253,15 @@ class BodyCollisionGeometry:
     shapes: list[ShapeInstance]
 
     def aabb_half_extents(self) -> NDArray[np.float64]:
-        """Return element-wise maximum half-extents across all shapes."""
+        """Return element-wise maximum half-extents across all shapes.
+
+        Accounts for shape offsets (origin_xyz) by expanding the AABB.
+        """
         if not self.shapes:
             return np.zeros(3, dtype=np.float64)
-        extents = np.stack([s.shape.half_extents_approx() for s in self.shapes])
-        return np.max(extents, axis=0)
+        extents = []
+        for s in self.shapes:
+            he = s.shape.half_extents_approx()
+            he_with_offset = he + np.abs(s.origin_xyz)
+            extents.append(he_with_offset)
+        return np.max(np.stack(extents), axis=0)

@@ -400,11 +400,13 @@ class StaticRobotData:
         body_shape_params = np.zeros((nb, 4), dtype=np.float32)
 
         # Populate collision shape data from actual geometry
+        # TODO(Q26-gpu): support multi-shape per body in GPU arrays
         if merged.collision_shapes:
             for i, geom in enumerate(merged.collision_shapes):
                 if geom is None or not geom.shapes:
                     continue
-                shape = geom.shapes[0].shape
+                # Pick largest shape by half-extent volume as representative
+                shape = max(geom.shapes, key=lambda s: float(np.prod(s.shape.half_extents_approx()))).shape
                 he = shape.half_extents_approx()
                 body_coll_radius[i] = float(np.mean(he))
 
@@ -422,6 +424,7 @@ class StaticRobotData:
                     body_shape_type[i] = SHAPE_CAPSULE
                     body_shape_params[i, 0] = shape.radius
                     body_shape_params[i, 1] = shape.length / 2.0
+                # ConvexHullShape/MeshShape: falls back to SHAPE_NONE + sphere radius
 
         for i, body in enumerate(bodies):
             j = body.joint

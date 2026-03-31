@@ -79,25 +79,26 @@ class CollisionPipeline:
                 if not geom.shapes:
                     continue
                 gid = offset + geom.body_index
-                X = all_X[gid]
-                shape = geom.shapes[0].shape
-                gz = scene.terrain.height_at(X.r[0], X.r[1])
-                manifold = ground_contact_query(shape, X, ground_z=gz)
-                if manifold is not None and _valid_normal(manifold.normal):
-                    for pt in manifold.points:
-                        contacts.append(
-                            ContactConstraint(
-                                body_i=gid,
-                                body_j=-1,  # -1 = ground/terrain
-                                point=pt,
-                                normal=manifold.normal.copy(),
-                                tangent1=np.zeros(3),
-                                tangent2=np.zeros(3),
-                                depth=manifold.depth,
-                                mu=0.5,  # default, could be per-geom
-                                condim=3,
+                X_body = all_X[gid]
+                for si in geom.shapes:
+                    X_shape = si.world_pose(X_body)
+                    gz = scene.terrain.height_at(X_shape.r[0], X_shape.r[1])
+                    manifold = ground_contact_query(si.shape, X_shape, ground_z=gz)
+                    if manifold is not None and _valid_normal(manifold.normal):
+                        for pt in manifold.points:
+                            contacts.append(
+                                ContactConstraint(
+                                    body_i=gid,
+                                    body_j=-1,  # -1 = ground/terrain
+                                    point=pt,
+                                    normal=manifold.normal.copy(),
+                                    tangent1=np.zeros(3),
+                                    tangent2=np.zeros(3),
+                                    depth=manifold.depth,
+                                    mu=0.5,  # default, could be per-geom
+                                    condim=3,
+                                )
                             )
-                        )
 
         # ── 2. Robot bodies vs static geometries ──
         for name, model in scene.robots.items():
@@ -107,33 +108,34 @@ class CollisionPipeline:
                     continue
                 gid = offset + geom.body_index
                 X_body = all_X[gid]
-                shape_body = geom.shapes[0].shape
 
-                for si, sg in enumerate(scene.static_geometries):
-                    sgid = reg.static_global_id(si)
-                    if filt is not None and not filt.should_collide(gid, sgid):
-                        continue
-                    manifold = gjk_epa_query(shape_body, X_body, sg.shape, sg.pose)
-                    if manifold is not None and _valid_normal(manifold.normal):
-                        for pt in manifold.points:
-                            contacts.append(
-                                ContactConstraint(
-                                    body_i=gid,
-                                    body_j=sgid,
-                                    point=pt,
-                                    normal=manifold.normal.copy(),
-                                    tangent1=np.zeros(3),
-                                    tangent2=np.zeros(3),
-                                    depth=manifold.depth,
-                                    mu=sg.mu,
-                                    condim=sg.condim,
-                                    mu_spin=sg.mu_spin,
-                                    mu_roll=sg.mu_roll,
+                for si_shape in geom.shapes:
+                    X_shape = si_shape.world_pose(X_body)
+                    for si_idx, sg in enumerate(scene.static_geometries):
+                        sgid = reg.static_global_id(si_idx)
+                        if filt is not None and not filt.should_collide(gid, sgid):
+                            continue
+                        manifold = gjk_epa_query(si_shape.shape, X_shape, sg.shape, sg.pose)
+                        if manifold is not None and _valid_normal(manifold.normal):
+                            for pt in manifold.points:
+                                contacts.append(
+                                    ContactConstraint(
+                                        body_i=gid,
+                                        body_j=sgid,
+                                        point=pt,
+                                        normal=manifold.normal.copy(),
+                                        tangent1=np.zeros(3),
+                                        tangent2=np.zeros(3),
+                                        depth=manifold.depth,
+                                        mu=sg.mu,
+                                        condim=sg.condim,
+                                        mu_spin=sg.mu_spin,
+                                        mu_roll=sg.mu_roll,
+                                    )
                                 )
-                            )
 
         # ── 3. Robot body vs robot body (self + inter-robot) ──
-        # Collect all robot body (gid, shape, X) tuples
+        # Collect per-shape entries (gid, shape, X_shape_world)
         body_entries: list[tuple[int, "CollisionShape", SpatialTransform]] = []
         for name, model in scene.robots.items():
             offset = reg.robot_offset[name]
@@ -141,7 +143,9 @@ class CollisionPipeline:
                 if not geom.shapes:
                     continue
                 gid = offset + geom.body_index
-                body_entries.append((gid, geom.shapes[0].shape, all_X[gid]))
+                for si in geom.shapes:
+                    X_shape = si.world_pose(all_X[gid])
+                    body_entries.append((gid, si.shape, X_shape))
 
         # Brute-force narrow phase (broad phase optimization can be added later)
         n = len(body_entries)
@@ -149,6 +153,9 @@ class CollisionPipeline:
             gid_i, shape_i, X_i = body_entries[i]
             for j in range(i + 1, n):
                 gid_j, shape_j, X_j = body_entries[j]
+                # Same-body shape filtering
+                if gid_i == gid_j:
+                    continue
                 if filt is not None and not filt.should_collide(gid_i, gid_j):
                     continue
                 manifold = gjk_epa_query(shape_i, X_i, shape_j, X_j)

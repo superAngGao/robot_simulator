@@ -94,30 +94,31 @@ class CpuEngine(PhysicsEngine):
         X_world = cache.X_world
         terrain = merged.terrain
 
-        # 1. Ground contacts (GJK/EPA per body with collision geometry)
+        # 1. Ground contacts (GJK/EPA per body, all shapes)
         for body_idx, _local_pos in merged.contact_points:
             geom = merged.collision_shapes[body_idx] if body_idx < len(merged.collision_shapes) else None
             if geom is None or not geom.shapes:
                 continue
-            shape = geom.shapes[0].shape
-            X = X_world[body_idx]
-            gz = terrain.height_at(X.r[0], X.r[1])
-            manifold = ground_contact_query(shape, X, ground_z=gz)
-            if manifold is not None and manifold.depth > 1e-10:
-                for pt in manifold.points:
-                    contacts.append(
-                        ContactConstraint(
-                            body_i=body_idx,
-                            body_j=-1,
-                            point=pt,
-                            normal=manifold.normal.copy(),
-                            tangent1=np.zeros(3),
-                            tangent2=np.zeros(3),
-                            depth=manifold.depth,
-                            mu=0.8,
-                            condim=3,
+            X_body = X_world[body_idx]
+            for si in geom.shapes:
+                X_shape = si.world_pose(X_body)
+                gz = terrain.height_at(X_shape.r[0], X_shape.r[1])
+                manifold = ground_contact_query(si.shape, X_shape, ground_z=gz)
+                if manifold is not None and manifold.depth > 1e-10:
+                    for pt in manifold.points:
+                        contacts.append(
+                            ContactConstraint(
+                                body_i=body_idx,
+                                body_j=-1,
+                                point=pt,
+                                normal=manifold.normal.copy(),
+                                tangent1=np.zeros(3),
+                                tangent2=np.zeros(3),
+                                depth=manifold.depth,
+                                mu=0.8,
+                                condim=3,
+                            )
                         )
-                    )
 
         # 2. Body-body contacts (analytical sphere approximation)
         # Note: GJK/EPA has poor depth accuracy for deep sphere-sphere penetration
@@ -130,8 +131,8 @@ class CpuEngine(PhysicsEngine):
             if shape_i is None or shape_j is None or not shape_i.shapes or not shape_j.shapes:
                 continue
 
-            r_i = float(np.mean(shape_i.shapes[0].shape.half_extents_approx()))
-            r_j = float(np.mean(shape_j.shapes[0].shape.half_extents_approx()))
+            r_i = float(np.mean(shape_i.aabb_half_extents()))
+            r_j = float(np.mean(shape_j.aabb_half_extents()))
             diff = X_world[bi].r - X_world[bj].r
             dist = np.linalg.norm(diff)
             overlap = (r_i + r_j) - dist
