@@ -70,6 +70,7 @@ class MergedModel:
     nq: int
     nv: int
     nb: int
+    collision_filter: object = None  # Optional CollisionFilter for GPU broadphase
 
 
 def merge_models(
@@ -209,4 +210,5 @@ def merge_models(
         nq=merged_tree.nq,
         nv=merged_tree.nv,
         nb=merged_tree.num_bodies,
+        collision_filter=collision_filter,
     )

@@ -137,6 +137,16 @@ Pinocchio issue #1388 曾在此处有 bug。
 
 ## Collision / Contact
 
+**Q30 — GPU Multi-Shape Collision Data Layout** ✅ RESOLVED (2026-04-01)
+
+Cross-engine research (8 engines) completed. Universal pattern: flat parallel
+arrays indexed by shape ID (`shape_body[]`, `shape_type[]`, `shape_transform[]`),
+pre-allocated contact buffers with atomic counters (GPU) or static shapes (JAX),
+type-pair dispatch table for narrowphase. Forward index `body_shape_adr/num`
+optional but useful. Broadphase: start N-squared + bounding sphere, add SAP later.
+`warp.sim` removed in Warp 1.10, superseded by Newton (Linux Foundation project).
+→ Full analysis in REFLECTIONS.md session 15b.
+
 **Q23 — GPU 多体求解器角速度发散** ✅ RESOLVED (2026-03-27)
 
 **根因**：`solver_kernels_v2.py` 中 body-body 接触的 `J_body_j` 缺少取反。
@@ -462,10 +472,51 @@ R 合规性让粘着摩擦不再完全归零切向速度。实测：2 m/s 入射
 - 同 body shape 过滤（gid_i == gid_j 跳过）
 
 **待完成：**
-- GPU 多 shape 支持（当前只取最大 shape 作为代表，标记 TODO）
+- GPU 多 shape 支持 + 动态 broadphase（Q26-gpu，session 15 设计确定，见下方）
 - 凸分解管线（V-HACD/CoACD → list[ConvexHullShape]）
 - STL/OBJ 文件加载（当前 MeshShape 需要调用方传入顶点）
 - GPU GJK kernel（ConvexHullShape 的 GPU 碰撞检测）
+
+**Q26-gpu 设计方案（2026-04-01 确定）：**
+
+调研了 8 个引擎（Newton/PhysX 5/Bullet3 GPU/MuJoCo C/MJX/MuJoCo Warp/Brax/Isaac Gym），
+确认业界共识：展平 geom 数组 + 预分配接触缓冲 + atomic counter。
+
+*1. 数据布局（MuJoCo 模式）：*
+```
+shape_type[nshape], shape_body[nshape], shape_params[nshape,4],
+shape_offset[nshape,3], shape_rotation[nshape,9]
+body_shape_adr[nb], body_shape_num[nb]  — 正向索引
+```
+展平存储，body 通过 adr+num 索引自己的 shapes。所有引擎（8/8）用此模式。
+
+*2. 动态 broadphase（方案 A：N² 过滤）：*
+```
+for bi in range(nb):
+  for bj in range(bi+1, nb):
+    if excluded(bi,bj): continue
+    if bounding_sphere_separated(bi,bj): continue  — 最便宜的检测
+    slot = wp.atomic_add(n_pairs_active, env, 1)
+    active_pair_bi/bj[env, slot] = bi, bj
+```
+替代当前静态 collision_pairs。天然支持多机器人（跨 robot body 对自动发现）。
+四足 N=13 → 78 对，人形 N=30 → 435 对，10 四足 N=130 → 8385 对，GPU < 20μs。
+
+*3. 接触缓冲（MuJoCo Warp 模式）：*
+```
+contact_count: (N_envs,) atomic counter，每步 zero 后 narrowphase 动态递增
+max_contacts: 预分配上界，溢出静默丢弃
+```
+替代当前静态 1:1 slot 映射。Narrowphase 内层循环遍历 shape 对。
+
+*4. 地面接触改进：*
+对每个 contact body 遍历所有 shapes（不再只检测一个代表 shape）。
+非 contact body 仍不检测地面（未来可升级为全 geom 检测）。
+
+**备选方案 B（SAP broadphase，N > 200 时升级）：**
+GPU radix sort + binary search overlap，O(N log N)。MuJoCo Warp 已验证。
+当前 N < 60 不需要，留作 Phase 3 多机器人大规模场景时升级。
+接口不变（都是输出 active pairs + atomic counter），可平滑切换。
 
 **Q27 — 多物理子系统接口**
 

@@ -21,6 +21,7 @@ from physics.joint import (
     PrismaticJoint,
     RevoluteJoint,
 )
+from physics.spatial import SpatialTransform
 
 if TYPE_CHECKING:
     from robot.model import RobotModel
@@ -126,7 +127,7 @@ class StaticRobotData:
         default_factory=lambda: np.zeros(0, dtype=np.float32)
     )  # (nb,) collision sphere radius per body (legacy, kept for backward compat)
 
-    # -- Per-body collision shape descriptors (for analytical GPU collision) --
+    # -- Per-body collision shape descriptors (legacy, for warp_backend compat) --
     body_shape_type: NDArray[np.int32] = field(
         default_factory=lambda: np.zeros(0, dtype=np.int32)
     )  # (nb,) 0=None, 1=Sphere, 2=Box, 3=Cylinder, 4=Capsule
@@ -134,6 +135,35 @@ class StaticRobotData:
         default_factory=lambda: np.zeros((0, 4), dtype=np.float32)
     )  # (nb, 4) packed shape params: Sphere=[r,0,0,0], Box=[hx,hy,hz,0],
     #   Cylinder=[r,hl,0,0], Capsule=[r,hl,0,0]
+
+    # -- Flat shape arrays (MuJoCo-style, for multi-shape GPU collision) --
+    nshape: int = 0
+    shape_type: NDArray[np.int32] = field(
+        default_factory=lambda: np.zeros(0, dtype=np.int32)
+    )  # (nshape,) SHAPE_* enum
+    shape_body: NDArray[np.int32] = field(
+        default_factory=lambda: np.zeros(0, dtype=np.int32)
+    )  # (nshape,) which body owns this shape
+    shape_params: NDArray[np.float32] = field(
+        default_factory=lambda: np.zeros((0, 4), dtype=np.float32)
+    )  # (nshape, 4) packed shape params
+    shape_offset: NDArray[np.float32] = field(
+        default_factory=lambda: np.zeros((0, 3), dtype=np.float32)
+    )  # (nshape, 3) local position in body frame
+    shape_rotation: NDArray[np.float32] = field(
+        default_factory=lambda: np.zeros((0, 9), dtype=np.float32)
+    )  # (nshape, 9) flattened 3x3 rotation in body frame
+    body_shape_adr: NDArray[np.int32] = field(
+        default_factory=lambda: np.zeros(0, dtype=np.int32)
+    )  # (nb,) start index into flat shape arrays
+    body_shape_num: NDArray[np.int32] = field(
+        default_factory=lambda: np.zeros(0, dtype=np.int32)
+    )  # (nb,) number of shapes per body
+
+    # -- Collision exclude matrix (for GPU dynamic broadphase) --
+    collision_excluded: NDArray[np.int32] = field(
+        default_factory=lambda: np.zeros((0, 0), dtype=np.int32)
+    )  # (nb, nb) 1=excluded from collision
 
     # -- Constraint solver parameters --
     contact_cfm: float = 1e-6  # Constraint Force Mixing (regularization)
@@ -405,17 +435,71 @@ class StaticRobotData:
         body_shape_type = np.zeros(nb, dtype=np.int32)  # SHAPE_NONE by default
         body_shape_params = np.zeros((nb, 4), dtype=np.float32)
 
-        # Populate collision shape data from actual geometry
-        # TODO(Q26-gpu): support multi-shape per body in GPU arrays
+        # -- Flat shape arrays (MuJoCo-style, Q26-gpu multi-shape) --
+        # Pass 1: count total shapes and build body_shape_adr/num
+        body_shape_adr = np.zeros(nb, dtype=np.int32)
+        body_shape_num = np.zeros(nb, dtype=np.int32)
+        nshape = 0
+        if merged.collision_shapes:
+            for i, geom in enumerate(merged.collision_shapes):
+                body_shape_adr[i] = nshape
+                if geom is not None and geom.shapes:
+                    body_shape_num[i] = len(geom.shapes)
+                    nshape += len(geom.shapes)
+                # Update body_coll_radius from actual geometry
+                if geom is not None and geom.shapes:
+                    he = geom.aabb_half_extents()
+                    body_coll_radius[i] = float(np.mean(he))
+
+        # Pass 2: fill flat arrays
+        ns = max(nshape, 1)  # at least 1 element for empty arrays
+        flat_shape_type = np.zeros(ns, dtype=np.int32)
+        flat_shape_body = np.zeros(ns, dtype=np.int32)
+        flat_shape_params = np.zeros((ns, 4), dtype=np.float32)
+        flat_shape_offset = np.zeros((ns, 3), dtype=np.float32)
+        flat_shape_rotation = np.tile(np.eye(3, dtype=np.float32).flatten(), (ns, 1))
+
         if merged.collision_shapes:
             for i, geom in enumerate(merged.collision_shapes):
                 if geom is None or not geom.shapes:
                     continue
-                # Pick largest shape by half-extent volume as representative
-                shape = max(geom.shapes, key=lambda s: float(np.prod(s.shape.half_extents_approx()))).shape
-                he = shape.half_extents_approx()
-                body_coll_radius[i] = float(np.mean(he))
+                for local_j, si in enumerate(geom.shapes):
+                    s_idx = body_shape_adr[i] + local_j
+                    flat_shape_body[s_idx] = i
+                    flat_shape_offset[s_idx] = si.origin_xyz.astype(np.float32)
+                    # Precompute rotation matrix from RPY
+                    if np.any(si.origin_rpy != 0):
+                        R_local = SpatialTransform.from_rpy(
+                            float(si.origin_rpy[0]),
+                            float(si.origin_rpy[1]),
+                            float(si.origin_rpy[2]),
+                        ).R.astype(np.float32)
+                        flat_shape_rotation[s_idx] = R_local.flatten()
 
+                    shape = si.shape
+                    if isinstance(shape, SphereShape):
+                        flat_shape_type[s_idx] = SHAPE_SPHERE
+                        flat_shape_params[s_idx, 0] = shape.radius
+                    elif isinstance(shape, BoxShape):
+                        flat_shape_type[s_idx] = SHAPE_BOX
+                        flat_shape_params[s_idx, :3] = (shape._size / 2.0).astype(np.float32)
+                    elif isinstance(shape, CylinderShape):
+                        flat_shape_type[s_idx] = SHAPE_CYLINDER
+                        flat_shape_params[s_idx, 0] = shape._radius
+                        flat_shape_params[s_idx, 1] = shape._length / 2.0
+                    elif isinstance(shape, CapsuleShape):
+                        flat_shape_type[s_idx] = SHAPE_CAPSULE
+                        flat_shape_params[s_idx, 0] = shape.radius
+                        flat_shape_params[s_idx, 1] = shape.length / 2.0
+                    # ConvexHullShape/MeshShape: SHAPE_NONE + fallback radius
+
+        # Legacy per-body arrays (backward compat for warp_backend)
+        if merged.collision_shapes:
+            for i, geom in enumerate(merged.collision_shapes):
+                if geom is None or not geom.shapes:
+                    continue
+                best = max(geom.shapes, key=lambda s: float(np.prod(s.shape.half_extents_approx())))
+                shape = best.shape
                 if isinstance(shape, SphereShape):
                     body_shape_type[i] = SHAPE_SPHERE
                     body_shape_params[i, 0] = shape.radius
@@ -430,7 +514,30 @@ class StaticRobotData:
                     body_shape_type[i] = SHAPE_CAPSULE
                     body_shape_params[i, 0] = shape.radius
                     body_shape_params[i, 1] = shape.length / 2.0
-                # ConvexHullShape/MeshShape: falls back to SHAPE_NONE + sphere radius
+
+        # -- Collision exclude matrix (for GPU dynamic broadphase) --
+        collision_excluded = np.zeros((nb, nb), dtype=np.int32)
+        for i in range(nb):
+            collision_excluded[i, i] = 1  # self-exclusion
+        # Parent-child exclusion
+        for i, body in enumerate(bodies):
+            pi = body.parent
+            if pi >= 0:
+                collision_excluded[i, pi] = 1
+                collision_excluded[pi, i] = 1
+        # Shapeless bodies excluded from all
+        for i in range(nb):
+            if body_shape_num[i] == 0:
+                collision_excluded[i, :] = 1
+                collision_excluded[:, i] = 1
+        # Apply CollisionFilter if available
+        if hasattr(merged, "collision_filter") and merged.collision_filter is not None:
+            cf = merged.collision_filter
+            for i in range(nb):
+                for j in range(i + 1, nb):
+                    if not cf.should_collide(i, j):
+                        collision_excluded[i, j] = 1
+                        collision_excluded[j, i] = 1
 
         for i, body in enumerate(bodies):
             j = body.joint
@@ -549,6 +656,15 @@ class StaticRobotData:
             body_collision_radius=body_coll_radius,
             body_shape_type=body_shape_type,
             body_shape_params=body_shape_params,
+            nshape=nshape,
+            shape_type=flat_shape_type,
+            shape_body=flat_shape_body,
+            shape_params=flat_shape_params,
+            shape_offset=flat_shape_offset,
+            shape_rotation=flat_shape_rotation,
+            body_shape_adr=body_shape_adr,
+            body_shape_num=body_shape_num,
+            collision_excluded=collision_excluded,
             inv_mass_per_body=inv_mass_per_body,
             inv_inertia_per_body=inv_inertia_per_body,
             actuated_q_indices=actuated_q_indices,

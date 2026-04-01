@@ -18,7 +18,8 @@
 | Collision algorithms (AABB/OBB/GJK) | hpp-fcl / coal | Bullet dispatcher |
 | Friction regularization (PGS) | MuJoCo (R diag) / ODE (slip1/slip2) | Bullet (warmstart=0) / PhysX (angDamp) |
 | Ground contact model | MuJoCo | Drake |
-| GPU parallel simulation | Isaac Lab | Warp examples |
+| GPU parallel simulation | Newton (ex-warp.sim) | MuJoCo Warp (MJWarp) |
+| GPU collision data layout | Newton / MuJoCo Warp | PhysX 5 / Bullet3 GPU |
 | RL environment interface | Gymnasium | Isaac Lab |
 | Domain randomization | Isaac Lab | MuJoCo randomize |
 | URDF / robot description format | Pinocchio urdf_parser | Drake |
@@ -160,6 +161,43 @@ for Phase 2.
   Reference for `domain_rand/` module design.
 - `ObservationManager` / `RewardManager`: named, composable observation and
   reward terms. Better than a monolithic `_get_obs()` method.
+
+---
+
+### Newton (successor to warp.sim)
+**Repo:** https://github.com/newton-physics/newton
+**What it is:** GPU-accelerated physics engine built on NVIDIA Warp. Linux Foundation
+project led by Disney Research, Google DeepMind, and NVIDIA. Supersedes `warp.sim`
+(removed in Warp 1.10.0). Integrates MuJoCo Warp as its primary rigid body backend.
+
+**Key patterns to study:**
+- `Model` + `State` separation (immutable config vs mutable dynamics)
+- Shape data layout: `shape_body[]`, `shape_type[]`, `shape_transform[]`,
+  `shape_scale[]`, `shape_material[]` — flat parallel arrays, GPU-friendly
+- `Contacts` class: pre-allocated parallel arrays (`rigid_contact_shape0/1[]`,
+  `rigid_contact_point0/1[]`, `rigid_contact_normal[]`, `rigid_contact_distance[]`,
+  `rigid_contact_count`). Only counter reset per frame (1 kernel launch).
+- `CollisionPipeline.collide(state, contacts)`: broadphase→narrowphase pipeline
+  decoupled from solver.
+- Multi-world: `shape_world[]` / `body_world[]` for parallel env isolation.
+- Narrowphase dispatch table: shape-type pairs → specialized kernels.
+
+---
+
+### MuJoCo Warp (MJWarp)
+**Repo:** https://github.com/google-deepmind/mujoco_warp
+**What it is:** GPU-optimized MuJoCo port on NVIDIA Warp. Newest GPU physics
+engine (GTC 2025). Same mjModel/mjData semantics, Warp kernel implementation.
+
+**Key patterns to study:**
+- Broadphase: SAP (project→sort→binary-search→pair-generate) or N-squared
+  with hierarchical filter (plane→sphere→AABB→OBB). Selectable via `m.opt.broadphase`.
+- Contact buffer: `(nworld, naconmax)` pre-allocated. `nacon` via `wp.atomic_add()`.
+  Overflow → silent discard. EPA workspace pre-allocated to avoid OOM in RL training.
+- Multi-world: kernels launch `dim=(nworld, ngeom)`, one thread per (world, geom).
+- Narrowphase: `MJ_COLLISION_TABLE` routes 32 type-pairs to PRIMITIVE/CONVEX/SDF/FLEX.
+- Geom arrays: same layout as C MuJoCo (`geom_type`, `geom_bodyid`, `geom_pos`, etc.)
+  but with `(nworld, ngeom)` batch dimension.
 
 ---
 
