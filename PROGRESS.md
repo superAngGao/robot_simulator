@@ -505,6 +505,22 @@ CPU f32 截断实验：CPU f64 vs CPU f32 只差 0.008mm，进一步确认差异
 
 **Phase 2 总测试数：619（全部通过，较 session 13 的 644 减少 25 个死代码测试）**
 
+### Session 15 — Q25 PGS 摩擦修复 + Q26-gpu 多 shape 碰撞 (2026-04-01)
+
+**Q25 修复：PGS 摩擦行 per-row R 正则化**
+- 摩擦行 `R_i = (1-d)/d × |W_ii|`（ADMM 同款 solimp），摩擦 warmstart 归零
+- CPU PGS/PGS-SI + GPU solver_kernels/crba_kernels/solver_kernels_v2 全覆盖
+- 7 新测试（球体静止稳定性、重球、减速验证）
+
+**Q26-gpu：GPU 多 shape 碰撞 + 动态 N² broadphase**
+- MuJoCo 式展平 shape 数组（shape_type/body/params/offset/rotation + body_shape_adr/num）
+- 碰撞排除矩阵 (nb×nb) 上传 GPU（parent-child + CollisionFilter）
+- `batched_detect_multishape` kernel：动态 N² broadphase + 多 shape narrowphase + atomic counter
+- WarpBatchBackend 标记弃用（单 shape only）
+- 7 新测试（多 shape 地面、动态 broadphase、碰撞过滤、稳定性）
+
+**总测试数：649（全部通过）**
+
 ---
 
 ## Phase 3 — High-Fidelity Rendering + Sensor Simulation ⬜

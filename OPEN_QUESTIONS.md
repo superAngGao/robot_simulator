@@ -461,7 +461,7 @@ R 合规性让粘着摩擦不再完全归零切向速度。实测：2 m/s 入射
 （`omega *= 1 - k_damp * dt`）。优点是不影响摩擦精度（R 可以调小或去掉），
 缺点是全局影响所有旋转运动（空中旋转体也被阻尼）。可组合使用：小 R + 小角阻尼。
 
-**Q26 — 几何系统重构（凸分解前提）** 🔄 大部分解决 (2026-03-31)
+**Q26 — 几何系统重构（凸分解前提）** 🔄 GPU 多 shape 已实现 (2026-04-01)
 
 **已完成（session 14）：**
 - ConvexHullShape(vertices) + support_point (argmax)
@@ -471,8 +471,28 @@ R 合规性让粘着摩擦不再完全归零切向速度。实测：2 m/s 入射
 - aabb_half_extents() 考虑 origin_xyz 偏移
 - 同 body shape 过滤（gid_i == gid_j 跳过）
 
+**已完成（session 15）：**
+- GPU 多 shape：展平 shape 数组（MuJoCo 模式）+ body_shape_adr/num 正向索引
+- 动态 N² broadphase：bounding sphere + collision_excluded 矩阵，替代静态 pairs
+- 碰撞 kernel `batched_detect_multishape`：ground 多 shape + body-body atomic counter
+- 7 个新测试（多 shape 地面、动态 broadphase、碰撞过滤、稳定性）
+- 649 测试全部通过
+
+**测试覆盖盲区（session 16 补充）：**
+
+高风险：
+- GPU PGS 球体静止角速度稳定性（Q25 GPU kernel 改了但没测）
+- Shape offset 接触点精度（只验证 count，没验证接触点世界坐标反映 offset）
+- 非 Sphere shape（Box/Capsule）多 shape dispatch 路径
+- 接触深度精度（depth 值是否物理合理，不只是 count>0）
+
+中风险：
+- CPU vs GPU 多 shape 一致性（CpuEngine 也支持多 shape）
+- 接触缓冲溢出（max_contacts < 实际接触数时 graceful discard）
+- 多 shape body-body 碰撞（两个多 shape body 互碰）
+- Shape rotation（非零 origin_rpy）
+
 **待完成：**
-- GPU 多 shape 支持 + 动态 broadphase（Q26-gpu，session 15 设计确定，见下方）
 - 凸分解管线（V-HACD/CoACD → list[ConvexHullShape]）
 - STL/OBJ 文件加载（当前 MeshShape 需要调用方传入顶点）
 - GPU GJK kernel（ConvexHullShape 的 GPU 碰撞检测）
