@@ -18,7 +18,7 @@ import numpy as np
 import warp as wp
 
 from .backends.static_data import StaticRobotData
-from .backends.warp.collision_kernels import batched_detect_analytical
+from .backends.warp.collision_kernels import batched_detect_multishape
 from .backends.warp.crba_kernels import (
     batched_apply_contact_impulse,
     batched_build_W_joint_space,
@@ -82,9 +82,17 @@ class GpuEngine(PhysicsEngine):
             device=device,
         )
 
-        # Collision data
-        n_pairs = len(merged.collision_pairs)
-        max_contacts = s.nc + n_pairs
+        # Collision data — dynamic broadphase (Q26-gpu)
+        # max_contacts: ground shapes + worst-case body-body shape pairs
+        max_shapes_per_body = int(s.body_shape_num.max()) if s.nshape > 0 else 1
+        max_ground_contacts = s.nc * max_shapes_per_body
+        # Count bodies with shapes for body-body upper bound
+        n_bodies_with_shapes = int(np.sum(s.body_shape_num > 0))
+        max_body_pairs = n_bodies_with_shapes * (n_bodies_with_shapes - 1) // 2
+        max_pair_contacts = min(max_body_pairs * max_shapes_per_body**2, 1024)
+        max_contacts = max(max_ground_contacts + max_pair_contacts, 16)
+        max_contacts = min(max_contacts, 2048)  # cap to prevent excessive memory
+        n_pairs = len(merged.collision_pairs)  # kept for legacy warp_backend compat
         max_rows = max_contacts * 3  # condim=3
 
         # Solver scratch
@@ -117,6 +125,7 @@ class GpuEngine(PhysicsEngine):
         self._contact_bj = wp.zeros((num_envs, max_contacts), dtype=wp.int32, device=device)
         self._contact_active = wp.zeros((num_envs, max_contacts), dtype=wp.int32, device=device)
         self._contact_depth = wp.zeros((num_envs, max_contacts), dtype=wp.float32, device=device)
+        self._contact_count = wp.zeros(num_envs, dtype=wp.int32, device=device)  # atomic counter
 
         # J_body_j for body-body contacts
         self._J_body_j = wp.zeros((num_envs, max_rows, 6), dtype=wp.float32, device=device)
@@ -149,10 +158,20 @@ class GpuEngine(PhysicsEngine):
         self._gpu_inv_mass = wp.array(s.inv_mass_per_body, dtype=wp.float32, device=device)
         self._gpu_inv_inertia = wp.array(s.inv_inertia_per_body, dtype=wp.float32, device=device)
         self._gpu_body_radius = wp.array(s.body_collision_radius, dtype=wp.float32, device=device)
+        # Legacy per-body shape arrays (for batched_detect_analytical backward compat)
         self._gpu_shape_type = wp.array(s.body_shape_type, dtype=wp.int32, device=device)
         self._gpu_shape_params = wp.array(s.body_shape_params, dtype=wp.float32, device=device)
 
-        # Body-body collision pairs
+        # Flat shape arrays (MuJoCo-style, Q26-gpu multi-shape)
+        self._gpu_flat_shape_type = wp.array(s.shape_type, dtype=wp.int32, device=device)
+        self._gpu_flat_shape_params = wp.array(s.shape_params, dtype=wp.float32, device=device)
+        self._gpu_flat_shape_offset = wp.array(s.shape_offset, dtype=wp.float32, device=device)
+        self._gpu_flat_shape_rotation = wp.array(s.shape_rotation, dtype=wp.float32, device=device)
+        self._gpu_body_shape_adr = wp.array(s.body_shape_adr, dtype=wp.int32, device=device)
+        self._gpu_body_shape_num = wp.array(s.body_shape_num, dtype=wp.int32, device=device)
+        self._gpu_collision_excluded = wp.array(s.collision_excluded, dtype=wp.int32, device=device)
+
+        # Body-body collision pairs (legacy, kept for backward compat)
         if n_pairs > 0:
             self._gpu_pair_bi = wp.array(s.collision_pair_body_i, dtype=wp.int32, device=device)
             self._gpu_pair_bj = wp.array(s.collision_pair_body_j, dtype=wp.int32, device=device)
@@ -293,26 +312,31 @@ class GpuEngine(PhysicsEngine):
             outputs=[sol.v_predicted],
         )
 
-        # 5. Collision detection (ground + body-body) — analytical shape dispatch
+        # 5. Collision detection — multi-shape + dynamic N² broadphase (Q26-gpu)
         wp.launch(
-            batched_detect_analytical,
+            batched_detect_multishape,
             dim=N,
             device=self._device,
             inputs=[
                 sc.X_world_R,
                 sc.X_world_r,
-                self._gpu_shape_type,
-                self._gpu_shape_params,
+                self._gpu_flat_shape_type,
+                self._gpu_flat_shape_params,
+                self._gpu_flat_shape_offset,
+                self._gpu_flat_shape_rotation,
+                self._gpu_body_shape_adr,
+                self._gpu_body_shape_num,
+                self._gpu_body_radius,
                 self._gpu_contact_body_idx,
                 s.contact_ground_z,
                 self._nc_ground,
-                self._gpu_pair_bi,
-                self._gpu_pair_bj,
-                self._gpu_body_radius,
-                self._n_pairs,
+                self._gpu_collision_excluded,
+                s.nb,
+                0.05,  # broadphase_margin
                 self._max_contacts,
             ],
             outputs=[
+                self._contact_count,
                 self._contact_depth,
                 self._contact_normal,
                 self._contact_point,

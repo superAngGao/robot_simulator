@@ -3,6 +3,13 @@ WarpBatchBackend — GPU-accelerated batched physics using NVIDIA Warp.
 
 Holds all state as Warp arrays on CUDA. Each step launches a sequence
 of kernels with dim=N (one thread per environment).
+
+NOTE (Q26-gpu): This backend uses the legacy single-shape-per-body collision
+path (batched_detect_analytical) and body-level Delassus matrix. Multi-shape
+collision and dynamic broadphase are only available through GpuEngine, which
+uses the joint-space CRBA pipeline (Q29) and batched_detect_multishape kernel.
+Prefer GpuEngine for new work. WarpBatchBackend is maintained for backward
+compatibility with the VecEnv/BatchBackend interface.
 """
 
 from __future__ import annotations
