@@ -21,6 +21,7 @@ from __future__ import annotations
 import warp as wp
 
 from .kernels import JOINT_FREE, JOINT_PRISMATIC, JOINT_REVOLUTE
+from .solver_kernels import CONDIM, _impedance_wp
 from .spatial_warp import (
     spatial_cross_force_times_f,
     spatial_cross_vel_times_v,
@@ -560,7 +561,13 @@ def batched_build_W_joint_space(
     v_predicted: wp.array(dtype=wp.float32, ndim=2),
     qdot: wp.array(dtype=wp.float32, ndim=2),
     contact_active: wp.array(dtype=wp.int32, ndim=2),
+    contact_depth: wp.array(dtype=wp.float32, ndim=2),
     cfm: float,
+    solimp_d0: float,
+    solimp_dw: float,
+    solimp_width: float,
+    solimp_mid: float,
+    solimp_power: float,
     max_contacts: int,
     max_rows: int,
     nv: int,
@@ -613,8 +620,18 @@ def batched_build_W_joint_space(
                 val += J_joint[env, r1, k] * HinvJt[env, k, r2]
             W[env, r1, r2] = val
 
-    for r in range(n_active_rows):
-        W_diag[env, r] = W[env, r, r] + cfm
+    # Per-row regularization: normal=cfm, friction=R (Q25 fix)
+    for ci in range(max_contacts):
+        if contact_active[env, ci] == 0:
+            continue
+        base = ci * CONDIM
+        depth_c = contact_depth[env, ci]
+        d_imp = _impedance_wp(depth_c, solimp_d0, solimp_dw, solimp_width, solimp_mid, solimp_power)
+        ratio = (1.0 - d_imp) / wp.max(d_imp, 1.0e-10)
+        W_diag[env, base] = W[env, base, base] + cfm
+        for off in range(1, CONDIM):
+            row = base + off
+            W_diag[env, row] = W[env, row, row] + ratio * wp.abs(W[env, row, row])
 
     # v_free, v_current from J × velocity
     for r in range(n_active_rows):

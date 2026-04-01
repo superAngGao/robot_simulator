@@ -38,6 +38,34 @@ JOINT_FIXED = wp.constant(3)
 CONDIM = wp.constant(3)  # Fixed condim=3 for ground contact (normal + 2 tangent)
 
 
+@wp.func
+def _impedance_wp(
+    depth: float,
+    d_0: float,
+    d_width: float,
+    imp_width: float,
+    midpoint: float,
+    power: float,
+) -> float:
+    """Compute impedance d(r) from solimp parameters (MuJoCo sigmoid)."""
+    if imp_width < 1.0e-10:
+        return d_0
+    x = wp.min(1.0, wp.max(0.0, wp.abs(depth) / imp_width))
+    if x <= 0.0:
+        return d_0
+    if x >= 1.0:
+        return d_width
+    y = x
+    if power > 1.0:
+        if x <= midpoint:
+            a = 1.0 / wp.max(wp.pow(midpoint, power - 1.0), 1.0e-10)
+            y = a * wp.pow(x, power)
+        else:
+            b_c = 1.0 / wp.max(wp.pow(1.0 - midpoint, power - 1.0), 1.0e-10)
+            y = 1.0 - b_c * wp.pow(1.0 - x, power)
+    return d_0 + y * (d_width - d_0)
+
+
 # ---------------------------------------------------------------------------
 # K1: Ground contact detection
 # ---------------------------------------------------------------------------
@@ -134,6 +162,11 @@ def batched_build_W_vfree(
     inv_inertia: wp.array3d(dtype=wp.float32),  # (nb, 3, 3)
     mu: float,
     cfm: float,
+    solimp_d0: float,
+    solimp_dw: float,
+    solimp_width: float,
+    solimp_mid: float,
+    solimp_power: float,
     nc: int,
     max_rows: int,
     # Outputs
@@ -282,10 +315,22 @@ def batched_build_W_vfree(
             val = wp.dot(j2_lin, Minv_j1_lin) + wp.dot(j2_ang, Minv_j1_ang)
             W[env_id, r1, r2] = W[env_id, r1, r2] + val
 
-    # Add CFM to diagonal
-    for r in range(n_rows):
-        if row_body_idx[env_id, r] >= 0:
-            W_diag[env_id, r] = W[env_id, r, r] + cfm
+    # Per-row regularization: normal rows get uniform cfm,
+    # friction rows get R = (1-d)/d * |W_ii| (Q25 fix).
+    for c in range(nc):
+        if contact_active[env_id, c] == 0:
+            continue
+        base = c * CONDIM
+        depth_c = contact_depth[env_id, c]
+        d_imp = _impedance_wp(depth_c, solimp_d0, solimp_dw, solimp_width, solimp_mid, solimp_power)
+        ratio = (1.0 - d_imp) / wp.max(d_imp, 1.0e-10)
+
+        # Normal row: uniform cfm
+        W_diag[env_id, base] = W[env_id, base, base] + cfm
+        # Friction rows: per-row R
+        for off in range(1, CONDIM):
+            row = base + off
+            W_diag[env_id, row] = W[env_id, row, row] + ratio * wp.abs(W[env_id, row, row])
 
 
 # ---------------------------------------------------------------------------

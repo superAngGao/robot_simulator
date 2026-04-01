@@ -9,6 +9,7 @@ Key differences from solver_kernels.py:
 
 import warp as wp
 
+from .solver_kernels import CONDIM, _impedance_wp
 from .spatial_warp import (
     transform_force_wp,
     vec6_angular,
@@ -21,7 +22,6 @@ JOINT_FREE = wp.constant(0)
 JOINT_REVOLUTE = wp.constant(1)
 JOINT_PRISMATIC = wp.constant(2)
 JOINT_FIXED = wp.constant(3)
-CONDIM = wp.constant(3)
 
 
 @wp.func
@@ -63,6 +63,12 @@ def batched_build_W_vfree_v2(
     inv_inertia: wp.array3d(dtype=wp.float32),
     mu: float,
     cfm: float,
+    solimp_d0: float,
+    solimp_dw: float,
+    solimp_width: float,
+    solimp_mid: float,
+    solimp_power: float,
+    contact_depth_v2: wp.array2d(dtype=wp.float32),  # (N, max_contacts)
     max_contacts: int,
     max_rows: int,
     # Outputs
@@ -277,10 +283,20 @@ def batched_build_W_vfree_v2(
 
             W[env_id, r1, r2] = W[env_id, r1, r2] + val
 
-    # CFM on diagonal
-    for r in range(n_rows):
-        if row_bi[env_id, r] >= 0 or row_bj[env_id, r] >= 0:
-            W_diag[env_id, r] = W[env_id, r, r] + cfm
+    # Per-row regularization: normal=cfm, friction=R (Q25 fix)
+    for ci in range(max_contacts):
+        if contact_active[env_id, ci] == 0:
+            continue
+        base = ci * CONDIM
+        depth_c = contact_depth_v2[env_id, ci]
+        d_imp = _impedance_wp(depth_c, solimp_d0, solimp_dw, solimp_width, solimp_mid, solimp_power)
+        ratio = (1.0 - d_imp) / wp.max(d_imp, 1.0e-10)
+        # Normal row: uniform cfm
+        W_diag[env_id, base] = W[env_id, base, base] + cfm
+        # Friction rows: per-row R
+        for off in range(1, CONDIM):
+            row = base + off
+            W_diag[env_id, row] = W[env_id, row, row] + ratio * wp.abs(W[env_id, row, row])
 
 
 @wp.kernel

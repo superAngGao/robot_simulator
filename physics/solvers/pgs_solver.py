@@ -137,7 +137,14 @@ class PGSContactSolver:
         max_iter : Maximum PGS iterations.
         tolerance: Convergence tolerance on impulse change.
         erp      : Error Reduction Parameter (Baumgarte stabilization).
-        cfm      : Constraint Force Mixing (regularization).
+        cfm      : Constraint Force Mixing (regularization on normal rows).
+        solimp   : (d_0, d_width, width, midpoint, power) impedance params.
+                    Controls per-row R regularization on friction rows:
+                    R_i = (1-d)/d * |W_ii|.  Prevents float32 noise from
+                    producing spurious friction forces (Q25 fix).
+        friction_warmstart: If False, zero friction lambdas each frame
+                    instead of warmstarting (Bullet-style, prevents
+                    cross-frame noise accumulation).
     """
 
     def __init__(
@@ -146,12 +153,39 @@ class PGSContactSolver:
         tolerance: float = 1e-6,
         erp: float = 0.2,
         cfm: float = 1e-6,
+        solimp: tuple[float, ...] = (0.95, 0.99, 0.001, 0.5, 2.0),
+        friction_warmstart: bool = False,
     ) -> None:
         self.max_iter = max_iter
         self.tolerance = tolerance
         self.erp = erp
         self.cfm = cfm
+        self.solimp = solimp
+        self.friction_warmstart = friction_warmstart
         self._warm_cache: dict[tuple[int, int], list[tuple[Vec3, NDArray]]] = {}
+
+    def _impedance(self, depth: float) -> float:
+        """Compute impedance d(r) from solimp parameters.
+
+        Piecewise power-law sigmoid — same as ADMMQPSolver._impedance().
+        """
+        d_0, d_width, width, midpoint, power = self.solimp
+        if width < 1e-10:
+            return d_0
+        x = min(1.0, max(0.0, abs(depth) / width))
+        if x <= 0:
+            return d_0
+        if x >= 1:
+            return d_width
+        if power <= 1:
+            y = x
+        elif x <= midpoint:
+            a = 1.0 / max(midpoint ** (power - 1), 1e-10)
+            y = a * x**power
+        else:
+            b_coeff = 1.0 / max((1.0 - midpoint) ** (power - 1), 1e-10)
+            y = 1.0 - b_coeff * (1.0 - x) ** power
+        return d_0 + y * (d_width - d_0)
 
     def solve(
         self,
@@ -274,8 +308,17 @@ class PGSContactSolver:
                 for ri2, r2 in enumerate(rows):
                     W[r1, r2] += J_rows[ri2] @ Minv_j1
 
-        for i in range(n_rows):
-            W[i, i] += self.cfm
+        # Per-row regularization: normal rows get uniform cfm,
+        # friction rows get self-adaptive R = (1-d)/d * |W_ii| (Q25 fix).
+        for ci, c in enumerate(contacts):
+            base = row_offsets[ci]
+            # Normal row: uniform cfm
+            W[base, base] += self.cfm
+            if c.condim >= 3:
+                d = self._impedance(c.depth)
+                ratio = (1.0 - d) / max(d, 1e-10)
+                for j in range(1, c.condim):
+                    W[base + j, base + j] += ratio * abs(W[base + j, base + j])
 
         # ── Free velocity ──
         v_free = np.zeros(n_rows)
@@ -337,9 +380,12 @@ class PGSContactSolver:
                         best_dist = dist
                         best_lam = cached_lam
                 if best_lam is not None:
-                    # Copy as many elements as min(cached, current) condim
-                    n_copy = min(len(best_lam), c.condim)
-                    lambdas[base : base + n_copy] = best_lam[:n_copy]
+                    # Normal row always warmstarted
+                    lambdas[base] = best_lam[0]
+                    # Friction rows: only warmstart if enabled (Q25 fix)
+                    if self.friction_warmstart:
+                        n_copy = min(len(best_lam), c.condim)
+                        lambdas[base + 1 : base + n_copy] = best_lam[1:n_copy]
 
         # ── PGS iterations ──
         for iteration in range(self.max_iter):

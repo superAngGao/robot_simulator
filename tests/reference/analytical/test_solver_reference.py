@@ -150,14 +150,22 @@ class TestFrictionSticking:
         # v_contact_x = vx + (-0.1)*omega_y
         v_contact_x = v_after[0] + (-0.1) * v_after[4]
         assert abs(v_after[2]) < 1e-3, f"{name}: v_z={v_after[2]}"
-        assert abs(v_contact_x) < 1e-2, f"{name}: v_contact_x={v_contact_x:.4f}, expected 0.0"
+        # Tolerance relaxed from 1e-2 to 0.03: Q25 fix adds per-row R
+        # regularization on friction rows (compliance), causing small residual
+        # tangential velocity — physically correct (matches MuJoCo soft contact).
+        assert abs(v_contact_x) < 0.03, f"{name}: v_contact_x={v_contact_x:.4f}, expected ~0.0"
 
     def test_pgs_body_vx_analytical(self):
-        """PGS body center vx should be 1.4286 (analytical W_t1t1=3.5)."""
+        """PGS body center vx should be near 1.4286 (analytical W_t1t1=3.5).
+
+        Tolerance relaxed from 1e-3 to 0.01: Q25 fix adds per-row R
+        regularization on friction rows, making W_eff = W + R > W.
+        This slightly reduces the friction impulse, giving larger vx.
+        """
         solver = PGSContactSolver(max_iter=50, erp=0.0, cfm=1e-8)
         v_after, _ = _solve_and_get_velocity(solver, np.array([2.0, 0, -2.0, 0, 0, 0]))
-        expected_vx = 2.0 - 2.0 / 3.5  # = 1.4286
-        assert abs(v_after[0] - expected_vx) < 1e-3, f"vx={v_after[0]:.4f}, expected {expected_vx:.4f}"
+        expected_vx = 2.0 - 2.0 / 3.5  # = 1.4286 (hard LCP)
+        assert abs(v_after[0] - expected_vx) < 0.01, f"vx={v_after[0]:.4f}, expected ~{expected_vx:.4f}"
 
 
 # ---------------------------------------------------------------------------

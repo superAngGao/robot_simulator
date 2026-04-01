@@ -16,6 +16,7 @@
 | Joint model & passive torques | Drake | MuJoCo |
 | Collision geometry abstraction | Drake SceneGraph | Pinocchio GeometryModel |
 | Collision algorithms (AABB/OBB/GJK) | hpp-fcl / coal | Bullet dispatcher |
+| Friction regularization (PGS) | MuJoCo (R diag) / ODE (slip1/slip2) | Bullet (warmstart=0) / PhysX (angDamp) |
 | Ground contact model | MuJoCo | Drake |
 | GPU parallel simulation | Isaac Lab | Warp examples |
 | RL environment interface | Gymnasium | Isaac Lab |
@@ -120,6 +121,27 @@ AABB trees, BVH.
 **Lessons learned:**
 - Joint friction from URDF is loaded but **not applied automatically** — must
   simulate via motor control. Similar to Pinocchio damping issue. We avoid this.
+
+**Friction regularization (Q25 research):**
+- `btSequentialImpulseConstraintSolver`: friction warmstart 每帧归零
+  （法向用 `old * 0.85`，摩擦初始化为 0）。阻断跨帧噪声积累。
+- `m_frictionCFM` 参数存在但默认 = 0（未启用）。
+- `btContactSolverInfo.h` 定义 `m_restitutionVelocityThreshold = 0.2`
+  （bounce 死区，非摩擦，但同一设计模式）。
+- Sleeping/deactivation：低速体冻结，终极兜底。
+
+---
+
+### ODE (Open Dynamics Engine)
+**What it is:** 经典开源物理引擎，CFM/ERP 概念的起源。
+
+**Friction regularization (Q25 research):**
+- 全局 CFM 加到所有约束行对角线（含摩擦），默认 `1e-5` (f32) / `1e-10` (f64)。
+- **`slip1`/`slip2` 参数**：摩擦行专用 CFM，等价于 `v_slip = k × f_friction`。
+  物理含义：表面有力相关的微小滑移。数学效果：
+  `lambda_t = -v_t / (W_diag + slip)`，当 `v_t ~ 1e-7` 和 `slip ~ 1e-4` 时
+  摩擦冲量被压制到正常值的 ~1e-3。
+- 两阶段求解：先法向（假设无摩擦），再摩擦（用固定法向力），解耦。
 
 ---
 

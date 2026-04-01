@@ -365,16 +365,91 @@ CollisionPipeline.detect(scene, all_X, all_v) → list[ContactConstraint]
 
 **触发条件**：下一个需要新 dispatch 维度的功能开发时。详见 memory `project_gpu_engine_dispatch.md`。
 
-**Q25 — PGS 摩擦力通过力臂产生假角速度**
+**Q25 — PGS 摩擦力通过力臂产生假角速度** ✅ RESOLVED (2026-04-01)
 
-解析碰撞正确计算接触点位置后（接触点在地面，球心在 z=radius 处），
-PGS 在零切向速度时仍产生微小摩擦力，通过 r_arm=radius 的力臂产生转矩，
-导致球体角速度缓慢增长。
+**现象**：球体静止放在地面，零初速度。数千步后角速度持续增长 → NaN。
+仅影响 PGS/PGS-SI（CPU + GPU），ADMMQPSolver 无此问题。
 
-- 当前影响：多球地面场景数千步后角速度发散 → NaN
-- 根因：PGS 对零速度的摩擦力不够严格归零（float32 数值噪声被放大）
-- 可能修复：摩擦力死区（|v_tangential| < ε 时跳过摩擦行）、或更大 CFM
-- ADMMQPSolver 无此问题（隐式求解天然抑制数值噪声）
+**正反馈环路（4 步）**：
+```
+Step 1: float32 噪声 → v_tangential ≈ 1e-7（四元数→旋转→叉积中间运算）
+Step 2: PGS 无死区 → lambda_t = -v_t / W_diag ≈ 1e-7（非零）
+         代码：pgs_solver.py:447, solver_kernels.py:343
+Step 3: 力臂放大 → torque = r × lambda_t, alpha = torque / I
+         球体 r_arm=[0,0,-r], cross 产生 |torque| = r * |lambda_t|
+         代码：pgs_solver.py:105-109, solver_kernels.py:233-234
+Step 4: omega += alpha * dt → 下一步 v_t = omega × r 更大 → 正反馈
+```
+float64 噪声 ~1e-16，需 ~10¹⁰ 步才达宏观量级（不会遇到）。
+float32 噪声 ~1e-7，~10⁴ 步即可增长到问题水平 → GPU 必修。
+
+**ADMM 为什么没问题——三重机制**：
+1. **R 正则化**（根本性）：`R_i = (1-d)/d × A_ii`，给摩擦力加二次代价。
+   因 A_tt 含力臂贡献（球体 A_tt = 7/(2m) vs A_nn = 1/m），
+   摩擦行 R 自动 3.5× 大于法向行，精确抵消力臂放大效应。
+2. **切向阻尼参考**：`a_ref_t = -b × v_t`，目标是衰减切向速度，v_t ≈ 0 时不驱动力。
+3. **圆锥投影**：‖f_t‖ ≤ μ·f_n（正确 Coulomb 锥），vs PGS 方盒 clip（√2 倍过冲）。
+
+其中只有 R 是根本性的。ADMM 无 R 但完全收敛时等价于精确 Coulomb LCP，
+与 PGS 有相同问题。ρ 只是算法参数，不改变最优解（仅加速收敛）。
+
+**主流引擎解法对比**：
+
+| 引擎 | 主要机制 | 辅助机制 | 参数 |
+|------|---------|---------|------|
+| Bullet | 摩擦 warmstart 每帧归零 | sleeping + split impulse | m_frictionCFM=0（默认关） |
+| ODE | 全局 CFM + slip1/slip2（摩擦专用 CFM） | 两阶段法向→摩擦 | CFM=1e-5 (f32) |
+| PhysX | 角阻尼 + sleeping | 摩擦仅后几轮迭代 | angularDamping>0 |
+| MuJoCo | R 对角正则化（始终存在） | impratio 控制摩擦/法向 R 比 | solimp → R |
+| Box2D | 累积冲量 clamp | warmstart 衰减因子 0.2 | — |
+| AGX | SPOOK 物理合规性 | 混合直接/迭代 | compliance>0 |
+
+**三层正则化分类**：
+- 积分器层：角阻尼 τ=-k·I·ω（PhysX）— 全局，影响所有旋转
+- 求解器层：CFM/R 加到 W 对角线（ODE/MuJoCo）— 仅影响约束行
+- 约束公式层：a_ref 阻尼目标（MuJoCo）— 仅影响优化目标
+
+**决策：方案 D = 摩擦行 per-row R + 摩擦 warmstart 归零**
+
+方案 A（摩擦行 per-row R，移植自 ADMM）：
+```python
+# PGS 当前：W[i,i] += cfm (1e-6，聊胜于无)
+# 修复后：摩擦行用 ADMM 同款自适应 R
+if is_friction_row:
+    R_i = (1-d)/d × |W[i,i]|    # A_tt 含力臂，R 自动更强
+else:
+    W[i,i] += cfm                 # 法向保持小 cfm
+```
+
+方案 B（Bullet 式摩擦 warmstart 归零）：
+- 法向冲量正常 warmstart
+- 摩擦冲量每帧重置为 0，阻断跨帧积累
+
+**不选硬死区的原因**：v_t < ε 时摩擦关闭 → 低速滚动球进入死区后永远漂移。
+per-row R 是连续的，摩擦始终存在但被合规性软化，低速球仍可减速停止。
+
+**我们的 per-row R vs MuJoCo 的 per-contact R**：
+我们 `R_i = (1-d)/d × A_ii`（每行各自 A_ii），MuJoCo 用 per-contact 常数 R。
+对 Q25 而言我们的方案更优：A_tt > A_nn（含力臂贡献），摩擦行自动获得更强正则化，
+精确抵消力臂放大。MuJoCo 需要手动调 impratio 达到类似效果。
+
+**已实现（session 15）：**
+- CPU PGS/PGS-SI：摩擦行 per-row R = (1-d)/d × |W_ii|（共享 ADMM 的 solimp 参数）
+- CPU PGS：摩擦 warmstart 每帧归零（Bullet 方案，`friction_warmstart=False` 默认）
+- GPU：solver_kernels / crba_kernels / solver_kernels_v2 同步修改
+- 7 个新测试（球体静止稳定性 + 重球 + 减速验证 + 参数传递）
+→ Moved to REFLECTIONS.md.
+
+**已知权衡——摩擦精度 vs 稳定性（P4，先不优化）**：
+R 合规性让粘着摩擦不再完全归零切向速度。实测：2 m/s 入射时残余 0.02 m/s（1%），
+介于 MuJoCo (~3-5%) 和 Bullet (~0.05%) 之间。如需更硬摩擦，可调 solimp d_0：
+- d_0=0.95（当前默认）→ ratio=0.053, 残余 ~1%
+- d_0=0.98 → ratio=0.020, 残余 ~0.4%
+- d_0=0.99 → ratio=0.010, 残余 ~0.2%（Q25 保护力度降低）
+
+若调 solimp 仍不满足精度需求，备选方案：学习 PhysX 在积分器层加角速度阻尼
+（`omega *= 1 - k_damp * dt`）。优点是不影响摩擦精度（R 可以调小或去掉），
+缺点是全局影响所有旋转运动（空中旋转体也被阻尼）。可组合使用：小 R + 小角阻尼。
 
 **Q26 — 几何系统重构（凸分解前提）** 🔄 大部分解决 (2026-03-31)
 

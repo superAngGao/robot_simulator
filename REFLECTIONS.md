@@ -5,6 +5,49 @@ Updated at the end of each development session.
 
 ---
 
+## 2026-04-01 (session 15) — Q25 PGS 摩擦假角速度修复
+
+### Q25 根因分析
+
+球体静止在地面时，PGS 摩擦行产生 float32 噪声级别的 lambda_t（~1e-7），
+通过接触点力臂（r_arm = 球半径）产生转矩 → 角加速度 → 更大的切向速度 →
+正反馈环路 → 数千步后角速度发散 → NaN。
+
+**正反馈链**：float32 噪声 → v_t ≈ 1e-7 → PGS 无死区产生 lambda_t → 力臂放大
+→ torque → omega 增长 → v_t = omega × r 更大 → 循环。
+
+**ADMM 为什么免疫**：per-row R 正则化 `R_i = (1-d)/d × A_ii`。因为摩擦行
+A_tt 含力臂贡献（球体 A_tt = 7/(2m) vs A_nn = 1/m），R_friction 自动 3.5× 大于
+R_normal，精确抵消力臂放大效应。这是数学自洽的：放大因子大 → 正则化更强。
+
+### 设计决策：per-row R + 摩擦 warmstart 归零
+
+**调研了 6 个引擎**（Bullet/ODE/PhysX/MuJoCo/Box2D/AGX），总结出三层正则化：
+- 积分器层：角阻尼（PhysX）— 全局影响所有旋转，物理不正确
+- 求解器层：CFM/R（ODE/MuJoCo）— 仅影响约束行，最精确
+- 约束公式层：a_ref 阻尼（MuJoCo）— 需要 R 配合才有效
+
+**选择方案 D = A + B**：
+- **A: 摩擦行 per-row R**（移植自 ADMM 的 compliance 模型）
+  - 与 ADMM 共享 solimp 参数语义，不引入新概念
+  - per-row 的 A_ii 自适应：力臂大的行 R 自动更强
+  - 连续，无死区不连续跳变，低速球能正常减速停止
+- **B: 摩擦 warmstart 归零**（Bullet 方案）
+  - 法向冲量正常 warmstart，摩擦冲量每帧重置
+  - 阻断跨帧积累，即使单帧 R 不够也不会长期发散
+
+**排除的方案**：
+- 硬死区（|v_t| < ε → lambda_t = 0）：低速球进入死区后永远漂移，物理不正确
+- 全局角阻尼（PhysX 式）：影响所有旋转运动，对空中旋转体也施加虚假阻尼
+- 纯 ADMM ρ 无 R：ρ 只是算法参数，完全收敛后消失，不改变最优解
+
+**我们的 per-row R vs MuJoCo per-contact R**：
+MuJoCo 实现用 per-contact 常数 R（所有 condim 行共享），论文推导是 per-row。
+我们忠于论文：per-row R 让摩擦行按 A_tt 自适应。对 Q25 更优（自动补偿力臂），
+对刚体穿透也更优（Q30 已验证：穿透 0.25mm vs MuJoCo 1.1mm，不依赖机器人结构）。
+
+---
+
 ## 2026-03-31 (session 14) — 遗留清理 + 求解器重构 + 精度排查
 
 ### 求解器调度混乱的根因与修复

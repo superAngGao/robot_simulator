@@ -47,6 +47,8 @@ class PGSSplitImpulseSolver:
         erp: float = 0.8,
         slop: float = 0.005,
         cfm: float = 1e-6,
+        solimp: tuple[float, ...] = (0.95, 0.99, 0.001, 0.5, 2.0),
+        friction_warmstart: bool = False,
     ) -> None:
         self.max_iter = max_iter
         self.tolerance = tolerance
@@ -59,6 +61,8 @@ class PGSSplitImpulseSolver:
             tolerance=tolerance,
             erp=0.0,
             cfm=cfm,
+            solimp=solimp,
+            friction_warmstart=friction_warmstart,
         )
         self.position_corrections: list[NDArray] = []
 
@@ -85,9 +89,7 @@ class PGSSplitImpulseSolver:
             return [np.zeros(6) for _ in range(num_bodies)]
 
         # Pass 1: velocity PGS (erp=0, no Baumgarte bias)
-        impulses = self._vel_solver.solve(
-            contacts, body_v, body_X_world, inv_mass, inv_inertia, dt
-        )
+        impulses = self._vel_solver.solve(contacts, body_v, body_X_world, inv_mass, inv_inertia, dt)
 
         # Pass 2: direct position correction (decoupled from velocity)
         for c in contacts:

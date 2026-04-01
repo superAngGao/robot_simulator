@@ -141,6 +141,12 @@ class StaticRobotData:
     contact_slop: float = 0.005  # Allowed penetration before correction [m]
     solver_max_iter: int = 60  # Jacobi PGS iteration count
     solver_omega: float = 0.7  # Jacobi relaxation factor
+    # Solimp impedance params for friction R regularization (Q25 fix)
+    solimp_d0: float = 0.95
+    solimp_dw: float = 0.99
+    solimp_width: float = 0.001
+    solimp_mid: float = 0.5
+    solimp_power: float = 2.0
 
     # -- Root body index (for observation slicing) --
     root_body_idx: int = 0

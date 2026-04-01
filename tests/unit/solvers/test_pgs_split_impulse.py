@@ -98,7 +98,8 @@ class TestPGSSIFrictionSticking:
         v_after, _ = _solve_and_get_velocity(solver, np.array([2.0, 0, -2.0, 0, 0, 0]))
         v_contact_x = v_after[0] + (-0.1) * v_after[4]
         assert abs(v_after[2]) < 1e-3
-        assert abs(v_contact_x) < 1e-2
+        # Tolerance relaxed: Q25 friction R regularization adds compliance
+        assert abs(v_contact_x) < 0.03
 
 
 class TestPGSSIFrictionless:
