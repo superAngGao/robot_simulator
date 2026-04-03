@@ -22,6 +22,7 @@ import warp as wp
 from .spatial_warp import (
     inverse_transform_R,
     inverse_transform_r,
+    quat_to_rot_wp,
     transform_force_wp,
     vec6_angular,
     vec6_from_two_vec3,
@@ -520,9 +521,23 @@ def batched_impulse_to_gen(
                 # S = [ax,ay,az, 0,0,0] → Sᵀf = dot(axis, f_linear)
                 gen_impulse[env_id, vs] = axis[0] * f_i[0] + axis[1] * f_i[1] + axis[2] * f_i[2]
         elif jtype == JOINT_FREE:
-            # S = I₆ → Sᵀf = f
-            for d in range(6):
-                gen_impulse[env_id, vs + d] = f_i[d]
+            # S = [[R_J^T, 0], [0, I]] → S^T = [[R_J, 0], [0, I]]
+            # gen_impulse[:3] = R_J @ f[:3],  gen_impulse[3:6] = f[3:6]
+            qs_free = q_idx_start[i]
+            RJ_free = quat_to_rot_wp(
+                q[env_id, qs_free],
+                q[env_id, qs_free + 1],
+                q[env_id, qs_free + 2],
+                q[env_id, qs_free + 3],
+            )
+            f_lin = wp.vec3(f_i[0], f_i[1], f_i[2])
+            tau_lin = RJ_free * f_lin
+            gen_impulse[env_id, vs + 0] = tau_lin[0]
+            gen_impulse[env_id, vs + 1] = tau_lin[1]
+            gen_impulse[env_id, vs + 2] = tau_lin[2]
+            gen_impulse[env_id, vs + 3] = f_i[3]
+            gen_impulse[env_id, vs + 4] = f_i[4]
+            gen_impulse[env_id, vs + 5] = f_i[5]
 
         # Propagate to parent: f_parent += X_up.apply_force(f_child)
         pi = parent_idx[i]

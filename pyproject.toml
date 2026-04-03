@@ -19,3 +19,7 @@ indent-style = "space"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: long-running tests (MuJoCo/Bullet reference comparisons, multi-step validation)",
+    "gpu: tests requiring CUDA (Warp kernels, GPU engines)",
+]

@@ -343,8 +343,16 @@ class FreeJoint(Joint):
     Position parameterisation (nq = 7):
         q = [qw, qx, qy, qz, x, y, z]   (quaternion + translation)
 
-    Velocity parameterisation (nv = 6):
-        qdot = [vx, vy, vz, ωx, ωy, ωz]  (spatial velocity, [linear; angular])
+    Velocity parameterisation (nv = 6, MuJoCo convention):
+        qdot = [vx, vy, vz, ωx, ωy, ωz]
+        Linear velocity  [vx, vy, vz]  is in **world frame**.
+        Angular velocity [ωx, ωy, ωz] is in **body frame**.
+
+    The q-dependent motion subspace S(q) = [[R^T, 0], [0, I_3]] maps
+    the mixed-frame qdot to a body-frame spatial velocity, ensuring
+    correct dynamics via Featherstone ABA/RNEA/CRBA.  The Coriolis
+    bias c_J = Sdot @ qdot = [-ω × (R^T v_world), 0] accounts for
+    the rotating frame.
     """
 
     nq = 7
@@ -360,14 +368,25 @@ class FreeJoint(Joint):
         return SpatialTransform(R, pos)
 
     def motion_subspace(self, q: NDArray[np.float64]) -> NDArray[np.float64]:
-        return np.eye(6, dtype=np.float64)  # S = I_6
+        R = quat_to_rot(q[:4])
+        S = np.eye(6, dtype=np.float64)
+        S[:3, :3] = R.T  # world-frame linear → body-frame linear
+        return S
 
     def bias_acceleration(
         self,
         q: NDArray[np.float64],
         qdot: NDArray[np.float64],
     ) -> Vec6:
-        return np.zeros(6, dtype=np.float64)
+        # Coriolis bias from q-dependent S: c_J = Sdot @ qdot
+        # Sdot[:3,:3] = d(R^T)/dt = -[omega_body×] @ R^T
+        # c_J[:3] = -omega_body × (R^T @ v_world)
+        R = quat_to_rot(q[:4])
+        v_body_lin = R.T @ qdot[:3]
+        omega_body = qdot[3:]
+        c = np.zeros(6, dtype=np.float64)
+        c[:3] = -np.cross(omega_body, v_body_lin)
+        return c
 
     def default_q(self) -> NDArray[np.float64]:
         # Identity quaternion (w=1) at origin

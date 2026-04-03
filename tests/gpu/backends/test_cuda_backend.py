@@ -10,9 +10,14 @@ import numpy as np
 import pytest
 import torch
 
-from physics.backends import get_backend
-from rl_env.cfg import EnvCfg
-from robot import load_urdf
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+]
+
+from physics.backends import get_backend  # noqa: E402
+from rl_env.cfg import EnvCfg  # noqa: E402
+from robot import load_urdf  # noqa: E402
 
 ATOL_SINGLE = 1e-4
 ATOL_MULTI = 5e-3

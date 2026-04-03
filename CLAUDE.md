@@ -8,7 +8,9 @@
 |------|---------|
 | Install (editable) | `pip install -e .` |
 | Run example | `MPLBACKEND=Agg python -m robot_simulator.examples.simple_quadruped [--save out.gif]` |
-| Run tests | `python -m pytest tests/ -v` |
+| Run tests (fast, ~13s) | `python -m pytest tests/ -m "not (slow or gpu)" -v` |
+| Run tests (fast+gpu, ~2min) | `python -m pytest tests/ -m "not slow" -v` |
+| Run tests (all, ~21min) | `python -m pytest tests/ -v` |
 | Lint | `ruff check .` |
 | Format | `ruff format .` |
 | Pre-commit (manual) | `pre-commit run --files <file1> <file2>` |

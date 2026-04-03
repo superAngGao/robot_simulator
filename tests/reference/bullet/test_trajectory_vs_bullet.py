@@ -50,7 +50,10 @@ from robot.model import RobotModel
 from scene import Scene
 from simulator import Simulator
 
-pytestmark = pytest.mark.skipif(not HAS_BULLET, reason="pybullet not installed")
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.skipif(not HAS_BULLET, reason="pybullet not installed"),
+]
 
 N_STEPS = 500
 DT = 0.001

@@ -8,7 +8,6 @@ Kernel factories use module-level globals to inject shape constants
 
 from __future__ import annotations
 
-import functools
 import sys
 
 import tilelang
@@ -28,8 +27,6 @@ def _build_fk_kernel_impl():
     """Build the FK kernel using current module globals _N, _nb, _nq, _nv."""
     N = _this_module._N
     nb = _this_module._nb
-    nq = _this_module._nq
-    nv = _this_module._nv
 
     @tilelang.jit(out_idx=[2, 3, 4, 5, 6])
     def kernel():
@@ -116,7 +113,7 @@ def _build_fk_kernel_impl():
                     jt = jtype[body]
                     qs = qstart[body]
                     vs = vstart[body]
-                    vl = vlen[body]
+                    _vl = vlen[body]  # noqa: F841 — read for alignment
                     pid = pidx[body]
 
                     for d in T.Serial(3):
@@ -145,9 +142,9 @@ def _build_fk_kernel_impl():
                         K_buf[2, 0] = -ax[1]
                         K_buf[2, 1] = ax[0]
                         for a, b in T.Parallel(3, 3):
-                            R_J[a, b] = (c * T.if_then_else(a == b, 1.0, 0.0)
-                                         + s * K_buf[a, b]
-                                         + omc * ax[a] * ax[b])
+                            R_J[a, b] = (
+                                c * T.if_then_else(a == b, 1.0, 0.0) + s * K_buf[a, b] + omc * ax[a] * ax[b]
+                            )
 
                     if jt == 2:  # PRISMATIC
                         d_val = q[env_id, qs]
@@ -164,15 +161,15 @@ def _build_fk_kernel_impl():
                         x = qx / n
                         y = qy / n
                         z = qz / n
-                        R_J[0, 0] = 1.0 - 2.0 * (y*y + z*z)
-                        R_J[0, 1] = 2.0 * (x*y - w*z)
-                        R_J[0, 2] = 2.0 * (x*z + w*y)
-                        R_J[1, 0] = 2.0 * (x*y + w*z)
-                        R_J[1, 1] = 1.0 - 2.0 * (x*x + z*z)
-                        R_J[1, 2] = 2.0 * (y*z - w*x)
-                        R_J[2, 0] = 2.0 * (x*z - w*y)
-                        R_J[2, 1] = 2.0 * (y*z + w*x)
-                        R_J[2, 2] = 1.0 - 2.0 * (x*x + y*y)
+                        R_J[0, 0] = 1.0 - 2.0 * (y * y + z * z)
+                        R_J[0, 1] = 2.0 * (x * y - w * z)
+                        R_J[0, 2] = 2.0 * (x * z + w * y)
+                        R_J[1, 0] = 2.0 * (x * y + w * z)
+                        R_J[1, 1] = 1.0 - 2.0 * (x * x + z * z)
+                        R_J[1, 2] = 2.0 * (y * z - w * x)
+                        R_J[2, 0] = 2.0 * (x * z - w * y)
+                        R_J[2, 1] = 2.0 * (y * z + w * x)
+                        R_J[2, 2] = 1.0 - 2.0 * (x * x + y * y)
                         for d in T.Serial(3):
                             r_J[d] = q[env_id, qs + 4 + d]
 
@@ -222,8 +219,20 @@ def _build_fk_kernel_impl():
                         for d in T.Serial(3):
                             vJ[d] = ax[d] * qdot[env_id, vs]
                     if jt == 0:
-                        for d in T.Serial(6):
-                            vJ[d] = qdot[env_id, vs + d]
+                        # MuJoCo convention: qdot[:3] world linear, qdot[3:] body angular
+                        # vJ = S @ qdot = [R_J^T @ v_world; omega_body]
+                        v_world = T.alloc_local([3], "float32")
+                        v_body_lin = T.alloc_local([3], "float32")
+                        for d in T.Serial(3):
+                            v_world[d] = qdot[env_id, vs + d]
+                        # v_body_lin = R_J^T @ v_world
+                        for i_r in T.Serial(3):
+                            v_body_lin[i_r] = 0.0
+                            for k_r in T.Serial(3):
+                                v_body_lin[i_r] += R_J[k_r, i_r] * v_world[k_r]
+                        for d in T.Serial(3):
+                            vJ[d] = v_body_lin[d]
+                            vJ[d + 3] = qdot[env_id, vs + 3 + d]
 
                     if pid < 0:
                         for d in T.Parallel(6):
@@ -267,12 +276,10 @@ def _build_aba_kernel_impl():
     """Build the ABA kernel using current module globals."""
     N = _this_module._N
     nb = _this_module._nb
-    nq = _this_module._nq
     nv = _this_module._nv
 
     @tilelang.jit(out_idx=[4])
     def kernel():
-
         @T.macro
         def mat66_mul_vec6(M, v, out):
             for i in T.Parallel(6):
@@ -374,8 +381,8 @@ def _build_aba_kernel_impl():
             for i, j in T.Parallel(6, 6):
                 X6[i, j] = 0.0
             for i, j in T.Parallel(3, 3):
-                X6[i, j] = R[j, i]           # top-left: E
-                X6[i + 3, j + 3] = R[j, i]   # bottom-right: E
+                X6[i, j] = R[j, i]  # top-left: E
+                X6[i + 3, j + 3] = R[j, i]  # bottom-right: E
             # top-right: -E @ skew(r)
             _K = T.alloc_local([3, 3], "float32")
             for a, b in T.Parallel(3, 3):
@@ -404,6 +411,7 @@ def _build_aba_kernel_impl():
             jtype: T.Tensor([_nb], "int32"),
             jaxis: T.Tensor([_nb, 3], "float32"),
             pidx: T.Tensor([_nb], "int32"),
+            qstart: T.Tensor([_nb], "int32"),
             vstart: T.Tensor([_nb], "int32"),
             vlen: T.Tensor([_nb], "int32"),
             I_mat: T.Tensor([_nb, 6, 6], "float32"),
@@ -420,10 +428,9 @@ def _build_aba_kernel_impl():
                 a_arr = T.alloc_local([nb, 6], "float32")
                 # Per-body ABA pass 2 storage
                 U_arr = T.alloc_local([nb, 6], "float32")  # for 1-DOF
-                Dinv_arr = T.alloc_local([nb], "float32")   # scalar for 1-DOF
-                u_arr = T.alloc_local([nb], "float32")      # scalar for 1-DOF
+                Dinv_arr = T.alloc_local([nb], "float32")  # scalar for 1-DOF
+                u_arr = T.alloc_local([nb], "float32")  # scalar for 1-DOF
                 # FreeJoint storage (body 0 only typically)
-                U6_arr = T.alloc_local([6, 6], "float32")
                 u6_arr = T.alloc_local([6], "float32")
                 IA6_for_solve = T.alloc_local([6, 6], "float32")
 
@@ -446,7 +453,10 @@ def _build_aba_kernel_impl():
                 pA_A = T.alloc_local([6], "float32")
                 IA_tmp = T.alloc_local([6, 6], "float32")
                 IA_parent = T.alloc_local([6, 6], "float32")
-                pA_parent = T.alloc_local([6], "float32")
+                # FreeJoint R_J (computed from quaternion)
+                R_J_free = T.alloc_local([3, 3], "float32")
+                v_world_aba = T.alloc_local([3], "float32")
+                v_body_lin_aba = T.alloc_local([3], "float32")
 
                 # Zero init
                 for i in T.Serial(nb):
@@ -488,13 +498,58 @@ def _build_aba_kernel_impl():
                         for d in T.Serial(3):
                             vJ[d] = ax[d] * qdot[env_id, vs]
                     if jt == 0:  # FREE
-                        for d in T.Serial(6):
-                            vJ[d] = qdot[env_id, vs + d]
+                        # MuJoCo convention: qdot[:3] world linear, qdot[3:] body angular
+                        # Compute R_J from quaternion
+                        qs_aba = qstart[i]
+                        qw_f = q[env_id, qs_aba]
+                        qx_f = q[env_id, qs_aba + 1]
+                        qy_f = q[env_id, qs_aba + 2]
+                        qz_f = q[env_id, qs_aba + 3]
+                        n_f = T.sqrt(qw_f * qw_f + qx_f * qx_f + qy_f * qy_f + qz_f * qz_f)
+                        w_f = qw_f / n_f
+                        x_f = qx_f / n_f
+                        y_f = qy_f / n_f
+                        z_f = qz_f / n_f
+                        R_J_free[0, 0] = 1.0 - 2.0 * (y_f * y_f + z_f * z_f)
+                        R_J_free[0, 1] = 2.0 * (x_f * y_f - w_f * z_f)
+                        R_J_free[0, 2] = 2.0 * (x_f * z_f + w_f * y_f)
+                        R_J_free[1, 0] = 2.0 * (x_f * y_f + w_f * z_f)
+                        R_J_free[1, 1] = 1.0 - 2.0 * (x_f * x_f + z_f * z_f)
+                        R_J_free[1, 2] = 2.0 * (y_f * z_f - w_f * x_f)
+                        R_J_free[2, 0] = 2.0 * (x_f * z_f - w_f * y_f)
+                        R_J_free[2, 1] = 2.0 * (y_f * z_f + w_f * x_f)
+                        R_J_free[2, 2] = 1.0 - 2.0 * (x_f * x_f + y_f * y_f)
+                        # vJ[:3] = R_J^T @ v_world
+                        for d_r in T.Serial(3):
+                            v_world_aba[d_r] = qdot[env_id, vs + d_r]
+                        for i_r in T.Serial(3):
+                            v_body_lin_aba[i_r] = 0.0
+                            for k_r in T.Serial(3):
+                                v_body_lin_aba[i_r] += R_J_free[k_r, i_r] * v_world_aba[k_r]
+                        for d in T.Serial(3):
+                            vJ[d] = v_body_lin_aba[d]
+                            vJ[d + 3] = qdot[env_id, vs + 3 + d]
+
+                    # Coriolis bias for FreeJoint: c_J_free = [-omega x v_body_lin, 0]
+                    cJ_free = T.alloc_local([6], "float32")
+                    for d in T.Parallel(6):
+                        cJ_free[d] = 0.0
+                    if jt == 0:  # FREE
+                        # omega x v_body_lin
+                        _w_cJ = T.alloc_local([3], "float32")
+                        _v_cJ = T.alloc_local([3], "float32")
+                        _wxv_cJ = T.alloc_local([3], "float32")
+                        for d in T.Serial(3):
+                            _w_cJ[d] = vJ[d + 3]
+                            _v_cJ[d] = vJ[d]
+                        cross3(_w_cJ, _v_cJ, _wxv_cJ)
+                        for d in T.Serial(3):
+                            cJ_free[d] = -_wxv_cJ[d]
 
                     if pid < 0:
                         for d in T.Parallel(6):
                             v_arr[i, d] = vJ[d]
-                            c_arr[i, d] = 0.0
+                            c_arr[i, d] = cJ_free[d]
                     else:
                         # Load parent velocity
                         for d in T.Serial(6):
@@ -502,12 +557,12 @@ def _build_aba_kernel_impl():
                         transform_vel(R_up, r_up, tmp6, vi)
                         for d in T.Parallel(6):
                             v_arr[i, d] = vi[d] + vJ[d]
-                        # c = v ×_vel vJ
+                        # c = v ×_vel vJ + cJ_free
                         for d in T.Serial(6):
                             vi[d] = v_arr[i, d]
                         spatial_cross_vel_mv(vi, vJ, ci)
                         for d in T.Parallel(6):
-                            c_arr[i, d] = ci[d]
+                            c_arr[i, d] = ci[d] + cJ_free[d]
 
                     # IA = I_body
                     for a, b in T.Parallel(6, 6):
@@ -584,10 +639,22 @@ def _build_aba_kernel_impl():
                                 pA_A[d] = pA_i[d] + tmp6[d] + U_i[d] * D_inv_buf[0] * u_buf[0]
 
                         if jt == 0:  # FREE (6-DOF)
-                            # S = I, U = IA, D = IA
-                            # u = tau - pA
+                            # With S = [[R_J^T,0],[0,I]], work in body frame:
+                            # tau_body[:3] = R_J^T @ tau_gen[:3], tau_body[3:] = tau_gen[3:]
+                            # Then standard ABA with S=I on tau_body, and convert qddot back.
+                            # u = tau_body - pA
+                            tau_body = T.alloc_local([6], "float32")
+                            tau_gen_lin = T.alloc_local([3], "float32")
+                            for d in T.Serial(3):
+                                tau_gen_lin[d] = tau_total[env_id, vs + d]
+                            for i_r in T.Serial(3):
+                                tau_body[i_r] = 0.0
+                                for k_r in T.Serial(3):
+                                    tau_body[i_r] += R_J_free[k_r, i_r] * tau_gen_lin[k_r]
+                            for d in T.Serial(3):
+                                tau_body[d + 3] = tau_total[env_id, vs + 3 + d]
                             for d in T.Serial(6):
-                                u6_arr[d] = tau_total[env_id, vs + d] - pA_i[d]
+                                u6_arr[d] = tau_body[d] - pA_i[d]
                             # Store IA for pass 3
                             for a, b in T.Parallel(6, 6):
                                 IA6_for_solve[a, b] = IA[i, a, b]
@@ -735,8 +802,39 @@ def _build_aba_kernel_impl():
                                         s_buf[0] -= aug[row, k] * qdd[k]
                                 qdd[row] = s_buf[0] / aug[row, row]
 
+                            # qdd is body-frame. Convert to generalized coords:
+                            # qddot_gen[:3] = R_J @ qdd[:3], qddot_gen[3:6] = qdd[3:6]
+                            # Recompute R_J from quaternion
+                            qs_p3 = qstart[i]
+                            qw_p3 = q[env_id, qs_p3]
+                            qx_p3 = q[env_id, qs_p3 + 1]
+                            qy_p3 = q[env_id, qs_p3 + 2]
+                            qz_p3 = q[env_id, qs_p3 + 3]
+                            n_p3 = T.sqrt(qw_p3 * qw_p3 + qx_p3 * qx_p3 + qy_p3 * qy_p3 + qz_p3 * qz_p3)
+                            w_p3 = qw_p3 / n_p3
+                            x_p3 = qx_p3 / n_p3
+                            y_p3 = qy_p3 / n_p3
+                            z_p3 = qz_p3 / n_p3
+                            RJ_p3 = T.alloc_local([3, 3], "float32")
+                            RJ_p3[0, 0] = 1.0 - 2.0 * (y_p3 * y_p3 + z_p3 * z_p3)
+                            RJ_p3[0, 1] = 2.0 * (x_p3 * y_p3 - w_p3 * z_p3)
+                            RJ_p3[0, 2] = 2.0 * (x_p3 * z_p3 + w_p3 * y_p3)
+                            RJ_p3[1, 0] = 2.0 * (x_p3 * y_p3 + w_p3 * z_p3)
+                            RJ_p3[1, 1] = 1.0 - 2.0 * (x_p3 * x_p3 + z_p3 * z_p3)
+                            RJ_p3[1, 2] = 2.0 * (y_p3 * z_p3 - w_p3 * x_p3)
+                            RJ_p3[2, 0] = 2.0 * (x_p3 * z_p3 - w_p3 * y_p3)
+                            RJ_p3[2, 1] = 2.0 * (y_p3 * z_p3 + w_p3 * x_p3)
+                            RJ_p3[2, 2] = 1.0 - 2.0 * (x_p3 * x_p3 + y_p3 * y_p3)
+                            qdd_gen_lin = T.alloc_local([3], "float32")
+                            for i_r in T.Serial(3):
+                                qdd_gen_lin[i_r] = 0.0
+                                for k_r in T.Serial(3):
+                                    qdd_gen_lin[i_r] += RJ_p3[i_r, k_r] * qdd[k_r]
+                            for d in T.Serial(3):
+                                qddot[env_id, vs + d] = qdd_gen_lin[d]
+                            for d in T.Serial(3):
+                                qddot[env_id, vs + 3 + d] = qdd[3 + d]
                             for d in T.Parallel(6):
-                                qddot[env_id, vs + d] = qdd[d]
                                 a_arr[i, d] = tmp6b[d] + qdd[d]
                     else:
                         for d in T.Parallel(6):
@@ -774,9 +872,12 @@ def rodrigues_torch(axis: torch.Tensor, angle: torch.Tensor) -> torch.Tensor:
     c = torch.cos(angle).unsqueeze(-1).unsqueeze(-1)
     s = torch.sin(angle).unsqueeze(-1).unsqueeze(-1)
     K = torch.zeros(N, 3, 3, device=angle.device, dtype=angle.dtype)
-    K[:, 0, 1] = -k[:, 2]; K[:, 0, 2] = k[:, 1]
-    K[:, 1, 0] = k[:, 2]; K[:, 1, 2] = -k[:, 0]
-    K[:, 2, 0] = -k[:, 1]; K[:, 2, 1] = k[:, 0]
+    K[:, 0, 1] = -k[:, 2]
+    K[:, 0, 2] = k[:, 1]
+    K[:, 1, 0] = k[:, 2]
+    K[:, 1, 2] = -k[:, 0]
+    K[:, 2, 0] = -k[:, 1]
+    K[:, 2, 1] = k[:, 0]
     kkT = torch.einsum("ni,nj->nij", k, k)
     I = torch.eye(3, device=angle.device, dtype=angle.dtype).unsqueeze(0)
     return c * I + s * K + (1.0 - c) * kkT
@@ -785,11 +886,20 @@ def rodrigues_torch(axis: torch.Tensor, angle: torch.Tensor) -> torch.Tensor:
 def quat_to_rot_torch(quat: torch.Tensor) -> torch.Tensor:
     q = quat / quat.norm(dim=-1, keepdim=True)
     w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
-    return torch.stack([
-        1 - 2*(y*y + z*z), 2*(x*y - w*z), 2*(x*z + w*y),
-        2*(x*y + w*z), 1 - 2*(x*x + z*z), 2*(y*z - w*x),
-        2*(x*z - w*y), 2*(y*z + w*x), 1 - 2*(x*x + y*y),
-    ], dim=-1).reshape(-1, 3, 3)
+    return torch.stack(
+        [
+            1 - 2 * (y * y + z * z),
+            2 * (x * y - w * z),
+            2 * (x * z + w * y),
+            2 * (x * y + w * z),
+            1 - 2 * (x * x + z * z),
+            2 * (y * z - w * x),
+            2 * (x * z - w * y),
+            2 * (y * z + w * x),
+            1 - 2 * (x * x + y * y),
+        ],
+        dim=-1,
+    ).reshape(-1, 3, 3)
 
 
 def transform_velocity_torch(R, r, v):
@@ -827,9 +937,20 @@ def spatial_transform_matrix_torch(R, r):
     N = R.shape[0]
     E = R.transpose(-1, -2)
     zero = torch.zeros(N, device=R.device, dtype=R.dtype)
-    skew_r = torch.stack([
-        zero, -r[:, 2], r[:, 1], r[:, 2], zero, -r[:, 0], -r[:, 1], r[:, 0], zero,
-    ], dim=-1).reshape(N, 3, 3)
+    skew_r = torch.stack(
+        [
+            zero,
+            -r[:, 2],
+            r[:, 1],
+            r[:, 2],
+            zero,
+            -r[:, 0],
+            -r[:, 1],
+            r[:, 0],
+            zero,
+        ],
+        dim=-1,
+    ).reshape(N, 3, 3)
     M = torch.zeros(N, 6, 6, device=R.device, dtype=R.dtype)
     M[:, :3, :3] = E
     M[:, :3, 3:] = -torch.bmm(E, skew_r)

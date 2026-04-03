@@ -5,6 +5,255 @@ Updated at the end of each development session.
 
 ---
 
+## 2026-04-01 (session 15b) — Q30 GPU Multi-Shape Collision: Cross-Engine Research
+
+### Research Scope
+
+Surveyed 8 engines (NVIDIA Warp/Newton, PhysX 5, Bullet3 GPU, MuJoCo C, MuJoCo MJX,
+MuJoCo Warp, Brax, Isaac Gym/Lab) for GPU compound/multi-shape collision architecture.
+Goal: inform our Phase 2 data layout and kernel design for multi-geom bodies.
+
+### Summary Table
+
+| Engine | Data Layout | Body→Shape Index | Broadphase | Contact Buffer | Atomic? |
+|--------|-------------|-----------------|------------|----------------|---------|
+| **Newton** | Flat parallel arrays (`shape_body[]`, `shape_type[]`, `shape_transform[]`) | `shape_body[s] == b` scan | BVH or Hash Grid | Pre-allocated, `rigid_contact_count` counter | Yes (implied by Warp kernels) |
+| **PhysX 5** | Shapes are first-class broadphase entries | Actor→shapes via `attachShape()` | GPU incremental SAP on shapes (not actors) | Pre-allocated `PxGpuDynamicsMemoryConfig`, overflow → discard | N/A (internal) |
+| **Bullet3 GPU** | Flat `collidables[]` + `childShapes[]` + offset/count | `collidable.m_shapeIndex` + `m_numChildShapes` | GPU parallel linear BVH | Double-buffered fixed-size, swap each frame | Appears fixed-index |
+| **MuJoCo C** | Flat `geom_*[]` (ngeom), `body_geomadr` + `body_geomnum` | `geom_bodyid[g]` reverse map + `body_geomadr`/`body_geomnum` forward | SAP on body AABBs → geom pairs | Arena-allocated `mjContact[]`, `d->ncon` counter | No (sequential C) |
+| **MuJoCo MJX** | Same flat arrays as C, JAX tensors | `geom_bodyid` inherited from mjModel | Bounding-sphere `top_k` (branchless) | Static-shaped JAX arrays, `max_contact_points` cap | No (functional JAX) |
+| **MuJoCo Warp** | Same flat arrays, Warp tensors `(nworld, ngeom)` | `geom_bodyid` + body-geom index arrays | SAP or N-squared (configurable) | Pre-allocated `(nworld, naconmax)`, `nacon` atomic counter | Yes (`wp.atomic_add`) |
+| **Brax** | Inherits MJX `geom_*` arrays, JAX pytrees | `sys.geom_bodyid` | Delegates to MJX `collision()` | MJX Contact object | No (functional JAX) |
+| **Isaac Gym/Lab** | PhysX compound shapes, V-HACD decomposition | PhysX `PxRigidActor` → shapes | PhysX GPU SAP | PhysX GPU buffers | PhysX internal |
+
+### Detailed Findings Per Engine
+
+#### 1. Newton (successor to warp.sim)
+
+**Data layout** — MuJoCo-style flat parallel arrays in the `Model` class:
+```
+shape_body[nshape]       # int: which body owns this shape
+shape_type[nshape]       # enum: SPHERE, CAPSULE, BOX, MESH, SDF
+shape_transform[nshape]  # Transform: body-to-shape offset
+shape_scale[nshape]      # vec3: non-uniform scaling
+shape_material[nshape]   # friction, restitution, stiffness
+```
+Multi-shape bodies: multiple entries with same `shape_body[s]` value.
+No `body_shapeadr`/`body_shapenum` forward index (linear scan or pre-built).
+
+**Collision pipeline**: `CollisionPipeline.collide(state, contacts)` → broadphase
+(BVH or hash grid) → narrowphase dispatch table (sphere-sphere, capsule-capsule,
+box-box SAT, mesh-primitive BVH, SDF-primitive).
+
+**Contact buffer**: `Contacts` class with pre-allocated parallel arrays
+(`rigid_contact_shape0/1[]`, `rigid_contact_point0/1[]`, `rigid_contact_normal[]`,
+`rigid_contact_distance[]`, `rigid_contact_count`). Buffer allocated once from
+Model max capacity, cleared per frame (only counters reset = 1 kernel launch).
+
+**Multi-world**: `shape_world[]` and `body_world[]` arrays for collision group
+isolation across parallel environments.
+
+#### 2. PhysX 5 GPU
+
+**Data layout** — Shapes are independent broadphase entries. Each `PxRigidActor`
+owns N shapes via `attachShape()`. No flat array exposed to user; internal
+representation unknown but shape-centric.
+
+**Broadphase** — `PxBroadPhaseType::eGPU`: GPU incremental sweep-and-prune with
+ABP-style initial pair generation. Operates on *shapes*, not actors. Two compound
+actors produce `O(shapes_A * shapes_B)` interaction pairs. `PxAggregate` bundles
+actors into single broadphase entry to reduce pair explosion (ragdoll use case).
+
+**GPU narrowphase** — Requires PCM enabled. Convex hulls limited to 64 verts/polys
+on GPU (fallback to CPU otherwise). Contact modification forces CPU fallback.
+
+**Contact buffer** — Pre-allocated via `PxGpuDynamicsMemoryConfig`. Cannot grow
+dynamically. Overflow → warnings + discarded contacts/constraints. Statistics
+(`PxGpuDynamicsMemoryConfigStatistics`) report actual required sizes for tuning.
+
+**Compound optimization** — `PxBVH` structures for complex compounds route to
+internal "compound pruner" (separate from main scene query structures).
+Aggregate overlap processing happens on CPU even with GPU broadphase.
+
+#### 3. Bullet3 GPU (OpenCL)
+
+**Data layout** — Fully flattened for GPU coalescing:
+```
+collidables[ncollidable]     # each has: shapeType, shapeIndex, numChildShapes
+childShapes[total_children]  # flattened child shapes, offset-indexed
+convexPolyhedra[nconvex]     # vertexOffset, faceOffset into global arrays
+convexVertices[], convexIndices[], convexFaces[]  # global flat arrays
+treeNodes[], subTrees[]      # quantized BVH nodes (16 bytes each, compressed)
+```
+
+**Compound registration**: `registerCompoundShape()` stores children in flat
+`m_cpuChildShapes`, builds `b3QuantizedBvh` locally, transfers to GPU.
+Collidable's `m_shapeIndex` + `m_numChildShapes` index into child array.
+
+**Single-shape optimization**: Bodies without compounds skip BVH entirely —
+direct collidable reference, no tree traversal overhead.
+
+**Broadphase**: GPU parallel linear BVH with quantized AABB nodes.
+Compound pairs use `findCompoundPairsKernel` (tandem tree-vs-tree traversal).
+
+**Narrowphase**: `computeConvexConvexContactsGPUSAT()` handles all types.
+Kernel reads `m_shapeType` field to dispatch: SHAPE_CONVEX_HULL, SHAPE_SPHERE,
+SHAPE_PLANE, SHAPE_COMPOUND_OF_CONVEX_HULLS.
+
+**Contact buffer**: Two fixed-size buffers (`m_maxContactCapacity`), double-buffered
+(swap `m_currentContactBuffer = 1 - m_currentContactBuffer` each frame). No atomic
+counter visible — SAT kernel writes contacts at computed indices.
+
+#### 4. MuJoCo C
+
+**Data layout** — The gold standard flat-array pattern:
+```
+mjModel:
+  geom_type[ngeom]         # mjtGeom enum
+  geom_bodyid[ngeom]       # reverse map: geom → body
+  geom_pos[ngeom * 3]      # local offset from body origin
+  geom_quat[ngeom * 4]     # local rotation from body frame
+  geom_size[ngeom * 3]     # shape-specific parameters
+  geom_contype[ngeom]      # contact type bitmask
+  geom_conaffinity[ngeom]  # contact affinity bitmask
+  body_geomadr[nbody]      # forward map: body → first geom index
+  body_geomnum[nbody]      # forward map: body → geom count
+  
+mjData:
+  geom_xpos[ngeom * 3]    # world position (from FK)
+  geom_xmat[ngeom * 9]    # world rotation matrix (from FK)
+  contact[nconmax]         # pre-allocated mjContact array
+  ncon                     # active contact count (reset to 0 each step)
+```
+
+**Collision pipeline**: 3 stages:
+1. **Broadphase** (SAP): sweep-and-prune on body AABBs along PCA-selected axis.
+   Returns body pairs. Geom pairs extracted within overlapping bodies.
+2. **Filtering**: contype/conaffinity bitmask, bounding sphere, parent-child
+   exclusion, weld exclusion, OBB test.
+3. **Narrowphase**: `mjCOLLISIONFUNC[type1][type2]` double-dispatch table
+   (26+ entries). Arena-allocates `mjMAXCONPAIR` contacts per pair call.
+
+**Multi-geom bodies**: `body_geomadr`/`body_geomnum` defines contiguous geom
+ranges. Broadphase returns body pairs; narrowphase iterates all geom-geom pairs
+within the body pair.
+
+#### 5. MuJoCo MJX (JAX GPU port)
+
+**Data layout** — Same arrays as C MuJoCo, stored as JAX arrays. No structural
+changes for GPU — the flat-array pattern maps directly to JAX tensors.
+
+**Broadphase** — Bounding-sphere distance + `jax.lax.top_k(-dist, k=max_geom_pairs)`.
+Branchless: no spatial tree, just sort-and-select. Works well on accelerators
+that hate branching. Applied per geom-type-pair group.
+
+**Narrowphase** — Geom pairs pre-grouped by `FunctionKey(geom_types, data_ids, condim)`.
+Type-pair dispatch table with 26+ entries. Collision functions vmapped over all
+pairs in each group. SDF-based optimization (gradient descent) for curved shapes.
+
+**Contact buffer** — Static-shaped JAX arrays (required for JIT compilation).
+`max_contact_points` caps contacts per condim group via `top_k(-dist)`.
+`max_geom_pairs` caps broadphase pair count. Both set as custom numerics.
+Excess contacts selected by deepest penetration.
+
+**Key insight**: "The most expensive part of an MJX simulation loop is collision
+detection by far." Explicit pair enumeration recommended for performance.
+
+#### 6. MuJoCo Warp (GPU, newest)
+
+**Data layout** — Same flat arrays as C MuJoCo, stored as Warp arrays with
+shape `(nworld, ngeom, ...)` for multi-world batching.
+
+**Broadphase** — Two options (selectable via `m.opt.broadphase`):
+- **SAP**: project bounding spheres onto random direction, segmented sort,
+  binary search for overlap ranges, cumulative scan for load balancing.
+  3-stage GPU pipeline: project → sort → pair-generate.
+- **N-squared**: iterate pre-filtered pair list with hierarchical filter
+  (plane → sphere → AABB → OBB).
+
+**Narrowphase** — `MJ_COLLISION_TABLE` routes 32 geom-type pairs to PRIMITIVE
+(analytic), CONVEX (GJK/EPA), SDF, or FLEX kernels. Warp `@wp.kernel` dispatch.
+
+**Contact buffer** — Pre-allocated `(nworld, naconmax)`. `nacon` incremented via
+`wp.atomic_add()`. Overflow → contacts silently dropped.
+
+**EPA workspace** — Pre-allocated `EpaWorkspace` in `Data` to avoid per-frame
+allocation (OOM fix for RL training). Sized by `naconmax * epa_iterations`.
+
+#### 7. Brax
+
+**Data layout** — Inherits MuJoCo's `mjx.Model` via `System(mjx.Model)`.
+All `geom_*` arrays from MuJoCo are available as JAX arrays.
+
+**Collision** — Delegates entirely to `mjx.collision(sys, d)`. The `contact.py`
+module handles coordinate transforms (body-local → world via vmapped
+`local_to_global()` indexed by `sys.geom_bodyid`) and wraps MJX contacts
+into Brax `Contact(link_idx, elasticity, ...)`.
+
+**Multi-geom bodies** — Handled through `geom_bodyid` indexing, same as MuJoCo.
+No separate compound shape concept.
+
+#### 8. Isaac Gym / Isaac Lab
+
+**Architecture** — Thin wrapper around PhysX GPU. All collision is PhysX.
+
+**URDF loading**: collision meshes → V-HACD convex decomposition for PhysX.
+Submeshes can be loaded as separate shapes (`convex_decomposition_from_submeshes`).
+MJCF: primitive shapes only, no mesh loading.
+
+**Compound shapes**: URDF links with multiple `<collision>` elements become
+PhysX compound actors (multiple `PxShape` per `PxRigidActor`).
+
+**Data exposure**: Physics state as flat PyTorch tensors (pos, quat, vel, omega).
+Contact forces exposed as net per-body tensors. No per-contact-point access
+in standard API.
+
+### Architecture Decision Implications for Our Project
+
+**Consensus pattern across all engines:**
+1. **Flat parallel arrays** indexed by shape ID (not nested per-body).
+   `shape_body[s]` reverse map is universal. Forward map optional.
+2. **Pre-allocated contact buffers** with known max capacity. No dynamic
+   allocation during simulation step.
+3. **Atomic counter** for GPU contact generation (Warp-based engines).
+   JAX engines use static shapes + top_k selection instead.
+4. **Type-pair dispatch table** for narrowphase (not a single polymorphic kernel).
+
+**Recommended design for our Phase 2:**
+
+```python
+# Model (static, immutable after build)
+shape_body: wp.array(dtype=int)           # [nshape] → body index
+shape_type: wp.array(dtype=int)           # [nshape] → GEO_SPHERE/BOX/CAPSULE/MESH
+shape_transform: wp.array(dtype=wp.transform)  # [nshape] → body-local offset
+shape_scale: wp.array(dtype=wp.vec3)      # [nshape]
+shape_size: wp.array(dtype=wp.vec3)       # [nshape] → type-specific params
+
+# Forward index (MuJoCo pattern, optional but useful for body-centric iteration)
+body_shape_adr: wp.array(dtype=int)       # [nbody] → first shape index
+body_shape_num: wp.array(dtype=int)       # [nbody] → shape count
+
+# Contacts (pre-allocated, reused each frame)
+contact_shape0: wp.array(dtype=int)       # [max_contacts]
+contact_shape1: wp.array(dtype=int)       # [max_contacts]
+contact_point: wp.array(dtype=wp.vec3)    # [max_contacts]
+contact_normal: wp.array(dtype=wp.vec3)   # [max_contacts]
+contact_dist: wp.array(dtype=float)       # [max_contacts]
+contact_count: wp.array(dtype=int)        # [1] atomic counter
+
+# Multi-world: add world dimension → (nworld, nshape), (nworld, max_contacts)
+```
+
+**Broadphase recommendation**: Start with N-squared + bounding sphere filter
+(simplest, works for ≤100 bodies). Add SAP when scaling to 1000+ bodies.
+MJX's top_k approach is elegant but requires static-shape arrays (JAX constraint).
+
+**Single-shape optimization**: Most robot links have 1 shape. The flat-array
+pattern handles this naturally (no special case needed, unlike Bullet's explicit
+compound BVH path). Only build per-body BVH if `body_shape_num[b] > threshold`.
+
+---
+
 ## 2026-04-01 (session 15) — Q25 PGS 摩擦假角速度修复
 
 ### Q25 根因分析

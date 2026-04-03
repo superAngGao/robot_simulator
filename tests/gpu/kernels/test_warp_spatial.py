@@ -12,6 +12,8 @@ import pytest
 
 wp = pytest.importorskip("warp")
 
+pytestmark = pytest.mark.gpu
+
 from physics.backends.warp.spatial_warp import (  # noqa: E402
     compose_transform_r_wp,
     compose_transform_wp,

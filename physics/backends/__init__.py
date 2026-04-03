@@ -5,8 +5,9 @@ Usage::
 
     from physics.backends import get_backend
 
-    backend = get_backend("numpy", model, cfg, num_envs)   # CPU fallback
-    backend = get_backend("warp",  model, cfg, num_envs)   # NVIDIA Warp GPU
+    backend = get_backend("numpy",    model, cfg, num_envs)   # CPU fallback
+    backend = get_backend("tilelang", model, cfg, num_envs)   # PyTorch CUDA
+    backend = get_backend("cuda",     model, cfg, num_envs)   # CUDA C++ fused
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ def get_backend(
     """Factory: return a BatchBackend instance by name.
 
     Args:
-        name     : ``"numpy"`` | ``"warp"`` | ``"tilelang"``
+        name     : ``"numpy"`` | ``"tilelang"`` | ``"cuda"``
         model    : Loaded RobotModel.
         cfg      : Environment configuration.
         num_envs : Number of parallel environments.
@@ -40,22 +41,12 @@ def get_backend(
         from .numpy_loop import NumpyLoopBackend
 
         return NumpyLoopBackend(model, cfg, num_envs)
-    elif name == "warp":
-        try:
-            from .warp.warp_backend import WarpBatchBackend
-        except ImportError as e:
-            raise ImportError(
-                "Warp backend requires `warp-lang` and `torch`. "
-                "Install with: pip install warp-lang torch"
-            ) from e
-        return WarpBatchBackend(model, cfg, num_envs)
     elif name == "tilelang":
         try:
             from .tilelang.tilelang_backend import TileLangBatchBackend
         except ImportError as e:
             raise ImportError(
-                "TileLang backend requires `tilelang` and `torch`. "
-                "Install with: pip install tilelang torch"
+                "TileLang backend requires `tilelang` and `torch`. Install with: pip install tilelang torch"
             ) from e
         return TileLangBatchBackend(model, cfg, num_envs)
     elif name in ("cuda", "cuda_crba", "cuda_crba_tc", "cuda_grouped_schur"):
@@ -63,8 +54,7 @@ def get_backend(
             from .cuda.cuda_backend import CudaBatchBackend
         except Exception as e:
             raise ImportError(
-                "CUDA backend requires PyTorch with CUDA and a C++ compiler. "
-                f"Error: {e}"
+                f"CUDA backend requires PyTorch with CUDA and a C++ compiler. Error: {e}"
             ) from e
         if name == "cuda_grouped_schur":
             dynamics = "grouped_schur"
@@ -76,7 +66,4 @@ def get_backend(
             dynamics = "aba"
         return CudaBatchBackend(model, cfg, num_envs, dynamics=dynamics)
     else:
-        raise ValueError(
-            f"Unknown backend: {name!r}. "
-            "Choose 'numpy', 'warp', 'tilelang', or 'cuda'."
-        )
+        raise ValueError(f"Unknown backend: {name!r}. Choose 'numpy', 'tilelang', or 'cuda'.")

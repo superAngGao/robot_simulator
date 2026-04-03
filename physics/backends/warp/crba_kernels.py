@@ -23,6 +23,7 @@ import warp as wp
 from .kernels import JOINT_FREE, JOINT_PRISMATIC, JOINT_REVOLUTE
 from .solver_kernels import CONDIM, _impedance_wp
 from .spatial_warp import (
+    quat_to_rot_wp,
     spatial_cross_force_times_f,
     spatial_cross_vel_times_v,
     transform_force_wp,
@@ -101,7 +102,13 @@ def _inertia_mul_vec(
 
 @wp.func
 def _motion_subspace_col(jtype: int, axis: wp.vec3, col: int) -> vec6f:
-    """Column `col` of motion subspace S. Convention: [linear(3); angular(3)]."""
+    """Column `col` of motion subspace S. Convention: [linear(3); angular(3)].
+
+    For FreeJoint with MuJoCo mixed-frame convention (world linear, body angular),
+    S = [[R_J^T, 0], [0, I_3]].  When R_J is not supplied (identity default),
+    this returns the identity column — use _motion_subspace_col_free() for the
+    full q-dependent version.
+    """
     s = vec6f()
     if jtype == JOINT_REVOLUTE:
         s[3] = axis[0]
@@ -112,6 +119,23 @@ def _motion_subspace_col(jtype: int, axis: wp.vec3, col: int) -> vec6f:
         s[1] = axis[1]
         s[2] = axis[2]
     elif jtype == JOINT_FREE:
+        s[col] = 1.0
+    return s
+
+
+@wp.func
+def _motion_subspace_col_free(col: int, R_J: wp.mat33) -> vec6f:
+    """Column `col` of FreeJoint S = [[R_J^T, 0], [0, I]].
+
+    MuJoCo convention: qdot[:3] world linear, qdot[3:] body angular.
+    """
+    s = vec6f()
+    if col < 3:
+        # Column col of R_J^T: element [i] = R_J^T[i, col] = R_J[col, i]
+        s[0] = R_J[col, 0]
+        s[1] = R_J[col, 1]
+        s[2] = R_J[col, 2]
+    else:
         s[col] = 1.0
     return s
 
@@ -143,6 +167,16 @@ def _load_rup(
     body: int,
 ) -> wp.vec3:
     return wp.vec3(X_up_r[env, body, 0], X_up_r[env, body, 1], X_up_r[env, body, 2])
+
+
+@wp.func
+def _load_RJ_free(
+    q: wp.array(dtype=wp.float32, ndim=2),
+    env: int,
+    qs: int,
+) -> wp.mat33:
+    """Compute R_J from FreeJoint quaternion q[env, qs:qs+4]."""
+    return quat_to_rot_wp(q[env, qs], q[env, qs + 1], q[env, qs + 2], q[env, qs + 3])
 
 
 # ---------------------------------------------------------------------------
@@ -271,13 +305,25 @@ def batched_crba_rnea_cholesky(
         vs = v_idx_start[i]
         axis = wp.vec3(joint_axis[i, 0], joint_axis[i, 1], joint_axis[i, 2])
 
+        # For FreeJoint, S depends on R_J (q-dependent)
+        RJ_i = wp.identity(n=3, dtype=float)
+        if jtype == JOINT_FREE:
+            qs_i = q_idx_start[i]
+            RJ_i = _load_RJ_free(q, env, qs_i)
+
         for col in range(vl):
-            S_col = _motion_subspace_col(jtype, axis, col)
+            if jtype == JOINT_FREE:
+                S_col = _motion_subspace_col_free(col, RJ_i)
+            else:
+                S_col = _motion_subspace_col(jtype, axis, col)
             F_col = _ic_mul_vec(IC, env, i, S_col)
 
             # Diagonal block
             for k in range(vl):
-                S_k = _motion_subspace_col(jtype, axis, k)
+                if jtype == JOINT_FREE:
+                    S_k = _motion_subspace_col_free(k, RJ_i)
+                else:
+                    S_k = _motion_subspace_col(jtype, axis, k)
                 val = float(0.0)
                 for d in range(6):
                     val += S_k[d] * F_col[d]
@@ -299,8 +345,17 @@ def batched_crba_rnea_cholesky(
                     ax_j = wp.vec3(joint_axis[j, 0], joint_axis[j, 1], joint_axis[j, 2])
                     jt_j = joint_type[j]
 
+                    # For FreeJoint ancestor, load R_J
+                    RJ_j = wp.identity(n=3, dtype=float)
+                    if jt_j == JOINT_FREE:
+                        qs_j = q_idx_start[j]
+                        RJ_j = _load_RJ_free(q, env, qs_j)
+
                     for k in range(vl_j):
-                        S_j = _motion_subspace_col(jt_j, ax_j, k)
+                        if jt_j == JOINT_FREE:
+                            S_j = _motion_subspace_col_free(k, RJ_j)
+                        else:
+                            S_j = _motion_subspace_col(jt_j, ax_j, k)
                         val = float(0.0)
                         for d in range(6):
                             val += S_j[d] * F_col[d]
@@ -330,19 +385,33 @@ def batched_crba_rnea_cholesky(
                 qd = qdot[env, vs]
                 vJ = vec6f(axis[0] * qd, axis[1] * qd, axis[2] * qd, 0.0, 0.0, 0.0)
             elif jtype == JOINT_FREE:
+                # MuJoCo convention: qdot[:3] world-frame linear, qdot[3:] body angular.
+                # vJ = S @ qdot = [R_J^T @ v_world; omega_body] (body-frame spatial).
+                qs_free = q_idx_start[i]
+                RJ_free = _load_RJ_free(q, env, qs_free)
+                v_world = wp.vec3(qdot[env, vs], qdot[env, vs + 1], qdot[env, vs + 2])
+                v_body_lin = wp.transpose(RJ_free) * v_world
+                omega_body = wp.vec3(qdot[env, vs + 3], qdot[env, vs + 4], qdot[env, vs + 5])
                 vJ = vec6f(
-                    qdot[env, vs],
-                    qdot[env, vs + 1],
-                    qdot[env, vs + 2],
-                    qdot[env, vs + 3],
-                    qdot[env, vs + 4],
-                    qdot[env, vs + 5],
+                    v_body_lin[0], v_body_lin[1], v_body_lin[2], omega_body[0], omega_body[1], omega_body[2]
                 )
+
+        # Coriolis bias for FreeJoint: c_J = [-omega x v_body_lin, 0]
+        cJ_free = vec6f()
+        if jtype == JOINT_FREE and vl > 0:
+            omega_cJ = wp.vec3(vJ[3], vJ[4], vJ[5])
+            vlin_cJ = wp.vec3(vJ[0], vJ[1], vJ[2])
+            wxv = wp.cross(omega_cJ, vlin_cJ)
+            cJ_free = vec6f(-wxv[0], -wxv[1], -wxv[2], 0.0, 0.0, 0.0)
 
         pi = parent_idx[i]
         if pi < 0:
             v_i = vJ
             a_i = transform_velocity_wp(R_up, r_up, neg_a_gravity)
+            # Add Coriolis bias for FreeJoint root
+            if jtype == JOINT_FREE:
+                for d in range(6):
+                    a_i[d] = a_i[d] + cJ_free[d]
         else:
             v_parent = vec6f(
                 rnea_v[env, pi, 0],
@@ -368,7 +437,7 @@ def batched_crba_rnea_cholesky(
             cJ = spatial_cross_vel_times_v(v_i, vJ)
             a_i = vec6f()
             for d in range(6):
-                a_i[d] = a_xf[d] + cJ[d]
+                a_i[d] = a_xf[d] + cJ[d] + cJ_free[d]
 
         for d in range(6):
             rnea_v[env, i, d] = v_i[d]
@@ -403,8 +472,17 @@ def batched_crba_rnea_cholesky(
             elif jtype == JOINT_PRISMATIC:
                 C_bias[env, vs] = axis[0] * f_i[0] + axis[1] * f_i[1] + axis[2] * f_i[2]
             elif jtype == JOINT_FREE:
-                for d in range(6):
-                    C_bias[env, vs + d] = f_i[d]
+                # S^T = [[R_J, 0], [0, I]]:  tau[:3] = R_J @ f[:3], tau[3:6] = f[3:6]
+                qs_bk = q_idx_start[i]
+                RJ_bk = _load_RJ_free(q, env, qs_bk)
+                f_lin = wp.vec3(f_i[0], f_i[1], f_i[2])
+                tau_lin = RJ_bk * f_lin
+                C_bias[env, vs + 0] = tau_lin[0]
+                C_bias[env, vs + 1] = tau_lin[1]
+                C_bias[env, vs + 2] = tau_lin[2]
+                C_bias[env, vs + 3] = f_i[3]
+                C_bias[env, vs + 4] = f_i[4]
+                C_bias[env, vs + 5] = f_i[5]
 
         pi = parent_idx[i]
         if pi >= 0:
@@ -441,6 +519,7 @@ def batched_contact_jacobian(
     joint_type: wp.array(dtype=wp.int32),
     joint_axis: wp.array(dtype=wp.float32, ndim=2),
     parent_idx: wp.array(dtype=wp.int32),
+    q_idx_start: wp.array(dtype=wp.int32),
     v_idx_start: wp.array(dtype=wp.int32),
     v_idx_len: wp.array(dtype=wp.int32),
     max_contacts: int,
@@ -501,8 +580,17 @@ def batched_contact_jacobian(
                     origin = wp.vec3(X_world_r[env, i, 0], X_world_r[env, i, 1], X_world_r[env, i, 2])
                     r_arm = cp - origin
 
+                    # Load R_J for FreeJoint
+                    RJ_ci = wp.identity(n=3, dtype=float)
+                    if jt == JOINT_FREE:
+                        qs_ci = q_idx_start[i]
+                        RJ_ci = _load_RJ_free(q, env, qs_ci)
+
                     for k in range(vl):
-                        S_col = _motion_subspace_col(jt, ax, k)
+                        if jt == JOINT_FREE:
+                            S_col = _motion_subspace_col_free(k, RJ_ci)
+                        else:
+                            S_col = _motion_subspace_col(jt, ax, k)
                         s_lin_w = R_w * wp.vec3(S_col[0], S_col[1], S_col[2])
                         s_ang_w = R_w * wp.vec3(S_col[3], S_col[4], S_col[5])
                         v_point = s_lin_w + wp.cross(s_ang_w, r_arm)
@@ -536,8 +624,17 @@ def batched_contact_jacobian(
                     origin = wp.vec3(X_world_r[env, i, 0], X_world_r[env, i, 1], X_world_r[env, i, 2])
                     r_arm = cp - origin
 
+                    # Load R_J for FreeJoint
+                    RJ_cj = wp.identity(n=3, dtype=float)
+                    if jt == JOINT_FREE:
+                        qs_cj = q_idx_start[i]
+                        RJ_cj = _load_RJ_free(q, env, qs_cj)
+
                     for k in range(vl):
-                        S_col = _motion_subspace_col(jt, ax, k)
+                        if jt == JOINT_FREE:
+                            S_col = _motion_subspace_col_free(k, RJ_cj)
+                        else:
+                            S_col = _motion_subspace_col(jt, ax, k)
                         s_lin_w = R_w * wp.vec3(S_col[0], S_col[1], S_col[2])
                         s_ang_w = R_w * wp.vec3(S_col[3], S_col[4], S_col[5])
                         v_point = s_lin_w + wp.cross(s_ang_w, r_arm)
@@ -568,6 +665,9 @@ def batched_build_W_joint_space(
     solimp_width: float,
     solimp_mid: float,
     solimp_power: float,
+    erp_pos: float,  # reinterpreted as 1/τ (inverse solref time constant)
+    slop: float,
+    dt: float,  # unused (kept for API compat), position correction is dt-independent
     max_contacts: int,
     max_rows: int,
     nv: int,
@@ -582,7 +682,7 @@ def batched_build_W_joint_space(
     v_free: wp.array(dtype=wp.float32, ndim=2),
     v_current: wp.array(dtype=wp.float32, ndim=2),
 ):
-    """W = J H⁻¹ Jᵀ, v_free = J v_pred, v_current = J qdot."""
+    """W = J H⁻¹ Jᵀ, v_free = J v_pred + Baumgarte bias, v_current = J qdot."""
     env = wp.tid()
 
     # Zero
@@ -620,7 +720,9 @@ def batched_build_W_joint_space(
                 val += J_joint[env, r1, k] * HinvJt[env, k, r2]
             W[env, r1, r2] = val
 
-    # Per-row regularization: normal=cfm, friction=R (Q25 fix)
+    # Per-row regularization (QP dual style).
+    # Normal row: small cfm (hard contact — penetration correction via v_ref below).
+    # Friction rows: per-row R = (1-d)/d × |W_ii| (Q25 fix, Todorov 2014).
     for ci in range(max_contacts):
         if contact_active[env, ci] == 0:
             continue
@@ -628,10 +730,10 @@ def batched_build_W_joint_space(
         depth_c = contact_depth[env, ci]
         d_imp = _impedance_wp(depth_c, solimp_d0, solimp_dw, solimp_width, solimp_mid, solimp_power)
         ratio = (1.0 - d_imp) / wp.max(d_imp, 1.0e-10)
-        W_diag[env, base] = W[env, base, base] + cfm
+        W_diag[env, base] = W[env, base, base] + cfm  # normal: hard
         for off in range(1, CONDIM):
             row = base + off
-            W_diag[env, row] = W[env, row, row] + ratio * wp.abs(W[env, row, row])
+            W_diag[env, row] = W[env, row, row] + ratio * wp.abs(W[env, row, row])  # friction: soft
 
     # v_free, v_current from J × velocity
     for r in range(n_active_rows):
@@ -642,6 +744,23 @@ def batched_build_W_joint_space(
             vc += J_joint[env, r, k] * qdot[env, k]
         v_free[env, r] = vf
         v_current[env, r] = vc
+
+    # Position correction via solref time constant (MuJoCo QP dual).
+    # Target velocity on normal row: v_ref = max(depth - slop, 0) / τ
+    # where τ = solref_timeconst (default 0.02s = 20ms).
+    # RHS becomes: v_free - v_ref (subtract, so PGS produces more force).
+    # dt-independent: depth=1mm → 0.05 m/s, depth=20mm → 1.0 m/s.
+    if erp_pos > 0.0:
+        inv_tau = erp_pos  # reinterpret erp_pos as 1/τ (see static_data)
+        for ci in range(max_contacts):
+            if contact_active[env, ci] == 0:
+                continue
+            depth_c = contact_depth[env, ci]
+            effective = depth_c - slop
+            if effective > 0.0:
+                base = ci * CONDIM
+                v_ref = inv_tau * effective
+                v_free[env, base] -= v_ref
 
 
 # ---------------------------------------------------------------------------

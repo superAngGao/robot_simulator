@@ -23,7 +23,7 @@ class VecEnv:
         model     : Shared RobotModel (read-only).
         cfg       : Shared EnvCfg.
         num_envs  : Number of parallel environments.
-        backend   : ``"numpy"`` (CPU for-loop) or ``"warp"`` (GPU).
+        backend   : ``"numpy"`` (CPU), ``"tilelang"`` or ``"cuda"`` (GPU).
         reset_fn  : Ignored for backend-based VecEnv (kept for API compat).
     """
 
@@ -128,9 +128,7 @@ class BatchedObsManager:
         return torch.cat(parts, dim=1) if parts else torch.zeros(0)
 
 
-def _sample_noise_batch(
-    cfg: NoiseCfg, shape: tuple, device: torch.device
-) -> torch.Tensor:
+def _sample_noise_batch(cfg: NoiseCfg, shape: tuple, device: torch.device) -> torch.Tensor:
     if cfg.noise_type == "gaussian":
         return torch.randn(shape, device=device) * cfg.std
     elif cfg.noise_type == "uniform":

@@ -167,10 +167,11 @@ class StaticRobotData:
 
     # -- Constraint solver parameters --
     contact_cfm: float = 1e-6  # Constraint Force Mixing (regularization)
-    contact_erp_pos: float = 0.8  # Position correction ERP (split impulse)
-    contact_slop: float = 0.005  # Allowed penetration before correction [m]
+    contact_erp_pos: float = 0.8  # Position correction ERP (legacy, unused)
+    contact_erp_baumgarte: float = 10.0  # 1/τ where τ=0.1s; v_ref = depth/τ (MuJoCo QP style)
+    contact_slop: float = 0.001  # Allowed penetration before correction [m]
     solver_max_iter: int = 60  # Jacobi PGS iteration count
-    solver_omega: float = 0.7  # Jacobi relaxation factor
+    solver_omega: float = 0.6  # Jacobi relaxation factor (≤0.6 for mixed-frame FreeJoint stability)
     # Solimp impedance params for friction R regularization (Q25 fix)
     solimp_d0: float = 0.95
     solimp_dw: float = 0.99

@@ -17,10 +17,7 @@ Kernel launch order per step:
 
 import warp as wp
 
-# Augmented matrix type for 6x6 linear system solve (6x7)
-mat67f = wp.types.matrix(shape=(6, 7), dtype=wp.float32)
-
-from .spatial_warp import (
+from .spatial_warp import (  # noqa: E402
     compose_transform_r_wp,
     compose_transform_wp,
     inverse_transform_R,
@@ -44,6 +41,9 @@ from .spatial_warp import (
     vec6_linear,
     vec6f,
 )
+
+# Augmented matrix type for 6x6 linear system solve (6x7)
+mat67f = wp.types.matrix(shape=(6, 7), dtype=wp.float32)
 
 # Joint type constants (must match static_data.py)
 JOINT_FREE = wp.constant(0)
@@ -122,6 +122,11 @@ def joint_vJ(
         qd = qdot[env_id, v_start]
         vJ = vec6f(axis[0] * qd, axis[1] * qd, axis[2] * qd, 0.0, 0.0, 0.0)
     elif jtype == JOINT_FREE:
+        # MuJoCo convention: qdot[:3] = world-frame linear, qdot[3:] = body-frame angular.
+        # vJ must be body-frame spatial velocity, so apply S = [[R^T, 0], [0, I]]:
+        # vJ[:3] = R^T @ qdot[:3],  vJ[3:] = qdot[3:]
+        # R_J is not available here; caller must post-multiply.
+        # We return raw qdot; the FK kernel applies R^T after computing R_J.
         vJ = vec6f(
             qdot[env_id, v_start],
             qdot[env_id, v_start + 1],
@@ -177,9 +182,15 @@ def batched_fk_body_vel(
 
         # X_tree for this body
         R_tree = wp.mat33(
-            X_tree_R[i, 0, 0], X_tree_R[i, 0, 1], X_tree_R[i, 0, 2],
-            X_tree_R[i, 1, 0], X_tree_R[i, 1, 1], X_tree_R[i, 1, 2],
-            X_tree_R[i, 2, 0], X_tree_R[i, 2, 1], X_tree_R[i, 2, 2],
+            X_tree_R[i, 0, 0],
+            X_tree_R[i, 0, 1],
+            X_tree_R[i, 0, 2],
+            X_tree_R[i, 1, 0],
+            X_tree_R[i, 1, 1],
+            X_tree_R[i, 1, 2],
+            X_tree_R[i, 2, 0],
+            X_tree_R[i, 2, 1],
+            X_tree_R[i, 2, 2],
         )
         r_tree = wp.vec3(X_tree_r[i, 0], X_tree_r[i, 1], X_tree_r[i, 2])
 
@@ -203,9 +214,15 @@ def batched_fk_body_vel(
         else:
             # X_world = X_world[parent] @ X_up
             R_parent = wp.mat33(
-                X_world_R[env_id, pid, 0, 0], X_world_R[env_id, pid, 0, 1], X_world_R[env_id, pid, 0, 2],
-                X_world_R[env_id, pid, 1, 0], X_world_R[env_id, pid, 1, 1], X_world_R[env_id, pid, 1, 2],
-                X_world_R[env_id, pid, 2, 0], X_world_R[env_id, pid, 2, 1], X_world_R[env_id, pid, 2, 2],
+                X_world_R[env_id, pid, 0, 0],
+                X_world_R[env_id, pid, 0, 1],
+                X_world_R[env_id, pid, 0, 2],
+                X_world_R[env_id, pid, 1, 0],
+                X_world_R[env_id, pid, 1, 1],
+                X_world_R[env_id, pid, 1, 2],
+                X_world_R[env_id, pid, 2, 0],
+                X_world_R[env_id, pid, 2, 1],
+                X_world_R[env_id, pid, 2, 2],
             )
             r_parent = wp.vec3(
                 X_world_r[env_id, pid, 0],
@@ -222,15 +239,28 @@ def batched_fk_body_vel(
         # Body velocity
         vJ = joint_vJ(jtype, axis, vs, vl, qdot, env_id)
 
+        # FreeJoint: apply S = [[R_J^T, 0], [0, I]] to get body-frame velocity,
+        # and compute Coriolis bias c_J = [-omega × v_body_lin, 0].
+        if jtype == JOINT_FREE:
+            v_world = wp.vec3(vJ[0], vJ[1], vJ[2])
+            v_body_lin = wp.transpose(R_J) * v_world
+            omega_body = wp.vec3(vJ[3], vJ[4], vJ[5])
+            vJ = vec6f(
+                v_body_lin[0], v_body_lin[1], v_body_lin[2], omega_body[0], omega_body[1], omega_body[2]
+            )
+
         if pid < 0:
             for d in range(6):
                 v_bodies[env_id, i, d] = vJ[d]
         else:
             # v[parent] in body frame
             v_parent = vec6f(
-                v_bodies[env_id, pid, 0], v_bodies[env_id, pid, 1],
-                v_bodies[env_id, pid, 2], v_bodies[env_id, pid, 3],
-                v_bodies[env_id, pid, 4], v_bodies[env_id, pid, 5],
+                v_bodies[env_id, pid, 0],
+                v_bodies[env_id, pid, 1],
+                v_bodies[env_id, pid, 2],
+                v_bodies[env_id, pid, 3],
+                v_bodies[env_id, pid, 4],
+                v_bodies[env_id, pid, 5],
             )
             v_xformed = transform_velocity_wp(R_up, r_up, v_parent)
             for d in range(6):
@@ -384,9 +414,15 @@ def batched_contact(
 
         # World position = R @ local_pos + r
         R = wp.mat33(
-            X_world_R[env_id, bi, 0, 0], X_world_R[env_id, bi, 0, 1], X_world_R[env_id, bi, 0, 2],
-            X_world_R[env_id, bi, 1, 0], X_world_R[env_id, bi, 1, 1], X_world_R[env_id, bi, 1, 2],
-            X_world_R[env_id, bi, 2, 0], X_world_R[env_id, bi, 2, 1], X_world_R[env_id, bi, 2, 2],
+            X_world_R[env_id, bi, 0, 0],
+            X_world_R[env_id, bi, 0, 1],
+            X_world_R[env_id, bi, 0, 2],
+            X_world_R[env_id, bi, 1, 0],
+            X_world_R[env_id, bi, 1, 1],
+            X_world_R[env_id, bi, 1, 2],
+            X_world_R[env_id, bi, 2, 0],
+            X_world_R[env_id, bi, 2, 1],
+            X_world_R[env_id, bi, 2, 2],
         )
         r = wp.vec3(
             X_world_r[env_id, bi, 0],
@@ -401,9 +437,12 @@ def batched_contact(
 
             # Contact velocity in world frame
             v_body = vec6f(
-                v_bodies[env_id, bi, 0], v_bodies[env_id, bi, 1],
-                v_bodies[env_id, bi, 2], v_bodies[env_id, bi, 3],
-                v_bodies[env_id, bi, 4], v_bodies[env_id, bi, 5],
+                v_bodies[env_id, bi, 0],
+                v_bodies[env_id, bi, 1],
+                v_bodies[env_id, bi, 2],
+                v_bodies[env_id, bi, 3],
+                v_bodies[env_id, bi, 4],
+                v_bodies[env_id, bi, 5],
             )
             v_lin_w = R * vec6_linear(v_body)
             omega_w = R * vec6_angular(v_body)
@@ -474,15 +513,27 @@ def batched_collision(
 
         # Load transforms
         Ri = wp.mat33(
-            X_world_R[env_id, bi, 0, 0], X_world_R[env_id, bi, 0, 1], X_world_R[env_id, bi, 0, 2],
-            X_world_R[env_id, bi, 1, 0], X_world_R[env_id, bi, 1, 1], X_world_R[env_id, bi, 1, 2],
-            X_world_R[env_id, bi, 2, 0], X_world_R[env_id, bi, 2, 1], X_world_R[env_id, bi, 2, 2],
+            X_world_R[env_id, bi, 0, 0],
+            X_world_R[env_id, bi, 0, 1],
+            X_world_R[env_id, bi, 0, 2],
+            X_world_R[env_id, bi, 1, 0],
+            X_world_R[env_id, bi, 1, 1],
+            X_world_R[env_id, bi, 1, 2],
+            X_world_R[env_id, bi, 2, 0],
+            X_world_R[env_id, bi, 2, 1],
+            X_world_R[env_id, bi, 2, 2],
         )
         ri = wp.vec3(X_world_r[env_id, bi, 0], X_world_r[env_id, bi, 1], X_world_r[env_id, bi, 2])
         Rj = wp.mat33(
-            X_world_R[env_id, bj, 0, 0], X_world_R[env_id, bj, 0, 1], X_world_R[env_id, bj, 0, 2],
-            X_world_R[env_id, bj, 1, 0], X_world_R[env_id, bj, 1, 1], X_world_R[env_id, bj, 1, 2],
-            X_world_R[env_id, bj, 2, 0], X_world_R[env_id, bj, 2, 1], X_world_R[env_id, bj, 2, 2],
+            X_world_R[env_id, bj, 0, 0],
+            X_world_R[env_id, bj, 0, 1],
+            X_world_R[env_id, bj, 0, 2],
+            X_world_R[env_id, bj, 1, 0],
+            X_world_R[env_id, bj, 1, 1],
+            X_world_R[env_id, bj, 1, 2],
+            X_world_R[env_id, bj, 2, 0],
+            X_world_R[env_id, bj, 2, 1],
+            X_world_R[env_id, bj, 2, 2],
         )
         rj = wp.vec3(X_world_r[env_id, bj, 0], X_world_r[env_id, bj, 1], X_world_r[env_id, bj, 2])
 
@@ -510,7 +561,7 @@ def batched_collision(
                 min_overlap = overlap
                 min_axis = k
 
-        if separated == False:
+        if not separated:
             depth = min_overlap
             # Direction
             sep = ri - rj
@@ -581,8 +632,12 @@ def store_mat66(arr: wp.array(dtype=wp.float32, ndim=4), env_id: int, body: int,
 @wp.func
 def load_vec6(arr: wp.array3d(dtype=wp.float32), env_id: int, body: int) -> vec6f:
     return vec6f(
-        arr[env_id, body, 0], arr[env_id, body, 1], arr[env_id, body, 2],
-        arr[env_id, body, 3], arr[env_id, body, 4], arr[env_id, body, 5],
+        arr[env_id, body, 0],
+        arr[env_id, body, 1],
+        arr[env_id, body, 2],
+        arr[env_id, body, 3],
+        arr[env_id, body, 4],
+        arr[env_id, body, 5],
     )
 
 
@@ -625,9 +680,6 @@ def batched_aba(
 ):
     env_id = wp.tid()
 
-    # Gravity spatial vector [lin; ang] = [0, 0, -g, 0, 0, 0]
-    a_gravity = vec6f(0.0, 0.0, -gravity, 0.0, 0.0, 0.0)
-
     # ---- Pass 1: forward — velocities and bias forces ----
     for i in range(nb):
         jtype = joint_type[i]
@@ -640,25 +692,48 @@ def batched_aba(
 
         # X_up already computed by FK kernel
         R_up = wp.mat33(
-            X_up_R[env_id, i, 0, 0], X_up_R[env_id, i, 0, 1], X_up_R[env_id, i, 0, 2],
-            X_up_R[env_id, i, 1, 0], X_up_R[env_id, i, 1, 1], X_up_R[env_id, i, 1, 2],
-            X_up_R[env_id, i, 2, 0], X_up_R[env_id, i, 2, 1], X_up_R[env_id, i, 2, 2],
+            X_up_R[env_id, i, 0, 0],
+            X_up_R[env_id, i, 0, 1],
+            X_up_R[env_id, i, 0, 2],
+            X_up_R[env_id, i, 1, 0],
+            X_up_R[env_id, i, 1, 1],
+            X_up_R[env_id, i, 1, 2],
+            X_up_R[env_id, i, 2, 0],
+            X_up_R[env_id, i, 2, 1],
+            X_up_R[env_id, i, 2, 2],
         )
         r_up = wp.vec3(X_up_r[env_id, i, 0], X_up_r[env_id, i, 1], X_up_r[env_id, i, 2])
 
         vJ = joint_vJ(jtype, axis, vs, vl, qdot, env_id)
 
+        # FreeJoint: apply R_J^T to linear part (joint_vJ returns raw qdot)
+        # and compute Coriolis bias c_J_free = [-omega x v_body_lin, 0]
+        cJ_free = vec6f()
+        if jtype == JOINT_FREE:
+            R_J = joint_transform_R(jtype, axis, qs, ql, q, env_id)
+            v_world = wp.vec3(vJ[0], vJ[1], vJ[2])
+            v_body_lin = wp.transpose(R_J) * v_world
+            omega_body = wp.vec3(vJ[3], vJ[4], vJ[5])
+            vJ = vec6f(
+                v_body_lin[0], v_body_lin[1], v_body_lin[2], omega_body[0], omega_body[1], omega_body[2]
+            )
+            wxv = wp.cross(omega_body, v_body_lin)
+            cJ_free = vec6f(-wxv[0], -wxv[1], -wxv[2], 0.0, 0.0, 0.0)
+
         vi = vec6f()
         ci = vec6f()
         if pid < 0:
             vi = vJ
-            # bias acceleration: cJ = 0 for all our joint types
+            # Coriolis bias for FreeJoint
+            ci = cJ_free
         else:
             v_parent = load_vec6(aba_v, env_id, pid)
             v_xformed = transform_velocity_wp(R_up, r_up, v_parent)
             for d in range(6):
                 vi[d] = v_xformed[d] + vJ[d]
-            ci = spatial_cross_vel_times_v(vi, vJ)
+            cJ_standard = spatial_cross_vel_times_v(vi, vJ)
+            for d in range(6):
+                ci[d] = cJ_standard[d] + cJ_free[d]
 
         store_vec6(aba_v, env_id, i, vi)
         store_vec6(aba_c, env_id, i, ci)
@@ -731,17 +806,22 @@ def batched_aba(
                 aba_Dinv[env_id, i, 0, 0] = D_inv_val
 
             elif jtype == JOINT_FREE:
-                # S = I_6, U = IA, D = IA, D_inv = IA^{-1}
-                # For 6-DOF: U = IA @ I = IA
-                # D = I^T @ IA @ I = IA
-                # This requires 6x6 inverse.
-                # Use the identity: IA_A = IA - IA @ IA^{-1} @ IA = 0
-                # pA_A = pA + 0 @ c + IA @ D_inv @ u
-
-                # u = tau - S^T @ pA = tau - pA (since S = I)
-                u_i = vec6f()
-                for d in range(6):
-                    u_i[d] = tau_total[env_id, vs + d] - pA_i[d]
+                # With S = [[R_J^T,0],[0,I]], work in body frame:
+                # tau_body[:3] = R_J^T @ tau_gen[:3], tau_body[3:] = tau_gen[3:]
+                # Then standard ABA with S=I on tau_body (IA_A = 0 still holds).
+                R_J_free = joint_transform_R(jtype, axis, qs, ql, q, env_id)
+                tau_gen_lin = wp.vec3(
+                    tau_total[env_id, vs], tau_total[env_id, vs + 1], tau_total[env_id, vs + 2]
+                )
+                tau_body_lin = wp.transpose(R_J_free) * tau_gen_lin
+                u_i = vec6f(
+                    tau_body_lin[0] - pA_i[0],
+                    tau_body_lin[1] - pA_i[1],
+                    tau_body_lin[2] - pA_i[2],
+                    tau_total[env_id, vs + 3] - pA_i[3],
+                    tau_total[env_id, vs + 4] - pA_i[4],
+                    tau_total[env_id, vs + 5] - pA_i[5],
+                )
                 store_vec6(aba_u, env_id, i, u_i)
 
                 # For free joint: IA_A = 0, pA_A = pA + IA @ IA_inv @ u = pA + u
@@ -765,9 +845,15 @@ def batched_aba(
         # Propagate to parent
         if pid >= 0:
             R_up = wp.mat33(
-                X_up_R[env_id, i, 0, 0], X_up_R[env_id, i, 0, 1], X_up_R[env_id, i, 0, 2],
-                X_up_R[env_id, i, 1, 0], X_up_R[env_id, i, 1, 1], X_up_R[env_id, i, 1, 2],
-                X_up_R[env_id, i, 2, 0], X_up_R[env_id, i, 2, 1], X_up_R[env_id, i, 2, 2],
+                X_up_R[env_id, i, 0, 0],
+                X_up_R[env_id, i, 0, 1],
+                X_up_R[env_id, i, 0, 2],
+                X_up_R[env_id, i, 1, 0],
+                X_up_R[env_id, i, 1, 1],
+                X_up_R[env_id, i, 1, 2],
+                X_up_R[env_id, i, 2, 0],
+                X_up_R[env_id, i, 2, 1],
+                X_up_R[env_id, i, 2, 2],
             )
             r_up = wp.vec3(X_up_r[env_id, i, 0], X_up_r[env_id, i, 1], X_up_r[env_id, i, 2])
 
@@ -795,9 +881,15 @@ def batched_aba(
         pid = parent_idx[i]
 
         R_up = wp.mat33(
-            X_up_R[env_id, i, 0, 0], X_up_R[env_id, i, 0, 1], X_up_R[env_id, i, 0, 2],
-            X_up_R[env_id, i, 1, 0], X_up_R[env_id, i, 1, 1], X_up_R[env_id, i, 1, 2],
-            X_up_R[env_id, i, 2, 0], X_up_R[env_id, i, 2, 1], X_up_R[env_id, i, 2, 2],
+            X_up_R[env_id, i, 0, 0],
+            X_up_R[env_id, i, 0, 1],
+            X_up_R[env_id, i, 0, 2],
+            X_up_R[env_id, i, 1, 0],
+            X_up_R[env_id, i, 1, 1],
+            X_up_R[env_id, i, 1, 2],
+            X_up_R[env_id, i, 2, 0],
+            X_up_R[env_id, i, 2, 1],
+            X_up_R[env_id, i, 2, 2],
         )
         r_up = wp.vec3(X_up_r[env_id, i, 0], X_up_r[env_id, i, 1], X_up_r[env_id, i, 2])
 
@@ -897,10 +989,19 @@ def batched_aba(
                         s = s - aug[row, k] * qdd[k]
                     qdd[row] = s / aug[row, row]
 
-                for d in range(6):
-                    qddot[env_id, vs + d] = qdd[d]
+                # qdd is body-frame. Convert to generalized coords:
+                # qddot_gen[:3] = R_J @ qdd[:3], qddot_gen[3:6] = qdd[3:6]
+                R_J_p3 = joint_transform_R(jtype, axis, qs, ql, q, env_id)
+                qdd_body_lin = wp.vec3(qdd[0], qdd[1], qdd[2])
+                qdd_gen_lin = R_J_p3 * qdd_body_lin
+                qddot[env_id, vs + 0] = qdd_gen_lin[0]
+                qddot[env_id, vs + 1] = qdd_gen_lin[1]
+                qddot[env_id, vs + 2] = qdd_gen_lin[2]
+                qddot[env_id, vs + 3] = qdd[3]
+                qddot[env_id, vs + 4] = qdd[4]
+                qddot[env_id, vs + 5] = qdd[5]
 
-                # a = a_p + c + S @ qddot = apc + qdd (since S = I)
+                # a = apc + qdd_body (body-frame acceleration, S=I in body frame)
                 ai = vec6f()
                 for d in range(6):
                     ai[d] = apc[d] + qdd[d]

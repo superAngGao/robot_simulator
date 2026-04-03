@@ -11,6 +11,7 @@ import warp as wp
 
 from .solver_kernels import CONDIM, _impedance_wp
 from .spatial_warp import (
+    quat_to_rot_wp,
     transform_force_wp,
     vec6_angular,
     vec6_from_two_vec3,
@@ -431,6 +432,8 @@ def batched_impulse_to_gen_v2(
     X_up_r: wp.array3d(dtype=wp.float32),
     joint_type: wp.array(dtype=wp.int32),
     joint_axis: wp.array2d(dtype=wp.float32),
+    q: wp.array2d(dtype=wp.float32),
+    q_idx_start: wp.array(dtype=wp.int32),
     parent_idx: wp.array(dtype=wp.int32),
     v_idx_start: wp.array(dtype=wp.int32),
     max_contacts: int,
@@ -550,8 +553,22 @@ def batched_impulse_to_gen_v2(
             else:
                 gen_impulse[env_id, vs] = axis[0] * f_i[0] + axis[1] * f_i[1] + axis[2] * f_i[2]
         elif jtype == JOINT_FREE:
-            for d in range(6):
-                gen_impulse[env_id, vs + d] = f_i[d]
+            # S^T = [[R_J, 0], [0, I]]: gen_impulse[:3] = R_J @ f[:3], [3:6] = f[3:6]
+            qs_free = q_idx_start[i]
+            RJ_free = quat_to_rot_wp(
+                q[env_id, qs_free],
+                q[env_id, qs_free + 1],
+                q[env_id, qs_free + 2],
+                q[env_id, qs_free + 3],
+            )
+            f_lin = wp.vec3(f_i[0], f_i[1], f_i[2])
+            tau_lin = RJ_free * f_lin
+            gen_impulse[env_id, vs + 0] = tau_lin[0]
+            gen_impulse[env_id, vs + 1] = tau_lin[1]
+            gen_impulse[env_id, vs + 2] = tau_lin[2]
+            gen_impulse[env_id, vs + 3] = f_i[3]
+            gen_impulse[env_id, vs + 4] = f_i[4]
+            gen_impulse[env_id, vs + 5] = f_i[5]
 
         pi = parent_idx[i]
         if pi >= 0:

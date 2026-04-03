@@ -363,6 +363,7 @@ class GpuEngine(PhysicsEngine):
                 self._gpu_joint_type,
                 self._gpu_joint_axis,
                 self._gpu_parent_idx,
+                self._gpu_q_idx_start,
                 self._gpu_v_idx_start,
                 self._gpu_v_idx_len,
                 self._max_contacts,
@@ -390,6 +391,9 @@ class GpuEngine(PhysicsEngine):
                 s.solimp_width,
                 s.solimp_mid,
                 s.solimp_power,
+                s.contact_erp_baumgarte if self._solver != "admm" else 0.0,
+                s.contact_slop,
+                dt,
                 self._max_contacts,
                 self._max_rows,
                 s.nv,
@@ -489,28 +493,10 @@ class GpuEngine(PhysicsEngine):
             outputs=[sol.dqdot],
         )
 
-        # 11. Position correction (PGS only — ADMM handles via compliance)
-        if self._solver == "admm":
-            sol.pos_corrections.zero_()
-        else:
-            from .backends.warp.solver_kernels import batched_position_correction
-
-            wp.launch(
-                batched_position_correction,
-                dim=N,
-                device=self._device,
-                inputs=[
-                    self._contact_active,
-                    self._contact_depth,
-                    self._gpu_contact_body_idx,
-                    self._gpu_inv_mass,
-                    s.contact_erp_pos,
-                    s.contact_slop,
-                    self._nc_ground,
-                    s.nb,  # only ground contacts get position correction
-                ],
-                outputs=[sol.pos_corrections],
-            )
+        # 11. Position correction — now handled via Baumgarte velocity bias
+        # in batched_build_W_joint_space (step 7), propagated through J^T to
+        # all generalized coordinates. No separate position correction pass.
+        sol.pos_corrections.zero_()
 
         # 12. Integration
         wp.launch(

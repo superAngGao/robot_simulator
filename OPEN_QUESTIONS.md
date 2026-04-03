@@ -320,6 +320,19 @@ GPU Jacobi PGS + ADMM 求解器实现完成后，需要一次认真的重构：
 - `physics/solvers/` 接口验证（PGS / Jacobi PGS / ADMM 统一 ABC）
 - **触发条件**：GPU ADMM kernel 完成且测试通过后
 
+**Q32 — batched_build_W_joint_space 求解器 bias 分离**
+
+当前 `batched_build_W_joint_space` 同时计算 W/v_free（共用）和 Baumgarte ERP bias（PGS 专用）。
+ADMM 有自己的 compliance 模型（solref/solimp），不需要 Baumgarte。临时方案是 `erp_pos if
+solver != "admm" else 0.0`，不干净。
+
+正确架构：
+1. `batched_build_W_joint_space` 只算纯净的 W、v_free、v_current（无 bias）
+2. PGS 路径：单独 kernel 或 kernel 参数加 Baumgarte bias 到 v_free
+3. ADMM 路径：在 ADMM kernel 内部用自己的 compliance 模型（已有）
+
+**触发条件**：下次接触求解器重构时（Q19）一并处理。
+
 **Q20 — 与主流项目的功能差距 → Scene 重构方案已确定**
 
 与 MuJoCo/Bullet/Drake/Isaac Lab 对比审查后，确定以下重构方案：
@@ -374,6 +387,24 @@ CollisionPipeline.detect(scene, all_X, all_v) → list[ContactConstraint]
 - backend: warp / cuda
 
 **触发条件**：下一个需要新 dispatch 维度的功能开发时。详见 memory `project_gpu_engine_dispatch.md`。
+
+**Q31 — BatchBackend 整套退役（VecEnv 改用 GpuEngine）**
+
+`WarpBatchBackend` 已退役（session 16，FreeJoint 坐标系修复后不再维护）。
+剩余 BatchBackend 实现（NumpyLoopBackend / TileLangBatchBackend / CudaBatchBackend）
+与 PhysicsEngine（CpuEngine / GpuEngine）功能重叠，每个 backend 独立实现完整物理步进
+导致算法重复 4 处。
+
+**目标**：VecEnv 直接包装 GpuEngine（已支持 num_envs=N 并行），退役 BatchBackend ABC 及
+所有实现。合并后只剩两条管线：CpuEngine（精度/调试）+ GpuEngine（RL 训练）。
+
+**退役顺序**：
+1. ~~WarpBatchBackend~~ ✅ 已退役 (2026-04-02)
+2. VecEnv 改用 GpuEngine 接口（`step(tau, dt)` 替代 `step(actions)`）
+3. 退役 TileLangBatchBackend + CudaBatchBackend + NumpyLoopBackend
+4. 删除 BatchBackend ABC + `get_backend()` 工厂
+
+**触发条件**：下一次需要给 VecEnv 添加功能时（如 auto-reset、domain randomization）。
 
 **Q25 — PGS 摩擦力通过力臂产生假角速度** ✅ RESOLVED (2026-04-01)
 

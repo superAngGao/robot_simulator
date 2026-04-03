@@ -29,7 +29,10 @@ try:
 except Exception:
     HAS_WARP = False
 
-pytestmark = pytest.mark.skipif(not HAS_WARP, reason="Warp or CUDA not available")
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(not HAS_WARP, reason="Warp or CUDA not available"),
+]
 
 
 # ---------------------------------------------------------------------------

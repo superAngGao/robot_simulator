@@ -33,7 +33,11 @@ try:
 except Exception:
     HAS_ENGINES = False
 
-pytestmark = pytest.mark.skipif(not HAS_ENGINES, reason="GPU/CPU engine not available")
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.gpu,
+    pytest.mark.skipif(not HAS_ENGINES, reason="GPU/CPU engine not available"),
+]
 
 
 # ---------------------------------------------------------------------------

@@ -40,7 +40,10 @@ from physics.robot_tree import Body, RobotTreeNumpy
 from physics.solvers.pgs_solver import ContactConstraint, PGSContactSolver
 from physics.spatial import SpatialInertia, SpatialTransform
 
-pytestmark = pytest.mark.skipif(not HAS_BULLET, reason="pybullet not installed")
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.skipif(not HAS_BULLET, reason="pybullet not installed"),
+]
 
 DT = 0.001
 RADIUS = 0.1

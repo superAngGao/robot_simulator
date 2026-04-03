@@ -70,7 +70,10 @@ BALL_BX = 0.3
 VX_A = 2.0
 VX_B = -2.0
 
-pytestmark = pytest.mark.skipif(not HAS_MUJOCO, reason="mujoco not installed")
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.skipif(not HAS_MUJOCO, reason="mujoco not installed"),
+]
 
 
 # ---------------------------------------------------------------------------

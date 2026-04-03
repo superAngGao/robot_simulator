@@ -40,6 +40,8 @@ import pytest
 from physics.solvers.pgs_solver import ContactConstraint, PGSContactSolver
 from physics.spatial import SpatialTransform
 
+pytestmark = pytest.mark.slow
+
 # ---------------------------------------------------------------------------
 # Shared fixture
 # ---------------------------------------------------------------------------

@@ -14,6 +14,8 @@ import torch
 
 tilelang = pytest.importorskip("tilelang")
 
+pytestmark = pytest.mark.gpu
+
 from physics.backends import get_backend  # noqa: E402
 from rl_env.cfg import EnvCfg  # noqa: E402
 from robot import load_urdf  # noqa: E402

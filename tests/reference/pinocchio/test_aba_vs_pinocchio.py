@@ -28,7 +28,10 @@ from physics.joint import Axis, RevoluteJoint
 from physics.robot_tree import Body, RobotTree
 from physics.spatial import SpatialInertia, SpatialTransform
 
-pytestmark = pytest.mark.skipif(not HAS_PINOCCHIO, reason="pinocchio not installed")
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.skipif(not HAS_PINOCCHIO, reason="pinocchio not installed"),
+]
 
 ATOL = 1e-8  # tolerance for ABA comparison
 

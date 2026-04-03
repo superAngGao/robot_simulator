@@ -751,6 +751,7 @@ class TileLangBatchBackend(BatchBackend):
             self._joint_type,
             self._joint_axis,
             self._parent_idx,
+            self._q_idx_start,
             self._v_idx_start,
             self._v_idx_len,
             self._inertia_mat,

@@ -36,7 +36,11 @@ try:
 except Exception:
     HAS_WARP = False
 
-pytestmark = pytest.mark.skipif(not (HAS_MUJOCO and HAS_WARP), reason="Requires both mujoco and Warp/CUDA")
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.gpu,
+    pytest.mark.skipif(not (HAS_MUJOCO and HAS_WARP), reason="Requires both mujoco and Warp/CUDA"),
+]
 
 # Physical constants — must match MuJoCo XML exactly
 DT = 2e-4  # GPU engine default timestep

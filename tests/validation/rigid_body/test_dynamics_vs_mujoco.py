@@ -36,7 +36,10 @@ try:
 except ImportError:
     HAS_MUJOCO = False
 
-pytestmark = pytest.mark.skipif(not HAS_MUJOCO, reason="mujoco not installed")
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.skipif(not HAS_MUJOCO, reason="mujoco not installed"),
+]
 
 
 # ---------------------------------------------------------------------------

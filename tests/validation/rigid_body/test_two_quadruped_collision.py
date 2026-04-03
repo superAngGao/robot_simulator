@@ -55,6 +55,7 @@ except Exception:
     HAS_ENGINE = False
 
 pytestmark = [
+    pytest.mark.slow,
     pytest.mark.skipif(not HAS_MUJOCO, reason="mujoco not installed"),
     pytest.mark.skipif(not HAS_ENGINE, reason="CpuEngine not available"),
 ]
