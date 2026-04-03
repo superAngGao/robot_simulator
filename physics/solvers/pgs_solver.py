@@ -153,6 +153,7 @@ class PGSContactSolver:
         tolerance: float = 1e-6,
         erp: float = 0.2,
         cfm: float = 1e-6,
+        slop: float = 0.0,
         solimp: tuple[float, ...] = (0.95, 0.99, 0.001, 0.5, 2.0),
         friction_warmstart: bool = False,
     ) -> None:
@@ -160,6 +161,7 @@ class PGSContactSolver:
         self.tolerance = tolerance
         self.erp = erp
         self.cfm = cfm
+        self.slop = slop
         self.solimp = solimp
         self.friction_warmstart = friction_warmstart
         self._warm_cache: dict[tuple[int, int], list[tuple[Vec3, NDArray]]] = {}
@@ -356,7 +358,14 @@ class PGSContactSolver:
         for ci, c in enumerate(contacts):
             base = row_offsets[ci]
             erp = c.erp if c.erp is not None else self.erp
-            baumgarte = -erp / dt * c.depth
+            slop = c.slop if c.slop is not None else self.slop
+            # Position correction: v_ref = depth / τ (MuJoCo QP style).
+            # erp is reinterpreted as 1/τ when > 1, or as classic erp/dt when ≤ 1.
+            penetration = max(c.depth - slop, 0.0)
+            if erp > 1.0:
+                baumgarte = -erp * penetration  # 1/τ * (depth - slop)
+            else:
+                baumgarte = -erp / dt * penetration  # legacy Baumgarte
             restitution_bias = 0.0
             if c.restitution > 0.0 and v_free[base] < -0.01:
                 restitution_bias = c.restitution * v_free[base]

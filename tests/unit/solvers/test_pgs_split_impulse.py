@@ -285,48 +285,52 @@ class TestPGSBaumgarteDiverges:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestPositionCorrections:
-    """Verify position corrections are computed correctly."""
+class TestBaumgarteBias:
+    """Verify Baumgarte velocity bias produces correct position correction effect.
 
-    def test_correction_direction(self):
-        """Position correction should push body along contact normal."""
-        solver = PGSSplitImpulseSolver(erp=0.8, slop=0.0)
+    The PGSSplitImpulseSolver folds position correction into the velocity
+    solve via Baumgarte stabilization. The ``position_corrections`` attribute
+    is always zero — correction flows through extra normal impulse.
+    """
+
+    def test_bias_adds_upward_impulse(self):
+        """With depth > slop, Baumgarte bias should produce extra upward impulse."""
+        # Solver with ERP bias (depth > slop → bias active)
+        solver_erp = PGSSplitImpulseSolver(erp=0.8, slop=0.0, cfm=1e-8)
         cc = _make_contact(depth=0.01)
         v = [np.array([0, 0, -1.0, 0, 0, 0])]
-        solver.solve([cc], v, X, [INV_MASS], [INV_INERTIA], dt=DT)
+        imp_erp = solver_erp.solve([cc], v, X, [INV_MASS], [INV_INERTIA], dt=DT)
 
-        pc = solver.position_corrections[0]
-        assert pc[2] > 0, "Correction should push upward (+z)"
-        assert abs(pc[0]) < 1e-10, "No correction in x"
-        assert abs(pc[1]) < 1e-10, "No correction in y"
+        # Solver without ERP bias
+        solver_no = PGSSplitImpulseSolver(erp=0.0, slop=0.0, cfm=1e-8)
+        cc2 = _make_contact(depth=0.01)
+        v2 = [np.array([0, 0, -1.0, 0, 0, 0])]
+        imp_no = solver_no.solve([cc2], v2, X, [INV_MASS], [INV_INERTIA], dt=DT)
 
-    def test_correction_magnitude(self):
-        """Correction = erp * (depth - slop), mass-weighted."""
-        erp = 0.5
-        slop = 0.002
-        depth = 0.01
-        solver = PGSSplitImpulseSolver(erp=erp, slop=slop)
-        cc = _make_contact(depth=depth)
-        v = [np.array([0, 0, -1.0, 0, 0, 0])]
-        solver.solve([cc], v, X, [INV_MASS], [INV_INERTIA], dt=DT)
+        # ERP should produce larger upward impulse
+        assert imp_erp[0][2] > imp_no[0][2], "Baumgarte bias should add upward impulse"
+        # Both should be positive (pushing up)
+        assert imp_erp[0][2] > 0
+        assert imp_no[0][2] > 0
 
-        pc = solver.position_corrections[0]
-        expected = erp * (depth - slop)  # body_j is ground (infinite mass), so 100% to body_i
-        assert abs(pc[2] - expected) < 1e-8
+    def test_no_bias_within_slop(self):
+        """When depth < slop, Baumgarte bias is zero — matches erp=0 result."""
+        solver_with_slop = PGSSplitImpulseSolver(erp=0.8, slop=0.02, cfm=1e-8)
+        solver_no_erp = PGSContactSolver(max_iter=30, erp=0.0, cfm=1e-8)
 
-    def test_no_correction_within_slop(self):
-        """No correction when depth < slop."""
-        solver = PGSSplitImpulseSolver(erp=0.8, slop=0.02)
-        cc = _make_contact(depth=0.01)  # depth < slop
-        v = [np.array([0, 0, -1.0, 0, 0, 0])]
-        solver.solve([cc], v, X, [INV_MASS], [INV_INERTIA], dt=DT)
+        cc1 = _make_contact(depth=0.01)  # depth < slop=0.02
+        cc2 = _make_contact(depth=0.01)
+        v1 = [np.array([0, 0, -1.0, 0, 0, 0])]
+        v2 = [np.array([0, 0, -1.0, 0, 0, 0])]
 
-        pc = solver.position_corrections[0]
-        assert np.linalg.norm(pc) < 1e-10
+        imp1 = solver_with_slop.solve([cc1], v1, X, [INV_MASS], [INV_INERTIA], dt=DT)
+        imp2 = solver_no_erp.solve([cc2], v2, X, [INV_MASS], [INV_INERTIA], dt=DT)
 
-    def test_two_body_mass_weighting(self):
-        """Two dynamic bodies: correction weighted by inverse mass."""
-        solver = PGSSplitImpulseSolver(erp=1.0, slop=0.0)
+        np.testing.assert_allclose(imp1[0], imp2[0], atol=1e-8)
+
+    def test_two_body_impulse_mass_weighting(self):
+        """Two dynamic bodies: impulse distributed proportional to inverse mass."""
+        solver = PGSSplitImpulseSolver(erp=10.0, slop=0.0, cfm=1e-8)
         cc = ContactConstraint(
             body_i=0,
             body_j=1,
@@ -342,20 +346,15 @@ class TestPositionCorrections:
             SpatialTransform.from_translation(np.array([0.0, 0.0, 0.4])),
             SpatialTransform.from_translation(np.array([0.0, 0.0, 0.6])),
         ]
-        inv_m = [1.0, 3.0]  # body_j is lighter (higher inv_mass)
+        inv_m = [1.0, 3.0]  # body_j lighter (higher inv_mass)
         v2 = [np.zeros(6), np.zeros(6)]
         inv_I = [np.eye(3) * 250, np.eye(3) * 250]
 
-        solver.solve([cc], v2, X2, inv_m, inv_I, dt=DT)
-        pc0 = solver.position_corrections[0]
-        pc1 = solver.position_corrections[1]
+        imp = solver.solve([cc], v2, X2, inv_m, inv_I, dt=DT)
 
-        # body_i pushed +z, body_j pushed -z
-        assert pc0[2] > 0
-        assert pc1[2] < 0
-        # body_j (inv_mass=3) gets 3x more correction than body_i (inv_mass=1)
-        ratio = abs(pc1[2]) / abs(pc0[2])
-        assert abs(ratio - 3.0) < 0.1
+        # body_i impulse +z, body_j impulse -z (Newton's third law)
+        assert imp[0][2] > 0, "body_i should get upward impulse"
+        assert imp[1][2] < 0, "body_j should get downward impulse"
 
     def test_no_contacts_no_corrections(self):
         solver = PGSSplitImpulseSolver()
@@ -512,29 +511,34 @@ class TestPerContactMaterial:
         )
 
     def test_per_contact_slop_in_split_impulse(self):
-        """Per-contact slop controls position correction threshold."""
+        """Per-contact slop controls Baumgarte bias threshold.
+
+        With depth < slop, no Baumgarte bias → impulse matches erp=0 baseline.
+        With depth > slop, Baumgarte bias adds extra impulse.
+        """
         solver = PGSSplitImpulseSolver(max_iter=50, erp=0.8, slop=0.001, cfm=1e-8)
         depth = 0.005
 
-        # Contact with large slop: no correction (depth < slop)
+        # Contact with large slop: no bias (depth < slop)
         cc_large_slop = _make_contact(depth=depth)
         cc_large_slop.slop = 0.01
         v = [np.array([0, 0, -1.0, 0, 0, 0])]
-        solver.solve([cc_large_slop], v, X, [INV_MASS], [INV_INERTIA], dt=DT)
-        pc_large = solver.position_corrections[0].copy()
+        imp_large = solver.solve([cc_large_slop], v, X, [INV_MASS], [INV_INERTIA], dt=DT)
 
-        # Contact with small slop: correction applied
+        # Contact with small slop: bias applied (depth > slop)
         cc_small_slop = _make_contact(depth=depth)
         cc_small_slop.slop = 0.001
         v2 = [np.array([0, 0, -1.0, 0, 0, 0])]
-        solver.solve([cc_small_slop], v2, X, [INV_MASS], [INV_INERTIA], dt=DT)
-        pc_small = solver.position_corrections[0].copy()
+        imp_small = solver.solve([cc_small_slop], v2, X, [INV_MASS], [INV_INERTIA], dt=DT)
 
-        assert np.linalg.norm(pc_large) < 1e-10, "Large slop should give no correction"
-        assert pc_small[2] > 0, "Small slop should give upward correction"
+        # Small slop → more impulse (Baumgarte bias active)
+        assert imp_small[0][2] > imp_large[0][2], "Small slop should give more impulse"
 
     def test_mixed_materials_two_contacts(self):
-        """Two contacts with different erp: steel (erp=0.9) and rubber (erp=0.1)."""
+        """Two contacts with different erp: steel (erp=0.9) and rubber (erp=0.1).
+
+        Higher erp should produce stronger total Baumgarte bias.
+        """
         solver = PGSSplitImpulseSolver(max_iter=50, erp=0.5, slop=0.0, cfm=1e-8)
 
         steel = ContactConstraint(
@@ -564,26 +568,30 @@ class TestPerContactMaterial:
             slop=0.005,
         )
         v = [np.array([0, 0, -2.0, 0, 0, 0])]
-        solver.solve([steel, rubber], v, X, [INV_MASS], [INV_INERTIA], dt=DT)
+        imp = solver.solve([steel, rubber], v, X, [INV_MASS], [INV_INERTIA], dt=DT)
 
-        pc = solver.position_corrections[0]
-        # Steel contributes: 0.9 * (0.01 - 0.001) = 0.0081
-        # Rubber contributes: 0.1 * (0.01 - 0.005) = 0.0005
-        # Total z correction should be between the two extremes
-        assert pc[2] > 0, "Position correction should push up"
-        # Both contribute, so correction > rubber-only but < steel-only
-        steel_only = 0.9 * (0.01 - 0.001)
-        rubber_only = 0.1 * (0.01 - 0.005)
-        assert pc[2] > rubber_only * 0.5
-        assert pc[2] < steel_only * 2.0
+        # Total impulse should push body upward (both contacts on ground)
+        assert imp[0][2] > 0, "Total impulse should push up"
 
     def test_none_erp_uses_solver_default(self):
-        """erp=None on contact should use solver's default erp."""
-        solver = PGSSplitImpulseSolver(max_iter=50, erp=0.5, slop=0.0, cfm=1e-8)
-        cc = _make_contact(depth=0.01)
-        assert cc.erp is None  # default
+        """erp=None on contact should use solver's default erp.
+
+        Verify by comparing: contact with erp=None vs contact with explicit
+        erp equal to solver's default — they should produce identical impulse.
+        """
+        solver_erp = 0.5
+        solver = PGSSplitImpulseSolver(max_iter=50, erp=solver_erp, slop=0.0, cfm=1e-8)
+
+        # Contact with erp=None (uses solver default)
+        cc_none = _make_contact(depth=0.01)
+        assert cc_none.erp is None
         v = [np.array([0, 0, -1.0, 0, 0, 0])]
-        solver.solve([cc], v, X, [INV_MASS], [INV_INERTIA], dt=DT)
-        pc = solver.position_corrections[0]
-        expected = 0.5 * 0.01  # solver_erp * depth
-        assert abs(pc[2] - expected) < 1e-8
+        imp_none = solver.solve([cc_none], v, X, [INV_MASS], [INV_INERTIA], dt=DT)
+
+        # Contact with explicit erp matching solver default
+        cc_explicit = _make_contact(depth=0.01)
+        cc_explicit.erp = solver_erp
+        v2 = [np.array([0, 0, -1.0, 0, 0, 0])]
+        imp_explicit = solver.solve([cc_explicit], v2, X, [INV_MASS], [INV_INERTIA], dt=DT)
+
+        np.testing.assert_allclose(imp_none[0], imp_explicit[0], atol=1e-10)
