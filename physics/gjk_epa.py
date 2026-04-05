@@ -19,7 +19,6 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
-from numpy.typing import NDArray
 
 from .geometry import CollisionShape
 from .spatial import SpatialTransform, Vec3
@@ -34,6 +33,13 @@ class ContactManifold:
     normal: Vec3  # contact normal (world frame, from j to i)
     depth: float  # penetration depth (positive = penetrating)
     points: list[Vec3] = field(default_factory=list)  # contact points (world)
+    point_depths: list[float] | None = None  # per-point depths; None = use depth
+
+    def depth_at(self, i: int) -> float:
+        """Return penetration depth for the i-th contact point."""
+        if self.point_depths is not None:
+            return self.point_depths[i]
+        return self.depth
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +284,6 @@ def epa(
     for _ in range(max_iter):
         # Find closest face to origin
         min_dist = float("inf")
-        min_face = 0
         min_normal = np.zeros(3)
 
         for fi, (i, j, k) in enumerate(faces):
@@ -291,7 +296,6 @@ def epa(
             dist = abs(np.dot(n, a))
             if dist < min_dist:
                 min_dist = dist
-                min_face = fi
                 min_normal = n
 
         # New support point in direction of closest face normal
@@ -424,6 +428,96 @@ def ground_contact_query(
         body_i=-1,
         body_j=-1,
         normal=normal,
+        depth=depth,
+        points=[contact_point],
+    )
+
+
+def halfspace_convex_query(
+    convex_shape: CollisionShape,
+    convex_pose: SpatialTransform,
+    hs_normal_world: Vec3,
+    hs_point_world: Vec3,
+    margin: float = 0.0,
+) -> Optional[ContactManifold]:
+    """Test a convex shape against an infinite half-space.
+
+    The half-space solid occupies ``dot(n, p - p0) <= 0``.  The surface
+    normal ``n`` points *outward* from the solid (into free space).
+
+    Algorithm (O(1) — one support query + one dot product):
+      1.  Find the support point of the convex shape in direction ``-n``
+          (the deepest point into the half-space).
+      2.  ``signed_dist = dot(n, support - p0)``  (positive = above plane).
+      3.  ``depth = -signed_dist``  (positive = penetrating).
+      4.  Contact point = projection of the support point onto the plane.
+
+    This generalises ``ground_contact_query`` to arbitrary plane
+    orientations.  For a z-up ground plane at height *h* it is
+    equivalent to ``ground_contact_query(shape, pose, ground_z=h)``.
+
+    Reference: Drake point-pair penetration for HalfSpace vs convex.
+
+    Args:
+        convex_shape    : Convex collision shape (must support ``support_point``).
+        convex_pose     : World-frame pose of the shape.
+        hs_normal_world : Outward unit normal of the half-space in world frame.
+        hs_point_world  : A point on the half-space surface in world frame.
+        margin          : Detection margin [m] (same semantics as
+                          ``ground_contact_query``).
+
+    Returns:
+        ContactManifold if penetrating or within margin, else None.
+    """
+    # Check for multi-point contact (Box, ConvexHull)
+    verts_local = convex_shape.contact_vertices()
+
+    if verts_local is not None:
+        # Enumerate all vertices and collect those below the plane
+        verts_world = (convex_pose.R @ verts_local.T).T + convex_pose.r  # (N, 3)
+        signed_dists = verts_world @ hs_normal_world - np.dot(hs_normal_world, hs_point_world)
+        penetrating = signed_dists < margin  # below or within margin
+        if not np.any(penetrating):
+            return None
+
+        points = []
+        point_depths = []
+        max_depth = 0.0
+        for i in np.where(penetrating)[0]:
+            sd = float(signed_dists[i])
+            d = -sd
+            cp = verts_world[i] - sd * hs_normal_world  # project onto plane
+            points.append(cp)
+            point_depths.append(d)
+            if d > max_depth:
+                max_depth = d
+
+        return ContactManifold(
+            body_i=-1,
+            body_j=-1,
+            normal=hs_normal_world.copy(),
+            depth=max_depth,
+            points=points,
+            point_depths=point_depths,
+        )
+
+    # Single-point fallback (Sphere, Capsule, Cylinder)
+    neg_normal = -hs_normal_world
+    d_local = convex_pose.R.T @ neg_normal
+    s_local = convex_shape.support_point(d_local)
+    s_world = convex_pose.R @ s_local + convex_pose.r
+
+    signed_dist = float(np.dot(hs_normal_world, s_world - hs_point_world))
+    depth = -signed_dist
+    if depth <= -margin:
+        return None
+
+    contact_point = s_world - signed_dist * hs_normal_world
+
+    return ContactManifold(
+        body_i=-1,
+        body_j=-1,
+        normal=hs_normal_world.copy(),
         depth=depth,
         points=[contact_point],
     )

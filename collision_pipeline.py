@@ -27,9 +27,10 @@ import numpy as np
 from numpy.typing import NDArray
 
 from physics.geometry import CollisionShape
-from physics.gjk_epa import gjk_epa_query, ground_contact_query
+from physics.gjk_epa import gjk_epa_query, ground_contact_query, halfspace_convex_query
 from physics.solvers.pgs_solver import ContactConstraint
 from physics.spatial import SpatialTransform, Vec6
+from physics.terrain import HalfSpaceTerrain
 
 _MIN_NORMAL_NORM = 1e-8  # reject contacts with degenerate normals
 
@@ -82,10 +83,18 @@ class CollisionPipeline:
                 X_body = all_X[gid]
                 for si in geom.shapes:
                     X_shape = si.world_pose(X_body)
-                    gz = scene.terrain.height_at(X_shape.r[0], X_shape.r[1])
-                    manifold = ground_contact_query(si.shape, X_shape, ground_z=gz)
+                    if isinstance(scene.terrain, HalfSpaceTerrain):
+                        manifold = halfspace_convex_query(
+                            si.shape,
+                            X_shape,
+                            hs_normal_world=scene.terrain.normal_world,
+                            hs_point_world=scene.terrain.point_on_plane,
+                        )
+                    else:
+                        gz = scene.terrain.height_at(X_shape.r[0], X_shape.r[1])
+                        manifold = ground_contact_query(si.shape, X_shape, ground_z=gz)
                     if manifold is not None and _valid_normal(manifold.normal):
-                        for pt in manifold.points:
+                        for pi, pt in enumerate(manifold.points):
                             contacts.append(
                                 ContactConstraint(
                                     body_i=gid,
@@ -94,8 +103,8 @@ class CollisionPipeline:
                                     normal=manifold.normal.copy(),
                                     tangent1=np.zeros(3),
                                     tangent2=np.zeros(3),
-                                    depth=manifold.depth,
-                                    mu=0.5,  # default, could be per-geom
+                                    depth=manifold.depth_at(pi),
+                                    mu=getattr(scene.terrain, "mu", 0.5),
                                     condim=3,
                                 )
                             )
@@ -117,7 +126,7 @@ class CollisionPipeline:
                             continue
                         manifold = gjk_epa_query(si_shape.shape, X_shape, sg.shape, sg.pose)
                         if manifold is not None and _valid_normal(manifold.normal):
-                            for pt in manifold.points:
+                            for pi, pt in enumerate(manifold.points):
                                 contacts.append(
                                     ContactConstraint(
                                         body_i=gid,
@@ -126,7 +135,7 @@ class CollisionPipeline:
                                         normal=manifold.normal.copy(),
                                         tangent1=np.zeros(3),
                                         tangent2=np.zeros(3),
-                                        depth=manifold.depth,
+                                        depth=manifold.depth_at(pi),
                                         mu=sg.mu,
                                         condim=sg.condim,
                                         mu_spin=sg.mu_spin,
@@ -160,7 +169,7 @@ class CollisionPipeline:
                     continue
                 manifold = gjk_epa_query(shape_i, X_i, shape_j, X_j)
                 if manifold is not None and _valid_normal(manifold.normal):
-                    for pt in manifold.points:
+                    for pi, pt in enumerate(manifold.points):
                         contacts.append(
                             ContactConstraint(
                                 body_i=gid_i,
@@ -169,7 +178,7 @@ class CollisionPipeline:
                                 normal=manifold.normal.copy(),
                                 tangent1=np.zeros(3),
                                 tangent2=np.zeros(3),
-                                depth=manifold.depth,
+                                depth=manifold.depth_at(pi),
                                 mu=0.5,
                                 condim=3,
                             )

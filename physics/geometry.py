@@ -44,6 +44,15 @@ class CollisionShape(ABC):
         """
         raise NotImplementedError(f"{type(self).__name__} does not support GJK queries.")
 
+    def contact_vertices(self) -> NDArray[np.float64] | None:
+        """Return all vertices of the shape in local frame, or None.
+
+        Shapes with a finite vertex set (Box, ConvexHull) return (N, 3).
+        Smooth shapes (Sphere, Capsule, Cylinder) return None.
+        Used by halfspace_convex_query for multi-point contact.
+        """
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Concrete shapes
@@ -62,6 +71,24 @@ class BoxShape(CollisionShape):
     def support_point(self, direction: NDArray[np.float64]) -> NDArray[np.float64]:
         h = self._size / 2.0
         return np.sign(direction) * h
+
+    def contact_vertices(self) -> NDArray[np.float64]:
+        """Return all 8 box corner vertices in local frame."""
+        h = self._size / 2.0
+        signs = np.array(
+            [
+                [-1, -1, -1],
+                [-1, -1, 1],
+                [-1, 1, -1],
+                [-1, 1, 1],
+                [1, -1, -1],
+                [1, -1, 1],
+                [1, 1, -1],
+                [1, 1, 1],
+            ],
+            dtype=np.float64,
+        )
+        return signs * h
 
 
 class SphereShape(CollisionShape):
@@ -175,6 +202,9 @@ class ConvexHullShape(CollisionShape):
         dots = self._vertices @ direction
         return self._vertices[np.argmax(dots)].copy()
 
+    def contact_vertices(self) -> NDArray[np.float64]:
+        return self._vertices
+
 
 class MeshShape(CollisionShape):
     """Mesh geometry with optional vertex data.
@@ -207,6 +237,28 @@ class MeshShape(CollisionShape):
             raise NotImplementedError("MeshShape support_point requires loaded vertices")
         dots = self._vertices @ direction
         return self._vertices[np.argmax(dots)].copy()
+
+
+class HalfSpaceShape(CollisionShape):
+    """Infinite half-space collision shape.
+
+    In its local frame the surface is at z = 0 with outward normal +z.
+    The solid occupies z <= 0.  Orientation is controlled by the
+    SpatialTransform (pose) applied at the usage site, exactly like
+    Drake ``HalfSpace``, Bullet ``btStaticPlaneShape``, and MuJoCo
+    ``<geom type="plane">``.
+
+    NOT compatible with GJK/EPA — use ``halfspace_convex_query()``
+    from ``gjk_epa.py`` for collision detection.
+
+    Reference: Drake geometry::HalfSpace, Bullet btStaticPlaneShape.
+    """
+
+    def half_extents_approx(self) -> NDArray[np.float64]:
+        return np.array([1e6, 1e6, 1e6], dtype=np.float64)
+
+    # support_point() intentionally NOT overridden — inherited
+    # NotImplementedError from CollisionShape base class.
 
 
 # ---------------------------------------------------------------------------

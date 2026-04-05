@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from physics.geometry import BoxShape, CapsuleShape, CylinderShape, SphereShape
-from physics.gjk_epa import gjk, gjk_epa_query, ground_contact_query
+from physics.gjk_epa import gjk, gjk_epa_query, ground_contact_query, halfspace_convex_query
 from physics.spatial import SpatialTransform
 
 ATOL = 1e-4
@@ -240,3 +240,83 @@ class TestGJKEdgeCases:
         cap = CapsuleShape(0.3, 1.0)
         s = cap.support_point(np.array([1, 1, 1]))
         assert np.all(np.isfinite(s))
+
+
+class TestHalfSpaceConvexQuery:
+    """Tests for halfspace_convex_query (arbitrary-orientation ground plane)."""
+
+    def test_sphere_on_z_up_plane(self):
+        """Z-up half-space should match ground_contact_query."""
+        sphere = SphereShape(0.1)
+        pose = SpatialTransform.from_translation(np.array([0.0, 0.0, 0.05]))
+        normal = np.array([0.0, 0.0, 1.0])
+        point = np.zeros(3)
+        result = halfspace_convex_query(sphere, pose, normal, point)
+        ref = ground_contact_query(sphere, pose, ground_z=0.0)
+        assert result is not None and ref is not None
+        np.testing.assert_allclose(result.depth, ref.depth, atol=1e-12)
+        np.testing.assert_allclose(result.normal, ref.normal, atol=1e-12)
+
+    def test_sphere_above_incline_no_contact(self):
+        """Sphere well above inclined plane → None."""
+        sphere = SphereShape(0.1)
+        normal = np.array([-np.sin(np.pi / 6), 0.0, np.cos(np.pi / 6)])
+        point = np.zeros(3)
+        # Place sphere high above the plane
+        pose = SpatialTransform.from_translation(np.array([0.0, 0.0, 2.0]))
+        result = halfspace_convex_query(sphere, pose, normal, point)
+        assert result is None
+
+    def test_sphere_penetrating_incline(self):
+        """Sphere penetrating an inclined plane → correct depth and normal."""
+        theta = np.pi / 6  # 30 degrees
+        normal = np.array([-np.sin(theta), 0.0, np.cos(theta)])
+        point = np.zeros(3)
+        sphere = SphereShape(0.1)
+        # Place sphere center ON the plane (depth = radius)
+        pose = SpatialTransform.from_translation(np.zeros(3))
+        result = halfspace_convex_query(sphere, pose, normal, point)
+        assert result is not None
+        assert result.depth == ATOL or result.depth > 0
+        np.testing.assert_allclose(result.depth, 0.1, atol=1e-6)
+        np.testing.assert_allclose(result.normal, normal, atol=1e-12)
+
+    def test_box_on_incline(self):
+        """Box sitting on 45-degree incline."""
+        theta = np.pi / 4  # 45 degrees
+        normal = np.array([-np.sin(theta), 0.0, np.cos(theta)])
+        point = np.zeros(3)
+        box = BoxShape((0.2, 0.2, 0.2))
+        # Place box center on the plane
+        pose = SpatialTransform.from_translation(np.zeros(3))
+        result = halfspace_convex_query(box, pose, normal, point)
+        assert result is not None
+        assert result.depth > 0
+
+    def test_contact_point_lies_on_plane(self):
+        """Contact point should lie on the half-space surface."""
+        theta = np.pi / 4
+        normal = np.array([-np.sin(theta), 0.0, np.cos(theta)])
+        point = np.zeros(3)
+        sphere = SphereShape(0.1)
+        # Place sphere center on the plane → penetrating by radius
+        pose = SpatialTransform.from_translation(np.zeros(3))
+        result = halfspace_convex_query(sphere, pose, normal, point)
+        assert result is not None
+        # Contact point should satisfy dot(n, cp - p0) = 0
+        for cp in result.points:
+            dist = np.dot(normal, cp - point)
+            assert abs(dist) < 1e-10
+
+    def test_margin_detects_nearby(self):
+        """With margin > 0, detect shapes that are close but not penetrating."""
+        sphere = SphereShape(0.1)
+        normal = np.array([0.0, 0.0, 1.0])
+        point = np.zeros(3)
+        # Sphere at z=0.15 → gap = 0.05, no penetration
+        pose = SpatialTransform.from_translation(np.array([0.0, 0.0, 0.15]))
+        assert halfspace_convex_query(sphere, pose, normal, point) is None
+        # With margin = 0.1, should detect
+        result = halfspace_convex_query(sphere, pose, normal, point, margin=0.1)
+        assert result is not None
+        assert result.depth < 0  # negative depth = gap

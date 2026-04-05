@@ -16,10 +16,11 @@ from .constraint_solvers import wrap_solver
 from .dynamics_cache import DynamicsCache
 from .engine import PhysicsEngine, StepOutput
 from .force_source import PassiveForceSource
-from .gjk_epa import ground_contact_query
+from .gjk_epa import ground_contact_query, halfspace_convex_query
 from .solvers.pgs_solver import ContactConstraint
 from .solvers.pgs_split_impulse import PGSSplitImpulseSolver
 from .step_pipeline import StepPipeline
+from .terrain import HalfSpaceTerrain
 
 if TYPE_CHECKING:
     from .merged_model import MergedModel
@@ -102,10 +103,18 @@ class CpuEngine(PhysicsEngine):
             X_body = X_world[body_idx]
             for si in geom.shapes:
                 X_shape = si.world_pose(X_body)
-                gz = terrain.height_at(X_shape.r[0], X_shape.r[1])
-                manifold = ground_contact_query(si.shape, X_shape, ground_z=gz)
+                if isinstance(terrain, HalfSpaceTerrain):
+                    manifold = halfspace_convex_query(
+                        si.shape,
+                        X_shape,
+                        hs_normal_world=terrain.normal_world,
+                        hs_point_world=terrain.point_on_plane,
+                    )
+                else:
+                    gz = terrain.height_at(X_shape.r[0], X_shape.r[1])
+                    manifold = ground_contact_query(si.shape, X_shape, ground_z=gz)
                 if manifold is not None and manifold.depth > 1e-10:
-                    for pt in manifold.points:
+                    for pi, pt in enumerate(manifold.points):
                         contacts.append(
                             ContactConstraint(
                                 body_i=body_idx,
@@ -114,8 +123,8 @@ class CpuEngine(PhysicsEngine):
                                 normal=manifold.normal.copy(),
                                 tangent1=np.zeros(3),
                                 tangent2=np.zeros(3),
-                                depth=manifold.depth,
-                                mu=0.8,
+                                depth=manifold.depth_at(pi),
+                                mu=getattr(terrain, "mu", 0.8),
                                 condim=3,
                             )
                         )
