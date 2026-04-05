@@ -1,6 +1,6 @@
 # Robot Simulator — Progress Tracker
 
-> Last updated: 2026-04-03 (session 16)
+> Last updated: 2026-04-05 (session 17)
 > Reference plan: [PLAN.md](./PLAN.md)
 
 ---
@@ -437,7 +437,7 @@ CUDA 性能最优原因：全物理步融合为单 kernel launch，零 inter-ker
 | 碰撞形状 | 5 | Box + Sphere + Cylinder + Capsule + Mesh(stub) |
 | 碰撞过滤 | 1 | CollisionFilter（bitmask + explicit exclude + auto parent-child） |
 | 场景管理 | 1 | Scene + BodyRegistry + StaticGeometry + 多机器人 |
-| GPU 后端 | 4 | NumPy + Warp + TileLang + CUDA |
+| GPU 后端 | 1 | GpuEngine (Warp)；NumPy/TileLang/CUDA 已删除 (Q31) |
 | **验证测试** | **32** | CPU vs MuJoCo (单/双摆+四足+两四足碰撞) + GPU vs CPU (四足) |
 
 ### Session 13 — Q28/Q29 修复 + 端到端验证 (2026-03-30)
@@ -520,6 +520,28 @@ CPU f32 截断实验：CPU f64 vs CPU f32 只差 0.008mm，进一步确认差异
 - 7 新测试（多 shape 地面、动态 broadphase、碰撞过滤、稳定性）
 
 **总测试数：649（全部通过）**
+
+### Session 16-17 — GpuEngine API 扩展 + Q31 Backend 清理 (2026-04-03 ~ 2026-04-05)
+
+**GpuEngine API 扩展 (session 16)：**
+- [x] State accessors — `q_wp`, `qdot_wp`, `v_bodies_wp`, `x_world_R_wp`, `x_world_r_wp`（zero-copy Warp 数组）
+- [x] Per-env reset — `reset_envs(env_ids)` + scatter kernel（支持 ADMM warmstart 清除）
+- [x] Decimation — `step_n(n_substeps)` 避免重复 GPU→CPU 拷贝
+- [x] StepOutput 现在填充 `X_world` 和 `v_bodies`（之前为 None）
+- [x] Bug fix: `reset()` 更新 `_default_q`，`_scatter_zero_2d` 修复 2D/3D 维度错误
+- [x] 29 新测试（state accessors + StepOutput + step_n + reset_envs + ADMM reset）
+
+**Q31 Backend 清理 (session 17)：**
+- [x] 删除 `BatchBackend(ABC)` + `StepResult` + `get_backend()` 工厂
+- [x] 删除 `NumpyLoopBackend` + `TileLangBatchBackend` + `CudaBatchBackend`
+- [x] 删除 `torch_solver.py` + `batched_crba.py` + `tilelang/` + `cuda/` 目录
+- [x] 删除 `VecEnv` + `BatchedObsManager`（`rl_env/vec_env.py`）
+- [x] 删除对应测试（test_tilelang_backend、test_cuda_backend、test_batched_crba）
+- [x] 更新 PLAN.md、repo_list.md、PROGRESS.md
+
+**删除统计：~4,100 行代码，12 个文件，3 个测试文件**
+
+GpuEngine 是唯一的 GPU 物理引擎。下一步：Manager-based RLEnv。
 
 ---
 

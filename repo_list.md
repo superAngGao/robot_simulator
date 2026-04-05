@@ -243,13 +243,8 @@
 | | `warp/analytical_collision.py` | 14 个 @wp.func: ground + body-body 解析碰撞 |
 | | `warp/spatial_warp.py` | 空间代数 @wp.func (rodrigues, transform, cross) |
 | | `warp/scratch.py` | ABABatchScratch GPU 缓冲区 |
-| **CUDA C++** | `cuda/kernels.cu` | 单融合 CUDA kernel (全物理步) |
-| | `cuda/cuda_backend.py` | CUDABatchBackend |
-| **TileLang** | `tilelang/kernels_tl.py` | FK + ABA TileLang kernel |
-| | `tilelang/tilelang_backend.py` | TileLangBatchBackend |
-| **NumPy** | `numpy_loop.py` | NumpyLoopBackend (CPU for-loop 后备) |
-| **共享** | `batch_backend.py` | BatchBackend(ABC), StepResult |
-| | `static_data.py` | StaticRobotData.from_model() / .from_merged() |
+| **共享** | `static_data.py` | StaticRobotData.from_model() / .from_merged() |
+| ~~CUDA/TileLang/NumPy~~ | ~~已删除 (Q31)~~ | ~~BatchBackend ABC + 3 backends → GpuEngine 统一~~ |
 
 ---
 

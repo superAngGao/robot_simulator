@@ -82,16 +82,14 @@ robot_simulator/
 │   ├── collision.py       # Layer 1: SelfCollisionModel(ABC) + AABBSelfCollision
 │   │                      #   (replaces self_collision.py in Phase 2)
 │   ├── integrator.py      # Layer 1: Semi-implicit Euler / RK4
-│   └── backends/           # Layer 1 (Phase 2): GPU backends
-│       ├── __init__.py     #   get_backend("warp"|"tilelang") factory
-│       ├── warp/           #   NVIDIA Warp backend
-│       │   ├── robot_tree_warp.py   # RobotTreeWarp(RobotTreeBase)
-│       │   ├── contact_warp.py      # Warp contact kernels
-│       │   └── collision_warp.py    # Warp self-collision kernels
-│       └── tilelang/       #   TileLang backend
-│           ├── robot_tree_tl.py     # RobotTreeTileLang(RobotTreeBase)
-│           ├── contact_tl.py        # TileLang contact kernels
-│           └── collision_tl.py      # TileLang self-collision kernels
+│   └── backends/           # Layer 1 (Phase 2): GPU backend
+│       ├── static_data.py  #   StaticRobotData — flat arrays for GPU upload
+│       └── warp/           #   NVIDIA Warp kernels (used by GpuEngine)
+│           ├── kernels.py          # FK, ABA, integration kernels
+│           ├── solver_kernels.py   # Jacobi PGS-SI solver kernel
+│           ├── admm_kernels.py     # ADMM constraint solver kernel
+│           ├── collision_kernels.py # Collision detection kernel
+│           └── ...                 # spatial_warp, scratch, etc.
 │
 ├── robot/                 # Robot Description axis
 │   ├── model.py           # RobotModel dataclass
@@ -113,8 +111,8 @@ robot_simulator/
 │   ├── reward_terms.py    # standard reward term functions (Phase 2+)
 │   ├── managers.py        # TermManager(ABC) + ObsManager + RewardManager(stub)
 │   │                      #   + TerminationManager(stub)
-│   ├── base_env.py        # Layer 3: Gymnasium-compatible single env
-│   └── vec_env.py         # Layer 4: parallel VecEnv (torch.Tensor on CUDA, backend-agnostic)
+│   └── base_env.py        # Layer 3: Gymnasium-compatible single env
+│   # vec_env.py removed (Q31) — replaced by Manager-based RLEnv + GpuEngine
 │
 ├── deploy/                # Phase 5 (deferred)
 │   ├── policy_export.py
@@ -131,7 +129,7 @@ robot_simulator/
 | Layer | Technology | Notes |
 |---|---|---|
 | Phase 1 physics | Python + NumPy | Validate correctness first |
-| Phase 2 physics | NVIDIA Warp + TileLang + CUDA C++ | 4 GPU backends (NumPy/Warp/TileLang/CUDA), benchmarked |
+| Phase 2 physics | NVIDIA Warp (GpuEngine) | Single GPU backend; TileLang/CUDA/NumPy backends removed (Q31) |
 | Tensor format | PyTorch (torch.Tensor) | Unified data format; zero-copy interop with backends via DLPack |
 | Rendering (early) | matplotlib 3D | Quick visualization |
 | Rendering (later) | Vulkan + ray tracing | Sim-to-Real visual fidelity |
@@ -163,11 +161,10 @@ Deliverables:
 
 ### Phase 2 — GPU Acceleration + Parallel Environments
 
-Architecture decisions confirmed in REFLECTIONS.md (2026-03-17), updated 2026-03-23:
-- **4 GPU backends**: NumPy (CPU fallback) + Warp + TileLang + raw CUDA C++, all implementing `BatchBackend(ABC)`.
-- **Unified data format**: `torch.Tensor` on CUDA throughout VecEnv/managers. GPU backends receive tensors via zero-copy (Warp: `wp.from_torch()`; TileLang: DLPack; CUDA: `data_ptr<float>()`).
-- **Backend selection**: `physics/backends/get_backend("numpy"|"warp"|"tilelang"|"cuda")` factory; upper layers are backend-agnostic.
-- **VecEnv parallelism**: GPU kernels batched over N envs (`dim=N`), not Python-level for-loop.
+Architecture decisions confirmed in REFLECTIONS.md (2026-03-17), updated 2026-04-05 (Q31):
+- **Single GPU backend**: `GpuEngine` (Warp kernels) is the sole GPU physics engine. TileLang/CUDA/NumPy batch backends and `BatchBackend(ABC)` removed in Q31 refactor — 6 duplicated algorithm implementations eliminated.
+- **Batching**: GpuEngine handles `num_envs=N` internally via Warp kernel `dim=N`.
+- **RL env layer**: Manager-based `RLEnv` (Isaac Lab style) wraps GpuEngine. Old `VecEnv` + `BatchedObsManager` removed.
 - **Obs/Action space**: Manager + term-function pattern (Isaac Lab style); `ObsManager` fully implemented, Reward/Termination as stubs.
 - **Simulator placement**: Top-level `simulator.py` (not inside `physics/`).
 
@@ -210,32 +207,22 @@ Architecture decisions confirmed in REFLECTIONS.md (2026-03-17), updated 2026-03
 - [ ] `rl_env/obs_terms.py` — standard term functions: `base_lin_vel`, `base_ang_vel`, `joint_pos`, `joint_vel`, `contact_mask`, …
 - [ ] `rl_env/managers.py` — `TermManager(ABC)`, `ObsManager` (full), `RewardManager` (stub), `TerminationManager` (stub); `train()` / `eval()` noise switch
 - [ ] `rl_env/base_env.py` — `Env(model, cfg)`, Gymnasium interface
-- [ ] `rl_env/vec_env.py` — `VecEnv`: holds Warp arrays directly, no Python env-loop
+- ~~`rl_env/vec_env.py`~~ — removed (Q31); replaced by Manager-based RLEnv + GpuEngine
 
-#### 2e — GPU backends ✅ DONE
+#### 2e — GPU backends ✅ DONE (Q31: consolidated to GpuEngine)
 
-**架构**：`BatchBackend(ABC)` + `StepResult` dataclass。VecEnv 通过 `get_backend(name)` 工厂选择后端，
-上层代码完全不感知具体后端。`StaticRobotData` 将 `RobotModel` 展平为连续数组供 GPU 使用。
+**Original**: 4 backends (NumPy/Warp/TileLang/CUDA) implementing `BatchBackend(ABC)`.
+**Q31 refactor (2026-04-05)**: All backends except Warp kernels removed. `GpuEngine`
+is now the sole GPU physics engine, supporting `num_envs=N` batched simulation.
+`BatchBackend(ABC)`, `StepResult`, `get_backend()`, `NumpyLoopBackend`,
+`TileLangBatchBackend`, `CudaBatchBackend`, `torch_solver.py`, `batched_crba.py`
+all deleted (~4,100 lines removed).
 
-四个后端已实现并通过数值验证（float32 vs float64，atol=1e-4）：
-
-| 后端 | 实现方式 | N=1000 steps/s | vs NumPy |
-|------|----------|----------------|----------|
-| NumPy | Python for-loop (CPU) | 533 | 1x |
-| TileLang | TileLang kernel (FK+ABA) + PyTorch (contact/integration) | 438,700 | 823x |
-| Warp | 7 个 @wp.kernel (FK/ABA/contact/collision/integration) | 750,363 | 1,408x |
-| **CUDA** | **单融合 CUDA C++ kernel** (全物理步) | **2,204,524** | **4,136x** |
-
-文件结构：
+Current structure:
 ```
 physics/backends/
-├── __init__.py              # get_backend() 工厂
-├── batch_backend.py         # BatchBackend(ABC), StepResult
-├── static_data.py           # StaticRobotData
-├── numpy_loop.py            # NumpyLoopBackend
-├── warp/                    # Warp: spatial_warp.py, kernels.py, warp_backend.py, scratch.py
-├── tilelang/                # TileLang: kernels_tl.py (FK+ABA kernel), tilelang_backend.py
-└── cuda/                    # CUDA C++: kernels.cu, cuda_backend.py
+├── static_data.py           # StaticRobotData — flat arrays for GPU
+└── warp/                    # Warp kernels (used by GpuEngine)
 ```
 
 #### 2f — High-fidelity contact modeling 🔄

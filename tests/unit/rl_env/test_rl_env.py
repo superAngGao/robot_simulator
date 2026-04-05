@@ -6,7 +6,6 @@ Covers:
   2. Noise applied in train mode
   3. Noise NOT applied in eval mode
   4. Env.step() returns finite obs with correct shape
-  5. VecEnv N=4 step obs shape = (4, obs_dim)
   6. PDController effort_limit clips tau
   7. TorqueController pass-through and effort clipping
   8. obs_terms individual term functions
@@ -14,7 +13,6 @@ Covers:
  10. Env episode truncation
  11. Env init_noise_scale
  12. PDController simplifies to kp*action_scale*action for zero state
- 13. VecEnv reset returns correct shape
  14. ObsManager with base_lin_vel / base_ang_vel terms
 """
 
@@ -26,7 +24,7 @@ import torch
 from physics.joint import FreeJoint, RevoluteJoint
 from physics.robot_tree import Body, RobotTreeNumpy
 from physics.spatial import SpatialInertia, SpatialTransform
-from rl_env import Env, EnvCfg, NoiseCfg, ObsTermCfg, PDController, VecEnv, obs_terms
+from rl_env import Env, EnvCfg, NoiseCfg, ObsTermCfg, PDController, obs_terms
 from rl_env.controllers import TorqueController
 from robot.model import RobotModel
 
@@ -168,27 +166,6 @@ def test_env_step_returns_valid():
 
     assert obs.shape == (4,), f"Expected (4,), got {obs.shape}"
     assert torch.all(torch.isfinite(obs)), "obs contains non-finite values"
-
-
-# ---------------------------------------------------------------------------
-# 5. VecEnv N=4 step obs shape = (4, obs_dim)
-# ---------------------------------------------------------------------------
-
-
-def test_vec_env_step():
-    model = _make_model()
-    cfg = _make_cfg()
-    vec = VecEnv(model, cfg, num_envs=4)
-    vec.reset()
-
-    nu = len(model.actuated_joint_names)
-    actions = torch.zeros(4, nu, dtype=torch.float32)
-    obs, rew, term, trunc, info = vec.step(actions)
-
-    assert obs.shape == (4, 4), f"Expected (4, 4), got {obs.shape}"
-    assert rew.shape == (4,)
-    assert term.shape == (4,)
-    assert trunc.shape == (4,)
 
 
 # ---------------------------------------------------------------------------
@@ -455,20 +432,6 @@ def test_init_noise_randomizes_state():
     q2 = env.q.copy()
 
     assert not np.allclose(q1, q2), "Different seeds should produce different initial states"
-
-
-# ---------------------------------------------------------------------------
-# 13. VecEnv reset shape
-# ---------------------------------------------------------------------------
-
-
-def test_vec_env_reset_shape():
-    model = _make_model()
-    cfg = _make_cfg()
-    vec = VecEnv(model, cfg, num_envs=3)
-    obs, infos = vec.reset()
-    assert obs.shape == (3, 4), f"Expected (3, 4), got {obs.shape}"
-    assert len(infos) == 3
 
 
 # ---------------------------------------------------------------------------
