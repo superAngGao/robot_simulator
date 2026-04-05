@@ -1,6 +1,6 @@
 # Robot Simulator — Progress Tracker
 
-> Last updated: 2026-04-05 (session 17)
+> Last updated: 2026-04-06 (session 18)
 > Reference plan: [PLAN.md](./PLAN.md)
 
 ---
@@ -542,6 +542,19 @@ CPU f32 截断实验：CPU f64 vs CPU f32 只差 0.008mm，进一步确认差异
 **删除统计：~4,100 行代码，12 个文件，3 个测试文件**
 
 GpuEngine 是唯一的 GPU 物理引擎。下一步：Manager-based RLEnv。
+
+**HalfSpaceShape + 斜面接触 (session 18)：**
+- [x] `HalfSpaceShape`（geometry.py）— 无限半空间碰撞形状
+- [x] `HalfSpaceTerrain`（terrain.py）— 任意方向斜面 terrain + mu 属性
+- [x] `halfspace_convex_query()`（gjk_epa.py）— 半空间 vs 凸体碰撞检测
+- [x] 多点接触：`contact_vertices()` 返回 Box 8 顶点 / ConvexHull 全顶点
+- [x] `ContactManifold.point_depths` — 每个接触点独立穿透深度
+- [x] `CollisionPipeline` + `CpuEngine` isinstance dispatch
+- [x] 5 个斜面物理验证测试 + 力/速度可视化脚本
+- [x] 调研记录：Q32（TriangleMeshTerrain）、Q18.7b（max depenetration velocity）、Q18.9（滚动摩擦 5 引擎对比）
+
+**验证结果**：法向力/摩擦力与解析解一致（< 0.1%），球体滚动 `a=(5/7)g sinθ`，
+2D 摩擦方向旋转正确，滑动→滚动过渡 `v_cross = 5/7 × v0`。
 
 ---
 

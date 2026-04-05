@@ -5,6 +5,63 @@ Updated at the end of each development session.
 
 ---
 
+## 2026-04-06 (session 18) — HalfSpaceShape, Inclined Plane Contact, Multi-Point
+
+### Design Decision: Ground as Collision Geometry (Approach B)
+
+Researched 5 open-source simulators (MuJoCo, Drake, Bullet, PhysX/Isaac Lab, Newton).
+Universal pattern: ground is a collision geometry (HalfSpace/plane), not a special
+terrain concept. Contact normal comes from collision detection, not terrain queries.
+
+Chose Approach B over Approach A (InclinedPlaneTerrain):
+- A = generalize terrain.normal_at() for force decomposition (minimal change but wrong architecture)
+- **B** = HalfSpaceShape as collision body, halfspace_convex_query for detection (matches all major engines)
+
+Also added `HalfSpaceTerrain` to bridge the old Terrain API (height_at, normal_at) for
+backward compatibility with PenaltyContactModel and other code paths.
+
+### Multi-Point Contact for Vertex-Based Shapes
+
+Single-point contact caused box tipping on inclines (12% velocity error, 900N force spikes).
+Added `contact_vertices()` to CollisionShape: Box returns 8 corners, ConvexHull returns all
+vertices, smooth shapes return None (single-point fallback). `ContactManifold.point_depths`
+stores per-point penetration depth.
+
+Result: force accuracy improved to < 0.1% (Fn=8.496 vs 8.496 N analytical). Box still
+has initial tipping transient due to finite-size effects (not a numerical bug).
+
+### Sphere Rolling Physics Validated
+
+Sphere on incline enters rolling regime automatically through LCP solver + single-point
+Coulomb friction. Key findings:
+- High friction (μ > (2/7)tanθ): sphere rolls, a = (5/7)g sinθ — matches analytical
+- Low friction (μ < (2/7)tanθ): sphere slides, a = g(sinθ - μcosθ) — matches analytical
+- 2D velocity (along + cross slope): sliding→rolling transition gives v_cross = 5/7 × v0
+  (exact match with energy partition theory)
+- Cross-slope velocity conserved after rolling transition (no rolling friction with condim=3)
+
+### ADMM-C vs PGS-SI Robustness
+
+Tested deep initial penetration (0.018m for 0.1m box):
+- PGS-SI: excessive impulse → box ejected from surface → free fall (Fn=0)
+- ADMM-C: compliant contact naturally limits recovery force → correct dynamics (err 3.4%)
+
+Recorded as Q18.7b: need max depenetration velocity clamp for PGS-SI.
+
+### Rolling Friction Research (Q18.9)
+
+Surveyed 5 engines for condim 4/6 (torsional/rolling friction):
+- MuJoCo: unified elliptic cone, R diagonal coupling, angular Jacobian for spin/roll rows
+- Bullet: separate box constraints, bound NOT coupled to normal force
+- PhysX: torsional only (patch radius), no rolling friction, TGS solver only
+- Drake: no explicit rolling friction (hydroelastic provides implicit)
+- ODE: Tasora & Anitescu (2013) complementarity model
+
+Our solver already has condim/mu_spin/mu_roll fields in ContactConstraint. Missing:
+angular Jacobian rows (spin/roll use ω·d instead of v·d).
+
+---
+
 ## 2026-04-03 (session 16) — PGS slop fix + Q31 Architecture Refactor Planning
 
 ### Bug Fix: PGS slop parameter not forwarded
