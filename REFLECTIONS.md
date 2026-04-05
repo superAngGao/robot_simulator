@@ -5,6 +5,46 @@ Updated at the end of each development session.
 
 ---
 
+## 2026-04-03 (session 16) — PGS slop fix + Q31 Architecture Refactor Planning
+
+### Bug Fix: PGS slop parameter not forwarded
+
+`PGSContactSolver` had no `slop` parameter. `PGSSplitImpulseSolver` stored slop
+but never passed it to the inner solver. With erp ≤ 1.0, Baumgarte bias was
+`-erp/dt * depth` without slop, causing spurious velocity bias on shallow contacts.
+
+Fix: Add `slop` to `PGSContactSolver`, use `max(depth - slop, 0)` in both erp
+branches. 13 test failures resolved. 7 tests rewritten from old `position_corrections`
+API to Baumgarte velocity bias verification.
+
+### Q31 — Architecture Refactor Decision
+
+**Problem identified**: Two parallel GPU physics paths (GpuEngine warp kernels vs
+TileLang/CUDA VecEnv backends) with 6 duplicated core algorithms. Every new feature
+(Prismatic joint, multi-shape collision) requires changes in both paths.
+
+**Cross-engine research** (Isaac Lab, Brax/MJX, Isaac Gym, Gymnasium):
+All frameworks share the same pattern — env layer never touches physics. Physics is
+a black-box `step()` call. Env layer handles obs/reward/reset/action/events.
+
+**Decision**: Isaac Lab Manager-based architecture.
+- GpuEngine becomes the sole GPU physics engine (already supports num_envs=N)
+- New `RLEnv` class with 6 Managers (Action, Observation, Reward, Termination, Event, Command)
+- Config-driven: swap reward terms / obs functions without touching step loop
+- Delete: TileLangBatchBackend, CudaBatchBackend, NumpyLoopBackend, BatchBackend ABC
+
+**GpuEngine gaps to fill**: StepOutput exposure (low), decimation (low), per-env
+reset (medium), runtime parameter modification for DR (high, deferred).
+
+**Naming**: "VecEnv" misleading since batching is in GpuEngine. Rename to `RLEnv`.
+
+### Test Status
+
+662 passed, 1 pre-existing failure (`test_early_phase_separation_vs_mujoco` —
+Q30 ADMM R regularization difference, 0.022mm over atol=0.02 threshold).
+
+---
+
 ## 2026-04-01 (session 15b) — Q30 GPU Multi-Shape Collision: Cross-Engine Research
 
 ### Research Scope

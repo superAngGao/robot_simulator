@@ -42,6 +42,41 @@ if TYPE_CHECKING:
     from .merged_model import MergedModel
 
 
+# ── Per-env reset kernels ──
+
+
+@wp.kernel
+def _scatter_reset(
+    env_ids: wp.array(dtype=wp.int32),
+    q_src: wp.array2d(dtype=wp.float32),
+    qdot_src: wp.array2d(dtype=wp.float32),
+    nq: int,
+    nv: int,
+    q_dst: wp.array2d(dtype=wp.float32),
+    qdot_dst: wp.array2d(dtype=wp.float32),
+):
+    """Copy q_src[i] → q_dst[env_ids[i]] for each i in range(dim)."""
+    i = wp.tid()
+    eid = env_ids[i]
+    for j in range(nq):
+        q_dst[eid, j] = q_src[i, j]
+    for j in range(nv):
+        qdot_dst[eid, j] = qdot_src[i, j]
+
+
+@wp.kernel
+def _scatter_zero_2d(
+    env_ids: wp.array(dtype=wp.int32),
+    dim1: int,
+    dst: wp.array2d(dtype=wp.float32),
+):
+    """Zero out dst[env_ids[i], :] for 2D arrays (ADMM warmstart)."""
+    i = wp.tid()
+    eid = env_ids[i]
+    for j in range(dim1):
+        dst[eid, j] = 0.0
+
+
 class GpuEngine(PhysicsEngine):
     """GPU physics engine with Warp kernels.
 
@@ -184,15 +219,104 @@ class GpuEngine(PhysicsEngine):
         self._default_q = q0.astype(np.float32)
         self._default_qdot = qdot0.astype(np.float32)
 
+    # ── Public state accessors (zero-copy warp arrays) ──
+
+    @property
+    def num_envs(self) -> int:
+        return self._num_envs
+
+    @property
+    def q_wp(self):
+        """Warp array (N, nq) — current generalized positions."""
+        return self._scratch.q
+
+    @property
+    def qdot_wp(self):
+        """Warp array (N, nv) — current generalized velocities."""
+        return self._scratch.qdot
+
+    @property
+    def v_bodies_wp(self):
+        """Warp array (N, nb, 6) — body spatial velocities after last FK."""
+        return self._scratch.v_bodies
+
+    @property
+    def x_world_R_wp(self):
+        """Warp array (N, nb, 3, 3) — body rotation matrices in world frame."""
+        return self._scratch.X_world_R
+
+    @property
+    def x_world_r_wp(self):
+        """Warp array (N, nb, 3) — body positions in world frame."""
+        return self._scratch.X_world_r
+
+    @property
+    def contact_active_wp(self):
+        """Warp array (N, max_contacts) int32 — contact active flags."""
+        return self._contact_active
+
+    @property
+    def contact_count_wp(self):
+        """Warp array (N,) int32 — active contact count per env."""
+        return self._contact_count
+
     def reset(self, q0: np.ndarray | None = None) -> None:
         """Reset all environments to default or given state."""
         N = self._num_envs
         sc = self._scratch
-        q_np = np.tile(q0 if q0 is not None else self._default_q, (N, 1)).astype(np.float32)
+        if q0 is not None:
+            self._default_q = np.asarray(q0, dtype=np.float32).ravel()
+        q_np = np.tile(self._default_q, (N, 1)).astype(np.float32)
         qdot_np = np.tile(self._default_qdot, (N, 1)).astype(np.float32)
         wp.copy(sc.q, wp.array(q_np, dtype=wp.float32, device=self._device))
         wp.copy(sc.qdot, wp.array(qdot_np, dtype=wp.float32, device=self._device))
-        # Clear ADMM warmstart state
+        self._clear_warmstart()
+
+    def reset_envs(self, env_ids: np.ndarray, q0: np.ndarray | None = None) -> None:
+        """Reset specific environments by index.
+
+        Args:
+            env_ids: 1D int array of environment indices to reset.
+            q0: Optional (nq,) initial state. If None, uses default_q.
+        """
+        if len(env_ids) == 0:
+            return
+        sc = self._scratch
+        q_row = (q0 if q0 is not None else self._default_q).astype(np.float32)
+        qdot_row = self._default_qdot.copy()
+
+        # Build per-env arrays and scatter
+        env_ids_i32 = np.asarray(env_ids, dtype=np.int32)
+        n_reset = len(env_ids_i32)
+        q_tile = np.tile(q_row, (n_reset, 1))
+        qdot_tile = np.tile(qdot_row, (n_reset, 1))
+
+        gpu_ids = wp.array(env_ids_i32, dtype=wp.int32, device=self._device)
+        gpu_q_src = wp.array(q_tile, dtype=wp.float32, device=self._device)
+        gpu_qdot_src = wp.array(qdot_tile, dtype=wp.float32, device=self._device)
+
+        wp.launch(
+            _scatter_reset,
+            dim=n_reset,
+            inputs=[gpu_ids, gpu_q_src, gpu_qdot_src, self._static.nq, self._static.nv],
+            outputs=[sc.q, sc.qdot],
+            device=self._device,
+        )
+
+        # Clear warmstart for reset envs
+        if self._solver == "admm":
+            sol = self._solver_scratch
+            for arr in [sol.admm_f_prev, sol.admm_s_prev, sol.admm_u_prev]:
+                wp.launch(
+                    _scatter_zero_2d,
+                    dim=n_reset,
+                    inputs=[gpu_ids, arr.shape[1]],
+                    outputs=[arr],
+                    device=self._device,
+                )
+
+    def _clear_warmstart(self):
+        """Clear ADMM warmstart state for all environments."""
         if self._solver == "admm":
             sol = self._solver_scratch
             sol.admm_f_prev.zero_()
@@ -200,13 +324,24 @@ class GpuEngine(PhysicsEngine):
             sol.admm_u_prev.zero_()
             sol.admm_prev_n_active.zero_()
 
+    def step_n(self, tau=None, dt=None, n_substeps: int = 1) -> StepOutput:
+        """Run n_substeps physics steps, return output once at end.
+
+        More efficient than calling step() in a loop because it avoids
+        repeated GPU→CPU copies of StepOutput.
+
+        Args:
+            tau: (N, nv) generalized forces (held constant across substeps).
+            dt: Time step per substep. If None, uses self._dt.
+            n_substeps: Number of physics substeps to run.
+        """
+        for _ in range(n_substeps):
+            self._step_physics(tau=tau, dt=dt)
+        return self._make_output()
+
     def step(self, q=None, qdot=None, tau=None, dt=None):
         """One physics step. If q/qdot/tau not given, uses internal state."""
-        N = self._num_envs
-        s = self._static
         sc = self._scratch
-        sol = self._solver_scratch
-        dt = dt or self._dt
 
         # If external state provided, upload it
         if q is not None:
@@ -215,6 +350,17 @@ class GpuEngine(PhysicsEngine):
         if qdot is not None:
             qdot_np = np.atleast_2d(qdot).astype(np.float32)
             wp.copy(sc.qdot, wp.array(qdot_np, dtype=wp.float32, device=self._device))
+
+        self._step_physics(tau=tau, dt=dt)
+        return self._make_output()
+
+    def _step_physics(self, tau=None, dt=None):
+        """Run one physics substep (no output extraction)."""
+        N = self._num_envs
+        s = self._static
+        sc = self._scratch
+        sol = self._solver_scratch
+        dt = dt or self._dt
 
         # Tau (default zero)
         if tau is not None:
@@ -525,15 +671,21 @@ class GpuEngine(PhysicsEngine):
         wp.copy(sc.q, sc.q_new)
         wp.copy(sc.qdot, sc.qdot_new)
 
-        # Build output
+    def _make_output(self) -> StepOutput:
+        """Extract current state into a StepOutput (GPU→CPU copy)."""
+        N = self._num_envs
+        sc = self._scratch
         q_out = sc.q.numpy().copy()
         qdot_out = sc.qdot.numpy().copy()
+        x_world_R_out = sc.X_world_R.numpy().copy()
+        x_world_r_out = sc.X_world_r.numpy().copy()
+        v_bodies_out = sc.v_bodies.numpy().copy()
 
         return StepOutput(
             q_new=q_out[0] if N == 1 else q_out,
             qdot_new=qdot_out[0] if N == 1 else qdot_out,
-            X_world=None,  # can be populated if needed
-            v_bodies=None,
+            X_world=(x_world_R_out[0], x_world_r_out[0]) if N == 1 else (x_world_R_out, x_world_r_out),
+            v_bodies=v_bodies_out[0] if N == 1 else v_bodies_out,
             contact_active=self._contact_active.numpy().copy(),
             force_state=None,
         )
