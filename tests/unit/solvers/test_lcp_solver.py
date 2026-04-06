@@ -129,19 +129,25 @@ class TestPGSSolver:
         assert total_z > 0
 
     def test_body_body_collision(self):
-        """Two bodies colliding (neither is ground)."""
+        """Two bodies colliding (neither is ground).
+
+        Solver convention: ``v_free = (v_i − v_j) · normal``, and the solver
+        enforces ``v_free + W λ ≥ 0``. For ``v_free < 0`` (penetrating), the
+        normal must point from body j toward body i. Here i sits at x=0 and j
+        at x=1, so the normal is −x.
+        """
         solver = PGSContactSolver(max_iter=50)
         c = ContactConstraint(
             body_i=0,
             body_j=1,
             point=np.array([0.5, 0, 0.0]),
-            normal=np.array([1, 0, 0.0]),  # push apart along X
+            normal=np.array([-1.0, 0.0, 0.0]),  # j → i (−x)
             tangent1=np.zeros(3),
             tangent2=np.zeros(3),
             depth=0.05,
             mu=0.3,
         )
-        # Body 0 moving right, body 1 moving left
+        # Body 0 moving +X (into body 1), body 1 moving −X (into body 0).
         body_v = [
             np.array([1.0, 0, 0, 0, 0, 0]),
             np.array([-1.0, 0, 0, 0, 0, 0]),
@@ -154,11 +160,10 @@ class TestPGSSolver:
         inv_inertia = [np.eye(3), np.eye(3)]
 
         impulses = solver.solve([c], body_v, body_X, inv_mass, inv_inertia, dt=1e-3)
-        # Normal points from j(1) to i(0) in +X direction
-        # Body 0 (body_i) gets pushed in +X (normal direction)
-        # Body 1 (body_j) gets pushed in -X (opposite)
-        assert impulses[0][0] > 0, f"Body i should get +X impulse, got {impulses[0][0]}"
-        assert impulses[1][0] < 0, f"Body j should get -X impulse, got {impulses[1][0]}"
+        # Separating impulse pushes body i (left) further in −x and body j
+        # (right) in +x.
+        assert impulses[0][0] < 0, f"Body i should get −X impulse, got {impulses[0][0]}"
+        assert impulses[1][0] > 0, f"Body j should get +X impulse, got {impulses[1][0]}"
 
     def test_pgs_convergence(self):
         """More iterations should give better result."""

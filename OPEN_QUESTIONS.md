@@ -237,11 +237,12 @@ Phase 2f 已实现 GJK/EPA + PGS LCP + 关节 Coulomb 摩擦。与 MuJoCo/Bullet
 7. **隐式接触积分** — 当前是显式（先算力再积分），MuJoCo/Drake 用隐式
    （接触约束与动力学耦合求解），数值稳定性更好。
 
-   7b. **最大恢复速度限制 (max depenetration velocity)** (2026-04-06)
-   深穿透时 PGS-SI 产生过大冲量导致物体弹飞。ADMM-C（合规接触）天然免疫此问题。
-   PGS 路线需钳位：`v_bias = min(erp * depth / dt, v_max)`，Bullet 用
-   `m_splitImpulsePenetrationThreshold`，PhysX 用 `maxDepenetrationVelocity`。
-   实测：0.018m 穿透下 PGS-SI 弹飞（Fn=0），ADMM-C 正常（err 3.4%）。
+   7b. ~~**最大恢复速度限制 (max depenetration velocity)**~~ ✅ RESOLVED (2026-04-06 session 19)
+   `PGSContactSolver` / `PGSSplitImpulseSolver` / `crba_kernels.batched_build_W_joint_space`
+   均加了 `max_depenetration_vel` 钳位（PhysX 风格），默认 1 m/s（因为我们把 position
+   correction 折进 velocity，钳位值即 post-solve 速度，不能设太大）。
+   `StaticRobotData.max_depenetration_vel` 集中管理。
+   6 个新单元测试覆盖 clamp 行为 + 深穿透不弹飞集成测试。
 
 8. ~~**碰撞过滤掩码**~~ ✅ RESOLVED — `physics/collision_filter.py` 实现了三层过滤：
    auto-exclude（parent-child）、bitmask（group/mask uint32）、explicit exclude set。

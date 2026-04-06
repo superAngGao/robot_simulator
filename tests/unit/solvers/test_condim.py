@@ -198,13 +198,30 @@ class TestCondim6Rolling:
         assert impulses[0][3] < 0, f"Rolling impulse should oppose rotation: {impulses[0][3]}"
 
     def test_no_rolling_with_condim4(self):
-        """condim=4 should NOT produce rolling-opposing torque."""
+        """condim=4 should NOT add rolling-friction torque over condim=3.
+
+        A body rotating about a tangent axis (ω_x=5) above the ground receives
+        tangential-friction torque at the lever arm — that torque is present
+        at every condim ≥ 3. Rolling friction is the *extra* torque that
+        condim=6 adds via its angular Jacobian rows. This test verifies
+        condim=4 does NOT add any such extra torque (rolling rows are absent),
+        by comparing the angular-x impulse against condim=3.
+        """
         solver = PGSContactSolver(max_iter=50)
-        c, v, X, m, I = _make_ground_contact(condim=4, mu=0.5, mu_spin=0.01)
-        v[0] = np.array([0.0, 0.0, -1.0, 5.0, 0.0, 0.0])
-        impulses = solver.solve([c], v, X, m, I, dt=1e-3)
-        # condim=4 has no rolling rows
-        assert abs(impulses[0][3]) < abs(impulses[0][2]) * 0.1
+        v_init = np.array([0.0, 0.0, -1.0, 5.0, 0.0, 0.0])
+
+        c3, v3, X3, m3, I3 = _make_ground_contact(condim=3, mu=0.5)
+        v3[0] = v_init.copy()
+        imp3 = solver.solve([c3], v3, X3, m3, I3, dt=1e-3)
+
+        c4, v4, X4, m4, I4 = _make_ground_contact(condim=4, mu=0.5, mu_spin=0.01)
+        v4[0] = v_init.copy()
+        imp4 = solver.solve([c4], v4, X4, m4, I4, dt=1e-3)
+
+        # condim=4 adds torsional friction on the normal axis (angular z),
+        # but leaves the rolling axes (angular x/y) unchanged relative to condim=3.
+        np.testing.assert_allclose(imp4[0][3], imp3[0][3], atol=1e-6)
+        np.testing.assert_allclose(imp4[0][4], imp3[0][4], atol=1e-6)
 
     def test_condim6_all_channels_active(self):
         """Body with combined motion should activate all 6 constraint channels."""

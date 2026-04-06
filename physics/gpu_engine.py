@@ -31,15 +31,89 @@ from .backends.warp.kernels import (
 )
 from .backends.warp.scratch import ABABatchScratch
 from .backends.warp.solver_kernels import (
+    CONDIM,
     batched_constraint_integrate,
     batched_jacobi_pgs_step,
     batched_predicted_velocity,
 )
+from .backends.warp.solver_kernels_v2 import _build_tangent_frame
 from .backends.warp.solver_scratch import SolverScratch
 from .engine import PhysicsEngine, StepOutput
 
 if TYPE_CHECKING:
     from .merged_model import MergedModel
+
+
+# ── Contact force aggregation kernel ──
+
+
+@wp.kernel
+def _aggregate_contact_forces(
+    lambdas: wp.array2d(dtype=wp.float32),
+    contact_active: wp.array2d(dtype=wp.int32),
+    contact_normal: wp.array3d(dtype=wp.float32),
+    contact_bi: wp.array2d(dtype=wp.int32),
+    sensor_body_idx: wp.array(dtype=wp.int32),
+    max_contacts: int,
+    nc_sensor: int,
+    dt: float,
+    force_out: wp.array2d(dtype=wp.float32),
+):
+    """Aggregate per-contact impulses into per-sensor-body world forces.
+
+    For each active contact whose body_i matches a sensor body, reconstruct
+    the 3D world-frame force from (lambda_n, lambda_t1, lambda_t2) and
+    atomic-add into force_out[env, sensor_idx*3 + k].
+
+    Args:
+        lambdas      : (N, max_rows) constraint impulses from solver.
+        contact_active : (N, max_contacts) int, 1 if active.
+        contact_normal : (N, max_contacts, 3) contact normals.
+        contact_bi   : (N, max_contacts) body index of contact body i.
+        sensor_body_idx : (nc_sensor,) body indices to track.
+        max_contacts : Max contacts per env.
+        nc_sensor    : Number of sensor bodies.
+        dt           : Time step (force = impulse / dt).
+        force_out    : (N, nc_sensor*3) output, must be zeroed before call.
+    """
+    env_id = wp.tid()
+
+    for c in range(max_contacts):
+        if contact_active[env_id, c] == 0:
+            continue
+
+        bi = contact_bi[env_id, c]
+
+        # Find sensor index for this body (no break — Warp limitation)
+        si = int(-1)
+        for s in range(nc_sensor):
+            if sensor_body_idx[s] == bi and si < 0:
+                si = s
+        if si < 0:
+            continue
+
+        # Reconstruct world force from constraint impulses
+        normal = wp.vec3(
+            contact_normal[env_id, c, 0],
+            contact_normal[env_id, c, 1],
+            contact_normal[env_id, c, 2],
+        )
+        frame = _build_tangent_frame(normal)
+        t1 = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2])
+        t2 = wp.vec3(frame[1, 0], frame[1, 1], frame[1, 2])
+
+        base = c * CONDIM
+        inv_dt = 1.0 / dt
+        ln = lambdas[env_id, base + 0] * inv_dt
+        lt1 = lambdas[env_id, base + 1] * inv_dt
+        lt2 = lambdas[env_id, base + 2] * inv_dt
+
+        f = normal * ln + t1 * lt1 + t2 * lt2
+
+        off = si * 3
+        wp.atomic_add(force_out, env_id, off + 0, f[0])
+        wp.atomic_add(force_out, env_id, off + 1, f[1])
+        wp.atomic_add(force_out, env_id, off + 2, f[2])
 
 
 # ── Per-env reset kernels ──
@@ -172,6 +246,11 @@ class GpuEngine(PhysicsEngine):
         self._n_pairs = n_pairs
         self._nc_ground = s.nc
 
+        # Contact force sensor: per-sensor-body aggregated world forces
+        # Layout: (N, nc_sensor * 3) flattened for wp.atomic_add compatibility
+        self._nc_sensor = s.nc  # sensor bodies = contact bodies
+        self._contact_force_sensor = wp.zeros((num_envs, max(s.nc * 3, 1)), dtype=wp.float32, device=device)
+
         # Upload static data
         self._gpu_joint_type = wp.array(s.joint_type, dtype=wp.int32, device=device)
         self._gpu_joint_axis = wp.array(s.joint_axis, dtype=wp.float32, device=device)
@@ -259,6 +338,19 @@ class GpuEngine(PhysicsEngine):
     def contact_count_wp(self):
         """Warp array (N,) int32 — active contact count per env."""
         return self._contact_count
+
+    @property
+    def contact_force_sensor_wp(self):
+        """Warp array (N, nc_sensor*3) flat — per-sensor-body net contact force in world frame.
+
+        Reshape to (N, nc_sensor, 3) via numpy: .numpy().reshape(N, nc_sensor, 3).
+        """
+        return self._contact_force_sensor
+
+    @property
+    def nc_sensor(self) -> int:
+        """Number of sensor (contact) bodies."""
+        return self._nc_sensor
 
     def reset(self, q0: np.ndarray | None = None) -> None:
         """Reset all environments to default or given state."""
@@ -539,6 +631,7 @@ class GpuEngine(PhysicsEngine):
                 s.solimp_power,
                 s.contact_erp_baumgarte if self._solver != "admm" else 0.0,
                 s.contact_slop,
+                s.max_depenetration_vel,
                 dt,
                 self._max_contacts,
                 self._max_rows,
@@ -666,6 +759,26 @@ class GpuEngine(PhysicsEngine):
             ],
             outputs=[sc.q_new, sc.qdot_new],
         )
+
+        # 13. Aggregate contact forces for sensor bodies
+        if self._nc_sensor > 0:
+            self._contact_force_sensor.zero_()
+            wp.launch(
+                _aggregate_contact_forces,
+                dim=N,
+                device=self._device,
+                inputs=[
+                    sol.lambdas,
+                    self._contact_active,
+                    self._contact_normal,
+                    self._contact_bi,
+                    self._gpu_contact_body_idx,
+                    self._max_contacts,
+                    self._nc_sensor,
+                    dt,
+                ],
+                outputs=[self._contact_force_sensor],
+            )
 
         # Update state
         wp.copy(sc.q, sc.q_new)

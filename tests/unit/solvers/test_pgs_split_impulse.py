@@ -595,3 +595,154 @@ class TestPerContactMaterial:
         imp_explicit = solver.solve([cc_explicit], v2, X, [INV_MASS], [INV_INERTIA], dt=DT)
 
         np.testing.assert_allclose(imp_none[0], imp_explicit[0], atol=1e-10)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 9. Max Depenetration Velocity Clamp (Q18.7b)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestMaxDepenetrationVelocityClamp:
+    """Verify ``max_depenetration_vel`` bounds the Baumgarte recovery impulse.
+
+    Background (Q18.7b, session 18):
+      Deep initial penetration with legacy Baumgarte (``v_bias = erp·d/dt``)
+      can produce v_bias of many meters per second, which drives the solver to
+      output a recovery impulse that ejects the body. Bullet solves this with
+      ``m_splitImpulsePenetrationThreshold`` and PhysX with
+      ``maxDepenetrationVelocity``; we adopt the same cap on the bias magnitude.
+
+    Test setup: 1 kg point body at rest, contact at body CoM height so the
+    normal Jacobian is ``J_n = [0,0,1,0,0,0]`` and ``W_nn = 1``. With zero
+    free velocity the PGS solution is ``lambda_n = -bias`` directly, which
+    lets us read off the clamp from the impulse.
+    """
+
+    def test_deep_penetration_legacy_erp_clamped(self):
+        """depth=0.1, erp=0.8, dt=1e-3 → unclamped bias = 80 m/s.
+
+        Default clamp of 10 m/s must reduce the impulse to ~10 N·s.
+        """
+        solver = PGSContactSolver(max_iter=100, erp=0.8, slop=0.0, cfm=1e-10, max_depenetration_vel=10.0)
+        cc = _make_contact(depth=0.1)
+        v = [np.zeros(6)]
+        imp = solver.solve([cc], v, X, [INV_MASS], [INV_INERTIA], dt=DT)
+        # Expected: clamp at 10, W_nn=1 → lambda_n ≈ 10
+        assert 9.9 < imp[0][2] < 10.1, f"Clamped impulse should be ≈10 N·s, got {imp[0][2]:.3f}"
+
+    def test_shallow_penetration_not_clamped(self):
+        """Shallow depth stays below clamp — impulse reflects the raw bias."""
+        solver = PGSContactSolver(max_iter=100, erp=0.8, slop=0.0, cfm=1e-10, max_depenetration_vel=10.0)
+        # depth=1 mm, erp=0.8, dt=1 ms → bias = 0.8 m/s (well under 10)
+        cc = _make_contact(depth=0.001)
+        v = [np.zeros(6)]
+        imp = solver.solve([cc], v, X, [INV_MASS], [INV_INERTIA], dt=DT)
+        assert 0.75 < imp[0][2] < 0.85, f"Unclamped impulse should be ≈0.8 N·s, got {imp[0][2]:.3f}"
+
+    def test_clamp_value_is_honored(self):
+        """Lower clamp → smaller impulse under deep penetration."""
+        deep = _make_contact(depth=0.1)
+        common_kwargs = dict(max_iter=100, erp=0.8, slop=0.0, cfm=1e-10)
+
+        solver_10 = PGSContactSolver(**common_kwargs, max_depenetration_vel=10.0)
+        solver_1 = PGSContactSolver(**common_kwargs, max_depenetration_vel=1.0)
+
+        imp_10 = solver_10.solve([deep], [np.zeros(6)], X, [INV_MASS], [INV_INERTIA], dt=DT)
+        imp_1 = solver_1.solve([_make_contact(depth=0.1)], [np.zeros(6)], X, [INV_MASS], [INV_INERTIA], dt=DT)
+
+        assert 9.9 < imp_10[0][2] < 10.1
+        assert 0.9 < imp_1[0][2] < 1.1
+
+    def test_mujoco_qp_style_erp_clamped(self):
+        """erp > 1 (MuJoCo QP style, 1/τ) path is also clamped."""
+        # v_ref_raw = erp * depth = 200 * 0.1 = 20 m/s → clamp to 10
+        solver = PGSContactSolver(max_iter=100, erp=200.0, slop=0.0, cfm=1e-10, max_depenetration_vel=10.0)
+        cc = _make_contact(depth=0.1)
+        imp = solver.solve([cc], [np.zeros(6)], X, [INV_MASS], [INV_INERTIA], dt=DT)
+        assert 9.9 < imp[0][2] < 10.1, f"Clamped MuJoCo-style bias should give ≈10 N·s, got {imp[0][2]:.3f}"
+
+    def test_split_impulse_wrapper_passes_clamp(self):
+        """PGSSplitImpulseSolver must forward the clamp to the inner solver."""
+        solver = PGSSplitImpulseSolver(max_iter=100, erp=0.8, slop=0.0, cfm=1e-10, max_depenetration_vel=2.0)
+        cc = _make_contact(depth=0.1)
+        imp = solver.solve([cc], [np.zeros(6)], X, [INV_MASS], [INV_INERTIA], dt=DT)
+        # Clamp at 2 → impulse should be ≈2 N·s
+        assert 1.9 < imp[0][2] < 2.1, f"Wrapper clamp should give ≈2 N·s, got {imp[0][2]:.3f}"
+
+    def test_deep_penetration_no_ejection_integration(self):
+        """End-to-end: body placed deeply inside the ground should not eject.
+
+        Without the clamp, legacy Baumgarte with ``erp=0.8, dt=2e-4`` turns a
+        17 mm penetration into a v_bias of 68 m/s, which drives a PGS lambda
+        large enough to throw the body off the ground (Q18.7b). With the
+        default clamp of 1 m/s the recovery is bounded: the ball rises gently
+        over ~17 ms to resolve the penetration rather than being ejected.
+        """
+        tree = RobotTreeNumpy(gravity=9.81)
+        tree.add_body(
+            Body(
+                name="ball",
+                index=0,
+                joint=FreeJoint("root"),
+                inertia=SpatialInertia(mass=1.0, inertia=np.diag([0.004] * 3), com=np.zeros(3)),
+                X_tree=SpatialTransform.identity(),
+                parent=-1,
+            )
+        )
+        tree.finalize()
+
+        sim_dt = 2e-4
+        integrator = SemiImplicitEuler(dt=sim_dt)
+        # Default max_depenetration_vel = 1 m/s.
+        solver = PGSSplitImpulseSolver(max_iter=60, erp=0.8, slop=0.005, cfm=1e-6)
+
+        q, qdot = tree.default_state()
+        radius = 0.05
+        # Place ball centre 17 mm below the radius → depth = 17 mm, a "deep"
+        # initial penetration well past the slop.
+        q[6] = radius - 0.017
+
+        inv_m = [1.0]
+        inv_I = [np.eye(3) * 250.0]
+
+        max_z = q[6]
+        max_vz = 0.0
+        for _ in range(200):
+            X_w = tree.forward_kinematics(q)
+            v_b = tree.body_velocities(q, qdot)
+
+            depth = radius - X_w[0].r[2]
+            contacts = []
+            if depth > 0:
+                contacts.append(
+                    ContactConstraint(
+                        body_i=0,
+                        body_j=-1,
+                        point=np.array([X_w[0].r[0], X_w[0].r[1], 0.0]),
+                        normal=np.array([0.0, 0.0, 1.0]),
+                        tangent1=np.zeros(3),
+                        tangent2=np.zeros(3),
+                        depth=depth,
+                        mu=0.5,
+                        condim=3,
+                    )
+                )
+
+            ext = [np.zeros(6)]
+            if contacts:
+                imp = solver.solve(contacts, v_b, X_w, inv_m, inv_I, dt=sim_dt)
+                ext = [imp[0] / sim_dt]
+
+            tau = tree.passive_torques(q, qdot)
+            q, qdot = integrator.step(tree, q, qdot, tau, ext)
+
+            if q[6] > max_z:
+                max_z = q[6]
+            if abs(qdot[2]) > max_vz:
+                max_vz = abs(qdot[2])
+
+        # With the 1 m/s clamp: post-solve |vz| is bounded (≤ ~1 m/s plus
+        # gravity nudge) and the ball rises at most a few cm above its rest
+        # position instead of being flung metres away.
+        assert max_vz < 1.5, f"|vz| blew up to {max_vz:.2f} m/s (clamp leaked)"
+        assert max_z < radius + 0.05, f"Ball was ejected to z={max_z:.3f}, expected near radius={radius}"

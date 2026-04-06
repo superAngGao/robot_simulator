@@ -170,6 +170,15 @@ class StaticRobotData:
     contact_erp_pos: float = 0.8  # Position correction ERP (legacy, unused)
     contact_erp_baumgarte: float = 10.0  # 1/τ where τ=0.1s; v_ref = depth/τ (MuJoCo QP style)
     contact_slop: float = 0.001  # Allowed penetration before correction [m]
+    # Max depenetration velocity clamp (PhysX maxDepenetrationVelocity style).
+    # Bounds the magnitude of the Baumgarte recovery velocity bias so that deep
+    # initial penetration cannot eject the body from the contact. Because we
+    # fold position correction into the velocity solve (not true split impulse),
+    # the cap doubles as a real post-solve velocity and must stay small; 1 m/s
+    # resolves ~1 mm per ms — faster than gravity's penetration rate — while
+    # keeping the recoil well below typical contact velocities.
+    # ADMM-C is naturally immune via compliant contact; this only affects PGS paths.
+    max_depenetration_vel: float = 1.0  # [m/s]
     solver_max_iter: int = 60  # Jacobi PGS iteration count
     solver_omega: float = 0.6  # Jacobi relaxation factor (≤0.6 for mixed-frame FreeJoint stability)
     # Solimp impedance params for friction R regularization (Q25 fix)

@@ -145,6 +145,12 @@ class PGSContactSolver:
         friction_warmstart: If False, zero friction lambdas each frame
                     instead of warmstarting (Bullet-style, prevents
                     cross-frame noise accumulation).
+        max_depenetration_vel: Upper bound on the Baumgarte velocity bias
+                    magnitude [m/s] (PhysX ``maxDepenetrationVelocity`` style).
+                    Because position correction is folded into the velocity
+                    solve, the bias is also the resulting post-solve velocity,
+                    so the default is conservative (1 m/s). Prevents deep
+                    initial penetration from ejecting the body.
     """
 
     def __init__(
@@ -156,6 +162,7 @@ class PGSContactSolver:
         slop: float = 0.0,
         solimp: tuple[float, ...] = (0.95, 0.99, 0.001, 0.5, 2.0),
         friction_warmstart: bool = False,
+        max_depenetration_vel: float = 1.0,
     ) -> None:
         self.max_iter = max_iter
         self.tolerance = tolerance
@@ -164,6 +171,7 @@ class PGSContactSolver:
         self.slop = slop
         self.solimp = solimp
         self.friction_warmstart = friction_warmstart
+        self.max_depenetration_vel = max_depenetration_vel
         self._warm_cache: dict[tuple[int, int], list[tuple[Vec3, NDArray]]] = {}
 
     def _impedance(self, depth: float) -> float:
@@ -355,6 +363,7 @@ class PGSContactSolver:
 
         # ── Baumgarte bias + restitution (normal row only) ──
         bias = np.zeros(n_rows)
+        v_max = self.max_depenetration_vel
         for ci, c in enumerate(contacts):
             base = row_offsets[ci]
             erp = c.erp if c.erp is not None else self.erp
@@ -366,6 +375,10 @@ class PGSContactSolver:
                 baumgarte = -erp * penetration  # 1/τ * (depth - slop)
             else:
                 baumgarte = -erp / dt * penetration  # legacy Baumgarte
+            # Clamp depenetration velocity magnitude (Bullet/PhysX style).
+            # Prevents deep-penetration ejection by bounding the recovery impulse.
+            if baumgarte < -v_max:
+                baumgarte = -v_max
             restitution_bias = 0.0
             if c.restitution > 0.0 and v_free[base] < -0.01:
                 restitution_bias = c.restitution * v_free[base]

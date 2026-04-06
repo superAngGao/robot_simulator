@@ -667,6 +667,7 @@ def batched_build_W_joint_space(
     solimp_power: float,
     erp_pos: float,  # reinterpreted as 1/τ (inverse solref time constant)
     slop: float,
+    max_depen_vel: float,  # upper bound on |v_ref| — prevents deep-penetration ejection
     dt: float,  # unused (kept for API compat), position correction is dt-independent
     max_contacts: int,
     max_rows: int,
@@ -750,6 +751,8 @@ def batched_build_W_joint_space(
     # where τ = solref_timeconst (default 0.02s = 20ms).
     # RHS becomes: v_free - v_ref (subtract, so PGS produces more force).
     # dt-independent: depth=1mm → 0.05 m/s, depth=20mm → 1.0 m/s.
+    # v_ref is clamped to max_depen_vel (Bullet m_splitImpulsePenetrationThreshold
+    # / PhysX maxDepenetrationVelocity) to prevent deep-penetration ejection.
     if erp_pos > 0.0:
         inv_tau = erp_pos  # reinterpret erp_pos as 1/τ (see static_data)
         for ci in range(max_contacts):
@@ -760,6 +763,8 @@ def batched_build_W_joint_space(
             if effective > 0.0:
                 base = ci * CONDIM
                 v_ref = inv_tau * effective
+                if v_ref > max_depen_vel:
+                    v_ref = max_depen_vel
                 v_free[env, base] -= v_ref
 
 

@@ -40,6 +40,12 @@ class PGSSplitImpulseSolver:
         erp      : Error Reduction Parameter for Baumgarte bias (0..1).
         slop     : Allowed penetration before correction kicks in [m].
         cfm      : Constraint Force Mixing (regularization).
+        max_depenetration_vel: Upper bound on the Baumgarte velocity bias
+                  magnitude [m/s] (PhysX ``maxDepenetrationVelocity`` style).
+                  Because position correction is folded into the velocity
+                  solve, the bias also becomes the post-solve velocity — keep
+                  it small (default 1 m/s) to avoid ejection from deep initial
+                  penetration.
     """
 
     def __init__(
@@ -51,12 +57,14 @@ class PGSSplitImpulseSolver:
         cfm: float = 1e-6,
         solimp: tuple[float, ...] = (0.95, 0.99, 0.001, 0.5, 2.0),
         friction_warmstart: bool = False,
+        max_depenetration_vel: float = 1.0,
     ) -> None:
         self.max_iter = max_iter
         self.tolerance = tolerance
         self.erp = erp
         self.slop = slop
         self.cfm = cfm
+        self.max_depenetration_vel = max_depenetration_vel
         # Delegate to PGS with Baumgarte ERP bias
         self._vel_solver = PGSContactSolver(
             max_iter=max_iter,
@@ -66,6 +74,7 @@ class PGSSplitImpulseSolver:
             slop=slop,
             solimp=solimp,
             friction_warmstart=friction_warmstart,
+            max_depenetration_vel=max_depenetration_vel,
         )
         self.position_corrections: list[NDArray] = []
 

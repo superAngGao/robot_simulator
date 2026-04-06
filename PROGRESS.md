@@ -556,6 +556,30 @@ GpuEngine 是唯一的 GPU 物理引擎。下一步：Manager-based RLEnv。
 **验证结果**：法向力/摩擦力与解析解一致（< 0.1%），球体滚动 `a=(5/7)g sinθ`，
 2D 摩擦方向旋转正确，滑动→滚动过渡 `v_cross = 5/7 × v0`。
 
+### Session 19 — Max Depenetration Velocity Clamp (Q18.7b) (2026-04-06)
+
+**修复**：PGS-SI 深穿透弹飞问题（Q18.7b）。
+
+- [x] `StaticRobotData.max_depenetration_vel = 1.0` m/s — 集中配置
+- [x] `PGSContactSolver` / `PGSSplitImpulseSolver` — 新增 `max_depenetration_vel` 参数，
+      clamp 两条路径（legacy `erp/dt × depth` 和 MuJoCo QP `1/τ × depth`）
+- [x] `crba_kernels.batched_build_W_joint_space` — 新增 `max_depen_vel` kernel 参数，
+      clamp `v_ref` 计算
+- [x] `gpu_engine.py` — 传入 `s.max_depenetration_vel`
+
+**为什么默认 1 m/s（非 Bullet 的 10）**：我们把 position correction 折进 velocity
+而不是真正的 split impulse，钳位值即 post-solve 速度；太大会弹飞。Bullet 真正的
+split impulse 不把修正注入实速度所以可以允许更大。
+
+**Bug 暴露**：过去两个单元测试（`test_body_body_collision`、`test_no_rolling_with_condim4`）
+依赖未钳位 Baumgarte 的巨大偏置来掩盖测试 setup 自身的缺陷：
+- `test_body_body_collision` normal 方向反了（应为 `-x`）
+- `test_no_rolling_with_condim4` 用 depth=0.2m 让 Baumgarte 巨冲量压过摩擦力矩，
+  相对断言才通过；修复：改为 condim=4 vs condim=3 角冲量对比
+
+**测试**：6 个新 clamp 单元测试（直接 LCP + 端到端深穿透场景），629 tests 全通过
+（481 fast CPU + 136 GPU + 12 MuJoCo 对标）。
+
 ---
 
 ## Phase 3 — High-Fidelity Rendering + Sensor Simulation ⬜
