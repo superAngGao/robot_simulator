@@ -5,6 +5,207 @@ Updated at the end of each development session.
 
 ---
 
+## 2026-04-07 (session 20) — Design Discussion: InterfaceMaterial + Multi-Physics Architecture (no code changes)
+
+**Context:** No code was written this session. This was a design discussion that
+started from Q18.9 (rolling/spin friction angular Jacobian rows) and expanded
+into a full multi-physics material architecture re-examination. The outcome is
+a set of deferred decisions recorded across REFERENCES.md, OPEN_QUESTIONS.md,
+and `memory/project_multiphysics_architecture.md`. **Refactor is not started —
+it waits until Phase 2 (rigid body) is finished and Phase 3 (rendering + RL)
+scaffolding is in place.**
+
+### The conversation arc (for future re-reading)
+
+The discussion moved through six distinct framings, each triggered by the user
+rejecting a too-narrow framing and asking for a deeper one. Recording the arc
+because the arc itself is the main takeaway — a "simple feature" question
+opened up an architectural re-examination that we would not have reached if we
+had just implemented Q18.9 as a local PGS row addition.
+
+**1. Implementation framing (starting point):** "How do we add condim 4/6
+angular Jacobian rows to PGS?" I surveyed 5 engines (MuJoCo elliptic cone,
+Bullet box constraints, PhysX torsional patch, Drake hydroelastic, ODE
+Tasora-Anitescu) and proposed three coupling-model options.
+
+**2. Architectural framing (first redirect):** User said "比起讨论这些细节,
+我们应该先想清楚这个功能应该以何种方式嵌入到我们的物理仿真系统中" — stop
+discussing details, think about how this feature *embeds* into the system.
+This moved the question from "how" to "where".
+
+**3. Physics framing (physics clarification):** For ball physics, condim=3
+already gives correct rolling on inclines and sliding→rolling transition
+(validated session 18). The only missing physics is "a ball stops on flat
+ground" — which is **energy dissipation**, not a complementarity constraint.
+*Sliding friction is an LCP constraint; rolling resistance is a dissipation
+channel. They are physically different beasts.* Proposed four architectural
+options: (A) embed in solver, (B) independent ContactDissipation channel,
+(C) material-system-driven, (D) don't model (Drake hydroelastic path).
+
+**4. Material-system framing (second redirect):** User committed: "未来必须
+要有材料的概念" — material is a required concept. I researched 6 engines
+(MuJoCo/Drake/PhysX/Bullet/Newton/Chrono) on material systems, extracted 5
+design axes (class vs SoA, attachment level, combine rule, solver-aware
+split, runtime mutability).
+
+**5. Multi-physics framing (third redirect):** User committed: "多物理场一定
+要有，至少刚体软体流体" — multi-physics future (rigid + soft + fluid) is
+mandatory. This killed the naive "single ContactMaterial dataclass" options
+(they would accumulate 40+ fields as new subsystems arrive). I proposed
+component composition (typed Drake-group style).
+
+**6. Interface-not-body framing (the key redirect — from the user):** User
+answered Q1-Q5 but pointed out that Q3 was the real question: *what is
+"interface" in multi-physics?* And then made two observations that reframed
+everything:
+  - **"contact" is rigid-body vocabulary**, not multi-physics vocabulary.
+    The continuum-mechanics standard term is "interface" (where two
+    physical domains meet — rigid-rigid contact, rigid-soft collision,
+    fluid-solid boundary, soft-soft cohesion, thermal interface, etc.).
+  - **"物体的形状边界和相互作用界面其实是不能混为一谈的概念"** — body's
+    geometric boundary and the interaction interface are NOT the same
+    concept. For rigid bodies they happen to coincide (which is why
+    MuJoCo/Bullet/PhysX get away with "material on shape"), but for
+    soft bodies the interaction interface is a subset of the surface mesh,
+    and for fluids it's dynamic (particles near boundaries).
+
+These two observations triggered a physics-first audit: of all contact
+parameters, only μ-family (sliding/rolling/spin) is a true interface law
+(Coulomb friction at a sliding interface — works for any pairing).
+`k_normal`/`restitution`/`compliance_*` are **specific to the "rigid body
+with penalty/LCP contact" modeling choice**, not universal physics. This
+cleanly distinguishes constitutive laws (bulk, Young's/viscosity) from
+interface laws (surface, friction/adhesion).
+
+**7. Precedent search:** Asked what other projects do. Research found:
+  - **SOFA** is the textbook precedent for our direction: explicit separation
+    via `MechanicalObject` (DoF) + `Mapping` (applyJ/applyJT) + `CollisionModel`
+    (interface params) + `InteractionForceField` (inter-body coupling). One
+    mechanical object can have multiple collision models with different
+    materials via SubsetMapping. This is the vocabulary we should borrow.
+  - **Drake hydroelastic** is the mathematical precedent: ContactSurface is
+    a runtime-computed equal-pressure locus `{Q : e_M(Q) = e_N(Q)}` inside
+    both bodies' volumes, not at any geometric boundary.
+  - **Genesis** is the anti-pattern: per-entity materials + hand-coded couplers
+    (`RigidMPMCoupler`, `RigidSPHCoupler`, `MPMSPHCoupler`, ...) lead to
+    O(N²) coupling code explosion. Validates our `CouplingImpulse` direction.
+
+**8. SOFA performance audit:** Concerned about SOFA's runtime cost. Research
+found: SOFA is **right taxonomy, wrong machinery**. Execution model is a
+13-visitor sequential graph traversal with virtual dispatch, scatter-add
+mapping with indirection (not BLAS — can't be fused across envs), SofaCUDA
+launches kernels per-component not per-phase, empirical 0.15× realtime on a
+small soft gripper (SofaGym paper HAL hal-03778189), completely absent from
+all major robotics RL benchmarks, SOFA's own maintainers want to escape the
+visitor pattern (2023 dev report wiki). **Borrow vocabulary, reject
+execution model entirely. Implement mappings as pre-assembled SoA data
+dispatched by one kernel per mapping type, not virtual classes traversed
+by visitors.**
+
+### Design decisions reached (all deferred)
+
+- **Q1** (union vs subclass for solver-specific fields): **union**. Penalty
+  k_normal, LCP compliance, ADMM solref live in the same `InterfaceMaterial`
+  class; contact models read the fields they need, ignore the rest
+  (Newton-style). Future subsystems with genuinely disjoint fields (hydroelastic
+  modulus, Young's modulus) will go in separate Properties classes composed
+  into subsystem-specific materials — not nested in InterfaceMaterial.
+
+- **Q2** (material attachment in multi-physics): each subsystem decides its
+  own bulk-material attachment level. Rigid: none (mass/inertia is from URDF,
+  not a material concept). Soft: per-element or per-body `ElasticProperties`.
+  Fluid: per-particle-group `FluidProperties`. **Interface material (μ-family)
+  is always at the subsystem's "contact primitive" level** (rigid ShapeInstance,
+  soft surface triangle subset, fluid particle group).
+
+- **Q3** (interface as independent concept): **yes, independent**. Not a
+  sub-field of rigid-body material. Renamed `ContactProperties` → `InterfaceMaterial`
+  to reflect that this is a continuum-mechanics interface law applicable to
+  all subsystem pairs, not a rigid-body-specific thing.
+
+- **Q4** (per-shape attachment granularity): for rigid, **per-shape**
+  (on `ShapeInstance`). Not per-body, because one body can have multiple
+  shapes with different materials (rubber foot pad + metal body). The
+  "shape boundary ≠ interaction interface" principle is documented but
+  not enforced in code at the rigid-only MVP — rigid's shape happens to
+  be its interaction region, so direct attachment on `ShapeInstance` is
+  sound. Future subsystems will introduce subsystem-specific
+  `InterfaceRegion` wrappers.
+
+- **Q5** (MVP scope): only implement `InterfaceMaterial` + `ShapeInstance.interface`
+  field + narrowphase path. **Do NOT build** `RigidBodyMaterial`, `SoftBodyMaterial`,
+  `FluidMaterial`, `ElasticProperties`, `FluidProperties`, `InterfaceRegion`
+  wrapper classes, or any cross-subsystem abstraction. Only build them when
+  the corresponding subsystem actually arrives.
+
+### Rigid body has no "bulk material" class — P2 clarification
+
+A subtle point worth recording because it was initially confusing: rigid
+body does **not** need a `RigidBodyMaterial` wrapper class. Reason: after
+separating interface properties (which live on the shape), a rigid body's
+remaining "material" information is just mass and inertia tensor — and
+those come from URDF `<inertial>` as final numerical values, not from a
+material concept. Density is already baked into inertia by the authoring
+tool (onshape-to-robot, Fusion360, etc.). So `RigidBodyMaterial` would be
+an empty wrapper. Soft body and fluid DO need bulk material classes
+(ElasticProperties, FluidProperties) because their interior physics is
+genuinely material-driven (Young's modulus, viscosity, etc.).
+
+### Timing — why the refactor is deferred
+
+1. **No forcing bug**: current `ContactConstraint.mu/mu_spin/mu_roll` +
+   global override fields work for all existing physics (penetration, LCP
+   cone, sliding friction, even session-18-validated rolling on inclines).
+   The only missing physics is "ball stops on flat ground" which is
+   energy dissipation, not a constraint — and even that isn't blocking
+   anything right now.
+2. **Phase mismatch**: current priority is Phase 2 rigid body finish →
+   Phase 3 rendering + RL scaffolding. Interface/material refactor's main
+   payoff is Phase 5+ multi-physics. Doing it now pays cost in the wrong
+   phase.
+3. **Design is preserved**: the complete discussion is now recorded in
+   three places (REFERENCES.md, OPEN_QUESTIONS.md Q18.9, and the
+   multiphysics_architecture memory). Future sessions can re-read and
+   resume without re-deriving.
+4. **Sequencing**: when the time comes, first step is **pure rename +
+   field migration** (`InterfaceMaterial` dataclass + `ShapeInstance.interface`
+   + reading path in narrowphase), as its own PR with no solver changes.
+   *Then* the actual Q18.9 rolling-friction angular Jacobian rows on top.
+
+### Meta-lesson
+
+Research-before-deciding paid off again. The specific thing that saved us
+from a bad decision was the user's insistence on reframing "how do we
+implement this" into "where does this live" — three times in a row. Each
+reframing found a deeper question hiding under a shallower one:
+  1. "Angular Jacobian row" → "constraint vs dissipation physics"
+  2. "Rolling friction feature" → "multi-physics material system"
+  3. "Material system" → "what is interface in multi-physics"
+  4. "Interface concept" → "body boundary ≠ interaction interface"
+
+The final conceptual split (constitutive law = bulk; interface law =
+boundary) is physics textbook material, not novel. But we would have
+completely missed it if we had started implementing Q18.9 as a local PGS
+row addition with hard-coded μ_roll/μ_spin fields. The memory feedback
+"research before deciding" + "always consider GPU" + "proactive
+extensibility" steered the discussion all the way through to the right
+answer. Keep doing this.
+
+### No code changes this session
+
+- Files modified: `REFERENCES.md` (new matrix row, SOFA / Genesis sections,
+  Drake hydroelastic addendum), `OPEN_QUESTIONS.md` (Q18.9 status updated
+  with deferral rationale and implementation sequencing), `REFLECTIONS.md`
+  (this entry), `memory/project_multiphysics_architecture.md` (session 20
+  update), `memory/user_profile.md` (enriched user profile), `memory/MEMORY.md`
+  (index line updated).
+- Tests: untouched. No code changed.
+- Next session: continue with Phase 2 rigid body work (next item on PLAN.md
+  or user's choice). **Do not** start InterfaceMaterial refactor until
+  Phase 3 scaffolding is in place.
+
+---
+
 ## 2026-04-06 (session 18) — HalfSpaceShape, Inclined Plane Contact, Multi-Point
 
 ### Design Decision: Ground as Collision Geometry (Approach B)

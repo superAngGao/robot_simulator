@@ -249,10 +249,30 @@ Phase 2f 已实现 GJK/EPA + PGS LCP + 关节 Coulomb 摩擦。与 MuJoCo/Bullet
    集成到 `AABBSelfCollision`、`LCPContactModel`、`load_urdf(collision_exclude_pairs=...)`。
    参考：Drake CollisionFilterDeclaration + MuJoCo contype/conaffinity。
 
-9. **接触维度控制 — condim 4/6 的滚动/扭转摩擦** (2026-04-06 调研完成)
+9. **接触维度控制 — condim 4/6 的滚动/扭转摩擦** (2026-04-06 调研完成，2026-04-07 架构讨论完成，**延后到 Phase 3 完成后实装**)
 
    当前 condim 固定 3D。`ContactConstraint` 已有 `condim`/`mu_spin`/`mu_roll` 字段，
    PGS solver 框架已支持 1/3/4/6，但 angular Jacobian 行（spin/roll）未实现。
+
+   **状态**：研究 + 架构设计都完成，实装延后。本问题在 session 20 讨论中从
+   "加一个 rolling friction 约束行"扩展成了"多物理场界面/材料架构"的完整设计讨论，
+   最终决定**与 `InterfaceMaterial` 重命名 + 材料 per-shape 附着一起做，而非孤立实装**。
+   触发时机：Phase 2 (rigid body) 完成 + Phase 3 (rendering + RL) 脚手架搭好之后。
+   理由：(1) 现在没有必须解决的 bug；(2) 架构收益要 Phase 5+ 多物理场才兑现；
+   (3) 过早 refactor 等于在错的 phase 付实装成本。
+
+   **完整设计线索**：
+   - `REFLECTIONS.md` 2026-04-07 (session 20) — 讨论脉络和决定
+   - `REFERENCES.md` 新矩阵行 "Multi-physics interface / material architecture"
+     + 新 SOFA / Genesis 条目 + Drake hydroelastic 小节
+   - `memory/project_multiphysics_architecture.md` session 20 update — MVP 清单
+     和 "为什么不需要 RigidBodyMaterial 壳类" 的物理论证
+
+   **实装前要重读的东西**（按顺序）：
+   1. 上面三个文件的 session 20 相关段
+   2. Session 18 斜面滚动实验结果（REFLECTIONS "Sphere Rolling Physics Validated"）
+      — condim=3 下横向速度守恒，这是 rolling friction 要解决的唯一物理缺口
+   3. 本条目下面的 "各项目方案" 和 "实现要点"
 
    **各项目方案**：
    - MuJoCo：condim=4 加 1 行扭转（ω·n），condim=6 再加 2 行滚动（ω·t₁, ω·t₂）。
@@ -267,6 +287,13 @@ Phase 2f 已实现 GJK/EPA + PGS LCP + 关节 Coulomb 摩擦。与 MuJoCo/Bullet
    - mu_spin 单位是长度（接触面片直径），mu_roll 单位是长度（变形深度）
    - 验证场景：球在斜面横向初速度，condim=6 时 v_cross 应衰减，condim=3 时守恒
    - 参考：Tasora & Anitescu (2013) Meccanica 48, pp.1643-1659
+
+   **实装时的第一步**（不是 rolling friction 本身，而是先做地基）：
+   1. `InterfaceMaterial` dataclass（union 字段）+ `ShapeInstance.interface` 附着
+   2. `ContactConstraint.mu/mu_spin/mu_roll` 从 `ShapeInstance.interface` 读取，
+      删除全局 override 通道
+   3. 纯重命名 + 字段迁移，**不改求解器逻辑**，作为独立 PR
+   4. 然后才开始 condim 4/6 angular Jacobian rows 的实装
 
 10. **同 body 多 geom 过滤** — 一个 body 有多个 collision shape 时，
     同 body 的 shape 之间不应碰撞。当前 `BodyCollisionGeometry` 合并为单 AABB，

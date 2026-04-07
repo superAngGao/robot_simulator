@@ -14,6 +14,7 @@
 |---------|-------------------|-----------|
 | Rigid body dynamics (ABA / RNEA) | Pinocchio | Drake MultibodyPlant |
 | Joint model & passive torques | Drake | MuJoCo |
+| Multi-physics interface / material architecture | SOFA (taxonomy only, reject machinery) | Drake hydroelastic, Genesis (anti-pattern) |
 | Collision geometry abstraction | Drake SceneGraph | Pinocchio GeometryModel |
 | Collision algorithms (AABB/OBB/GJK) | hpp-fcl / coal | Bullet dispatcher |
 | Friction regularization (PGS) | MuJoCo (R diag) / ODE (slip1/slip2) | Bullet (warmstart=0) / PhysX (angDamp) |
@@ -63,11 +64,28 @@ Python bindings.
 - `MultibodyPlant.Finalize()`: mirrors our `RobotTree.finalize()` pattern.
 - Role-based geometry: same shape can have `collision` role, `proximity` role, and
   `illustration` (rendering) role simultaneously.
+- `ProximityProperties` as a typed property bag per geometry, with groups
+  ("material", "hydroelastic", "wildcard"). Each backend declares the keys
+  it consumes. Extensible without modifying a core Material class.
+
+**Hydroelastic contact — interaction surface ≠ geometry boundary:**
+Drake has two contact models: *point contact* (standard, interaction at shape
+boundary) and *hydroelastic contact* (mathematically different). In hydroelastic,
+each compliant geom carries a scalar pressure field `e(p)` defined over its
+volume. When two bodies overlap, the `ContactSurface` is the equal-pressure
+locus `{Q : e_M(Q) = e_N(Q)}` — a surface that lives *inside* both bodies'
+volumes, not at any geometry boundary. This is the strongest mathematical
+precedent for treating "interaction interface" as a runtime-computed entity
+distinct from geometric shape boundaries.
+- Files: `drake/multibody/hydroelastics/`, `drake/geometry/query_results/contact_surface.h`
+- Paper: Elandt et al., "A pressure field model for fast, robust approximation
+  of net contact force and moment between nominally rigid objects" (2019)
 
 **Relevant API docs:**
 - Joint damping: `drake::multibody::Joint::default_damping()`
 - Shape: `drake::geometry::Shape` and subclasses
 - SceneGraph: `drake::geometry::SceneGraph`
+- ContactSurface: `drake::geometry::ContactSurface`
 
 ---
 
@@ -225,3 +243,135 @@ compliance means in practice.
 - `VecEnv` interface: `step_async` / `step_wait` pattern for parallel envs.
 - Used as a smoke-test: if SB3 can train on our env without modification, our
   Gymnasium compliance is correct.
+
+---
+
+### SOFA Framework
+**Repo:** https://github.com/sofa-framework/sofa
+**What it is:** Academic C++ multi-physics framework (INRIA). Used in surgical
+simulation, biomechanics, FEM deformables. The strongest open-source precedent
+for explicit "interaction interface ≠ body DoF" architecture.
+
+**Why we care:** SOFA's multi-model representation cleanly separates
+*mechanical state* (where DoFs live) from *collision model* (where interactions
+happen), connected by an explicit *Mapping* layer. This is the architecture
+we need for future multi-physics (rigid + soft + fluid), where the
+"interaction interface" may be a subset of a surface mesh, a set of particles,
+or a runtime-computed region — not just a shape boundary.
+
+**Conceptual taxonomy to borrow (vocabulary only):**
+- `MechanicalObject<T>`: stores DoF (position, velocity, mass). Only mechanics.
+- `BaseMapping` with `applyJ` (forward) / `applyJT` (transpose): maps between
+  representations, e.g. `SubsetMapping`, `BarycentricMapping`, `RigidMapping`.
+  **`applyJT` is exactly what our future `CouplingImpulse` needs to do** —
+  transpose-map an interface-space impulse back to body DoF.
+- `CollisionModel` (`TriangleCollisionModel`, `PointCollisionModel`, etc.):
+  independent component with its own `contactStiffness`, `contactFriction`,
+  `contactRestitution`, `contactResponse`, `d_contactDistance`. Attached to a
+  MechanicalObject via a Mapping.
+- `ForceField`: per-body internal forces (gravity, springs, hyperelastic).
+- `InteractionForceField`: force fields *between* two objects — standalone
+  scene graph node, not owned by either body. Lives at the interface.
+- `ConstraintCorrection`: maps Lagrange multipliers back to body DoF.
+
+**Key insight — one body, multiple interface regions:** A single
+MechanicalObject can have *multiple* CollisionModels attached via different
+Mappings (including `SubsetMapping` to select a DoF subset), each with its
+own friction/material. This is how SOFA handles "robot's rubber foot pad
++ metal body" on one mechanical object.
+
+**CRITICAL WARNING — DO NOT copy the execution model:**
+SOFA's conceptual taxonomy is right, but its runtime machinery is structurally
+incompatible with GPU-batched RL (thousands of parallel envs). Concrete issues:
+
+1. **13-visitor step + virtual dispatch**: `DefaultAnimationLoop::step()` runs
+   ~13 visitors per simulation step (`AnimateVisitor`, `CollisionVisitor`,
+   `SolveVisitor`, `UpdateMappingVisitor`, etc.). Each visitor walks the
+   scene graph and calls virtual methods on every component. `Visitor.h` has
+   `isThreadSafe()=false` by default — traversal is fundamentally sequential.
+2. **Scatter-add mapping with indirection, not BLAS**: `BarycentricMapper::applyJT`
+   is a hand-rolled `out[element[j]] += inPos * baryCoef[j]` loop with
+   per-element indirection. *Not* a CSR/BSR sparse matvec — the Jacobian is
+   implicit in `(map, elements)`, never assembled. Cannot be fused across envs
+   because indirection tables differ per env.
+3. **SofaCUDA is component-level, not pipeline-level**: `CudaMechanicalObject`
+   launches one CUDA kernel per vector operation (`vAssign`, `vAdd`, `vOp`).
+   Scene graph traversal stays on CPU. No batched-env support — one CUDA
+   Mapping per body, not across bodies.
+4. **Empirical performance**: SofaGym paper (Ménager et al., HAL hal-03778189)
+   reports 0.15× realtime for a small soft-gripper environment, single env,
+   single process. "Parallelism" = Python `SubprocVecEnv` (OS multiprocess).
+   Compare Isaac Gym / MJX: 4096 envs, one GPU, one process, >100k env-steps/sec.
+5. **Absent from all major robotics benchmarks** (SimBenchmark, 2024 Review
+   of Nine Physics Engines for RL). Not a throughput-RL contender.
+6. **SOFA's own maintainers want to escape**: 2023 dev report wiki lists
+   "POC for iterators on scene graph to avoid relying on visitors" — the
+   visitor pattern is a known liability.
+
+**Our takeaway:**
+- **Borrow vocabulary**: `MechanicalState`, `Mapping(applyJ/applyJT)`,
+  `ForceField`, `CollisionModel`, `InteractionForceField`, `ConstraintCorrection`.
+  These abstraction boundaries are sound and should inform our future naming.
+- **Reject execution model entirely**: no scene graph, no visitors, no
+  per-component virtual dispatch in the hot loop. Follow Warp/Newton/MJWarp:
+  fixed-phase pipeline, each phase = one Warp kernel on flat SoA buffers
+  indexed by `env_id`.
+- **Mappings as data, not virtual classes**: store as pre-assembled
+  `(out_idx, in_idx, weight)` triplet buffers across all envs, dispatched by
+  one kernel per mapping type. Compile-time-static, not runtime-dynamic.
+- **Preserve multi-representation concept**: mechanical / collision / visual
+  as distinct DoF spaces is genuinely good for soft body work. Sync step
+  must be one batched kernel, not `UpdateMappingVisitor`.
+
+**Files worth reading (as external reference, not to copy):**
+- `Sofa/framework/Simulation/Core/src/sofa/simulation/DefaultAnimationLoop.cpp`
+- `Sofa/framework/Simulation/Core/src/sofa/simulation/Visitor.h`
+- `Sofa/framework/Core/src/sofa/core/CollisionModel.h`
+- `Sofa/framework/Core/src/sofa/core/BaseMapping.h`
+- `Sofa/Component/Mapping/Linear/.../BarycentricMapperTopologyContainer.inl`
+- `applications/plugins/SofaCUDA/` (as cautionary example)
+
+**Slogan:** SOFA is the right taxonomy, the wrong machinery. Read the
+headers, copy the names, rewrite the implementation.
+
+---
+
+### Genesis (Embodied AI Simulator)
+**Repo:** https://github.com/Genesis-Embodied-AI/Genesis
+**What it is:** Recent multi-physics simulator (2024) built on Taichi,
+supporting rigid, MPM, FEM, SPH, PBD, and hybrid bodies. Aimed at embodied
+AI / robot learning.
+
+**Why we care (as an anti-pattern):** Genesis targets the same problem
+space we do (GPU-accelerated multi-physics for embodied AI), but it made
+a specific architectural choice we should *not* repeat: no unified
+interface abstraction, cross-physics coupling via hand-coded couplers.
+
+**Architecture:**
+- Material per entity type: `genesis/engine/materials/rigid/`, `MPM/`, `FEM/`,
+  `SPH/`, `PBD/`, `SF/`. Each subdirectory has its own material class
+  hierarchy. `base.py`, `hybrid.py`, `kinematic.py`, `tool.py` at root.
+- `Material` is `Generic[EntityT]` — bound to entity type, not to surface
+  or interface.
+- Cross-physics coupling via explicit coupler classes: `RigidMPMCoupler`,
+  `RigidSPHCoupler`, `RigidPBDCoupler`, `MPMSPHCoupler`, etc. Coupling logic
+  is hard-coded in each coupler, not derived from a unified interface
+  abstraction.
+
+**The N² problem:** with N physics types, Genesis needs O(N²) coupler
+classes. With rigid + MPM + FEM + SPH + PBD = 5 types, that's 10 coupler
+pairs. Each new physics type requires writing N new couplers. This scales
+badly and creates tight coupling between subsystems.
+
+**Validation for our direction:** Genesis's coupler explosion is exactly
+what our `PhysicsSubsystem + CouplingImpulse` architecture is designed to
+avoid. The plan is: each subsystem publishes `InterfaceRegion`s carrying
+`InterfaceMaterial`; the coupling layer reads both sides' interfaces and
+computes a generic impulse response. Adding a new subsystem only requires
+implementing its `InterfaceRegion.apply_interface_impulse(impulse)`, not
+writing N new couplers.
+
+**Takeaway:** Genesis proves both that (a) multi-physics on GPU is feasible
+and worth pursuing, and (b) skipping the interface abstraction leads to
+unmaintainable O(N²) coupling code. Our design should extract the lesson
+without copying the mistake.
