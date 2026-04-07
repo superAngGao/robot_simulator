@@ -797,6 +797,116 @@ session 21 REFLECTIONS（详细调查脉络）。
 
 ## Performance / Optimization
 
+**Q34 — Restitution 作为机械阻抗失配：物理材料 → e 的统一映射** (2026-04-07 session 21，**研究完成**)
+
+**核心洞察（session 21 与用户讨论中浮现）**：MuJoCo 风格 spring-damper compliance
+contact 里的阻尼系数 `b` 在数学上**等于 2× 接触界面的特征机械阻抗**。
+
+具体推导：
+- 1D 弹性杆：`c = √(E/ρ)` 是声速，`Z = ρcA` 是特征阻抗（单位 N·s/m）
+- 等效集总参数：`k = EA/L`、`m = ρAL`、`ω_n = √(k/m) = c/L`
+- 临界阻尼：`b_crit = 2√(km) = 2A√(Eρ) = 2ρcA = 2Z`
+- **`b_crit ≡ 2Z`** — 这不是巧合，是同一个物理量在两种描述里的表达
+
+物理解释：
+- ζ = 1（默认临界阻尼）→ b = 2Z → **完美阻抗匹配** → 入射波被界面完全吸收
+  → 没有反弹（默认 ADMM-C 不反弹的本质原因）
+- ζ < 1 → b < 2Z → **阻抗失配** → 部分波反射 → 反弹
+- ζ > 1 → 内部耗散比波传播还快（过阻尼）
+
+两材料碰撞时的 e ≈ 声学反射系数 `(Z_A − Z_B) / (Z_A + Z_B)` 的某种函数。这给
+"为什么钢球落到橡胶比落到钢弹得更高"一个**纯物理**的解释（钢-橡胶阻抗失配大）。
+
+**研究 agent 调查结果（2026-04-07，完整报告 `docs/restitution_impedance_research_2026-04-07.md`）**
+
+调查 8 个引擎（MuJoCo / Newton / Bullet / PhysX / ODE / Drake / Chrono SMC + NSC）
++ 7 篇论文（Hunt-Crossley 1975 / Lankarani-Nikravesh 1990 / Marhefka-Orin 1999
+/ Falcon 1998 / Schwager-Pöschel 2007/2008 / Zhang-Sharf 2019 / Stronge 2000）
++ DEM 校准文献。
+
+**纠正一个术语错误**：我之前说的 `e ≈ exp(-π·ζ/√(1-ζ²))` **不是 Hunt-Crossley
+公式**，而是 **Kelvin-Voigt 半周期模型**。Hunt & Crossley 在 1975 原文里**明确
+拒绝**了这个公式："during impact... half of a damped sine wave... is shown to
+be logically untenable, for it indicates that the bodies must exert tension on
+one another just before separating"。所以我的实验"早期脱离接触"假设是对的，
+而且 Hunt-Crossley 1975 年就发现并解决了。文献里把半周期公式叫"Hunt-Crossley
+closed form" 是普遍的误用。
+
+**关键引擎发现**：
+- **MuJoCo / Newton / Drake** 都不暴露 user-facing `restitution`，只让用户调
+  damping ratio 或 dissipation `d` (s/m)。Drake 文档原话："bounce velocity
+  bounded by 1/d"。
+- **Bullet / PhysX / ODE** 暴露 `restitution`，但它们都是 velocity-impulse
+  Newton 模型，不是 spring-damper compliance，所以是直接 LCP 速度偏置，没有
+  spring-damper 翻译问题。
+- **Project Chrono SMC** 是**唯一**一个 spring-damper compliance solver 暴露
+  user-facing `e` 的引擎，内部用 Lankarani-Nikravesh 翻译。但 LN 公式在
+  e<0.7 时不准（文献已知）。所以 Chrono SMC 是 C.2 的最直接先例，但用了
+  已知不准的公式。
+
+**关键论文发现**：
+- **Zhang & Sharf 2019** "Exact restitution and generalizations for the
+  Hunt-Crossley contact model" — 第一个**精确解析**的 (e, λ) 闭式，用 inverse
+  restitution coefficient 级数，**有效在高耗散区**。这是 C.2 选项 B（闭式映射）
+  应该用的公式，**不是** Lankarani-Nikravesh（不准），更不是 Kelvin-Voigt
+  半周期（错的术语）。
+- **Schwager & Pöschel 2008** "delayed recovery" — 显式处理早期脱离接触边界
+  的精确解，针对 Hertzian viscoelastic 接触。
+- **Marhefka & Orin 1999** — 机器人圈最常引，能量自洽全 e 范围，显式 force→0
+  分离边界。
+- **Drake 的合并规则**：`d_combined = (k₂/(k₁+k₂))·d₁ + (k₁/(k₁+k₂))·d₂`
+  （刚度加权平均），物理上比 Bullet 的 multiply / PhysX 的 average/min/max
+  更对（这是串联弹簧的正确合并）。
+
+**关键阻抗发现（Q3 的核心）**：
+> "**No paper found explicitly equates phenomenological contact `b` with `ρcA`.**
+> None of the surveyed engines bridges contact damping to characteristic
+> acoustic impedance."
+
+DEM 文献从 (E, ν, ρ, R) 算 (k, b)，但用的是 Hertzian/Lankarani-Nikravesh
+公式，**不是**波阻抗解释。Drake hydroelastic 把 k 跟物理量挂钩（pressure
+field），但把 d 留作 phenomenological。Hogan 1985 robot impedance control 是
+**对偶问题**（prescribe 期望的 (M,B,K)），从来不去把 B 跟材料 ρcA 关联。
+
+**结论：物理是熟知的（continuum mechanics 教科书 + 声学 + DEM），但作为
+user-facing API 设计原则被显式叙述出来这件事没有先例**。所以"我们的项目第一个
+把接触阻尼作为物理机械阻抗显式暴露"的卖点**是站得住脚的**。
+
+**Session 21 决定**：
+
+✅ **写**。先写一份 blog post，再扩展成 workshop paper 级别。
+- Blog：早期发布，门槛低，可以快速 iterate 反馈
+- Workshop paper：blog 成熟后扩展，目标 IROS / RSS / SimSI workshop
+- 时间表 / 大纲 TBD（"anyway，可以再议"）
+
+**对 C.2 实装的影响（暂不锁定）**：
+- 如果 paper 是目标，C.2 的实装应当成为 **demo**，而不是只在 docstring 写一句
+- 这意味着 ADMM-C 暴露 `e` 入口（决策 B 中的 B2/B3）从"诚实就好不暴露"变成
+  "这是论文的核心 demo，必须实装"
+- combine rule 应该走 Drake stiffness-weighted 风格（决策 A 中的 A2），而不是
+  PhysX/Bullet 的 multiply
+- 物理材料量入口 `(ρ, E, η)` 也应该作为 first-class API
+- **但**：以上都暂不锁定，等 blog/paper 大纲定下来再决定 C.2 具体形态
+
+**短期 C.2 实装方向（保留选项）**：
+1. **A1 (PGS Newton restitution + per-shape e + multiply)**：能用、跟主流一致、
+   不押宝在 paper 上
+2. **A2 + B2 (Drake-style combine + Zhang-Sharf 闭式 ADMM-C 翻译 + 物理量
+   入口)**：是 paper 的 demo
+3. 在 C.2 启动前先写 blog 大纲，反过来约束 C.2 的设计
+
+**关联**：
+- `docs/restitution_impedance_research_2026-04-07.md`（完整研究报告）
+- session 21 REFLECTIONS（待补，下次 session 起头时一起写）
+- session 20 InterfaceMaterial 设计（"interface vs bulk material"在这里被统一）
+- Q33 chaos + Q30 正则化（同一 session 的另一条线）
+- C.2 PGS Newton restitution（短期实装路径，待 blog 大纲约束）
+- memory `project_impedance_restitution_insight.md`（项目记录）
+
+**当前优先级**：blog 大纲先写，C.2 实装方向待定。**新颖性已确认**。
+
+---
+
 **Q22 — DynamicsCache 与 ABA/CRBA 的 FK 重复计算**
 
 `DynamicsCache.from_tree()` 计算 `X_world`（FK）和 `body_v`，但 `tree.aba()` 和
