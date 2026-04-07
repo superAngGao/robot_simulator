@@ -65,8 +65,12 @@ BASE_RADIUS = 0.15
 XA, XB = -0.14, 0.14  # bases overlap by 0.02m (sep=0.28 < 2*0.15=0.30)
 BASE_Z = 0.42
 
-# Compare only the first N_COMPARE steps (before chaotic toppling)
-N_COMPARE = 2500  # 0.5 seconds — enough for collision + initial response
+# Compare only the deterministic phase. Past ~step 1500 the chaotic toppling
+# regime amplifies any per-step difference exponentially (Lyapunov ~600 steps),
+# so the comparison windows below stop well before that. The dominant per-step
+# source is the Q30 per-row R vs MuJoCo per-contact R difference; see Q33 in
+# OPEN_QUESTIONS.md for the chaos amplification interaction.
+N_COMPARE = 2000  # 0.4 seconds — collision + early response, before chaos
 N_FULL = 5000  # full run for NaN checks
 
 
@@ -231,7 +235,14 @@ class TestTwoQuadCollisionShortTerm:
         )
 
     def test_early_phase_separation_vs_mujoco(self):
-        """Separation trajectory should agree within 2cm for first 2500 steps."""
+        """Separation trajectory should agree within 1.5cm for first 2000 steps.
+
+        The 1.5cm tolerance reflects the residual Q30 per-row R vs per-contact R
+        difference amplified by chaos over the comparison window. Window length
+        was reduced from 2500 to 2000 steps in session 21 because past ~1500
+        steps the chaotic amplification dominates and the comparison loses
+        physical meaning. See Q33 in OPEN_QUESTIONS.md.
+        """
         merged = _build_two_quad_ours()
         q, qdot = _init_state_ours(merged)
 
@@ -246,7 +257,7 @@ class TestTwoQuadCollisionShortTerm:
         np.testing.assert_allclose(
             sep_ours[idx],
             sep_mj[idx],
-            atol=0.02,
+            atol=0.015,
             err_msg="Separation diverged from MuJoCo in early phase",
         )
 

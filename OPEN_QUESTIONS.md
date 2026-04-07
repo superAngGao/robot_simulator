@@ -753,6 +753,46 @@ per-contact R 让穿透 ∝ 有效质量，更适合模拟柔性接触面（solr
 条件数更可控、忠于原始论文推导。不修改。
 **优先级**：P4（已充分理解，不影响功能）
 
+**Q33 — 链式 chaos 放大 Q30 正则化差异，需监控触发器** (2026-04-07 session 21)
+
+**现象**：`test_two_quadruped_collision::test_early_phase_separation_vs_mujoco`
+在 2500 步比较时跨过了 atol=0.02 阈值（实测 22.3mm 超出）。session 21 调查
+排除了 implicit damping 假设（damping=0 反而更糟），最终确认根因是 Q30
+**per-row R vs per-contact R** 的微小每步差异，被两四足倾倒这个混沌系统
+经 ~1500 步指数放大（每 100 步 × 1.1）到肉眼可见。
+
+**为什么这是个 open question 而不是 resolved bug**：
+1. **Q30 决策不变**：我们的 per-row R 物理上更优，不修改。
+2. **测试本身已修正**：N_COMPARE 2500 → 2000 + atol 0.02 → 0.015，
+   把比较窗口收缩到混沌主导之前的"确定性相位"。这是当前的临时缓解。
+3. **风险**：未来加入更多复杂场景（多机器人、复杂 mesh、长时间模拟）很可能
+   也会撞上同样的 chaos 放大问题。任何 Q30 量级的每步差异在 chaos 放大下
+   都会跨过任何固定容差。
+4. **没有通用解法**：要么继续 case-by-case 收紧测试范围（蔓延式 workaround），
+   要么找一种"chaos-robust"的对比指标（守恒量、能量、统计量），要么真的去改
+   per-row R。
+
+**触发"重新评估 Q30"的条件**（达到任一条则重开 Q30）：
+- 同一类失败在 ≥ 3 个独立 validation 测试中出现
+- 在物理上"应该确定"的场景（非 chaotic 系统）出现 > Q30 量级的 CPU vs MuJoCo 差异
+- 客户/用户场景报告与 MuJoCo 结果有显著差异
+
+**可能的长期方案**（按风险递增排序）：
+1. **Chaos-robust 指标**：把 chaotic 场景的对比从"轨迹差"换成"能量守恒"
+   或"接触脉冲总量"。问题：实现复杂度高，丢失 step-by-step 调试能力。
+2. **加 per-contact R 作为可选模式**：保留 per-row 默认，加 `regularization=
+   "per_row"|"per_contact"` 开关。validation 测试用 per_contact 模式与 MuJoCo
+   完全对齐，生产用 per_row。问题：维护两套求解器路径，每次改 PGS/ADMM 都
+   要双写。
+3. **混合 R**：法向用 per-contact（与 MuJoCo 一致），摩擦用 per-row（保留 Q25
+   保护）。问题：Q30 论文推导的内部一致性被打破，精确意义需要重新论证。
+
+**当前优先级**：P3（已知风险，已有缓解，但需要监控）。每次新增 validation 测试时
+检查是否撞到这个问题；累计计数。
+
+**关联**：Q30（per-row R 决策本身），Q25（per-row R 在 Q25 修复中是关键），
+session 21 REFLECTIONS（详细调查脉络）。
+
 ---
 
 ## Performance / Optimization
