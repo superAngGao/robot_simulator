@@ -618,21 +618,30 @@ R 合规性让粘着摩擦不再完全归零切向速度。实测：2 m/s 入射
 - 7 个新测试（多 shape 地面、动态 broadphase、碰撞过滤、稳定性）
 - 649 测试全部通过
 
-**测试覆盖盲区（session 16 补充）：**
+**测试覆盖盲区（session 16 补充）：** ✅ ALL RESOLVED (sessions 21–22)
 
-高风险：
-- GPU PGS 球体静止角速度稳定性（Q25 GPU kernel 改了但没测）
-- Shape offset 接触点精度（只验证 count，没验证接触点世界坐标反映 offset）
-- 非 Sphere shape（Box/Capsule）多 shape dispatch 路径
-- 接触深度精度（depth 值是否物理合理，不只是 count>0）
+实际状态：8 项盲区在 session 15 ede06cb 已经写了 `tests/gpu/collision/test_gpu_multishape_coverage.py`
+（778 行，覆盖全部 8 项），但**作者忘了划掉清单**。Session 21 也没 grep 现状就在
+独立文件 `test_q25_gpu_multibody.py` 重写了 B.1 的多体扩展。Session 22 才发现这个 lapse
+并系统地把 11 个原有测试加固到 31 个（B.2/3/5/7/8），全部使用 discriminator math 而非
+"count >= 1" / "no NaN" 弱断言。
 
-中风险：
-- CPU vs GPU 多 shape 一致性（CpuEngine 也支持多 shape）
-- 接触缓冲溢出（max_contacts < 实际接触数时 graceful discard）
-- 多 shape body-body 碰撞（两个多 shape body 互碰）
-- Shape rotation（非零 origin_rpy）
+| 盲区 | TestClass | 测试数 | 加固内容 |
+|------|-----------|--------|---------|
+| B.1 GPU PGS 球体角速度稳定性 | TestGpuQ25FrictionStability | 3 | session 15+session 21 多体扩展 |
+| B.2 Shape offset 接触点精度 | TestShapeOffsetContactPrecision | 4 | +y 轴对称 + body R × offset 组合（session 22） |
+| B.3 非 Sphere 多 shape | TestNonSphereMultiShape | 5 | tilted box / tilted capsule / shape grouping（session 22） |
+| B.4 接触深度精度 | TestContactDepthAccuracy | 3 | 已强 |
+| B.5 CPU vs GPU 一致性 | TestCpuGpuMultiShapeConsistency | 4 | per-contact + body-body 跨引擎对比（session 22） |
+| B.6 Contact buffer 溢出 | TestContactBufferOverflow | 2 | 已合理 |
+| B.7 多 shape body-body | TestMultiShapeBodyBody | 5 | sphere-sphere 几何 + 多对 shape filter（session 22） |
+| B.8 Shape rotation | TestShapeRotation | 5 | origin_rpy 真实测试 + 组合 R + settling 几何（session 22） |
 
-**待完成：**
+总计：11 → **31 测试**。Settling test 的轨迹诊断保存在 `tests/fixtures/rotated_box_settling.png`。
+延后到 Phase 3 渲染就绪后由用户视觉验证的场景：B.5-c (CPU/GPU 长轨迹)、B.7-c (separation
+增大动力学)。原因：chaos / 多解动力学不适合 numerical assertion。
+
+**待完成（功能扩展，不是测试盲区）：**
 - 凸分解管线（V-HACD/CoACD → list[ConvexHullShape]）
 - STL/OBJ 文件加载（当前 MeshShape 需要调用方传入顶点）
 - GPU GJK kernel（ConvexHullShape 的 GPU 碰撞检测）

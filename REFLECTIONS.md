@@ -5,6 +5,235 @@ Updated at the end of each development session.
 
 ---
 
+## 2026-04-08 (session 22) — Phase 2 finish B.2-B.8: Multi-shape narrowphase test hardening
+
+### Meta-discovery: B.2-B.8 coverage already existed
+
+Started session ready to write tests for the 7 remaining items in the
+session-16 coverage gap list (OPEN_QUESTIONS Q26 — 8 high/medium-risk
+multi-shape and rotation gaps). Per `feedback_check_reflections.md`,
+grep'd existing tests first instead of trusting the doc. Found
+`tests/gpu/collision/test_gpu_multishape_coverage.py`: **778 lines, 23
+tests, all passing, structurally covering all 8 gap items**, committed in
+session 15 (ede06cb). The author wrote the gap list AND the coverage in
+the same commit but never crossed off the list. Session 21 then re-wrote
+B.1 in a separate file (`test_q25_gpu_multibody.py`) without grepping.
+
+This is the same kind of lapse `feedback_check_reflections.md` warns about
+— there's now a clear pattern: **read existing state before doing work,
+including reading existing TESTS before writing new ones.**
+
+### What the existing 23 tests actually needed
+
+Audit showed about 25% of the existing tests had weak assertions (`count
+>= 1`, `no NaN`, "non-identity"). Structural coverage to all 8 items was
+fine; physical-quantity verification was missing. Approach: harden in
+place using the methodology from B.3 (discriminator math, geometric
+asymmetry to break degeneracies, exact analytic expected values).
+
+### B.3 — TestNonSphereMultiShape: 4 → 5 (done first as a methodology test)
+
+- Replaced `test_box_touches_ground` (axis-aligned + count >= 1) with
+  `test_tilted_box_lands_on_edge`: box rotated 45° about y, pz=0.06,
+  expected depth ≈ 0.0107. The discriminator: for the buggy
+  axis-aligned narrowphase `lowest_z = pz - hz`, this fixture gives
+  `lowest_z = 0.06 - 0.05 = 0.01 > 0` → **zero contacts**. Any rotation
+  bug fails on `len(contacts) >= 1`.
+- Fixed `test_capsule_touches_ground`: previously pz=0.04 for a capsule
+  with radius 0.05 and length 0.2 (total z extent 0.3) — physically
+  meaningless 14cm chest-deep penetration. Updated to pz=0.14, ~1cm
+  penetration, with full depth/normal/point assertions.
+- Added `test_tilted_capsule_lands_on_endcap`: capsule rotated 60° about
+  y, expected contact x ≈ -0.0866. The non-zero, non-symmetric x value is
+  the strongest discriminator: any narrowphase that treats capsule axis
+  as world-up (ignores R) gives contact x = 0.
+- Added shape-grouping verification to
+  `test_box_plus_capsule_multishape_both_contact`: partition contacts by
+  world x and require near_box and near_capsule each have ≥ 1. Without
+  this, a buggy multi-shape index that only walks the first shape can
+  still pass `count >= 2` because the box generates 4 corner contacts.
+
+### B.2 — TestShapeOffsetContactPrecision: 2 → 4
+
+- `test_y_axis_offset_two_spheres_y_separation` (symmetric to existing
+  x-axis test) catches axis index hardcoding.
+- `test_rotated_body_with_offset_sphere_world_position` is the strongest
+  test in this set: body 45° about z with shape offset (0.1, 0.1, 0).
+  Expected contact xy = R_z(45°) @ (0.1, 0.1, 0) = (0, 0.1414, 0). Any
+  bug that fails to apply body R to shape offset places the contact at
+  (0.1, 0.1, 0) — > 10 cm difference, no atol absorbs that.
+
+### B.5 — TestCpuGpuMultiShapeConsistency: 2 → 4
+
+The existing tests checked count agreement and one trajectory at 5mm.
+Per-contact CPU vs GPU agreement (depth, normal, contact point) was not
+tested anywhere.
+
+- `test_cpu_gpu_multishape_contact_details_agree`: same fixture as the
+  existing count test, but compares per-contact data sorted by x. Atol
+  5e-4 (0.5mm). Passed first try — float64 CPU and float32 GPU agree
+  to that precision.
+- `test_cpu_gpu_body_body_contact_agree`: cross-engine check for body-body
+  narrowphase, which is **two entirely independent implementations**
+  (CPU GJK/EPA in `physics/contact.py`, GPU analytical sphere-sphere in
+  `analytical_collision.py`). Two single-sphere bodies overlapping at
+  z=1, depth = 2r - dist = 0.02. Test required `cpu_engine._detect_contacts`
+  private API because StepOutput.contact_active is just a boolean array.
+
+### B.7 — TestMultiShapeBodyBody: 3 → 5
+
+- `test_two_spheres_body_body_geometry`: depth ≈ 0.02, normal = (-1,0,0),
+  contact point on body j surface = (0.03, 0, 1). The signed normal
+  catches Q23-class sign bugs.
+- `test_multishape_pair_filter_inner_shapes_only`: 2x2 shape pair fixture
+  arranged so only the **inner** shape pair overlaps. Asserts exact
+  count == 1 + correct contact location. Catches narrowphase that uses
+  body bounding sphere instead of shape pairs (would over-count or
+  miss the contact entirely).
+
+### B.8 — TestShapeRotation: 4 → 5
+
+The big find: `test_rotated_box_contacts_ground` was using **45° about
+the z-axis**. Rotating an axis-aligned box about its own vertical
+**doesn't change the height profile** — the SAT lowest_z formula gives
+the same answer as identity rotation. The existing test wasn't actually
+exercising the rotated narrowphase path. Replaced with
+`test_origin_rpy_45deg_y_box_lands_on_edge` (mirror of B.3 tilted box
+but using shape origin_rpy instead of body R).
+
+`test_combined_origin_rpy_and_body_rotation`: body 30° about y AND
+shape origin_rpy = [0, 30°, 0] → composed world R = R_y(60°). Computed
+expected `lowest_z_offset` from `R_body @ R_shape` directly with numpy
+to catch composition-order bugs without me having to derive by hand.
+This is the only test in the suite that catches `R_total = R_shape @ R_body`
+(wrong order — would compute identity for 30°+30° about y because
+rotations commute, but generally wrong).
+
+`test_rotated_box_settles_and_tumbles` replaces `test_rotated_box_stable_1000_steps`
+(NaN-only). Five layered assertions: no NaN throughout, pz never negative,
+final 500 steps std(pz) < 1.5mm (settled), final pz close to one of the
+3 stable rest values {0.03, 0.05, 0.10} for box (0.1, 0.06, 0.2), and
+**min qw < 0.99** (body actually rotated during contact). The qw check
+verifies the rotation code path was exercised, not just bypassed.
+
+### Trajectory diagnostic for B.8-c
+
+Wrote a standalone matplotlib script before designing the assertion to
+see how the rotated box actually settles. Saved to
+`tests/fixtures/rotated_box_settling.png` with the test docstring
+referencing it. Three phases visible in the plot:
+
+1. Free fall 0–0.27s (qw stays at 1.0, no rotation under gravity alone)
+2. First contact + tumble 0.27–0.42s (pz drops from SAT-predicted 0.107
+   to 0.055 — a 5cm extra drop because the body rotates during contact)
+3. Settled by 0.625s (pz ≈ 0.055, qw ≈ 0.932)
+
+Final pz of 0.055 corresponds to the box resting on its (0.06, 0.2) face
+with hx=0.05 down + ~5mm residual penetration and tilt. Used 4000 steps
+in the test (0.8s, comfortable margin past the 0.625s settling).
+
+### Three real incidents during implementation
+
+**1. `_ball_model` typo (B.5-b).** Used wrong helper name. Caught
+on first run, fixed in 30s. No reflection needed — typos are
+zero-cost when feedback is fast.
+
+**2. Wrong analytical expected for sphere-sphere contact point (B.5-b).**
+Hard-coded `expected_point = (0.04, 0, 1)` (midpoint of centers). CPU
+and GPU both gave (0.03, 0, 1) (body j surface). The convention is
+"contact point on body j's surface, normal points from j to i". My
+analytical reasoning was wrong; CPU and GPU were both right.
+
+The lesson here is sharper than typo-recovery: **CPU and GPU
+independent-implementation agreement IS ground truth.** Two separate
+implementations cannot both make the same wrong choice unless they
+copied from the same wrong document. When they agree on a value that
+disagrees with my hand-derivation, my hand-derivation is wrong.
+Correct procedure: write a quick exploratory script to GET the values
+before writing assertion expected values. Don't try to derive by hand
+and risk getting the convention wrong.
+
+**3. Sign error in tilted-capsule pz formula (B.3-#5).** The pytest
+test reported 0 contacts. **First reaction was wrong**: I started
+considering whether GPU narrowphase was missing R for capsule. Before
+chasing that, I did the right thing: wrote a 13-line standalone repro
+script. It produced perfect output (`depth=0.01, contact_x=-0.0866`).
+That ruled out the GPU side immediately and pointed me to the test
+fixture. The bug was `pz = target_depth + half_length*cos + radius`
+instead of `pz = (half_length*cos + radius) - target_depth` — sign
+error placed the capsule above the ground.
+
+**Lesson**: when a test fails, **first prove the test code itself is
+correct** (especially geometry/units/composition fixtures) before
+suspecting the code under test. The 13-line standalone script is
+~5 seconds of work and definitively isolates "test bug vs code bug".
+This is a sister rule to `feedback_check_reflections.md`: in both
+cases the principle is "verify the problem is where you think it is
+before chasing it".
+
+### Multi-step dynamics tests cannot use single-point predictions
+
+Original B.8-c plan: predict final pz from the static SAT formula and
+assert. The diagnostic plot showed why this is wrong — the box tumbles
+during contact and ends up in a **different** stable rest pose than
+its initial rpy would suggest. q(t→∞) is **not** uniquely determined by
+q(0) for systems with multiple stable equilibria.
+
+Generalization: any test that runs more than ~10 steps and tries to
+predict the final state from the initial state with a single number is
+fragile to (a) chaos amplification (Q33), (b) multiple stable equilibria,
+(c) solver penetration that adds offsets to clean geometric values.
+
+**Right approach for multi-step tests**: assert that the system enters a
+**stable set** (final pz close to ANY of the stable rests), not a
+specific point. And verify some side-channel that proves the dynamics
+actually happened (e.g., min qw < 0.99 to prove tumbling occurred).
+
+This is the same principle that justifies deferring B.5-c (CPU/GPU long
+trajectory) and B.7-c (separation-increases) to a future visual-test
+class — they are inherently chaotic/multi-solution and don't fit into
+numerical-assertion testing.
+
+### Numbers
+
+- File: `tests/gpu/collision/test_gpu_multishape_coverage.py`: 24 → 31
+  tests (+7 net, because most additions extended existing classes
+  rather than creating new ones).
+- Across both rounds (B.3 in this session, then B.2/5/7/8): 11 → 31 tests
+  in the file (+20 actual new test methods, 7 of which replaced weaker
+  predecessors).
+- Full fast+gpu suite: 622 → 629 passed, 1 skipped, 0 failed, ~3.5 min.
+
+### Still-open coverage gaps (NOT touched this session)
+
+B.2-B.8 hardening was about strengthening existing narrowphase coverage,
+not expanding the coverage map. Gaps that remain on the bigger picture:
+
+- Engine routing / dispatch: CpuEngine ↔ CollisionPipeline ↔ GpuEngine
+  glue layer (HalfSpaceShape dispatch, CollisionFilter cross-engine
+  consistency, etc.)
+- Multi-robot × multi-shape combinatorics
+- CRBA Cholesky numerical conditioning
+- `engine.reset()` state isolation (q/qdot are cleared, but what about
+  contact buffers, force_state, internal scratch)
+- dt range testing (everything tested at 2e-4)
+- bitmask collision filter non-parent-child scenarios
+- Sensor / rendering — Phase 3
+
+User confirmed the next direction is to attack those, after the
+geometry-enrichment work that follows the doc commit.
+
+### MEMORY.md update
+
+No new memories from this session — the lessons here generalize the
+existing `feedback_check_reflections.md` rule to "check existing tests
+before writing new ones" and "verify test code before suspecting code
+under test", which are within the spirit of that memory. If a future
+session repeats this kind of duplicate work I'll add a more specific
+memory then.
+
+---
+
 ## 2026-04-07 (session 21) — Phase 2 finish B.1: Q25 GPU PGS multi-body coverage + Q33 chaos question
 
 ### Scope
