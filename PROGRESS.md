@@ -805,6 +805,72 @@ pipeline，不只测它的接口。
 **下一步**：commit B(1)-B(4)（4 个测试新文件 + 2 个 bug 修复 + 3 个 doc 更新），
 然后转去 (c) 几何丰富（STL/OBJ loader / 凸分解 / GPU GJK）。
 
+### Session 24 — Phase 2 收尾 B(6)：CRBA Cholesky conditioning + Wilkinson 方法论 (2026-04-09)
+
+**Wilkinson 后向稳定性方法论 — 入项目标准实践**
+
+Session 23 之前的数值正确性测试都是"比对式"（CPU vs GPU、CRBA vs ABA）——
+能抓相对漂移但抓不到 common-mode bug。Session 24 把 **Wilkinson 4 项后向误差
+测试**（reconstruction / normwise backward / forward bound / symmetry）+
+**合成 SPD fixture** 定为后续所有线性代数 kernel 数值测试的标准做法。
+完整记录在 REFLECTIONS.md session 24，feedback memory
+`feedback_numerical_stability_wilkinson.md` 让未来 session 自动应用。
+
+**B(6) — CRBA Cholesky 数值稳定性测试 (47 tests, 1 new file)**
+
+`tests/integration/test_crba_cholesky_conditioning.py` — 5 个 test class：
+
+| Class | 测试数 | 内容 | 方法论 grade |
+|-------|--------|------|-------------|
+| 1 — Synthetic SPD direct kernel | 13 | Wilkinson 4-test suite，包 `_chol_factor`/`_chol_solve` 跑 cond ∈ {1, 1e2, 1e4} 合成矩阵 + clamp activation 测试 | ★★★★★ |
+| 2 — CRBA H matrix properties | 11 | CPU 端 H 的对称性、PD margin、cond 三方法交叉验证、alpha lever 检验 | ★★★★ |
+| 4 — CRBA vs ABA physical fixtures | 13 | n_links ∈ {2,4,6,8} CRBA-vs-ABA 一致性 + Newton 残差 + 20-trial random battery | ★★★ |
+| 3 — q-sweep findings | 6 | Quadruped 近奇异 fixture 锚定 + chain 高 cond regime 锚定 | ★★ |
+| 5 — GPU qacc accessor cross-check | 4 | 新加 `qacc_smooth_wp` + `qacc_total_wp` accessor，no-contact 等价 / with-contact 差异 / qdot 差分一致 | ★★★ |
+
+**关键发现**：
+
+1. **GPU `_chol_factor` 是真正后向稳定的**：Wilkinson Test 2 在 cond ∈ [1, 1e4]
+   全部通过，backward error ~ 1e-7 (≈ε_f32) **与 cond 无关**。这是教科书定义。
+2. **Quadruped fixture cond 表面是平的** (2e3-6e3 across joint space)。"Near-singular"
+   配置在真实机器人 fixture 上**不存在**——只有合成 SPD (Class 1) 才能测高 κ regime。
+3. **regularization clamp 很少激活**：之前以为 "cond > 1e6 = silent wrong physics"
+   是过度悲观——random 矩阵在 cond=1e6 下 backward err 仍然 ~6e-9。要触发 clamp
+   需要专门构造的矩阵（如 `diag(1,...,1,1e-10)`），不是普通高 κ。
+4. **Chain fixture 校准**：
+   - n=4 → cond ≈ 1.5e4
+   - n=8 α=1.5 → cond ≈ 1e6
+   - n=12 α=1.5 → cond ≈ 4e7（GPU clamp regime）
+   - n=16 α=1.5 → cond ≈ 1.6e9（f32 完全无精度）
+5. **Class 1 调试时发现的设计 bug 反例**：原计划用 cond 扫描验证 clamp 激活，
+   实测发现 cond 高 ≠ pivot 小。改用 `diag(1,...,1,1e-10)` 直接强制 pivot < reg，
+   100x 误差一目了然。
+
+**API 改动**：
+
+- `physics/gpu_engine.py`: 新增 `qacc_smooth_wp` + `qacc_total_wp` 两个 zero-copy
+  property。`qacc_smooth` 是 H⁻¹(τ-C)，`qacc_total = qacc_smooth + dqdot/dt`。
+- `physics/gpu_engine.py`: 新增 `_compute_qacc_total` kernel，在 step 9 (apply
+  contact impulse) 后计算 `qacc_total`。
+- `physics/backends/warp/scratch.py`: 新增 `qacc_total` 缓冲区。
+- 下游用途：RL acceleration penalty `‖q̈‖²`、system identification（之前必须用
+  qdot 差分手动算）。
+
+**Wilkinson 文档化 + memory**：
+
+- REFLECTIONS.md session 24：完整方法论 + 经验数据 + Class 1-5 的实证结果
+- `feedback_numerical_stability_wilkinson.md`：standing 实践 memory，未来 session
+  自动应用 4-test suite + 合成 SPD
+
+**Q37 状态**：✅ RESOLVED in OPEN_QUESTIONS.md
+
+**新 OPEN_QUESTION**：Q38 — 三 Cholesky use site 拆分。需要 in-kernel inspection
+buffer（~50 LOC refactor），延后到出现实际 divergence bug 时再做。
+
+**B(5) Multi-robot × multi-shape**：仍延后。Session 24 之后是下一个目标。
+
+**Session 24 测试增量**：47 个新测试，全部通过。仓库总计：671 → **718 passed**.
+
 ---
 
 ## Phase 3 — High-Fidelity Rendering + Sensor Simulation ⬜

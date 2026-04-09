@@ -116,6 +116,24 @@ def _aggregate_contact_forces(
         wp.atomic_add(force_out, env_id, off + 2, f[2])
 
 
+@wp.kernel
+def _compute_qacc_total(
+    qacc_smooth: wp.array2d(dtype=wp.float32),  # (N, nv) — H⁻¹(τ - C)
+    dqdot: wp.array2d(dtype=wp.float32),  # (N, nv) — contact impulse Δq̇ = H⁻¹ Jᵀ λ
+    inv_dt: float,
+    nv: int,
+    qacc_total: wp.array2d(dtype=wp.float32),  # (N, nv) — output
+):
+    """Compute post-contact joint acceleration: qacc_total = qacc_smooth + dqdot/dt.
+
+    Used for downstream RL acceleration penalties (‖q̈‖²) and system identification.
+    Filled at the end of each step after the contact impulse has been applied.
+    """
+    env = wp.tid()
+    for i in range(nv):
+        qacc_total[env, i] = qacc_smooth[env, i] + dqdot[env, i] * inv_dt
+
+
 # ── Per-env reset kernels ──
 
 
@@ -341,6 +359,30 @@ class GpuEngine(PhysicsEngine):
     def x_world_r_wp(self):
         """Warp array (N, nb, 3) — body positions in world frame."""
         return self._scratch.X_world_r
+
+    @property
+    def qacc_smooth_wp(self):
+        """Warp array (N, nv) — pre-contact joint acceleration H⁻¹(τ - C).
+
+        Filled by the CRBA + Cholesky pass (step 3 of _step_physics) and
+        held in sc.qddot for the rest of the step (sol.qacc_smooth gets
+        reused as a temp buffer in step 7). Reading this between step()
+        calls returns the pre-contact q̈ from the most recent step.
+        """
+        return self._scratch.qddot
+
+    @property
+    def qacc_total_wp(self):
+        """Warp array (N, nv) — post-contact joint acceleration.
+
+        qacc_total = qacc_smooth + dqdot/dt
+        where dqdot = H⁻¹ Jᵀ λ is the contact-impulse delta to qdot.
+        Filled at step 10 of _step_physics (after impulse apply, before
+        integration). For contact-free configurations qacc_total ≡
+        qacc_smooth. For RL acceleration penalty terms ‖q̈‖² this is the
+        right quantity to use.
+        """
+        return self._scratch.qacc_total
 
     @property
     def contact_active_wp(self):
@@ -743,6 +785,18 @@ class GpuEngine(PhysicsEngine):
                 sol.chol_tmp,
             ],
             outputs=[sol.dqdot],
+        )
+
+        # 10. Compute qacc_total = qacc_smooth + dqdot/dt for downstream
+        # consumers (RL accel penalty, sysID). Must run AFTER step 9 (impulse
+        # apply) and BEFORE integration overwrites qdot. sc.qddot still
+        # holds the persistent qacc_smooth copy from step 3.
+        wp.launch(
+            _compute_qacc_total,
+            dim=N,
+            device=self._device,
+            inputs=[sc.qddot, sol.dqdot, 1.0 / dt, s.nv],
+            outputs=[sc.qacc_total],
         )
 
         # 11. Position correction — now handled via Baumgarte velocity bias

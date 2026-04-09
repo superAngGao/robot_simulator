@@ -353,20 +353,74 @@ GPU 要支持 HalfSpaceTerrain，需要：
 
 工作量：中。建议下次 test hardening pass 顺手做。
 
-**Q37 — CRBA Cholesky numerical conditioning test coverage** (2026-04-08, session 23)
+**Q37 — CRBA Cholesky numerical conditioning test coverage** ✅ RESOLVED (2026-04-09 session 24)
 
-剩余的 session 22 八项盲区清单未做的另一项。当前 CRBA + Cholesky pipeline
-（session 13 Q29）从未在高条件数 H 矩阵上测过。
+Done in session 24 as B(6). 47 new tests in
+`tests/integration/test_crba_cholesky_conditioning.py`. Adopted Wilkinson
+backward error methodology as standing practice (see REFLECTIONS session 24
++ feedback memory `feedback_numerical_stability_wilkinson.md`).
 
-需要构造的 fixture：
-- 大质量比（base 100 kg + finger 0.001 kg 这种）
-- 细长 link（细 inertia 主轴）
-- 近奇异姿态（两 revolute joint 共线）
+Test classes shipped:
+- Class 1 (13 tests): Wilkinson backward error on synthetic SPD via direct
+  GPU `_chol_factor` / `_chol_solve` kernel calls. Sweep cond ∈ {1, 1e2, 1e4}
+  + clamp activation test on diag(1,...,1,1e-10). Backward error confirmed
+  κ-independent → kernel is backward stable.
+- Class 2 (11 tests): CRBA H matrix structural properties (symmetry, PD
+  margin, three-method cond cross-validation, alpha lever check).
+- Class 4 (13 tests): CRBA vs ABA agreement at n_links ∈ {2, 4, 6, 8}
+  with zero/non-zero qdot, Newton residual `‖H q̈ + C - τ‖`, 20-trial
+  random battery.
+- Class 3 (6 tests): quadruped near-singular fixture (cond ~6e3, the
+  quadruped fixture is NOT actually near-singular) + chain high-cond
+  regime (n=12 α=1.5 → cond 4e7).
+- Class 5 (4 tests): GPU qacc accessor cross-check. Added
+  `qacc_smooth_wp` and `qacc_total_wp` properties to GpuEngine for
+  downstream RL acceleration penalty / sysID. Computed via new
+  `_compute_qacc_total` kernel after impulse apply.
 
-预期失败模式：Cholesky 失败 / 数值发散 / 非物理 qacc。
+Surprising findings:
+- Quadruped fixture cond surface is FLAT (2e3-6e3 across joint space).
+  Calf=0 is the worst-case but only by 4x. "Near-singular" doesn't
+  exist on real robot fixtures — synthetic SPD (Class 1) is the only
+  way to test high-κ regimes.
+- GPU `_chol_factor` is truly backward stable (Wilkinson Test 2 passes
+  independent of κ from 1 to 1e4).
+- Regularization clamp at reg=1e-6 is real but rarely-activated. Original
+  concern that "cond > 1e6 = silent wrong physics" was overblown — silent
+  wrong physics requires intentionally constructed matrices (e.g.,
+  `diag(1,...,1,1e-10)`), not just high κ.
 
-工作量：大。需要研究 conditioning 边界 + 设计 fixture + 决定容差。延后到
-Phase 3 之前。
+Full results and methodology: REFLECTIONS.md session 24.
+
+---
+
+**Q38 — Three Cholesky use-site disambiguation in GpuEngine** (2026-04-09 session 24)
+
+Q29 architecture: one Cholesky factor of H per step is reused for three
+solves: smooth dynamics (`H⁻¹(τ-C)`), Delassus build (`W = J H⁻¹ Jᵀ` via
+per-row solve), and impulse apply (`Δq̇ = H⁻¹ Jᵀ λ`). The "three uses
+share one L" property is what makes the GPU pipeline efficient.
+
+To **verify** through testing that each solve actually used the same L
+(not just that the final answer is consistent), you'd need inspection
+buffers inside the solver kernels: `qdot_after_smooth`,
+`qdot_after_delassus_solve_each_row`, etc. These don't exist — the three
+solves happen inside fused kernel sequences that update qdot in-place
+without checkpointing intermediate states.
+
+Session 24 Class 5 ships only the partial check: `qacc_smooth_wp` ≡
+`qacc_total_wp` when there's no contact, and `qacc_total - qacc_smooth =
+dqdot/dt` when there is contact. This catches gross mistakes (e.g.,
+qacc_total uses the wrong sign on dqdot) but cannot disambiguate the
+three internal Cholesky solves.
+
+**Decision**: deferred. Only worth implementing if we discover an actual
+three-use-site divergence bug, since the fused-kernel design is correct
+by construction. Adding inspection buffers is a real refactor (~50 LOC
+across crba_kernels + scratch + gpu_engine), not a test.
+
+**Trigger to revisit**: any GPU vs CPU divergence on contact-rich
+scenarios that's NOT explained by f32 precision (which Class 5 covers).
 
 ---
 

@@ -5,6 +5,298 @@ Updated at the end of each development session.
 
 ---
 
+## 2026-04-09 (session 24) — Phase 2 finish B(6): CRBA Cholesky conditioning + Wilkinson methodology adoption
+
+### Scope
+
+Session 23 finished 4 of 8 remaining gaps and deferred two: multi-robot ×
+multi-shape (B(5)) and CRBA Cholesky conditioning (B(6)). User chose to do
+both, B(6) first because it has cleaner detection criteria (algebraic
+invariants) than B(5) (which has the multi-step chaos problem).
+
+This session also adopts the **Wilkinson backward-error methodology** as a
+standing practice for any future numerical stability test. Previously the
+project used comparison-style tests (e.g., CRBA vs ABA, GPU vs CPU). This
+class of test catches relative drift between two implementations but cannot
+distinguish "both implementations have the same numerical bug" from "both
+work correctly". Wilkinson backward error tests the solver against
+mathematical truth (residuals, reconstruction), not against another
+implementation, so it catches absolute errors that comparison-style tests
+miss.
+
+### Methodology adopted: Wilkinson backward error for linear algebra kernels
+
+**When to apply**: Any custom linear-algebra kernel (Cholesky, LU, QR, SVD,
+linear solve, eigensolve), especially GPU implementations where there's no
+LAPACK fallback. Apply ALL of the following four tests, not a subset.
+
+**Test 1 — Reconstruction error** (validates the factor itself):
+```
+‖L L^T - H‖_F / ‖H‖_F  <  C × n × ε_machine
+```
+For Cholesky, theory gives C ~ 1; in practice C ~ 10 is acceptable. If this
+fails, the bug is in the factorization step, not the solve.
+
+**Test 2 — Normwise backward error** (validates the solve):
+```
+‖H x̂ - b‖ / (‖H‖ ‖x̂‖ + ‖b‖)  <  C × n × ε_machine
+```
+For backward-stable algorithms this is **independent of κ(H)**. If this
+grows with κ(H), the implementation is not backward stable — likely
+catastrophic cancellation, premature normalization, or bad accumulation order.
+
+**Test 3 — Forward error vs theoretical bound**:
+```
+‖x̂_f32 - x_ref_f64‖ / ‖x_ref_f64‖  ≤  κ(H) × ε_f32 × C(n)
+```
+The bound itself comes from `forward = κ × backward`. C(n) should be
+polynomial in n (typically n or n²). Catches: precision regressions, hidden
+single-precision intermediate accumulators in nominally f64 paths.
+
+**Test 4 — Symmetry / structure preservation** (validates upstream of solve):
+```
+‖H - H^T‖_F  <  n × ε × ‖H‖
+```
+For SPD inputs from CRBA, H must be exactly symmetric or O(ε). Catches:
+asymmetric updates in CRBA (e.g., computing H_ij and H_ji independently
+without enforcing the mirror), shape transposition bugs.
+
+**Synthetic SPD construction** (when physical fixture can't reach target κ):
+```python
+n, target_kappa = 8, 1e4
+Q = scipy.stats.ortho_group.rvs(n)
+lambdas = np.geomspace(1.0, 1.0 / target_kappa, n)
+H = Q @ np.diag(lambdas) @ Q.T  # cond(H) ≈ target_kappa to ~1%
+```
+This decouples the linear-algebra test from any physics fixture and lets
+you sweep κ all the way to the precision limit (10^7 for f32, 10^14 for
+f64) regardless of what condition numbers physical robots actually exhibit.
+
+**Why this matters for our pipeline specifically**: GPU `_chol_factor` in
+`physics/backends/warp/crba_kernels.py:188-211` has built-in regularization
+`if val < reg: val = reg` with reg=1e-6. At κ(H) > 10^6 the clamp activates
+silently — solver does not NaN, just returns wrong answer. Comparison-style
+tests against CPU NumPy Cholesky would mostly miss this because CPU also
+loses precision at high κ. Wilkinson tests catch it because the residual
+‖H x̂ - b‖ gets larger than the theoretical bound regardless of how the
+"comparison" answer is wrong.
+
+**Stop using**: comparison-only tests for new linear-algebra kernels.
+Comparison stays as a *complement* (it catches integration issues), but the
+core stability story comes from Wilkinson.
+
+**Recorded in memory**: `feedback_numerical_stability_wilkinson.md` so
+future sessions auto-apply the 4-test suite without needing to re-derive.
+
+### B(6) class structure
+
+Implementation order (reversed from initial proposal — synthetic first):
+
+1. **Class 1 — Synthetic SPD direct kernel** (Wilkinson, no physics)
+2. **Class 2 — CRBA H matrix properties** (CPU only, structural)
+3. **Class 4 — CRBA vs ABA residual** (algorithm cross-validation in physics)
+4. **Class 3 — q-sweep on quadruped + REFLECTIONS exploration** (this section)
+5. **Class 5 — GPU qacc accessor + cross-check** (requires API addition)
+
+Class 1 was reordered first because it's the strongest test (Wilkinson
+direct on the kernel) AND the fastest (no fixture construction; ~0.1ms per
+matrix). Doing it first means if the core kernel has a bug, we catch it
+before any physics-based test confuses the picture.
+
+### Decision: expose qacc_smooth_wp and qacc_total_wp on GpuEngine
+
+User raised: do we actually need to expose q̈ outside of tests? Honest
+audit:
+
+| Downstream | Need q̈? | Current workaround |
+|------------|---------|-------------------|
+| RL acceleration penalty `‖q̈‖²` | Yes | Store last qdot, finite-diff |
+| RL jerk penalty `‖q̈̇‖²` | Yes | Store two steps, double finite-diff |
+| System identification | Yes | Offline only |
+| IMU sim | No (uses body acc) | v_bodies_wp diff |
+| Inverse dynamics | No (q̈ is input) | — |
+
+RL acceleration penalty is a standard locomotion training term (legged_gym,
+Isaac Lab default it on). Adding the accessor is small (~5 LOC, mirrors
+q_wp/qdot_wp pattern from session 16). Decision: add it as real API, not
+just for testing. Test happens to consume it.
+
+**Subtlety**: there are two q̈ values in the pipeline:
+- `qacc_smooth = solve(H, τ - C)` — pre-contact (in `sol.qacc_smooth`)
+- `qacc_total = qacc_smooth + Δq̇_contact / dt` — post-contact
+
+Both useful: RL penalty wants `qacc_total` (the actual joint accel that
+physics applied), debugging wants `qacc_smooth` (separates dynamics from
+contact). Expose both. The naming reflects pipeline order.
+
+### Decision: Class 5 cannot fully disambiguate three Cholesky use sites
+
+Q29 architecture uses one Cholesky factor for three solves: smooth dynamics,
+Delassus build (W = J H⁻¹ J^T), impulse apply. The "three uses share one L"
+property is what makes the GPU pipeline efficient — but to verify it through
+testing, you'd need to check that each solve actually used the same L, not
+just that the final answer is consistent.
+
+Currently impossible from the outside: the three solves happen inside a
+fused kernel sequence that updates qdot in-place without checkpointing
+intermediate states. To disambiguate would require adding inspection
+buffers (qdot_after_smooth, qdot_after_delassus_solve_X) inside the solver
+kernels. That's a real refactor, not a test.
+
+**Decision**: Class 5 ships only the partial check (qacc_smooth vs
+qacc_total consistency, no contact case ⇒ they're equal). The full
+three-site test moves to OPEN_QUESTIONS as a deferred refactor item — only
+worth doing if we discover an actual three-site divergence bug, since the
+fused-kernel design itself is correct by construction.
+
+### Detection criteria strategy: relative vs absolute correctness
+
+User flagged the assertion problem early ("难以设置合适的检测标准"). The
+resolution is a hierarchy:
+
+1. **Absolute (Wilkinson, Class 1)**: residual / reconstruction / bound,
+   no second implementation needed. Strongest. Use whenever possible.
+2. **Relative cross-implementation (Class 4)**: CRBA vs ABA in CPU, GPU
+   vs CPU at end-to-end level. Catches integration bugs but not common-mode
+   numerical errors.
+3. **Structural (Class 2)**: shape, symmetry, definiteness — invariants
+   that hold without knowing any specific answer.
+4. **Calibration / exploration (Class 3)**: not a pass/fail test, an
+   *experiment* whose output is data recorded in REFLECTIONS for future
+   reference. The "test" then asserts that the chosen fixture still hits
+   the target cond range (regression catch).
+
+Rule: do (1) wherever possible. Add (2) for end-to-end. Add (3) cheaply
+in passing. Use (4) only when (1) cannot reach the target regime.
+
+### How this relates to Q33
+
+Q33 (chaos amplification of Q30 R formulation differences) is the limit
+case of "comparison testing fails": for chaotic multi-body systems, even
+two algorithmically-identical implementations diverge in trajectory after
+~100 steps from float32 reorder. Wilkinson methodology applied to Q33
+would not have prevented the test failure, but it would have made the
+failure mode obvious from the start: any test that compares trajectories
+of a chaotic system over hundreds of steps cannot pass except by accident.
+
+The Q33 lesson and the Wilkinson adoption are the same lesson: **prefer
+absolute mathematical properties over comparison to a second implementation,
+because the second implementation will eventually drift from yours for
+reasons unrelated to bugs.**
+
+### MEMORY.md update
+
+New feedback memory: `feedback_numerical_stability_wilkinson.md`. This is
+a methodology pointer ("when testing linear algebra kernels, use the 4-test
+Wilkinson suite + synthetic SPD"), not a project note. Future sessions
+should consult it before designing any numerical accuracy test.
+
+### Class 3 q-sweep experiment results (recorded for future reference)
+
+Goal: characterize cond(H) range for our existing fixtures so future tests
+can pick the right fixture for the cond regime they need to stress.
+
+**Quadruped fixture** (`tests/unit/dynamics/test_crba.py::_make_quadruped`):
+nq=11, nv=10, 4 actuated joints (2 hips + 2 calves, front legs only).
+
+| Configuration | cond(H) |
+|---------------|---------|
+| q=0 (zero pose) | 5.82e3 |
+| Random sweep n=200 (joint angles ∈ [-1.5, 1.5]) | min 2.15e3, median 4.6e3, max 6.17e3 |
+| Calf=-2 (folded) | 1.4e3 |
+| Calf=0 (extended) | 5.97e3 |
+| Calf=+0.5 | 4.76e3 |
+
+**Surprising finding**: the cond surface is FLAT — it does not vary
+strongly with q. Random sweep over 200 configurations spans only one
+order of magnitude (2e3 to 6e3). The cond is dominated by the
+floating-base mass coupling, not by joint configuration. Calf angle is
+the only meaningful lever, and even then only by ~4x. Hip angle is
+symmetric and barely affects cond at all.
+
+**Implication**: "near-singular configurations" do not exist on this
+fixture. The "worst-case" q is just calf=0 (legs extended), and it gives
+cond ≈ 6e3 — well within the f32 precision regime. There is nothing on
+this fixture that would test the GPU regularization clamp.
+
+**Chain fixture** (`tests/integration/test_crba_cholesky_conditioning.py::_chain_robot`):
+floating base + n_links revolute joints, length scaling L_k = L_0 × α^k.
+
+| n_links | α=1.0 | α=1.5 |
+|---------|-------|-------|
+| 4 | 1.59e4 | 1.37e4 |
+| 8 | 9.77e4 | 9.32e5 |
+| 12 | 3.95e5 | **4.37e7** |
+| 16 | 1.14e6 | **1.64e9** |
+
+n=12 α=1.5 enters the regime where GPU clamp may matter (cond ~ 4e7 — at
+this point f32 has effectively 0 digits of precision in the worst-case
+direction, though the typical solve direction still has some). n=16 α=1.5
+is into "no precision left in f32" territory and only useful as a
+documentation fixture for what failure looks like.
+
+**Choice of fixture per cond regime** (for future test design):
+
+| Regime | Fixture | Notes |
+|--------|---------|-------|
+| cond ≈ 1e3 | quadruped at calf=-2 | Realistic robot, mild |
+| cond ≈ 1e4 | chain n=4 | Realistic 4-DOF arm |
+| cond ≈ 1e5 | chain n=8 α=1.0 | Long chain, uniform |
+| cond ≈ 1e6 | chain n=8 α=1.5 | Long chain, uneven |
+| cond ≈ 1e7+ | chain n=12 α=1.5 | Aggressive |
+| cond > 1e10 | synthetic SPD (Class 1) | No physics fixture works |
+
+**The Wilkinson Class 1 synthetic SPD is the right tool for the highest
+cond regimes**. Physical fixtures plateau around cond ≈ 1e8 because
+inertia tensors must remain physically meaningful (mass > 0, PD inertia).
+
+### Class 1 Wilkinson empirical findings
+
+Run on cond ∈ {1, 1e2, 1e4} for n=8 with random b:
+- Reconstruction error: ~1e-7 (≈ ε_f32), independent of κ ✓
+- Backward error: ~1e-8 to 1e-7, **independent of κ** ✓ (this is the
+  textbook proof that the kernel is backward stable)
+- Forward error: scales linearly with κ × ε_f32 as theory predicts
+
+At κ=1e6 (above the original "clamp boundary" guess), the random-b
+backward error remains at ~6e-9 — **the clamp doesn't actually activate
+for typical random matrices**. The clamp `if val < reg: val = reg` only
+fires when an intermediate Cholesky pivot drops below 1e-6, which
+requires either:
+- A diagonal entry of M near zero (e.g., explicit `diag(1, 1, ..., 1e-10)`)
+- A very specific eigenstructure that produces tiny pivots through
+  cancellation
+
+The "clamp activation test" used a diagonal SPD with M[n-1,n-1]=1e-10
+to mechanically force the clamp. The result shows L[n-1,n-1] = sqrt(1e-6)
+= 1e-3 instead of the true sqrt(1e-10) = 1e-5 — 100x error, unambiguous.
+
+**Net assessment**: GPU `_chol_factor` and `_chol_solve` are backward
+stable across the entire physical range of robot Cholesky problems. The
+regularization clamp is a real but **rarely-activated** safety net, not
+the dominant failure mode. The previous concern that "cond > 1e6 = silent
+wrong physics" is **overblown** — silent wrong physics requires
+specifically engineered matrices, not just high κ.
+
+### Class 4 cond range from physical fixtures
+
+CRBA vs ABA agreement was tested at n_links ∈ {2, 4, 6, 8} with both
+zero and non-zero qdot. All passed at the κ × 1e-13 bound (f64
+machine accuracy × small constant). No regression of the existing CRBA
+implementation. Newton's law residual `‖H q̈ + C - τ‖ / ‖τ‖` also passes
+at the same bound, confirming that ABA's q̈ truly satisfies the
+equation of motion (this is structural, not just an internal-check).
+
+### Status
+
+13 (Class 1) + 11 (Class 2) + 13 (Class 4) + 6 (Class 3) = **43 new tests**
+all passing in `tests/integration/test_crba_cholesky_conditioning.py`.
+
+Class 5 (GPU qacc accessor + cross-check) still pending — requires adding
+new property to GpuEngine.
+
+---
+
 ## 2026-04-08 (session 23) — Phase 2 finish B(1)-B(4): True coverage gaps + 2 P0 dispatch bug fixes
 
 ### Scope

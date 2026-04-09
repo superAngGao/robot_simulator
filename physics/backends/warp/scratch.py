@@ -59,6 +59,11 @@ class ABABatchScratch:
         self.tau_action = wp.zeros((N, nv), dtype=wp.float32, device=device)
         self.tau_total = wp.zeros((N, nv), dtype=wp.float32, device=device)
         self.qddot = wp.zeros((N, nv), dtype=wp.float32, device=device)
+        # qacc_total: post-contact joint acceleration, filled at end of step.
+        # Computed as qddot (= qacc_smooth) + dqdot/dt where dqdot is the
+        # contact-impulse delta to qdot. Exposed via GpuEngine.qacc_total_wp
+        # for downstream RL acceleration penalties and sysID.
+        self.qacc_total = wp.zeros((N, nv), dtype=wp.float32, device=device)
 
         # -- External forces --
         self.ext_forces = wp.zeros((N, nb, 6), dtype=wp.float32, device=device)
