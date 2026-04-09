@@ -5,6 +5,208 @@ Updated at the end of each development session.
 
 ---
 
+## 2026-04-08 (session 23) — Phase 2 finish B(1)-B(4): True coverage gaps + 2 P0 dispatch bug fixes
+
+### Scope
+
+After session 22 finished narrowphase hardening, listed 8 still-open coverage
+gaps in PROGRESS.md. Session 23 attacked the 4 small-to-medium ones in
+sequence: engine.reset() isolation, dt range stability, bitmask collision
+filter end-to-end, and engine routing/dispatch. The remaining 2 (multi-robot
+× multi-shape, CRBA Cholesky conditioning) deferred.
+
+The end-to-end nature of these tests — verifying that components ALREADY
+covered individually still work when wired together through the engine
+pipeline — turned out to be the right kind of test for this layer. Two
+silent-wrong-physics bugs surfaced this session, both in the glue between
+correctly-functioning components.
+
+### B(1) — engine reset isolation (no bugs found)
+
+`tests/gpu/test_engine_reset_isolation.py`, 6 tests. CpuEngine is stateless
+per step (verified by reading the source), so only GpuEngine needed coverage.
+
+The strongest test (`test_reset_after_contact_matches_fresh`) is the
+contract: after a dirty trajectory + reset(q0) + N steps, the state must
+match a fresh engine that started at q0 + ran the same N steps. This catches
+any scratch buffer that survives reset and biases the next step.
+
+All 6 passed first try. The reset contract is clean. The existing
+`test_gpu_engine_api.py::TestResetEnvs` covered the per-env reset_envs API;
+this file complements with the bulk reset(q0) contract.
+
+### B(2) — dt range stability (no bugs found, documented bound)
+
+`tests/integration/test_dt_range_stability.py`, 9 tests. CPU only (small dt
+× many steps would make the GPU build cost dominate, and the test is about
+the integrator path, not the GPU dispatch).
+
+Sphere drop fixture at dt ∈ {5e-5, 1e-4, 2e-4, 5e-4} settles to within 2 mm
+of each other. Per-step dt override works. The semi-implicit Euler + penalty
+contact (k=5000) stability bound is comfortable: dt=2 ms still settles
+correctly, dt=10 ms doesn't NaN (just oscillates). Critical dt for k=5000,
+m=1 is ~28 ms by 2/sqrt(k/m).
+
+Tests document the bound with clear assertions so a future regression that
+narrows the stable range will fail loudly.
+
+### B(3) — collision filter end-to-end + Bug #1 (CPU silent filter failure)
+
+`tests/integration/test_collision_filter_engine.py`, 15 tests. The existing
+`tests/unit/collision/test_collision_filter.py` covered the CollisionFilter
+class itself and its integration with `AABBSelfCollision.build_pairs(
+collision_filter=f)` (note: explicit pass-through). The new file targets
+the missing layer: that the filter actually prevents physics contact when
+configured via the `merge_models(collision_filter=...)` path and consumed
+by the running engines.
+
+5 filter configurations × CPU + GPU + cross-engine consistency parametrize.
+
+**Bug #1 surfaced immediately**: 6 of 15 tests failed, all on the CPU side,
+all with the same pattern: filter says "should not collide" but
+CPU narrowphase still produces a contact.
+
+Tracing the bug:
+- `physics/merged_model.py:178` builds `all_collision_pairs` based on
+  parent-child exclusion only
+- The `collision_filter` parameter is stored on the merged model but
+  **never consulted** when assembling the pair list
+- `physics/cpu_engine.py:137` iterates `merged.collision_pairs` blindly,
+  never checking `merged.collision_filter`
+
+Net result: CPU body-body collision filter is **completely broken** for
+filters configured via `merge_models()`. Bitmask isolation, separate-group
+filtering, explicit `exclude_pair` — all silently ignored on CPU.
+
+GPU doesn't have this bug because `static_data.from_merged()` builds its
+own `collision_excluded` matrix from the filter at engine construction.
+Two parallel implementations, CPU lost track of one of its inputs.
+
+Why the existing unit tests didn't catch it: they configure the filter
+via `AABBSelfCollision.build_pairs(collision_filter=f)` directly, not via
+`merge_models(collision_filter=f)`. The unit tests prove the FILTER class
+works and prove the AABBSelfCollision INTEGRATION works. They don't prove
+that what the user actually does — pass the filter into `merge_models` —
+flows through to the engine.
+
+**Fix** (`physics/merged_model.py`): apply
+`collision_filter.should_collide(gi, gj)` at pair-build time, mirroring
+the GPU `static_data` approach. Filter evaluated once at model
+construction; runtime path stays free.
+
+After fix: 15/15 pass.
+
+### B(4) — engine routing + Bug #2 (GPU silent HalfSpaceTerrain failure)
+
+`tests/integration/test_engine_routing.py`, 12 tests. Targets the dispatch
+glue: terrain type, body-body shape pairs, solver name, and CPU/GPU
+agreement on the FlatTerrain baseline.
+
+While designing the GPU HalfSpaceTerrain test, ran a quick standalone repro
+to see what GPU actually does with a non-flat terrain. Result:
+
+```
+GPU contacts: 1
+  point=[0. 0. 0.], normal=[0. 0. 1.], depth=0.0500
+```
+
+For a 30° tilted plane with normal (-0.5, 0, 0.866). GPU silently used flat
+ground at z=0. **Completely no error, no warning.** A user who passes
+HalfSpaceTerrain to GpuEngine gets wrong physics with no indication the
+feature isn't supported.
+
+Tracing: `GpuEngine.__init__` doesn't read `merged.terrain` at all.
+`static_data.contact_ground_z` is a single float — there's no provision
+for a plane normal. The GPU narrowphase uses `wp.vec3(0, 0, 1)` as the
+contact normal and `ground_z` as the height plane. Whatever terrain object
+sat on the merged model was simply ignored.
+
+**Fix** (`physics/gpu_engine.py`): hard-fail in `__init__`. If
+`merged.terrain` is not a FlatTerrain, raise NotImplementedError with a
+clear message pointing the user at CpuEngine. Silent wrong physics is the
+worst possible failure mode — better to fail loud and force the user to
+choose CPU explicitly.
+
+After fix: 12/12 pass, including `test_gpu_halfspace_terrain_raises` and
+`test_gpu_flat_terrain_works` (regression check).
+
+### Pattern: dispatch bugs in the glue layer
+
+Both bugs this session sat in the glue layer between correctly-functioning
+components:
+
+- **Bug #1**: `CollisionFilter` is correct. `CpuEngine` is correct.
+  `merge_models()` "stores" the filter. Each component is fine in isolation;
+  the integration is broken.
+- **Bug #2**: `HalfSpaceTerrain` class is correct. `CpuEngine` consumes it
+  correctly via `halfspace_convex_query`. `GpuEngine` doesn't consume it
+  at all.
+
+Neither bug was visible to:
+- Unit tests of `CollisionFilter` (the class works)
+- Unit tests of `HalfSpaceTerrain` (the class works)
+- Integration tests of CpuEngine alone (uses default everything)
+- Integration tests of GpuEngine alone (uses default everything)
+- Cross-engine tests with default config (no filter, flat terrain)
+
+The bugs are visible only to **end-to-end dispatch tests** that:
+1. Configure a non-default value (filter, terrain)
+2. Pass it through the user-facing API (`merge_models`)
+3. Consume it through the engine
+4. Verify the OBSERVED physics matches the CONFIGURED behavior
+
+The lesson generalizes: when adding a new feature that flows through
+multiple components, write at least one end-to-end test that traces the
+feature value from user input to physics output. Don't trust component-
+level tests to cover the glue.
+
+This is a sister principle to the session-22 lessons:
+- "Check existing tests before writing new ones" (lapse)
+- "Verify test code before suspecting code under test" (debugging)
+- "End-to-end dispatch tests catch glue-layer bugs" (this session)
+
+### Numbers
+
+- 4 new test files, 42 new tests total
+- B(1): 6, B(2): 9, B(3): 15, B(4): 12
+- 2 P0 bug fixes (merged_model.py, gpu_engine.py)
+- Repo total: 629 → 671 passed, 1 skipped, 0 failed
+- Full fast+gpu suite ~5 minutes
+
+### Still-open from the 8-item gap list
+
+Two items not done this session:
+- Multi-robot × multi-shape combinatorics (medium effort)
+- CRBA Cholesky numerical conditioning (large effort — requires
+  high-condition-number H matrix fixtures: thin links, large mass
+  ratios, near-singular postures)
+
+Deferred to a future session.
+
+### Stop point for tomorrow
+
+All session 23 work is committed in this session's commit. Tomorrow's
+options (pre-discussed):
+1. **(c) Geometry enrichment**: STL/OBJ loader, V-HACD/CoACD convex
+   decomposition, GPU GJK for ConvexHullShape. STL/OBJ loader is the
+   most user-impactful next step.
+2. Continue B-series with multi-robot × multi-shape and/or CRBA conditioning
+3. Engine routing follow-up: there may be more silent dispatch failures
+   in less-explored corners (e.g. solver name dispatch with unknown name,
+   HeightmapTerrain on CPU which raises NotImplementedError)
+
+User has expressed preference for going (c) next.
+
+### MEMORY.md — should this session add a memory?
+
+Considered adding a feedback memory like "write end-to-end dispatch tests
+when adding any feature that crosses module boundaries", but the session
+22 reflection already captures the spirit of "check the wiring, not just
+the components". Holding off on a new memory until I see this kind of bug
+again — three data points justify a memory; two is still pattern-matching.
+
+---
+
 ## 2026-04-08 (session 22) — Phase 2 finish B.2-B.8: Multi-shape narrowphase test hardening
 
 ### Meta-discovery: B.2-B.8 coverage already existed

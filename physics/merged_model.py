@@ -176,6 +176,10 @@ def merge_models(
                 gi = body_offset + i
                 gj = body_offset + j
                 if collision_shapes[gi] is not None and collision_shapes[gj] is not None:
+                    # Apply CollisionFilter at pair-build time (mirrors GPU
+                    # static_data.collision_excluded built from same filter).
+                    if collision_filter is not None and not collision_filter.should_collide(gi, gj):
+                        continue
                     all_collision_pairs.append((gi, gj))
 
         body_offset += n_bodies
@@ -191,6 +195,8 @@ def merge_models(
             for bi in range(slice_i.body_start, slice_i.body_start + slice_i.body_count):
                 for bj in range(slice_j.body_start, slice_j.body_start + slice_j.body_count):
                     if collision_shapes[bi] is not None and collision_shapes[bj] is not None:
+                        if collision_filter is not None and not collision_filter.should_collide(bi, bj):
+                            continue
                         all_collision_pairs.append((bi, bj))
 
     # Set gravity from first robot's tree (all should match)

@@ -172,6 +172,19 @@ class GpuEngine(PhysicsEngine):
     ) -> None:
         super().__init__(merged)
         wp.init()
+
+        # GPU narrowphase only supports flat ground (single ground_z scalar in
+        # static_data). Reject other terrain types loudly rather than silently
+        # using flat ground at z=0 — silent wrong physics is the worst outcome.
+        from physics.terrain import FlatTerrain
+
+        if merged.terrain is not None and not isinstance(merged.terrain, FlatTerrain):
+            raise NotImplementedError(
+                f"GpuEngine only supports FlatTerrain (got {type(merged.terrain).__name__}). "
+                f"Non-flat terrain (HalfSpaceTerrain, HeightmapTerrain) is CPU-only. "
+                f"Use CpuEngine for inclined planes / heightmaps until GPU support lands."
+            )
+
         self._device = device
         self._num_envs = num_envs
         self._dt = dt
