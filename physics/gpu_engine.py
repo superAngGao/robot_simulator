@@ -12,7 +12,8 @@ The full physics step runs as a sequence of GPU kernel launches:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, List
 
 import numpy as np
 import warp as wp
@@ -167,6 +168,17 @@ def _scatter_zero_2d(
     eid = env_ids[i]
     for j in range(dim1):
         dst[eid, j] = 0.0
+
+
+@dataclass
+class ContactInfo:
+    """One detected contact (read-only snapshot from GPU buffers)."""
+
+    body_i: int
+    body_j: int  # -1 = ground contact
+    depth: float
+    normal: np.ndarray  # (3,)
+    point: np.ndarray  # (3,)
 
 
 class GpuEngine(PhysicsEngine):
@@ -406,6 +418,30 @@ class GpuEngine(PhysicsEngine):
     def nc_sensor(self) -> int:
         """Number of sensor (contact) bodies."""
         return self._nc_sensor
+
+    def query_contacts(self, env_idx: int = 0) -> List[ContactInfo]:
+        """Return detected contacts for one environment (call after step).
+
+        Reads from GPU contact buffers filled by the most recent step().
+        """
+        n = int(self._contact_count.numpy()[env_idx])
+        if n == 0:
+            return []
+        bi = self._contact_bi.numpy()[env_idx, :n]
+        bj = self._contact_bj.numpy()[env_idx, :n]
+        depth = self._contact_depth.numpy()[env_idx, :n]
+        normal = self._contact_normal.numpy()[env_idx, :n]  # (n, 3)
+        point = self._contact_point.numpy()[env_idx, :n]  # (n, 3)
+        return [
+            ContactInfo(
+                body_i=int(bi[k]),
+                body_j=int(bj[k]),
+                depth=float(depth[k]),
+                normal=normal[k].copy(),
+                point=point[k].copy(),
+            )
+            for k in range(n)
+        ]
 
     def reset(self, q0: np.ndarray | None = None) -> None:
         """Reset all environments to default or given state."""

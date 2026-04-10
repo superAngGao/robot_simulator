@@ -898,6 +898,24 @@ per-contact R 让穿透 ∝ 有效质量，更适合模拟柔性接触面（solr
 **关联**：Q30（per-row R 决策本身），Q25（per-row R 在 Q25 修复中是关键），
 session 21 REFLECTIONS（详细调查脉络）。
 
+**Q37 — GpuEngine contact query API refactor** (2026-04-10, session 25)
+
+当前 `GpuEngine.query_contacts()` 是 B(5) staircase 测试期间加的轻量版接口，
+直接从 warp 缓冲区逐元素读回 CPU 构造 `ContactInfo` list。
+
+需要重构的点：
+1. **CpuEngine 对等接口** — CpuEngine 没有 `query_contacts()`，测试中用
+   `cpu._detect_contacts(cache)` + filter `body_j >= 0`，不一致。
+2. **批量读取性能** — 当前逐元素构造 Python list，适合测试但不适合 RL env
+   需要高频调用的场景。应改为返回结构化 NumPy arrays。
+3. **PhysicsEngine ABC** — `query_contacts()` 应作为抽象方法加入 `PhysicsEngine`
+   基类，CPU/GPU 共享接口签名。
+4. **multi-env 批量查询** — 当前只支持 `env_idx` 单 env 查询，RL 场景需要
+   一次读取所有 env 的 contact 数据。
+
+**触发条件**：B(5) staircase 6 步全部完成后立即执行。
+**优先级**：P1（后续测试和 RL env 都依赖这个接口）。
+
 ---
 
 ## Performance / Optimization
@@ -1068,3 +1086,20 @@ Tests added across Phase 2a/2b/2c + session 2 补全：
 - `tests/test_integrator.py` — SemiImplicitEuler + RK4（11 tests）
 Total: 68 tests，全部通过。
 → Moved to REFLECTIONS.md.
+
+**Q38 — Test suite execution time blocking development velocity** (2026-04-10, session 25)
+
+当前 `python -m pytest tests/ -m "not slow"` 运行 723 tests 需要 ~5 分钟。
+每次 commit 前的 HARD GATE 都要等这么久，严重拖慢开发节奏。B(5) staircase
+6 步 = 6 次 commit = ~30 分钟纯等待时间。
+
+需要调查的方向：
+1. **GPU test warm-up 开销** — 每个 GPU test 文件可能独立初始化 warp/CUDA context，
+   考虑 session-scoped fixture 共享 context。
+2. **Test 分层** — 区分 unit（纯 CPU, <1s）/ integration（CPU+GPU, <10s）/ validation
+   （multi-step sim, >10s），commit gate 只跑 unit + 当前改动相关的 integration。
+3. **并行执行** — `pytest-xdist` 多进程（但 GPU 资源竞争需要处理）。
+4. **增量测试** — `pytest --lf`（last failed）+ `pytest-testmon`（只跑受影响的测试）。
+
+**触发条件**：Phase 3 开始前必须解决。
+**优先级**：P1（直接影响每日开发效率）。
