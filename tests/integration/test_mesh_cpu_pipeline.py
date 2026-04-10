@@ -347,7 +347,8 @@ def _build_go2_leg(name: str):
 
     tree.finalize()
 
-    # Collision geometry: box hulls approximating cylindrical links
+    # Collision geometry: box hulls approximating cylindrical links.
+    # origin_xyz shifts the shape center to the middle of each link segment.
     geometries = [
         BodyCollisionGeometry(
             hip_idx,
@@ -355,11 +356,21 @@ def _build_go2_leg(name: str):
         ),
         BodyCollisionGeometry(
             thigh_idx,
-            [ShapeInstance(shape=_box_hull(_THIGH_RADIUS, _THIGH_RADIUS, _THIGH_LENGTH / 2))],
+            [
+                ShapeInstance(
+                    shape=_box_hull(_THIGH_RADIUS, _THIGH_RADIUS, _THIGH_LENGTH / 2),
+                    origin_xyz=np.array([0.0, 0.0, -_THIGH_LENGTH / 2]),
+                )
+            ],
         ),
         BodyCollisionGeometry(
             calf_idx,
-            [ShapeInstance(shape=_box_hull(_CALF_RADIUS, _CALF_RADIUS, _CALF_LENGTH / 2))],
+            [
+                ShapeInstance(
+                    shape=_box_hull(_CALF_RADIUS, _CALF_RADIUS, _CALF_LENGTH / 2),
+                    origin_xyz=np.array([0.0, 0.0, -_CALF_LENGTH / 2]),
+                )
+            ],
         ),
     ]
 
