@@ -243,13 +243,10 @@ class TestStep1MultiBodyCrossRobot:
         tau = np.zeros(merged.nv)
         dt = 2e-4
 
-        # --- CPU contact count ---
+        # --- CPU contact count (via public query_contacts API) ---
         cpu = CpuEngine(merged, dt=dt)
-        from physics.dynamics_cache import DynamicsCache
-
-        cache = DynamicsCache.from_tree(merged.tree, q, qdot, dt)
-        cpu_contacts = cpu._detect_contacts(cache)
-        cpu_bb = [c for c in cpu_contacts if c.body_j >= 0]
+        cpu.step(q.copy(), qdot.copy(), tau, dt=dt)
+        cpu_bb = [c for c in cpu.query_contacts() if c.body_j >= 0]
         n_cpu = len(cpu_bb)
 
         # --- GPU contact count (via public query_contacts API) ---

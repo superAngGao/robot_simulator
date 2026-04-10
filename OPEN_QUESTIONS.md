@@ -341,17 +341,13 @@ GPU 要支持 HalfSpaceTerrain，需要：
 
 **触发条件**：用户需要 GPU 上跑斜面 RL 任务时。当前 CpuEngine 已支持。
 
-**Q36 — Multi-robot × multi-shape combinatorics test coverage** (2026-04-08, session 23)
+**Q36 — Multi-robot × multi-shape combinatorics test coverage** ✅ RESOLVED (session 25)
 
-剩余的 session 22 八项盲区清单未做的两项之一。已有 multi-robot 测试和 multi-shape
-测试，但**两者交叉**（多个 multi-shape robot 互撞）没有 fixture。
-
-可能盲区：
-- collision_pairs 跨 robot × 跨 shape 组合的排列
-- shape_adr/shape_num 的 cross-robot 索引一致性
-- contact buffer slot 分配在跨 robot 多 shape 场景下不溢出
-
-工作量：中。建议下次 test hardening pass 顺手做。
+Done as B(5) staircase: 36 tests across 6 files covering 8 dimensions
+(multi-body, multi-shape, 3 robots, custom filter, mixed shapes, ground,
+CPU/GPU, multi-env). Added `GpuEngine.query_contacts()` API. No P0 bugs
+found. Discovered CPU body-body uses body-level approximation (not per-shape).
+→ See commits a7ba463–f8d2dc6, REFLECTIONS.md session 25.
 
 **Q37 — CRBA Cholesky numerical conditioning test coverage** ✅ RESOLVED (2026-04-09 session 24)
 
@@ -898,23 +894,16 @@ per-contact R 让穿透 ∝ 有效质量，更适合模拟柔性接触面（solr
 **关联**：Q30（per-row R 决策本身），Q25（per-row R 在 Q25 修复中是关键），
 session 21 REFLECTIONS（详细调查脉络）。
 
-**Q37 — GpuEngine contact query API refactor** (2026-04-10, session 25)
+**Q39 — Contact query API refactor** ✅ RESOLVED (2026-04-10, session 25)
 
-当前 `GpuEngine.query_contacts()` 是 B(5) staircase 测试期间加的轻量版接口，
-直接从 warp 缓冲区逐元素读回 CPU 构造 `ContactInfo` list。
+Done. `ContactInfo` moved to `engine.py` (shared). `query_contacts()` added as
+abstract method on `PhysicsEngine` ABC, implemented by both `CpuEngine` (converts
+from internal `ContactConstraint`) and `GpuEngine` (reads warp buffers).
+B(5) tests migrated from `cpu._detect_contacts()` to public `cpu.query_contacts()`.
 
-需要重构的点：
-1. **CpuEngine 对等接口** — CpuEngine 没有 `query_contacts()`，测试中用
-   `cpu._detect_contacts(cache)` + filter `body_j >= 0`，不一致。
-2. **批量读取性能** — 当前逐元素构造 Python list，适合测试但不适合 RL env
-   需要高频调用的场景。应改为返回结构化 NumPy arrays。
-3. **PhysicsEngine ABC** — `query_contacts()` 应作为抽象方法加入 `PhysicsEngine`
-   基类，CPU/GPU 共享接口签名。
-4. **multi-env 批量查询** — 当前只支持 `env_idx` 单 env 查询，RL 场景需要
-   一次读取所有 env 的 contact 数据。
-
-**触发条件**：B(5) staircase 6 步全部完成后立即执行。
-**优先级**：P1（后续测试和 RL env 都依赖这个接口）。
+Remaining items deferred to RL env phase:
+- Batch NumPy return (structured arrays instead of Python list)
+- Multi-env batch query (all envs at once)
 
 ---
 
@@ -1087,7 +1076,7 @@ Tests added across Phase 2a/2b/2c + session 2 补全：
 Total: 68 tests，全部通过。
 → Moved to REFLECTIONS.md.
 
-**Q38 — Test suite execution time blocking development velocity** (2026-04-10, session 25)
+**Q40 — Test suite execution time blocking development velocity** (2026-04-10, session 25)
 
 当前 `python -m pytest tests/ -m "not slow"` 运行 723 tests 需要 ~5 分钟。
 每次 commit 前的 HARD GATE 都要等这么久，严重拖慢开发节奏。B(5) staircase

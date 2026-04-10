@@ -271,11 +271,9 @@ class TestStep6CpuGpuMultiEnv:
 
         # CPU single-env
         cpu = CpuEngine(merged, dt=dt)
-        from physics.dynamics_cache import DynamicsCache
-
-        cache = DynamicsCache.from_tree(merged.tree, q_env0, qdot, dt)
-        cpu_contacts = cpu._detect_contacts(cache)
-        cpu_ground = [c for c in cpu_contacts if c.body_j < 0]
+        tau_cpu = np.zeros(merged.nv)
+        cpu.step(q_env0.copy(), qdot.copy(), tau_cpu, dt=dt)
+        cpu_ground = [c for c in cpu.query_contacts() if c.body_j < 0]
 
         # GPU env 0
         tau_2d = np.zeros((NUM_ENVS, merged.nv))

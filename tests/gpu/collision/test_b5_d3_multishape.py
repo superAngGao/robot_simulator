@@ -230,11 +230,8 @@ class TestStep2MultiShapeCrossRobot:
 
         # CPU — body-level approximation: 1 contact per overlapping body-pair
         cpu = CpuEngine(merged, dt=dt)
-        from physics.dynamics_cache import DynamicsCache
-
-        cache = DynamicsCache.from_tree(merged.tree, q, qdot, dt)
-        cpu_contacts = cpu._detect_contacts(cache)
-        cpu_bb = [c for c in cpu_contacts if c.body_j >= 0]
+        cpu.step(q.copy(), qdot.copy(), tau, dt=dt)
+        cpu_bb = [c for c in cpu.query_contacts() if c.body_j >= 0]
         n_cpu_body_pairs = 3  # body-level: A0↔B0, A1↔B1, A2↔B2
         assert len(cpu_bb) == n_cpu_body_pairs, (
             f"CPU body-level contacts: expected {n_cpu_body_pairs}, got {len(cpu_bb)}"

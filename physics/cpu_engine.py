@@ -14,7 +14,7 @@ from numpy.typing import NDArray
 
 from .constraint_solvers import wrap_solver
 from .dynamics_cache import DynamicsCache
-from .engine import PhysicsEngine, StepOutput
+from .engine import ContactInfo, PhysicsEngine, StepOutput
 from .force_source import PassiveForceSource
 from .gjk_epa import ground_contact_query, halfspace_convex_query
 from .solvers.pgs_solver import ContactConstraint
@@ -53,6 +53,7 @@ class CpuEngine(PhysicsEngine):
             constraint_solver=wrapped,
         )
         self._dt = dt
+        self._last_contacts: List[ContactConstraint] = []
 
     def step(
         self,
@@ -69,6 +70,7 @@ class CpuEngine(PhysicsEngine):
 
         # Collision detection on merged body list
         contacts = self._detect_contacts(cache)
+        self._last_contacts = contacts
 
         # Run pipeline (smooth forces → constraint → integrate)
         self._pipeline.dt = dt
@@ -164,3 +166,20 @@ class CpuEngine(PhysicsEngine):
                 )
 
         return contacts
+
+    def query_contacts(self, env_idx: int = 0) -> List[ContactInfo]:
+        """Return contacts from the most recent step() as ContactInfo list.
+
+        Args:
+            env_idx: Ignored (CpuEngine is single-env).
+        """
+        return [
+            ContactInfo(
+                body_i=c.body_i,
+                body_j=c.body_j,
+                depth=float(c.depth),
+                normal=np.asarray(c.normal, dtype=np.float64).copy(),
+                point=np.asarray(c.point, dtype=np.float64).copy(),
+            )
+            for c in self._last_contacts
+        ]

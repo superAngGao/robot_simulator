@@ -15,13 +15,24 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from numpy.typing import NDArray
 
 if TYPE_CHECKING:
     from .dynamics_cache import ForceState
     from .merged_model import MergedModel
+
+
+@dataclass
+class ContactInfo:
+    """One detected contact (read-only snapshot, shared by CPU and GPU engines)."""
+
+    body_i: int
+    body_j: int  # -1 = ground contact
+    depth: float
+    normal: NDArray  # (3,)
+    point: NDArray  # (3,)
 
 
 @dataclass
@@ -72,4 +83,15 @@ class PhysicsEngine(ABC):
 
         Returns:
             StepOutput with new state and diagnostics.
+        """
+
+    @abstractmethod
+    def query_contacts(self, env_idx: int = 0) -> List[ContactInfo]:
+        """Return detected contacts from the most recent step().
+
+        Args:
+            env_idx : Environment index (GPU multi-env). Ignored by CpuEngine.
+
+        Returns:
+            List of ContactInfo snapshots. body_j == -1 means ground contact.
         """

@@ -12,7 +12,6 @@ The full physics step runs as a sequence of GPU kernel launches:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, List
 
 import numpy as np
@@ -39,7 +38,7 @@ from .backends.warp.solver_kernels import (
 )
 from .backends.warp.solver_kernels_v2 import _build_tangent_frame
 from .backends.warp.solver_scratch import SolverScratch
-from .engine import PhysicsEngine, StepOutput
+from .engine import ContactInfo, PhysicsEngine, StepOutput
 
 if TYPE_CHECKING:
     from .merged_model import MergedModel
@@ -168,17 +167,6 @@ def _scatter_zero_2d(
     eid = env_ids[i]
     for j in range(dim1):
         dst[eid, j] = 0.0
-
-
-@dataclass
-class ContactInfo:
-    """One detected contact (read-only snapshot from GPU buffers)."""
-
-    body_i: int
-    body_j: int  # -1 = ground contact
-    depth: float
-    normal: np.ndarray  # (3,)
-    point: np.ndarray  # (3,)
 
 
 class GpuEngine(PhysicsEngine):
