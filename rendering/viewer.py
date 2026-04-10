@@ -21,15 +21,18 @@ Usage
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  (registers 3D projection)
 
-from ..physics.robot_tree import RobotTree
-from ..physics.spatial import SpatialTransform
+from physics.robot_tree import RobotTree
+from physics.spatial import SpatialTransform
+
+if TYPE_CHECKING:
+    from .render_scene import RenderScene
 
 # ---------------------------------------------------------------------------
 # Colour palette
@@ -90,25 +93,31 @@ class RobotViewer:
 
     def render_pose(
         self,
-        q: np.ndarray,
+        q: Optional[np.ndarray] = None,
         title: str = "Robot pose",
         show: bool = True,
         save_path: Optional[str] = None,
+        render_scene: Optional["RenderScene"] = None,
     ) -> plt.Figure:
         """Render a single robot pose.
 
         Args:
-            q         : Generalised positions.
-            title     : Window / figure title.
-            show      : If True, call plt.show().
-            save_path : If given, save figure to this path.
+            q            : Generalised positions (not needed if render_scene given).
+            title        : Window / figure title.
+            show         : If True, call plt.show().
+            save_path    : If given, save figure to this path.
+            render_scene : If given, draw collision shapes + contacts
+                           instead of body-sphere skeleton.
 
         Returns:
             The matplotlib Figure object.
         """
         fig = plt.figure(figsize=(8, 7))
         ax = fig.add_subplot(111, projection="3d")
-        self._draw_frame(ax, q)
+        if render_scene is not None:
+            self._draw_scene(ax, render_scene)
+        else:
+            self._draw_frame(ax, q)
         ax.set_title(title)
         self._configure_axes(ax)
 
@@ -121,21 +130,24 @@ class RobotViewer:
     def animate(
         self,
         times: np.ndarray,
-        qs: np.ndarray,
+        qs: Optional[np.ndarray] = None,
         interval: int = 20,
         title: str = "Simulation replay",
         show: bool = True,
         save_path: Optional[str] = None,
+        render_scenes: Optional[list] = None,
     ) -> animation.FuncAnimation:
         """Animate a recorded trajectory.
 
         Args:
-            times     : (N,) time stamps [s].
-            qs        : (N, nq) generalised positions.
-            interval  : Delay between frames in milliseconds.
-            title     : Figure title.
-            show      : If True, call plt.show().
-            save_path : If given, save to .gif or .mp4 (requires ffmpeg/pillow).
+            times          : (N,) time stamps [s].
+            qs             : (N, nq) generalised positions (not needed if
+                             render_scenes is given).
+            interval       : Delay between frames in milliseconds.
+            title          : Figure title.
+            show           : If True, call plt.show().
+            save_path      : If given, save to .gif or .mp4 (requires ffmpeg/pillow).
+            render_scenes  : List of RenderScene objects, one per frame.
 
         Returns:
             The FuncAnimation object.
@@ -154,15 +166,18 @@ class RobotViewer:
             artists = []
             ax.set_title(title)
 
-            q = qs[frame_idx]
-            artists = self._draw_frame(ax, q)
+            if render_scenes is not None:
+                artists = self._draw_scene(ax, render_scenes[frame_idx])
+            else:
+                artists = self._draw_frame(ax, qs[frame_idx])
             time_text.set_text(f"t = {times[frame_idx]:.3f} s")
             return artists + [time_text]
 
+        n_frames = len(render_scenes) if render_scenes is not None else len(qs)
         anim = animation.FuncAnimation(
             fig,
             update,
-            frames=len(times),
+            frames=n_frames,
             interval=interval,
             blit=False,
         )
@@ -258,6 +273,43 @@ class RobotViewer:
                 zorder=3,
             )
             artists.append(sc)
+        return artists
+
+    # ------------------------------------------------------------------
+    # RenderScene drawing
+    # ------------------------------------------------------------------
+
+    def _draw_scene(self, ax: "Axes3D", scene: "RenderScene") -> list:
+        """Draw a complete RenderScene with collision shapes and contacts."""
+        from .shape_artists import SHAPE_DRAWERS, draw_contacts, draw_terrain
+
+        artists = []
+
+        # Terrain
+        artists += draw_terrain(ax, scene.terrain, self.floor_size)
+
+        # Skeleton links
+        for p_pos, c_pos in scene.skeleton_links:
+            (line,) = ax.plot(
+                [p_pos[0], c_pos[0]],
+                [p_pos[1], c_pos[1]],
+                [p_pos[2], c_pos[2]],
+                color=PALETTE["joint"],
+                linewidth=1.5,
+                alpha=0.5,
+                zorder=1,
+            )
+            artists.append(line)
+
+        # Collision shapes
+        for ps in scene.shapes:
+            drawer = SHAPE_DRAWERS.get(ps.shape_type)
+            if drawer:
+                artists += drawer(ax, ps.position, ps.rotation, **ps.params)
+
+        # Contacts
+        artists += draw_contacts(ax, scene.contacts)
+
         return artists
 
     # ------------------------------------------------------------------

@@ -65,6 +65,10 @@ class BoxShape(CollisionShape):
     def __init__(self, size: tuple[float, float, float]) -> None:
         self._size = np.asarray(size, dtype=np.float64)
 
+    @property
+    def size(self) -> NDArray[np.float64]:
+        return self._size
+
     def half_extents_approx(self) -> NDArray[np.float64]:
         return self._size / 2.0
 
@@ -118,6 +122,14 @@ class CylinderShape(CollisionShape):
     def __init__(self, radius: float, length: float) -> None:
         self._radius = float(radius)
         self._length = float(length)
+
+    @property
+    def radius(self) -> float:
+        return self._radius
+
+    @property
+    def length(self) -> float:
+        return self._length
 
     def half_extents_approx(self) -> NDArray[np.float64]:
         r = self._radius
