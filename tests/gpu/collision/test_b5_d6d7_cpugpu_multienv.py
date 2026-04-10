@@ -254,11 +254,14 @@ class TestStep6CpuGpuMultiEnv:
         assert count_1 == 0, "Env 1 should have no contacts"
         assert count_0 != count_1, "Env counts should differ (independence check)"
 
-    def test_cpu_gpu_contact_count_agreement(self):
-        """CPU and GPU env 0 must agree on contact count (body-body only).
+    def test_cpu_gpu_sorted_ground_contact_match(self):
+        """CPU vs GPU ground contacts must match: same body_i set, close depth/normal.
 
-        Note: CPU uses body-level sphere approximation for body-body (Step 2
-        finding), so we compare ground contact count which both handle per-shape.
+        Both CPU and GPU do per-shape ground contact detection, so the contact
+        lists should agree at the shape level. Body-body is excluded from this
+        comparison because CPU uses body-level approximation (Step 2 finding).
+
+        Sorted by (body_i, depth) to ensure deterministic comparison.
         """
         merged = _build_merged()
         q_2env = _make_q_2env(merged)
@@ -281,13 +284,52 @@ class TestStep6CpuGpuMultiEnv:
         gpu.step(q_2env, qdot_2env, tau_2d, dt=dt)
         gpu_ground = [c for c in gpu.query_contacts(env_idx=0) if c.body_j == -1]
 
-        # Ground contacts should match (both do per-shape ground detection)
-        assert len(cpu_ground) > 0, "CPU should detect ground contacts"
-        assert len(gpu_ground) > 0, "GPU should detect ground contacts"
-        # Allow small difference due to float32 vs float64 threshold
-        assert abs(len(cpu_ground) - len(gpu_ground)) <= 1, (
-            f"CPU/GPU ground contact count mismatch: CPU={len(cpu_ground)}, GPU={len(gpu_ground)}"
+        # 1. Count must match exactly
+        assert len(cpu_ground) == len(gpu_ground), (
+            f"Ground contact count mismatch: CPU={len(cpu_ground)}, GPU={len(gpu_ground)}"
         )
+        assert len(cpu_ground) > 0, "Both should detect ground contacts"
+
+        # 2. Sort by (body_i, depth) for deterministic comparison
+        cpu_sorted = sorted(cpu_ground, key=lambda c: (c.body_i, c.depth))
+        gpu_sorted = sorted(gpu_ground, key=lambda c: (c.body_i, c.depth))
+
+        # 3. body_i sequence must match exactly
+        cpu_bodies = [c.body_i for c in cpu_sorted]
+        gpu_bodies = [c.body_i for c in gpu_sorted]
+        assert cpu_bodies == gpu_bodies, (
+            f"Ground contact body_i mismatch:\n  CPU: {cpu_bodies}\n  GPU: {gpu_bodies}"
+        )
+
+        # 4. Normal must be [0,0,1] for flat terrain (both backends)
+        for i, (cc, gc) in enumerate(zip(cpu_sorted, gpu_sorted)):
+            np.testing.assert_allclose(
+                cc.normal,
+                [0, 0, 1],
+                atol=1e-6,
+                err_msg=f"CPU contact {i} normal wrong",
+            )
+            np.testing.assert_allclose(
+                gc.normal,
+                [0, 0, 1],
+                atol=1e-3,  # float32
+                err_msg=f"GPU contact {i} normal wrong",
+            )
+
+        # 5. Depth must agree (float32 vs float64 tolerance)
+        cpu_depths = np.array([c.depth for c in cpu_sorted])
+        gpu_depths = np.array([c.depth for c in gpu_sorted])
+        np.testing.assert_allclose(
+            gpu_depths,
+            cpu_depths,
+            atol=2e-3,
+            rtol=0.1,
+            err_msg="Ground contact depth mismatch CPU vs GPU",
+        )
+        # Note: contact point XY is NOT compared because CPU (GJK/EPA) and
+        # GPU (analytical) use different algorithms for box/capsule ground
+        # contact points. The physically meaningful quantities are body_i,
+        # normal, and depth — those are compared above.
 
     def test_multienv_simulation_stable(self):
         """50 steps with 2 envs must stay finite (no NaN from cross-talk)."""

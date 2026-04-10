@@ -271,3 +271,48 @@ class TestStep2MultiShapeCrossRobot:
         assert dict(pair_counts) == expected, (
             f"Contact body-pair distribution mismatch.\n  Expected: {expected}\n  Got: {dict(pair_counts)}"
         )
+
+    def test_multishape_depth_and_normal(self):
+        """Hand-computed depth/normal for multi-shape sphere-sphere contacts.
+
+        Geometry (q=0):
+            A bodies at (0, 0, 0.5), (0, 0.35, 0.5), (0, 0.70, 0.5)
+            B bodies at (0.12, 0, 0.5), (0.12, 0.35, 0.5), (0.12, 0.70, 0.5)
+            Each body: 2 spheres r=0.08, offset ±0.08 in Z
+            X separation = 0.12
+
+        Same-level shape pairs (top↔top, bot↔bot):
+            dist = 0.12 (pure X separation, same Z)
+            depth = 2*0.08 - 0.12 = 0.04
+            normal = (p_Ai - p_Bi) / dist = (-1, 0, 0)
+
+        Contact points (on surface of B shape toward A):
+            top: p_Bj_top + normal * r = (0.12, y, 0.58) + (-0.08, 0, 0) = (0.04, y, 0.58)
+            bot: p_Bj_bot + normal * r = (0.12, y, 0.42) + (-0.08, 0, 0) = (0.04, y, 0.42)
+        """
+        merged = _build_merged()
+        q, qdot = _init_state(merged)
+        tau = np.zeros(merged.nv)
+        dt = 2e-4
+
+        gpu = GpuEngine(merged, num_envs=1, dt=dt)
+        gpu.step(q.copy(), qdot.copy(), tau, dt=dt)
+        gpu_bb = [c for c in gpu.query_contacts(env_idx=0) if c.body_j >= 0]
+        gpu_bb.sort(key=lambda c: (c.body_i, -c.point[2]))  # sort by body, Z desc
+
+        # Expected: 6 contacts (3 body-pairs × 2 same-level)
+        y_vals = [0.0, 0.35, 0.70]
+        expected = []
+        for k, (bi, bj) in enumerate([(0, 3), (1, 4), (2, 5)]):
+            y = y_vals[k]
+            expected.append((bi, bj, 0.04, [-1, 0, 0], [0.04, y, 0.58]))  # top
+            expected.append((bi, bj, 0.04, [-1, 0, 0], [0.04, y, 0.42]))  # bot
+
+        assert len(gpu_bb) == len(expected), f"Expected {len(expected)} contacts"
+        for i, (c, (bi, bj, depth, normal, point)) in enumerate(zip(gpu_bb, expected)):
+            assert c.body_i == bi and c.body_j == bj, (
+                f"Contact {i}: ({c.body_i},{c.body_j}), expected ({bi},{bj})"
+            )
+            np.testing.assert_allclose(c.depth, depth, atol=1e-4, err_msg=f"Contact {i} depth")
+            np.testing.assert_allclose(c.normal, normal, atol=1e-4, err_msg=f"Contact {i} normal")
+            np.testing.assert_allclose(c.point, point, atol=1e-3, err_msg=f"Contact {i} point")

@@ -265,3 +265,59 @@ class TestStep1MultiBodyCrossRobot:
         assert gpu_bb_count == N_ACTUAL_CONTACTS, (
             f"GPU body-body contacts: expected {N_ACTUAL_CONTACTS}, got {gpu_bb_count}"
         )
+
+    def test_sphere_sphere_depth_and_normal(self):
+        """Hand-computed depth/normal/point for sphere-sphere contacts.
+
+        Geometry (q=0, all joints straight):
+            A bodies at (0, 0, 0.5), (0.3, 0, 0.5), (0.6, 0, 0.5)
+            B bodies at (0, 0.15, 0.5), (0.3, 0.15, 0.5), (0.6, 0.15, 0.5)
+            r = 0.1 each
+
+        For each same-X pair (Ai, Bi):
+            dist = 0.15
+            depth = 2r - dist = 0.2 - 0.15 = 0.05
+            normal = (p_Ai - p_Bi) / dist = (0, -1, 0)
+            point = p_Bi + normal * r = (x, 0.15 - 0.1, 0.5) = (x, 0.05, 0.5)
+        """
+        merged = _build_merged()
+        q, qdot = _init_state(merged)
+        tau = np.zeros(merged.nv)
+        dt = 2e-4
+
+        gpu = GpuEngine(merged, num_envs=1, dt=dt)
+        gpu.step(q.copy(), qdot.copy(), tau, dt=dt)
+        gpu_bb = [c for c in gpu.query_contacts(env_idx=0) if c.body_j >= 0]
+
+        # Sort by body_i for deterministic order
+        gpu_bb.sort(key=lambda c: c.body_i)
+
+        expected = [
+            # (body_i, body_j, depth, normal, point)
+            (0, 3, 0.05, [0, -1, 0], [0.0, 0.05, 0.5]),
+            (1, 4, 0.05, [0, -1, 0], [0.3, 0.05, 0.5]),
+            (2, 5, 0.05, [0, -1, 0], [0.6, 0.05, 0.5]),
+        ]
+
+        assert len(gpu_bb) == len(expected), f"Expected {len(expected)} contacts"
+        for i, (c, (bi, bj, depth, normal, point)) in enumerate(zip(gpu_bb, expected)):
+            assert c.body_i == bi, f"Contact {i}: body_i={c.body_i}, expected {bi}"
+            assert c.body_j == bj, f"Contact {i}: body_j={c.body_j}, expected {bj}"
+            np.testing.assert_allclose(
+                c.depth,
+                depth,
+                atol=1e-4,
+                err_msg=f"Contact {i} depth",
+            )
+            np.testing.assert_allclose(
+                c.normal,
+                normal,
+                atol=1e-4,
+                err_msg=f"Contact {i} normal",
+            )
+            np.testing.assert_allclose(
+                c.point,
+                point,
+                atol=1e-3,
+                err_msg=f"Contact {i} point",
+            )

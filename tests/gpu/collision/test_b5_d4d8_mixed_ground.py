@@ -242,8 +242,25 @@ class TestStep5MixedShapesGround:
             f"Expected all 3 shape types, got {shape_types}"
         )
 
-    def test_ground_and_body_contacts_coexist(self):
-        """Both ground (bj=-1) and body-body (bj>=0) contacts must be present."""
+    def test_ground_and_body_contact_counts(self):
+        """Hand-computed exact contact counts for mixed-shape fixture.
+
+        Ground contacts (Z_A=Z_B=0.05, ground z=0, shape offset ±0.04):
+            A link0: bottom sphere (z=0.01, r=0.05) → depth=0.04.        1 ground
+            A link1: bottom box (z=0.01, hz=0.04) → depth=0.03.          1 ground
+            A link2: bottom sphere (z=0.01, r=0.05) → depth=0.04.        1 ground
+            B link0: bottom sphere (z=0.01, r=0.05) → depth=0.04.        1 ground
+            B link1: bottom capsule (z=0.01, r=0.04, hl=0.03) → depth=0.06. 1 ground
+            B link2: bottom sphere (z=0.01, r=0.05) → depth=0.04.        1 ground
+            C: Z=0.50 → 0 ground.
+            Total: 6 ground contacts.
+
+        Body-body contacts (A↔B, Y_sep=0.08):
+            A0↔B0: sphere↔box + sphere↔sphere = 2 contacts.
+            A1↔B1: sphere↔capsule + box↔capsule + sphere↔capsule = 3 contacts.
+            A2↔B2: capsule↔sphere + sphere↔sphere = 2 contacts.
+            Total: 7 body-body contacts.
+        """
         merged = _build_merged()
         q, qdot = _init_state(merged)
         tau = np.zeros(merged.nv)
@@ -256,12 +273,11 @@ class TestStep5MixedShapesGround:
         ground = [c for c in contacts if c.body_j == -1]
         body_body = [c for c in contacts if c.body_j >= 0]
 
-        assert len(ground) > 0, "No ground contacts detected (Robot A should touch ground)"
-        assert len(body_body) > 0, "No body-body contacts detected (A↔B should overlap)"
+        assert len(ground) == 6, f"Ground contacts: expected 6, got {len(ground)}"
+        assert len(body_body) == 7, f"Body-body contacts: expected 7, got {len(body_body)}"
 
-    def test_ground_contacts_are_low_robots(self):
-        """Ground contacts should only come from Robot A and B bodies (low Z).
-        Robot C (Z=0.50) should have no ground contacts."""
+    def test_ground_contact_per_body_distribution(self):
+        """Each of A[0-2] and B[0-2] has exactly 1 ground contact. C has 0."""
         merged = _build_merged()
         q, qdot = _init_state(merged)
         tau = np.zeros(merged.nv)
@@ -271,11 +287,17 @@ class TestStep5MixedShapesGround:
         gpu.step(q.copy(), qdot.copy(), tau, dt=dt)
         ground = [c for c in gpu.query_contacts(env_idx=0) if c.body_j == -1]
 
-        ab_bodies = set(range(0, 6))  # A=[0,1,2], B=[3,4,5]
-        c_bodies = set(range(6, 9))
-        for c in ground:
-            assert c.body_i not in c_bodies, f"Ground contact on Robot C body {c.body_i}, expected none"
-            assert c.body_i in ab_bodies, f"Ground contact on unexpected body {c.body_i}"
+        from collections import Counter
+
+        body_counts = Counter(c.body_i for c in ground)
+        # Each A and B body has exactly 1 shape touching ground
+        for bi in range(6):  # A=[0,1,2], B=[3,4,5]
+            assert body_counts[bi] == 1, f"Body {bi}: expected 1 ground contact, got {body_counts[bi]}"
+        # C bodies have 0 ground contacts
+        for bi in range(6, 9):
+            assert body_counts[bi] == 0, (
+                f"Body {bi} (Robot C): expected 0 ground contacts, got {body_counts[bi]}"
+            )
 
     def test_body_body_contacts_only_ab(self):
         """Body-body contacts should only come from A↔B (Y_sep=0.08 < 2r).
