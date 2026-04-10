@@ -18,7 +18,7 @@ from physics.geometry import (
     ConvexHullShape,
     ShapeInstance,
 )
-from physics.joint import FreeJoint
+from physics.joint import FreeJoint, RevoluteJoint
 from physics.merged_model import merge_models
 from physics.robot_tree import Body, RobotTreeNumpy
 from physics.spatial import SpatialInertia, SpatialTransform
@@ -277,3 +277,212 @@ class TestUrdfMeshToCpuEngine:
         contacts = engine.query_contacts()
         assert len(contacts) >= 1
         assert contacts[0].depth > 0
+
+
+# ---------------------------------------------------------------------------
+# Two Go2-style legs mid-air collision
+# ---------------------------------------------------------------------------
+
+# Approximate Go2 leg link dimensions
+_THIGH_LENGTH = 0.20
+_CALF_LENGTH = 0.20
+_THIGH_RADIUS = 0.02
+_CALF_RADIUS = 0.015
+
+
+def _box_hull(hx: float, hy: float, hz: float) -> ConvexHullShape:
+    """Create a box-shaped ConvexHullShape."""
+    signs = np.array(
+        [[-1, -1, -1], [-1, -1, 1], [-1, 1, -1], [-1, 1, 1], [1, -1, -1], [1, -1, 1], [1, 1, -1], [1, 1, 1]],
+        dtype=np.float64,
+    )
+    return ConvexHullShape(signs * np.array([hx, hy, hz]))
+
+
+def _build_go2_leg(name: str):
+    """Build a Go2-style single leg: floating hip + thigh + calf.
+
+    All links use ConvexHullShape collision geometry (box hulls
+    approximating the link shape).
+    """
+    from robot.model import RobotModel
+
+    tree = RobotTreeNumpy(gravity=9.81)
+
+    # Hip body (floating base)
+    hip_idx = tree.add_body(
+        Body(
+            name=f"{name}_hip",
+            index=0,
+            joint=FreeJoint(f"{name}_root"),
+            inertia=SpatialInertia(0.5, np.eye(3) * 0.001, np.zeros(3)),
+            X_tree=SpatialTransform.identity(),
+            parent=-1,
+        )
+    )
+
+    # Thigh body (revolute Y-axis, hangs from hip)
+    thigh_idx = tree.add_body(
+        Body(
+            name=f"{name}_thigh",
+            index=0,
+            joint=RevoluteJoint(f"{name}_thigh_joint", axis=np.array([0.0, 1.0, 0.0])),
+            inertia=SpatialInertia.from_cylinder(0.8, _THIGH_RADIUS, _THIGH_LENGTH),
+            X_tree=SpatialTransform.identity(),
+            parent=hip_idx,
+        )
+    )
+
+    # Calf body (revolute Y-axis, hangs from thigh)
+    calf_idx = tree.add_body(
+        Body(
+            name=f"{name}_calf",
+            index=0,
+            joint=RevoluteJoint(f"{name}_calf_joint", axis=np.array([0.0, 1.0, 0.0])),
+            inertia=SpatialInertia.from_cylinder(0.4, _CALF_RADIUS, _CALF_LENGTH),
+            X_tree=SpatialTransform(np.eye(3), np.array([0.0, 0.0, -_THIGH_LENGTH])),
+            parent=thigh_idx,
+        )
+    )
+
+    tree.finalize()
+
+    # Collision geometry: box hulls approximating cylindrical links
+    geometries = [
+        BodyCollisionGeometry(
+            hip_idx,
+            [ShapeInstance(shape=_box_hull(0.04, 0.03, 0.03))],
+        ),
+        BodyCollisionGeometry(
+            thigh_idx,
+            [ShapeInstance(shape=_box_hull(_THIGH_RADIUS, _THIGH_RADIUS, _THIGH_LENGTH / 2))],
+        ),
+        BodyCollisionGeometry(
+            calf_idx,
+            [ShapeInstance(shape=_box_hull(_CALF_RADIUS, _CALF_RADIUS, _CALF_LENGTH / 2))],
+        ),
+    ]
+
+    return RobotModel(
+        tree=tree,
+        actuated_joint_names=[f"{name}_thigh_joint", f"{name}_calf_joint"],
+        contact_body_names=[f"{name}_hip", f"{name}_thigh", f"{name}_calf"],
+        geometries=geometries,
+    )
+
+
+class TestTwoLegMidAirCollision:
+    """Two Go2-style legs launched at each other in the air.
+
+    Each leg is a 3-link chain (hip + thigh + calf) with ConvexHullShape
+    collision geometry. They start separated with opposing initial
+    velocities and should produce body-body contacts via GJK/EPA.
+    """
+
+    def test_collision_detected_after_approach(self):
+        """Two legs moving toward each other → body-body contacts detected."""
+        leg_a = _build_go2_leg("L")
+        leg_b = _build_go2_leg("R")
+
+        terrain = FlatTerrain()
+        merged = merge_models({"leg_a": leg_a, "leg_b": leg_b}, terrain=terrain)
+
+        dt = 2e-4
+        engine = CpuEngine(merged, dt=dt)
+
+        # --- Initial state ---
+        q = np.zeros(merged.nq)
+        qdot = np.zeros(merged.nv)
+
+        # Leg A: FreeJoint q = [qw,qx,qy,qz, px,py,pz] at indices [0:7]
+        # Leg A joint angles: thigh q[7], calf q[8]
+        # Leg B: FreeJoint q = [qw,qx,qy,qz, px,py,pz] at indices [9:16]
+        # Leg B joint angles: thigh q[16], calf q[17]
+        nq_a = leg_a.tree.nq  # 7 (FreeJoint) + 1 (thigh) + 1 (calf) = 9
+        nv_a = leg_a.tree.nv  # 6 + 1 + 1 = 8
+
+        # Leg A at x=-0.15, z=0.5 (in the air)
+        q[0] = 1.0  # qw
+        q[4] = -0.15  # px
+        q[6] = 0.5  # pz
+
+        # Leg B at x=+0.15, z=0.5
+        q[nq_a + 0] = 1.0  # qw
+        q[nq_a + 4] = 0.15  # px
+        q[nq_a + 6] = 0.5  # pz
+
+        # Initial velocities: moving toward each other at 2 m/s
+        # FreeJoint qdot layout: [vx,vy,vz, wx,wy,wz] (linear-first spatial convention)
+        qdot[0] = 2.0  # Leg A: vx = +2 m/s (rightward)
+        qdot[nv_a + 0] = -2.0  # Leg B: vx = -2 m/s (leftward)
+
+        # --- Simulate until collision ---
+        # Gap = 0.30 m, closing speed = 4 m/s
+        # Links have half-extent ~0.04 in x → collision when gap < ~0.08
+        # Effective gap to close: 0.30 - 0.08 = 0.22 m
+        # Time to collision: ~0.22/4 = 0.055 s = 55 ms
+        # Simulate 80ms to be safe (400 steps at dt=2e-4)
+        n_steps = 400
+        contact_detected = False
+        first_contact_step = None
+        max_body_body_contacts = 0
+
+        for step_i in range(n_steps):
+            out = engine.step(q, qdot, np.zeros(merged.nv), dt)
+            q = out.q_new
+            qdot = out.qdot_new
+
+            contacts = engine.query_contacts()
+            bb_contacts = [c for c in contacts if c.body_j >= 0]
+            if bb_contacts and not contact_detected:
+                contact_detected = True
+                first_contact_step = step_i
+            max_body_body_contacts = max(max_body_body_contacts, len(bb_contacts))
+
+        # --- Assertions ---
+        assert contact_detected, "Two legs should collide when approaching each other"
+        assert first_contact_step is not None
+        # Contact should happen roughly when expected (not too early, not too late)
+        assert first_contact_step > 100, f"Contact too early at step {first_contact_step}"
+        assert first_contact_step < 380, f"Contact too late at step {first_contact_step}"
+        assert max_body_body_contacts >= 1
+
+    def test_no_collision_when_parallel(self):
+        """Two legs moving in parallel (same direction) → no body-body contact."""
+        leg_a = _build_go2_leg("L")
+        leg_b = _build_go2_leg("R")
+
+        terrain = FlatTerrain()
+        merged = merge_models({"leg_a": leg_a, "leg_b": leg_b}, terrain=terrain)
+
+        dt = 2e-4
+        engine = CpuEngine(merged, dt=dt)
+
+        q = np.zeros(merged.nq)
+        qdot = np.zeros(merged.nv)
+
+        nq_a = leg_a.tree.nq
+        nv_a = leg_a.tree.nv
+
+        # Leg A at x=-0.5, z=0.5
+        q[0] = 1.0
+        q[4] = -0.5
+        q[6] = 0.5
+
+        # Leg B at x=+0.5, z=0.5
+        q[nq_a + 0] = 1.0
+        q[nq_a + 4] = 0.5
+        q[nq_a + 6] = 0.5
+
+        # Both moving rightward at same speed → never collide
+        qdot[0] = 1.0
+        qdot[nv_a + 0] = 1.0
+
+        for _ in range(200):
+            out = engine.step(q, qdot, np.zeros(merged.nv), dt)
+            q = out.q_new
+            qdot = out.qdot_new
+
+        contacts = engine.query_contacts()
+        bb_contacts = [c for c in contacts if c.body_j >= 0]
+        assert len(bb_contacts) == 0, "Parallel-moving legs should not collide"
