@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from physics.geometry import BoxShape, CapsuleShape, CylinderShape, SphereShape
+from physics.geometry import BoxShape, CapsuleShape, ConvexHullShape, CylinderShape, SphereShape
 from physics.gjk_epa import gjk, gjk_epa_query, ground_contact_query, halfspace_convex_query
 from physics.spatial import SpatialTransform
 
@@ -320,3 +320,59 @@ class TestHalfSpaceConvexQuery:
         result = halfspace_convex_query(sphere, pose, normal, point, margin=0.1)
         assert result is not None
         assert result.depth < 0  # negative depth = gap
+
+
+# ---------------------------------------------------------------------------
+# ConvexHullShape collision tests
+# ---------------------------------------------------------------------------
+
+
+def _make_cube_hull(half: float = 0.05) -> ConvexHullShape:
+    """Create a unit cube ConvexHullShape centered at origin."""
+    signs = np.array(
+        [[-1, -1, -1], [-1, -1, 1], [-1, 1, -1], [-1, 1, 1], [1, -1, -1], [1, -1, 1], [1, 1, -1], [1, 1, 1]],
+        dtype=np.float64,
+    )
+    return ConvexHullShape(signs * half)
+
+
+class TestConvexHullCollision:
+    def test_convexhull_vs_convexhull_overlap(self):
+        """Two overlapping ConvexHullShape cubes → GJK detects intersection."""
+        hull_a = _make_cube_hull(0.05)
+        hull_b = _make_cube_hull(0.05)
+        pose_a = SpatialTransform.from_translation(np.array([0.0, 0.0, 0.0]))
+        pose_b = SpatialTransform.from_translation(np.array([0.08, 0.0, 0.0]))
+        # Overlap = 0.05 + 0.05 - 0.08 = 0.02
+
+        intersecting, _ = gjk(hull_a, pose_a, hull_b, pose_b)
+        assert intersecting
+
+        manifold = gjk_epa_query(hull_a, pose_a, hull_b, pose_b)
+        assert manifold is not None
+        assert manifold.depth > 0.01
+
+    def test_convexhull_vs_convexhull_separated(self):
+        """Two separated ConvexHullShape cubes → no collision."""
+        hull_a = _make_cube_hull(0.05)
+        hull_b = _make_cube_hull(0.05)
+        pose_a = SpatialTransform.from_translation(np.array([0.0, 0.0, 0.0]))
+        pose_b = SpatialTransform.from_translation(np.array([0.2, 0.0, 0.0]))
+
+        intersecting, _ = gjk(hull_a, pose_a, hull_b, pose_b)
+        assert not intersecting
+
+        manifold = gjk_epa_query(hull_a, pose_a, hull_b, pose_b)
+        assert manifold is None
+
+    def test_convexhull_vs_sphere(self):
+        """ConvexHullShape cube vs SphereShape → GJK detects intersection."""
+        hull = _make_cube_hull(0.05)
+        sphere = SphereShape(0.03)
+        pose_hull = SpatialTransform.from_translation(np.array([0.0, 0.0, 0.0]))
+        pose_sphere = SpatialTransform.from_translation(np.array([0.07, 0.0, 0.0]))
+        # Overlap = 0.05 + 0.03 - 0.07 = 0.01
+
+        manifold = gjk_epa_query(hull, pose_hull, sphere, pose_sphere)
+        assert manifold is not None
+        assert manifold.depth > 0.005

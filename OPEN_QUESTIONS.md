@@ -54,10 +54,12 @@ Each collision algorithm decides how to merge or iterate them.
 - Confirmed design, no action needed — but must verify AABB merge logic
   in `AABBSelfCollision.from_geometries()` handles multi-shape bodies correctly.
 
-**Q7 — Mesh collision geometry (`<geometry><mesh/>`)**
-`MeshShape` stores only `filename`, no geometry is loaded or processed.
-- Current: silently skipped in collision model construction (logged as warning)
-- Needed: convex hull or SDF baking. Phase 3.
+**Q7 — Mesh collision geometry (`<geometry><mesh/>`)** ✅ RESOLVED (session 26)
+CPU path complete: URDF `<mesh>` → trimesh 加载 → ConvexHullShape → GJK/EPA 碰撞（地面+体-体）。
+CPU body-body 碰撞也从球近似升级为 GJK/EPA per-shape。
+- `robot/mesh_loader.py` 隔离 trimesh 依赖（选装 `pip install .[mesh]`）
+- `physics/` 层不依赖 trimesh，只看到 ConvexHullShape(numpy array)
+- **GPU 端未实现**：ConvexHullShape → `SHAPE_NONE` → 球 fallback。见 Q41。
 
 **Q8 — Simulator (Layer 2) module location** ✅ RESOLVED
 Decision: top-level `simulator.py` (Option B).
@@ -1092,3 +1094,27 @@ Total: 68 tests，全部通过。
 
 **触发条件**：Phase 3 开始前必须解决。
 **优先级**：P1（直接影响每日开发效率）。
+
+**Q41 — GPU ConvexHullShape 碰撞支持** (2026-04-10, session 26)
+
+CPU 端 mesh → ConvexHullShape → GJK/EPA 已完整（Q7 resolved），但 GPU 端仍缺失：
+
+1. **无 `SHAPE_CONVEXHULL` 枚举** — `static_data.py` 只有 SHAPE_SPHERE/BOX/CYLINDER/CAPSULE (0-4)
+2. **无凸包顶点 GPU 数组** — 需要 `hull_vertices[total_verts, 3]`、`hull_vert_adr[nshape]`、
+   `hull_vert_count[nshape]` 存变长顶点数据
+3. **无 GPU GJK kernel** — 需要 Warp `@wp.func` 实现 support_point（线性扫描顶点）+ GJK/EPA
+4. **无 narrowphase dispatch** — `collision_kernels.py` 的 shape-pair dispatch 表需要添加
+   CONVEXHULL × SPHERE/BOX/CAPSULE/CONVEXHULL 路径
+
+当前行为：ConvexHullShape 在 `static_data.py` 被设为 `SHAPE_NONE`，GPU 碰撞退化为
+`body_collision_radius` 球近似。
+
+**联合设计要求**：GPU 数据布局（flat arrays）、凸分解缓存格式、mesh 预处理管线三者需要
+一起设计，避免返工。缓存格式取决于 GPU 需要什么数据，GPU kernel 设计取决于凸分解输出什么。
+
+**前置工作**：
+- Q7 ✅ CPU mesh loading pipeline
+- Q17 BVH 三角 mesh（Phase 3，GPU ConvexHull 之后）
+
+**触发条件**：需要 GPU 加速的 RL 训练使用带 mesh 碰撞的 URDF 时。
+**优先级**：P1（RL 训练的主要 blocker 之一）。

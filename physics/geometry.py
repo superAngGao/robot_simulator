@@ -214,14 +214,29 @@ class MeshShape(CollisionShape):
     these operations raise NotImplementedError.
     """
 
-    def __init__(self, filename: str, vertices: NDArray[np.float64] | None = None) -> None:
+    def __init__(
+        self,
+        filename: str,
+        vertices: NDArray[np.float64] | None = None,
+        scale: tuple[float, float, float] | NDArray[np.float64] | None = None,
+    ) -> None:
         self.filename = filename
+        if scale is not None:
+            self._scale = np.asarray(scale, dtype=np.float64)
+        else:
+            self._scale = np.ones(3, dtype=np.float64)
         self._vertices: NDArray[np.float64] | None = None
         if vertices is not None:
             v = np.asarray(vertices, dtype=np.float64)
             if v.ndim != 2 or v.shape[1] != 3:
                 raise ValueError(f"MeshShape vertices must be (N, 3), got {v.shape}")
+            if not np.allclose(self._scale, 1.0):
+                v = v * self._scale
             self._vertices = v
+
+    @property
+    def scale(self) -> NDArray[np.float64]:
+        return self._scale
 
     @property
     def vertices(self) -> NDArray[np.float64] | None:
@@ -237,6 +252,9 @@ class MeshShape(CollisionShape):
             raise NotImplementedError("MeshShape support_point requires loaded vertices")
         dots = self._vertices @ direction
         return self._vertices[np.argmax(dots)].copy()
+
+    def contact_vertices(self) -> NDArray[np.float64] | None:
+        return self._vertices
 
 
 class HalfSpaceShape(CollisionShape):

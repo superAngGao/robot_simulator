@@ -16,7 +16,7 @@ from .constraint_solvers import wrap_solver
 from .dynamics_cache import DynamicsCache
 from .engine import ContactInfo, PhysicsEngine, StepOutput
 from .force_source import PassiveForceSource
-from .gjk_epa import ground_contact_query, halfspace_convex_query
+from .gjk_epa import gjk_epa_query, ground_contact_query, halfspace_convex_query
 from .solvers.pgs_solver import ContactConstraint
 from .solvers.pgs_split_impulse import PGSSplitImpulseSolver
 from .step_pipeline import StepPipeline
@@ -131,39 +131,32 @@ class CpuEngine(PhysicsEngine):
                             )
                         )
 
-        # 2. Body-body contacts (analytical sphere approximation)
-        # Note: GJK/EPA has poor depth accuracy for deep sphere-sphere penetration
-        # (EPA returns ~0.00003 for actual 0.05 overlap). Analytical sphere approx
-        # is more reliable for body-body until per-shape analytical functions are
-        # ported to CPU.
+        # 2. Body-body contacts (GJK/EPA per shape)
         for bi, bj in merged.collision_pairs:
-            shape_i = merged.collision_shapes[bi]
-            shape_j = merged.collision_shapes[bj]
-            if shape_i is None or shape_j is None or not shape_i.shapes or not shape_j.shapes:
+            geom_i = merged.collision_shapes[bi] if bi < len(merged.collision_shapes) else None
+            geom_j = merged.collision_shapes[bj] if bj < len(merged.collision_shapes) else None
+            if geom_i is None or geom_j is None or not geom_i.shapes or not geom_j.shapes:
                 continue
-
-            r_i = float(np.mean(shape_i.aabb_half_extents()))
-            r_j = float(np.mean(shape_j.aabb_half_extents()))
-            diff = X_world[bi].r - X_world[bj].r
-            dist = np.linalg.norm(diff)
-            overlap = (r_i + r_j) - dist
-
-            if overlap > 0 and dist > 1e-10:
-                normal = diff / dist
-                contact_pt = X_world[bj].r + normal * r_j
-                contacts.append(
-                    ContactConstraint(
-                        body_i=bi,
-                        body_j=bj,
-                        point=contact_pt,
-                        normal=normal,
-                        tangent1=np.zeros(3),
-                        tangent2=np.zeros(3),
-                        depth=overlap,
-                        mu=0.8,
-                        condim=3,
-                    )
-                )
+            for si_i in geom_i.shapes:
+                X_i = si_i.world_pose(X_world[bi])
+                for si_j in geom_j.shapes:
+                    X_j = si_j.world_pose(X_world[bj])
+                    manifold = gjk_epa_query(si_i.shape, X_i, si_j.shape, X_j)
+                    if manifold is not None and manifold.depth > 1e-10:
+                        for pi, pt in enumerate(manifold.points):
+                            contacts.append(
+                                ContactConstraint(
+                                    body_i=bi,
+                                    body_j=bj,
+                                    point=pt,
+                                    normal=manifold.normal.copy(),
+                                    tangent1=np.zeros(3),
+                                    tangent2=np.zeros(3),
+                                    depth=manifold.depth_at(pi),
+                                    mu=0.8,
+                                    condim=3,
+                                )
+                            )
 
         return contacts
 

@@ -110,6 +110,27 @@ class TestMeshShape:
         with pytest.raises(ValueError):
             MeshShape("test.stl", vertices=np.array([1, 2, 3]))
 
+    def test_contact_vertices_with_data(self):
+        verts = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float)
+        s = MeshShape("test.stl", vertices=verts)
+        cv = s.contact_vertices()
+        assert cv is not None
+        np.testing.assert_allclose(cv, verts, atol=ATOL)
+
+    def test_contact_vertices_none_without_vertices(self):
+        s = MeshShape("test.stl")
+        assert s.contact_vertices() is None
+
+    def test_scale_applied_to_vertices(self):
+        verts = np.array([[1, 2, 3], [4, 5, 6]], dtype=float)
+        s = MeshShape("test.stl", vertices=verts, scale=(2.0, 1.0, 0.5))
+        np.testing.assert_allclose(s.vertices, [[2, 2, 1.5], [8, 5, 3]], atol=ATOL)
+        np.testing.assert_allclose(s.scale, [2.0, 1.0, 0.5], atol=ATOL)
+
+    def test_scale_default_is_identity(self):
+        s = MeshShape("test.stl")
+        np.testing.assert_allclose(s.scale, [1.0, 1.0, 1.0], atol=ATOL)
+
 
 class TestShapeInstanceWorldPose:
     def test_zero_offset_returns_same(self):

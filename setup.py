@@ -8,5 +8,8 @@ setup(
         "numpy>=1.24",
         "matplotlib>=3.7",
     ],
+    extras_require={
+        "mesh": ["trimesh>=3.21"],
+    },
     python_requires=">=3.10",
 )

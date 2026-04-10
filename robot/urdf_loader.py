@@ -16,6 +16,7 @@ References:
 from __future__ import annotations
 
 import logging
+import os
 import xml.etree.ElementTree as ET
 from collections import deque
 from dataclasses import dataclass, field
@@ -117,7 +118,10 @@ def _parse_collision_shapes(link_elem) -> list[ShapeInstance]:
             shape = CylinderShape(float(cyl.get("radius", "0")), float(cyl.get("length", "0")))
         mesh = geom.find("mesh")
         if mesh is not None:
-            shape = MeshShape(mesh.get("filename", ""))
+            filename = mesh.get("filename", "")
+            scale_str = mesh.get("scale", "1 1 1")
+            scale = tuple(float(x) for x in scale_str.split())
+            shape = MeshShape(filename, scale=scale)
         if shape is not None:
             shapes.append(ShapeInstance(shape=shape, origin_xyz=origin_xyz, origin_rpy=origin_rpy))
     return shapes
@@ -245,6 +249,7 @@ def _build_model(
     floating_base: bool,
     contact_links: Optional[list[str]],
     gravity: float,
+    urdf_dir: str = "",
 ) -> RobotModel:
     # --- 1. BFS topological sort ---
     children_map: dict[str, list[_JointData]] = {name: [] for name in data.links}
@@ -320,20 +325,29 @@ def _build_model(
         ld = data.links[link_name]
         if not ld.collision_shapes:
             continue
-        has_mesh = any(isinstance(s.shape, MeshShape) for s in ld.collision_shapes)
-        non_mesh = [s for s in ld.collision_shapes if not isinstance(s.shape, MeshShape)]
-        if has_mesh and not non_mesh:
-            log.warning("Link %r has only MeshShape; skipping (Q7).", link_name)
-            continue
-        if has_mesh:
-            log.warning("Link %r has mixed mesh/primitive; using primitives only.", link_name)
-        shapes_to_use = non_mesh if non_mesh else ld.collision_shapes
-        geometries.append(
-            BodyCollisionGeometry(
-                body_index=link_to_body_idx[link_name],
-                shapes=shapes_to_use,
+        resolved_shapes: list[ShapeInstance] = []
+        for si in ld.collision_shapes:
+            if isinstance(si.shape, MeshShape):
+                from .mesh_loader import load_mesh, resolve_mesh_path
+
+                mesh_path = resolve_mesh_path(si.shape.filename, urdf_dir)
+                convex = load_mesh(mesh_path, scale=tuple(si.shape.scale))
+                resolved_shapes.append(
+                    ShapeInstance(
+                        shape=convex,
+                        origin_xyz=si.origin_xyz,
+                        origin_rpy=si.origin_rpy,
+                    )
+                )
+            else:
+                resolved_shapes.append(si)
+        if resolved_shapes:
+            geometries.append(
+                BodyCollisionGeometry(
+                    body_index=link_to_body_idx[link_name],
+                    shapes=resolved_shapes,
+                )
             )
-        )
 
     # --- 4. Actuated joints ---
     actuated_joint_names = [
@@ -381,7 +395,8 @@ def load_urdf(
     Scene level — use load_urdf_scene() for a ready-to-simulate Scene.
     """
     data = _parse_urdf(urdf_path)
-    return _build_model(data, floating_base, contact_links, gravity)
+    urdf_dir = os.path.dirname(os.path.abspath(urdf_path))
+    return _build_model(data, floating_base, contact_links, gravity, urdf_dir=urdf_dir)
 
 
 def load_urdf_scene(

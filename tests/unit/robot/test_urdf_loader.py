@@ -14,8 +14,17 @@ import textwrap
 import numpy as np
 import pytest
 
+from physics.geometry import ConvexHullShape
 from physics.joint import FixedJoint, FreeJoint, RevoluteJoint
 from robot import RobotModel, load_urdf
+
+_has_trimesh = True
+try:
+    import trimesh
+except ImportError:
+    _has_trimesh = False
+
+needs_trimesh = pytest.mark.skipif(not _has_trimesh, reason="trimesh not installed")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -165,3 +174,67 @@ def test_missing_inertial():
         assert root_body.inertia.mass == pytest.approx(1e-6)
     finally:
         os.unlink(path)
+
+
+# ---------------------------------------------------------------------------
+# Mesh loading tests
+# ---------------------------------------------------------------------------
+
+
+def _mesh_link_urdf(mesh_filename: str, scale: str | None = None) -> str:
+    scale_attr = f' scale="{scale}"' if scale else ""
+    return f"""
+    <robot name="mesh_robot">
+      <link name="base">
+        <inertial>
+          <mass value="1.0"/>
+          <origin xyz="0 0 0" rpy="0 0 0"/>
+          <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/>
+        </inertial>
+        <collision>
+          <origin xyz="0 0 0" rpy="0 0 0"/>
+          <geometry>
+            <mesh filename="{mesh_filename}"{scale_attr}/>
+          </geometry>
+        </collision>
+      </link>
+    </robot>
+    """
+
+
+@needs_trimesh
+class TestUrdfMeshLoading:
+    def test_mesh_loaded_as_convexhull(self, tmp_path):
+        """URDF <mesh> → load_urdf → geometries contain ConvexHullShape."""
+        stl_path = tmp_path / "cube.stl"
+        trimesh.creation.box(extents=(0.1, 0.1, 0.1)).export(str(stl_path))
+
+        urdf_path = tmp_path / "robot.urdf"
+        urdf_path.write_text(textwrap.dedent(_mesh_link_urdf("cube.stl")))
+
+        model = load_urdf(str(urdf_path), floating_base=True)
+        assert len(model.geometries) == 1
+        shape = model.geometries[0].shapes[0].shape
+        assert isinstance(shape, ConvexHullShape)
+        assert shape.vertices.shape[0] == 8  # cube hull
+
+    def test_mesh_scale_applied(self, tmp_path):
+        """URDF <mesh scale="2 1 1"> → x-extent doubled."""
+        stl_path = tmp_path / "cube.stl"
+        trimesh.creation.box(extents=(0.1, 0.1, 0.1)).export(str(stl_path))
+
+        urdf_path = tmp_path / "robot.urdf"
+        urdf_path.write_text(textwrap.dedent(_mesh_link_urdf("cube.stl", scale="2 1 1")))
+
+        model = load_urdf(str(urdf_path), floating_base=True)
+        shape = model.geometries[0].shapes[0].shape
+        he = shape.half_extents_approx()
+        np.testing.assert_allclose(he, [0.10, 0.05, 0.05], atol=1e-6)
+
+    def test_mesh_missing_file_error(self, tmp_path):
+        """URDF references nonexistent mesh → FileNotFoundError."""
+        urdf_path = tmp_path / "robot.urdf"
+        urdf_path.write_text(textwrap.dedent(_mesh_link_urdf("nonexistent.stl")))
+
+        with pytest.raises(FileNotFoundError):
+            load_urdf(str(urdf_path), floating_base=True)
