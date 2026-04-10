@@ -224,6 +224,7 @@ def _cpu_contacts(cpu_engine, q, qdot=None, dt=2e-4):
 class TestGpuQ25FrictionStability:
     """GPU PGS solver: Q25 per-row R must prevent angular velocity divergence."""
 
+    @pytest.mark.slow
     def test_sphere_at_rest_angular_velocity_bounded(self):
         """Sphere resting on ground: max |omega| < 0.1 rad/s over 5000 GPU steps."""
         model = _sphere_model(mass=1.0, radius=0.1)
@@ -244,6 +245,7 @@ class TestGpuQ25FrictionStability:
 
         assert max_omega < 0.1, f"GPU PGS angular velocity diverged: max |omega| = {max_omega:.4f} rad/s"
 
+    @pytest.mark.slow
     def test_heavy_sphere_at_rest_stable(self):
         """Heavy sphere (50 kg) on ground: larger moment arm stress test."""
         model = _sphere_model(mass=50.0, radius=0.15)

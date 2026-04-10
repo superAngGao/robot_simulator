@@ -75,6 +75,7 @@ class TestDtRangeFinalState:
     """The settled rest pose of a sphere drop should be insensitive to dt."""
 
     @pytest.mark.parametrize("dt", [5e-5, 1e-4, 2e-4, 5e-4])
+    @pytest.mark.slow
     def test_sphere_drop_settles_consistently(self, dt):
         """Drop a sphere from z=0.5 for 1.5 s of sim time; final z should be near radius."""
         radius = 0.1
@@ -99,6 +100,7 @@ class TestDtRangeFinalState:
         v = np.linalg.norm(qdot_final[:3])
         assert v < 0.05, f"dt={dt}: |v|={v:.4f} not settled (final qdot={qdot_final})"
 
+    @pytest.mark.slow
     def test_final_z_agrees_across_dt(self):
         """Final settled z must agree to within 2 mm across the dt range."""
         radius = 0.1

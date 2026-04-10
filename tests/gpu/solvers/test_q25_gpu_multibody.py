@@ -127,6 +127,7 @@ class TestQ25GpuPgsTwoBallsSeparate:
     "body-body contact".
     """
 
+    @pytest.mark.slow
     def test_two_balls_resting_no_body_body(self):
         merged = _two_ball_merged(radius=0.1)
         gpu = GpuEngine(merged, num_envs=1, dt=2e-4)  # default solver = jacobi_pgs_si
@@ -161,6 +162,7 @@ class TestQ25GpuPgsTwoBallsTouching:
     row in the PGS solve.
     """
 
+    @pytest.mark.slow
     def test_two_balls_touching_on_ground(self):
         merged = _two_ball_merged(radius=0.1)
         gpu = GpuEngine(merged, num_envs=1, dt=2e-4)
@@ -197,6 +199,7 @@ class TestQ25GpuPgsQuadrupedStanding:
     twitching. After the per-row R fix, both should stay near zero.
     """
 
+    @pytest.mark.slow
     def test_quadruped_standing_still_5000_steps(self):
         from tests.validation.rigid_body.models import build_quadruped
 
@@ -265,6 +268,7 @@ class TestQ25GpuPgsTwoBallsDifferentHeights:
     of what A is doing.
     """
 
+    @pytest.mark.slow
     def test_two_balls_different_heights_free_fall_then_land(self):
         merged = _two_ball_merged(radius=0.1)
         gpu = GpuEngine(merged, num_envs=1, dt=2e-4)

@@ -118,6 +118,7 @@ def _run_steps(gpu, q, qdot, n_steps, dt=2e-4):
 class TestGpuAdmmBallDrop:
     """Ball drop: ADMM produces correct ground contact."""
 
+    @pytest.mark.slow
     def test_ball_does_not_penetrate_ground(self):
         """Ball dropped from height should settle near z=radius, not penetrate."""
         merged = _ball_merged(radius=0.1)
@@ -128,6 +129,7 @@ class TestGpuAdmmBallDrop:
         assert z > 0.05, f"Ball penetrated ground: z={z:.4f}"
         assert z < 0.2, f"Ball did not fall: z={z:.4f}"
 
+    @pytest.mark.slow
     def test_ball_velocity_settles_near_zero(self):
         """After landing, vertical velocity should be near zero."""
         merged = _ball_merged(radius=0.1)
@@ -186,6 +188,7 @@ class TestGpuAdmmFrictionCone:
 class TestGpuAdmmVsPgs:
     """ADMM and PGS should produce qualitatively similar results."""
 
+    @pytest.mark.slow
     def test_ball_drop_admm_vs_pgs(self):
         """Ball drop: both solvers should settle to similar height."""
         merged = _ball_merged(radius=0.1)

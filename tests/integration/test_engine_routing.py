@@ -388,6 +388,7 @@ class TestSolverDispatch:
     routes the constraint solve through different kernel paths
     (gpu_engine.py:648). Both must settle a ball drop within reasonable bounds."""
 
+    @pytest.mark.slow
     def test_jacobi_pgs_si_settles_drop(self):
         model = _sphere_robot(0.1)
         merged = merge_models(robots={"a": model})
@@ -402,6 +403,7 @@ class TestSolverDispatch:
         z = float(engine._scratch.q.numpy()[0, 6])
         assert 0.090 < z < 0.110, f"jacobi_pgs_si failed to settle: z={z:.4f}"
 
+    @pytest.mark.slow
     def test_admm_settles_drop(self):
         model = _sphere_robot(0.1)
         merged = merge_models(robots={"a": model})
@@ -416,6 +418,7 @@ class TestSolverDispatch:
         z = float(engine._scratch.q.numpy()[0, 6])
         assert 0.090 < z < 0.110, f"admm failed to settle: z={z:.4f}"
 
+    @pytest.mark.slow
     def test_both_solvers_agree_on_settled_height(self):
         """PGS and ADMM should converge to similar steady-state z (within 5 mm)."""
         results = {}

@@ -122,6 +122,7 @@ class TestContactForceValues:
         assert fx < 0.1 * fz, f"fx={fx} too large vs fz={fz}"
         assert fy < 0.1 * fz, f"fy={fy} too large vs fz={fz}"
 
+    @pytest.mark.slow
     def test_force_magnitude_matches_gravity(self):
         """At steady state, contact force ≈ mg."""
         mass = 2.0
