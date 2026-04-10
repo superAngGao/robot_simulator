@@ -715,9 +715,13 @@ plot 保存到 `tests/fixtures/rotated_box_settling.png`，docstring 引用。
    更稳定的姿态（observed pz=0.055 vs SAT-predicted 0.107）。教训：多步动力学不能假设
    q(t→∞) 由 q(0) 唯一决定，应当用"系统进入某个稳定集"而非"系统到达某个具体点"作为断言。
 
-**两条 deferred test class**（等 Phase 3 渲染）：B.5-c (CPU/GPU 长轨迹一致性) 和
-B.7-c (multishape body-body separation 增大动力学)。这两类是 chaos / 多解动力学，
-不适合 numerical assertion，等 Phase 3 后开 `tests/visual/` 类用图片/视频呈现给用户判断。
+**deferred test class**（等 Phase 3 渲染）：
+- B.5-c — CPU/GPU 长轨迹一致性
+- B.7-c — multishape body-body separation 增大动力学
+- **Q7 两腿碰撞动力学** — `TestTwoLegMidAirCollision` 碰后反弹方向/能量/多步轨迹
+
+这些是 chaos / 多解动力学，不适合 numerical assertion，等 Phase 3 后开
+`tests/visual/` 类用图片/视频呈现给用户判断。
 
 **OPEN_QUESTIONS Q26 盲区清单**：8 项全部划掉，标注完成 session 和测试类映射。
 

@@ -377,6 +377,11 @@ class TestTwoLegMidAirCollision:
     Each leg is a 3-link chain (hip + thigh + calf) with ConvexHullShape
     collision geometry. They start separated with opposing initial
     velocities and should produce body-body contacts via GJK/EPA.
+
+    NOTE: Current tests only verify structural properties (contact detected,
+    timing reasonable). Post-collision dynamics correctness (rebound direction,
+    energy, multi-step trajectory) requires visual verification — deferred to
+    Phase 3 rendering (same as B.5-c and B.7-c in PROGRESS.md).
     """
 
     def test_collision_detected_after_approach(self):
