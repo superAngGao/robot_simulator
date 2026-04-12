@@ -1108,8 +1108,8 @@ Total: 68 tests，全部通过。
 
 **子任务**：
 1. ✅ 方案调研：7 引擎 (Bullet/MuJoCo/Coal/PhysX/ODE/Box2D/Jolt) 对比
-2. 🔄 CPU 实现：FaceTopology + build_contact_manifold + S-H clipping
-3. ⬜ GPU 方案 B：Box-Box branchless SAT kernel
+2. ✅ CPU 实现：FaceTopology + build_contact_manifold + S-H clipping + coplanar face merging
+3. ✅ GPU 方案 B：Box-Box SAT kernel (single-point, 15-axis, depth+normal+contact_point)
 4. ⬜ GPU 方案 C：per-pair manifold cache (4 points, fixed buffer)
 5. ⬜ `find_support_face` O(log F) 优化 (Gauss map / hill climbing) — 当 ConvexHull >200 面时
 

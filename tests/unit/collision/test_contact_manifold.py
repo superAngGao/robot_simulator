@@ -110,6 +110,69 @@ class TestFaceTopologyConvexHull:
             outward_dir = face_center - centroid
             assert np.dot(t.normals[fi], outward_dir) > 0
 
+    def test_box_as_convexhull_merges_to_6_faces(self):
+        """A box represented as ConvexHullShape should merge triangles into 6 quads."""
+        verts = np.array(
+            [
+                [-1, -1, -1],
+                [-1, -1, 1],
+                [-1, 1, -1],
+                [-1, 1, 1],
+                [1, -1, -1],
+                [1, -1, 1],
+                [1, 1, -1],
+                [1, 1, 1],
+            ],
+            dtype=np.float64,
+        )
+        t = ConvexHullShape(verts).face_topology()
+        assert t.num_faces == 6
+        assert t.num_edges == 12
+        for fi in range(6):
+            assert len(t.face_polygon(fi)) == 4
+
+    def test_box_as_convexhull_normals_axis_aligned(self):
+        """Merged faces should have axis-aligned normals for a box."""
+        verts = np.array(
+            [
+                [-1, -1, -1],
+                [-1, -1, 1],
+                [-1, 1, -1],
+                [-1, 1, 1],
+                [1, -1, -1],
+                [1, -1, 1],
+                [1, 1, -1],
+                [1, 1, 1],
+            ],
+            dtype=np.float64,
+        )
+        t = ConvexHullShape(verts).face_topology()
+        for n in t.normals:
+            assert np.count_nonzero(np.abs(n) > 0.5) == 1
+
+    def test_box_as_convexhull_side_planes(self):
+        """Side planes of merged quad faces should be valid."""
+        verts = np.array(
+            [
+                [-1, -1, -1],
+                [-1, -1, 1],
+                [-1, 1, -1],
+                [-1, 1, 1],
+                [1, -1, -1],
+                [1, -1, 1],
+                [1, 1, -1],
+                [1, 1, 1],
+            ],
+            dtype=np.float64,
+        )
+        t = ConvexHullShape(verts).face_topology()
+        for fi in range(t.num_faces):
+            planes = t.side_planes(fi)
+            assert len(planes) == 4  # quad → 4 side planes
+            center = t.face_polygon(fi).mean(axis=0)
+            for sn, sd in planes:
+                assert np.dot(sn, center) <= sd + 1e-10
+
     def test_smooth_shape_returns_none(self):
         s = SphereShape(1.0)
         assert s.face_topology() is None
@@ -284,3 +347,87 @@ class TestSmoothShapeFallback:
         m = gjk_epa_query(s, ps, b, pb)
         assert m is not None
         assert len(m.points) == 1
+
+
+# ---------------------------------------------------------------------------
+# ConvexHullShape manifold tests (coplanar face merging)
+# ---------------------------------------------------------------------------
+
+
+def _box_as_convexhull(size):
+    """Create a ConvexHullShape from box vertices."""
+    hx, hy, hz = size[0] / 2, size[1] / 2, size[2] / 2
+    verts = np.array(
+        [
+            [-hx, -hy, -hz],
+            [-hx, -hy, hz],
+            [-hx, hy, -hz],
+            [-hx, hy, hz],
+            [hx, -hy, -hz],
+            [hx, -hy, hz],
+            [hx, hy, -hz],
+            [hx, hy, hz],
+        ],
+        dtype=np.float64,
+    )
+    return ConvexHullShape(verts)
+
+
+class TestConvexHullManifold:
+    """ConvexHullShape with merged coplanar faces produces correct manifolds."""
+
+    def test_face_face_4_points(self):
+        """Two box-like ConvexHulls in face-face contact → 4 points."""
+        a = _box_as_convexhull((1, 1, 1))
+        b = _box_as_convexhull((2, 2, 1))
+        pa = _id_pose([0, 0, 0.9])
+        pb = _id_pose([0, 0, 0])
+        m = gjk_epa_query(a, pa, b, pb)
+        assert m is not None
+        assert len(m.points) == 4
+
+    def test_face_face_depth(self):
+        a = _box_as_convexhull((1, 1, 1))
+        b = _box_as_convexhull((2, 2, 1))
+        pa = _id_pose([0, 0, 0.9])
+        pb = _id_pose([0, 0, 0])
+        m = gjk_epa_query(a, pa, b, pb)
+        for i in range(len(m.points)):
+            assert m.depth_at(i) == pytest.approx(0.1, abs=1e-3)
+
+    def test_face_face_covers_corners(self):
+        """Contact points should span A's bottom face corners."""
+        a = _box_as_convexhull((1, 1, 1))
+        b = _box_as_convexhull((2, 2, 1))
+        pa = _id_pose([0, 0, 0.9])
+        pb = _id_pose([0, 0, 0])
+        m = gjk_epa_query(a, pa, b, pb)
+        xs = sorted(p[0] for p in m.points)
+        ys = sorted(p[1] for p in m.points)
+        assert xs[0] == pytest.approx(-0.5, abs=0.05)
+        assert xs[-1] == pytest.approx(0.5, abs=0.05)
+        assert ys[0] == pytest.approx(-0.5, abs=0.05)
+        assert ys[-1] == pytest.approx(0.5, abs=0.05)
+
+    def test_matches_boxshape(self):
+        """ConvexHull(box_verts) manifold should match BoxShape manifold."""
+        box = BoxShape((1, 1, 1))
+        ch = _box_as_convexhull((1, 1, 1))
+        platform = BoxShape((2, 2, 1))
+        pose_top = _id_pose([0, 0, 0.9])
+        pose_bot = _id_pose([0, 0, 0])
+
+        m_box = gjk_epa_query(box, pose_top, platform, pose_bot)
+        m_ch = gjk_epa_query(ch, pose_top, platform, pose_bot)
+        assert len(m_box.points) == len(m_ch.points)
+
+    def test_edge_face_2_points(self):
+        """ConvexHull box rotated 45° → edge-face → 2 points."""
+        a = _box_as_convexhull((1, 1, 1))
+        b = _box_as_convexhull((2, 2, 1))
+        R = _rot_y(np.pi / 4)
+        pa = SpatialTransform(R, np.array([0, 0, 0.8]))
+        pb = _id_pose([0, 0, 0])
+        m = gjk_epa_query(a, pa, b, pb)
+        assert m is not None
+        assert len(m.points) == 2

@@ -509,3 +509,512 @@ def sphere_box_normal(
     # Normal in local frame, transform to world
     n_local = diff / dist
     return R_box * n_local
+
+
+# ---------------------------------------------------------------------------
+# Body-body collision: Tier 3 — Box vs Box (OBB-OBB SAT)
+# ---------------------------------------------------------------------------
+# SAT tests 15 potential separating axes:
+#   - 6 face normals  (3 from A, 3 from B)
+#   - 9 edge cross products (A_i × B_j)
+# The axis with minimum positive penetration is the contact normal.
+#
+# Return convention:
+#   box_box()         → (depth, hit, _) packed in vec3
+#   box_box_normal()  → world-frame unit normal from B to A
+#   box_box_contact() → world-frame contact point
+#
+# Reference: Ericson (2004) §4.4, Gottschalk et al. (1996) OBBTree.
+# ---------------------------------------------------------------------------
+
+
+@wp.func
+def _sat_face_axis(
+    t_dot_axis: float,
+    ra: float,
+    rb: float,
+) -> float:
+    """Compute penetration depth for a single SAT face axis.
+
+    Returns penetration (positive = overlapping) or a large negative
+    value if separated on this axis.
+    """
+    sep = wp.abs(t_dot_axis)
+    pen = ra + rb - sep
+    return pen
+
+
+@wp.func
+def _sat_edge_axis_pen(
+    t: wp.vec3,
+    axis: wp.vec3,
+    R_a: wp.mat33,
+    R_b: wp.mat33,
+    ha: wp.vec3,
+    hb: wp.vec3,
+) -> float:
+    """Compute penetration for an edge-edge cross product axis.
+
+    Projects both OBBs onto *axis* and returns penetration depth.
+    Axis must be unit length.
+    """
+    # Project half-extents of A onto axis
+    ra = (
+        ha[0] * wp.abs(wp.dot(wp.vec3(R_a[0, 0], R_a[1, 0], R_a[2, 0]), axis))
+        + ha[1] * wp.abs(wp.dot(wp.vec3(R_a[0, 1], R_a[1, 1], R_a[2, 1]), axis))
+        + ha[2] * wp.abs(wp.dot(wp.vec3(R_a[0, 2], R_a[1, 2], R_a[2, 2]), axis))
+    )
+    rb = (
+        hb[0] * wp.abs(wp.dot(wp.vec3(R_b[0, 0], R_b[1, 0], R_b[2, 0]), axis))
+        + hb[1] * wp.abs(wp.dot(wp.vec3(R_b[0, 1], R_b[1, 1], R_b[2, 1]), axis))
+        + hb[2] * wp.abs(wp.dot(wp.vec3(R_b[0, 2], R_b[1, 2], R_b[2, 2]), axis))
+    )
+    sep = wp.abs(wp.dot(t, axis))
+    return ra + rb - sep
+
+
+@wp.func
+def box_box(
+    pos_a: wp.vec3,
+    R_a: wp.mat33,
+    ha_x: float,
+    ha_y: float,
+    ha_z: float,
+    pos_b: wp.vec3,
+    R_b: wp.mat33,
+    hb_x: float,
+    hb_y: float,
+    hb_z: float,
+) -> wp.vec3:
+    """OBB vs OBB via SAT (15 axes). Returns (depth, hit, _) in vec3.
+
+    Reference: Ericson (2004) §4.4 — OBB intersection test.
+    """
+    t = pos_b - pos_a  # center offset (world frame)
+
+    # Column vectors of each rotation matrix (box local axes in world)
+    ax0 = wp.vec3(R_a[0, 0], R_a[1, 0], R_a[2, 0])
+    ax1 = wp.vec3(R_a[0, 1], R_a[1, 1], R_a[2, 1])
+    ax2 = wp.vec3(R_a[0, 2], R_a[1, 2], R_a[2, 2])
+    bx0 = wp.vec3(R_b[0, 0], R_b[1, 0], R_b[2, 0])
+    bx1 = wp.vec3(R_b[0, 1], R_b[1, 1], R_b[2, 1])
+    bx2 = wp.vec3(R_b[0, 2], R_b[1, 2], R_b[2, 2])
+
+    ha = wp.vec3(ha_x, ha_y, ha_z)
+    hb = wp.vec3(hb_x, hb_y, hb_z)
+
+    # Precompute R_rel[i][j] = dot(ax_i, bx_j) and abs version
+    # (Ericson §4.4 optimisation — avoids recomputing per-axis projections)
+    r00 = wp.dot(ax0, bx0)
+    r01 = wp.dot(ax0, bx1)
+    r02 = wp.dot(ax0, bx2)
+    r10 = wp.dot(ax1, bx0)
+    r11 = wp.dot(ax1, bx1)
+    r12 = wp.dot(ax1, bx2)
+    r20 = wp.dot(ax2, bx0)
+    r21 = wp.dot(ax2, bx1)
+    r22 = wp.dot(ax2, bx2)
+
+    ar00 = wp.abs(r00) + 1.0e-8
+    ar01 = wp.abs(r01) + 1.0e-8
+    ar02 = wp.abs(r02) + 1.0e-8
+    ar10 = wp.abs(r10) + 1.0e-8
+    ar11 = wp.abs(r11) + 1.0e-8
+    ar12 = wp.abs(r12) + 1.0e-8
+    ar20 = wp.abs(r20) + 1.0e-8
+    ar21 = wp.abs(r21) + 1.0e-8
+    ar22 = wp.abs(r22) + 1.0e-8
+
+    # t projected onto A's local axes
+    ta0 = wp.dot(t, ax0)
+    ta1 = wp.dot(t, ax1)
+    ta2 = wp.dot(t, ax2)
+
+    min_pen = 1.0e30  # large sentinel
+
+    # --- 6 face axes ---
+    # A's face 0 (ax0)
+    pen = _sat_face_axis(ta0, ha[0], hb[0] * ar00 + hb[1] * ar01 + hb[2] * ar02)
+    if pen < 0.0:
+        return wp.vec3(0.0, 0.0, 0.0)
+    if pen < min_pen:
+        min_pen = pen
+
+    # A's face 1 (ax1)
+    pen = _sat_face_axis(ta1, ha[1], hb[0] * ar10 + hb[1] * ar11 + hb[2] * ar12)
+    if pen < 0.0:
+        return wp.vec3(0.0, 0.0, 0.0)
+    if pen < min_pen:
+        min_pen = pen
+
+    # A's face 2 (ax2)
+    pen = _sat_face_axis(ta2, ha[2], hb[0] * ar20 + hb[1] * ar21 + hb[2] * ar22)
+    if pen < 0.0:
+        return wp.vec3(0.0, 0.0, 0.0)
+    if pen < min_pen:
+        min_pen = pen
+
+    # B's face 0 (bx0): t projected onto bx0
+    tb0 = wp.dot(t, bx0)
+    pen = _sat_face_axis(tb0, ha[0] * ar00 + ha[1] * ar10 + ha[2] * ar20, hb[0])
+    if pen < 0.0:
+        return wp.vec3(0.0, 0.0, 0.0)
+    if pen < min_pen:
+        min_pen = pen
+
+    # B's face 1 (bx1)
+    tb1 = wp.dot(t, bx1)
+    pen = _sat_face_axis(tb1, ha[0] * ar01 + ha[1] * ar11 + ha[2] * ar21, hb[1])
+    if pen < 0.0:
+        return wp.vec3(0.0, 0.0, 0.0)
+    if pen < min_pen:
+        min_pen = pen
+
+    # B's face 2 (bx2)
+    tb2 = wp.dot(t, bx2)
+    pen = _sat_face_axis(tb2, ha[0] * ar02 + ha[1] * ar12 + ha[2] * ar22, hb[2])
+    if pen < 0.0:
+        return wp.vec3(0.0, 0.0, 0.0)
+    if pen < min_pen:
+        min_pen = pen
+
+    # --- 9 edge-edge axes (A_i × B_j) ---
+    # Each cross product may be degenerate (parallel edges → zero axis).
+    # Skip degenerate axes (they are redundant with face axes).
+
+    # A0 × B0
+    cross = wp.cross(ax0, bx0)
+    cl = wp.length(cross)
+    if cl > 1.0e-6:
+        axis = cross / cl
+        pen = _sat_edge_axis_pen(t, axis, R_a, R_b, ha, hb)
+        if pen < 0.0:
+            return wp.vec3(0.0, 0.0, 0.0)
+        if pen < min_pen:
+            min_pen = pen
+
+    # A0 × B1
+    cross = wp.cross(ax0, bx1)
+    cl = wp.length(cross)
+    if cl > 1.0e-6:
+        axis = cross / cl
+        pen = _sat_edge_axis_pen(t, axis, R_a, R_b, ha, hb)
+        if pen < 0.0:
+            return wp.vec3(0.0, 0.0, 0.0)
+        if pen < min_pen:
+            min_pen = pen
+
+    # A0 × B2
+    cross = wp.cross(ax0, bx2)
+    cl = wp.length(cross)
+    if cl > 1.0e-6:
+        axis = cross / cl
+        pen = _sat_edge_axis_pen(t, axis, R_a, R_b, ha, hb)
+        if pen < 0.0:
+            return wp.vec3(0.0, 0.0, 0.0)
+        if pen < min_pen:
+            min_pen = pen
+
+    # A1 × B0
+    cross = wp.cross(ax1, bx0)
+    cl = wp.length(cross)
+    if cl > 1.0e-6:
+        axis = cross / cl
+        pen = _sat_edge_axis_pen(t, axis, R_a, R_b, ha, hb)
+        if pen < 0.0:
+            return wp.vec3(0.0, 0.0, 0.0)
+        if pen < min_pen:
+            min_pen = pen
+
+    # A1 × B1
+    cross = wp.cross(ax1, bx1)
+    cl = wp.length(cross)
+    if cl > 1.0e-6:
+        axis = cross / cl
+        pen = _sat_edge_axis_pen(t, axis, R_a, R_b, ha, hb)
+        if pen < 0.0:
+            return wp.vec3(0.0, 0.0, 0.0)
+        if pen < min_pen:
+            min_pen = pen
+
+    # A1 × B2
+    cross = wp.cross(ax1, bx2)
+    cl = wp.length(cross)
+    if cl > 1.0e-6:
+        axis = cross / cl
+        pen = _sat_edge_axis_pen(t, axis, R_a, R_b, ha, hb)
+        if pen < 0.0:
+            return wp.vec3(0.0, 0.0, 0.0)
+        if pen < min_pen:
+            min_pen = pen
+
+    # A2 × B0
+    cross = wp.cross(ax2, bx0)
+    cl = wp.length(cross)
+    if cl > 1.0e-6:
+        axis = cross / cl
+        pen = _sat_edge_axis_pen(t, axis, R_a, R_b, ha, hb)
+        if pen < 0.0:
+            return wp.vec3(0.0, 0.0, 0.0)
+        if pen < min_pen:
+            min_pen = pen
+
+    # A2 × B1
+    cross = wp.cross(ax2, bx1)
+    cl = wp.length(cross)
+    if cl > 1.0e-6:
+        axis = cross / cl
+        pen = _sat_edge_axis_pen(t, axis, R_a, R_b, ha, hb)
+        if pen < 0.0:
+            return wp.vec3(0.0, 0.0, 0.0)
+        if pen < min_pen:
+            min_pen = pen
+
+    # A2 × B2
+    cross = wp.cross(ax2, bx2)
+    cl = wp.length(cross)
+    if cl > 1.0e-6:
+        axis = cross / cl
+        pen = _sat_edge_axis_pen(t, axis, R_a, R_b, ha, hb)
+        if pen < 0.0:
+            return wp.vec3(0.0, 0.0, 0.0)
+        if pen < min_pen:
+            min_pen = pen
+
+    if min_pen > 0.0 and min_pen < 1.0e29:
+        return wp.vec3(min_pen, 1.0, 0.0)
+    return wp.vec3(0.0, 0.0, 0.0)
+
+
+@wp.func
+def box_box_normal(
+    pos_a: wp.vec3,
+    R_a: wp.mat33,
+    ha_x: float,
+    ha_y: float,
+    ha_z: float,
+    pos_b: wp.vec3,
+    R_b: wp.mat33,
+    hb_x: float,
+    hb_y: float,
+    hb_z: float,
+) -> wp.vec3:
+    """Contact normal (from B to A) for OBB-OBB via SAT minimum axis.
+
+    Re-evaluates all 15 axes to find the minimum penetration axis.
+    Returns a unit normal in world frame pointing from B toward A.
+    """
+    t = pos_b - pos_a
+
+    ax0 = wp.vec3(R_a[0, 0], R_a[1, 0], R_a[2, 0])
+    ax1 = wp.vec3(R_a[0, 1], R_a[1, 1], R_a[2, 1])
+    ax2 = wp.vec3(R_a[0, 2], R_a[1, 2], R_a[2, 2])
+    bx0 = wp.vec3(R_b[0, 0], R_b[1, 0], R_b[2, 0])
+    bx1 = wp.vec3(R_b[0, 1], R_b[1, 1], R_b[2, 1])
+    bx2 = wp.vec3(R_b[0, 2], R_b[1, 2], R_b[2, 2])
+
+    ha = wp.vec3(ha_x, ha_y, ha_z)
+    hb = wp.vec3(hb_x, hb_y, hb_z)
+
+    r00 = wp.dot(ax0, bx0)
+    r01 = wp.dot(ax0, bx1)
+    r02 = wp.dot(ax0, bx2)
+    r10 = wp.dot(ax1, bx0)
+    r11 = wp.dot(ax1, bx1)
+    r12 = wp.dot(ax1, bx2)
+    r20 = wp.dot(ax2, bx0)
+    r21 = wp.dot(ax2, bx1)
+    r22 = wp.dot(ax2, bx2)
+
+    ar00 = wp.abs(r00) + 1.0e-8
+    ar01 = wp.abs(r01) + 1.0e-8
+    ar02 = wp.abs(r02) + 1.0e-8
+    ar10 = wp.abs(r10) + 1.0e-8
+    ar11 = wp.abs(r11) + 1.0e-8
+    ar12 = wp.abs(r12) + 1.0e-8
+    ar20 = wp.abs(r20) + 1.0e-8
+    ar21 = wp.abs(r21) + 1.0e-8
+    ar22 = wp.abs(r22) + 1.0e-8
+
+    ta0 = wp.dot(t, ax0)
+    ta1 = wp.dot(t, ax1)
+    ta2 = wp.dot(t, ax2)
+
+    min_pen = 1.0e30
+    best_axis = wp.vec3(0.0, 0.0, 1.0)
+
+    # --- Face axes ---
+    pen = _sat_face_axis(ta0, ha[0], hb[0] * ar00 + hb[1] * ar01 + hb[2] * ar02)
+    if pen < min_pen and pen > 0.0:
+        min_pen = pen
+        best_axis = ax0
+
+    pen = _sat_face_axis(ta1, ha[1], hb[0] * ar10 + hb[1] * ar11 + hb[2] * ar12)
+    if pen < min_pen and pen > 0.0:
+        min_pen = pen
+        best_axis = ax1
+
+    pen = _sat_face_axis(ta2, ha[2], hb[0] * ar20 + hb[1] * ar21 + hb[2] * ar22)
+    if pen < min_pen and pen > 0.0:
+        min_pen = pen
+        best_axis = ax2
+
+    tb0 = wp.dot(t, bx0)
+    pen = _sat_face_axis(tb0, ha[0] * ar00 + ha[1] * ar10 + ha[2] * ar20, hb[0])
+    if pen < min_pen and pen > 0.0:
+        min_pen = pen
+        best_axis = bx0
+
+    tb1 = wp.dot(t, bx1)
+    pen = _sat_face_axis(tb1, ha[0] * ar01 + ha[1] * ar11 + ha[2] * ar21, hb[1])
+    if pen < min_pen and pen > 0.0:
+        min_pen = pen
+        best_axis = bx1
+
+    tb2 = wp.dot(t, bx2)
+    pen = _sat_face_axis(tb2, ha[0] * ar02 + ha[1] * ar12 + ha[2] * ar22, hb[2])
+    if pen < min_pen and pen > 0.0:
+        min_pen = pen
+        best_axis = bx2
+
+    # --- Edge-edge axes ---
+    cross = wp.cross(ax0, bx0)
+    cl = wp.length(cross)
+    if cl > 1.0e-6:
+        axis = cross / cl
+        pen = _sat_edge_axis_pen(t, axis, R_a, R_b, ha, hb)
+        if pen < min_pen and pen > 0.0:
+            min_pen = pen
+            best_axis = axis
+
+    cross = wp.cross(ax0, bx1)
+    cl = wp.length(cross)
+    if cl > 1.0e-6:
+        axis = cross / cl
+        pen = _sat_edge_axis_pen(t, axis, R_a, R_b, ha, hb)
+        if pen < min_pen and pen > 0.0:
+            min_pen = pen
+            best_axis = axis
+
+    cross = wp.cross(ax0, bx2)
+    cl = wp.length(cross)
+    if cl > 1.0e-6:
+        axis = cross / cl
+        pen = _sat_edge_axis_pen(t, axis, R_a, R_b, ha, hb)
+        if pen < min_pen and pen > 0.0:
+            min_pen = pen
+            best_axis = axis
+
+    cross = wp.cross(ax1, bx0)
+    cl = wp.length(cross)
+    if cl > 1.0e-6:
+        axis = cross / cl
+        pen = _sat_edge_axis_pen(t, axis, R_a, R_b, ha, hb)
+        if pen < min_pen and pen > 0.0:
+            min_pen = pen
+            best_axis = axis
+
+    cross = wp.cross(ax1, bx1)
+    cl = wp.length(cross)
+    if cl > 1.0e-6:
+        axis = cross / cl
+        pen = _sat_edge_axis_pen(t, axis, R_a, R_b, ha, hb)
+        if pen < min_pen and pen > 0.0:
+            min_pen = pen
+            best_axis = axis
+
+    cross = wp.cross(ax1, bx2)
+    cl = wp.length(cross)
+    if cl > 1.0e-6:
+        axis = cross / cl
+        pen = _sat_edge_axis_pen(t, axis, R_a, R_b, ha, hb)
+        if pen < min_pen and pen > 0.0:
+            min_pen = pen
+            best_axis = axis
+
+    cross = wp.cross(ax2, bx0)
+    cl = wp.length(cross)
+    if cl > 1.0e-6:
+        axis = cross / cl
+        pen = _sat_edge_axis_pen(t, axis, R_a, R_b, ha, hb)
+        if pen < min_pen and pen > 0.0:
+            min_pen = pen
+            best_axis = axis
+
+    cross = wp.cross(ax2, bx1)
+    cl = wp.length(cross)
+    if cl > 1.0e-6:
+        axis = cross / cl
+        pen = _sat_edge_axis_pen(t, axis, R_a, R_b, ha, hb)
+        if pen < min_pen and pen > 0.0:
+            min_pen = pen
+            best_axis = axis
+
+    cross = wp.cross(ax2, bx2)
+    cl = wp.length(cross)
+    if cl > 1.0e-6:
+        axis = cross / cl
+        pen = _sat_edge_axis_pen(t, axis, R_a, R_b, ha, hb)
+        if pen < min_pen and pen > 0.0:
+            min_pen = pen
+            best_axis = axis
+
+    # Orient normal: should point from B to A (i.e. opposite to t = B - A)
+    if wp.dot(best_axis, t) > 0.0:
+        best_axis = wp.vec3(-best_axis[0], -best_axis[1], -best_axis[2])
+
+    return best_axis
+
+
+@wp.func
+def box_box_contact_point(
+    pos_a: wp.vec3,
+    R_a: wp.mat33,
+    ha_x: float,
+    ha_y: float,
+    ha_z: float,
+    pos_b: wp.vec3,
+    R_b: wp.mat33,
+    hb_x: float,
+    hb_y: float,
+    hb_z: float,
+    normal: wp.vec3,
+) -> wp.vec3:
+    """Contact point for OBB-OBB: support midpoint on the contact normal.
+
+    Finds the deepest point on each box along the contact normal and
+    returns their midpoint.  This is the single-point approximation;
+    multi-point manifold is a separate pass.
+
+    Reference: Ericson (2004) §5.5.7.
+    """
+    # Support point of A in direction -normal (deepest into B)
+    Rt_a = wp.transpose(R_a)
+    n_local_a = Rt_a * wp.vec3(-normal[0], -normal[1], -normal[2])
+    sx_a = ha_x
+    if n_local_a[0] < 0.0:
+        sx_a = -ha_x
+    sy_a = ha_y
+    if n_local_a[1] < 0.0:
+        sy_a = -ha_y
+    sz_a = ha_z
+    if n_local_a[2] < 0.0:
+        sz_a = -ha_z
+    sup_a = pos_a + R_a * wp.vec3(sx_a, sy_a, sz_a)
+
+    # Support point of B in direction +normal (deepest into A)
+    Rt_b = wp.transpose(R_b)
+    n_local_b = Rt_b * normal
+    sx_b = hb_x
+    if n_local_b[0] < 0.0:
+        sx_b = -hb_x
+    sy_b = hb_y
+    if n_local_b[1] < 0.0:
+        sy_b = -hb_y
+    sz_b = hb_z
+    if n_local_b[2] < 0.0:
+        sz_b = -hb_z
+    sup_b = pos_b + R_b * wp.vec3(sx_b, sy_b, sz_b)
+
+    # Midpoint
+    return (sup_a + sup_b) * 0.5

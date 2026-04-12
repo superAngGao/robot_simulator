@@ -18,6 +18,9 @@ from .analytical_collision import (
     SHAPE_SPHERE,
     _box_ground_contact_point,
     _capsule_ground_contact_point,
+    box_box,
+    box_box_contact_point,
+    box_box_normal,
     box_vs_ground,
     capsule_capsule,
     capsule_vs_ground,
@@ -390,6 +393,19 @@ def batched_detect_analytical(
             hit = res[1]
             normal = sphere_capsule_normal_point(a_pos, r_a, b_pos, b_R, r_b, hl_b)
             cp = a_pos - normal * r_a
+
+        elif a_t == SHAPE_BOX and b_t == SHAPE_BOX:
+            ha_x = shape_params[a_bi, 0]
+            ha_y = shape_params[a_bi, 1]
+            ha_z = shape_params[a_bi, 2]
+            hb_x = shape_params[b_bi, 0]
+            hb_y = shape_params[b_bi, 1]
+            hb_z = shape_params[b_bi, 2]
+            res = box_box(a_pos, a_R, ha_x, ha_y, ha_z, b_pos, b_R, hb_x, hb_y, hb_z)
+            depth = res[0]
+            hit = res[1]
+            normal = box_box_normal(a_pos, a_R, ha_x, ha_y, ha_z, b_pos, b_R, hb_x, hb_y, hb_z)
+            cp = box_box_contact_point(a_pos, a_R, ha_x, ha_y, ha_z, b_pos, b_R, hb_x, hb_y, hb_z, normal)
 
         elif a_t == SHAPE_CAPSULE and b_t == SHAPE_CAPSULE:
             r_a = shape_params[a_bi, 0]
@@ -767,6 +783,52 @@ def batched_detect_multishape(
                         n_hit = n_res[1]
                         n_normal = sphere_capsule_normal_point(a_pos, r_a, b_pos, b_R, r_b, n_hl_b)
                         n_cp = a_pos - n_normal * r_a
+                    elif a_t == SHAPE_BOX and b_t == SHAPE_BOX:
+                        n_ha_x = flat_shape_params[a_idx, 0]
+                        n_ha_y = flat_shape_params[a_idx, 1]
+                        n_ha_z = flat_shape_params[a_idx, 2]
+                        n_hb_x = flat_shape_params[b_idx, 0]
+                        n_hb_y = flat_shape_params[b_idx, 1]
+                        n_hb_z = flat_shape_params[b_idx, 2]
+                        n_res = box_box(
+                            a_pos,
+                            a_R,
+                            n_ha_x,
+                            n_ha_y,
+                            n_ha_z,
+                            b_pos,
+                            b_R,
+                            n_hb_x,
+                            n_hb_y,
+                            n_hb_z,
+                        )
+                        n_depth = n_res[0]
+                        n_hit = n_res[1]
+                        n_normal = box_box_normal(
+                            a_pos,
+                            a_R,
+                            n_ha_x,
+                            n_ha_y,
+                            n_ha_z,
+                            b_pos,
+                            b_R,
+                            n_hb_x,
+                            n_hb_y,
+                            n_hb_z,
+                        )
+                        n_cp = box_box_contact_point(
+                            a_pos,
+                            a_R,
+                            n_ha_x,
+                            n_ha_y,
+                            n_ha_z,
+                            b_pos,
+                            b_R,
+                            n_hb_x,
+                            n_hb_y,
+                            n_hb_z,
+                            n_normal,
+                        )
                     elif a_t == SHAPE_CAPSULE and b_t == SHAPE_CAPSULE:
                         r_a = flat_shape_params[a_idx, 0]
                         hl_a = flat_shape_params[a_idx, 1]

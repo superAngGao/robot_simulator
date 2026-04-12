@@ -165,7 +165,19 @@ def _build_box_face_topology(half: NDArray[np.float64]) -> FaceTopology:
 def _build_convexhull_face_topology(vertices: NDArray[np.float64]) -> FaceTopology:
     """Build FaceTopology for a ConvexHullShape from its vertex cloud.
 
-    Uses scipy.spatial.ConvexHull to compute faces and edges.
+    Uses scipy.spatial.ConvexHull to compute faces.  Coplanar triangles
+    are merged into larger polygons so that face-face contact manifolds
+    produce the correct number of contact points (e.g. 4 for a quad face,
+    not limited to 3 from a single triangle).
+
+    Algorithm:
+      1. Group hull simplices by normal direction (dot > 1 - eps).
+      2. For each group, collect all directed half-edges.  Interior edges
+         appear twice (opposite directions) and cancel; boundary edges
+         survive exactly once.
+      3. Chain the boundary edges into an ordered polygon loop.
+
+    Reference: Christer Ericson (2004) §12.3 — convex hull face merging.
     """
     from scipy.spatial import ConvexHull
 
@@ -175,28 +187,102 @@ def _build_convexhull_face_topology(vertices: NDArray[np.float64]) -> FaceTopolo
     # Re-index: original indices → compact indices
     reindex = {orig: i for i, orig in enumerate(hull.vertices)}
 
-    normals_list = []
-    face_ids_list = []
+    # --- Step 1: parse simplices into (normal, re-indexed CCW triangle) ---
+    _COPLANAR_DOT = 1.0 - 1e-6
+
+    tri_normals: list[NDArray[np.float64]] = []
+    tri_vids: list[list[int]] = []
+
     for simplex, eq in zip(hull.simplices, hull.equations):
         n = eq[:3]
         nrm = np.linalg.norm(n)
         if nrm < 1e-12:
             continue
         n = n / nrm
-        normals_list.append(n)
-
-        # Simplex gives 3 vertex indices (triangulated face)
-        fids = np.array([reindex[s] for s in simplex])
-
-        # Ensure CCW winding: if cross(v1-v0, v2-v0) · n < 0, flip
+        fids = [reindex[s] for s in simplex]
         v0, v1, v2 = hull_verts[fids[0]], hull_verts[fids[1]], hull_verts[fids[2]]
         if np.dot(np.cross(v1 - v0, v2 - v0), n) < 0:
             fids = fids[::-1]
-        face_ids_list.append(fids)
+        tri_normals.append(n)
+        tri_vids.append(fids)
+
+    # --- Step 2: group coplanar triangles ---
+    n_tris = len(tri_normals)
+    group_id = [-1] * n_tris
+    groups: list[list[int]] = []
+
+    for i in range(n_tris):
+        if group_id[i] >= 0:
+            continue
+        gid = len(groups)
+        group_id[i] = gid
+        members = [i]
+        for j in range(i + 1, n_tris):
+            if group_id[j] >= 0:
+                continue
+            if np.dot(tri_normals[i], tri_normals[j]) >= _COPLANAR_DOT:
+                group_id[j] = gid
+                members.append(j)
+        groups.append(members)
+
+    # --- Step 3: merge each group into a single polygon ---
+    normals_list: list[NDArray[np.float64]] = []
+    face_ids_list: list[NDArray[np.intp]] = []
+
+    for members in groups:
+        # Representative normal (average, re-normalised)
+        avg_n = np.mean([tri_normals[m] for m in members], axis=0)
+        avg_n = avg_n / np.linalg.norm(avg_n)
+        normals_list.append(avg_n)
+
+        if len(members) == 1:
+            face_ids_list.append(np.array(tri_vids[members[0]], dtype=np.intp))
+            continue
+
+        # Collect directed half-edges; interior edges appear in both
+        # directions and cancel.
+        edge_count: dict[tuple[int, int], int] = {}
+        for m in members:
+            vids = tri_vids[m]
+            for k in range(3):
+                e = (vids[k], vids[(k + 1) % 3])
+                edge_count[e] = edge_count.get(e, 0) + 1
+
+        # Boundary edges: appear exactly once (reverse also counted)
+        boundary: dict[int, int] = {}
+        for (a, b), cnt in edge_count.items():
+            rev = (b, a)
+            if edge_count.get(rev, 0) == 0:
+                boundary[a] = b
+
+        if not boundary:
+            # Degenerate: all edges shared — keep first triangle
+            face_ids_list.append(np.array(tri_vids[members[0]], dtype=np.intp))
+            continue
+
+        # Chain boundary into ordered polygon loop
+        start = next(iter(boundary))
+        loop = [start]
+        cur = boundary[start]
+        max_steps = len(boundary) + 1
+        while cur != start and max_steps > 0:
+            loop.append(cur)
+            cur = boundary.get(cur, start)
+            max_steps -= 1
+
+        # Verify CCW winding w.r.t. average normal
+        if len(loop) >= 3:
+            v0 = hull_verts[loop[0]]
+            v1 = hull_verts[loop[1]]
+            v2 = hull_verts[loop[2]]
+            if np.dot(np.cross(v1 - v0, v2 - v0), avg_n) < 0:
+                loop.reverse()
+
+        face_ids_list.append(np.array(loop, dtype=np.intp))
 
     normals = np.array(normals_list, dtype=np.float64)
 
-    # Unique edges
+    # Unique edges (from merged faces)
     edge_set: set[tuple[int, int]] = set()
     for fids in face_ids_list:
         for i in range(len(fids)):
