@@ -1129,6 +1129,44 @@ Total: 68 tests，全部通过。
 **触发条件**：使用 >200 面 ConvexHull 且碰撞检测成为性能瓶颈时。
 **优先级**：P2（优化，非正确性）。
 
+**Q44 — Convex Margin (Jolt-style convex radius)** (2026-04-12, session 27)
+
+当前 GJK 检测到穿透后必须进入 EPA（expanding polytope），EPA 有已知的数值
+退化问题（degenerate simplex → 错误深度/法线，见 session 27 EPA 诊断）。
+Session 27 已通过修复 GJK 退化分支 + EPA hexahedron 初始化解决最严重的 case，
+但 EPA 本质上是数值不稳定的算法。
+
+**Convex margin 方案（Jolt / Bullet / PhysX）**：所有形状内缩小量 margin ε，
+GJK 在"近分离"状态工作（closest-point 问题，不需要 EPA）。穿透深度 =
+margin - gjk_distance。只有深穿透（distance > margin）时才进入 EPA。
+
+**优点**：
+- GJK closest-point 数值稳定性远优于 EPA
+- 法线 = closest-point 方向，帧间连续、不跳变
+- 大幅减少 EPA 触发频率（Jolt 经验：>95% 接触在 GJK 阶段解决）
+- 不会引入额外抖动（反而减少抖动）
+
+**代价**：
+- 形状棱角被"磨圆"（Minkowski sum 小球），margin 过大会影响物理行为
+- 所有 `support_point()` 实现需要改（内缩 margin）
+- `gjk()` 返回值语义变化（closest-point + distance 而非 bool intersect）
+- 深度补偿逻辑：`real_depth = margin - gjk_distance`
+- 接触检测阈值从 `depth > 0` 变为 `distance < margin`
+- 全套测试需要适配
+
+**推荐 margin 值**：1e-4 m（对 r=0.05 形状占 0.2%，不影响物理行为）
+
+**与现有修复的关系**：
+- Q44 (margin) 和 session 27 EPA 修复互相独立
+- EPA 修复保证"需要 EPA 时它正确"，margin 减少"需要 EPA 的频率"
+- 两者可叠加，defense-in-depth
+
+**参考**：Jolt `ConvexShape::GetSupportFunction` (convex radius = 0.05 default)、
+Bullet `btConvexInternalShape::getMargin()`、PhysX contact offset。
+
+**触发条件**：EPA 退化成为反复出现的问题，或需要更高精度的接触法线时。
+**优先级**：P2（架构优化，非正确性 — session 27 EPA 修复已解决正确性）。
+
 **Q41 — GPU ConvexHullShape 碰撞支持** (2026-04-10, session 26)
 
 CPU 端 mesh → ConvexHullShape → GJK/EPA 已完整（Q7 resolved），但 GPU 端仍缺失：

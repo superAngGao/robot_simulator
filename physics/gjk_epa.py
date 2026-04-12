@@ -106,13 +106,36 @@ def _triple_product(a: Vec3, b: Vec3, c: Vec3) -> Vec3:
     return b * np.dot(a, c) - a * np.dot(b, c)
 
 
+def _perpendicular_to(v: Vec3) -> Vec3:
+    """Return a unit vector perpendicular to *v*."""
+    a = np.abs(v)
+    if a[0] <= a[1] and a[0] <= a[2]:
+        axis = np.array([1.0, 0.0, 0.0])
+    elif a[1] <= a[2]:
+        axis = np.array([0.0, 1.0, 0.0])
+    else:
+        axis = np.array([0.0, 0.0, 1.0])
+    p = np.cross(v, axis)
+    n = np.linalg.norm(p)
+    if n < 1e-15:
+        return axis
+    return p / n
+
+
 def _do_simplex_2(simplex: list, direction: np.ndarray) -> bool:
     """Handle line segment simplex. Returns True if origin is inside."""
     B, A = simplex[0], simplex[1]  # A is newest
     AB = B - A
     AO = -A
     if np.dot(AB, AO) > 0:
-        direction[:] = _triple_product(AB, AO, AB)
+        new_dir = _triple_product(AB, AO, AB)
+        # When AO is parallel to AB (origin lies ON the segment),
+        # the triple product is zero.  Pick a perpendicular direction
+        # to continue building the simplex instead of terminating
+        # with a degenerate 2-point simplex.
+        if np.linalg.norm(new_dir) < 1e-12:
+            new_dir = _perpendicular_to(AB)
+        direction[:] = new_dir
     else:
         simplex[:] = [A]
         direction[:] = AO
@@ -242,33 +265,97 @@ def epa(
     Returns:
         (normal, depth) — normal points from B to A.
     """
-    # Ensure we have a tetrahedron
-    while len(simplex) < 4:
-        # Degenerate: add points to form tetrahedron
-        if len(simplex) == 1:
-            d = np.array([1.0, 0.0, 0.0])
-            simplex.append(_support(shape_a, pose_a, shape_b, pose_b, d))
-        elif len(simplex) == 2:
-            e = simplex[1] - simplex[0]
-            d = np.cross(e, np.array([1, 0, 0]))
-            if np.linalg.norm(d) < 1e-10:
-                d = np.cross(e, np.array([0, 1, 0]))
-            simplex.append(_support(shape_a, pose_a, shape_b, pose_b, d))
-        elif len(simplex) == 3:
-            AB = simplex[1] - simplex[0]
-            AC = simplex[2] - simplex[0]
-            d = np.cross(AB, AC)
-            simplex.append(_support(shape_a, pose_a, shape_b, pose_b, d))
+    # --- Build initial polytope that strictly contains the origin ---
+    #
+    # When GJK returns a degenerate simplex (< 4 points), the naive
+    # tetrahedron inflation can place the origin ON a face boundary,
+    # causing EPA to stall (depth ≈ 0, wrong normal).
+    #
+    # Defence: for 1- or 2-point simplexes, build a hexahedron (6 verts,
+    # 8 faces) from the line direction + two perpendicular directions.
+    # The ± symmetry guarantees the origin is strictly inside.
+    #
+    # For 3-point: try both normal directions for the 4th point, pick
+    # the one that contains the origin.  Fall through to hexahedron if
+    # neither works.
+    #
+    # Reference: Bullet btGjkEpa2.cpp hexahedron initialization.
 
-    # Build initial polytope (tetrahedron faces)
-    # Each face is (i, j, k) with outward-pointing normal
-    vertices = list(simplex)
-    faces = [
-        (0, 1, 2),
-        (0, 3, 1),
-        (0, 2, 3),
-        (1, 3, 2),
-    ]
+    def _sup(d):
+        return _support(shape_a, pose_a, shape_b, pose_b, d)
+
+    if len(simplex) <= 2:
+        # --- Hexahedron from line (or point) ---
+        if len(simplex) == 1:
+            simplex.append(_sup(np.array([1.0, 0.0, 0.0])))
+        line_dir = simplex[1] - simplex[0]
+        ln = np.linalg.norm(line_dir)
+        if ln < 1e-15:
+            line_dir = np.array([1.0, 0.0, 0.0])
+        else:
+            line_dir = line_dir / ln
+        p1 = _perpendicular_to(line_dir)
+        p2 = np.cross(line_dir, p1)
+
+        v0 = simplex[0]
+        v1 = simplex[1]
+        v2 = _sup(p1)
+        v3 = _sup(-p1)
+        v4 = _sup(p2)
+        v5 = _sup(-p2)
+        vertices = [v0, v1, v2, v3, v4, v5]
+        # 8 triangular faces of the hexahedron (two pyramids sharing a
+        # quadrilateral equator: v2-v4-v3-v5)
+        faces = [
+            (0, 2, 4),
+            (0, 4, 3),
+            (0, 3, 5),
+            (0, 5, 2),
+            (1, 4, 2),
+            (1, 3, 4),
+            (1, 5, 3),
+            (1, 2, 5),
+        ]
+    elif len(simplex) == 3:
+        # Try both normal directions for the 4th point
+        AB = simplex[1] - simplex[0]
+        AC = simplex[2] - simplex[0]
+        n = np.cross(AB, AC)
+        d_plus = _sup(n)
+        d_minus = _sup(-n)
+        # Pick the one that puts origin more inside
+        # (larger minimum signed distance from origin to all faces)
+        for candidate in [d_plus, d_minus]:
+            simplex_try = list(simplex) + [candidate]
+            # Quick check: is origin inside?
+            inside = True
+            for i, (a, b, c) in enumerate([(0, 1, 2), (0, 3, 1), (0, 2, 3), (1, 3, 2)]):
+                va, vb, vc = simplex_try[a], simplex_try[b], simplex_try[c]
+                fn = np.cross(vb - va, vc - va)
+                if np.dot(fn, -va) < -1e-10:
+                    inside = False
+                    break
+            if inside:
+                simplex = simplex_try
+                break
+        if len(simplex) < 4:
+            simplex.append(d_plus)  # fallback
+        vertices = list(simplex)
+        faces = [
+            (0, 1, 2),
+            (0, 3, 1),
+            (0, 2, 3),
+            (1, 3, 2),
+        ]
+    else:
+        # Already 4 points — use as-is
+        vertices = list(simplex)
+        faces = [
+            (0, 1, 2),
+            (0, 3, 1),
+            (0, 2, 3),
+            (1, 3, 2),
+        ]
 
     # Ensure normals point outward (away from origin)
     corrected_faces = []

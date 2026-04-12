@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from physics.geometry import BoxShape, CapsuleShape, ConvexHullShape, CylinderShape, SphereShape
-from physics.gjk_epa import gjk, gjk_epa_query, ground_contact_query, halfspace_convex_query
+from physics.gjk_epa import epa, gjk, gjk_epa_query, ground_contact_query, halfspace_convex_query
 from physics.spatial import SpatialTransform
 
 ATOL = 1e-4
@@ -376,3 +377,105 @@ class TestConvexHullCollision:
         manifold = gjk_epa_query(hull, pose_hull, sphere, pose_sphere)
         assert manifold is not None
         assert manifold.depth > 0.005
+
+
+# ---------------------------------------------------------------------------
+# EPA accuracy regression tests (session 27 — degenerate simplex fix)
+# ---------------------------------------------------------------------------
+
+
+class TestEPAAccuracyRegression:
+    """Verify EPA depth/normal accuracy after GJK degenerate simplex fix.
+
+    Previously, axis-aligned sphere-sphere and box-box pairs caused GJK
+    to return a 2-point simplex (origin on segment, triple_product = 0).
+    EPA then built a degenerate initial polytope and diverged (depth ≈ 0).
+
+    Fix A: GJK _do_simplex_2 perpendicular fallback.
+    Fix B: EPA hexahedron initialization for ≤2-point simplex.
+    """
+
+    @pytest.mark.parametrize(
+        "radius,dist,exp_depth",
+        [
+            (0.05, 0.08, 0.02),  # small overlap
+            (0.05, 0.05, 0.05),  # medium overlap
+            (0.05, 0.02, 0.08),  # large overlap
+            (0.5, 0.8, 0.2),  # large sphere
+            (0.5, 0.5, 0.5),  # large sphere medium overlap
+        ],
+    )
+    def test_sphere_sphere_axis_aligned(self, radius, dist, exp_depth):
+        """Sphere-sphere along X axis — depth must match analytic value."""
+        s1 = SphereShape(radius)
+        s2 = SphereShape(radius)
+        p1 = SpatialTransform.from_translation(np.array([0.0, 0.0, 0.0]))
+        p2 = SpatialTransform.from_translation(np.array([dist, 0.0, 0.0]))
+        result = gjk_epa_query(s1, p1, s2, p2)
+        assert result is not None
+        assert result.depth == pytest.approx(exp_depth, abs=1e-3)
+
+    @pytest.mark.parametrize(
+        "axis",
+        [
+            np.array([1.0, 0, 0]),
+            np.array([0, 1.0, 0]),
+            np.array([0, 0, 1.0]),
+        ],
+        ids=["X", "Y", "Z"],
+    )
+    def test_sphere_sphere_all_axes(self, axis):
+        """Sphere-sphere along each coordinate axis."""
+        s = SphereShape(0.05)
+        p1 = SpatialTransform.from_translation(np.zeros(3))
+        p2 = SpatialTransform.from_translation(0.08 * axis)
+        result = gjk_epa_query(s, p1, s, p2)
+        assert result is not None
+        assert result.depth == pytest.approx(0.02, abs=1e-3)
+
+    def test_sphere_sphere_normal_direction(self):
+        """EPA normal should point from B to A (separation direction)."""
+        s = SphereShape(0.05)
+        p1 = SpatialTransform.from_translation(np.array([0.0, 0.0, 0.0]))
+        p2 = SpatialTransform.from_translation(np.array([0.08, 0.0, 0.0]))
+        result = gjk_epa_query(s, p1, s, p2)
+        assert result is not None
+        # Normal should be approximately (-1, 0, 0) or (1, 0, 0)
+        assert abs(abs(result.normal[0]) - 1.0) < 0.05
+
+    @pytest.mark.parametrize(
+        "half,dist,exp_depth",
+        [
+            (0.05, 0.08, 0.02),
+            (0.05, 0.05, 0.05),
+            (0.5, 0.8, 0.2),
+        ],
+    )
+    def test_box_box_axis_aligned(self, half, dist, exp_depth):
+        """Box-box along X axis — depth must match analytic value."""
+        b1 = BoxShape((half * 2, half * 2, half * 2))
+        b2 = BoxShape((half * 2, half * 2, half * 2))
+        p1 = SpatialTransform.from_translation(np.zeros(3))
+        p2 = SpatialTransform.from_translation(np.array([dist, 0.0, 0.0]))
+        result = gjk_epa_query(b1, p1, b2, p2)
+        assert result is not None
+        assert result.depth == pytest.approx(exp_depth, abs=1e-3)
+
+    def test_epa_hexahedron_path_2pt_simplex(self):
+        """EPA with forced 2-point simplex uses hexahedron initialization."""
+        s = SphereShape(0.05)
+        p1 = SpatialTransform.from_translation(np.array([0, 0, 1.0]))
+        p2 = SpatialTransform.from_translation(np.array([0.08, 0, 1.0]))
+        # Force 2-point simplex (bypassing GJK fix)
+        simplex = [np.array([-0.18, 0, 0]), np.array([0.02, 0, 0])]
+        n, d = epa(s, p1, s, p2, simplex)
+        assert d == pytest.approx(0.02, abs=1e-3)
+
+    def test_epa_hexahedron_path_1pt_simplex(self):
+        """EPA with 1-point simplex still converges correctly."""
+        s = SphereShape(0.05)
+        p1 = SpatialTransform.from_translation(np.array([0, 0, 1.0]))
+        p2 = SpatialTransform.from_translation(np.array([0.08, 0, 1.0]))
+        simplex = [np.array([-0.18, 0, 0])]
+        n, d = epa(s, p1, s, p2, simplex)
+        assert d == pytest.approx(0.02, abs=1e-3)
