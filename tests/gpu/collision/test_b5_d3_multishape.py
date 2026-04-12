@@ -216,26 +216,24 @@ class TestStep2MultiShapeCrossRobot:
         )
 
     def test_narrowphase_contact_count(self):
-        """GPU: 6 shape-level contacts. CPU: 3 body-level (known limitation).
+        """GPU: 6 shape-level contacts. CPU: ≥3 body-level contacts.
 
-        CPU body-body uses body-level sphere approximation (single sphere per body,
-        see cpu_engine.py line 132), so it sees 3 contacts (one per body-pair).
-        GPU uses per-shape narrowphase, correctly finding 6 (2 per body-pair).
-        This asymmetry is a known gap — CPU per-shape port is deferred.
+        CPU body-body uses GJK/EPA per shape pair.  With multi-point contact
+        manifold generation (session 27), face-clipping may produce multiple
+        contact points per shape pair — typically 2 for edge-face contacts.
+        GPU uses per-shape narrowphase (analytical primitives), finding 6.
         """
         merged = _build_merged()
         q, qdot = _init_state(merged)
         tau = np.zeros(merged.nv)
         dt = 2e-4
 
-        # CPU — body-level approximation: 1 contact per overlapping body-pair
+        # CPU — GJK/EPA per-shape with multi-point manifold
         cpu = CpuEngine(merged, dt=dt)
         cpu.step(q.copy(), qdot.copy(), tau, dt=dt)
         cpu_bb = [c for c in cpu.query_contacts() if c.body_j >= 0]
-        n_cpu_body_pairs = 3  # body-level: A0↔B0, A1↔B1, A2↔B2
-        assert len(cpu_bb) == n_cpu_body_pairs, (
-            f"CPU body-level contacts: expected {n_cpu_body_pairs}, got {len(cpu_bb)}"
-        )
+        # At least 3 (one per body-pair), may be more with face clipping
+        assert len(cpu_bb) >= 3, f"CPU contacts: expected ≥3, got {len(cpu_bb)}"
 
         # GPU — per-shape narrowphase: 2 shape contacts per body-pair
         gpu = GpuEngine(merged, num_envs=1, dt=dt)

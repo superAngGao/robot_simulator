@@ -1095,6 +1095,40 @@ Total: 68 tests，全部通过。
 **触发条件**：Phase 3 开始前必须解决。
 **优先级**：P1（直接影响每日开发效率）。
 
+**Q42 — Contact Manifold Generation: Face Clipping + Edge-Edge** (2026-04-12, session 27)
+
+**问题**：`gjk_epa_query()` 只生成单个接触点（两个 support point 的中点），
+对 face-face、face-edge、edge-edge 接触不正确。Box-Box 碰撞尤其明显：
+缺乏多点接触导致 box 无法稳定放置，力矩传递错误。
+
+**决策**（session 27）：
+- CPU：方案 B — GJK/EPA + 面识别 + Sutherland-Hodgman clipping + edge-edge 最近点
+- GPU：方案 B (首次接触 / 大位移) + 方案 C (持久 manifold 增量更新)
+- 新增 `FaceTopology` 接口：Box 6面预计算、ConvexHull 从 scipy 提取面拓扑
+
+**子任务**：
+1. ✅ 方案调研：7 引擎 (Bullet/MuJoCo/Coal/PhysX/ODE/Box2D/Jolt) 对比
+2. 🔄 CPU 实现：FaceTopology + build_contact_manifold + S-H clipping
+3. ⬜ GPU 方案 B：Box-Box branchless SAT kernel
+4. ⬜ GPU 方案 C：per-pair manifold cache (4 points, fixed buffer)
+5. ⬜ `find_support_face` O(log F) 优化 (Gauss map / hill climbing) — 当 ConvexHull >200 面时
+
+**完整设计线索**：REFLECTIONS.md session 27
+
+**Q43 — find_support_face Optimization for High-Poly ConvexHull** (2026-04-12, session 27)
+
+当前 `FaceTopology.find_support_face()` 用暴力扫描 O(F)。对机器人 URDF
+典型的 <50 面 ConvexHull 足够，但 >200 面时需要优化：
+
+- **邻接图爬山** O(√F)：利用凸多面体上 dot product 的凸性，从上一帧最佳面
+  开始 hill climb。需要预计算面邻接图。Jolt/Bullet 方案。
+- **Gauss map 层次搜索** O(log F)：面法线映射到单位球，BSP 树搜索。PhysX 方案。
+- **Edge-edge 轴剪枝**：Gauss map arc overlap test (Dirk Gregorius GDC 2013)
+  可将 O(E_A × E_B) SAT 降为 O(E_A + E_B)，对 GPU SAT 路径尤其重要。
+
+**触发条件**：使用 >200 面 ConvexHull 且碰撞检测成为性能瓶颈时。
+**优先级**：P2（优化，非正确性）。
+
 **Q41 — GPU ConvexHullShape 碰撞支持** (2026-04-10, session 26)
 
 CPU 端 mesh → ConvexHullShape → GJK/EPA 已完整（Q7 resolved），但 GPU 端仍缺失：

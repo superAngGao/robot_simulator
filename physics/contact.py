@@ -406,7 +406,7 @@ class LCPContactModel(ContactModel):
                 ground_z=self._terrain.height_at(X.r[0], X.r[1]),
             )
             if manifold is not None:
-                for pt in manifold.points:
+                for pi, pt in enumerate(manifold.points):
                     contacts.append(
                         ContactConstraint(
                             body_i=body_idx,
@@ -415,7 +415,7 @@ class LCPContactModel(ContactModel):
                             normal=manifold.normal.copy(),
                             tangent1=np.zeros(3),
                             tangent2=np.zeros(3),
-                            depth=manifold.depth,
+                            depth=manifold.depth_at(pi),
                             mu=mu,
                             condim=cdim,
                             mu_spin=mu_s,

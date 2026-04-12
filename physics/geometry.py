@@ -8,6 +8,7 @@ shapes with a body index.
 References:
   ROS URDF spec §collision element.
   Featherstone (2008) §2.1 — link geometry conventions.
+  Dirk Gregorius (GDC 2015) — face topology for contact manifold generation.
 """
 
 from __future__ import annotations
@@ -21,6 +22,194 @@ from numpy.typing import NDArray
 
 if TYPE_CHECKING:
     from .spatial import SpatialTransform
+
+
+# ---------------------------------------------------------------------------
+# Face topology for polyhedral shapes (contact manifold generation)
+# ---------------------------------------------------------------------------
+
+
+class FaceTopology:
+    """Pre-computed face/edge topology for convex polyhedra.
+
+    Used by Sutherland-Hodgman contact clipping (方案 B) after GJK/EPA
+    produces a penetration normal. Smooth shapes (Sphere, Capsule,
+    Cylinder) do not have face topology — their contact manifold is
+    generated analytically.
+
+    Attributes:
+        normals         : (F, 3) outward unit normals per face.
+        vertices        : (V, 3) unique vertex positions (local frame).
+        face_vertex_ids : list of F arrays, each containing ordered vertex
+                          indices for one face polygon.
+        edges           : (E, 2, 3) unique undirected edges as (start, end)
+                          point pairs in local frame.
+
+    Reference: Dirk Gregorius, "Robust Contact Creation" (GDC 2015).
+    """
+
+    __slots__ = ("normals", "vertices", "face_vertex_ids", "edges")
+
+    def __init__(
+        self,
+        normals: NDArray[np.float64],
+        vertices: NDArray[np.float64],
+        face_vertex_ids: list[NDArray[np.intp]],
+        edges: NDArray[np.float64],
+    ) -> None:
+        self.normals = normals
+        self.vertices = vertices
+        self.face_vertex_ids = face_vertex_ids
+        self.edges = edges
+
+    def find_support_face(self, direction: NDArray[np.float64]) -> int:
+        """Return the face index whose normal is most aligned with *direction*.
+
+        O(F) brute-force scan.  Sufficient for F < 200; for larger
+        polyhedra, upgrade to adjacency-graph hill climbing (Q43).
+        """
+        return int(np.argmax(self.normals @ direction))
+
+    def face_polygon(self, face_idx: int) -> NDArray[np.float64]:
+        """Return ordered (N, 3) vertices of the face polygon."""
+        return self.vertices[self.face_vertex_ids[face_idx]]
+
+    def side_planes(self, face_idx: int) -> list[tuple[NDArray[np.float64], float]]:
+        """Return side clipping planes for *face_idx*.
+
+        Each plane is (outward_normal, offset) such that a point p is
+        *inside* when ``dot(outward_normal, p) <= offset``.
+
+        The planes are perpendicular to the face and extend inward from
+        each edge of the face polygon.  Used by Sutherland-Hodgman
+        clipping to restrict the incident face polygon to the reference
+        face's lateral extent.
+        """
+        verts = self.face_polygon(face_idx)
+        face_n = self.normals[face_idx]
+        n_verts = len(verts)
+        planes = []
+        for i in range(n_verts):
+            v0 = verts[i]
+            v1 = verts[(i + 1) % n_verts]
+            edge = v1 - v0
+            # Outward side plane normal: edge × face_normal (points outward)
+            side_n = np.cross(edge, face_n)
+            nrm = np.linalg.norm(side_n)
+            if nrm < 1e-12:
+                continue
+            side_n = side_n / nrm
+            planes.append((side_n, float(np.dot(side_n, v0))))
+        return planes
+
+    @property
+    def num_faces(self) -> int:
+        return len(self.face_vertex_ids)
+
+    @property
+    def num_edges(self) -> int:
+        return self.edges.shape[0]
+
+
+def _build_box_face_topology(half: NDArray[np.float64]) -> FaceTopology:
+    """Build FaceTopology for an axis-aligned box with given half-extents."""
+    hx, hy, hz = half
+    # 8 vertices — same order as BoxShape.contact_vertices
+    verts = np.array(
+        [
+            [-hx, -hy, -hz],  # 0
+            [-hx, -hy, hz],  # 1
+            [-hx, hy, -hz],  # 2
+            [-hx, hy, hz],  # 3
+            [hx, -hy, -hz],  # 4
+            [hx, -hy, hz],  # 5
+            [hx, hy, -hz],  # 6
+            [hx, hy, hz],  # 7
+        ],
+        dtype=np.float64,
+    )
+    # 6 faces: outward normal + CCW vertex ring (viewed from outside)
+    normals = np.array(
+        [
+            [1, 0, 0],  # +X face
+            [-1, 0, 0],  # -X face
+            [0, 1, 0],  # +Y face
+            [0, -1, 0],  # -Y face
+            [0, 0, 1],  # +Z face
+            [0, 0, -1],  # -Z face
+        ],
+        dtype=np.float64,
+    )
+    face_ids = [
+        np.array([4, 6, 7, 5]),  # +X: vertices with x = +hx
+        np.array([0, 1, 3, 2]),  # -X: vertices with x = -hx
+        np.array([2, 3, 7, 6]),  # +Y: vertices with y = +hy
+        np.array([0, 4, 5, 1]),  # -Y: vertices with y = -hy
+        np.array([1, 5, 7, 3]),  # +Z: vertices with z = +hz
+        np.array([0, 2, 6, 4]),  # -Z: vertices with z = -hz
+    ]
+    # 12 unique edges
+    edge_set: set[tuple[int, int]] = set()
+    for fv in face_ids:
+        for i in range(len(fv)):
+            a, b = int(fv[i]), int(fv[(i + 1) % len(fv)])
+            key = (min(a, b), max(a, b))
+            edge_set.add(key)
+    edges = np.array(
+        [[verts[a], verts[b]] for a, b in sorted(edge_set)],
+        dtype=np.float64,
+    )
+    return FaceTopology(normals, verts, face_ids, edges)
+
+
+def _build_convexhull_face_topology(vertices: NDArray[np.float64]) -> FaceTopology:
+    """Build FaceTopology for a ConvexHullShape from its vertex cloud.
+
+    Uses scipy.spatial.ConvexHull to compute faces and edges.
+    """
+    from scipy.spatial import ConvexHull
+
+    hull = ConvexHull(vertices)
+    hull_verts = vertices[hull.vertices]
+
+    # Re-index: original indices → compact indices
+    reindex = {orig: i for i, orig in enumerate(hull.vertices)}
+
+    normals_list = []
+    face_ids_list = []
+    for simplex, eq in zip(hull.simplices, hull.equations):
+        n = eq[:3]
+        nrm = np.linalg.norm(n)
+        if nrm < 1e-12:
+            continue
+        n = n / nrm
+        normals_list.append(n)
+
+        # Simplex gives 3 vertex indices (triangulated face)
+        fids = np.array([reindex[s] for s in simplex])
+
+        # Ensure CCW winding: if cross(v1-v0, v2-v0) · n < 0, flip
+        v0, v1, v2 = hull_verts[fids[0]], hull_verts[fids[1]], hull_verts[fids[2]]
+        if np.dot(np.cross(v1 - v0, v2 - v0), n) < 0:
+            fids = fids[::-1]
+        face_ids_list.append(fids)
+
+    normals = np.array(normals_list, dtype=np.float64)
+
+    # Unique edges
+    edge_set: set[tuple[int, int]] = set()
+    for fids in face_ids_list:
+        for i in range(len(fids)):
+            a, b = int(fids[i]), int(fids[(i + 1) % len(fids)])
+            key = (min(a, b), max(a, b))
+            edge_set.add(key)
+    edges = np.array(
+        [[hull_verts[a], hull_verts[b]] for a, b in sorted(edge_set)],
+        dtype=np.float64,
+    )
+
+    return FaceTopology(normals, hull_verts, face_ids_list, edges)
+
 
 # ---------------------------------------------------------------------------
 # Abstract shape base
@@ -53,6 +242,16 @@ class CollisionShape(ABC):
         """
         return None
 
+    def face_topology(self) -> FaceTopology | None:
+        """Return pre-computed face topology, or None for smooth shapes.
+
+        Polyhedral shapes (Box, ConvexHull) return a FaceTopology with
+        face normals, vertex rings, and edges.  Smooth shapes (Sphere,
+        Capsule, Cylinder) return None — their contact manifold is
+        generated by shape-specific analytical methods.
+        """
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Concrete shapes
@@ -64,6 +263,7 @@ class BoxShape(CollisionShape):
 
     def __init__(self, size: tuple[float, float, float]) -> None:
         self._size = np.asarray(size, dtype=np.float64)
+        self._face_topo = _build_box_face_topology(self._size / 2.0)
 
     @property
     def size(self) -> NDArray[np.float64]:
@@ -78,21 +278,10 @@ class BoxShape(CollisionShape):
 
     def contact_vertices(self) -> NDArray[np.float64]:
         """Return all 8 box corner vertices in local frame."""
-        h = self._size / 2.0
-        signs = np.array(
-            [
-                [-1, -1, -1],
-                [-1, -1, 1],
-                [-1, 1, -1],
-                [-1, 1, 1],
-                [1, -1, -1],
-                [1, -1, 1],
-                [1, 1, -1],
-                [1, 1, 1],
-            ],
-            dtype=np.float64,
-        )
-        return signs * h
+        return self._face_topo.vertices.copy()
+
+    def face_topology(self) -> FaceTopology:
+        return self._face_topo
 
 
 class SphereShape(CollisionShape):
@@ -202,20 +391,24 @@ class ConvexHullShape(CollisionShape):
         if v.ndim != 2 or v.shape[1] != 3 or v.shape[0] < 4:
             raise ValueError(f"ConvexHullShape requires (N>=4, 3) vertices, got {v.shape}")
         self._vertices = v
+        self._face_topo = _build_convexhull_face_topology(v)
 
     @property
     def vertices(self) -> NDArray[np.float64]:
-        return self._vertices
+        return self._face_topo.vertices
 
     def half_extents_approx(self) -> NDArray[np.float64]:
-        return np.max(np.abs(self._vertices), axis=0)
+        return np.max(np.abs(self._face_topo.vertices), axis=0)
 
     def support_point(self, direction: NDArray[np.float64]) -> NDArray[np.float64]:
-        dots = self._vertices @ direction
-        return self._vertices[np.argmax(dots)].copy()
+        dots = self._face_topo.vertices @ direction
+        return self._face_topo.vertices[np.argmax(dots)].copy()
 
     def contact_vertices(self) -> NDArray[np.float64]:
-        return self._vertices
+        return self._face_topo.vertices
+
+    def face_topology(self) -> FaceTopology:
+        return self._face_topo
 
 
 class MeshShape(CollisionShape):

@@ -17,6 +17,8 @@
 | Multi-physics interface / material architecture | SOFA (taxonomy only, reject machinery) | Drake hydroelastic, Genesis (anti-pattern) |
 | Collision geometry abstraction | Drake SceneGraph | Pinocchio GeometryModel |
 | Collision algorithms (AABB/OBB/GJK) | hpp-fcl / coal | Bullet dispatcher |
+| Contact manifold generation (face clipping) | ODE dBoxBox2 / Jolt ManifoldBetweenTwoFaces | Bullet btBoxBoxDetector / Coal contact_patch |
+| Persistent contact manifold (GPU) | PhysX 5 PCM | Bullet btPersistentManifold |
 | Friction regularization (PGS) | MuJoCo (R diag) / ODE (slip1/slip2) | Bullet (warmstart=0) / PhysX (angDamp) |
 | Ground contact model | MuJoCo | Drake |
 | GPU parallel simulation | Newton (ex-warp.sim) | MuJoCo Warp (MJWarp) |

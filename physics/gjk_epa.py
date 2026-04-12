@@ -20,7 +20,7 @@ from typing import Optional
 
 import numpy as np
 
-from .geometry import CollisionShape
+from .geometry import CollisionShape, FaceTopology
 from .spatial import SpatialTransform, Vec3
 
 
@@ -354,13 +354,365 @@ def epa(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Contact manifold generation (方案 B: face clipping + edge-edge)
+# ---------------------------------------------------------------------------
+
+# Alignment threshold: if both shapes' best face dot < this, switch to
+# edge-edge path.  For a box, edge-edge normals give dot ≈ 0.707 against
+# face normals.  Threshold of 0.9 (~25°) catches edge-edge while letting
+# face-edge (one side well-aligned) through the face clipping path.
+_FACE_ALIGN_THRESHOLD = 0.9
+
+
+def _clip_polygon_by_plane(
+    polygon: list[Vec3],
+    plane_normal: Vec3,
+    plane_offset: float,
+) -> list[Vec3]:
+    """Sutherland-Hodgman: clip polygon against half-plane dot(n, p) <= d.
+
+    Reference: Erin Catto, "Contact Manifolds" (GDC 2007).
+    """
+    if not polygon:
+        return []
+    output: list[Vec3] = []
+    n = len(polygon)
+    for i in range(n):
+        current = polygon[i]
+        nxt = polygon[(i + 1) % n]
+        d_curr = np.dot(plane_normal, current) - plane_offset
+        d_nxt = np.dot(plane_normal, nxt) - plane_offset
+        if d_curr <= 0:  # current inside
+            output.append(current)
+            if d_nxt > 0:  # next outside → add intersection
+                t = d_curr / (d_curr - d_nxt)
+                output.append(current + t * (nxt - current))
+        elif d_nxt <= 0:  # current outside, next inside → add intersection
+            t = d_curr / (d_curr - d_nxt)
+            output.append(current + t * (nxt - current))
+    return output
+
+
+def _segment_closest_points(
+    p0: Vec3,
+    p1: Vec3,
+    q0: Vec3,
+    q1: Vec3,
+) -> tuple[Vec3, Vec3]:
+    """Closest points between two line segments P0-P1 and Q0-Q1.
+
+    Returns (point_on_P, point_on_Q).
+    Reference: Ericson (2004) §5.1.9.
+    """
+    d1 = p1 - p0
+    d2 = q1 - q0
+    r = p0 - q0
+    a = float(np.dot(d1, d1))
+    e = float(np.dot(d2, d2))
+    f = float(np.dot(d2, r))
+
+    EPS = 1e-12
+    if a < EPS and e < EPS:
+        return p0.copy(), q0.copy()
+    if a < EPS:
+        t = np.clip(f / e, 0.0, 1.0)
+        return p0.copy(), q0 + t * d2
+    c = float(np.dot(d1, r))
+    if e < EPS:
+        s = np.clip(-c / a, 0.0, 1.0)
+        return p0 + s * d1, q0.copy()
+
+    b = float(np.dot(d1, d2))
+    denom = a * e - b * b
+
+    if denom > EPS:
+        s = np.clip((b * f - c * e) / denom, 0.0, 1.0)
+    else:
+        s = 0.0
+
+    t = (b * s + f) / e
+    if t < 0.0:
+        t = 0.0
+        s = np.clip(-c / a, 0.0, 1.0)
+    elif t > 1.0:
+        t = 1.0
+        s = np.clip((b - c) / a, 0.0, 1.0)
+
+    return p0 + s * d1, q0 + t * d2
+
+
+def _find_best_edge_on_face(
+    topo: FaceTopology,
+    face_idx: int,
+    pose: SpatialTransform,
+    epa_normal: Vec3,
+) -> tuple[Vec3, Vec3]:
+    """Return the (world-frame) edge on *face_idx* most perpendicular to *epa_normal*.
+
+    For edge-edge contacts, the contact edge is the one whose direction
+    is most perpendicular to the EPA normal (smallest |dot(edge_dir, n)|).
+    """
+    poly = topo.face_polygon(face_idx)
+    nv = len(poly)
+    best_dot = float("inf")
+    best_p0 = pose.R @ poly[0] + pose.r
+    best_p1 = pose.R @ poly[1] + pose.r
+    for i in range(nv):
+        v0_w = pose.R @ poly[i] + pose.r
+        v1_w = pose.R @ poly[(i + 1) % nv] + pose.r
+        edge_dir = v1_w - v0_w
+        edge_len = np.linalg.norm(edge_dir)
+        if edge_len < 1e-12:
+            continue
+        edge_dir = edge_dir / edge_len
+        d = abs(float(np.dot(edge_dir, epa_normal)))
+        if d < best_dot:
+            best_dot = d
+            best_p0 = v0_w
+            best_p1 = v1_w
+    return best_p0, best_p1
+
+
+def build_contact_manifold(
+    shape_a: CollisionShape,
+    pose_a: SpatialTransform,
+    shape_b: CollisionShape,
+    pose_b: SpatialTransform,
+    normal: Vec3,
+    depth: float,
+) -> ContactManifold:
+    """Generate a multi-point contact manifold from GJK/EPA output.
+
+    Given the penetration *normal* (from B to A) and *depth*, produces
+    contact points via face identification + Sutherland-Hodgman clipping,
+    or edge-edge closest-point for edge contacts.
+
+    Falls back to single support-midpoint for smooth shape pairs.
+
+    Reference:
+      Dirk Gregorius, "Robust Contact Creation" (GDC 2015).
+      ODE dBoxBox2 — SAT + clipping reference implementation.
+    """
+    topo_a = shape_a.face_topology()
+    topo_b = shape_b.face_topology()
+
+    # If either shape lacks face topology (smooth shape), fall back to
+    # single-point support midpoint.
+    if topo_a is None or topo_b is None:
+        return _single_point_fallback(shape_a, pose_a, shape_b, pose_b, normal, depth)
+
+    # --- Face identification (in local frames) ---
+    # EPA normal points from B to A.  The contact face on each shape
+    # points TOWARD the other body:
+    #   A's contact face → anti-parallel to EPA normal → search -normal
+    #   B's contact face → parallel to EPA normal     → search +normal
+    n_local_a = pose_a.R.T @ (-normal)  # A's face toward B
+    n_local_b = pose_b.R.T @ normal  # B's face toward A
+    face_a = topo_a.find_support_face(n_local_a)
+    face_b = topo_b.find_support_face(n_local_b)
+    dot_a = float(np.dot(topo_a.normals[face_a], n_local_a))
+    dot_b = float(np.dot(topo_b.normals[face_b], n_local_b))
+
+    # --- Edge-edge detection ---
+    if dot_a < _FACE_ALIGN_THRESHOLD and dot_b < _FACE_ALIGN_THRESHOLD:
+        return _edge_edge_manifold(
+            topo_a,
+            face_a,
+            pose_a,
+            topo_b,
+            face_b,
+            pose_b,
+            normal,
+            depth,
+        )
+
+    # --- Face clipping path (handles face-face, face-edge, vertex-face) ---
+    # Choose reference shape: the one with better face alignment.
+    # The reference face normal (world) points outward from the reference
+    # shape's contact face — i.e., TOWARD the incident shape.
+    if dot_a >= dot_b:
+        ref_topo, ref_face, ref_pose = topo_a, face_a, pose_a
+        inc_topo, inc_face, inc_pose = topo_b, face_b, pose_b
+        # A's contact face normal points toward B → anti-parallel to EPA normal
+        ref_normal_world = pose_a.R @ topo_a.normals[face_a]
+    else:
+        ref_topo, ref_face, ref_pose = topo_b, face_b, pose_b
+        inc_topo, inc_face, inc_pose = topo_a, face_a, pose_a
+        # B's contact face normal points toward A → parallel to EPA normal
+        ref_normal_world = pose_b.R @ topo_b.normals[face_b]
+
+    return _face_clip_manifold(
+        ref_topo,
+        ref_face,
+        ref_pose,
+        inc_topo,
+        inc_face,
+        inc_pose,
+        ref_normal_world,
+        normal,
+        depth,
+    )
+
+
+def _single_point_fallback(
+    shape_a: CollisionShape,
+    pose_a: SpatialTransform,
+    shape_b: CollisionShape,
+    pose_b: SpatialTransform,
+    normal: Vec3,
+    depth: float,
+) -> ContactManifold:
+    """Original single-point contact via support-midpoint."""
+    d_local_a = pose_a.R.T @ normal
+    s_a = pose_a.R @ shape_a.support_point(d_local_a) + pose_a.r
+    d_local_b = pose_b.R.T @ (-normal)
+    s_b = pose_b.R @ shape_b.support_point(d_local_b) + pose_b.r
+    contact_point = (s_a + s_b) / 2.0
+    return ContactManifold(
+        body_i=-1,
+        body_j=-1,
+        normal=normal,
+        depth=depth,
+        points=[contact_point],
+    )
+
+
+def _face_clip_manifold(
+    ref_topo: FaceTopology,
+    ref_face: int,
+    ref_pose: SpatialTransform,
+    inc_topo: FaceTopology,
+    inc_face: int,
+    inc_pose: SpatialTransform,
+    ref_normal_world: Vec3,
+    epa_normal: Vec3,
+    epa_depth: float,
+) -> ContactManifold:
+    """Generate contact points by clipping the incident face against the
+    reference face's side planes (Sutherland-Hodgman).
+
+    Handles face-face (4 pts), face-edge (2 pts), vertex-face (1 pt)
+    uniformly — the clipping naturally degrades.
+    """
+    # Reference face: world-frame polygon, normal, and a point on the plane
+    ref_poly_local = ref_topo.face_polygon(ref_face)
+    ref_poly_world = [(ref_pose.R @ v + ref_pose.r) for v in ref_poly_local]
+    ref_n_world = ref_normal_world
+    ref_point_on_plane = ref_poly_world[0]
+
+    # Side planes in world frame
+    # Each side plane passes through edge i (vertex i → vertex i+1).
+    # Transform normal to world; recompute offset using vertex i in world.
+    side_planes_local = ref_topo.side_planes(ref_face)
+    side_planes_world = []
+    for i, (sn_local, _) in enumerate(side_planes_local):
+        sn_world = ref_pose.R @ sn_local
+        v_world = ref_poly_world[i]  # vertex i lies on this side plane
+        sd_world = float(np.dot(sn_world, v_world))
+        side_planes_world.append((sn_world, sd_world))
+
+    # Incident face: world-frame polygon
+    inc_poly_local = inc_topo.face_polygon(inc_face)
+    polygon = [inc_pose.R @ v + inc_pose.r for v in inc_poly_local]
+
+    # Clip incident polygon against each side plane
+    for plane_n, plane_d in side_planes_world:
+        polygon = _clip_polygon_by_plane(polygon, plane_n, plane_d)
+        if not polygon:
+            break
+
+    if not polygon:
+        # Degenerate: clipping eliminated everything — fall back
+        return ContactManifold(
+            body_i=-1,
+            body_j=-1,
+            normal=epa_normal,
+            depth=epa_depth,
+            points=[],
+            point_depths=[],
+        )
+
+    # Filter: keep only points below (or on) the reference face plane
+    ref_d = float(np.dot(ref_n_world, ref_point_on_plane))
+    points = []
+    point_depths = []
+    for p in polygon:
+        signed_dist = float(np.dot(ref_n_world, p)) - ref_d
+        pt_depth = -signed_dist  # positive = below reference plane
+        if pt_depth > -1e-6:  # small tolerance for on-plane points
+            # Project point onto contact plane (midpoint correction)
+            contact_pt = p - signed_dist * ref_n_world
+            points.append(contact_pt)
+            point_depths.append(max(pt_depth, 0.0))
+
+    if not points:
+        return ContactManifold(
+            body_i=-1,
+            body_j=-1,
+            normal=epa_normal,
+            depth=epa_depth,
+            points=[],
+            point_depths=[],
+        )
+
+    return ContactManifold(
+        body_i=-1,
+        body_j=-1,
+        normal=epa_normal,
+        depth=max(point_depths),
+        points=points,
+        point_depths=point_depths,
+    )
+
+
+def _edge_edge_manifold(
+    topo_a: FaceTopology,
+    face_a: int,
+    pose_a: SpatialTransform,
+    topo_b: FaceTopology,
+    face_b: int,
+    pose_b: SpatialTransform,
+    normal: Vec3,
+    depth: float,
+) -> ContactManifold:
+    """Generate a single contact point for edge-edge contact.
+
+    Finds the most perpendicular edge on each shape's support face,
+    then computes the closest point pair between the two line segments.
+    """
+    p0_a, p1_a = _find_best_edge_on_face(topo_a, face_a, pose_a, normal)
+    p0_b, p1_b = _find_best_edge_on_face(topo_b, face_b, pose_b, normal)
+
+    pt_a, pt_b = _segment_closest_points(p0_a, p1_a, p0_b, p1_b)
+    contact_point = (pt_a + pt_b) / 2.0
+
+    return ContactManifold(
+        body_i=-1,
+        body_j=-1,
+        normal=normal,
+        depth=depth,
+        points=[contact_point],
+    )
+
+
+# ---------------------------------------------------------------------------
+# High-level API
+# ---------------------------------------------------------------------------
+
+
 def gjk_epa_query(
     shape_a: CollisionShape,
     pose_a: SpatialTransform,
     shape_b: CollisionShape,
     pose_b: SpatialTransform,
 ) -> Optional[ContactManifold]:
-    """Test two convex shapes for intersection and compute contact info.
+    """Test two convex shapes for intersection and compute contact manifold.
+
+    Uses GJK for intersection test, EPA for penetration normal/depth,
+    then builds a multi-point contact manifold via face clipping
+    (Sutherland-Hodgman) for polyhedral shapes, or single-point fallback
+    for smooth shapes.
 
     Returns ContactManifold if penetrating, None if separated.
     """
@@ -372,21 +724,7 @@ def gjk_epa_query(
     if depth < 1e-10:
         return None
 
-    # Contact point: midpoint of deepest penetration
-    # Approximate by support points on each shape along normal
-    d_local_a = pose_a.R.T @ normal
-    s_a = pose_a.R @ shape_a.support_point(d_local_a) + pose_a.r
-    d_local_b = pose_b.R.T @ (-normal)
-    s_b = pose_b.R @ shape_b.support_point(d_local_b) + pose_b.r
-    contact_point = (s_a + s_b) / 2.0
-
-    return ContactManifold(
-        body_i=-1,
-        body_j=-1,
-        normal=normal,
-        depth=depth,
-        points=[contact_point],
-    )
+    return build_contact_manifold(shape_a, pose_a, shape_b, pose_b, normal, depth)
 
 
 def ground_contact_query(

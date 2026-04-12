@@ -5,6 +5,114 @@ Updated at the end of each development session.
 
 ---
 
+## 2026-04-12 (session 27) — Contact Manifold Generation: GJK/EPA Post-Processing + FaceTopology
+
+### Problem Statement
+
+`gjk_epa_query()` produces a **single contact point** via support-point midpoint
+(`gjk_epa.py:376-381`). `BoxShape.support_point()` always returns a vertex
+(`sign(direction) * half_extents`), so the midpoint of two vertices is used as the
+contact point regardless of the actual contact geometry. This is incorrect for:
+
+- **Face-face**: box resting on box needs 4 contact points to resist torque → gets 1
+- **Face-edge**: box edge on a surface needs 2 points → gets 1 at wrong location
+- **Edge-edge**: two box edges crossing needs 1 point at the closest-point location
+  → gets 1 at the midpoint of two irrelevant vertices (potentially far from contact)
+- **Vertex-face**: approximately correct (support midpoint ≈ vertex), but not exact
+
+GPU side is worse: `collision_kernels.py:429-437` falls back to **sphere-sphere**
+for Box-Box pairs (no analytical box-box collision implemented).
+
+### Research: 7-Engine Survey
+
+Surveyed: Bullet, MuJoCo, Coal (hpp-fcl), PhysX 5, ODE, Box2D, Jolt.
+
+**Universal pattern** — all engines separate "penetration detection" from "manifold
+generation". Three distinct approaches:
+
+| Approach | Description | Used by |
+|----------|-------------|---------|
+| **A: SAT + Clipping** | 15-axis SAT (box-box), face identification, Sutherland-Hodgman clip | ODE, Bullet (box-box), MuJoCo |
+| **B: GJK/EPA + Face Clipping** | GJK/EPA for normal, then face identification + S-H clipping | Jolt, Coal, PhysX |
+| **C: Persistent Manifold** | GJK/EPA gives 1 point/frame, cache accumulates to 4 over 3-4 frames | Bullet (general convex), PhysX (PCM) |
+
+Key references:
+- Dirk Gregorius, "Robust Contact Creation for Physics Simulation" (GDC 2015)
+- Erin Catto, "Contact Manifolds" (GDC 2007)
+- ODE `dBoxBox2()` — pedagogical reference for SAT + clipping
+
+### Decision: 方案 B (CPU) + 方案 B+C (GPU)
+
+**CPU**: GJK/EPA + face identification + Sutherland-Hodgman clipping (方案 B).
+Keeps existing GJK/EPA, adds post-processing. Works for all convex shapes.
+
+**GPU**: 方案 B (one-shot full manifold) + 方案 C (persistent incremental manifold).
+B for first contact / large displacement; C for subsequent frames (low cost).
+For box-box specifically, SAT is preferred over GJK/EPA on GPU (fixed 15 axes,
+branchless, no iteration).
+
+**Why not pure SAT on CPU**: SAT is O(E_A × E_B) for general ConvexHull, which
+explodes for mesh-derived shapes. GJK/EPA + face-scan post-processing is O(F)
+regardless of edge count — GJK already solved the hard "which direction" problem.
+
+**Why C doesn't conflict with tensor cores**: Manifold generation (Layer 1:
+collision detection) is completely independent of constraint solving (Layer 2:
+H⁻¹ via Cholesky/tensor cores). Better manifolds actually help — stable 4-point
+contact gives predictable Delassus matrix W dimensions and conditioning.
+
+### FaceTopology Interface Design
+
+Chose mixed approach (option 3): pre-computed topology object, not per-query
+face list allocation.
+
+```python
+class FaceTopology:
+    normals: NDArray          # (F, 3) face outward normals
+    vertices: NDArray         # (V, 3) all unique vertices
+    face_vertex_ids: list     # per-face ordered vertex index rings
+    edges: NDArray            # (E, 2, 3) unique directed edge pairs
+
+    def find_support_face(direction) -> int   # argmax(normals @ direction)
+    def face_polygon(face_idx) -> NDArray     # ordered (N, 3) vertices
+    def side_planes(face_idx) -> list         # for S-H clipping
+```
+
+- Smooth shapes (Sphere, Capsule, Cylinder): `face_topology()` returns None
+- Polyhedral shapes (Box, ConvexHull): pre-computed at construction time
+- GPU-friendly: `normals` and `vertices` are flat numpy arrays, directly uploadable
+
+### `find_support_face` Error Cases and Mitigations
+
+1. **Edge-edge ambiguity**: Both shapes' best face dot < threshold (~0.98) →
+   switch to edge-edge closest-point path. Detected by checking alignment quality.
+2. **Tied face normals**: Direction exactly between two faces → either face is
+   valid (both adjacent to the contact edge), clipping produces same result.
+3. **EPA normal error**: For robustness, can use partial-SAT (measure actual
+   separation per face) instead of trusting EPA normal directly. Deferred — EPA
+   tolerance is sufficient for robot simulation geometry.
+
+### Face Query Optimization (future)
+
+| Face count | Algorithm | Complexity |
+|------------|-----------|------------|
+| ≤50 | Brute force scan | O(F) |
+| 50-500 | Adjacency graph hill climbing | O(√F) amortized |
+| >500 | Gauss map hierarchical search | O(log F) |
+
+Current: brute force. Robot URDF links typically have <50 faces. Hill climbing
+and Gauss map deferred — tracked in OPEN_QUESTIONS.
+
+### Solver Compatibility
+
+**CPU PGS**: Already supports multiple ContactConstraints per body pair.
+Full Delassus matrix W = J M⁻¹ Jᵀ includes cross-contact coupling.
+Only change: use `manifold.depth_at(i)` for per-point depth.
+
+**GPU**: Contact buffer sizing needs `max_points_per_pair` multiplier.
+Solver scratch `max_rows` scales accordingly. No algorithmic changes.
+
+---
+
 ## 2026-04-09 (session 24) — Phase 2 finish B(6): CRBA Cholesky conditioning + Wilkinson methodology adoption
 
 ### Scope
