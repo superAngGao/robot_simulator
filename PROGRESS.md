@@ -432,9 +432,9 @@ CUDA 性能最优原因：全物理步融合为单 kernel launch，零 inter-ker
 | 接触求解器 | **7** | PGS + PGS-SI + Jacobi PGS + ADMM-C + ADMM + ADMMQPSolver + GPU ADMM |
 | 接触维度 | condim 1/3/4/6 | MuJoCo 风格，variable rows + per-condim 锥投影 |
 | GPU Delassus | **joint-space** | W = J H⁻¹ Jᵀ via CRBA+Cholesky（替代 body-level） |
-| GPU 碰撞 | 解析 + 球近似 | 4 shape × ground + 4 body-body 解析 @wp.func |
-| CPU 碰撞 | GJK/EPA + 球近似 | ground: GJK/EPA，body-body: 球近似 |
-| 碰撞形状 | 5 | Box + Sphere + Cylinder + Capsule + Mesh(stub) |
+| GPU 碰撞 | 解析 | 4 shape × ground + 5 body-body 解析 @wp.func (含 box-box SAT) |
+| CPU 碰撞 | GJK/EPA + manifold | ground: halfspace multi-point，body-body: GJK/EPA + face clipping |
+| 碰撞形状 | 5 | Box + Sphere + Cylinder + Capsule + ConvexHull(+Mesh) |
 | 碰撞过滤 | 1 | CollisionFilter（bitmask + explicit exclude + auto parent-child） |
 | 场景管理 | 1 | Scene + BodyRegistry + StaticGeometry + 多机器人 |
 | GPU 后端 | 1 | GpuEngine (Warp)；NumPy/TileLang/CUDA 已删除 (Q31) |

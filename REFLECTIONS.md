@@ -5,6 +5,66 @@ Updated at the end of each development session.
 
 ---
 
+## 2026-04-12 (session 28) — GPU Box-Box SAT + ConvexHull Coplanar Face Merging
+
+### GPU Box-Box SAT Kernel
+
+**Problem**: GPU box-box collision fell back to sphere-sphere bounding radius
+(`collision_kernels.py` fallback branch), producing incorrect depth, normal,
+and contact point for all box-box configurations.
+
+**Decision**: Implement OBB-OBB SAT (Separating Axis Theorem) instead of
+porting GJK/EPA to GPU.
+
+**Why SAT over EPA on GPU**:
+- SAT is analytically exact for box-box (15 fixed axes), no convergence loop
+- Branchless-friendly: fixed axis count, min-reduction, no polytope expansion
+- EPA polytope loop is hard to make SIMT-friendly and has numerical edge cases
+- MuJoCo/Bullet/PhysX all use SAT (not EPA) for box-box
+- Verified: CPU EPA results match SAT exactly on all tested configs (face-face,
+  edge-face, edge-edge, both-rotated)
+
+**Implementation** (`analytical_collision.py`):
+- `box_box()`: 15-axis SAT with early-out on separation, Ericson §4.4 optimisation
+  (precomputed R_rel + abs for projection). Returns (depth, hit).
+- `box_box_normal()`: re-evaluates 15 axes to find minimum penetration axis.
+  Orients normal from B to A.
+- `box_box_contact_point()`: support-midpoint (deepest point on each box along
+  normal, averaged). Single-point approximation for now.
+- Degenerate edge cross products (parallel edges, |cross| < 1e-6) are skipped —
+  they are redundant with face axes (Ericson §4.4.1 remark).
+
+**Wired into**: both `batched_detect_analytical` and `batched_detect_multishape`
+kernels, canonicalized as `(SHAPE_BOX, SHAPE_BOX)` case.
+
+**Current limitation**: single contact point per box-box pair. Multi-point manifold
+(face clipping on GPU) is Q42.4.
+
+### ConvexHull Coplanar Face Merging
+
+**Problem**: `_build_convexhull_face_topology()` used raw scipy `ConvexHull.simplices`
+(triangulated faces). A box-as-ConvexHull got 12 triangular faces instead of 6 quads.
+Face-face contact manifold clipping against a triangle produced max 3 points instead
+of the correct 4.
+
+**Fix**: Group simplices by normal direction (dot > 1-1e-6), collect directed
+half-edges, cancel interior edges (shared in both directions), chain boundary
+edges into ordered polygon loop. Verify CCW winding against averaged normal.
+
+**Result**: box-as-ConvexHull → 6 faces × 4 vertices, octahedron → 8 faces × 3
+vertices (unchanged). Manifold now produces 4 contact points for face-face.
+
+### Test Coverage
+
+- 12 new GPU SAT tests: face-face depth/normal, axis overlap, asymmetric boxes,
+  rotated (edge-face, edge-edge, both-rotated), CPU-GPU agreement, separation
+- 5 new ConvexHull topology tests: face merging, normal alignment, side planes
+- 5 new ConvexHull manifold tests: face-face 4pts, depth, corners, BoxShape match,
+  edge-face 2pts
+- Total: 859 tests (847 non-slow + 12 GPU SAT)
+
+---
+
 ## 2026-04-12 (session 27) — Contact Manifold Generation: GJK/EPA Post-Processing + FaceTopology
 
 ### Problem Statement
@@ -20,8 +80,8 @@ contact point regardless of the actual contact geometry. This is incorrect for:
   → gets 1 at the midpoint of two irrelevant vertices (potentially far from contact)
 - **Vertex-face**: approximately correct (support midpoint ≈ vertex), but not exact
 
-GPU side is worse: `collision_kernels.py:429-437` falls back to **sphere-sphere**
-for Box-Box pairs (no analytical box-box collision implemented).
+GPU side was worse: `collision_kernels.py` fell back to **sphere-sphere**
+for Box-Box pairs. **Fixed in session 28**: OBB-OBB SAT kernel added.
 
 ### Research: 7-Engine Survey
 
