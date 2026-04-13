@@ -1196,29 +1196,41 @@ CPU 端 mesh → ConvexHullShape → GJK/EPA 已完整（Q7 resolved），但 GP
 **触发条件**：需要 GPU 加速的 RL 训练使用带 mesh 碰撞的 URDF 时。
 **优先级**：P1（RL 训练的主要 blocker 之一）。
 
-**Q45 — GPU multi-point ground contacts + body-body causes solver explosion** (2026-04-13, session 29)
+**Q45 — Jacobi PGS divergence with clustered multi-point contacts** ✅ RESOLVED (2026-04-13, session 29)
 
-`box_ground_manifold()` 函数已实现且单元测试通过，但未接入碰撞 kernel。
-原因：当多点地面接触与 body-body 接触同时存在时，Jacobi PGS 求解器在第一步就发散
-（qdot 达到 3.2e8），导致 NaN。
+**根因**：同 body 上 N 个同法向接触 → W 矩阵零特征值（力分配不定）→
+Jacobi 迭代矩阵 ρ > 1。调研 MJX（Newton/CG）、PhysX（colored GS）、
+Bullet3（mass splitting），确认纯 Jacobi 无法处理此场景。
 
-**复现条件**：
-- 2+ 个机器人合并（body-body 接触存在）
-- 至少一个 box shape 产生 4 个地面接触点
-- 单机器人场景正常，仅合并后发散
+**解决**：新增两个 solver backend：
+- `jacobi_pgs_ms` — Mass splitting (Tonge 2012)：W_diag × N_contacts_per_body
+- `colored_pgs` — Graph-colored GS (PhysX 方案)：图着色 + 异色串行
 
-**推测根因**（待调查）：
-- 多点地面接触增加了 W 矩阵中同 body 上的耦合行
-- Jacobi PGS 每步并行更新所有 lambda，coupling 强时收敛性差
-- 可能需要 Gauss-Seidel ordering、warm starting、或 block solver 处理同 body 多接触
+box-ground 多点已激活。原始 `jacobi_pgs_si` 不支持多点 ground（会发散）。
+→ Moved to REFLECTIONS.md session 29.
 
-**解决方案候选**：
-1. Gauss-Seidel（顺序更新）替代 Jacobi（并行更新）— 牺牲并行性但收敛好
-2. PGS 迭代次数增加（当前 60，可能不够）
-3. Under-relaxation（降低 omega）
-4. Block PGS：同 body 的接触组成一个 block，block 内 Gauss-Seidel
-5. 切换到 ADMM solver（已有 GPU 实现，合规接触天然阻尼）
+**Q46 — Solver backend 大规模系统验证** (2026-04-13, session 29)
 
-**当前缓解**：box-ground 保持单点接触。box-box 多点接触不受影响。
-**触发条件**：需要 box 稳定放置在地面（不翘起）时。
-**优先级**：P2（功能已实现但未激活，不影响当前物理正确性）。
+Session 29 新增的三个能处理多点接触的 solver（`jacobi_pgs_ms`、`colored_pgs`、`admm`）
+在小规模 fixture（9 body, 16 contacts）上验证通过，但以下维度未经测试：
+
+**待验证维度**：
+1. **大规模 RL 训练**：num_envs=1000+，持续 10⁶ steps 的数值稳定性
+2. **复杂机器人**：人形（30+ body）、多足（高 DOF）的接触密集场景
+3. **Solver 间物理一致性**：不同 solver 在长时间仿真中的轨迹偏差量化
+4. **Colored GS 性能**：960 kernel launch/step 的 overhead 在大 N_envs 下是否可接受
+   （当前 254ms/step vs ADMM 66ms/step，需要优化：减少 MAX_COLORS、kernel 内循环）
+5. **Mass splitting 收敛精度**：under-relaxation 导致的力分配误差对 RL reward 的影响
+6. **CPU vs GPU 一致性**：box-ground 多点改变了 GPU 接触数（9 vs CPU 6），
+   需要更新 CPU 端使其也支持多点，或明确文档化差异
+
+**Benchmark 基线**（session 29, 3-robot 9-body fixture, 500 steps）：
+```
+jacobi_pgs_si:  DIVERGED step 1
+jacobi_pgs_ms:  stable, 174 ms/step, max|qdot|=1~3
+colored_pgs:    stable, 254 ms/step, max|qdot|=1~3
+admm:           stable,  66 ms/step, max|qdot|=0~4
+```
+
+**触发条件**：Phase 3 RL 训练循环实装前。
+**优先级**：P1（直接影响 RL 训练质量和速度）。

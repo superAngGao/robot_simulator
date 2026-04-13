@@ -56,6 +56,46 @@ work perfectly. Root cause is likely W matrix coupling — deferred as Q45.
   - Separation: SAT correctly rejects
 - All 859 existing non-slow tests pass (0 regressions)
 
+### Q45 Root Cause Analysis → Two New Solver Backends
+
+**Problem**: `box_ground_manifold` 4-point contacts + body-body contacts on
+merged multi-robot scenes caused Jacobi PGS divergence (qdot=3.2e8, NaN step 1).
+
+**Root cause**: 4 contacts on same body with same normal → W has zero eigenvalue
+(force distribution indeterminate). Jacobi iteration matrix spectral radius
+ρ=4.38 > 1. Per-row R regularization (tried, reverted) doesn't help — it
+modifies W_diag but not W, so the iteration matrix `G = I - ω D⁻¹ W` is
+unchanged in structure.
+
+**Industry survey**:
+- MuJoCo MJX: Newton/CG (no PGS at all)
+- PhysX GPU: Graph-colored GS (batch by body independence)
+- Bullet3 GPU: Mass splitting (Tonge et al., SIGGRAPH 2012) + colored GS
+- Brax: No coupled solver (penalty contacts / PBD)
+- No major engine uses pure Jacobi PGS for clustered contacts
+
+**Solution**: Two new solver backends:
+- `jacobi_pgs_ms`: Mass splitting — scale W_diag by contacts-per-body.
+  Full parallelism, equivalent to per-contact under-relaxation.
+- `colored_pgs`: Graph-colored GS — greedy coloring, within-color parallel,
+  between-color sequential. GS convergence guarantee for PSD W.
+
+**Benchmark** (3-robot 9-body, 500 steps, box-ground 4pt active):
+```
+jacobi_pgs_si:  DIVERGED step 1
+jacobi_pgs_ms:  stable, 174 ms/step
+colored_pgs:    stable, 254 ms/step (960 kernel launches/step — optimize later)
+admm:           stable,  66 ms/step
+```
+
+**Q46 registered**: large-scale RL validation pending (num_envs=1000+, complex
+robots, long-horizon stability, solver-to-solver physics agreement).
+
+### Updated Test Count
+
+- 12 manifold tests + 7 solver backend tests = 19 new tests
+- Total: 866 passed, 1 skipped, 0 failed
+
 ---
 
 ## 2026-04-12 (session 28) — GPU Box-Box SAT + ConvexHull Coplanar Face Merging
