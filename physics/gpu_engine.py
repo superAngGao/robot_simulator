@@ -224,14 +224,16 @@ class GpuEngine(PhysicsEngine):
 
         # Collision data — dynamic broadphase (Q26-gpu)
         # max_contacts: ground shapes + worst-case body-body shape pairs
+        # Multi-point manifold: box-box/box-ground produce up to 4 contacts each
+        MANIFOLD_MAX = 4
         max_shapes_per_body = int(s.body_shape_num.max()) if s.nshape > 0 else 1
-        max_ground_contacts = s.nc * max_shapes_per_body
+        max_ground_contacts = s.nc * max_shapes_per_body * MANIFOLD_MAX
         # Count bodies with shapes for body-body upper bound
         n_bodies_with_shapes = int(np.sum(s.body_shape_num > 0))
         max_body_pairs = n_bodies_with_shapes * (n_bodies_with_shapes - 1) // 2
-        max_pair_contacts = min(max_body_pairs * max_shapes_per_body**2, 1024)
-        max_contacts = max(max_ground_contacts + max_pair_contacts, 16)
-        max_contacts = min(max_contacts, 2048)  # cap to prevent excessive memory
+        max_pair_contacts = min(max_body_pairs * max_shapes_per_body**2 * MANIFOLD_MAX, 4096)
+        max_contacts = max(max_ground_contacts + max_pair_contacts, 64)
+        max_contacts = min(max_contacts, 8192)  # cap to prevent excessive memory
         n_pairs = len(merged.collision_pairs)  # kept for legacy warp_backend compat
         max_rows = max_contacts * 3  # condim=3
 

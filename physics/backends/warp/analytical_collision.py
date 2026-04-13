@@ -1018,3 +1018,565 @@ def box_box_contact_point(
 
     # Midpoint
     return (sup_a + sup_b) * 0.5
+
+
+# ---------------------------------------------------------------------------
+# Multi-point contact manifold structs and helpers
+# ---------------------------------------------------------------------------
+
+
+@wp.struct
+class ClipPoly:
+    """Polygon buffer for Sutherland-Hodgman clipping (max 8 vertices).
+
+    A quad (4 verts) clipped by 4 half-planes produces at most 8 vertices.
+    """
+
+    v0: wp.vec3
+    v1: wp.vec3
+    v2: wp.vec3
+    v3: wp.vec3
+    v4: wp.vec3
+    v5: wp.vec3
+    v6: wp.vec3
+    v7: wp.vec3
+    count: wp.int32
+
+
+@wp.struct
+class BoxBoxManifold:
+    """Up to 4 contact points from box-box or box-ground collision."""
+
+    p0: wp.vec3
+    p1: wp.vec3
+    p2: wp.vec3
+    p3: wp.vec3
+    d0: wp.float32
+    d1: wp.float32
+    d2: wp.float32
+    d3: wp.float32
+    count: wp.int32
+
+
+@wp.func
+def _clip_poly_get(poly: ClipPoly, i: int) -> wp.vec3:
+    """Read vertex i from ClipPoly (0-indexed, 8-branch)."""
+    if i == 0:
+        return poly.v0
+    if i == 1:
+        return poly.v1
+    if i == 2:
+        return poly.v2
+    if i == 3:
+        return poly.v3
+    if i == 4:
+        return poly.v4
+    if i == 5:
+        return poly.v5
+    if i == 6:
+        return poly.v6
+    return poly.v7
+
+
+@wp.func
+def _clip_poly_push(poly: ClipPoly, v: wp.vec3) -> ClipPoly:
+    """Append vertex to ClipPoly, return updated struct."""
+    idx = poly.count
+    if idx == 0:
+        poly.v0 = v
+    elif idx == 1:
+        poly.v1 = v
+    elif idx == 2:
+        poly.v2 = v
+    elif idx == 3:
+        poly.v3 = v
+    elif idx == 4:
+        poly.v4 = v
+    elif idx == 5:
+        poly.v5 = v
+    elif idx == 6:
+        poly.v6 = v
+    elif idx == 7:
+        poly.v7 = v
+    poly.count = idx + 1
+    return poly
+
+
+@wp.func
+def _manifold_get_point(m: BoxBoxManifold, i: int) -> wp.vec3:
+    if i == 0:
+        return m.p0
+    if i == 1:
+        return m.p1
+    if i == 2:
+        return m.p2
+    return m.p3
+
+
+@wp.func
+def _manifold_get_depth(m: BoxBoxManifold, i: int) -> wp.float32:
+    if i == 0:
+        return m.d0
+    if i == 1:
+        return m.d1
+    if i == 2:
+        return m.d2
+    return m.d3
+
+
+@wp.func
+def _manifold_set(m: BoxBoxManifold, i: int, p: wp.vec3, d: float) -> BoxBoxManifold:
+    """Set point i in manifold, return updated struct."""
+    if i == 0:
+        m.p0 = p
+        m.d0 = d
+    elif i == 1:
+        m.p1 = p
+        m.d1 = d
+    elif i == 2:
+        m.p2 = p
+        m.d2 = d
+    elif i == 3:
+        m.p3 = p
+        m.d3 = d
+    return m
+
+
+# ---------------------------------------------------------------------------
+# Box face geometry
+# ---------------------------------------------------------------------------
+
+
+@wp.func
+def _box_face_normal_world(R: wp.mat33, face_idx: int) -> wp.vec3:
+    """World-frame outward normal for box face_idx (0-5: +X,-X,+Y,-Y,+Z,-Z)."""
+    if face_idx == 0:
+        return wp.vec3(R[0, 0], R[1, 0], R[2, 0])
+    if face_idx == 1:
+        return wp.vec3(-R[0, 0], -R[1, 0], -R[2, 0])
+    if face_idx == 2:
+        return wp.vec3(R[0, 1], R[1, 1], R[2, 1])
+    if face_idx == 3:
+        return wp.vec3(-R[0, 1], -R[1, 1], -R[2, 1])
+    if face_idx == 4:
+        return wp.vec3(R[0, 2], R[1, 2], R[2, 2])
+    return wp.vec3(-R[0, 2], -R[1, 2], -R[2, 2])
+
+
+@wp.func
+def _box_face_vertices(
+    pos: wp.vec3,
+    R: wp.mat33,
+    hx: float,
+    hy: float,
+    hz: float,
+    face_idx: int,
+) -> ClipPoly:
+    """4 world-frame vertices of box face face_idx in CCW winding.
+
+    Face indexing: 0=+X, 1=-X, 2=+Y, 3=-Y, 4=+Z, 5=-Z.
+    CCW winding is viewed from outside the box (outward normal points at viewer).
+    """
+    # Local-frame vertices for each face
+    l0 = wp.vec3(0.0, 0.0, 0.0)
+    l1 = wp.vec3(0.0, 0.0, 0.0)
+    l2 = wp.vec3(0.0, 0.0, 0.0)
+    l3 = wp.vec3(0.0, 0.0, 0.0)
+
+    if face_idx == 0:  # +X face
+        l0 = wp.vec3(hx, -hy, -hz)
+        l1 = wp.vec3(hx, hy, -hz)
+        l2 = wp.vec3(hx, hy, hz)
+        l3 = wp.vec3(hx, -hy, hz)
+    elif face_idx == 1:  # -X face
+        l0 = wp.vec3(-hx, hy, -hz)
+        l1 = wp.vec3(-hx, -hy, -hz)
+        l2 = wp.vec3(-hx, -hy, hz)
+        l3 = wp.vec3(-hx, hy, hz)
+    elif face_idx == 2:  # +Y face
+        l0 = wp.vec3(hx, hy, -hz)
+        l1 = wp.vec3(-hx, hy, -hz)
+        l2 = wp.vec3(-hx, hy, hz)
+        l3 = wp.vec3(hx, hy, hz)
+    elif face_idx == 3:  # -Y face
+        l0 = wp.vec3(-hx, -hy, -hz)
+        l1 = wp.vec3(hx, -hy, -hz)
+        l2 = wp.vec3(hx, -hy, hz)
+        l3 = wp.vec3(-hx, -hy, hz)
+    elif face_idx == 4:  # +Z face
+        l0 = wp.vec3(-hx, -hy, hz)
+        l1 = wp.vec3(hx, -hy, hz)
+        l2 = wp.vec3(hx, hy, hz)
+        l3 = wp.vec3(-hx, hy, hz)
+    else:  # face_idx == 5, -Z face
+        l0 = wp.vec3(-hx, hy, -hz)
+        l1 = wp.vec3(hx, hy, -hz)
+        l2 = wp.vec3(hx, -hy, -hz)
+        l3 = wp.vec3(-hx, -hy, -hz)
+
+    poly = ClipPoly()
+    poly.v0 = pos + R * l0
+    poly.v1 = pos + R * l1
+    poly.v2 = pos + R * l2
+    poly.v3 = pos + R * l3
+    poly.count = 4
+    return poly
+
+
+@wp.func
+def _box_find_support_face(R: wp.mat33, direction: wp.vec3) -> int:
+    """Find box face whose outward normal has highest dot with direction.
+
+    Returns face index 0-5 (+X,-X,+Y,-Y,+Z,-Z).
+    """
+    ax0 = wp.vec3(R[0, 0], R[1, 0], R[2, 0])
+    ax1 = wp.vec3(R[0, 1], R[1, 1], R[2, 1])
+    ax2 = wp.vec3(R[0, 2], R[1, 2], R[2, 2])
+
+    d0 = wp.dot(direction, ax0)
+    d1 = wp.dot(direction, ax1)
+    d2 = wp.dot(direction, ax2)
+
+    best_dot = d0
+    best_idx = 0
+    if -d0 > best_dot:
+        best_dot = -d0
+        best_idx = 1
+    if d1 > best_dot:
+        best_dot = d1
+        best_idx = 2
+    if -d1 > best_dot:
+        best_dot = -d1
+        best_idx = 3
+    if d2 > best_dot:
+        best_dot = d2
+        best_idx = 4
+    if -d2 > best_dot:
+        best_idx = 5
+
+    return best_idx
+
+
+@wp.func
+def _box_find_incident_face(R: wp.mat33, ref_normal: wp.vec3) -> int:
+    """Find box face most anti-aligned with ref_normal (min dot)."""
+    ax0 = wp.vec3(R[0, 0], R[1, 0], R[2, 0])
+    ax1 = wp.vec3(R[0, 1], R[1, 1], R[2, 1])
+    ax2 = wp.vec3(R[0, 2], R[1, 2], R[2, 2])
+
+    d0 = wp.dot(ref_normal, ax0)
+    d1 = wp.dot(ref_normal, ax1)
+    d2 = wp.dot(ref_normal, ax2)
+
+    best_dot = d0
+    best_idx = 0
+    if -d0 < best_dot:
+        best_dot = -d0
+        best_idx = 1
+    if d1 < best_dot:
+        best_dot = d1
+        best_idx = 2
+    if -d1 < best_dot:
+        best_dot = -d1
+        best_idx = 3
+    if d2 < best_dot:
+        best_dot = d2
+        best_idx = 4
+    if -d2 < best_dot:
+        best_idx = 5
+
+    return best_idx
+
+
+# ---------------------------------------------------------------------------
+# Sutherland-Hodgman polygon clipping
+# ---------------------------------------------------------------------------
+
+
+@wp.func
+def _clip_polygon_by_plane(poly: ClipPoly, plane_n: wp.vec3, plane_d: float) -> ClipPoly:
+    """Clip polygon against half-plane {x : dot(plane_n, x) <= plane_d}.
+
+    Sutherland-Hodgman: for each edge, classify endpoints and emit
+    kept vertices + intersection points.
+    """
+    out = ClipPoly()
+    out.count = 0
+    n = poly.count
+
+    for i in range(8):
+        if i >= n:
+            continue
+        curr = _clip_poly_get(poly, i)
+        next_idx = (i + 1) % n
+        nxt = _clip_poly_get(poly, next_idx)
+
+        d_curr = wp.dot(plane_n, curr) - plane_d
+        d_nxt = wp.dot(plane_n, nxt) - plane_d
+
+        if d_curr <= 0.0:
+            # Current inside
+            if out.count < 8:
+                out = _clip_poly_push(out, curr)
+            if d_nxt > 0.0:
+                # Next outside — add intersection
+                denom = d_curr - d_nxt
+                if wp.abs(denom) > 1.0e-12:
+                    t = d_curr / denom
+                    inter = curr + t * (nxt - curr)
+                    if out.count < 8:
+                        out = _clip_poly_push(out, inter)
+        else:
+            # Current outside
+            if d_nxt <= 0.0:
+                # Next inside — add intersection
+                denom = d_curr - d_nxt
+                if wp.abs(denom) > 1.0e-12:
+                    t = d_curr / denom
+                    inter = curr + t * (nxt - curr)
+                    if out.count < 8:
+                        out = _clip_poly_push(out, inter)
+
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Box-box multi-point manifold via face clipping
+# ---------------------------------------------------------------------------
+
+
+@wp.func
+def box_box_manifold(
+    pos_a: wp.vec3,
+    R_a: wp.mat33,
+    ha_x: float,
+    ha_y: float,
+    ha_z: float,
+    pos_b: wp.vec3,
+    R_b: wp.mat33,
+    hb_x: float,
+    hb_y: float,
+    hb_z: float,
+    normal: wp.vec3,
+    depth: float,
+) -> BoxBoxManifold:
+    """Multi-point contact manifold for OBB-OBB collision.
+
+    Given the SAT contact normal (B→A) and penetration depth, produces
+    up to 4 contact points via Sutherland-Hodgman face clipping.
+
+    For edge-edge contacts (normal not aligned with any face axis),
+    falls back to the single support-midpoint.
+
+    Reference: Ericson (2004) §5.5, Bullet btBoxBoxDetector.
+    """
+    result = BoxBoxManifold()
+    result.count = 0
+
+    # --- Axis type detection ---
+    # Check alignment of normal with face axes of A and B
+    ax0 = wp.vec3(R_a[0, 0], R_a[1, 0], R_a[2, 0])
+    ax1 = wp.vec3(R_a[0, 1], R_a[1, 1], R_a[2, 1])
+    ax2 = wp.vec3(R_a[0, 2], R_a[1, 2], R_a[2, 2])
+
+    da0 = wp.abs(wp.dot(normal, ax0))
+    da1 = wp.abs(wp.dot(normal, ax1))
+    da2 = wp.abs(wp.dot(normal, ax2))
+    max_dot_a = da0
+    if da1 > max_dot_a:
+        max_dot_a = da1
+    if da2 > max_dot_a:
+        max_dot_a = da2
+
+    bx0 = wp.vec3(R_b[0, 0], R_b[1, 0], R_b[2, 0])
+    bx1 = wp.vec3(R_b[0, 1], R_b[1, 1], R_b[2, 1])
+    bx2 = wp.vec3(R_b[0, 2], R_b[1, 2], R_b[2, 2])
+
+    db0 = wp.abs(wp.dot(normal, bx0))
+    db1 = wp.abs(wp.dot(normal, bx1))
+    db2 = wp.abs(wp.dot(normal, bx2))
+    max_dot_b = db0
+    if db1 > max_dot_b:
+        max_dot_b = db1
+    if db2 > max_dot_b:
+        max_dot_b = db2
+
+    FACE_THRESH = 0.99
+
+    if max_dot_a < FACE_THRESH and max_dot_b < FACE_THRESH:
+        # Edge-edge contact: single point (support midpoint)
+        cp = box_box_contact_point(
+            pos_a,
+            R_a,
+            ha_x,
+            ha_y,
+            ha_z,
+            pos_b,
+            R_b,
+            hb_x,
+            hb_y,
+            hb_z,
+            normal,
+        )
+        result.p0 = cp
+        result.d0 = depth
+        result.count = 1
+        return result
+
+    # --- Face clipping path ---
+    # Reference face = box whose face normal aligns better with SAT normal
+    # The reference face normal should point in the same direction as `normal`
+    # (from B toward A), so for A we look for face aligned with -normal
+    # (A's outward face toward B), for B we look for face aligned with +normal.
+
+    ref_pos = pos_a
+    ref_R = R_a
+    ref_hx = ha_x
+    ref_hy = ha_y
+    ref_hz = ha_z
+    inc_pos = pos_b
+    inc_R = R_b
+    inc_hx = hb_x
+    inc_hy = hb_y
+    inc_hz = hb_z
+    # Reference face: A's face whose outward normal ≈ -normal (faces toward B)
+    neg_n = wp.vec3(-normal[0], -normal[1], -normal[2])
+    ref_face = _box_find_support_face(R_a, neg_n)
+    ref_fn = _box_face_normal_world(R_a, ref_face)
+
+    if max_dot_b > max_dot_a:
+        # B is reference instead
+        ref_pos = pos_b
+        ref_R = R_b
+        ref_hx = hb_x
+        ref_hy = hb_y
+        ref_hz = hb_z
+        inc_pos = pos_a
+        inc_R = R_a
+        inc_hx = ha_x
+        inc_hy = ha_y
+        inc_hz = ha_z
+        ref_face = _box_find_support_face(R_b, normal)
+        ref_fn = _box_face_normal_world(R_b, ref_face)
+
+    # Incident face: face on incident box most anti-aligned with ref normal
+    inc_face = _box_find_incident_face(inc_R, ref_fn)
+
+    # Get face polygons in world frame
+    ref_poly = _box_face_vertices(ref_pos, ref_R, ref_hx, ref_hy, ref_hz, ref_face)
+    inc_poly = _box_face_vertices(inc_pos, inc_R, inc_hx, inc_hy, inc_hz, inc_face)
+
+    # Clip incident polygon against 4 side planes of reference face
+    # Side plane for edge (v_i, v_{i+1}): normal = cross(edge, ref_fn), pointing inward
+    for ei in range(4):
+        ev0 = _clip_poly_get(ref_poly, ei)
+        ev1 = _clip_poly_get(ref_poly, (ei + 1) % 4)
+        edge = ev1 - ev0
+        side_n = wp.normalize(wp.cross(edge, ref_fn))
+        side_d = wp.dot(side_n, ev0)
+        inc_poly = _clip_polygon_by_plane(inc_poly, side_n, side_d)
+
+    # Project clipped points onto reference plane, filter by depth
+    ref_d = wp.dot(ref_fn, _clip_poly_get(ref_poly, 0))
+
+    for ci in range(8):
+        if ci >= inc_poly.count:
+            continue
+        if result.count >= 4:
+            continue
+        p = _clip_poly_get(inc_poly, ci)
+        signed_dist = wp.dot(ref_fn, p) - ref_d
+        pt_depth = -signed_dist
+        if pt_depth > -1.0e-6:
+            # Project point onto reference plane
+            contact_pt = p - signed_dist * ref_fn
+            clamped_depth = pt_depth
+            if clamped_depth < 0.0:
+                clamped_depth = 0.0
+            result = _manifold_set(result, result.count, contact_pt, clamped_depth)
+            result.count = result.count + 1
+
+    # If clipping produced nothing (degenerate), fall back to single point
+    if result.count == 0:
+        cp = box_box_contact_point(
+            pos_a,
+            R_a,
+            ha_x,
+            ha_y,
+            ha_z,
+            pos_b,
+            R_b,
+            hb_x,
+            hb_y,
+            hb_z,
+            normal,
+        )
+        result.p0 = cp
+        result.d0 = depth
+        result.count = 1
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Box-ground multi-point manifold (vertex enumeration)
+# ---------------------------------------------------------------------------
+
+
+@wp.func
+def box_ground_manifold(
+    pos: wp.vec3,
+    R: wp.mat33,
+    hx: float,
+    hy: float,
+    hz: float,
+    ground_z: float,
+) -> BoxBoxManifold:
+    """Multi-point contact for box vs flat ground (z = ground_z).
+
+    Checks all 8 box vertices against the ground plane.
+    Keeps up to 4 deepest penetrating vertices.
+    """
+    result = BoxBoxManifold()
+    result.count = 0
+
+    # All 8 local-frame vertices
+    # We test them all but only keep up to 4 (deepest)
+    # For a resting box, exactly 4 bottom-face vertices penetrate.
+    for vi in range(8):
+        sx = hx
+        if vi & 1 == 0:
+            sx = -hx
+        sy = hy
+        if vi & 2 == 0:
+            sy = -hy
+        sz = hz
+        if vi & 4 == 0:
+            sz = -hz
+
+        local_v = wp.vec3(sx, sy, sz)
+        world_v = pos + R * local_v
+        vert_depth = ground_z - world_v[2]
+
+        if vert_depth > 0.0:
+            cp = wp.vec3(world_v[0], world_v[1], ground_z)
+            if result.count < 4:
+                result = _manifold_set(result, result.count, cp, vert_depth)
+                result.count = result.count + 1
+            else:
+                # Replace shallowest if this vertex is deeper
+                min_d = result.d0
+                min_idx = 0
+                if result.d1 < min_d:
+                    min_d = result.d1
+                    min_idx = 1
+                if result.d2 < min_d:
+                    min_d = result.d2
+                    min_idx = 2
+                if result.d3 < min_d:
+                    min_d = result.d3
+                    min_idx = 3
+                if vert_depth > min_d:
+                    result = _manifold_set(result, min_idx, cp, vert_depth)
+
+    return result

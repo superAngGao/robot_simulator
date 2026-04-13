@@ -18,8 +18,11 @@ from .analytical_collision import (
     SHAPE_SPHERE,
     _box_ground_contact_point,
     _capsule_ground_contact_point,
+    _manifold_get_depth,
+    _manifold_get_point,
     box_box,
     box_box_contact_point,
+    box_box_manifold,
     box_box_normal,
     box_vs_ground,
     capsule_capsule,
@@ -632,6 +635,7 @@ def batched_detect_multishape(
                 g_hit = g_res[1]
                 g_low = _box_ground_contact_point(pos_s, R_s, g_hx, g_hy, g_hz)
                 g_cp = wp.vec3(g_low[0], g_low[1], ground_z)
+                # TODO: upgrade to box_ground_manifold multi-point (Q42.4 follow-up)
             elif st == SHAPE_CYLINDER:
                 g_r = flat_shape_params[s_idx, 0]
                 g_hl = flat_shape_params[s_idx, 1]
@@ -804,31 +808,58 @@ def batched_detect_multishape(
                         )
                         n_depth = n_res[0]
                         n_hit = n_res[1]
-                        n_normal = box_box_normal(
-                            a_pos,
-                            a_R,
-                            n_ha_x,
-                            n_ha_y,
-                            n_ha_z,
-                            b_pos,
-                            b_R,
-                            n_hb_x,
-                            n_hb_y,
-                            n_hb_z,
-                        )
-                        n_cp = box_box_contact_point(
-                            a_pos,
-                            a_R,
-                            n_ha_x,
-                            n_ha_y,
-                            n_ha_z,
-                            b_pos,
-                            b_R,
-                            n_hb_x,
-                            n_hb_y,
-                            n_hb_z,
-                            n_normal,
-                        )
+                        # Multi-point manifold: write contacts inline
+                        if n_hit > 0.5:
+                            n_normal = box_box_normal(
+                                a_pos,
+                                a_R,
+                                n_ha_x,
+                                n_ha_y,
+                                n_ha_z,
+                                b_pos,
+                                b_R,
+                                n_hb_x,
+                                n_hb_y,
+                                n_hb_z,
+                            )
+                            # Manifold uses canonical (un-swapped) normal
+                            bbm = box_box_manifold(
+                                a_pos,
+                                a_R,
+                                n_ha_x,
+                                n_ha_y,
+                                n_ha_z,
+                                b_pos,
+                                b_R,
+                                n_hb_x,
+                                n_hb_y,
+                                n_hb_z,
+                                n_normal,
+                                n_depth,
+                            )
+                            # Apply swap to normal for writing
+                            if swap == 1:
+                                n_normal = wp.vec3(-n_normal[0], -n_normal[1], -n_normal[2])
+                            for mk in range(4):
+                                if mk < bbm.count:
+                                    m_slot = wp.atomic_add(contact_count, env_id, 1)
+                                    if m_slot < max_contacts:
+                                        _write_contact(
+                                            env_id,
+                                            m_slot,
+                                            _manifold_get_depth(bbm, mk),
+                                            n_normal,
+                                            _manifold_get_point(bbm, mk),
+                                            bi,
+                                            bj,
+                                            contact_depth,
+                                            contact_normal,
+                                            contact_point,
+                                            contact_bi,
+                                            contact_bj,
+                                            contact_active,
+                                        )
+                            n_hit = 0.0  # handled; skip common write
                     elif a_t == SHAPE_CAPSULE and b_t == SHAPE_CAPSULE:
                         r_a = flat_shape_params[a_idx, 0]
                         hl_a = flat_shape_params[a_idx, 1]

@@ -1110,8 +1110,13 @@ Total: 68 tests，全部通过。
 1. ✅ 方案调研：7 引擎 (Bullet/MuJoCo/Coal/PhysX/ODE/Box2D/Jolt) 对比
 2. ✅ CPU 实现：FaceTopology + build_contact_manifold + S-H clipping + coplanar face merging
 3. ✅ GPU 方案 B：Box-Box SAT kernel (single-point, 15-axis, depth+normal+contact_point)
-4. ⬜ GPU 方案 C：per-pair manifold cache (4 points, fixed buffer)
-5. ⬜ `find_support_face` O(log F) 优化 (Gauss map / hill climbing) — 当 ConvexHull >200 面时
+4. ✅ GPU box-box multi-point manifold：S-H face clipping on GPU (session 29)
+   - `ClipPoly` / `BoxBoxManifold` structs + `box_box_manifold()` in analytical_collision.py
+   - Produces 1-4 contacts: face-face (4), face-edge (2), edge-edge (1)
+   - `box_ground_manifold()` function implemented + unit-tested, but NOT wired into kernel
+     (solver instability with multi-point ground + body-body contacts; see Q45)
+5. ⬜ GPU 方案 C：per-pair manifold cache (4 points, fixed buffer, temporal coherence)
+6. ⬜ `find_support_face` O(log F) 优化 (Gauss map / hill climbing) — 当 ConvexHull >200 面时
 
 **完整设计线索**：REFLECTIONS.md session 27
 
@@ -1190,3 +1195,30 @@ CPU 端 mesh → ConvexHullShape → GJK/EPA 已完整（Q7 resolved），但 GP
 
 **触发条件**：需要 GPU 加速的 RL 训练使用带 mesh 碰撞的 URDF 时。
 **优先级**：P1（RL 训练的主要 blocker 之一）。
+
+**Q45 — GPU multi-point ground contacts + body-body causes solver explosion** (2026-04-13, session 29)
+
+`box_ground_manifold()` 函数已实现且单元测试通过，但未接入碰撞 kernel。
+原因：当多点地面接触与 body-body 接触同时存在时，Jacobi PGS 求解器在第一步就发散
+（qdot 达到 3.2e8），导致 NaN。
+
+**复现条件**：
+- 2+ 个机器人合并（body-body 接触存在）
+- 至少一个 box shape 产生 4 个地面接触点
+- 单机器人场景正常，仅合并后发散
+
+**推测根因**（待调查）：
+- 多点地面接触增加了 W 矩阵中同 body 上的耦合行
+- Jacobi PGS 每步并行更新所有 lambda，coupling 强时收敛性差
+- 可能需要 Gauss-Seidel ordering、warm starting、或 block solver 处理同 body 多接触
+
+**解决方案候选**：
+1. Gauss-Seidel（顺序更新）替代 Jacobi（并行更新）— 牺牲并行性但收敛好
+2. PGS 迭代次数增加（当前 60，可能不够）
+3. Under-relaxation（降低 omega）
+4. Block PGS：同 body 的接触组成一个 block，block 内 Gauss-Seidel
+5. 切换到 ADMM solver（已有 GPU 实现，合规接触天然阻尼）
+
+**当前缓解**：box-ground 保持单点接触。box-box 多点接触不受影响。
+**触发条件**：需要 box 稳定放置在地面（不翘起）时。
+**优先级**：P2（功能已实现但未激活，不影响当前物理正确性）。

@@ -5,6 +5,59 @@ Updated at the end of each development session.
 
 ---
 
+## 2026-04-13 (session 29) — GPU Box-Box Multi-Point Contact Manifold
+
+### GPU Box-Box Face Clipping (Q42.4)
+
+**Problem**: GPU box-box SAT (session 28) produced a single contact point via
+support-midpoint. Face-face contacts need 4 points for torque resistance;
+face-edge needs 2; only edge-edge correctly needs 1.
+
+**Solution**: Sutherland-Hodgman face clipping in Warp `@wp.func`, using:
+- `ClipPoly` struct (8 vec3 + count) for intermediate clipping polygon
+- `BoxBoxManifold` struct (4 points + 4 depths + count) for output
+- Accessor functions with 8-branch / 4-branch if-chains (Warp has no local arrays)
+- `box_box_manifold()`: detects axis type from normal alignment (face vs edge-edge),
+  clips incident face against reference face's 4 side planes, depth-filters to ≤4 pts
+
+**Key bug found during implementation**: Side plane normal direction. For S-H
+clipping with convention `dot(n, x) ≤ d` = inside, the side plane normal must
+point OUTWARD (away from face center). Correct formula: `cross(edge, ref_fn)`,
+NOT `cross(ref_fn, edge)`. Verified algebraically for all 6 box faces.
+
+**Axis type detection**: `abs(dot(normal, face_axis))` > 0.99 → face contact.
+Works because SAT face axes are exact box columns (within float32 precision).
+Edge-edge normals (cross products) are never aligned with face axes.
+
+**Contact buffer**: No solver changes needed. Multi-point contacts are
+independent slots via `atomic_add`. The solver treats N contacts from 1 pair
+identically to N contacts from N separate pairs.
+
+### Box-Ground Multi-Point: Implemented but Deferred (Q45)
+
+**`box_ground_manifold()`**: checks all 8 box vertices against ground plane,
+keeps up to 4 deepest. Function works correctly (unit tests pass).
+
+**NOT wired into collision kernel** due to Jacobi PGS solver instability:
+when multi-point ground contacts coexist with body-body contacts on merged
+multi-robot scenes, the solver diverges at step 1 (qdot reaches 3.2e8).
+Single-robot scenes and box-box multi-point without ground multi-point
+work perfectly. Root cause is likely W matrix coupling — deferred as Q45.
+
+### Test Coverage
+
+- 12 new tests in `tests/gpu/collision/test_gpu_box_box_manifold.py`:
+  - Face-face aligned: 4 contacts with correct depth
+  - Face-face partial overlap: 4 contacts in overlap region
+  - Face-edge (45° rotation): 2 contacts
+  - Edge-edge (crossed bars): ≥1 contact
+  - Depth accuracy: uniform and non-negative
+  - Box-ground function: 4 flat / tilted / above / corner
+  - Separation: SAT correctly rejects
+- All 859 existing non-slow tests pass (0 regressions)
+
+---
+
 ## 2026-04-12 (session 28) — GPU Box-Box SAT + ConvexHull Coplanar Face Merging
 
 ### GPU Box-Box SAT Kernel
