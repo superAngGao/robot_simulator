@@ -292,9 +292,9 @@ def batched_build_W_vfree_v2(
         depth_c = contact_depth_v2[env_id, ci]
         d_imp = _impedance_wp(depth_c, solimp_d0, solimp_dw, solimp_width, solimp_mid, solimp_power)
         ratio = (1.0 - d_imp) / wp.max(d_imp, 1.0e-10)
-        # Normal row: uniform cfm
+        # Normal row: uniform cfm (hard contact)
         W_diag[env_id, base] = W[env_id, base, base] + cfm
-        # Friction rows: per-row R
+        # Friction rows: per-row R = (1-d)/d × |W_ii| (Q25 fix)
         for off in range(1, CONDIM):
             row = base + off
             W_diag[env_id, row] = W[env_id, row, row] + ratio * wp.abs(W[env_id, row, row])

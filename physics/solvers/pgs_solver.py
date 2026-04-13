@@ -322,7 +322,7 @@ class PGSContactSolver:
         # friction rows get self-adaptive R = (1-d)/d * |W_ii| (Q25 fix).
         for ci, c in enumerate(contacts):
             base = row_offsets[ci]
-            # Normal row: uniform cfm
+            # Normal row: uniform cfm (hard contact)
             W[base, base] += self.cfm
             if c.condim >= 3:
                 d = self._impedance(c.depth)

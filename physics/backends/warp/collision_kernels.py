@@ -24,6 +24,7 @@ from .analytical_collision import (
     box_box_contact_point,
     box_box_manifold,
     box_box_normal,
+    box_ground_manifold,
     box_vs_ground,
     capsule_capsule,
     capsule_vs_ground,
@@ -633,9 +634,29 @@ def batched_detect_multishape(
                 g_res = box_vs_ground(pos_s, R_s, g_hx, g_hy, g_hz, ground_z)
                 g_depth = g_res[0]
                 g_hit = g_res[1]
-                g_low = _box_ground_contact_point(pos_s, R_s, g_hx, g_hy, g_hz)
-                g_cp = wp.vec3(g_low[0], g_low[1], ground_z)
-                # TODO: upgrade to box_ground_manifold multi-point (Q42.4 follow-up)
+                # Multi-point: write up to 4 contacts, skip common write
+                if g_hit > 0.5:
+                    gm = box_ground_manifold(pos_s, R_s, g_hx, g_hy, g_hz, ground_z)
+                    for gk in range(4):
+                        if gk < gm.count:
+                            g_slot = wp.atomic_add(contact_count, env_id, 1)
+                            if g_slot < max_contacts:
+                                _write_contact(
+                                    env_id,
+                                    g_slot,
+                                    _manifold_get_depth(gm, gk),
+                                    wp.vec3(0.0, 0.0, 1.0),
+                                    _manifold_get_point(gm, gk),
+                                    bi,
+                                    -1,
+                                    contact_depth,
+                                    contact_normal,
+                                    contact_point,
+                                    contact_bi,
+                                    contact_bj,
+                                    contact_active,
+                                )
+                    g_hit = 0.0  # handled; skip common single-write
             elif st == SHAPE_CYLINDER:
                 g_r = flat_shape_params[s_idx, 0]
                 g_hl = flat_shape_params[s_idx, 1]

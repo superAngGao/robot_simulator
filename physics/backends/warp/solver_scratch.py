@@ -87,6 +87,15 @@ class SolverScratch:
         # v_current = J @ qdot (used by both W build and ADMM)
         self.v_current = wp.zeros((N, max_rows), dtype=wp.float32, device=device)
 
+        # -- Mass splitting arrays (Jacobi PGS with mass splitting) --
+        if solver == "jacobi_pgs_ms":
+            self.n_contacts_per_body = wp.zeros((N, nb), dtype=wp.int32, device=device)
+
+        # -- Graph-colored GS arrays --
+        if solver == "colored_pgs":
+            self.contact_color = wp.zeros((N, nc), dtype=wp.int32, device=device)
+            self.n_colors = wp.zeros((N,), dtype=wp.int32, device=device)
+
         # -- ADMM solver arrays (allocated only when solver="admm") --
         if solver == "admm":
             self.admm_AR_rho = wp.zeros((N, max_rows, max_rows), dtype=wp.float32, device=device)

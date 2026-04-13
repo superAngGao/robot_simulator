@@ -282,48 +282,60 @@ class TestStep6CpuGpuMultiEnv:
         gpu.step(q_2env, qdot_2env, tau_2d, dt=dt)
         gpu_ground = [c for c in gpu.query_contacts(env_idx=0) if c.body_j == -1]
 
-        # 1. Count must match exactly
-        assert len(cpu_ground) == len(gpu_ground), (
-            f"Ground contact count mismatch: CPU={len(cpu_ground)}, GPU={len(gpu_ground)}"
+        # 1. GPU may produce more contacts than CPU due to box-ground multi-point
+        # manifold (GPU: 4 contacts per box, CPU: 1 single-point). Compare bodies
+        # that have contacts, not exact counts.
+        assert len(cpu_ground) > 0, "CPU should detect ground contacts"
+        assert len(gpu_ground) >= len(cpu_ground), (
+            f"GPU should have ≥ CPU ground contacts: CPU={len(cpu_ground)}, GPU={len(gpu_ground)}"
         )
-        assert len(cpu_ground) > 0, "Both should detect ground contacts"
 
         # 2. Sort by (body_i, depth) for deterministic comparison
         cpu_sorted = sorted(cpu_ground, key=lambda c: (c.body_i, c.depth))
         gpu_sorted = sorted(gpu_ground, key=lambda c: (c.body_i, c.depth))
 
-        # 3. body_i sequence must match exactly
-        cpu_bodies = [c.body_i for c in cpu_sorted]
-        gpu_bodies = [c.body_i for c in gpu_sorted]
-        assert cpu_bodies == gpu_bodies, (
-            f"Ground contact body_i mismatch:\n  CPU: {cpu_bodies}\n  GPU: {gpu_bodies}"
+        # 3. Same bodies should have ground contacts (GPU may have more per body)
+        cpu_body_set = set(c.body_i for c in cpu_sorted)
+        gpu_body_set = set(c.body_i for c in gpu_sorted)
+        assert cpu_body_set == gpu_body_set, (
+            f"Ground contact body sets differ:\n  CPU: {cpu_body_set}\n  GPU: {gpu_body_set}"
         )
 
-        # 4. Normal must be [0,0,1] for flat terrain (both backends)
-        for i, (cc, gc) in enumerate(zip(cpu_sorted, gpu_sorted)):
-            np.testing.assert_allclose(
-                cc.normal,
-                [0, 0, 1],
-                atol=1e-6,
-                err_msg=f"CPU contact {i} normal wrong",
-            )
+        # 4. Normal must be [0,0,1] for flat terrain (check GPU contacts only,
+        #    CPU count may differ due to multi-point)
+        for i, gc in enumerate(gpu_sorted):
             np.testing.assert_allclose(
                 gc.normal,
                 [0, 0, 1],
                 atol=1e-3,  # float32
                 err_msg=f"GPU contact {i} normal wrong",
             )
+        for i, cc in enumerate(cpu_sorted):
+            np.testing.assert_allclose(
+                cc.normal,
+                [0, 0, 1],
+                atol=1e-6,
+                err_msg=f"CPU contact {i} normal wrong",
+            )
 
-        # 5. Depth must agree (float32 vs float64 tolerance)
-        cpu_depths = np.array([c.depth for c in cpu_sorted])
-        gpu_depths = np.array([c.depth for c in gpu_sorted])
-        np.testing.assert_allclose(
-            gpu_depths,
-            cpu_depths,
-            atol=2e-3,
-            rtol=0.1,
-            err_msg="Ground contact depth mismatch CPU vs GPU",
-        )
+        # 5. Depth must agree for shared bodies (float32 vs float64 tolerance)
+        # Compare per-body max depth since GPU may have multiple contacts per body
+        from collections import defaultdict
+
+        cpu_max_depth = defaultdict(float)
+        for c in cpu_sorted:
+            cpu_max_depth[c.body_i] = max(cpu_max_depth[c.body_i], c.depth)
+        gpu_max_depth = defaultdict(float)
+        for c in gpu_sorted:
+            gpu_max_depth[c.body_i] = max(gpu_max_depth[c.body_i], c.depth)
+        for bi in cpu_max_depth:
+            np.testing.assert_allclose(
+                gpu_max_depth[bi],
+                cpu_max_depth[bi],
+                atol=2e-3,
+                rtol=0.1,
+                err_msg=f"Ground contact depth mismatch CPU vs GPU for body {bi}",
+            )
         # Note: contact point XY is NOT compared because CPU (GJK/EPA) and
         # GPU (analytical) use different algorithms for box/capsule ground
         # contact points. The physically meaningful quantities are body_i,
@@ -337,7 +349,7 @@ class TestStep6CpuGpuMultiEnv:
         tau = np.zeros((NUM_ENVS, merged.nv))
         dt = 2e-4
 
-        gpu = GpuEngine(merged, num_envs=NUM_ENVS, dt=dt)
+        gpu = GpuEngine(merged, num_envs=NUM_ENVS, dt=dt, solver="jacobi_pgs_ms")
         q, qdot = q_2env.copy(), qdot_2env.copy()
         for step in range(50):
             out = gpu.step(q, qdot, tau, dt=dt)
