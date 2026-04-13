@@ -180,3 +180,142 @@ class TestConvexHullStability:
             out = gpu.step(q, qdot, tau, dt=2e-4)
             q, qdot = out.q_new, out.qdot_new
             assert np.all(np.isfinite(q)), f"NaN at step {step}"
+
+
+# ---------------------------------------------------------------------------
+# CPU vs GPU agreement
+# ---------------------------------------------------------------------------
+
+
+def _two_body_model(shape_a, shape_b, z_a, z_b, y_sep=0.0):
+    """Create a 2-body model with two shapes, both as contact bodies."""
+    tree = RobotTreeNumpy(gravity=9.81)
+    tree.add_body(Body("a", 0, FreeJoint("ja"), _I, SpatialTransform.identity(), -1))
+    tree.add_body(Body("b", 1, FreeJoint("jb"), _I, SpatialTransform.identity(), -1))
+    tree.finalize()
+    geom_a = BodyCollisionGeometry(0, [ShapeInstance(shape_a)])
+    geom_b = BodyCollisionGeometry(1, [ShapeInstance(shape_b)])
+    model = RobotModel(
+        tree=tree,
+        geometries=[geom_a, geom_b],
+        contact_body_names=["a", "b"],
+    )
+    merged = merge_models({"A": model}, terrain=FlatTerrain())
+    q, qdot = merged.tree.default_state()
+    # Body a: q[0:7], body b: q[7:14]
+    q[6] = z_a
+    q[5] = 0.0
+    q[13] = z_b
+    q[12] = y_sep
+    return merged, q, qdot
+
+
+class TestCpuGpuAgreement:
+    """CPU (GJK/EPA) vs GPU (GJK + margin / vertex enum) agreement."""
+
+    def test_hull_ground_depth_agrees(self):
+        """ConvexHull-ground: CPU and GPU produce same max depth per body."""
+        from physics.cpu_engine import CpuEngine
+
+        hull = _box_as_hull(0.3, 0.3, 0.3)
+        merged, q, qdot = _single_hull_model(hull, z=0.25)
+        tau = np.zeros(merged.nv)
+
+        # CPU
+        cpu = CpuEngine(merged, dt=2e-4)
+        cpu.step(q.copy(), qdot.copy(), tau, dt=2e-4)
+        cpu_contacts = cpu.query_contacts()
+        cpu_ground = [c for c in cpu_contacts if c.body_j < 0]
+
+        # GPU
+        gpu = GpuEngine(merged, num_envs=1, dt=2e-4)
+        gpu.step(q.copy(), qdot.copy(), tau, dt=2e-4)
+        gpu_contacts = gpu.query_contacts(env_idx=0)
+        gpu_ground = [c for c in gpu_contacts if c.body_j < 0]
+
+        assert len(cpu_ground) > 0, "CPU should detect ground contacts"
+        assert len(gpu_ground) > 0, "GPU should detect ground contacts"
+
+        cpu_max_depth = max(c.depth for c in cpu_ground)
+        gpu_max_depth = max(c.depth for c in gpu_ground)
+        np.testing.assert_allclose(
+            gpu_max_depth,
+            cpu_max_depth,
+            atol=2e-3,
+            err_msg="CPU vs GPU ground depth disagree",
+        )
+
+    def test_hull_sphere_body_body_detected(self):
+        """ConvexHull vs Sphere body-body: both engines detect contact."""
+        from physics.cpu_engine import CpuEngine
+        from physics.geometry import SphereShape
+
+        hull = _box_as_hull(0.2, 0.2, 0.2)
+        sphere = SphereShape(0.15)
+        # Place them overlapping: hull center at z=0.5, sphere at z=0.5, y_sep=0.3
+        # Hull extends ±0.2 in Y, sphere radius 0.15 → overlap = 0.2+0.15-0.3 = 0.05
+        merged, q, qdot = _two_body_model(hull, sphere, z_a=0.5, z_b=0.5, y_sep=0.3)
+        tau = np.zeros(merged.nv)
+
+        # CPU
+        cpu = CpuEngine(merged, dt=2e-4)
+        cpu.step(q.copy(), qdot.copy(), tau, dt=2e-4)
+        cpu_bb = [c for c in cpu.query_contacts() if c.body_j >= 0]
+
+        # GPU
+        gpu = GpuEngine(merged, num_envs=1, dt=2e-4)
+        gpu.step(q.copy(), qdot.copy(), tau, dt=2e-4)
+        gpu_bb = [c for c in gpu.query_contacts(env_idx=0) if c.body_j >= 0]
+
+        assert len(cpu_bb) > 0, "CPU should detect hull-sphere body-body"
+        assert len(gpu_bb) > 0, "GPU should detect hull-sphere body-body"
+
+        # Depths should be in the same ballpark (GPU uses margin, CPU uses EPA)
+        cpu_depth = max(c.depth for c in cpu_bb)
+        gpu_depth = max(c.depth for c in gpu_bb)
+        # GPU depth is capped at CONVEX_MARGIN (1e-3) for non-deep penetration
+        # so we just check both detected the contact
+        assert cpu_depth > 0
+        assert gpu_depth > 0
+
+    def test_hull_hull_body_body_detected(self):
+        """ConvexHull vs ConvexHull body-body: both engines detect contact."""
+        from physics.cpu_engine import CpuEngine
+
+        hull_a = _box_as_hull(0.2, 0.2, 0.2)
+        hull_b = _box_as_hull(0.15, 0.15, 0.15)
+        # Overlapping in Y: hull_a ±0.2, hull_b ±0.15, sep=0.3 → overlap = 0.05
+        merged, q, qdot = _two_body_model(hull_a, hull_b, z_a=0.5, z_b=0.5, y_sep=0.3)
+        tau = np.zeros(merged.nv)
+
+        cpu = CpuEngine(merged, dt=2e-4)
+        cpu.step(q.copy(), qdot.copy(), tau, dt=2e-4)
+        cpu_bb = [c for c in cpu.query_contacts() if c.body_j >= 0]
+
+        gpu = GpuEngine(merged, num_envs=1, dt=2e-4)
+        gpu.step(q.copy(), qdot.copy(), tau, dt=2e-4)
+        gpu_bb = [c for c in gpu.query_contacts(env_idx=0) if c.body_j >= 0]
+
+        assert len(cpu_bb) > 0, "CPU should detect hull-hull body-body"
+        assert len(gpu_bb) > 0, "GPU should detect hull-hull body-body"
+
+    def test_separated_hull_no_contact(self):
+        """Well-separated ConvexHulls: neither engine detects contact."""
+        from physics.cpu_engine import CpuEngine
+
+        hull_a = _box_as_hull(0.1, 0.1, 0.1)
+        hull_b = _box_as_hull(0.1, 0.1, 0.1)
+        # Far apart: y_sep=1.0 >> 2*0.1
+        merged, q, qdot = _two_body_model(hull_a, hull_b, z_a=0.5, z_b=0.5, y_sep=1.0)
+        tau = np.zeros(merged.nv)
+
+        cpu = CpuEngine(merged, dt=2e-4)
+        cpu.step(q.copy(), qdot.copy(), tau, dt=2e-4)
+        cpu_bb = [c for c in cpu.query_contacts() if c.body_j >= 0]
+
+        gpu = GpuEngine(merged, num_envs=1, dt=2e-4)
+        gpu.step(q.copy(), qdot.copy(), tau, dt=2e-4)
+        gpu_bb = [c for c in gpu.query_contacts(env_idx=0) if c.body_j >= 0]
+
+        assert len(cpu_bb) == 0, f"CPU should not detect contact, got {len(cpu_bb)}"
+        assert len(gpu_bb) == 0, f"GPU should not detect contact, got {len(gpu_bb)}"

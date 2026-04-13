@@ -1958,16 +1958,22 @@ def gjk_closest_distance(
                 s_cz = sup[2]
 
     # Compute final distance
+    # NOTE: this simplified GJK uses a 3-point (triangle) simplex max.
+    # In 3D, overlap detection requires a 4-point tetrahedron. If the loop
+    # didn't converge to separation (done != 1), assume overlap (conservative).
     dist = float(0.0)
-    if done == 2:
-        dist = 0.0
-    elif s_n == 1:
-        dist = wp.length(wp.vec3(s_ax, s_ay, s_az))
+    if done == 1:
+        # Converged to separation — use tracked closest distance
+        if s_n == 1:
+            dist = wp.length(wp.vec3(s_ax, s_ay, s_az))
+        else:
+            dist = wp.max(closest_dist, 0.0)
     else:
-        dist = wp.max(closest_dist, 0.0)
+        # done==0 (no convergence) or done==2 (explicit overlap) → overlap
+        dist = 0.0
 
     hit = float(0.0)
-    if dist < margin or done == 2:
+    if dist < margin:
         hit = 1.0
 
     return wp.vec3(dist, hit, 0.0)
