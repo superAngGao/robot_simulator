@@ -12,14 +12,17 @@ The solver kernels then process these uniformly.
 import warp as wp
 
 from .analytical_collision import (
+    CONVEX_MARGIN,
     SHAPE_BOX,
     SHAPE_CAPSULE,
+    SHAPE_CONVEXHULL,
     SHAPE_CYLINDER,
     SHAPE_SPHERE,
     _box_ground_contact_point,
     _capsule_ground_contact_point,
     _manifold_get_depth,
     _manifold_get_point,
+    _support_world,
     box_box,
     box_box_contact_point,
     box_box_manifold,
@@ -30,7 +33,10 @@ from .analytical_collision import (
     capsule_vs_ground,
     closest_points_seg_seg_both,
     closest_points_segment_segment,
+    convexhull_ground_manifold,
     cylinder_vs_ground,
+    gjk_closest_distance,
+    gjk_contact_normal,
     sphere_box,
     sphere_box_normal,
     sphere_capsule,
@@ -555,6 +561,10 @@ def batched_detect_multishape(
     body_shape_adr: wp.array(dtype=wp.int32),
     body_shape_num: wp.array(dtype=wp.int32),
     body_collision_radius: wp.array(dtype=wp.float32),
+    # ConvexHull vertex data (Q41)
+    hull_vertices: wp.array2d(dtype=wp.float32),
+    hull_vert_adr: wp.array(dtype=wp.int32),
+    hull_vert_count: wp.array(dtype=wp.int32),
     # Ground contact bodies
     contact_body_idx: wp.array(dtype=wp.int32),
     ground_z: float,
@@ -663,6 +673,32 @@ def batched_detect_multishape(
                 g_res = cylinder_vs_ground(pos_s, R_s, g_r, g_hl, ground_z)
                 g_depth = g_res[0]
                 g_hit = g_res[1]
+            elif st == SHAPE_CONVEXHULL:
+                # Multi-point: vertex enumeration for hull vs ground
+                h_adr = hull_vert_adr[s_idx]
+                h_cnt = hull_vert_count[s_idx]
+                if h_cnt > 0:
+                    hm = convexhull_ground_manifold(pos_s, R_s, hull_vertices, h_adr, h_cnt, ground_z)
+                    for hk in range(4):
+                        if hk < hm.count:
+                            h_slot = wp.atomic_add(contact_count, env_id, 1)
+                            if h_slot < max_contacts:
+                                _write_contact(
+                                    env_id,
+                                    h_slot,
+                                    _manifold_get_depth(hm, hk),
+                                    wp.vec3(0.0, 0.0, 1.0),
+                                    _manifold_get_point(hm, hk),
+                                    bi,
+                                    -1,
+                                    contact_depth,
+                                    contact_normal,
+                                    contact_point,
+                                    contact_bi,
+                                    contact_bj,
+                                    contact_active,
+                                )
+                    g_hit = 0.0  # handled; skip common write
             else:
                 g_br = body_collision_radius[bi]
                 if g_br > 0.0:
@@ -904,6 +940,100 @@ def batched_detect_multishape(
                         if n_dist > 1.0e-10:
                             n_normal = n_diff / n_dist
                         n_cp = n_pt_b + n_normal * r_b
+                    elif a_t == SHAPE_CONVEXHULL or b_t == SHAPE_CONVEXHULL:
+                        # GJK closest-distance with convex margin (Q41)
+                        gjk_res = gjk_closest_distance(
+                            a_pos,
+                            a_R,
+                            a_t,
+                            wp.vec4(
+                                flat_shape_params[a_idx, 0],
+                                flat_shape_params[a_idx, 1],
+                                flat_shape_params[a_idx, 2],
+                                flat_shape_params[a_idx, 3],
+                            ),
+                            b_pos,
+                            b_R,
+                            b_t,
+                            wp.vec4(
+                                flat_shape_params[b_idx, 0],
+                                flat_shape_params[b_idx, 1],
+                                flat_shape_params[b_idx, 2],
+                                flat_shape_params[b_idx, 3],
+                            ),
+                            hull_vertices,
+                            hull_vert_adr[a_idx],
+                            hull_vert_count[a_idx],
+                            hull_vert_adr[b_idx],
+                            hull_vert_count[b_idx],
+                        )
+                        gjk_dist = gjk_res[0]
+                        gjk_hit = gjk_res[1]
+                        if gjk_hit > 0.5:
+                            n_hit = 1.0
+                            if gjk_dist > 0.0:
+                                n_depth = CONVEX_MARGIN - gjk_dist
+                            else:
+                                # Deep penetration: use bounding sphere fallback depth
+                                n_depth = CONVEX_MARGIN
+                            n_normal = gjk_contact_normal(
+                                a_pos,
+                                a_R,
+                                a_t,
+                                wp.vec4(
+                                    flat_shape_params[a_idx, 0],
+                                    flat_shape_params[a_idx, 1],
+                                    flat_shape_params[a_idx, 2],
+                                    flat_shape_params[a_idx, 3],
+                                ),
+                                b_pos,
+                                b_R,
+                                b_t,
+                                wp.vec4(
+                                    flat_shape_params[b_idx, 0],
+                                    flat_shape_params[b_idx, 1],
+                                    flat_shape_params[b_idx, 2],
+                                    flat_shape_params[b_idx, 3],
+                                ),
+                                hull_vertices,
+                                hull_vert_adr[a_idx],
+                                hull_vert_count[a_idx],
+                                hull_vert_adr[b_idx],
+                                hull_vert_count[b_idx],
+                            )
+                            # Contact point: midpoint of support points
+                            neg_n = wp.vec3(-n_normal[0], -n_normal[1], -n_normal[2])
+                            sup_a = _support_world(
+                                a_t,
+                                a_pos,
+                                a_R,
+                                wp.vec4(
+                                    flat_shape_params[a_idx, 0],
+                                    flat_shape_params[a_idx, 1],
+                                    flat_shape_params[a_idx, 2],
+                                    flat_shape_params[a_idx, 3],
+                                ),
+                                hull_vertices,
+                                hull_vert_adr[a_idx],
+                                hull_vert_count[a_idx],
+                                neg_n,
+                            )
+                            sup_b = _support_world(
+                                b_t,
+                                b_pos,
+                                b_R,
+                                wp.vec4(
+                                    flat_shape_params[b_idx, 0],
+                                    flat_shape_params[b_idx, 1],
+                                    flat_shape_params[b_idx, 2],
+                                    flat_shape_params[b_idx, 3],
+                                ),
+                                hull_vertices,
+                                hull_vert_adr[b_idx],
+                                hull_vert_count[b_idx],
+                                n_normal,
+                            )
+                            n_cp = (sup_a + sup_b) * 0.5
                     else:
                         # Fallback: sphere-sphere with body radius
                         r_a = a_br

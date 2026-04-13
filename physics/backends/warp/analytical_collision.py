@@ -29,6 +29,7 @@ SHAPE_SPHERE = wp.constant(1)
 SHAPE_BOX = wp.constant(2)
 SHAPE_CYLINDER = wp.constant(3)
 SHAPE_CAPSULE = wp.constant(4)
+SHAPE_CONVEXHULL = wp.constant(5)
 
 
 # ---------------------------------------------------------------------------
@@ -1565,6 +1566,471 @@ def box_ground_manifold(
                 result.count = result.count + 1
             else:
                 # Replace shallowest if this vertex is deeper
+                min_d = result.d0
+                min_idx = 0
+                if result.d1 < min_d:
+                    min_d = result.d1
+                    min_idx = 1
+                if result.d2 < min_d:
+                    min_d = result.d2
+                    min_idx = 2
+                if result.d3 < min_d:
+                    min_d = result.d3
+                    min_idx = 3
+                if vert_depth > min_d:
+                    result = _manifold_set(result, min_idx, cp, vert_depth)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# ConvexHull support point (GPU linear scan)
+# ---------------------------------------------------------------------------
+
+CONVEX_MARGIN = wp.constant(1.0e-3)  # convex margin for GJK (Jolt/Bullet style)
+
+
+@wp.func
+def _convexhull_support_local(
+    hull_verts: wp.array2d(dtype=wp.float32),
+    adr: int,
+    count: int,
+    direction: wp.vec3,
+) -> wp.vec3:
+    """Support point of convex hull in local frame (linear scan).
+
+    Returns the vertex with maximum dot product with direction.
+    """
+    best_dot = float(-1.0e30)
+    best_x = float(0.0)
+    best_y = float(0.0)
+    best_z = float(0.0)
+    for i in range(count):
+        idx = adr + i
+        vx = hull_verts[idx, 0]
+        vy = hull_verts[idx, 1]
+        vz = hull_verts[idx, 2]
+        d = vx * direction[0] + vy * direction[1] + vz * direction[2]
+        if d > best_dot:
+            best_dot = d
+            best_x = vx
+            best_y = vy
+            best_z = vz
+    return wp.vec3(best_x, best_y, best_z)
+
+
+@wp.func
+def _support_world(
+    shape_type: int,
+    pos: wp.vec3,
+    R: wp.mat33,
+    params: wp.vec4,
+    hull_verts: wp.array2d(dtype=wp.float32),
+    hull_adr: int,
+    hull_count: int,
+    direction: wp.vec3,
+) -> wp.vec3:
+    """Generic support point in world frame for any shape type.
+
+    Transforms direction to local frame, computes local support, transforms back.
+    """
+    Rt = wp.transpose(R)
+    d_local = Rt * direction
+
+    sup_local = wp.vec3(0.0, 0.0, 0.0)
+    if shape_type == SHAPE_SPHERE:
+        r = params[0]
+        sup_local = r * wp.normalize(d_local)
+    elif shape_type == SHAPE_BOX:
+        hx = params[0]
+        hy = params[1]
+        hz = params[2]
+        sx = hx
+        if d_local[0] < 0.0:
+            sx = -hx
+        sy = hy
+        if d_local[1] < 0.0:
+            sy = -hy
+        sz = hz
+        if d_local[2] < 0.0:
+            sz = -hz
+        sup_local = wp.vec3(sx, sy, sz)
+    elif shape_type == SHAPE_CAPSULE:
+        r = params[0]
+        hl = params[1]
+        axis_dot = d_local[2]
+        center_z = hl
+        if axis_dot < 0.0:
+            center_z = -hl
+        d_len = wp.length(d_local)
+        if d_len > 1.0e-10:
+            sup_local = wp.vec3(0.0, 0.0, center_z) + r * d_local / d_len
+        else:
+            sup_local = wp.vec3(0.0, 0.0, center_z)
+    elif shape_type == SHAPE_CONVEXHULL:
+        sup_local = _convexhull_support_local(hull_verts, hull_adr, hull_count, d_local)
+    else:
+        # Cylinder or unknown: use sphere fallback with mean half-extent
+        r = params[0]
+        d_len = wp.length(d_local)
+        if d_len > 1.0e-10:
+            sup_local = r * d_local / d_len
+
+    return pos + R * sup_local
+
+
+# ---------------------------------------------------------------------------
+# GPU GJK closest-distance (convex margin approach, no EPA)
+# ---------------------------------------------------------------------------
+
+
+@wp.struct
+class GJKSimplex:
+    """GJK simplex with 1-4 points in Minkowski difference space."""
+
+    a: wp.vec3
+    b: wp.vec3
+    c: wp.vec3
+    d: wp.vec3
+    n: wp.int32
+
+
+@wp.func
+def _gjk_support(
+    pos_a: wp.vec3,
+    R_a: wp.mat33,
+    type_a: int,
+    params_a: wp.vec4,
+    pos_b: wp.vec3,
+    R_b: wp.mat33,
+    type_b: int,
+    params_b: wp.vec4,
+    hull_verts: wp.array2d(dtype=wp.float32),
+    hull_adr_a: int,
+    hull_count_a: int,
+    hull_adr_b: int,
+    hull_count_b: int,
+    direction: wp.vec3,
+) -> wp.vec3:
+    """Minkowski difference support: sup_A(d) - sup_B(-d)."""
+    neg_d = wp.vec3(-direction[0], -direction[1], -direction[2])
+    sa = _support_world(type_a, pos_a, R_a, params_a, hull_verts, hull_adr_a, hull_count_a, direction)
+    sb = _support_world(type_b, pos_b, R_b, params_b, hull_verts, hull_adr_b, hull_count_b, neg_d)
+    return sa - sb
+
+
+@wp.func
+def _triple_product(a: wp.vec3, b: wp.vec3, c: wp.vec3) -> wp.vec3:
+    """Vector triple product: (a × b) × c = b(a·c) - a(b·c)."""
+    return b * wp.dot(a, c) - a * wp.dot(b, c)
+
+
+@wp.func
+def _gjk_do_simplex_2(s: GJKSimplex, direction: wp.vec3) -> GJKSimplex:
+    """Process line simplex (2 points). Returns updated simplex + new direction."""
+    ab = s.b - s.a  # newest to oldest: a is newest
+    # Swap convention: in our GJK, 'a' is the NEWEST point
+    # Actually let's use: s.a = newest, s.b = previous
+    ao = wp.vec3(-s.a[0], -s.a[1], -s.a[2])
+    if wp.dot(ab, ao) > 0.0:
+        # Origin is in the direction of B from A — keep line
+        s.n = 2
+    else:
+        # Origin is behind A — keep only A
+        s.b = s.a
+        s.n = 1
+    return s
+
+
+@wp.func
+def gjk_closest_distance(
+    pos_a: wp.vec3,
+    R_a: wp.mat33,
+    type_a: int,
+    params_a: wp.vec4,
+    pos_b: wp.vec3,
+    R_b: wp.mat33,
+    type_b: int,
+    params_b: wp.vec4,
+    hull_verts: wp.array2d(dtype=wp.float32),
+    hull_adr_a: int,
+    hull_count_a: int,
+    hull_adr_b: int,
+    hull_count_b: int,
+) -> wp.vec3:
+    """GJK closest-distance between two convex shapes.
+
+    Returns vec3(distance, hit, _) where:
+      - distance: closest distance between shapes (0 if overlapping)
+      - hit: 1.0 if distance < CONVEX_MARGIN (contact detected), else 0.0
+
+    Uses the convex margin approach: contact when distance < margin,
+    depth = margin - distance. No EPA needed.
+
+    Reference: Ericson (2004) §4.3, van den Bergen (2003).
+    """
+    margin = CONVEX_MARGIN
+
+    # Initial direction
+    direction = pos_b - pos_a
+    if wp.length(direction) < 1.0e-10:
+        direction = wp.vec3(1.0, 0.0, 0.0)
+
+    # First support point
+    sup = _gjk_support(
+        pos_a,
+        R_a,
+        type_a,
+        params_a,
+        pos_b,
+        R_b,
+        type_b,
+        params_b,
+        hull_verts,
+        hull_adr_a,
+        hull_count_a,
+        hull_adr_b,
+        hull_count_b,
+        direction,
+    )
+
+    # Simplex: track up to 3 points.
+    # All variables that are mutated inside the loop must be explicitly typed.
+    s_ax = float(sup[0])
+    s_ay = float(sup[1])
+    s_az = float(sup[2])
+    s_bx = float(0.0)
+    s_by = float(0.0)
+    s_bz = float(0.0)
+    s_cx = float(0.0)
+    s_cy = float(0.0)
+    s_cz = float(0.0)
+    s_n = int(1)
+    closest_dist = float(wp.length(sup))
+    done = int(0)  # 1=converged, 2=overlapping
+    dx = float(direction[0])
+    dy = float(direction[1])
+    dz = float(direction[2])
+
+    for _iter in range(32):
+        if done > 0:
+            continue  # Warp has no break in static loops; use guard
+
+        s_a = wp.vec3(s_ax, s_ay, s_az)
+        s_b = wp.vec3(s_bx, s_by, s_bz)
+        s_c = wp.vec3(s_cx, s_cy, s_cz)
+
+        # Direction toward origin from closest simplex feature
+        if s_n == 1:
+            dx = -s_ax
+            dy = -s_ay
+            dz = -s_az
+        elif s_n == 2:
+            ab = s_b - s_a
+            ao = wp.vec3(-s_ax, -s_ay, -s_az)
+            tp = _triple_product(ab, ao, ab)
+            dx = tp[0]
+            dy = tp[1]
+            dz = tp[2]
+        else:
+            ab = s_b - s_a
+            ac = s_c - s_a
+            n = wp.cross(ab, ac)
+            ao = wp.vec3(-s_ax, -s_ay, -s_az)
+            if wp.dot(n, ao) < 0.0:
+                n = wp.vec3(-n[0], -n[1], -n[2])
+            dx = n[0]
+            dy = n[1]
+            dz = n[2]
+
+        direction = wp.vec3(dx, dy, dz)
+        d_len = wp.length(direction)
+        if d_len < 1.0e-10:
+            done = 2  # overlapping
+            continue
+
+        direction = direction / d_len
+
+        # New support point
+        sup = _gjk_support(
+            pos_a,
+            R_a,
+            type_a,
+            params_a,
+            pos_b,
+            R_b,
+            type_b,
+            params_b,
+            hull_verts,
+            hull_adr_a,
+            hull_count_a,
+            hull_adr_b,
+            hull_count_b,
+            direction,
+        )
+
+        # Check progress
+        proj = wp.dot(sup, direction)
+        if proj < 1.0e-6:
+            done = 1  # converged
+            continue
+
+        if proj < closest_dist:
+            closest_dist = proj
+
+        # Add to simplex + reduce
+        if s_n == 1:
+            s_bx = s_ax
+            s_by = s_ay
+            s_bz = s_az
+            s_ax = sup[0]
+            s_ay = sup[1]
+            s_az = sup[2]
+            s_n = 2
+            ab2 = wp.vec3(s_bx - s_ax, s_by - s_ay, s_bz - s_az)
+            ao2 = wp.vec3(-s_ax, -s_ay, -s_az)
+            if wp.dot(ab2, ao2) <= 0.0:
+                s_ax = sup[0]
+                s_ay = sup[1]
+                s_az = sup[2]
+                s_n = 1
+        elif s_n == 2:
+            s_cx = s_bx
+            s_cy = s_by
+            s_cz = s_bz
+            s_bx = s_ax
+            s_by = s_ay
+            s_bz = s_az
+            s_ax = sup[0]
+            s_ay = sup[1]
+            s_az = sup[2]
+            s_n = 3
+            # Check which feature is closest
+            s_a2 = wp.vec3(s_ax, s_ay, s_az)
+            s_b2 = wp.vec3(s_bx, s_by, s_bz)
+            s_c2 = wp.vec3(s_cx, s_cy, s_cz)
+            ab3 = s_b2 - s_a2
+            ac3 = s_c2 - s_a2
+            ao3 = wp.vec3(-s_ax, -s_ay, -s_az)
+            abc3 = wp.cross(ab3, ac3)
+            ab_perp = wp.cross(ab3, abc3)
+            ac_perp = wp.cross(abc3, ac3)
+            if wp.dot(ab_perp, ao3) > 0.0:
+                # Closest to AB edge — drop C
+                s_n = 2
+            elif wp.dot(ac_perp, ao3) > 0.0:
+                # Closest to AC edge — drop B, keep A and C
+                s_bx = s_cx
+                s_by = s_cy
+                s_bz = s_cz
+                s_n = 2
+            else:
+                # Inside triangle — ensure correct winding
+                if wp.dot(abc3, ao3) < 0.0:
+                    tmpx = s_bx
+                    tmpy = s_by
+                    tmpz = s_bz
+                    s_bx = s_cx
+                    s_by = s_cy
+                    s_bz = s_cz
+                    s_cx = tmpx
+                    s_cy = tmpy
+                    s_cz = tmpz
+        else:
+            # s_n == 3: replace farthest point
+            s_a3 = wp.vec3(s_ax, s_ay, s_az)
+            s_b3 = wp.vec3(s_bx, s_by, s_bz)
+            s_c3 = wp.vec3(s_cx, s_cy, s_cz)
+            da = wp.dot(s_a3, s_a3)
+            db = wp.dot(s_b3, s_b3)
+            dc = wp.dot(s_c3, s_c3)
+            if da >= db and da >= dc:
+                s_ax = sup[0]
+                s_ay = sup[1]
+                s_az = sup[2]
+            elif db >= dc:
+                s_bx = sup[0]
+                s_by = sup[1]
+                s_bz = sup[2]
+            else:
+                s_cx = sup[0]
+                s_cy = sup[1]
+                s_cz = sup[2]
+
+    # Compute final distance
+    dist = float(0.0)
+    if done == 2:
+        dist = 0.0
+    elif s_n == 1:
+        dist = wp.length(wp.vec3(s_ax, s_ay, s_az))
+    else:
+        dist = wp.max(closest_dist, 0.0)
+
+    hit = float(0.0)
+    if dist < margin or done == 2:
+        hit = 1.0
+
+    return wp.vec3(dist, hit, 0.0)
+
+
+@wp.func
+def gjk_contact_normal(
+    pos_a: wp.vec3,
+    R_a: wp.mat33,
+    type_a: int,
+    params_a: wp.vec4,
+    pos_b: wp.vec3,
+    R_b: wp.mat33,
+    type_b: int,
+    params_b: wp.vec4,
+    hull_verts: wp.array2d(dtype=wp.float32),
+    hull_adr_a: int,
+    hull_count_a: int,
+    hull_adr_b: int,
+    hull_count_b: int,
+) -> wp.vec3:
+    """Contact normal from B to A using support point sampling."""
+    d = pos_a - pos_b
+    d_len = wp.length(d)
+    if d_len > 1.0e-10:
+        return d / d_len
+    return wp.vec3(0.0, 0.0, 1.0)
+
+
+# ---------------------------------------------------------------------------
+# ConvexHull-ground multi-point manifold (vertex enumeration)
+# ---------------------------------------------------------------------------
+
+
+@wp.func
+def convexhull_ground_manifold(
+    pos: wp.vec3,
+    R: wp.mat33,
+    hull_verts: wp.array2d(dtype=wp.float32),
+    adr: int,
+    count: int,
+    ground_z: float,
+) -> BoxBoxManifold:
+    """Multi-point ground contact for ConvexHull via vertex enumeration.
+
+    Checks all hull vertices against ground plane, keeps up to 4 deepest.
+    """
+    result = BoxBoxManifold()
+    result.count = 0
+
+    for i in range(count):
+        idx = adr + i
+        local_v = wp.vec3(hull_verts[idx, 0], hull_verts[idx, 1], hull_verts[idx, 2])
+        world_v = pos + R * local_v
+        vert_depth = ground_z - world_v[2]
+
+        if vert_depth > 0.0:
+            cp = wp.vec3(world_v[0], world_v[1], ground_z)
+            if result.count < 4:
+                result = _manifold_set(result, result.count, cp, vert_depth)
+                result.count = result.count + 1
+            else:
+                # Replace shallowest
                 min_d = result.d0
                 min_idx = 0
                 if result.d1 < min_d:

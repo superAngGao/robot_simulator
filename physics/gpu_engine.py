@@ -338,6 +338,11 @@ class GpuEngine(PhysicsEngine):
         self._gpu_body_shape_num = wp.array(s.body_shape_num, dtype=wp.int32, device=device)
         self._gpu_collision_excluded = wp.array(s.collision_excluded, dtype=wp.int32, device=device)
 
+        # ConvexHull vertex data (Q41)
+        self._gpu_hull_vertices = wp.array(s.hull_vertices, dtype=wp.float32, device=device)
+        self._gpu_hull_vert_adr = wp.array(s.hull_vert_adr, dtype=wp.int32, device=device)
+        self._gpu_hull_vert_count = wp.array(s.hull_vert_count, dtype=wp.int32, device=device)
+
         # Body-body collision pairs (legacy, kept for backward compat)
         if n_pairs > 0:
             self._gpu_pair_bi = wp.array(s.collision_pair_body_i, dtype=wp.int32, device=device)
@@ -666,6 +671,9 @@ class GpuEngine(PhysicsEngine):
                 self._gpu_body_shape_adr,
                 self._gpu_body_shape_num,
                 self._gpu_body_radius,
+                self._gpu_hull_vertices,
+                self._gpu_hull_vert_adr,
+                self._gpu_hull_vert_count,
                 self._gpu_contact_body_idx,
                 s.contact_ground_z,
                 self._nc_ground,

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy.typing import NDArray
 
-from physics.geometry import BoxShape, CapsuleShape, CylinderShape, SphereShape
+from physics.geometry import BoxShape, CapsuleShape, ConvexHullShape, CylinderShape, SphereShape
 from physics.joint import (
     FixedJoint,
     FreeJoint,
@@ -38,6 +38,7 @@ SHAPE_SPHERE = 1
 SHAPE_BOX = 2
 SHAPE_CYLINDER = 3
 SHAPE_CAPSULE = 4
+SHAPE_CONVEXHULL = 5
 
 
 @dataclass
@@ -159,6 +160,17 @@ class StaticRobotData:
     body_shape_num: NDArray[np.int32] = field(
         default_factory=lambda: np.zeros(0, dtype=np.int32)
     )  # (nb,) number of shapes per body
+
+    # -- ConvexHull vertex data (variable-length, packed flat, Q41) --
+    hull_vertices: NDArray[np.float32] = field(
+        default_factory=lambda: np.zeros((0, 3), dtype=np.float32)
+    )  # (total_hull_verts, 3) all hull vertices packed
+    hull_vert_adr: NDArray[np.int32] = field(
+        default_factory=lambda: np.zeros(0, dtype=np.int32)
+    )  # (nshape,) start index into hull_vertices per shape
+    hull_vert_count: NDArray[np.int32] = field(
+        default_factory=lambda: np.zeros(0, dtype=np.int32)
+    )  # (nshape,) number of hull vertices per shape
 
     # -- Collision exclude matrix (for GPU dynamic broadphase) --
     collision_excluded: NDArray[np.int32] = field(
@@ -461,6 +473,16 @@ class StaticRobotData:
                     he = geom.aabb_half_extents()
                     body_coll_radius[i] = float(np.mean(he))
 
+        # Pass 1b: count total ConvexHull vertices for flat packing (Q41)
+        total_hull_verts = 0
+        if merged.collision_shapes:
+            for geom in merged.collision_shapes:
+                if geom is None or not geom.shapes:
+                    continue
+                for si in geom.shapes:
+                    if isinstance(si.shape, ConvexHullShape):
+                        total_hull_verts += len(si.shape.vertices)
+
         # Pass 2: fill flat arrays
         ns = max(nshape, 1)  # at least 1 element for empty arrays
         flat_shape_type = np.zeros(ns, dtype=np.int32)
@@ -468,6 +490,10 @@ class StaticRobotData:
         flat_shape_params = np.zeros((ns, 4), dtype=np.float32)
         flat_shape_offset = np.zeros((ns, 3), dtype=np.float32)
         flat_shape_rotation = np.tile(np.eye(3, dtype=np.float32).flatten(), (ns, 1))
+        hull_vertices = np.zeros((max(total_hull_verts, 1), 3), dtype=np.float32)
+        hull_vert_adr = np.zeros(ns, dtype=np.int32)
+        hull_vert_count = np.zeros(ns, dtype=np.int32)
+        hull_write_offset = 0
 
         if merged.collision_shapes:
             for i, geom in enumerate(merged.collision_shapes):
@@ -501,7 +527,15 @@ class StaticRobotData:
                         flat_shape_type[s_idx] = SHAPE_CAPSULE
                         flat_shape_params[s_idx, 0] = shape.radius
                         flat_shape_params[s_idx, 1] = shape.length / 2.0
-                    # ConvexHullShape/MeshShape: SHAPE_NONE + fallback radius
+                    elif isinstance(shape, ConvexHullShape):
+                        flat_shape_type[s_idx] = SHAPE_CONVEXHULL
+                        verts = shape.vertices.astype(np.float32)
+                        nv = len(verts)
+                        hull_vert_adr[s_idx] = hull_write_offset
+                        hull_vert_count[s_idx] = nv
+                        hull_vertices[hull_write_offset : hull_write_offset + nv] = verts
+                        hull_write_offset += nv
+                    # MeshShape without convex hull: SHAPE_NONE + fallback radius
 
         # Legacy per-body arrays (backward compat for warp_backend)
         if merged.collision_shapes:
@@ -674,6 +708,9 @@ class StaticRobotData:
             shape_rotation=flat_shape_rotation,
             body_shape_adr=body_shape_adr,
             body_shape_num=body_shape_num,
+            hull_vertices=hull_vertices,
+            hull_vert_adr=hull_vert_adr,
+            hull_vert_count=hull_vert_count,
             collision_excluded=collision_excluded,
             inv_mass_per_body=inv_mass_per_body,
             inv_inertia_per_body=inv_inertia_per_body,
