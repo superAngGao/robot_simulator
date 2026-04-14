@@ -874,19 +874,17 @@ def ground_contact_query(
     Returns:
         ContactManifold if within margin, None if separated beyond margin.
     """
-    # Capsule: dispatch to analytical multi-point handler (2 pts when axis
-    # is parallel to ground).
+    # Capsule / Cylinder: dispatch to analytical multi-point handlers.
     from .capsule_collision import capsule_halfspace_manifold
-    from .geometry import CapsuleShape
+    from .cylinder_collision import cylinder_halfspace_manifold
+    from .geometry import CapsuleShape, CylinderShape
 
+    n_up = np.array([0.0, 0.0, 1.0])
+    p_ground = np.array([0.0, 0.0, ground_z])
     if isinstance(shape, CapsuleShape):
-        return capsule_halfspace_manifold(
-            shape,
-            pose,
-            np.array([0.0, 0.0, 1.0]),
-            np.array([0.0, 0.0, ground_z]),
-            margin=margin,
-        )
+        return capsule_halfspace_manifold(shape, pose, n_up, p_ground, margin=margin)
+    if isinstance(shape, CylinderShape):
+        return cylinder_halfspace_manifold(shape, pose, n_up, p_ground, margin=margin)
 
     # Find lowest point of shape
     d_local = pose.R.T @ np.array([0.0, 0.0, -1.0])
@@ -946,12 +944,17 @@ def halfspace_convex_query(
     Returns:
         ContactManifold if penetrating or within margin, else None.
     """
-    # Capsule: dispatch to analytical multi-point handler.
+    # Capsule / Cylinder: dispatch to analytical multi-point handlers.
     from .capsule_collision import capsule_halfspace_manifold
-    from .geometry import CapsuleShape
+    from .cylinder_collision import cylinder_halfspace_manifold
+    from .geometry import CapsuleShape, CylinderShape
 
     if isinstance(convex_shape, CapsuleShape):
         return capsule_halfspace_manifold(
+            convex_shape, convex_pose, hs_normal_world, hs_point_world, margin=margin
+        )
+    if isinstance(convex_shape, CylinderShape):
+        return cylinder_halfspace_manifold(
             convex_shape, convex_pose, hs_normal_world, hs_point_world, margin=margin
         )
 

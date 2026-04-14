@@ -28,15 +28,17 @@ class TestSupportPoint:
         np.testing.assert_allclose(s, expected, atol=ATOL)
 
     def test_cylinder_support(self):
-        cyl = CylinderShape(1.0, 4.0)
-        # Straight up: top disk (z=half_length, any point on rim)
+        cyl = CylinderShape(1.0, 4.0)  # N-gon prism, default N=12
+        # Straight up: a top-cap vertex (z=half_length, on rim)
         s = cyl.support_point(np.array([0, 0, 1.0]))
-        assert abs(s[2] - 2.0) < ATOL  # z = half_length
-        assert np.sqrt(s[0] ** 2 + s[1] ** 2) <= 1.0 + ATOL  # on disk
-        # Sideways: radius in X, z=0
+        assert abs(s[2] - 2.0) < ATOL
+        assert np.sqrt(s[0] ** 2 + s[1] ** 2) <= 1.0 + ATOL
+        # Sideways: prism vertex at angle 0 — either top or bottom rim
         s = cyl.support_point(np.array([1, 0, 0.0]))
-        np.testing.assert_allclose(s, [1, 0, 0], atol=ATOL)
-        # Diagonal: should be on rim of top disk
+        assert abs(s[0] - 1.0) < ATOL
+        assert abs(s[1]) < ATOL
+        assert abs(abs(s[2]) - 2.0) < ATOL  # on top OR bottom rim
+        # Diagonal: top-rim vertex at angle 0
         s = cyl.support_point(np.array([1, 0, 1.0]))
         assert abs(s[2] - 2.0) < ATOL
         assert abs(s[0] - 1.0) < ATOL

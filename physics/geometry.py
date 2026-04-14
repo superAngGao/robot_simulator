@@ -164,6 +164,69 @@ def _build_box_face_topology(half: NDArray[np.float64]) -> FaceTopology:
     return FaceTopology(normals, verts, face_ids, edges)
 
 
+def _build_cylinder_prism_topology(
+    radius: float, half_length: float, n_tessellation: int
+) -> tuple[NDArray[np.float64], FaceTopology]:
+    """Build prism-approximation vertices + FaceTopology for a cylinder.
+
+    The cylinder is tessellated as an N-gon prism aligned with local Z:
+    N vertices at z = -half_length (bottom cap), N at z = +half_length
+    (top cap), total 2N vertices. Faces: 2 N-gon caps + N rectangular
+    side faces.
+
+    Returns ``(vertices, topology)`` so the caller can keep a reference
+    to the vertex array for ``support_point`` and ``contact_vertices``.
+    """
+    n = int(n_tessellation)
+    if n < 3:
+        raise ValueError(f"cylinder n_tessellation must be >= 3, got {n}")
+
+    # 2N vertices: 0..n-1 bottom ring, n..2n-1 top ring, matching angle indices
+    angles = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+    ring_xy = np.stack([np.cos(angles) * radius, np.sin(angles) * radius], axis=1)
+    verts = np.zeros((2 * n, 3), dtype=np.float64)
+    verts[:n, :2] = ring_xy
+    verts[:n, 2] = -half_length
+    verts[n:, :2] = ring_xy
+    verts[n:, 2] = +half_length
+
+    # Faces:
+    #   face 0: top cap, normal +Z, CCW when viewed from +Z = vertex order [n..2n-1]
+    #   face 1: bottom cap, normal -Z, CCW from -Z = reverse of [0..n-1] = [n-1, n-2, ..., 0]
+    #   face 2..n+1: side face i, between bottom_i, bottom_{i+1}, top_{i+1}, top_i
+    top_ids = np.arange(n, 2 * n, dtype=np.intp)
+    bot_ids = np.arange(n - 1, -1, -1, dtype=np.intp)
+    face_vertex_ids: list[NDArray[np.intp]] = [top_ids, bot_ids]
+
+    side_normals: list[NDArray[np.float64]] = []
+    for i in range(n):
+        i_next = (i + 1) % n
+        side_ring = np.array([i, i_next, n + i_next, n + i], dtype=np.intp)
+        face_vertex_ids.append(side_ring)
+        mid_angle = 0.5 * (angles[i] + angles[i_next])
+        # Wrap-around midpoint: average on the unit circle, not raw
+        if i == n - 1:
+            mid_angle = 0.5 * (angles[i] + angles[0] + 2.0 * np.pi)
+        side_normals.append(np.array([np.cos(mid_angle), np.sin(mid_angle), 0.0]))
+
+    normals = np.zeros((n + 2, 3), dtype=np.float64)
+    normals[0] = np.array([0.0, 0.0, 1.0])
+    normals[1] = np.array([0.0, 0.0, -1.0])
+    for i, sn in enumerate(side_normals):
+        normals[2 + i] = sn
+
+    # Unique edges: N top rim, N bottom rim, N vertical risers = 3N
+    edge_list: list[list[NDArray[np.float64]]] = []
+    for i in range(n):
+        i_next = (i + 1) % n
+        edge_list.append([verts[i], verts[i_next]])  # bottom rim
+        edge_list.append([verts[n + i], verts[n + i_next]])  # top rim
+        edge_list.append([verts[i], verts[n + i]])  # riser
+    edges = np.array(edge_list, dtype=np.float64)
+
+    return verts, FaceTopology(normals, verts, face_vertex_ids, edges)
+
+
 def _build_convexhull_face_topology(vertices: NDArray[np.float64]) -> FaceTopology:
     """Build FaceTopology for a ConvexHullShape from its vertex cloud.
 
@@ -394,11 +457,30 @@ class SphereShape(CollisionShape):
 
 
 class CylinderShape(CollisionShape):
-    """Cylinder aligned with the local Z axis."""
+    """Cylinder aligned with the local Z axis, represented as an N-gon prism.
 
-    def __init__(self, radius: float, length: float) -> None:
+    The prism tessellation ``n_tessellation`` controls both ``support_point``
+    (discrete N-gon support) and ``face_topology`` (2 N-gon caps + N
+    rectangular sides). This makes the cylinder a single-representation
+    convex polytope for the generic GJK/EPA + S-H contact pipeline —
+    body-body contacts go through the same path as Box/ConvexHull.
+
+    Default N=12 gives ~3% radial error vs the true cylinder; increase
+    for higher fidelity at the cost of more contact pairs. Range ≥ 3.
+
+    For cylinder vs plane / half-space, the analytical handler in
+    `cylinder_collision` uses the true-circle geometry (not the prism),
+    exploiting the exact axis orientation to produce 1, 2, or 4 contact
+    points without polygon approximation.
+    """
+
+    def __init__(self, radius: float, length: float, n_tessellation: int = 12) -> None:
         self._radius = float(radius)
         self._length = float(length)
+        self._n_tess = int(n_tessellation)
+        verts, topo = _build_cylinder_prism_topology(self._radius, self._length / 2.0, self._n_tess)
+        self._prism_vertices = verts
+        self._face_topo = topo
 
     @property
     def radius(self) -> float:
@@ -408,23 +490,29 @@ class CylinderShape(CollisionShape):
     def length(self) -> float:
         return self._length
 
+    @property
+    def n_tessellation(self) -> int:
+        return self._n_tess
+
     def half_extents_approx(self) -> NDArray[np.float64]:
         r = self._radius
         return np.array([r, r, self._length / 2.0], dtype=np.float64)
 
     def support_point(self, direction: NDArray[np.float64]) -> NDArray[np.float64]:
-        # Cylinder = disk + line segment along Z
-        # Disk support: project direction onto XY, normalize, scale by radius
-        dxy = direction[:2]
-        nxy = np.linalg.norm(dxy)
-        if nxy < 1e-12:
-            sx, sy = self._radius, 0.0
-        else:
-            sx = dxy[0] / nxy * self._radius
-            sy = dxy[1] / nxy * self._radius
-        # Z support: sign(dz) * half_length
-        sz = np.sign(direction[2]) * (self._length / 2.0) if abs(direction[2]) > 1e-12 else 0.0
-        return np.array([sx, sy, sz], dtype=np.float64)
+        # Discrete support on the 2N prism vertices — matches face_topology
+        # so GJK/EPA witness points coincide with face-clipping geometry.
+        dots = self._prism_vertices @ direction
+        return self._prism_vertices[int(np.argmax(dots))]
+
+    def contact_vertices(self) -> NDArray[np.float64] | None:
+        # Intentionally return None: `halfspace_convex_query` would otherwise
+        # enumerate all 2N prism vertices and emit one contact per
+        # penetrating vertex (12+ contacts for a lying cylinder). Dispatch
+        # is handled analytically via `cylinder_plane_manifold` instead.
+        return None
+
+    def face_topology(self) -> FaceTopology:
+        return self._face_topo
 
 
 class CapsuleShape(CollisionShape):
