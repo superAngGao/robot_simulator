@@ -23,6 +23,8 @@ References:
 
 import warp as wp
 
+from physics.contact_tolerances import CONTACT_CONVEX_MARGIN
+
 # Shape type constants (must match static_data.py)
 SHAPE_NONE = wp.constant(0)
 SHAPE_SPHERE = wp.constant(1)
@@ -1045,8 +1047,12 @@ class ClipPoly:
 
 
 @wp.struct
-class BoxBoxManifold:
-    """Up to 4 contact points from box-box or box-ground collision."""
+class ContactPolyManifold:
+    """Up to 4 contact points from polytope-polytope / polytope-ground contact.
+
+    Generic name — used by box-box S-H face clipping, box/convexhull vs
+    ground vertex enumeration, and upcoming cylinder-prism pipelines.
+    """
 
     p0: wp.vec3
     p1: wp.vec3
@@ -1104,7 +1110,7 @@ def _clip_poly_push(poly: ClipPoly, v: wp.vec3) -> ClipPoly:
 
 
 @wp.func
-def _manifold_get_point(m: BoxBoxManifold, i: int) -> wp.vec3:
+def _manifold_get_point(m: ContactPolyManifold, i: int) -> wp.vec3:
     if i == 0:
         return m.p0
     if i == 1:
@@ -1115,7 +1121,7 @@ def _manifold_get_point(m: BoxBoxManifold, i: int) -> wp.vec3:
 
 
 @wp.func
-def _manifold_get_depth(m: BoxBoxManifold, i: int) -> wp.float32:
+def _manifold_get_depth(m: ContactPolyManifold, i: int) -> wp.float32:
     if i == 0:
         return m.d0
     if i == 1:
@@ -1126,7 +1132,7 @@ def _manifold_get_depth(m: BoxBoxManifold, i: int) -> wp.float32:
 
 
 @wp.func
-def _manifold_set(m: BoxBoxManifold, i: int, p: wp.vec3, d: float) -> BoxBoxManifold:
+def _manifold_set(m: ContactPolyManifold, i: int, p: wp.vec3, d: float) -> ContactPolyManifold:
     """Set point i in manifold, return updated struct."""
     if i == 0:
         m.p0 = p
@@ -1360,7 +1366,7 @@ def box_box_manifold(
     hb_z: float,
     normal: wp.vec3,
     depth: float,
-) -> BoxBoxManifold:
+) -> ContactPolyManifold:
     """Multi-point contact manifold for OBB-OBB collision.
 
     Given the SAT contact normal (B→A) and penetration depth, produces
@@ -1371,7 +1377,7 @@ def box_box_manifold(
 
     Reference: Ericson (2004) §5.5, Bullet btBoxBoxDetector.
     """
-    result = BoxBoxManifold()
+    result = ContactPolyManifold()
     result.count = 0
 
     # --- Axis type detection ---
@@ -1532,13 +1538,13 @@ def box_ground_manifold(
     hy: float,
     hz: float,
     ground_z: float,
-) -> BoxBoxManifold:
+) -> ContactPolyManifold:
     """Multi-point contact for box vs flat ground (z = ground_z).
 
     Checks all 8 box vertices against the ground plane.
     Keeps up to 4 deepest penetrating vertices.
     """
-    result = BoxBoxManifold()
+    result = ContactPolyManifold()
     result.count = 0
 
     # All 8 local-frame vertices
@@ -1587,7 +1593,7 @@ def box_ground_manifold(
 # ConvexHull support point (GPU linear scan)
 # ---------------------------------------------------------------------------
 
-CONVEX_MARGIN = wp.constant(1.0e-3)  # convex margin for GJK (Jolt/Bullet style)
+CONVEX_MARGIN = wp.constant(CONTACT_CONVEX_MARGIN)  # see physics.contact_tolerances
 
 
 @wp.func
@@ -2016,12 +2022,12 @@ def convexhull_ground_manifold(
     adr: int,
     count: int,
     ground_z: float,
-) -> BoxBoxManifold:
+) -> ContactPolyManifold:
     """Multi-point ground contact for ConvexHull via vertex enumeration.
 
     Checks all hull vertices against ground plane, keeps up to 4 deepest.
     """
-    result = BoxBoxManifold()
+    result = ContactPolyManifold()
     result.count = 0
 
     for i in range(count):

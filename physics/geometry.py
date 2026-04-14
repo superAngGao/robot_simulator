@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy.typing import NDArray
 
+from .contact_tolerances import CONTACT_COPLANAR_DOT
+
 if TYPE_CHECKING:
     from .spatial import SpatialTransform
 
@@ -188,7 +190,7 @@ def _build_convexhull_face_topology(vertices: NDArray[np.float64]) -> FaceTopolo
     reindex = {orig: i for i, orig in enumerate(hull.vertices)}
 
     # --- Step 1: parse simplices into (normal, re-indexed CCW triangle) ---
-    _COPLANAR_DOT = 1.0 - 1e-6
+    _COPLANAR_DOT = CONTACT_COPLANAR_DOT
 
     tri_normals: list[NDArray[np.float64]] = []
     tri_vids: list[list[int]] = []

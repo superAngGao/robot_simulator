@@ -20,6 +20,7 @@ from typing import Optional
 
 import numpy as np
 
+from .contact_tolerances import CONTACT_FACE_ALIGN_THRESHOLD
 from .geometry import CollisionShape, FaceTopology
 from .spatial import SpatialTransform, Vec3
 
@@ -447,9 +448,9 @@ def epa(
 
 # Alignment threshold: if both shapes' best face dot < this, switch to
 # edge-edge path.  For a box, edge-edge normals give dot ≈ 0.707 against
-# face normals.  Threshold of 0.9 (~25°) catches edge-edge while letting
+# face normals.  Threshold ~0.9 (~25°) catches edge-edge while letting
 # face-edge (one side well-aligned) through the face clipping path.
-_FACE_ALIGN_THRESHOLD = 0.9
+_FACE_ALIGN_THRESHOLD = CONTACT_FACE_ALIGN_THRESHOLD
 
 
 def _clip_polygon_by_plane(
