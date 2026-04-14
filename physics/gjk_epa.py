@@ -809,8 +809,13 @@ def gjk_epa_query(
 
     Returns ContactManifold if penetrating, None if separated.
     """
-    from .capsule_collision import capsule_box_manifold, capsule_capsule_manifold
-    from .geometry import BoxShape, CapsuleShape
+    from .capsule_collision import (
+        capsule_box_manifold,
+        capsule_capsule_manifold,
+        capsule_convexhull_manifold,
+        capsule_cylinder_manifold,
+    )
+    from .geometry import BoxShape, CapsuleShape, ConvexHullShape, CylinderShape
 
     a_is_cap = isinstance(shape_a, CapsuleShape)
     b_is_cap = isinstance(shape_b, CapsuleShape)
@@ -833,13 +838,19 @@ def gjk_epa_query(
         elif isinstance(other, BoxShape):
             manifold = capsule_box_manifold(cap, pose_cap, other, pose_other)
             dispatched = True
+        elif isinstance(other, CylinderShape):
+            manifold = capsule_cylinder_manifold(cap, pose_cap, other, pose_other)
+            dispatched = True
+        elif isinstance(other, ConvexHullShape):
+            manifold = capsule_convexhull_manifold(cap, pose_cap, other, pose_other)
+            dispatched = True
 
         if dispatched:
             if manifold is not None and flip:
                 manifold.normal = -manifold.normal
             return manifold
-        # Else (capsule vs sphere / cylinder / convexhull): fall through
-        # to the generic GJK/EPA single-point path below.
+        # Else (capsule vs sphere): fall through to the generic GJK/EPA
+        # single-point path below.
 
     intersecting, simplex = gjk(shape_a, pose_a, shape_b, pose_b)
     if not intersecting:

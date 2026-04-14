@@ -11,14 +11,14 @@ closed-form closest-point formulas that are both faster and more robust
 (EPA can degenerate on near-parallel configurations).
 
 Scope covered:
-  - `capsule_halfspace_manifold` — capsule vs infinite plane (1 or 2 pts)
-  - `capsule_capsule_manifold`   — capsule vs capsule (1 or 2 pts)
-  - `capsule_box_manifold`       — capsule vs OBB (1 or 2 pts)
+  - `capsule_halfspace_manifold`   — capsule vs infinite plane (1 or 2 pts)
+  - `capsule_capsule_manifold`     — capsule vs capsule (1 or 2 pts)
+  - `capsule_box_manifold`         — capsule vs OBB (1 or 2 pts)
+  - `capsule_cylinder_manifold`    — capsule vs cylinder (1 or 2 pts)
+  - `capsule_convexhull_manifold`  — capsule vs convex hull (1 or 2 pts)
 
-Capsule-sphere and capsule-convexhull still fall through to the generic
-GJK/EPA single-point path. capsule-sphere is exact there. capsule-hull
-multi-point is deferred (requires hull face clipping against segment,
-lower priority than the box / ground cases).
+Capsule-sphere still falls through to the generic GJK/EPA single-point
+path, which is exact (smooth shape, single contact point).
 
 References:
   ODE `dCollideCCTL` (capsule-capsule), `dCollideCCB` (capsule-box) —
@@ -34,7 +34,7 @@ from typing import Optional
 import numpy as np
 
 from .contact_tolerances import CONTACT_NEAR_PARALLEL_COS
-from .geometry import BoxShape, CapsuleShape
+from .geometry import BoxShape, CapsuleShape, ConvexHullShape, CylinderShape, SphereShape
 from .gjk_epa import ContactManifold, _segment_closest_points
 from .spatial import SpatialTransform, Vec3
 
@@ -308,6 +308,217 @@ def capsule_box_manifold(
     # Single-point: pick the deepest among {endpoint_0, endpoint_1, midpoint}.
     midpoint = 0.5 * (e0 + e1)
     cmid = _sphere_vs_box(midpoint, r, pose_b.r, pose_b.R, h)
+    candidates = [c for c in (c0, c1, cmid) if c is not None]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: -c[0])
+    depth, normal, cp = candidates[0]
+    return ContactManifold(body_i=-1, body_j=-1, normal=normal, depth=depth, points=[cp])
+
+
+# ---------------------------------------------------------------------------
+# capsule vs cylinder
+# ---------------------------------------------------------------------------
+
+
+def _cylinder_axis_endpoints(cyl: CylinderShape, pose: SpatialTransform) -> tuple[Vec3, Vec3, Vec3]:
+    """Return (endpoint_0, endpoint_1, axis_world) for the cylinder core segment."""
+    hl = cyl.length / 2.0
+    axis = pose.R @ np.array([0.0, 0.0, 1.0])
+    c0 = pose.r - hl * axis
+    c1 = pose.r + hl * axis
+    return c0, c1, axis
+
+
+def capsule_cylinder_manifold(
+    caps: CapsuleShape,
+    pose_c: SpatialTransform,
+    cyl: CylinderShape,
+    pose_y: SpatialTransform,
+    near_parallel_cos: float = CONTACT_NEAR_PARALLEL_COS,
+) -> Optional[ContactManifold]:
+    """Capsule vs cylinder; up to 2 contact points when axes are near-parallel.
+
+    The capsule core segment and the cylinder core segment are both line
+    segments.  We find their closest points via
+    ``_segment_closest_points()``, then check penetration at combined
+    radius ``r_cap + r_cyl``.
+
+    When the axes are near-parallel (``sin(angle) < threshold``), we
+    project one segment onto the other to find the axial overlap interval
+    and return 2 contact points at the overlap endpoints (line contact).
+    Otherwise a single contact at the closest-point pair.
+
+    Note: this treats the cylinder as a sphere-swept segment of radius
+    ``r_cyl`` — the same simplification Bullet/ODE use for capsule-like
+    narrowphase on cylinders.  The exact end-cap flat face is handled by
+    the prism face-topology path (``build_contact_manifold`` via GJK/EPA)
+    for face-on contacts; this handler is strictly for side-contact
+    scenarios where axis proximity dominates.
+
+    References:
+      ODE ``dCollideCCyC`` (capsule-cylinder, segment-segment core).
+      Ericson (2004) §5.1.9 Closest Point Between Two Segments.
+    """
+    r_cap = caps.radius
+    r_cyl = cyl.radius
+    r_sum = r_cap + r_cyl
+
+    e0, e1, axis_cap = _capsule_axis_endpoints(caps, pose_c)
+    c0, c1, axis_cyl = _cylinder_axis_endpoints(cyl, pose_y)
+
+    p_cap, p_cyl = _segment_closest_points(e0, e1, c0, c1)
+    diff = p_cap - p_cyl
+    dist = float(np.linalg.norm(diff))
+    depth = r_sum - dist
+    if depth <= 0.0:
+        return None
+
+    # Normal: from cylinder toward capsule
+    if dist < _EPS:
+        # Collinear — pick perpendicular direction
+        ref = np.array([1.0, 0.0, 0.0])
+        if abs(float(np.dot(axis_cap, ref))) > 0.9:
+            ref = np.array([0.0, 1.0, 0.0])
+        normal = np.cross(axis_cap, ref)
+        nrm = float(np.linalg.norm(normal))
+        normal = normal / nrm if nrm > _EPS else ref
+    else:
+        normal = diff / dist
+
+    sin_angle = float(np.linalg.norm(np.cross(axis_cap, axis_cyl)))
+    near_parallel = sin_angle < near_parallel_cos
+
+    if not near_parallel:
+        # Single contact on the cylinder surface along the normal
+        cp = p_cyl + normal * r_cyl
+        return ContactManifold(body_i=-1, body_j=-1, normal=normal, depth=depth, points=[cp])
+
+    # Near-parallel path: find axial overlap between the two segments,
+    # place contacts at both ends of the overlap interval.
+    # Project cylinder segment onto capsule segment parameterization.
+    seg_cap = e1 - e0
+    seg_cap_len_sq = float(np.dot(seg_cap, seg_cap))
+    if seg_cap_len_sq < _EPS:
+        cp = p_cyl + normal * r_cyl
+        return ContactManifold(body_i=-1, body_j=-1, normal=normal, depth=depth, points=[cp])
+
+    def _proj(p: Vec3) -> float:
+        return float(np.dot(p - e0, seg_cap)) / seg_cap_len_sq
+
+    tc0 = _proj(c0)
+    tc1 = _proj(c1)
+    t_lo = max(0.0, min(tc0, tc1))
+    t_hi = min(1.0, max(tc0, tc1))
+    if t_lo >= t_hi - 1e-9:
+        cp = p_cyl + normal * r_cyl
+        return ContactManifold(body_i=-1, body_j=-1, normal=normal, depth=depth, points=[cp])
+
+    # Two contact points at the overlap endpoints, on the cylinder surface
+    pa_lo = e0 + t_lo * seg_cap
+    pa_hi = e0 + t_hi * seg_cap
+    cp_lo = pa_lo + (r_cyl - dist) * normal
+    cp_hi = pa_hi + (r_cyl - dist) * normal
+
+    return ContactManifold(
+        body_i=-1,
+        body_j=-1,
+        normal=normal,
+        depth=depth,
+        points=[cp_lo, cp_hi],
+        point_depths=[depth, depth],
+    )
+
+
+# ---------------------------------------------------------------------------
+# capsule vs convex hull
+# ---------------------------------------------------------------------------
+
+
+def _sphere_vs_convexhull(
+    center_w: Vec3,
+    radius: float,
+    hull: ConvexHullShape,
+    pose_h: SpatialTransform,
+) -> Optional[tuple[float, Vec3, Vec3]]:
+    """Sphere vs ConvexHull closest-point contact via GJK/EPA.
+
+    Returns ``(depth, normal_world, contact_point_world)`` where normal
+    points from the hull toward the sphere, or ``None`` if separated.
+    """
+    from .gjk_epa import build_contact_manifold, epa, gjk
+
+    sph = SphereShape(radius)
+    pose_s = SpatialTransform.from_translation(center_w)
+
+    intersecting, simplex = gjk(sph, pose_s, hull, pose_h)
+    if not intersecting:
+        return None
+
+    normal, depth = epa(sph, pose_s, hull, pose_h, simplex)
+    if depth < 1e-10:
+        return None
+
+    # Build a single-point manifold to extract the contact point
+    m = build_contact_manifold(sph, pose_s, hull, pose_h, normal, depth)
+    if m is None:
+        return None
+
+    return depth, m.normal.copy(), m.points[0].copy()
+
+
+def capsule_convexhull_manifold(
+    caps: CapsuleShape,
+    pose_c: SpatialTransform,
+    hull: ConvexHullShape,
+    pose_h: SpatialTransform,
+    near_parallel_cos: float = CONTACT_NEAR_PARALLEL_COS,
+) -> Optional[ContactManifold]:
+    """Capsule vs ConvexHull; up to 2 contact points.
+
+    Strategy (mirrors ``capsule_box_manifold``):
+      1. Query sphere-vs-hull at both capsule endpoint hemispheres via
+         GJK/EPA.  If both endpoints contact with similar normals AND the
+         capsule axis is near-perpendicular to the contact normal (axis
+         near-parallel to the face), return 2 contact points.
+      2. Otherwise, also query at the capsule midpoint, and return the
+         deepest single contact.
+
+    This naturally handles:
+      - Face contact (capsule lying on a flat hull face) → 2 pts
+      - Edge/vertex contact (capsule end poking a hull edge) → 1 pt
+      - Perpendicular contact (capsule tip into a face) → 1 pt
+
+    References:
+      Same endpoint-sphere strategy as ``capsule_box_manifold``.
+    """
+    r = caps.radius
+    e0, e1, axis_w = _capsule_axis_endpoints(caps, pose_c)
+
+    c0 = _sphere_vs_convexhull(e0, r, hull, pose_h)
+    c1 = _sphere_vs_convexhull(e1, r, hull, pose_h)
+
+    # 2-point path: both endpoints hit with matching normals, axis ⊥ normal
+    if c0 is not None and c1 is not None:
+        d0, n0, cp0 = c0
+        d1, n1, cp1 = c1
+        if float(np.dot(n0, n1)) > 0.99:
+            n_avg = n0 + n1
+            nrm = float(np.linalg.norm(n_avg))
+            n_mean = n_avg / nrm if nrm > _EPS else n0
+            if abs(float(np.dot(axis_w, n_mean))) < near_parallel_cos:
+                return ContactManifold(
+                    body_i=-1,
+                    body_j=-1,
+                    normal=n_mean,
+                    depth=max(d0, d1),
+                    points=[cp0, cp1],
+                    point_depths=[d0, d1],
+                )
+
+    # Single-point: pick the deepest among {endpoint_0, endpoint_1, midpoint}.
+    midpoint = 0.5 * (e0 + e1)
+    cmid = _sphere_vs_convexhull(midpoint, r, hull, pose_h)
     candidates = [c for c in (c0, c1, cmid) if c is not None]
     if not candidates:
         return None

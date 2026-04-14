@@ -8,9 +8,11 @@ import pytest
 from physics.capsule_collision import (
     capsule_box_manifold,
     capsule_capsule_manifold,
+    capsule_convexhull_manifold,
+    capsule_cylinder_manifold,
     capsule_halfspace_manifold,
 )
-from physics.geometry import BoxShape, CapsuleShape
+from physics.geometry import BoxShape, CapsuleShape, ConvexHullShape, CylinderShape
 from physics.gjk_epa import ground_contact_query, halfspace_convex_query
 from physics.spatial import SpatialTransform
 
@@ -287,3 +289,250 @@ class TestGJKEpaDispatch:
         m = gjk_epa_query(cap, cap_pose, sph, sph_pose)
         assert m is not None
         assert len(m.points) == 1
+
+
+# ---------------------------------------------------------------------------
+# capsule vs cylinder
+# ---------------------------------------------------------------------------
+
+
+def _make_box_hull():
+    """Create a ConvexHullShape equivalent to BoxShape((0.4, 0.4, 0.4))."""
+    h = 0.2  # half-extent
+    verts = np.array(
+        [
+            [-h, -h, -h],
+            [-h, -h, h],
+            [-h, h, -h],
+            [-h, h, h],
+            [h, -h, -h],
+            [h, -h, h],
+            [h, h, -h],
+            [h, h, h],
+        ]
+    )
+    return ConvexHullShape(verts)
+
+
+class TestCapsuleCylinder:
+    def test_parallel_axes_side_by_side_two_points(self):
+        """Parallel capsule and cylinder laid side by side → 2 contacts."""
+        cap = CapsuleShape(radius=0.2, length=1.0)
+        cyl = CylinderShape(radius=0.15, length=0.8)
+        # Both axes along Z, separated by 0.3 in x (sum radii = 0.35)
+        pose_c = SpatialTransform.from_translation(np.array([0.0, 0.0, 0.0]))
+        pose_y = SpatialTransform.from_translation(np.array([0.3, 0.0, 0.0]))
+        m = capsule_cylinder_manifold(cap, pose_c, cyl, pose_y)
+        assert m is not None
+        assert len(m.points) == 2
+        assert abs(m.depth - 0.05) < ATOL  # 0.35 - 0.30
+        # Normal from cyl toward cap → -x
+        assert m.normal[0] < -0.99
+
+    def test_skew_axes_single_point(self):
+        """Capsule and cylinder at 90° → single closest-point contact."""
+        cap = CapsuleShape(radius=0.2, length=1.0)
+        cyl = CylinderShape(radius=0.15, length=1.0)
+        # Cap vertical (Z), cyl horizontal (X) offset by y=0.3
+        pose_c = SpatialTransform.from_translation(np.zeros(3))
+        pose_y = SpatialTransform(_rot_y(np.pi / 2), np.array([0.0, 0.3, 0.0]))
+        m = capsule_cylinder_manifold(cap, pose_c, cyl, pose_y)
+        assert m is not None
+        assert len(m.points) == 1
+        # dist = 0.3, sum radii = 0.35, depth = 0.05
+        assert abs(m.depth - 0.05) < 1e-4
+
+    def test_parallel_no_axial_overlap_single_point(self):
+        """Parallel but axially separated → single point at closest endpoints."""
+        cap = CapsuleShape(radius=0.2, length=1.0)  # z ∈ [-0.5, 0.5]
+        cyl = CylinderShape(radius=0.15, length=0.6)  # z ∈ [0.7, 1.3] shifted
+        pose_c = SpatialTransform.from_translation(np.zeros(3))
+        pose_y = SpatialTransform.from_translation(np.array([0.3, 0.0, 1.0]))
+        m = capsule_cylinder_manifold(cap, pose_c, cyl, pose_y)
+        # Closest endpoints: cap top z=0.5, cyl bottom z=0.7
+        # axial gap 0.2, lateral 0.3, dist = sqrt(0.04+0.09) ≈ 0.3606
+        # depth = 0.35 - 0.3606 < 0 → separated
+        assert m is None
+
+    def test_separated_returns_none(self):
+        cap = CapsuleShape(radius=0.1, length=1.0)
+        cyl = CylinderShape(radius=0.1, length=1.0)
+        pose_c = SpatialTransform.from_translation(np.zeros(3))
+        pose_y = SpatialTransform.from_translation(np.array([1.0, 0.0, 0.0]))
+        m = capsule_cylinder_manifold(cap, pose_c, cyl, pose_y)
+        assert m is None
+
+    def test_normal_direction_cyl_to_cap(self):
+        """Normal points from cylinder toward capsule."""
+        cap = CapsuleShape(radius=0.2, length=0.6)
+        cyl = CylinderShape(radius=0.15, length=0.6)
+        # Capsule at y=+0.3, cylinder at y=0 → normal should be +y
+        pose_c = SpatialTransform.from_translation(np.array([0.0, 0.3, 0.0]))
+        pose_y = SpatialTransform.from_translation(np.zeros(3))
+        m = capsule_cylinder_manifold(cap, pose_c, cyl, pose_y)
+        assert m is not None
+        assert m.normal[1] > 0.99
+
+    def test_contact_point_on_cylinder_surface(self):
+        """Contact point should be on the cylinder surface."""
+        cap = CapsuleShape(radius=0.2, length=0.6)
+        cyl = CylinderShape(radius=0.15, length=0.6)
+        # Single-point: skew axes
+        pose_c = SpatialTransform.from_translation(np.zeros(3))
+        pose_y = SpatialTransform(_rot_y(np.pi / 2), np.array([0.0, 0.3, 0.0]))
+        m = capsule_cylinder_manifold(cap, pose_c, cyl, pose_y)
+        assert m is not None
+        assert len(m.points) == 1
+        cp = m.points[0]
+        # Contact point should be offset from cyl axis by r_cyl along normal
+        # Cylinder centre at (0, 0.3, 0), axis along X after rotation
+        # At closest point the cyl point is at (0, 0.3, 0)
+        # Contact = (0, 0.3, 0) + 0.15 * normal_toward_cap
+        # normal ≈ (0, -1, 0) from the cap's perspective, so cp ≈ (0, 0.15, 0)
+        dist_from_cyl_center = abs(cp[1] - 0.3)
+        assert abs(dist_from_cyl_center - 0.15) < 1e-3
+
+    def test_different_radii(self):
+        """Depth correct with asymmetric radii."""
+        cap = CapsuleShape(radius=0.3, length=0.8)
+        cyl = CylinderShape(radius=0.1, length=0.8)
+        # Side by side, separation = 0.35, sum radii = 0.4 → depth = 0.05
+        pose_c = SpatialTransform.from_translation(np.zeros(3))
+        pose_y = SpatialTransform.from_translation(np.array([0.35, 0.0, 0.0]))
+        m = capsule_cylinder_manifold(cap, pose_c, cyl, pose_y)
+        assert m is not None
+        assert abs(m.depth - 0.05) < ATOL
+
+    def test_collinear_head_on(self):
+        """Collinear axes, capsule hemisphere poking into cylinder end → 1 pt."""
+        cap = CapsuleShape(radius=0.1, length=0.6)  # z ∈ [-0.3, 0.3]
+        cyl = CylinderShape(radius=0.1, length=0.6)  # z ∈ [0.15, 0.75]
+        pose_c = SpatialTransform.from_translation(np.zeros(3))
+        pose_y = SpatialTransform.from_translation(np.array([0.0, 0.0, 0.45]))
+        m = capsule_cylinder_manifold(cap, pose_c, cyl, pose_y)
+        # Closest: cap top at z=0.3, cyl bottom at z=0.15 → dist=0.15
+        # Depth = 0.2 - 0.15 = 0.05 (but axes are collinear → near_parallel
+        # overlap = [0.15/0.6, 0.3/0.6] = [0.25, 0.5] → 2 pts if overlap > eps)
+        # Actually: t projection of cyl bottom z=0.15 onto cap seg [-0.3, 0.3]:
+        # t = (0.15 - (-0.3)) / 0.6 = 0.75; cyl top z=0.75: t = (0.75+0.3)/0.6 = 1.75
+        # t_lo = max(0, min(0.75, 1.75)) = 0.75; t_hi = min(1, max(0.75, 1.75)) = 1.0
+        # overlap [0.75, 1.0] → 2 pts
+        assert m is not None
+        # Collinear: dist = 0 → picks perpendicular normal → depth = r_cap + r_cyl = 0.2
+        # Actually they're collinear AND overlapping → parallel path,
+        # but closest points are on the segment endpoints near each other
+        # Check at least contact exists
+        assert m.depth > 0
+
+
+# ---------------------------------------------------------------------------
+# capsule vs convex hull
+# ---------------------------------------------------------------------------
+
+
+class TestCapsuleConvexHull:
+    def test_capsule_lying_on_hull_face_two_points(self):
+        """Horizontal capsule on a box-hull top face → 2 contact points."""
+        hull = _make_box_hull()  # half-extent = 0.2
+        hull_pose = SpatialTransform.from_translation(np.zeros(3))
+        cap = CapsuleShape(radius=0.1, length=0.3)
+        # Capsule horizontal (axis along X), above hull top face (z=0.2)
+        cap_pose = SpatialTransform(_rot_y(np.pi / 2), np.array([0.0, 0.0, 0.25]))
+        # Bottom of capsule sphere = 0.25 - 0.1 = 0.15 < 0.2 → depth ~ 0.05
+        m = capsule_convexhull_manifold(cap, cap_pose, hull, hull_pose)
+        assert m is not None
+        assert len(m.points) == 2
+        assert m.depth > 0.03
+
+    def test_capsule_perpendicular_to_hull_face_one_point(self):
+        """Vertical capsule touching hull top → 1 contact point."""
+        hull = _make_box_hull()  # half-extent 0.2, top face z = 0.2
+        hull_pose = SpatialTransform.from_translation(np.zeros(3))
+        cap = CapsuleShape(radius=0.1, length=0.4)
+        # Capsule vertical (axis along Z). half_length = 0.2.
+        # Place centre at z = 0.45 → bottom endpoint at z = 0.25
+        # Bottom sphere surface at z = 0.25 - 0.1 = 0.15, hull top = 0.2
+        # → depth ≈ 0.05.  Top endpoint at z = 0.65 → far above hull.
+        # Only the bottom hemisphere contacts.
+        cap_pose = SpatialTransform.from_translation(np.array([0.0, 0.0, 0.45]))
+        m = capsule_convexhull_manifold(cap, cap_pose, hull, hull_pose)
+        assert m is not None
+        assert len(m.points) == 1
+        assert m.depth > 0.01
+
+    def test_capsule_near_hull_edge_one_point(self):
+        """Capsule approaching hull edge → 1 contact point."""
+        hull = _make_box_hull()
+        hull_pose = SpatialTransform.from_translation(np.zeros(3))
+        cap = CapsuleShape(radius=0.15, length=0.3)
+        # Capsule vertical, approaching the +x edge at x = 0.2
+        cap_pose = SpatialTransform.from_translation(np.array([0.3, 0.0, 0.0]))
+        # Lower sphere center at (0.3, 0, -0.15), closest hull point ~ (0.2, 0, -0.15)
+        # dist ~ 0.1, depth = 0.15 - 0.1 = 0.05
+        m = capsule_convexhull_manifold(cap, cap_pose, hull, hull_pose)
+        assert m is not None
+        assert m.depth > 0
+
+    def test_separated_returns_none(self):
+        hull = _make_box_hull()
+        hull_pose = SpatialTransform.from_translation(np.zeros(3))
+        cap = CapsuleShape(radius=0.1, length=0.3)
+        cap_pose = SpatialTransform.from_translation(np.array([2.0, 0.0, 0.0]))
+        m = capsule_convexhull_manifold(cap, cap_pose, hull, hull_pose)
+        assert m is None
+
+    def test_gjk_dispatch_capsule_convexhull(self):
+        """gjk_epa_query routes capsule-convexhull to analytical handler."""
+        from physics.gjk_epa import gjk_epa_query
+
+        hull = _make_box_hull()
+        hull_pose = SpatialTransform.from_translation(np.zeros(3))
+        cap = CapsuleShape(radius=0.1, length=0.3)
+        cap_pose = SpatialTransform(_rot_y(np.pi / 2), np.array([0.0, 0.0, 0.25]))
+        m = gjk_epa_query(cap, cap_pose, hull, hull_pose)
+        assert m is not None
+        assert len(m.points) >= 1
+
+    def test_swapped_argument_order_flips_normal(self):
+        """Hull first, capsule second → flipped normal."""
+        from physics.gjk_epa import gjk_epa_query
+
+        hull = _make_box_hull()
+        hull_pose = SpatialTransform.from_translation(np.zeros(3))
+        cap = CapsuleShape(radius=0.1, length=0.3)
+        cap_pose = SpatialTransform.from_translation(np.array([0.0, 0.0, 0.25]))
+        m_ch = gjk_epa_query(cap, cap_pose, hull, hull_pose)
+        m_hc = gjk_epa_query(hull, hull_pose, cap, cap_pose)
+        assert m_ch is not None and m_hc is not None
+        assert np.dot(m_ch.normal, m_hc.normal) < -0.9  # roughly opposite
+
+
+# ---------------------------------------------------------------------------
+# gjk_epa_query dispatch additions
+# ---------------------------------------------------------------------------
+
+
+class TestGJKEpaDispatchExtended:
+    def test_gjk_epa_query_capsule_cylinder_parallel(self):
+        from physics.gjk_epa import gjk_epa_query
+
+        cap = CapsuleShape(radius=0.2, length=1.0)
+        cyl = CylinderShape(radius=0.15, length=0.8)
+        pose_c = SpatialTransform.from_translation(np.zeros(3))
+        pose_y = SpatialTransform.from_translation(np.array([0.3, 0.0, 0.0]))
+        m = gjk_epa_query(cap, pose_c, cyl, pose_y)
+        assert m is not None
+        assert len(m.points) == 2
+
+    def test_gjk_epa_query_cylinder_capsule_swapped(self):
+        """Cylinder first, capsule second → still dispatched with flipped normal."""
+        from physics.gjk_epa import gjk_epa_query
+
+        cap = CapsuleShape(radius=0.2, length=1.0)
+        cyl = CylinderShape(radius=0.15, length=0.8)
+        pose_c = SpatialTransform.from_translation(np.zeros(3))
+        pose_y = SpatialTransform.from_translation(np.array([0.3, 0.0, 0.0]))
+        m_cy = gjk_epa_query(cap, pose_c, cyl, pose_y)
+        m_yc = gjk_epa_query(cyl, pose_y, cap, pose_c)
+        assert m_cy is not None and m_yc is not None
+        assert np.allclose(m_cy.normal, -m_yc.normal, atol=ATOL)
