@@ -802,8 +802,45 @@ def gjk_epa_query(
     (Sutherland-Hodgman) for polyhedral shapes, or single-point fallback
     for smooth shapes.
 
+    Capsule pairs (capsule-capsule, capsule-box) dispatch to analytical
+    multi-point handlers in `capsule_collision` and skip GJK/EPA entirely
+    — segment geometry is closed-form faster and avoids EPA degeneracy on
+    near-parallel axes.
+
     Returns ContactManifold if penetrating, None if separated.
     """
+    from .capsule_collision import capsule_box_manifold, capsule_capsule_manifold
+    from .geometry import BoxShape, CapsuleShape
+
+    a_is_cap = isinstance(shape_a, CapsuleShape)
+    b_is_cap = isinstance(shape_b, CapsuleShape)
+    if a_is_cap or b_is_cap:
+        # Canonicalize: capsule as first argument
+        if b_is_cap and not a_is_cap:
+            cap, pose_cap = shape_b, pose_b
+            other, pose_other = shape_a, pose_a
+            flip = True
+        else:
+            cap, pose_cap = shape_a, pose_a
+            other, pose_other = shape_b, pose_b
+            flip = False
+
+        manifold: Optional[ContactManifold] = None
+        dispatched = False
+        if isinstance(other, CapsuleShape):
+            manifold = capsule_capsule_manifold(cap, pose_cap, other, pose_other)
+            dispatched = True
+        elif isinstance(other, BoxShape):
+            manifold = capsule_box_manifold(cap, pose_cap, other, pose_other)
+            dispatched = True
+
+        if dispatched:
+            if manifold is not None and flip:
+                manifold.normal = -manifold.normal
+            return manifold
+        # Else (capsule vs sphere / cylinder / convexhull): fall through
+        # to the generic GJK/EPA single-point path below.
+
     intersecting, simplex = gjk(shape_a, pose_a, shape_b, pose_b)
     if not intersecting:
         return None
@@ -837,6 +874,20 @@ def ground_contact_query(
     Returns:
         ContactManifold if within margin, None if separated beyond margin.
     """
+    # Capsule: dispatch to analytical multi-point handler (2 pts when axis
+    # is parallel to ground).
+    from .capsule_collision import capsule_halfspace_manifold
+    from .geometry import CapsuleShape
+
+    if isinstance(shape, CapsuleShape):
+        return capsule_halfspace_manifold(
+            shape,
+            pose,
+            np.array([0.0, 0.0, 1.0]),
+            np.array([0.0, 0.0, ground_z]),
+            margin=margin,
+        )
+
     # Find lowest point of shape
     d_local = pose.R.T @ np.array([0.0, 0.0, -1.0])
     s_local = shape.support_point(d_local)
@@ -895,6 +946,15 @@ def halfspace_convex_query(
     Returns:
         ContactManifold if penetrating or within margin, else None.
     """
+    # Capsule: dispatch to analytical multi-point handler.
+    from .capsule_collision import capsule_halfspace_manifold
+    from .geometry import CapsuleShape
+
+    if isinstance(convex_shape, CapsuleShape):
+        return capsule_halfspace_manifold(
+            convex_shape, convex_pose, hs_normal_world, hs_point_world, margin=margin
+        )
+
     # Check for multi-point contact (Box, ConvexHull)
     verts_local = convex_shape.contact_vertices()
 
