@@ -1014,10 +1014,13 @@ def _sphere_any_manifold(
 ) -> Optional[ContactManifold]:
     """Analytical contact between a sphere and any convex shape.
 
-    Avoids GJK/EPA entirely.  For sphere-sphere and sphere-capsule the
-    closest point is computed in closed form.  For all other shapes the
-    closest point on *other* to the sphere centre is found via GJK in
-    distance mode (no EPA), then the sphere radius is applied analytically.
+    Dispatch table:
+      sphere-sphere   : closed-form (centre distance).
+      sphere-capsule  : closed-form (point-segment distance).
+      sphere-polytope : GJK intersection test + EPA.
+                        EPA is numerically stable for sphere-vs-polyhedral
+                        (only one smooth shape); degeneracy only arises when
+                        *both* shapes are smooth (sphere-sphere, handled above).
 
     Normal convention: points from *other* toward *sph* (i.e. from B to A
     when sph=A).

@@ -1,12 +1,20 @@
 """
-Gymnasium-compatible single-robot RL environment.
+CPU single-robot environment for physics validation and debugging.
 
-Follows Isaac Lab's Env pattern:
-  - Pre-computed static indices in __init__ (GPU-friendly for Phase 2e).
-  - Per-step cache updated by _update_cache() after every sim.step().
-  - Observation / reward / termination delegated to term managers.
+**定位（2026-04-16 确认）**：
 
-Reference: Isaac Lab ManagerBasedEnv (Isaac Lab docs §3.1).
+  - 这 *不是* RL 批量训练环境。
+  - 作用：CPU 精度验证（对照 MuJoCo/Bullet/Pinocchio）、单步交互调试、
+    快速原型。
+  - 底层：Simulator → CpuEngine（double-precision, hard constraints）。
+
+**RL 批量训练**（N env 并行）由 GpuEngine(num_envs=N) 承载，
+对应的 Manager-based RLEnv 待 GpuEngine GPU 能力补齐后实现（见 Q31）。
+
+接口沿用 Gymnasium API（reset/step），便于与标准工具链（Stable-Baselines3 等）
+做小规模对比实验，但不保证 GPU 吞吐。
+
+Reference: Isaac Lab ManagerBasedEnv (Isaac Lab docs §3.1) — 架构灵感来源。
 """
 
 from __future__ import annotations
