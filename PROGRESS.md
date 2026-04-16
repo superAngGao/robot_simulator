@@ -1,6 +1,6 @@
 # Robot Simulator — Progress Tracker
 
-> Last updated: 2026-04-13 (session 29)
+> Last updated: 2026-04-15 (session 31)
 > Reference plan: [PLAN.md](./PLAN.md)
 
 ---
@@ -875,9 +875,75 @@ buffer（~50 LOC refactor），延后到出现实际 divergence bug 时再做。
 
 **Session 24 测试增量**：47 个新测试，全部通过。仓库总计：671 → **718 passed**.
 
+### Session 31 — EPA 鲁棒性修复 + Convex Margin 实现 + 集成测试 (2026-04-15)
+
+**EPA Degenerate Simplex 修复（Part 1）**：
+
+- [x] `physics/gjk_epa.py` — `_epa_expand()` 退化面检测 + hexahedron 重建
+  - 若 EPA 初始 simplex 含面 dist_to_origin < `_EPA_DEGENERATE_TOL = 1e-9`，
+    自动从最近点构建 hexahedron（±x/±y/±z 方向搜索）
+  - 修复 sphere(r=0.1)@z=0.25 vs box-hull(half=0.2) depth=0.02→0.05（50% 误差→<3%）
+- [x] 13 tests in `tests/unit/collision/test_epa_robustness.py`（EPA 鲁棒性）
+
+**Convex Margin 实现（Part 2）**：
+
+- [x] `physics/gjk_epa.py` — `gjk_distance()` 新函数
+  - GJK closest-distance 模式（不要求相交），返回 `(dist, cp_a, cp_b)` 或 None（相交）
+  - 用于 Phase 1：浅接触（0 < pen < 2×margin）通过 gjk_distance 精确定深
+- [x] `physics/gjk_epa.py` — `gjk_epa_query()` 新增 `margin` 参数（默认 0 向后兼容）
+  - Phase 1：在 shrunk shapes（r-margin）上跑 gjk_distance；距离 < 2×margin 则触发接触
+  - Phase 2：shrunk shapes 相交时回落到完整 GJK+EPA
+  - Margin 语义：**不是**提前检测（gap < 2×margin），而是路由浅穿透到 Phase 1 稳定路径
+- [x] `physics/contact_tolerances.py` — `CONTACT_CONVEX_MARGIN = 1e-3`（1mm 全局常量）
+- [x] `physics/cpu_engine.py` — body-body 调用 `gjk_epa_query(..., margin=CONTACT_CONVEX_MARGIN)`
+- [x] 25 tests in `tests/unit/collision/test_convex_margin.py`（margin 单元测试）
+  - 5 个 test class：GJKDistance / MarginShallowContact / MarginDeepFallthrough / MarginConsistency / AllShapePairsMargin
+
+**Integration Tests（Part 3）**：
+
+- [x] `tests/integration/test_margin_vs_mujoco.py` — 15 个 CpuEngine vs MuJoCo 集成测试
+  - Class 1 — TestSingleBodyDropMuJoCo（7 tests）：sphere/box 自由落体 + 地面接触
+    - 稳态 z 偏差 < 0.5mm（sphere）/ < 1mm（box），着陆步数 ± 2 步
+  - Class 2 — TestTwoBodyContact（4 tests）：球-球 body-body 接触响应
+    - 非穿透、独立沉降、vs MuJoCo 稳态 z < 1mm、接触法向 |nx| > 0.99
+  - Class 3 — TestMarginPhysicsNeutral（4 tests）：margin 不改变物理（仅路由）
+    - 深接触 depth 偏差 < 1mm（margin=0 vs margin=1mm），浅接触仍检测到
+
+**关键洞察（写入 REFLECTIONS）**：
+- Margin 语义：`dist_shrunk = true_gap + 2×margin`，所以 `dist_shrunk < 2×margin` ↔ `true_gap < 0`
+  即只有真实穿透才触发接触，margin 是**路由开关**而非检测扩展
+- 地面接触不受 margin 影响：`halfspace_convex_query` 无 margin 参数
+- 求解器模型不兼容：PGS-SI 是完全非弹性（vx→0），MuJoCo 是软约束（部分弹性），
+  轨迹对比无意义；只有稳态对比有效
+
+**测试数**：891 + 13(EPA) + 25(margin) + 15(集成) = **944 passed**，全部通过
+
 ---
 
-## Phase 3 — High-Fidelity Rendering + Sensor Simulation ⬜
+### Session 30 — CPU Manifold 100% + EPA/Margin Plan (2026-04-14)
+
+**CPU Capsule Manifold Coverage Complete**：
+- [x] `capsule_cylinder_manifold()` — segment-segment + parallel axis → 1-2 points
+- [x] `capsule_convexhull_manifold()` — endpoint sphere GJK/EPA + normal consistency → 1-2 points
+- [x] `gjk_epa_query()` dispatch for both new pairs
+- [x] 16 new tests (8 capsule-cyl + 6 capsule-hull + 2 dispatch)
+- CPU manifold: Sphere-* 单点（正确）, 所有其他对多点 ✅
+
+**EPA Degenerate Simplex Bug 发现与诊断**：
+- sphere(r=0.1) vs box-hull(half=0.2): EPA depth=0.02 instead of 0.05
+- 根因：GJK simplex 有面 dist_to_origin=0，EPA 选错方向
+- 8 引擎调研完成（Jolt/Bullet/PhysX/Box2D/MuJoCo/Coal/Godot + Gregorius GDC talks）
+
+**EPA + Convex Margin Plan 确定（待下一 session 实施）**：
+- EPA 鲁棒性：退化面检测 → hexahedron 重建
+- Convex margin：GJK closest-distance 模式，浅接触不走 EPA
+- 架构归属：margin 属于 InterfaceMaterial（界面层），当前全局默认
+- 测试：EPA 17 + margin 24 + MuJoCo 响应对比 10 = 51 tests
+- Q44 从 P2 升级到 P1
+
+**测试数：875 → 891（+16 capsule manifold tests）**
+
+---
 
 **待完成：**
 - [ ] `rendering/vulkan_renderer/` — Vulkan + ray tracing 渲染器

@@ -13,6 +13,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .constraint_solvers import wrap_solver
+from .contact_tolerances import CONTACT_CONVEX_MARGIN
 from .dynamics_cache import DynamicsCache
 from .engine import ContactInfo, PhysicsEngine, StepOutput
 from .force_source import PassiveForceSource
@@ -141,7 +142,13 @@ class CpuEngine(PhysicsEngine):
                 X_i = si_i.world_pose(X_world[bi])
                 for si_j in geom_j.shapes:
                     X_j = si_j.world_pose(X_world[bj])
-                    manifold = gjk_epa_query(si_i.shape, X_i, si_j.shape, X_j)
+                    manifold = gjk_epa_query(
+                        si_i.shape,
+                        X_i,
+                        si_j.shape,
+                        X_j,
+                        margin=CONTACT_CONVEX_MARGIN,
+                    )
                     if manifold is not None and manifold.depth > 1e-10:
                         for pi, pt in enumerate(manifold.points):
                             contacts.append(

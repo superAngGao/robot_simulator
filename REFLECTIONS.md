@@ -3,9 +3,167 @@
 A running record of decisions, lessons learned, and issues encountered.
 Updated at the end of each development session.
 
+## 2026-04-15 (session 31) — EPA 鲁棒性修复 + Convex Margin + MuJoCo 集成测试
+
+### EPA Degenerate Simplex 修复
+
+**根因**：GJK 退化 simplex（面的 dist_to_origin ≈ 0）在 EPA 中选错扩展方向，
+导致 sphere(r=0.1)@z=0.25 vs box-hull(half=0.2) 返回 depth=0.02 而非 0.05（50% 误差）。
+
+**修复方案**：在 `_epa_expand()` 中检测退化面（dist < `_EPA_DEGENERATE_TOL = 1e-9`），
+从最近点向 ±x/±y/±z 构建正六面体 hexahedron 重建 polytope。参考：Jolt Physics
+"Degenerate simplex" 处理（Gregorius GDC 2013，Slide 65）。
+
+**修复后精度**：depth 误差 < 3%（之前 50%）。
+
+### Convex Margin 架构与语义
+
+**两阶段设计**：
+- Phase 1（gjk_distance on shrunk shapes）：处理浅穿透（0 < pen < 2×margin）
+- Phase 2（完整 GJK+EPA）：处理深穿透（pen > 2×margin）或 shrunk shapes 相交
+
+**关键语义**（调试中确认）：
+
+```
+dist_shrunk = true_gap + 2×margin
+```
+
+Phase 1 条件：`dist_shrunk < 2×margin` ↔ `true_gap < 0`（即真实穿透）。
+
+**Margin 不是提前检测**：margin 不让 gap < 2×margin 的分离状态触发接触。
+它只是把浅穿透（已经是真实几何穿透）路由到数值上更稳定的 gjk_distance 路径，
+避免 EPA 在接近零穿透时的退化问题。这与 MuJoCo/Bullet 的 "contact margin"
+语义不同（那些会扩展接触检测阈值）。
+
+**归属**：margin 在 `physics/contact_tolerances.py` 存储全局默认值
+（`CONTACT_CONVEX_MARGIN = 1e-3`），将来升级为 `InterfaceMaterial` per-pair 属性（Q44）。
+
+### 地面接触 vs Body-Body 接触的不对称性
+
+`halfspace_convex_query` 不接受 margin 参数——地面接触完全绕过 margin pipeline。
+这是有意设计：地面是半空间（无穷大），不会出现 EPA 退化 simplex；而且
+`halfspace_convex_query` 本身已经是解析解（距离精确）。
+
+只有 body-body 接触（`gjk_epa_query`）才受 margin 影响。
+
+### CpuEngine vs MuJoCo 对比方法论
+
+**关键发现**：
+- PGS-SI 是完全非弹性（post-collision vx→0），MuJoCo 是软约束（部分弹性，vx≈0.8）。
+- 轨迹对比在碰撞后立即分叉，1–2 步后误差超过任何合理容差。
+- **正确比较方式**：稳态指标（settled z）+ 几何约束（法向方向）+ 时序（着陆步数）。
+- 着陆时序一致（两引擎均为第 1129 步），稳态 z 偏差：sphere 0.06mm，box 0.20mm。
+
+**测试设计原则（从此次集成测试总结）**：
+1. 不要用轨迹 L2 比较两个不同求解器模型的引擎
+2. 稳态（settled）比较是安全的：能量耗散使两者收敛到同一配置空间位置
+3. 几何约束（法向 ≥ 0.99，不穿透）与求解器模型无关，是最强的比较指标
+4. 着陆时序（free-fall 运动学）与求解器无关，也是有效比较指标
+
+### 一个被排除的错误假设
+
+Session 30/31 期间曾认为 margin 会提前检测（gap = 2×margin 时触发接触）。
+实验数据否决：gap=5mm > 2×MARGIN=2mm 的球体在两种 margin 下均不接触。
+正确推导见上文。
+
 ---
 
-## 2026-04-13 (session 29) — GPU Box-Box Multi-Point Contact Manifold
+## 2026-04-14 (session 30) — CPU Manifold Coverage + EPA/Margin Architecture
+
+### CPU Capsule Manifold Coverage Complete
+
+Closed the last two CPU contact manifold gaps:
+- `capsule_cylinder_manifold()`: segment-segment closest point + parallel axis
+  detection → 1 or 2 contact points (mirrors capsule_capsule pattern)
+- `capsule_convexhull_manifold()`: endpoint sphere GJK/EPA queries + normal
+  consistency check → 1 or 2 points (mirrors capsule_box pattern)
+
+Both dispatched from `gjk_epa_query()` before GJK/EPA fallback. Only
+capsule-sphere remains single-point (physically correct for smooth body).
+
+CPU manifold coverage: all non-sphere pairs now have multi-point manifolds.
+
+### EPA Degenerate Simplex Bug Discovered
+
+While testing `capsule_convexhull_manifold`, sphere(r=0.1) at z=0.25 vs
+box-as-ConvexHull(half=0.2) returned EPA depth=0.02, normal=(0.55,-0.56,0.62)
+instead of correct depth=0.05, normal=(0,0,1).
+
+**Root cause diagnosed**: GJK returns 4-point simplex where one face has
+`dist_to_origin ≈ 0` (face passes through origin). EPA iteration 0 selects
+this degenerate face as "closest", expands in wrong diagonal direction,
+and converges to a wrong local minimum.
+
+**Manual EPA trace**:
+- Simplex face 0: normal=[-0.707, 0.707, 0], dist=0.000000 ← degenerate
+- Simplex face 3: normal=[-0.54, 0.56, -0.62], dist=0.019 ← also bad
+- EPA iter 0 picks face 0 (dist=0), expands toward [-0.707, 0.707, 0]
+- After 4 iterations converges to depth=0.02 in diagonal direction
+- True answer: face at z=-0.05 in Minkowski diff, depth=0.05 along +z
+
+### Industry Survey: EPA Degenerate Handling (8 engines)
+
+| Engine | Uses EPA? | Degenerate Handling | Convex Margin? |
+|--------|-----------|-------------------|----------------|
+| Jolt | Rarely | Convex radius makes degenerate rare; 32-support fallback | **Yes (core design)** |
+| Bullet | Yes | `EncloseOrigin()` + `FallBack(depth=0)` | Yes (separate margin) |
+| PhysX | Fallback | Progressive expand + dynamic ε scaled by shape margin | Yes (shape margin) |
+| Box2D | **No** | Avoids EPA entirely via TOI + SAT | Yes (shape radius) |
+| MuJoCo | Backup | MPR primary (no polytope init problem) | No |
+| Coal/HPP-FCL | Yes | Treats EPA as projection even without enclosure | No |
+| Godot | Yes | Bullet-derived, same weakness | No |
+
+**Industry consensus**: Convex margin (Jolt/Bullet/PhysX) is highest-leverage
+fix — makes degenerate case rare. But EPA robustness still needed for deep
+penetrations. Two-layer defense.
+
+### Architecture Decision: Margin Belongs to InterfaceMaterial
+
+Extensive discussion about where margin fits in the architecture, especially
+considering future FEM soft body cutting (刀切果冻 scenario).
+
+**Key insight**: margin is conceptually an **interface property**, not a shape
+property or a pipeline parameter. Different physics domains interpret margin
+differently:
+- Rigid convex-convex: GJK Minkowski erosion
+- Rigid convex-mesh (BVH): AABB inflation + triangle margin
+- FEM surface: contact distance threshold on deformed mesh
+- Fluid SPH: interaction radius (inherently per-particle)
+
+This aligns with session 20's `InterfaceMaterial` design: margin joins
+μ_sliding/rolling/spin, restitution, compliance as a union field.
+
+**Current decision**: global default `CONTACT_CONVEX_MARGIN = 1e-3` (already
+defined in `contact_tolerances.py`, currently unused). Docstring explicitly
+states intent to migrate to `InterfaceMaterial` when that class is implemented.
+Not implementing InterfaceMaterial now (session 20 timing decision unchanged).
+
+### FEM Soft Body Cutting — Architecture Compatibility Check
+
+User raised: "将来加入柔体，判定切割（如小刀切果冻），碰撞管线怎么设计？"
+
+**Analysis**: FEM cutting collision is a completely independent pipeline from
+convex-convex GJK/EPA:
+- Penetration detection: convex-vs-mesh (BVH), not convex-vs-convex
+- Contact surface: line/plane intersection with tet mesh, not discrete points
+- Topology modification: XFEM virtual nodes or SOFA remeshing
+- Force: cut surface constraint, not penalty/LCP contact
+
+**Conclusion**: current EPA/margin changes (convex-convex pipeline) do not
+conflict with future FEM pipeline. The intersection point is `CollisionPipeline`
+interface — must accommodate multiple narrowphase backends. Session 11's
+`PhysicsSubsystem` + `CouplingImpulse` architecture already handles this.
+
+### Plan for Next Session
+
+EPA robustness + convex margin implementation with three test files:
+1. `test_epa_robustness.py` (~17 tests): degenerate face fix, depth sweep, rotation stress
+2. `test_convex_margin.py` (~24 tests): gjk_distance, shallow contact, deep fallthrough, all shape pairs
+3. `test_margin_vs_mujoco.py` (~10 tests): trajectory comparison + response validation
+
+Full plan saved in `.claude/plans/floating-drifting-yeti.md`.
+
+---
 
 ### GPU Box-Box Face Clipping (Q42.4)
 

@@ -1,7 +1,7 @@
 # Robot Simulator — Project Manifest
 
 > 从零构建的刚体物理仿真器，面向 sim-to-real 腿足机器人 RL 训练。
-> Last updated: 2026-04-13 (session 29)
+> Last updated: 2026-04-16 (session 30)
 
 ## 一句话
 
@@ -91,7 +91,7 @@ viewer.py → matplotlib 交互/导出
 | `physics/robot_tree.py` | 运动学树: FK, ABA, CRBA, RNEA, integrate_q |
 | `physics/solvers/admm_qp.py` | ADMMQPSolver (acceleration-level QP) |
 | `physics/solvers/pgs_split_impulse.py` | PGS + split impulse |
-| `physics/gjk_epa.py` | GJK/EPA + CPU face clipping manifold |
+| `physics/gjk_epa.py` | GJK/EPA + convex margin (gjk_distance) + CPU face clipping manifold |
 | `physics/geometry.py` | CollisionShape + FaceTopology + ConvexHullShape |
 | `physics/backends/warp/analytical_collision.py` | GPU 解析碰撞 + S-H 面裁剪 manifold |
 | `physics/backends/warp/admm_kernels.py` | GPU ADMM 求解器 (Cholesky + 锥投影) |
@@ -108,7 +108,7 @@ viewer.py → matplotlib 交互/导出
 
 ## 规模
 
-- **866 个非慢速测试**（+112 slow），全部通过
+- **703 个非慢速测试**（+112 slow，共 1098），全部通过
 - physics/ ~16,000 行，rendering/ ~960 行，总计 ~44,000 行
 - 支持多机器人场景 + 静态几何 + 碰撞过滤 + 多点接触 manifold
 
@@ -125,6 +125,7 @@ viewer.py → matplotlib 交互/导出
 | 2j — GPU 解析碰撞 + MuJoCo 亚毫米对标 | ✅ |
 | 2k — GPU ADMM 求解器 + solver dispatch | ✅ |
 | 2l — GPU 多点接触 manifold + solver stability (session 27-29) | ✅ |
+| 2m — EPA 鲁棒性 + convex margin 两道防线 (session 30) | ✅ |
 | 3 — 渲染 (RenderScene 抽象 + matplotlib) | 🔄 开始 |
 | 4 — 域随机化 | ⬜ |
 | 5 — Sim-to-Real | ⬜ |

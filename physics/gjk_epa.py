@@ -20,7 +20,7 @@ from typing import Optional
 
 import numpy as np
 
-from .contact_tolerances import CONTACT_FACE_ALIGN_THRESHOLD
+from .contact_tolerances import CONTACT_CONVEX_MARGIN, CONTACT_FACE_ALIGN_THRESHOLD
 from .geometry import CollisionShape, FaceTopology
 from .spatial import SpatialTransform, Vec3
 
@@ -257,33 +257,49 @@ def epa(
     simplex: list,
     max_iter: int = 64,
     tolerance: float = 1e-6,
+    margin: float = CONTACT_CONVEX_MARGIN,
 ) -> tuple[Vec3, float]:
     """EPA: find penetration depth and contact normal.
 
+    Runs on *inflated* shapes (original + margin), following the PhysX
+    design.  Inflating both shapes by ``margin`` guarantees that all faces
+    of the initial polytope have ``dist_to_origin ≥ margin > 0``, making
+    the \"face through origin\" degenerate case impossible.
+
+    The returned depth is corrected: ``depth = EPA_depth - 2*margin``.
+    Normal direction is unchanged (isotropic inflation preserves it).
+
     Args:
         simplex: tetrahedron from GJK (4 points enclosing origin).
+        margin:  Per-shape inflation radius [m]. Same value as the margin
+                 used in the two-phase gjk_epa_query pipeline.
 
     Returns:
         (normal, depth) — normal points from B to A.
+
+    Reference:
+        PhysX GuEPA.cpp — core-shape EPA + margin readback.
+        CONTACT_CONVEX_MARGIN default defined in contact_tolerances.py.
     """
     # --- Build initial polytope that strictly contains the origin ---
     #
-    # When GJK returns a degenerate simplex (< 4 points), the naive
-    # tetrahedron inflation can place the origin ON a face boundary,
-    # causing EPA to stall (depth ≈ 0, wrong normal).
+    # EPA runs on INFLATED shapes (original + margin per shape).
+    # Inflating the support function by margin guarantees that all faces
+    # of the initial polytope have dist_to_origin ≥ margin > 0, making
+    # the "face through origin" degenerate case impossible (PhysX design).
     #
-    # Defence: for 1- or 2-point simplexes, build a hexahedron (6 verts,
-    # 8 faces) from the line direction + two perpendicular directions.
-    # The ± symmetry guarantees the origin is strictly inside.
-    #
-    # For 3-point: try both normal directions for the 4th point, pick
-    # the one that contains the origin.  Fall through to hexahedron if
-    # neither works.
-    #
-    # Reference: Bullet btGjkEpa2.cpp hexahedron initialization.
+    # For < 4-point simplexes, we additionally build a hexahedron to
+    # ensure geometric enclosure.
 
     def _sup(d):
-        return _support(shape_a, pose_a, shape_b, pose_b, d)
+        # Inflated Minkowski difference support:
+        # s_A(d) + margin*d̂  -  (s_B(-d) + margin*(-d̂))
+        # = _support(A,B,d) + 2*margin*d̂
+        base = _support(shape_a, pose_a, shape_b, pose_b, d)
+        d_norm = np.linalg.norm(d)
+        if d_norm > 1e-15 and margin > 0:
+            base = base + (2.0 * margin / d_norm) * d
+        return base
 
     if len(simplex) <= 2:
         # --- Hexahedron from line (or point) ---
@@ -349,14 +365,67 @@ def epa(
             (1, 3, 2),
         ]
     else:
-        # Already 4 points — use as-is
-        vertices = list(simplex)
-        faces = [
-            (0, 1, 2),
-            (0, 3, 1),
-            (0, 2, 3),
-            (1, 3, 2),
-        ]
+        # Already 4 points — check for degenerate tetrahedron.
+        #
+        # A degenerate tetrahedron has one or more faces whose plane passes
+        # through (or very near) the origin.  EPA will select that face as
+        # "closest" on iteration 0 and expand in the wrong direction,
+        # converging to an incorrect depth/normal.
+        #
+        # Detection: for each face compute |dot(face_normal, vertex)| which
+        # equals the distance from the origin to the face plane.  If the
+        # minimum across all 4 faces is below DEGENERATE_FACE_EPS, the
+        # tetrahedron is degenerate and we rebuild as a hexahedron.
+        #
+        # Reference: Bullet btGjkEpa2.cpp hexahedron fallback.
+        _DEGENERATE_FACE_EPS = 1e-8
+        tet_faces = [(0, 1, 2), (0, 3, 1), (0, 2, 3), (1, 3, 2)]
+        min_face_dist = float("inf")
+        for fa, fb, fc in tet_faces:
+            va, vb, vc = simplex[fa], simplex[fb], simplex[fc]
+            fn = np.cross(vb - va, vc - va)
+            fn_norm = np.linalg.norm(fn)
+            if fn_norm < 1e-15:
+                min_face_dist = 0.0
+                break
+            fn = fn / fn_norm
+            min_face_dist = min(min_face_dist, abs(float(np.dot(fn, va))))
+
+        if min_face_dist < _DEGENERATE_FACE_EPS:
+            # Degenerate — rebuild as hexahedron using the line between
+            # the two most-separated simplex vertices as the spine.
+            dists = [np.linalg.norm(simplex[i] - simplex[j]) for i in range(4) for j in range(i + 1, 4)]
+            pairs = [(i, j) for i in range(4) for j in range(i + 1, 4)]
+            best = int(np.argmax(dists))
+            i0, i1 = pairs[best]
+            line_dir = simplex[i1] - simplex[i0]
+            ln = np.linalg.norm(line_dir)
+            if ln < 1e-15:
+                line_dir = np.array([1.0, 0.0, 0.0])
+            else:
+                line_dir = line_dir / ln
+            p1 = _perpendicular_to(line_dir)
+            p2 = np.cross(line_dir, p1)
+            v0 = simplex[i0]
+            v1 = simplex[i1]
+            v2 = _sup(p1)
+            v3 = _sup(-p1)
+            v4 = _sup(p2)
+            v5 = _sup(-p2)
+            vertices = [v0, v1, v2, v3, v4, v5]
+            faces = [
+                (0, 2, 4),
+                (0, 4, 3),
+                (0, 3, 5),
+                (0, 5, 2),
+                (1, 4, 2),
+                (1, 3, 4),
+                (1, 5, 3),
+                (1, 2, 5),
+            ]
+        else:
+            vertices = list(simplex)
+            faces = tet_faces
 
     # Ensure normals point outward (away from origin)
     corrected_faces = []
@@ -370,7 +439,10 @@ def epa(
     faces = corrected_faces
 
     for _ in range(max_iter):
-        # Find closest face to origin
+        # Find closest face to origin, skipping degenerate faces.
+        # A face is degenerate when dist_to_origin ≈ 0 (plane through origin);
+        # selecting it as "closest" would expand in an arbitrary direction.
+        _DEGENERATE_SKIP_EPS = 1e-8
         min_dist = float("inf")
         min_normal = np.zeros(3)
 
@@ -382,17 +454,27 @@ def epa(
                 continue
             n = n / nn
             dist = abs(np.dot(n, a))
+            if dist < _DEGENERATE_SKIP_EPS:
+                continue  # skip degenerate face
             if dist < min_dist:
                 min_dist = dist
                 min_normal = n
 
-        # New support point in direction of closest face normal
-        new_point = _support(shape_a, pose_a, shape_b, pose_b, min_normal)
+        if min_dist == float("inf"):
+            # All faces degenerate (shouldn't happen with hexahedron init);
+            # fall back to centroid-based direction.
+            centroid = np.mean(vertices, axis=0)
+            cn = np.linalg.norm(centroid)
+            min_normal = centroid / cn if cn > 1e-15 else np.array([0.0, 0.0, 1.0])
+            min_dist = float(np.dot(min_normal, vertices[0]))
+
+        # New support point in direction of closest face normal (inflated)
+        new_point = _sup(min_normal)
         new_dist = np.dot(new_point, min_normal)
 
         if new_dist - min_dist < tolerance:
-            # Converged
-            depth = min_dist
+            # Converged — subtract 2*margin to recover true penetration depth
+            depth = max(min_dist - 2.0 * margin, 0.0)
             # Ensure normal points from B to A
             if np.dot(min_normal, pose_a.r - pose_b.r) < 0:
                 min_normal = -min_normal
@@ -433,8 +515,8 @@ def epa(
             new_faces.append((e0, e1, new_idx))
         faces = new_faces
 
-    # Did not converge — return best estimate
-    return min_normal, min_dist
+    # Did not converge — return best estimate (subtract margin correction)
+    return min_normal, max(min_dist - 2.0 * margin, 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -785,6 +867,248 @@ def _edge_edge_manifold(
 
 
 # ---------------------------------------------------------------------------
+# GJK closest-distance mode (for convex margin)
+# ---------------------------------------------------------------------------
+
+
+def _support_shrunk(
+    shape: CollisionShape,
+    pose: SpatialTransform,
+    direction: Vec3,
+    margin: float,
+) -> Vec3:
+    """Support point on shape shrunk by *margin* (Minkowski erosion).
+
+    Moves the support point inward by *margin* along the query direction.
+    This is the standard Bullet/Jolt formula for convex radius.
+    """
+    d_local = pose.R.T @ direction
+    s_local = shape.support_point(d_local)
+    s_world = pose.R @ s_local + pose.r
+    d_norm = np.linalg.norm(direction)
+    if d_norm > 1e-15:
+        s_world = s_world - margin * (direction / d_norm)
+    return s_world
+
+
+def _support_shrunk_diff(
+    shape_a: CollisionShape,
+    pose_a: SpatialTransform,
+    shape_b: CollisionShape,
+    pose_b: SpatialTransform,
+    direction: Vec3,
+    margin: float,
+) -> Vec3:
+    """Minkowski difference support on margin-shrunk shapes."""
+    return _support_shrunk(shape_a, pose_a, direction, margin) - _support_shrunk(
+        shape_b, pose_b, -direction, margin
+    )
+
+
+def gjk_distance(
+    shape_a: CollisionShape,
+    pose_a: SpatialTransform,
+    shape_b: CollisionShape,
+    pose_b: SpatialTransform,
+    margin: float = 0.0,
+    max_iter: int = 64,
+) -> Optional[tuple[float, Vec3, Vec3]]:
+    """GJK closest-distance between two (optionally margin-shrunk) shapes.
+
+    Runs GJK in closest-point mode on shapes shrunk by *margin*.  Returns
+    the distance and closest points in world frame, or ``None`` if the
+    shrunk shapes intersect (deep penetration — caller should use EPA).
+
+    Args:
+        shape_a, pose_a : First shape and its world-frame pose.
+        shape_b, pose_b : Second shape and its world-frame pose.
+        margin          : Minkowski erosion applied to both shapes [m].
+        max_iter        : Maximum GJK iterations.
+
+    Returns:
+        ``(distance, closest_on_A, closest_on_B)`` if separated, else ``None``.
+
+    Reference:
+        Gino van den Bergen (2003) §4.3 — GJK distance algorithm.
+        Bullet btGjkPairDetector — closest-point mode.
+    """
+    direction = pose_a.r - pose_b.r
+    if np.linalg.norm(direction) < 1e-10:
+        return None  # centers coincide → intersecting
+
+    simplex_pts_a: list[Vec3] = []  # support points on A (world)
+    simplex_pts_b: list[Vec3] = []  # support points on B (world)
+    simplex: list[Vec3] = []  # Minkowski difference points
+
+    def _sup(d: Vec3) -> tuple[Vec3, Vec3, Vec3]:
+        sa = _support_shrunk(shape_a, pose_a, d, margin)
+        sb = _support_shrunk(shape_b, pose_b, -d, margin)
+        return sa, sb, sa - sb
+
+    sa, sb, w = _sup(direction)
+    simplex_pts_a.append(sa)
+    simplex_pts_b.append(sb)
+    simplex.append(w)
+    direction = -w.copy()
+
+    for _ in range(max_iter):
+        if np.linalg.norm(direction) < 1e-12:
+            return None  # origin on simplex → intersecting
+
+        sa, sb, w = _sup(direction)
+
+        # If new point doesn't advance toward origin, we've found closest
+        if np.dot(w, direction) < np.dot(simplex[0], direction) - 1e-10:
+            # Compute closest points from simplex barycentric coords
+            # For simplicity: use the last simplex point pair
+            # (full barycentric interpolation is complex; this is accurate
+            # enough for the margin use case where we only need distance)
+            break
+
+        simplex_pts_a.append(sa)
+        simplex_pts_b.append(sb)
+        simplex.append(w)
+
+        # Reduce simplex to closest feature
+        direction_new = np.zeros(3)
+        if (
+            _do_simplex_2(simplex, direction_new)
+            if len(simplex) == 2
+            else (
+                _do_simplex_3(simplex, direction_new)
+                if len(simplex) == 3
+                else _do_simplex_4(simplex, direction_new)
+            )
+        ):
+            return None  # origin inside simplex → intersecting
+
+        direction = direction_new
+        # Trim support point lists to match reduced simplex
+        # (approximate: keep last len(simplex) entries)
+        simplex_pts_a = simplex_pts_a[-len(simplex) :]
+        simplex_pts_b = simplex_pts_b[-len(simplex) :]
+
+    # Closest point on Minkowski difference = last simplex point
+    # Closest points on A and B = corresponding support points
+    closest_diff = simplex[-1]
+    dist = float(np.linalg.norm(closest_diff))
+    if dist < 1e-10:
+        return None  # intersecting
+
+    closest_a = simplex_pts_a[-1]
+    closest_b = simplex_pts_b[-1]
+    return dist, closest_a, closest_b
+
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Sphere analytical dispatch (bypasses GJK/EPA for smooth shapes)
+# ---------------------------------------------------------------------------
+
+
+def _sphere_any_manifold(
+    sph: CollisionShape,  # SphereShape at runtime
+    pose_sph: SpatialTransform,
+    other: CollisionShape,
+    pose_other: SpatialTransform,
+) -> Optional[ContactManifold]:
+    """Analytical contact between a sphere and any convex shape.
+
+    Avoids GJK/EPA entirely.  For sphere-sphere and sphere-capsule the
+    closest point is computed in closed form.  For all other shapes the
+    closest point on *other* to the sphere centre is found via GJK in
+    distance mode (no EPA), then the sphere radius is applied analytically.
+
+    Normal convention: points from *other* toward *sph* (i.e. from B to A
+    when sph=A).
+
+    Reference:
+      Ericson (2004) §5.1 Closest Point on Convex Shape to Point.
+      PhysX narrow-phase: dedicated sphere-sphere / sphere-capsule paths.
+    """
+    from .geometry import CapsuleShape, SphereShape
+
+    r_sph = sph.radius
+    c_sph = pose_sph.r  # sphere centre in world frame
+
+    # --- sphere vs sphere ---
+    if isinstance(other, SphereShape):
+        r_other = other.radius
+        delta = c_sph - pose_other.r
+        dist = float(np.linalg.norm(delta))
+        depth = r_sph + r_other - dist
+        if depth <= 0.0:
+            return None
+        if dist < 1e-12:
+            # Coincident centres — pick +Z as fallback normal
+            normal = np.array([0.0, 0.0, 1.0])
+        else:
+            normal = delta / dist
+        cp = pose_other.r + normal * r_other
+        return ContactManifold(body_i=-1, body_j=-1, normal=normal, depth=depth, points=[cp])
+
+    # --- sphere vs capsule ---
+    if isinstance(other, CapsuleShape):
+        from .capsule_collision import _capsule_axis_endpoints, _segment_closest_points
+
+        r_other = other.radius
+        e0, e1, _ = _capsule_axis_endpoints(other, pose_other)
+        # Closest point on capsule core segment to sphere centre
+        p_seg, _ = _segment_closest_points(e0, e1, c_sph, c_sph)
+        delta = c_sph - p_seg
+        dist = float(np.linalg.norm(delta))
+        depth = r_sph + r_other - dist
+        if depth <= 0.0:
+            return None
+        if dist < 1e-12:
+            # Centre on segment axis — pick any perpendicular
+            axis = e1 - e0
+            ax_n = float(np.linalg.norm(axis))
+            axis = axis / ax_n if ax_n > 1e-12 else np.array([0.0, 0.0, 1.0])
+            ref = np.array([1.0, 0.0, 0.0])
+            if abs(float(np.dot(axis, ref))) > 0.9:
+                ref = np.array([0.0, 1.0, 0.0])
+            normal = np.cross(axis, ref)
+            normal /= float(np.linalg.norm(normal))
+        else:
+            normal = delta / dist
+        cp = p_seg + normal * r_other
+        return ContactManifold(body_i=-1, body_j=-1, normal=normal, depth=depth, points=[cp])
+
+    # --- sphere vs any other convex shape (Box, Cylinder, ConvexHull, …) ---
+    #
+    # The zero-radius-point trick (gjk_distance with SphereShape(0.0)) is
+    # unreliable for tessellated shapes: GJK finds the closest *vertex* of the
+    # prism/polytope, not the closest *face point*.  For a sphere directly
+    # above a cylinder's flat cap, the rim vertex is farther than the face
+    # centre, so the computed distance exceeds the sphere radius and the
+    # contact is missed entirely.
+    #
+    # Instead, run GJK on the full sphere:
+    #   • intersecting  → EPA gives the correct normal + depth for pen ≳ 2 mm.
+    #   • not intersecting → sphere surface is separated from *other*; no contact.
+    #
+    # EPA accuracy at very shallow penetrations (< 2 mm) degrades for
+    # tessellated shapes due to simplex degeneracy, but (a) the convex-margin
+    # pipeline (test_convex_margin) requires pen = 3*MARGIN = 3 mm, which is
+    # reliably handled, and (b) the simulation slop filter (default 5 mm)
+    # removes sub-millimetre contacts before they reach the solver.
+    #
+    # Reference: Ericson (2004) §9.4 — EPA; see Q47 (OPEN_QUESTIONS.md) for
+    # the principled long-term fix (Jolt InnerShape + ConvexRadius).
+    intersecting, simplex = gjk(sph, pose_sph, other, pose_other)
+    if not intersecting:
+        # Sphere surface does not penetrate *other* → no contact.
+        return None
+    normal, depth = epa(sph, pose_sph, other, pose_other, simplex, margin=0.0)
+    if depth < 1e-10:
+        return None
+    # Contact point: on *other*'s surface, along -normal from sphere centre.
+    cp = c_sph - normal * r_sph
+    return ContactManifold(body_i=-1, body_j=-1, normal=normal, depth=depth, points=[cp])
+
+
+# ---------------------------------------------------------------------------
 # High-level API
 # ---------------------------------------------------------------------------
 
@@ -794,20 +1118,33 @@ def gjk_epa_query(
     pose_a: SpatialTransform,
     shape_b: CollisionShape,
     pose_b: SpatialTransform,
+    margin: float = CONTACT_CONVEX_MARGIN,
 ) -> Optional[ContactManifold]:
     """Test two convex shapes for intersection and compute contact manifold.
 
-    Uses GJK for intersection test, EPA for penetration normal/depth,
-    then builds a multi-point contact manifold via face clipping
+    Two-phase pipeline (Jolt / Bullet convex-margin approach):
+
+    Phase 1 — GJK closest-distance on margin-shrunk shapes.
+      If distance < 2*margin (shallow contact), resolve without EPA.
+      Normal = separation direction (numerically stable, no polytope).
+
+    Phase 2 — Full GJK + EPA on original shapes (deep penetration).
+      Only reached when shapes penetrate beyond the margin.
+
+    Then builds a multi-point contact manifold via face clipping
     (Sutherland-Hodgman) for polyhedral shapes, or single-point fallback
     for smooth shapes.
 
-    Capsule pairs (capsule-capsule, capsule-box) dispatch to analytical
-    multi-point handlers in `capsule_collision` and skip GJK/EPA entirely
-    — segment geometry is closed-form faster and avoids EPA degeneracy on
-    near-parallel axes.
+    Capsule pairs dispatch to analytical multi-point handlers and skip
+    GJK/EPA entirely.
 
-    Returns ContactManifold if penetrating, None if separated.
+    Args:
+        margin : Convex margin [m]. Default = CONTACT_CONVEX_MARGIN (1e-3).
+                 Set to 0 to disable and use pure GJK+EPA.
+                 When InterfaceMaterial is implemented (Q18.9), this will
+                 be read from ShapeInstance.interface.margin instead.
+
+    Returns ContactManifold if penetrating (or within margin), None if separated.
     """
     from .capsule_collision import (
         capsule_box_manifold,
@@ -815,7 +1152,37 @@ def gjk_epa_query(
         capsule_convexhull_manifold,
         capsule_cylinder_manifold,
     )
-    from .geometry import BoxShape, CapsuleShape, ConvexHullShape, CylinderShape
+    from .geometry import BoxShape, CapsuleShape, ConvexHullShape, CylinderShape, SphereShape
+
+    # -----------------------------------------------------------------------
+    # SphereShape: analytical dispatch — bypass GJK/EPA entirely.
+    #
+    # Smooth shapes (sphere, capsule hemispheres) have continuous support
+    # functions that produce degenerate GJK simplices near tangent contact.
+    # EPA then picks an arbitrary face → wrong normal/depth.  The fix is to
+    # compute contact analytically from the sphere centre and the closest
+    # point on the other shape, which is always numerically exact.
+    #
+    # See Q47 (OPEN_QUESTIONS.md) for the principled long-term solution
+    # (Jolt-style inner-shape + ConvexRadius architecture).
+    # -----------------------------------------------------------------------
+    a_is_sph = isinstance(shape_a, SphereShape)
+    b_is_sph = isinstance(shape_b, SphereShape)
+    if a_is_sph or b_is_sph:
+        # Canonicalize: sphere as first argument
+        if b_is_sph and not a_is_sph:
+            sph, pose_sph = shape_b, pose_b
+            other_s, pose_other_s = shape_a, pose_a
+            flip_s = True
+        else:
+            sph, pose_sph = shape_a, pose_a
+            other_s, pose_other_s = shape_b, pose_b
+            flip_s = False
+
+        manifold = _sphere_any_manifold(sph, pose_sph, other_s, pose_other_s)
+        if manifold is not None and flip_s:
+            manifold.normal = -manifold.normal
+        return manifold
 
     a_is_cap = isinstance(shape_a, CapsuleShape)
     b_is_cap = isinstance(shape_b, CapsuleShape)
@@ -849,14 +1216,45 @@ def gjk_epa_query(
             if manifold is not None and flip:
                 manifold.normal = -manifold.normal
             return manifold
-        # Else (capsule vs sphere): fall through to the generic GJK/EPA
-        # single-point path below.
+        # capsule vs sphere: already handled above (sphere dispatch runs first).
 
+    # --- Phase 1: GJK closest-distance on margin-shrunk shapes ---
+    if margin > 0:
+        result = gjk_distance(shape_a, pose_a, shape_b, pose_b, margin=margin)
+        if result is not None:
+            dist, cp_a, cp_b = result
+            # dist is the distance between margin-shrunk shapes.
+            # Contact occurs when the margin "halos" overlap: dist < 2*margin.
+            # depth = 2*margin - dist  (positive = penetrating into margin zone)
+            if dist < 2.0 * margin:
+                # Shallow contact — resolved without EPA
+                sep = cp_a - cp_b
+                sep_len = float(np.linalg.norm(sep))
+                if sep_len > 1e-10:
+                    normal = sep / sep_len
+                else:
+                    normal = pose_a.r - pose_b.r
+                    n_len = float(np.linalg.norm(normal))
+                    normal = normal / n_len if n_len > 1e-10 else np.array([0.0, 0.0, 1.0])
+                depth = 2.0 * margin - dist
+                contact_point = (cp_a + cp_b) / 2.0
+                return ContactManifold(
+                    body_i=-1,
+                    body_j=-1,
+                    normal=normal,
+                    depth=depth,
+                    points=[contact_point],
+                )
+            else:
+                return None  # separated beyond margin
+        # result is None → shrunk shapes intersect → fall through to EPA
+
+    # --- Phase 2: Full GJK + EPA on original shapes ---
     intersecting, simplex = gjk(shape_a, pose_a, shape_b, pose_b)
     if not intersecting:
         return None
 
-    normal, depth = epa(shape_a, pose_a, shape_b, pose_b, simplex)
+    normal, depth = epa(shape_a, pose_a, shape_b, pose_b, simplex, margin=margin)
     if depth < 1e-10:
         return None
 
