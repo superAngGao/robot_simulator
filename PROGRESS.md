@@ -1,6 +1,6 @@
 # Robot Simulator — Progress Tracker
 
-> Last updated: 2026-04-15 (session 31)
+> Last updated: 2026-04-16 (session 32)
 > Reference plan: [PLAN.md](./PLAN.md)
 
 ---
@@ -874,6 +874,32 @@ buffer（~50 LOC refactor），延后到出现实际 divergence bug 时再做。
 **B(5) Multi-robot × multi-shape**：仍延后。Session 24 之后是下一个目标。
 
 **Session 24 测试增量**：47 个新测试，全部通过。仓库总计：671 → **718 passed**.
+
+### Session 32 — CPU GS-PGS 稳定性验证 + Q48/Q49 文档 (2026-04-16)
+
+**问题**：Q49 最初将 CPU 多接触冲量爆炸标记为 P1，类比 GPU Q45（Jacobi PGS 发散）。
+
+**实测结论**：CPU `PGSSplitImpulseSolver` 使用 **Gauss-Seidel 顺序迭代**，与 GPU
+Jacobi 并行更新根本不同。用与 Q45 完全相同的三机器人场景（`test_b5_d4d8_mixed_ground`
+fixture）在 CpuEngine 上跑 1000 步（max 11 contacts，加扰动）：
+
+```
+STABLE after 1000 steps
+n_contact: max=11, mean=1.6
+max|qdot|: initial=0.98, peak=5.20, final=4.65
+```
+
+**结论**：GS-PGS 天然更收敛，Q49 优先级从 P1 降为 P3。
+
+**文档更新**：
+- [x] Q48 — CPU 碰撞检测完备性（EPA 退化修复、gjk_distance 早退 bug workaround、
+      convex margin pipeline、残留缺口）
+- [x] Q49 — CPU 多接触冲量风险（实测稳定，理论分析，与 GPU Q45 对比，优先级降级）
+- [x] Q16 — GPU 用 CRBA+Cholesky 代替 ABA 的原因（L 因子复用）
+
+**测试数**：944（无新增，本 session 为调查/文档工作）
+
+---
 
 ### Session 31 — EPA 鲁棒性修复 + Convex Margin 实现 + 集成测试 (2026-04-15)
 

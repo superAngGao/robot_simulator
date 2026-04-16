@@ -3,6 +3,34 @@
 A running record of decisions, lessons learned, and issues encountered.
 Updated at the end of each development session.
 
+## 2026-04-16 (session 32) — CPU GS-PGS 稳定性验证
+
+### CPU 多接触冲量：GS vs Jacobi 的根本差异
+
+**背景**：Q45（GPU）修复了 Jacobi PGS 在多接触场景的发散问题（mass splitting）。
+类比之下，Q49 将 CPU 的同类风险标记为 P1。
+
+**实测**：使用与 Q45 完全相同的三机器人 fixture（`test_b5_d4d8_mixed_ground`），
+在 CpuEngine GS-PGS 上跑 1000 步，加上随机扰动（σ=0.5），最多 11 个同时接触：
+**全程稳定，max|qdot| 无爆炸**。
+
+**根因分析**：
+
+| 维度 | GPU Jacobi PGS | CPU Gauss-Seidel PGS |
+|------|---------------|----------------------|
+| 更新方式 | 所有接触并行用旧 λ | 顺序更新，立即用新 λ |
+| 发散条件 | ρ(I - D⁻¹W) > 1（容易触发）| 严格对角占优要求更宽松 |
+| Q45 场景结果 | **发散**（需 mass splitting）| **稳定** |
+
+**教训**：Q45 的爆炸是 GPU **Jacobi** 迭代的特有问题，不是"PGS 通病"。
+在移植 GPU 经验到 CPU 时，必须区分算法变体（Jacobi vs GS）而非直接类比求解器名称。
+
+**残留风险**：
+- 极端刚性多球链式碰撞（e≈1）下 GS 可能慢速漂移
+- nc>50 时 60 次迭代可能不收敛（尚未测试）
+
+---
+
 ## 2026-04-15 (session 31) — EPA 鲁棒性修复 + Convex Margin + MuJoCo 集成测试
 
 ### EPA Degenerate Simplex 修复
