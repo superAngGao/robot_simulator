@@ -431,6 +431,77 @@ def capsule_cylinder_manifold(
 
 
 # ---------------------------------------------------------------------------
+# sphere vs cylinder (analytical)
+# ---------------------------------------------------------------------------
+
+
+def _sphere_vs_cylinder(
+    center_w: Vec3,
+    radius: float,
+    cyl: CylinderShape,
+    pose_y: SpatialTransform,
+) -> Optional[tuple[float, Vec3, Vec3]]:
+    """Sphere vs cylinder closest-point contact (analytical).
+
+    Decomposes the problem into cylinder-local coordinates:
+      - axial component  t  along the cylinder axis (local Z)
+      - radial component r  perpendicular to the axis
+
+    Three regions:
+      1. Side  (|t| <= hl): closest point is on the curved surface.
+      2. Cap   (|t| > hl, r <= r_cyl): closest point is on a flat cap.
+      3. Rim   (|t| > hl, r > r_cyl): closest point is on the rim circle.
+
+    Returns ``(depth, normal_world, contact_point_world)`` where normal
+    points from the cylinder toward the sphere, or ``None`` if separated.
+
+    Reference:
+      Ericson (2004) §5.2.8 — Closest Point on Cylinder to Point.
+      PhysX NpCapsuleCapsule.cpp — sphere-cylinder analytical path.
+    """
+    r_cyl = cyl.radius
+    hl = cyl.length / 2.0
+    axis_w = pose_y.R @ np.array([0.0, 0.0, 1.0])  # cylinder axis in world
+
+    # Sphere centre in cylinder-local frame
+    delta = center_w - pose_y.r
+    t = float(np.dot(delta, axis_w))  # axial projection
+    radial_vec = delta - t * axis_w  # perpendicular component (world)
+    r = float(np.linalg.norm(radial_vec))  # radial distance from axis
+
+    if r > _EPS:
+        radial_dir = radial_vec / r  # unit radial direction (world)
+    else:
+        # Sphere centre on axis — pick any perpendicular as fallback
+        perp = np.array([1.0, 0.0, 0.0])
+        if abs(float(np.dot(axis_w, perp))) > 0.9:
+            perp = np.array([0.0, 1.0, 0.0])
+        radial_dir = np.cross(axis_w, perp)
+        radial_dir /= float(np.linalg.norm(radial_dir))
+
+    t_clamped = float(np.clip(t, -hl, hl))
+    r_clamped = min(r, r_cyl)
+
+    # Closest point on cylinder surface
+    cp_w = pose_y.r + t_clamped * axis_w + r_clamped * radial_dir
+
+    diff = center_w - cp_w
+    dist = float(np.linalg.norm(diff))
+    depth = radius - dist
+
+    if depth <= 0.0:
+        return None
+
+    if dist > _EPS:
+        normal_w = diff / dist
+    else:
+        # Sphere centre exactly on cylinder surface — push radially outward
+        normal_w = radial_dir.copy()
+
+    return depth, normal_w, cp_w
+
+
+# ---------------------------------------------------------------------------
 # capsule vs convex hull
 # ---------------------------------------------------------------------------
 

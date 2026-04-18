@@ -283,8 +283,9 @@ class TestAllShapePairsMargin:
 
     Penetrations:
       - Most pairs: pen = MARGIN (1 mm) — in shallow contact zone
-      - sphere-cyl, box-cyl, box-hull: pen = 3*MARGIN (3 mm) — these pairs
-        have a known gjk_distance early-termination issue; EPA path used.
+      - box-cyl, box-hull: pen = 3*MARGIN (3 mm) — these pairs have a known
+        gjk_distance early-termination issue; EPA path used.
+      - sphere-cyl: now uses analytical dispatch (fixed), pen = MARGIN.
     """
 
     def _check(self, shape_a, half_a, shape_b, half_b, pen, atol=2e-4):
@@ -301,7 +302,7 @@ class TestAllShapePairsMargin:
         self._check(SphereShape(0.05), 0.05, BoxShape((0.1, 0.1, 0.1)), 0.05, MARGIN)
 
     def test_sphere_cyl_margin(self):
-        self._check(SphereShape(0.05), 0.05, CylinderShape(0.05, 0.1), 0.05, 3 * MARGIN)
+        self._check(SphereShape(0.05), 0.05, CylinderShape(0.05, 0.1), 0.05, MARGIN)
 
     def test_sphere_hull_margin(self):
         self._check(SphereShape(0.05), 0.05, _box_hull(0.05), 0.05, MARGIN)

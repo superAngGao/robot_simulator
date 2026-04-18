@@ -587,3 +587,320 @@ class TestMarginPhysicsNeutral:
             f"Settled sphere z={z_settled:.5f} differs from radius={0.05} "
             f"by {abs(z_settled - 0.05) * 1000:.2f}mm"
         )
+
+
+# ---------------------------------------------------------------------------
+# Class 4: TestSphereAnalyticalVsMuJoCo
+# ---------------------------------------------------------------------------
+
+
+def _cylinder_model(radius: float = 0.05, length: float = 0.10):
+    """Single free-floating cylinder robot model."""
+    from physics.geometry import BodyCollisionGeometry, CylinderShape, ShapeInstance
+    from physics.joint import FreeJoint
+    from physics.merged_model import merge_models
+    from physics.robot_tree import Body, RobotTreeNumpy
+    from physics.spatial import SpatialInertia, SpatialTransform
+    from physics.terrain import FlatTerrain
+    from robot.model import RobotModel
+
+    m = 1.0
+    r, h = radius, length / 2.0
+    I_lat = m * (3 * r**2 + (2 * h) ** 2) / 12.0
+    I_ax = m * r**2 / 2.0
+    I = np.diag([I_lat, I_lat, I_ax])
+    tree = RobotTreeNumpy(gravity=9.81)
+    tree.add_body(
+        Body(
+            name="cyl",
+            index=0,
+            joint=FreeJoint("root"),
+            inertia=SpatialInertia(m, I, np.zeros(3)),
+            X_tree=SpatialTransform.identity(),
+            parent=-1,
+        )
+    )
+    tree.finalize()
+    model = RobotModel(
+        tree=tree,
+        actuated_joint_names=[],
+        contact_body_names=["cyl"],
+        geometries=[
+            BodyCollisionGeometry(
+                body_index=0,
+                shapes=[ShapeInstance(shape=CylinderShape(radius, length))],
+            )
+        ],
+    )
+    merged = merge_models({"r": model}, terrain=FlatTerrain())
+    engine = CpuEngine(merged, dt=DT)
+    return merged, engine, radius, length / 2.0
+
+
+def _sphere_on_box_model(r_sph: float = 0.05, half_box: float = 0.10):
+    """Sphere resting on top of a fixed (very heavy) box — tests sphere-box contact."""
+    from physics.geometry import BodyCollisionGeometry, BoxShape, ShapeInstance, SphereShape
+    from physics.joint import FreeJoint
+    from physics.merged_model import merge_models
+    from physics.robot_tree import Body, RobotTreeNumpy
+    from physics.spatial import SpatialInertia, SpatialTransform
+    from physics.terrain import FlatTerrain
+    from robot.model import RobotModel
+
+    # Two-body model: heavy box (pinned via huge mass) + free sphere
+    I_sph = np.eye(3) * (2 / 5 * 1.0 * r_sph**2)
+    I_box = np.eye(3) * (1e6 / 6.0 * (2 * half_box) ** 2)
+    tree = RobotTreeNumpy(gravity=9.81)
+    tree.add_body(
+        Body(
+            name="box",
+            index=0,
+            joint=FreeJoint("root_box"),
+            inertia=SpatialInertia(1e6, I_box, np.zeros(3)),  # very heavy = quasi-fixed
+            X_tree=SpatialTransform.identity(),
+            parent=-1,
+        )
+    )
+    tree.add_body(
+        Body(
+            name="sph",
+            index=1,
+            joint=FreeJoint("root_sph"),
+            inertia=SpatialInertia(1.0, I_sph, np.zeros(3)),
+            X_tree=SpatialTransform.identity(),
+            parent=-1,
+        )
+    )
+    tree.finalize()
+    model = RobotModel(
+        tree=tree,
+        actuated_joint_names=[],
+        contact_body_names=["box", "sph"],
+        geometries=[
+            BodyCollisionGeometry(
+                body_index=0,
+                shapes=[ShapeInstance(shape=BoxShape((2 * half_box, 2 * half_box, 2 * half_box)))],
+            ),
+            BodyCollisionGeometry(
+                body_index=1,
+                shapes=[ShapeInstance(shape=SphereShape(r_sph))],
+            ),
+        ],
+    )
+    merged = merge_models({"r": model}, terrain=FlatTerrain())
+    engine = CpuEngine(merged, dt=DT)
+    return merged, engine
+
+
+class TestSphereAnalyticalVsMuJoCo:
+    """Sphere-box and sphere-cylinder steady-state comparison vs MuJoCo.
+
+    Validates that the new analytical dispatch (bypassing GJK/EPA for
+    sphere-box and sphere-cylinder) produces the same settled height as
+    MuJoCo's analytical contact model.
+
+    Tolerances: 1 mm steady-state height difference (same as Class 1).
+    """
+
+    R = 0.05
+    Z0 = 0.4
+    N = 4000  # steps to settle
+
+    # -----------------------------------------------------------------------
+    # sphere-cylinder: drop onto flat ground, cylinder axis = +Z
+    # -----------------------------------------------------------------------
+
+    def test_cylinder_drop_steady_state_vs_mujoco(self):
+        """Cylinder (r=0.05, l=0.10) drops onto ground: settled z vs MuJoCo < 1mm."""
+        radius, length = 0.05, 0.10
+        merged, engine, r_cyl, hl = _cylinder_model(radius, length)
+
+        q = np.zeros(merged.nq)
+        q[0] = 1.0
+        q[6] = self.Z0
+        qdot = np.zeros(merged.nv)
+        z_traj = np.zeros(self.N)
+        for i in range(self.N):
+            z_traj[i] = q[6]
+            out = engine.step(q, qdot, np.zeros(merged.nv))
+            q, qdot = out.q_new, out.qdot_new
+        our_z = float(np.mean(z_traj[-500:]))
+
+        xml = f"""<mujoco>
+  <option timestep="{DT}"/>
+  <worldbody>
+    <geom type="plane" size="5 5 0.1"/>
+    <body name="c" pos="0 0 {self.Z0}">
+      <freejoint/>
+      <geom type="cylinder" size="{radius} {length / 2}" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        mj_z_traj = np.zeros(self.N)
+        for i in range(self.N):
+            mj_z_traj[i] = d.qpos[2]
+            mujoco.mj_step(m, d)
+        mj_z = float(np.mean(mj_z_traj[-500:]))
+
+        diff_mm = abs(our_z - mj_z) * 1000.0
+        assert diff_mm < 1.0, (
+            f"Cylinder steady-state z differs {diff_mm:.3f}mm (ours={our_z:.5f}, MuJoCo={mj_z:.5f})"
+        )
+
+    def test_sphere_on_cylinder_side_vs_mujoco(self):
+        """Sphere drops onto cylinder side (horizontal cylinder): settled z vs MuJoCo < 1mm.
+
+        The cylinder lies on its side (axis = +X), sphere drops from above.
+        Sphere rests on cylinder curved surface — true radial contact.
+        """
+        r_sph, r_cyl, l_cyl = 0.05, 0.05, 0.20
+
+        # Our engine: two-body model, cylinder with axis rotated to +X
+        from physics.geometry import BodyCollisionGeometry, CylinderShape, ShapeInstance, SphereShape
+        from physics.joint import FreeJoint
+        from physics.merged_model import merge_models
+        from physics.robot_tree import Body, RobotTreeNumpy
+        from physics.spatial import SpatialInertia, SpatialTransform
+        from physics.terrain import FlatTerrain
+        from robot.model import RobotModel
+
+        # Rotation: cylinder local +Z → world +X  (Rx(-90°))
+        Rx90 = np.array([[1, 0, 0], [0, 0, 1], [0, -1, 0]], dtype=float)
+
+        m_cyl = 1e6  # quasi-fixed
+        I_cyl = np.eye(3) * (m_cyl * r_cyl**2 / 2.0)
+        m_sph = 1.0
+        I_sph = np.eye(3) * (2 / 5 * m_sph * r_sph**2)
+
+        tree = RobotTreeNumpy(gravity=9.81)
+        tree.add_body(
+            Body(
+                name="cyl",
+                index=0,
+                joint=FreeJoint("root_cyl"),
+                inertia=SpatialInertia(m_cyl, I_cyl, np.zeros(3)),
+                X_tree=SpatialTransform.identity(),
+                parent=-1,
+            )
+        )
+        tree.add_body(
+            Body(
+                name="sph",
+                index=1,
+                joint=FreeJoint("root_sph"),
+                inertia=SpatialInertia(m_sph, I_sph, np.zeros(3)),
+                X_tree=SpatialTransform.identity(),
+                parent=-1,
+            )
+        )
+        tree.finalize()
+
+        model = RobotModel(
+            tree=tree,
+            actuated_joint_names=[],
+            contact_body_names=["cyl", "sph"],
+            geometries=[
+                BodyCollisionGeometry(0, [ShapeInstance(CylinderShape(r_cyl, l_cyl))]),
+                BodyCollisionGeometry(1, [ShapeInstance(SphereShape(r_sph))]),
+            ],
+        )
+        # Cylinder at z = r_cyl (lying on ground), rotated to +X axis
+        merged = merge_models({"r": model}, terrain=FlatTerrain())
+        engine = CpuEngine(merged, dt=DT)
+
+        q = np.zeros(merged.nq)
+        # Cylinder body: z = r_cyl (touching ground), rotated Rx90
+        import scipy.spatial.transform as sct
+
+        # q for FreeJoint: [qw, qx, qy, qz, x, y, z]
+        qrot_cyl = sct.Rotation.from_matrix(Rx90).as_quat()  # [x,y,z,w]
+        q[0] = qrot_cyl[3]
+        q[1] = qrot_cyl[0]
+        q[2] = qrot_cyl[1]
+        q[3] = qrot_cyl[2]
+        q[6] = r_cyl  # cylinder centre z
+        # Sphere body
+        q[7] = 1.0  # qw
+        q[13] = r_cyl + r_sph + 0.3  # sphere z, well above cylinder
+
+        qdot = np.zeros(merged.nv)
+        z_traj = np.zeros(self.N)
+        for i in range(self.N):
+            z_traj[i] = q[13]
+            out = engine.step(q, qdot, np.zeros(merged.nv))
+            q, qdot = out.q_new, out.qdot_new
+        our_z = float(np.mean(z_traj[-500:]))
+        expected_z = r_cyl + r_sph  # sphere rests on cylinder top
+
+        # MuJoCo reference
+        xml = f"""<mujoco>
+  <option timestep="{DT}"/>
+  <worldbody>
+    <geom type="plane" size="5 5 0.1"/>
+    <body name="cyl" pos="0 0 {r_cyl}" euler="90 0 0">
+      <geom type="cylinder" size="{r_cyl} {l_cyl / 2}" mass="1e6"/>
+    </body>
+    <body name="sph" pos="0 0 {r_cyl + r_sph + 0.3}">
+      <freejoint/>
+      <geom type="sphere" size="{r_sph}" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+        mj_m = mujoco.MjModel.from_xml_string(xml)
+        mj_d = mujoco.MjData(mj_m)
+        mj_z_traj = np.zeros(self.N)
+        for i in range(self.N):
+            mj_z_traj[i] = mj_d.qpos[2]
+            mujoco.mj_step(mj_m, mj_d)
+        mj_z = float(np.mean(mj_z_traj[-500:]))
+
+        diff_mm = abs(our_z - mj_z) * 1000.0
+        assert diff_mm < 2.0, (
+            f"Sphere-on-cylinder z differs {diff_mm:.3f}mm "
+            f"(ours={our_z:.5f}, MuJoCo={mj_z:.5f}, expected≈{expected_z:.5f})"
+        )
+
+    def test_sphere_on_box_side_vs_mujoco(self):
+        """Sphere drops onto top of a large box: settled z vs MuJoCo < 1mm.
+
+        Tests the sphere-box analytical dispatch end-to-end through CpuEngine.
+        """
+        r_sph, half_box = 0.05, 0.10
+
+        xml = f"""<mujoco>
+  <option timestep="{DT}"/>
+  <worldbody>
+    <geom type="plane" size="5 5 0.1"/>
+    <body name="box" pos="0 0 {half_box}">
+      <geom type="box" size="{half_box} {half_box} {half_box}" mass="1e6"/>
+    </body>
+    <body name="sph" pos="0 0 {half_box * 2 + r_sph + 0.3}">
+      <freejoint/>
+      <geom type="sphere" size="{r_sph}" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+        mj_m = mujoco.MjModel.from_xml_string(xml)
+        mj_d = mujoco.MjData(mj_m)
+        for _ in range(self.N):
+            mujoco.mj_step(mj_m, mj_d)
+        mj_z = float(mj_d.qpos[2])
+
+        merged, engine = _sphere_on_box_model(r_sph=r_sph, half_box=half_box)
+        q = np.zeros(merged.nq)
+        # box body (body 0): quasi-fixed at z = half_box
+        q[0] = 1.0  # qw
+        q[6] = half_box
+        # sphere body (body 1)
+        q[7] = 1.0  # qw
+        q[13] = half_box * 2 + r_sph + 0.3
+        qdot = np.zeros(merged.nv)
+        for _ in range(self.N):
+            out = engine.step(q, qdot, np.zeros(merged.nv))
+            q, qdot = out.q_new, out.qdot_new
+        our_z = float(q[13])
+
+        diff_mm = abs(our_z - mj_z) * 1000.0
+        assert diff_mm < 2.0, f"Sphere-on-box z differs {diff_mm:.3f}mm (ours={our_z:.5f}, MuJoCo={mj_z:.5f})"

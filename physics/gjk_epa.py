@@ -1029,7 +1029,7 @@ def _sphere_any_manifold(
       Ericson (2004) §5.1 Closest Point on Convex Shape to Point.
       PhysX narrow-phase: dedicated sphere-sphere / sphere-capsule paths.
     """
-    from .geometry import CapsuleShape, SphereShape
+    from .geometry import BoxShape, CapsuleShape, CylinderShape, SphereShape
 
     r_sph = sph.radius
     c_sph = pose_sph.r  # sphere centre in world frame
@@ -1078,7 +1078,28 @@ def _sphere_any_manifold(
         cp = p_seg + normal * r_other
         return ContactManifold(body_i=-1, body_j=-1, normal=normal, depth=depth, points=[cp])
 
-    # --- sphere vs any other convex shape (Box, Cylinder, ConvexHull, …) ---
+    # --- sphere vs box (analytical) ---
+    if isinstance(other, BoxShape):
+        from .capsule_collision import _sphere_vs_box
+
+        h = other.half_extents_approx()
+        result = _sphere_vs_box(c_sph, r_sph, pose_other.r, pose_other.R, h)
+        if result is None:
+            return None
+        depth, normal_w, cp_w = result
+        return ContactManifold(body_i=-1, body_j=-1, normal=normal_w, depth=depth, points=[cp_w])
+
+    # --- sphere vs cylinder (analytical) ---
+    if isinstance(other, CylinderShape):
+        from .capsule_collision import _sphere_vs_cylinder
+
+        result = _sphere_vs_cylinder(c_sph, r_sph, other, pose_other)
+        if result is None:
+            return None
+        depth, normal_w, cp_w = result
+        return ContactManifold(body_i=-1, body_j=-1, normal=normal_w, depth=depth, points=[cp_w])
+
+    # --- sphere vs any other convex shape (ConvexHull, …) ---
     #
     # The zero-radius-point trick (gjk_distance with SphereShape(0.0)) is
     # unreliable for tessellated shapes: GJK finds the closest *vertex* of the
@@ -1168,6 +1189,13 @@ def gjk_epa_query(
     #
     # See Q47 (OPEN_QUESTIONS.md) for the principled long-term solution
     # (Jolt-style inner-shape + ConvexRadius architecture).
+    #
+    # Dispatch table (all analytical, no GJK/EPA):
+    #   sphere-sphere   : centre distance
+    #   sphere-capsule  : point-segment distance
+    #   sphere-box      : OBB closest-point clamp  ← NEW (fixes gjk_distance early-exit)
+    #   sphere-cylinder : axis-decomposition        ← NEW (fixes gjk_distance early-exit)
+    #   sphere-hull     : GJK+EPA (polyhedral, EPA stable for one smooth shape)
     # -----------------------------------------------------------------------
     a_is_sph = isinstance(shape_a, SphereShape)
     b_is_sph = isinstance(shape_b, SphereShape)

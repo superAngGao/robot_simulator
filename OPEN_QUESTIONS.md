@@ -1310,23 +1310,26 @@ Jolt Physics 的做法（[JoltPhysics docs](https://jrouwe.github.io/JoltPhysics
 **触发条件**：下一次涉及 sphere/capsule EPA 不稳定 bug，或开始设计 InterfaceMaterial 时。
 **优先级**：P2（方案 A 补丁已稳定；架构重构有较大工作量，需专项讨论后决定）。
 
-**Q48 — CPU 碰撞检测完备性：session 31 已知 bug 与后续缺口** (2026-04-16, session 31)
+**Q48 — CPU 碰撞检测完备性：session 31/32 已知 bug 与后续缺口** (2026-04-16, session 31; 更新 session 32)
 
 **背景**：Session 31 在 CPU GJK/EPA 管线中发现并修复了多个 bug：
 1. **EPA 退化 simplex**（sphere-sphere/sphere-capsule）：EPA 在 smooth shapes 上生成退化
    三角面，法向量指向错误。修复：`gjk_epa_query()` 增加解析 dispatch（方案 A）。
-2. **`gjk_distance()` 早退出 bug**（box-cyl、box-hull、sphere-cyl）：GJK distance
-   对这三个 pair 在浅穿透（< 2×margin）时错误地提前返回。
-   修复：`test_convex_margin.py` 将这三个 pair 强制走 Phase 2 EPA（pen = 3×margin）。
+2. ✅ **sphere-box / sphere-cylinder 解析 dispatch**（session 32）：
+   `gjk_epa_query()` 对 SphereShape vs BoxShape / CylinderShape 增加 PhysX 风格解析路径，
+   完全绕过 GJK/EPA。sphere-cyl 的 `gjk_distance()` 早退出 workaround 已移除。
+   测试：`tests/unit/collision/test_sphere_analytical.py`（13 tests，atol=1e-6）。
+   MuJoCo 对比：`tests/integration/test_margin_vs_mujoco.py::TestSphereAnalyticalVsMuJoCo`（3 tests）。
 3. **凸 margin 管线**（Q44 Phase 1/2）：`gjk_epa_query()` 增加 margin 参数；
    Phase 1（gjk_distance on 收缩形状）处理浅接触，Phase 2（EPA）处理深穿透。
    测试：`tests/unit/collision/test_convex_margin.py`（336 行，所有 10 个形状对）。
 
 **当前残余缺口**：
 
-1. **`gjk_distance()` box-cyl/box-hull/sphere-cyl 早退出**：根本原因尚未修复，仅通过
-   在 `test_convex_margin.py` 中增大穿透深度绕过。下一步：追查 GJK distance 内部
-   终止条件（signed-distance simplex walk 在这三对上的退化），修复后去掉 workaround。
+1. **`gjk_distance()` box-cyl/box-hull 早退出**（sphere-cyl 已通过解析 dispatch 修复）：
+   根本原因尚未修复，仅通过在 `test_convex_margin.py` 中增大穿透深度绕过（pen = 3×margin）。
+   下一步：追查 GJK distance 内部终止条件（signed-distance simplex walk 在这两对上的退化），
+   修复后去掉 workaround。**优先级：P4（低优先级，解析 dispatch 已覆盖最常见 pair）**。
 
 2. **CPU 多点接触流形生成**：CPU 当前对大多数 pair 返回 **1 个接触点**；GPU 已实现
    box-box SAT（1–4 点，session 28）和球-凸体多点（session 29）。
