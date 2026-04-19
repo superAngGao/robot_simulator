@@ -1175,6 +1175,7 @@ def gjk_epa_query(
         capsule_capsule_manifold,
         capsule_convexhull_manifold,
         capsule_cylinder_manifold,
+        cylinder_cylinder_manifold,
     )
     from .geometry import BoxShape, CapsuleShape, ConvexHullShape, CylinderShape, SphereShape
 
@@ -1214,6 +1215,16 @@ def gjk_epa_query(
         if manifold is not None and flip_s:
             manifold.normal = -manifold.normal
         return manifold
+
+    # CylinderShape-CylinderShape: analytical dispatch — bypass GJK/EPA.
+    # Coaxial N-gon prisms produce degenerate GJK simplices (all support
+    # points collinear on z-axis), causing _do_simplex_3 to miss the origin.
+    # Returns None for end-cap / coaxial contacts → fall through to GJK/EPA.
+    if isinstance(shape_a, CylinderShape) and isinstance(shape_b, CylinderShape):
+        m = cylinder_cylinder_manifold(shape_a, pose_a, shape_b, pose_b)
+        if m is not None:
+            return m
+        # None means end-cap or coaxial — let GJK/EPA handle it
 
     a_is_cap = isinstance(shape_a, CapsuleShape)
     b_is_cap = isinstance(shape_b, CapsuleShape)

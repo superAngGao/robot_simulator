@@ -596,3 +596,104 @@ def capsule_convexhull_manifold(
     candidates.sort(key=lambda c: -c[0])
     depth, normal, cp = candidates[0]
     return ContactManifold(body_i=-1, body_j=-1, normal=normal, depth=depth, points=[cp])
+
+
+# ---------------------------------------------------------------------------
+# cylinder vs cylinder (analytical)
+# ---------------------------------------------------------------------------
+
+
+def cylinder_cylinder_manifold(
+    cyl_a: CylinderShape,
+    pose_a: SpatialTransform,
+    cyl_b: CylinderShape,
+    pose_b: SpatialTransform,
+    near_parallel_cos: float = CONTACT_NEAR_PARALLEL_COS,
+) -> Optional[ContactManifold]:
+    """Cylinder vs cylinder; up to 2 contact points when axes are near-parallel.
+
+    Treats both cylinders as sphere-swept segments with r_sum = r_a + r_b,
+    bypassing GJK/EPA which degenerates on coaxial N-gon prisms (all support
+    points collinear → degenerate simplex in _do_simplex_3).
+
+    Near-parallel axes: 2 pts at axial overlap endpoints (line contact).
+    Otherwise: 1 pt at closest-point pair.
+
+    References:
+      ODE dCollideCCyC — segment-segment core for cylinder-like shapes.
+      Ericson (2004) §5.1.9 Closest Point Between Two Segments.
+    """
+    r_a = cyl_a.radius
+    r_b = cyl_b.radius
+    r_sum = r_a + r_b
+
+    a0, a1, axis_a = _cylinder_axis_endpoints(cyl_a, pose_a)
+    b0, b1, axis_b = _cylinder_axis_endpoints(cyl_b, pose_b)
+
+    p_a, p_b = _segment_closest_points(a0, a1, b0, b1)
+    diff = p_a - p_b
+    dist = float(np.linalg.norm(diff))
+    depth = r_sum - dist
+    if depth <= 0.0:
+        return None
+
+    if dist < _EPS:
+        # Axes intersect or are coaxial.
+        # Coaxial (parallel): segment model can't determine normal/depth → fall through.
+        # Crossing (non-parallel): use cross(axis_a, axis_b) as the contact normal.
+        sin_angle_early = float(np.linalg.norm(np.cross(axis_a, axis_b)))
+        if sin_angle_early < near_parallel_cos:
+            return None  # coaxial — let GJK/EPA handle end-cap contact
+        normal = np.cross(axis_a, axis_b)
+        normal /= float(np.linalg.norm(normal))
+        # Ensure normal points from b toward a
+        if float(np.dot(normal, pose_a.r - pose_b.r)) < 0:
+            normal = -normal
+        cp = p_b + normal * r_b
+        return ContactManifold(body_i=-1, body_j=-1, normal=normal, depth=depth, points=[cp])
+
+    normal = diff / dist
+
+    # End-cap contact: normal is along the cylinder axis → fall through to GJK/EPA,
+    # which handles flat-face contacts correctly via face topology.
+    if abs(float(np.dot(normal, axis_a))) > 0.7:
+        return None
+
+    sin_angle = float(np.linalg.norm(np.cross(axis_a, axis_b)))
+    near_parallel = sin_angle < near_parallel_cos
+
+    if not near_parallel:
+        cp = p_b + normal * r_b
+        return ContactManifold(body_i=-1, body_j=-1, normal=normal, depth=depth, points=[cp])
+
+    # Near-parallel: project b segment onto a segment, find overlap interval
+    seg_a = a1 - a0
+    seg_a_len_sq = float(np.dot(seg_a, seg_a))
+    if seg_a_len_sq < _EPS:
+        cp = p_b + normal * r_b
+        return ContactManifold(body_i=-1, body_j=-1, normal=normal, depth=depth, points=[cp])
+
+    def _proj(p: Vec3) -> float:
+        return float(np.dot(p - a0, seg_a)) / seg_a_len_sq
+
+    tb0 = _proj(b0)
+    tb1 = _proj(b1)
+    t_lo = max(0.0, min(tb0, tb1))
+    t_hi = min(1.0, max(tb0, tb1))
+    if t_lo >= t_hi - 1e-6:
+        cp = p_b + normal * r_b
+        return ContactManifold(body_i=-1, body_j=-1, normal=normal, depth=depth, points=[cp])
+
+    pa_lo = a0 + t_lo * seg_a
+    pa_hi = a0 + t_hi * seg_a
+    cp_lo = pa_lo - normal * r_b
+    cp_hi = pa_hi - normal * r_b
+
+    return ContactManifold(
+        body_i=-1,
+        body_j=-1,
+        normal=normal,
+        depth=depth,
+        points=[cp_lo, cp_hi],
+        point_depths=[depth, depth],
+    )
