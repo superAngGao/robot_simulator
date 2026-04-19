@@ -1,19 +1,19 @@
-"""Unit tests for `physics.capsule_collision` analytical handlers."""
+"""Unit tests for `physics.narrowphase_analytical` capsule handlers."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from physics.capsule_collision import (
+from physics.geometry import BoxShape, CapsuleShape, ConvexHullShape, CylinderShape
+from physics.gjk_epa import ground_contact_query, halfspace_convex_query
+from physics.narrowphase_analytical import (
     capsule_box_manifold,
     capsule_capsule_manifold,
     capsule_convexhull_manifold,
     capsule_cylinder_manifold,
     capsule_halfspace_manifold,
 )
-from physics.geometry import BoxShape, CapsuleShape, ConvexHullShape, CylinderShape
-from physics.gjk_epa import ground_contact_query, halfspace_convex_query
 from physics.spatial import SpatialTransform
 
 ATOL = 1e-6

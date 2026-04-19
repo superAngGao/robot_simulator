@@ -1,28 +1,19 @@
 """
-Analytical multi-point contact manifold for capsule shapes.
+Analytical narrowphase dispatch — closed-form contact manifolds.
 
-Capsule is a sphere-swept line segment (Minkowski sum of segment + sphere),
-so contact with a plane / box / another capsule can be treated by
-collapsing the capsule to its core segment, finding the relevant
-closest-point pair (or 2-point overlap), and offsetting by the radius.
-
-The handlers here bypass GJK/EPA entirely because segment geometry has
-closed-form closest-point formulas that are both faster and more robust
-(EPA can degenerate on near-parallel configurations).
+Bypasses GJK/EPA for shape pairs where segment/sphere geometry admits
+exact closed-form solutions that are faster and more numerically robust
+(EPA can degenerate on near-parallel / coaxial configurations).
 
 Scope covered:
-  - `capsule_halfspace_manifold`   — capsule vs infinite plane (1 or 2 pts)
-  - `capsule_capsule_manifold`     — capsule vs capsule (1 or 2 pts)
-  - `capsule_box_manifold`         — capsule vs OBB (1 or 2 pts)
-  - `capsule_cylinder_manifold`    — capsule vs cylinder (1 or 2 pts)
-  - `capsule_convexhull_manifold`  — capsule vs convex hull (1 or 2 pts)
+  capsule-halfspace, capsule-capsule, capsule-box, capsule-cylinder,
+  capsule-convexhull, cylinder-cylinder,
+  sphere-box, sphere-cylinder, sphere-convexhull.
 
-Capsule-sphere still falls through to the generic GJK/EPA single-point
-path, which is exact (smooth shape, single contact point).
+All other pairs fall through to the generic GJK/EPA path in gjk_epa.py.
 
 References:
-  ODE `dCollideCCTL` (capsule-capsule), `dCollideCCB` (capsule-box) —
-    segment-based analytical formulation, epsilon-guarded parallel path.
+  ODE `dCollideCCTL` (capsule-capsule), `dCollideCCB` (capsule-box).
   MuJoCo `mjc_CapsulePlane`, `mjc_CapsuleCapsule`, `mjc_CapsuleBox`.
   Ericson (2004) §5.1.9 Closest Point Between Two Segments.
 """

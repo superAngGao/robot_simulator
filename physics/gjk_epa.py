@@ -1052,7 +1052,7 @@ def _sphere_any_manifold(
 
     # --- sphere vs capsule ---
     if isinstance(other, CapsuleShape):
-        from .capsule_collision import _capsule_axis_endpoints, _segment_closest_points
+        from .narrowphase_analytical import _capsule_axis_endpoints, _segment_closest_points
 
         r_other = other.radius
         e0, e1, _ = _capsule_axis_endpoints(other, pose_other)
@@ -1080,7 +1080,7 @@ def _sphere_any_manifold(
 
     # --- sphere vs box (analytical) ---
     if isinstance(other, BoxShape):
-        from .capsule_collision import _sphere_vs_box
+        from .narrowphase_analytical import _sphere_vs_box
 
         h = other.half_extents_approx()
         result = _sphere_vs_box(c_sph, r_sph, pose_other.r, pose_other.R, h)
@@ -1091,7 +1091,7 @@ def _sphere_any_manifold(
 
     # --- sphere vs cylinder (analytical) ---
     if isinstance(other, CylinderShape):
-        from .capsule_collision import _sphere_vs_cylinder
+        from .narrowphase_analytical import _sphere_vs_cylinder
 
         result = _sphere_vs_cylinder(c_sph, r_sph, other, pose_other)
         if result is None:
@@ -1170,14 +1170,14 @@ def gjk_epa_query(
 
     Returns ContactManifold if penetrating (or within margin), None if separated.
     """
-    from .capsule_collision import (
+    from .geometry import BoxShape, CapsuleShape, ConvexHullShape, CylinderShape, SphereShape
+    from .narrowphase_analytical import (
         capsule_box_manifold,
         capsule_capsule_manifold,
         capsule_convexhull_manifold,
         capsule_cylinder_manifold,
         cylinder_cylinder_manifold,
     )
-    from .geometry import BoxShape, CapsuleShape, ConvexHullShape, CylinderShape, SphereShape
 
     # -----------------------------------------------------------------------
     # SphereShape: analytical dispatch — bypass GJK/EPA entirely.
@@ -1326,9 +1326,9 @@ def ground_contact_query(
         ContactManifold if within margin, None if separated beyond margin.
     """
     # Capsule / Cylinder: dispatch to analytical multi-point handlers.
-    from .capsule_collision import capsule_halfspace_manifold
     from .cylinder_collision import cylinder_halfspace_manifold
     from .geometry import CapsuleShape, CylinderShape
+    from .narrowphase_analytical import capsule_halfspace_manifold
 
     n_up = np.array([0.0, 0.0, 1.0])
     p_ground = np.array([0.0, 0.0, ground_z])
@@ -1396,9 +1396,9 @@ def halfspace_convex_query(
         ContactManifold if penetrating or within margin, else None.
     """
     # Capsule / Cylinder: dispatch to analytical multi-point handlers.
-    from .capsule_collision import capsule_halfspace_manifold
     from .cylinder_collision import cylinder_halfspace_manifold
     from .geometry import CapsuleShape, CylinderShape
+    from .narrowphase_analytical import capsule_halfspace_manifold
 
     if isinstance(convex_shape, CapsuleShape):
         return capsule_halfspace_manifold(

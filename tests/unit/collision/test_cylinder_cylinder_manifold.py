@@ -2,8 +2,8 @@
 
 import numpy as np
 
-from physics.capsule_collision import cylinder_cylinder_manifold
 from physics.geometry import CylinderShape
+from physics.narrowphase_analytical import cylinder_cylinder_manifold
 from physics.spatial import SpatialTransform
 
 
