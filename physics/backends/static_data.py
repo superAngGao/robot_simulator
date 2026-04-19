@@ -172,6 +172,25 @@ class StaticRobotData:
         default_factory=lambda: np.zeros(0, dtype=np.int32)
     )  # (nshape,) number of hull vertices per shape
 
+    # -- ConvexHull face topology (for GPU face clipping, Q41) --
+    # Face normals: (total_faces, 3) packed across all hull shapes
+    hull_face_normals: NDArray[np.float32] = field(default_factory=lambda: np.zeros((0, 3), dtype=np.float32))
+    # Per-shape face address/count into hull_face_normals
+    hull_face_adr: NDArray[np.int32] = field(default_factory=lambda: np.zeros(0, dtype=np.int32))  # (nshape,)
+    hull_face_count: NDArray[np.int32] = field(
+        default_factory=lambda: np.zeros(0, dtype=np.int32)
+    )  # (nshape,)
+    # Per-face vertex ids: flat packed, indexed by hull_face_vert_adr
+    hull_face_vert_ids: NDArray[np.int32] = field(
+        default_factory=lambda: np.zeros(0, dtype=np.int32)
+    )  # (total_face_verts,) indices into hull_vertices (per-shape local)
+    hull_face_vert_adr: NDArray[np.int32] = field(
+        default_factory=lambda: np.zeros(0, dtype=np.int32)
+    )  # (total_faces,) start index into hull_face_vert_ids per face
+    hull_face_vert_count: NDArray[np.int32] = field(
+        default_factory=lambda: np.zeros(0, dtype=np.int32)
+    )  # (total_faces,) number of vertices per face
+
     # -- Collision exclude matrix (for GPU dynamic broadphase) --
     collision_excluded: NDArray[np.int32] = field(
         default_factory=lambda: np.zeros((0, 0), dtype=np.int32)
@@ -473,15 +492,21 @@ class StaticRobotData:
                     he = geom.aabb_half_extents()
                     body_coll_radius[i] = float(np.mean(he))
 
-        # Pass 1b: count total ConvexHull vertices for flat packing (Q41)
+        # Pass 1b: count total ConvexHull vertices and faces for flat packing (Q41)
         total_hull_verts = 0
+        total_hull_faces = 0
+        total_hull_face_verts = 0
         if merged.collision_shapes:
             for geom in merged.collision_shapes:
                 if geom is None or not geom.shapes:
                     continue
                 for si in geom.shapes:
                     if isinstance(si.shape, ConvexHullShape):
+                        topo = si.shape.face_topology()
                         total_hull_verts += len(si.shape.vertices)
+                        total_hull_faces += topo.num_faces
+                        for fids in topo.face_vertex_ids:
+                            total_hull_face_verts += len(fids)
 
         # Pass 2: fill flat arrays
         ns = max(nshape, 1)  # at least 1 element for empty arrays
@@ -494,6 +519,17 @@ class StaticRobotData:
         hull_vert_adr = np.zeros(ns, dtype=np.int32)
         hull_vert_count = np.zeros(ns, dtype=np.int32)
         hull_write_offset = 0
+        # Face topology arrays
+        nf = max(total_hull_faces, 1)
+        nfv = max(total_hull_face_verts, 1)
+        hull_face_normals = np.zeros((nf, 3), dtype=np.float32)
+        hull_face_adr = np.zeros(ns, dtype=np.int32)
+        hull_face_count = np.zeros(ns, dtype=np.int32)
+        hull_face_vert_ids = np.zeros(nfv, dtype=np.int32)
+        hull_face_vert_adr = np.zeros(nf, dtype=np.int32)
+        hull_face_vert_count = np.zeros(nf, dtype=np.int32)
+        hull_face_write_offset = 0
+        hull_face_vert_write_offset = 0
 
         if merged.collision_shapes:
             for i, geom in enumerate(merged.collision_shapes):
@@ -535,6 +571,21 @@ class StaticRobotData:
                         hull_vert_count[s_idx] = nv
                         hull_vertices[hull_write_offset : hull_write_offset + nv] = verts
                         hull_write_offset += nv
+                        # Pack face topology
+                        topo = shape.face_topology()
+                        nfaces = topo.num_faces
+                        hull_face_adr[s_idx] = hull_face_write_offset
+                        hull_face_count[s_idx] = nfaces
+                        for fi in range(nfaces):
+                            gfi = hull_face_write_offset + fi
+                            hull_face_normals[gfi] = topo.normals[fi].astype(np.float32)
+                            fids = topo.face_vertex_ids[fi]
+                            hull_face_vert_adr[gfi] = hull_face_vert_write_offset
+                            hull_face_vert_count[gfi] = len(fids)
+                            for k, vid in enumerate(fids):
+                                hull_face_vert_ids[hull_face_vert_write_offset + k] = int(vid)
+                            hull_face_vert_write_offset += len(fids)
+                        hull_face_write_offset += nfaces
                     # MeshShape without convex hull: SHAPE_NONE + fallback radius
 
         # Legacy per-body arrays (backward compat for warp_backend)
@@ -711,6 +762,12 @@ class StaticRobotData:
             hull_vertices=hull_vertices,
             hull_vert_adr=hull_vert_adr,
             hull_vert_count=hull_vert_count,
+            hull_face_normals=hull_face_normals,
+            hull_face_adr=hull_face_adr,
+            hull_face_count=hull_face_count,
+            hull_face_vert_ids=hull_face_vert_ids,
+            hull_face_vert_adr=hull_face_vert_adr,
+            hull_face_vert_count=hull_face_vert_count,
             collision_excluded=collision_excluded,
             inv_mass_per_body=inv_mass_per_body,
             inv_inertia_per_body=inv_inertia_per_body,

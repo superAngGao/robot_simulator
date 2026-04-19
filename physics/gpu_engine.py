@@ -289,6 +289,17 @@ class GpuEngine(PhysicsEngine):
         self._contact_depth = wp.zeros((num_envs, max_contacts), dtype=wp.float32, device=device)
         self._contact_count = wp.zeros(num_envs, dtype=wp.int32, device=device)  # atomic counter
 
+        # EPA scratch arrays (N, EPA_MAX_VERTS/FACES) — one row per env, reused each step
+        _EPA_V = 32
+        _EPA_F = 64
+        self._epa_vx = wp.zeros((num_envs, _EPA_V), dtype=wp.float32, device=device)
+        self._epa_vy = wp.zeros((num_envs, _EPA_V), dtype=wp.float32, device=device)
+        self._epa_vz = wp.zeros((num_envs, _EPA_V), dtype=wp.float32, device=device)
+        self._epa_fi0 = wp.zeros((num_envs, _EPA_F), dtype=wp.int32, device=device)
+        self._epa_fi1 = wp.zeros((num_envs, _EPA_F), dtype=wp.int32, device=device)
+        self._epa_fi2 = wp.zeros((num_envs, _EPA_F), dtype=wp.int32, device=device)
+        self._epa_fa = wp.zeros((num_envs, _EPA_F), dtype=wp.int32, device=device)
+
         # J_body_j for body-body contacts
         self._J_body_j = wp.zeros((num_envs, max_rows, 6), dtype=wp.float32, device=device)
         self._row_bi = wp.zeros((num_envs, max_rows), dtype=wp.int32, device=device)
@@ -342,6 +353,13 @@ class GpuEngine(PhysicsEngine):
         self._gpu_hull_vertices = wp.array(s.hull_vertices, dtype=wp.float32, device=device)
         self._gpu_hull_vert_adr = wp.array(s.hull_vert_adr, dtype=wp.int32, device=device)
         self._gpu_hull_vert_count = wp.array(s.hull_vert_count, dtype=wp.int32, device=device)
+        # ConvexHull face topology (Q41 face clipping)
+        self._gpu_hull_face_normals = wp.array(s.hull_face_normals, dtype=wp.float32, device=device)
+        self._gpu_hull_face_adr = wp.array(s.hull_face_adr, dtype=wp.int32, device=device)
+        self._gpu_hull_face_count = wp.array(s.hull_face_count, dtype=wp.int32, device=device)
+        self._gpu_hull_face_vert_ids = wp.array(s.hull_face_vert_ids, dtype=wp.int32, device=device)
+        self._gpu_hull_face_vert_adr = wp.array(s.hull_face_vert_adr, dtype=wp.int32, device=device)
+        self._gpu_hull_face_vert_count = wp.array(s.hull_face_vert_count, dtype=wp.int32, device=device)
 
         # Body-body collision pairs (legacy, kept for backward compat)
         if n_pairs > 0:
@@ -674,6 +692,19 @@ class GpuEngine(PhysicsEngine):
                 self._gpu_hull_vertices,
                 self._gpu_hull_vert_adr,
                 self._gpu_hull_vert_count,
+                self._gpu_hull_face_normals,
+                self._gpu_hull_face_adr,
+                self._gpu_hull_face_count,
+                self._gpu_hull_face_vert_ids,
+                self._gpu_hull_face_vert_adr,
+                self._gpu_hull_face_vert_count,
+                self._epa_vx,
+                self._epa_vy,
+                self._epa_vz,
+                self._epa_fi0,
+                self._epa_fi1,
+                self._epa_fi2,
+                self._epa_fa,
                 self._gpu_contact_body_idx,
                 s.contact_ground_z,
                 self._nc_ground,

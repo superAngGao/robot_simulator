@@ -12,7 +12,6 @@ The solver kernels then process these uniformly.
 import warp as wp
 
 from .analytical_collision import (
-    CONVEX_MARGIN,
     SHAPE_BOX,
     SHAPE_CAPSULE,
     SHAPE_CONVEXHULL,
@@ -22,7 +21,6 @@ from .analytical_collision import (
     _capsule_ground_contact_point,
     _manifold_get_depth,
     _manifold_get_point,
-    _support_world,
     box_box,
     box_box_contact_point,
     box_box_manifold,
@@ -35,8 +33,8 @@ from .analytical_collision import (
     closest_points_segment_segment,
     convexhull_ground_manifold,
     cylinder_vs_ground,
-    gjk_closest_distance,
-    gjk_contact_normal,
+    gjk_epa_penetration,
+    hull_hull_manifold,
     sphere_box,
     sphere_box_normal,
     sphere_capsule,
@@ -565,6 +563,21 @@ def batched_detect_multishape(
     hull_vertices: wp.array2d(dtype=wp.float32),
     hull_vert_adr: wp.array(dtype=wp.int32),
     hull_vert_count: wp.array(dtype=wp.int32),
+    # ConvexHull face topology (Q41 face clipping)
+    hull_face_normals: wp.array2d(dtype=wp.float32),
+    hull_face_adr: wp.array(dtype=wp.int32),
+    hull_face_count: wp.array(dtype=wp.int32),
+    hull_face_vert_ids: wp.array(dtype=wp.int32),
+    hull_face_vert_adr: wp.array(dtype=wp.int32),
+    hull_face_vert_count: wp.array(dtype=wp.int32),
+    # EPA scratch arrays (N, EPA_MAX_VERTS/FACES) — one row per env
+    epa_vx: wp.array2d(dtype=wp.float32),
+    epa_vy: wp.array2d(dtype=wp.float32),
+    epa_vz: wp.array2d(dtype=wp.float32),
+    epa_fi0: wp.array2d(dtype=wp.int32),
+    epa_fi1: wp.array2d(dtype=wp.int32),
+    epa_fi2: wp.array2d(dtype=wp.int32),
+    epa_fa: wp.array2d(dtype=wp.int32),
     # Ground contact bodies
     contact_body_idx: wp.array(dtype=wp.int32),
     ground_z: float,
@@ -941,8 +954,8 @@ def batched_detect_multishape(
                             n_normal = n_diff / n_dist
                         n_cp = n_pt_b + n_normal * r_b
                     elif a_t == SHAPE_CONVEXHULL or b_t == SHAPE_CONVEXHULL:
-                        # GJK closest-distance with convex margin (Q41)
-                        gjk_res = gjk_closest_distance(
+                        # GJK + EPA with convex margin, then face-clipping manifold (Q41)
+                        epa_res = gjk_epa_penetration(
                             a_pos,
                             a_R,
                             a_t,
@@ -966,74 +979,62 @@ def batched_detect_multishape(
                             hull_vert_count[a_idx],
                             hull_vert_adr[b_idx],
                             hull_vert_count[b_idx],
+                            epa_vx,
+                            epa_vy,
+                            epa_vz,
+                            epa_fi0,
+                            epa_fi1,
+                            epa_fi2,
+                            epa_fa,
+                            env_id,
                         )
-                        gjk_dist = gjk_res[0]
-                        gjk_hit = gjk_res[1]
-                        if gjk_hit > 0.5:
+                        epa_depth = epa_res[3]
+                        if epa_depth > 0.0:
                             n_hit = 1.0
-                            if gjk_dist > 0.0:
-                                n_depth = CONVEX_MARGIN - gjk_dist
-                            else:
-                                # Deep penetration: use bounding sphere fallback depth
-                                n_depth = CONVEX_MARGIN
-                            n_normal = gjk_contact_normal(
+                            n_depth = epa_depth
+                            epa_n = wp.vec3(epa_res[0], epa_res[1], epa_res[2])
+                            # Multi-point manifold via face clipping
+                            hhm = hull_hull_manifold(
                                 a_pos,
                                 a_R,
-                                a_t,
-                                wp.vec4(
-                                    flat_shape_params[a_idx, 0],
-                                    flat_shape_params[a_idx, 1],
-                                    flat_shape_params[a_idx, 2],
-                                    flat_shape_params[a_idx, 3],
-                                ),
                                 b_pos,
                                 b_R,
-                                b_t,
-                                wp.vec4(
-                                    flat_shape_params[b_idx, 0],
-                                    flat_shape_params[b_idx, 1],
-                                    flat_shape_params[b_idx, 2],
-                                    flat_shape_params[b_idx, 3],
-                                ),
                                 hull_vertices,
-                                hull_vert_adr[a_idx],
-                                hull_vert_count[a_idx],
-                                hull_vert_adr[b_idx],
-                                hull_vert_count[b_idx],
+                                hull_vert_adr,
+                                hull_vert_count,
+                                hull_face_normals,
+                                hull_face_adr,
+                                hull_face_count,
+                                hull_face_vert_ids,
+                                hull_face_vert_adr,
+                                hull_face_vert_count,
+                                a_idx,
+                                b_idx,
+                                epa_n,
+                                epa_depth,
                             )
-                            # Contact point: midpoint of support points
-                            neg_n = wp.vec3(-n_normal[0], -n_normal[1], -n_normal[2])
-                            sup_a = _support_world(
-                                a_t,
-                                a_pos,
-                                a_R,
-                                wp.vec4(
-                                    flat_shape_params[a_idx, 0],
-                                    flat_shape_params[a_idx, 1],
-                                    flat_shape_params[a_idx, 2],
-                                    flat_shape_params[a_idx, 3],
-                                ),
-                                hull_vertices,
-                                hull_vert_adr[a_idx],
-                                hull_vert_count[a_idx],
-                                neg_n,
-                            )
-                            sup_b = _support_world(
-                                b_t,
-                                b_pos,
-                                b_R,
-                                wp.vec4(
-                                    flat_shape_params[b_idx, 0],
-                                    flat_shape_params[b_idx, 1],
-                                    flat_shape_params[b_idx, 2],
-                                    flat_shape_params[b_idx, 3],
-                                ),
-                                hull_vertices,
-                                hull_vert_adr[b_idx],
-                                hull_vert_count[b_idx],
-                                n_normal,
-                            )
-                            n_cp = (sup_a + sup_b) * 0.5
+                            if swap == 1:
+                                epa_n = wp.vec3(-epa_n[0], -epa_n[1], -epa_n[2])
+                            for mk in range(4):
+                                if mk < hhm.count:
+                                    m_slot = wp.atomic_add(contact_count, env_id, 1)
+                                    if m_slot < max_contacts:
+                                        _write_contact(
+                                            env_id,
+                                            m_slot,
+                                            _manifold_get_depth(hhm, mk),
+                                            epa_n,
+                                            _manifold_get_point(hhm, mk),
+                                            bi,
+                                            bj,
+                                            contact_depth,
+                                            contact_normal,
+                                            contact_point,
+                                            contact_bi,
+                                            contact_bj,
+                                            contact_active,
+                                        )
+                            n_hit = 0.0  # handled; skip common write
                     else:
                         # Fallback: sphere-sphere with body radius
                         r_a = a_br

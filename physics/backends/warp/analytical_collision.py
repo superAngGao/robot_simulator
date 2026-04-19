@@ -1590,6 +1590,693 @@ def box_ground_manifold(
 
 
 # ---------------------------------------------------------------------------
+# GPU EPA — fixed polytope, max 64 faces, 32 iterations
+# ---------------------------------------------------------------------------
+
+EPA_MAX_VERTS = wp.constant(32)
+EPA_MAX_FACES = wp.constant(64)
+EPA_MAX_ITER = wp.constant(32)
+EPA_TOLERANCE = wp.constant(1.0e-5)
+
+
+@wp.func
+def _epa_support(
+    pos_a: wp.vec3,
+    R_a: wp.mat33,
+    type_a: int,
+    params_a: wp.vec4,
+    pos_b: wp.vec3,
+    R_b: wp.mat33,
+    type_b: int,
+    params_b: wp.vec4,
+    hull_verts: wp.array2d(dtype=wp.float32),
+    hull_adr_a: int,
+    hull_count_a: int,
+    hull_adr_b: int,
+    hull_count_b: int,
+    d: wp.vec3,
+    margin: float,
+) -> wp.vec3:
+    """Inflated Minkowski difference support for EPA."""
+    base = _gjk_support(
+        pos_a,
+        R_a,
+        type_a,
+        params_a,
+        pos_b,
+        R_b,
+        type_b,
+        params_b,
+        hull_verts,
+        hull_adr_a,
+        hull_count_a,
+        hull_adr_b,
+        hull_count_b,
+        d,
+    )
+    d_len = wp.length(d)
+    if d_len > 1.0e-10 and margin > 0.0:
+        base = base + (2.0 * margin / d_len) * d
+    return base
+
+
+@wp.func
+def gjk_epa_penetration(
+    pos_a: wp.vec3,
+    R_a: wp.mat33,
+    type_a: int,
+    params_a: wp.vec4,
+    pos_b: wp.vec3,
+    R_b: wp.mat33,
+    type_b: int,
+    params_b: wp.vec4,
+    hull_verts: wp.array2d(dtype=wp.float32),
+    hull_adr_a: int,
+    hull_count_a: int,
+    hull_adr_b: int,
+    hull_count_b: int,
+    epa_vx: wp.array2d(dtype=wp.float32),
+    epa_vy: wp.array2d(dtype=wp.float32),
+    epa_vz: wp.array2d(dtype=wp.float32),
+    epa_fi0: wp.array2d(dtype=wp.int32),
+    epa_fi1: wp.array2d(dtype=wp.int32),
+    epa_fi2: wp.array2d(dtype=wp.int32),
+    epa_fa: wp.array2d(dtype=wp.int32),
+    env_id: int,
+) -> wp.vec4:
+    """GJK + EPA: returns vec4(normal_x, normal_y, normal_z, depth).
+
+    depth < 0 means separated (no contact).
+    Uses convex margin: inflates shapes by CONVEX_MARGIN, subtracts 2*margin.
+
+    Reference: van den Bergen (2001) GDC 2001.
+    """
+    margin = float(CONVEX_MARGIN)
+
+    gjk_res = gjk_closest_distance(
+        pos_a,
+        R_a,
+        type_a,
+        params_a,
+        pos_b,
+        R_b,
+        type_b,
+        params_b,
+        hull_verts,
+        hull_adr_a,
+        hull_count_a,
+        hull_adr_b,
+        hull_count_b,
+    )
+    gjk_dist = gjk_res[0]
+    gjk_hit = gjk_res[1]
+
+    if gjk_hit < 0.5:
+        return wp.vec4(0.0, 0.0, 1.0, -1.0)
+
+    if gjk_dist > 1.0e-6:
+        d = pos_a - pos_b
+        d_len = wp.length(d)
+        if d_len > 1.0e-10:
+            n = d / d_len
+        else:
+            n = wp.vec3(0.0, 0.0, 1.0)
+        depth = margin - gjk_dist
+        if depth < 0.0:
+            depth = 0.0
+        return wp.vec4(n[0], n[1], n[2], depth)
+
+    # EPA: build initial hexahedron from 6 axis-aligned support points
+    sv0 = _epa_support(
+        pos_a,
+        R_a,
+        type_a,
+        params_a,
+        pos_b,
+        R_b,
+        type_b,
+        params_b,
+        hull_verts,
+        hull_adr_a,
+        hull_count_a,
+        hull_adr_b,
+        hull_count_b,
+        wp.vec3(1.0, 0.0, 0.0),
+        margin,
+    )
+    sv1 = _epa_support(
+        pos_a,
+        R_a,
+        type_a,
+        params_a,
+        pos_b,
+        R_b,
+        type_b,
+        params_b,
+        hull_verts,
+        hull_adr_a,
+        hull_count_a,
+        hull_adr_b,
+        hull_count_b,
+        wp.vec3(-1.0, 0.0, 0.0),
+        margin,
+    )
+    sv2 = _epa_support(
+        pos_a,
+        R_a,
+        type_a,
+        params_a,
+        pos_b,
+        R_b,
+        type_b,
+        params_b,
+        hull_verts,
+        hull_adr_a,
+        hull_count_a,
+        hull_adr_b,
+        hull_count_b,
+        wp.vec3(0.0, 1.0, 0.0),
+        margin,
+    )
+    sv3 = _epa_support(
+        pos_a,
+        R_a,
+        type_a,
+        params_a,
+        pos_b,
+        R_b,
+        type_b,
+        params_b,
+        hull_verts,
+        hull_adr_a,
+        hull_count_a,
+        hull_adr_b,
+        hull_count_b,
+        wp.vec3(0.0, -1.0, 0.0),
+        margin,
+    )
+    sv4 = _epa_support(
+        pos_a,
+        R_a,
+        type_a,
+        params_a,
+        pos_b,
+        R_b,
+        type_b,
+        params_b,
+        hull_verts,
+        hull_adr_a,
+        hull_count_a,
+        hull_adr_b,
+        hull_count_b,
+        wp.vec3(0.0, 0.0, 1.0),
+        margin,
+    )
+    sv5 = _epa_support(
+        pos_a,
+        R_a,
+        type_a,
+        params_a,
+        pos_b,
+        R_b,
+        type_b,
+        params_b,
+        hull_verts,
+        hull_adr_a,
+        hull_count_a,
+        hull_adr_b,
+        hull_count_b,
+        wp.vec3(0.0, 0.0, -1.0),
+        margin,
+    )
+
+    epa_vx[env_id, 0] = sv0[0]
+    epa_vy[env_id, 0] = sv0[1]
+    epa_vz[env_id, 0] = sv0[2]
+    epa_vx[env_id, 1] = sv1[0]
+    epa_vy[env_id, 1] = sv1[1]
+    epa_vz[env_id, 1] = sv1[2]
+    epa_vx[env_id, 2] = sv2[0]
+    epa_vy[env_id, 2] = sv2[1]
+    epa_vz[env_id, 2] = sv2[2]
+    epa_vx[env_id, 3] = sv3[0]
+    epa_vy[env_id, 3] = sv3[1]
+    epa_vz[env_id, 3] = sv3[2]
+    epa_vx[env_id, 4] = sv4[0]
+    epa_vy[env_id, 4] = sv4[1]
+    epa_vz[env_id, 4] = sv4[2]
+    epa_vx[env_id, 5] = sv5[0]
+    epa_vy[env_id, 5] = sv5[1]
+    epa_vz[env_id, 5] = sv5[2]
+    nv = int(6)
+
+    # 8 faces of hexahedron: verts 0=+X,1=-X,2=+Y,3=-Y,4=+Z,5=-Z
+    epa_fi0[env_id, 0] = 0
+    epa_fi1[env_id, 0] = 2
+    epa_fi2[env_id, 0] = 4
+    epa_fa[env_id, 0] = 1
+    epa_fi0[env_id, 1] = 0
+    epa_fi1[env_id, 1] = 4
+    epa_fi2[env_id, 1] = 3
+    epa_fa[env_id, 1] = 1
+    epa_fi0[env_id, 2] = 0
+    epa_fi1[env_id, 2] = 3
+    epa_fi2[env_id, 2] = 5
+    epa_fa[env_id, 2] = 1
+    epa_fi0[env_id, 3] = 0
+    epa_fi1[env_id, 3] = 5
+    epa_fi2[env_id, 3] = 2
+    epa_fa[env_id, 3] = 1
+    epa_fi0[env_id, 4] = 1
+    epa_fi1[env_id, 4] = 4
+    epa_fi2[env_id, 4] = 2
+    epa_fa[env_id, 4] = 1
+    epa_fi0[env_id, 5] = 1
+    epa_fi1[env_id, 5] = 3
+    epa_fi2[env_id, 5] = 4
+    epa_fa[env_id, 5] = 1
+    epa_fi0[env_id, 6] = 1
+    epa_fi1[env_id, 6] = 5
+    epa_fi2[env_id, 6] = 3
+    epa_fa[env_id, 6] = 1
+    epa_fi0[env_id, 7] = 1
+    epa_fi1[env_id, 7] = 2
+    epa_fi2[env_id, 7] = 5
+    epa_fa[env_id, 7] = 1
+    nf = int(8)
+
+    # Ensure outward winding
+    for fi in range(8):
+        i0 = epa_fi0[env_id, fi]
+        i1 = epa_fi1[env_id, fi]
+        i2 = epa_fi2[env_id, fi]
+        va = wp.vec3(epa_vx[env_id, i0], epa_vy[env_id, i0], epa_vz[env_id, i0])
+        vb = wp.vec3(epa_vx[env_id, i1], epa_vy[env_id, i1], epa_vz[env_id, i1])
+        vc = wp.vec3(epa_vx[env_id, i2], epa_vy[env_id, i2], epa_vz[env_id, i2])
+        fn = wp.cross(vb - va, vc - va)
+        if wp.dot(fn, va) < 0.0:
+            epa_fi1[env_id, fi] = i2
+            epa_fi2[env_id, fi] = i1
+
+    best_normal = wp.vec3(0.0, 0.0, 1.0)
+    best_dist = float(1.0e30)
+
+    for _iter in range(EPA_MAX_ITER):
+        min_dist = float(1.0e30)
+        min_fi = int(-1)
+        min_fn = wp.vec3(0.0, 0.0, 1.0)
+
+        for fi in range(EPA_MAX_FACES):
+            if fi >= nf:
+                continue
+            if epa_fa[env_id, fi] != 1:
+                continue
+            i0 = epa_fi0[env_id, fi]
+            i1 = epa_fi1[env_id, fi]
+            i2 = epa_fi2[env_id, fi]
+            va = wp.vec3(epa_vx[env_id, i0], epa_vy[env_id, i0], epa_vz[env_id, i0])
+            vb = wp.vec3(epa_vx[env_id, i1], epa_vy[env_id, i1], epa_vz[env_id, i1])
+            vc = wp.vec3(epa_vx[env_id, i2], epa_vy[env_id, i2], epa_vz[env_id, i2])
+            fn = wp.cross(vb - va, vc - va)
+            fn_len = wp.length(fn)
+            if fn_len < 1.0e-12:
+                continue
+            fn = fn / fn_len
+            dist = wp.abs(wp.dot(fn, va))
+            if dist < 1.0e-8:
+                continue
+            if dist < min_dist:
+                min_dist = dist
+                min_fi = fi
+                min_fn = fn
+
+        if min_fi < 0:
+            break
+
+        best_dist = min_dist
+        best_normal = min_fn
+
+        new_v = _epa_support(
+            pos_a,
+            R_a,
+            type_a,
+            params_a,
+            pos_b,
+            R_b,
+            type_b,
+            params_b,
+            hull_verts,
+            hull_adr_a,
+            hull_count_a,
+            hull_adr_b,
+            hull_count_b,
+            min_fn,
+            margin,
+        )
+        new_proj = wp.dot(new_v, min_fn)
+
+        if new_proj - min_dist < EPA_TOLERANCE:
+            break
+
+        if nv >= EPA_MAX_VERTS:
+            break
+
+        new_idx = nv
+        epa_vx[env_id, new_idx] = new_v[0]
+        epa_vy[env_id, new_idx] = new_v[1]
+        epa_vz[env_id, new_idx] = new_v[2]
+        nv = nv + 1
+
+        # Mark faces visible from new_v as fa=2 (just-removed this iter)
+        for fi in range(EPA_MAX_FACES):
+            if fi >= nf:
+                continue
+            if epa_fa[env_id, fi] != 1:
+                continue
+            i0 = epa_fi0[env_id, fi]
+            i1 = epa_fi1[env_id, fi]
+            i2 = epa_fi2[env_id, fi]
+            va = wp.vec3(epa_vx[env_id, i0], epa_vy[env_id, i0], epa_vz[env_id, i0])
+            vb = wp.vec3(epa_vx[env_id, i1], epa_vy[env_id, i1], epa_vz[env_id, i1])
+            vc = wp.vec3(epa_vx[env_id, i2], epa_vy[env_id, i2], epa_vz[env_id, i2])
+            fn2 = wp.cross(vb - va, vc - va)
+            if wp.dot(fn2, new_v - va) > 0.0:
+                epa_fa[env_id, fi] = 2  # just removed
+
+        # Horizon edges: edges of just-removed faces (fa==2) whose reverse
+        # is NOT shared with another just-removed face → border active polytope
+        for fi in range(EPA_MAX_FACES):
+            if fi >= nf:
+                continue
+            if epa_fa[env_id, fi] != 2:
+                continue
+            i0 = epa_fi0[env_id, fi]
+            i1 = epa_fi1[env_id, fi]
+            i2 = epa_fi2[env_id, fi]
+            for ei in range(3):
+                ea = int(0)
+                eb = int(0)
+                if ei == 0:
+                    ea = i0
+                    eb = i1
+                elif ei == 1:
+                    ea = i1
+                    eb = i2
+                else:
+                    ea = i2
+                    eb = i0
+                is_horizon = int(1)
+                for fj in range(EPA_MAX_FACES):
+                    if fj >= nf:
+                        continue
+                    if epa_fa[env_id, fj] != 2:
+                        continue
+                    if fj == fi:
+                        continue
+                    j0 = epa_fi0[env_id, fj]
+                    j1 = epa_fi1[env_id, fj]
+                    j2 = epa_fi2[env_id, fj]
+                    if (j0 == eb and j1 == ea) or (j1 == eb and j2 == ea) or (j2 == eb and j0 == ea):
+                        is_horizon = 0
+                if is_horizon == 1 and nf < EPA_MAX_FACES:
+                    epa_fi0[env_id, nf] = ea
+                    epa_fi1[env_id, nf] = eb
+                    epa_fi2[env_id, nf] = new_idx
+                    epa_fa[env_id, nf] = 1
+                    nf = nf + 1
+
+        # Finalize: fa==2 → fa==0 (permanently removed)
+        for fi in range(EPA_MAX_FACES):
+            if fi >= nf:
+                continue
+            if epa_fa[env_id, fi] == 2:
+                epa_fa[env_id, fi] = 0
+
+    depth = best_dist - 2.0 * margin
+    if depth < 0.0:
+        depth = 0.0
+
+    if wp.dot(best_normal, pos_a - pos_b) < 0.0:
+        best_normal = wp.vec3(-best_normal[0], -best_normal[1], -best_normal[2])
+
+    return wp.vec4(best_normal[0], best_normal[1], best_normal[2], depth)
+
+
+# ---------------------------------------------------------------------------
+# ConvexHull face clipping (Sutherland-Hodgman, MAX_FACE_VERTS=16)
+# ---------------------------------------------------------------------------
+
+MAX_FACE_VERTS = wp.constant(16)
+
+
+@wp.func
+def _hull_find_support_face(
+    hull_face_normals: wp.array2d(dtype=wp.float32),
+    hull_face_adr: wp.array(dtype=wp.int32),
+    hull_face_count: wp.array(dtype=wp.int32),
+    s_idx: int,
+    direction: wp.vec3,
+) -> int:
+    """Find hull face whose normal has highest dot with direction."""
+    f_adr = hull_face_adr[s_idx]
+    f_cnt = hull_face_count[s_idx]
+    best_dot = float(-1.0e30)
+    best_fi = int(0)
+    for fi in range(64):
+        if fi >= f_cnt:
+            continue
+        gfi = f_adr + fi
+        nx = hull_face_normals[gfi, 0]
+        ny = hull_face_normals[gfi, 1]
+        nz = hull_face_normals[gfi, 2]
+        d = nx * direction[0] + ny * direction[1] + nz * direction[2]
+        if d > best_dot:
+            best_dot = d
+            best_fi = fi
+    return best_fi
+
+
+@wp.func
+def _hull_face_poly(
+    hull_verts: wp.array2d(dtype=wp.float32),
+    hull_vert_adr: wp.array(dtype=wp.int32),
+    hull_face_vert_ids: wp.array(dtype=wp.int32),
+    hull_face_vert_adr: wp.array(dtype=wp.int32),
+    hull_face_vert_count: wp.array(dtype=wp.int32),
+    hull_face_adr: wp.array(dtype=wp.int32),
+    s_idx: int,
+    local_fi: int,
+    pos: wp.vec3,
+    R: wp.mat33,
+) -> ClipPoly:
+    """Get world-frame polygon for hull face local_fi of shape s_idx."""
+    f_adr = hull_face_adr[s_idx]
+    gfi = f_adr + local_fi
+    v_adr = hull_face_vert_adr[gfi]
+    v_cnt = hull_face_vert_count[gfi]
+    vert_base = hull_vert_adr[s_idx]
+
+    poly = ClipPoly()
+    poly.count = 0
+
+    for k in range(MAX_FACE_VERTS):
+        if k >= v_cnt:
+            continue
+        vid = hull_face_vert_ids[v_adr + k]
+        lv = wp.vec3(
+            hull_verts[vert_base + vid, 0],
+            hull_verts[vert_base + vid, 1],
+            hull_verts[vert_base + vid, 2],
+        )
+        wv = pos + R * lv
+        if poly.count < 8:
+            poly = _clip_poly_push(poly, wv)
+
+    return poly
+
+
+@wp.func
+def hull_hull_manifold(
+    pos_a: wp.vec3,
+    R_a: wp.mat33,
+    pos_b: wp.vec3,
+    R_b: wp.mat33,
+    hull_verts: wp.array2d(dtype=wp.float32),
+    hull_vert_adr: wp.array(dtype=wp.int32),
+    hull_vert_count: wp.array(dtype=wp.int32),
+    hull_face_normals: wp.array2d(dtype=wp.float32),
+    hull_face_adr: wp.array(dtype=wp.int32),
+    hull_face_count: wp.array(dtype=wp.int32),
+    hull_face_vert_ids: wp.array(dtype=wp.int32),
+    hull_face_vert_adr: wp.array(dtype=wp.int32),
+    hull_face_vert_count: wp.array(dtype=wp.int32),
+    a_idx: int,
+    b_idx: int,
+    normal: wp.vec3,
+    depth: float,
+) -> ContactPolyManifold:
+    """Multi-point contact manifold for hull-hull via face clipping.
+
+    Reference: Ericson (2004) §5.5, Bullet btConvexConvexAlgorithm.
+    """
+    result = ContactPolyManifold()
+    result.count = 0
+
+    neg_n_local_a = wp.transpose(R_a) * wp.vec3(-normal[0], -normal[1], -normal[2])
+    face_a = _hull_find_support_face(hull_face_normals, hull_face_adr, hull_face_count, a_idx, neg_n_local_a)
+    n_local_b = wp.transpose(R_b) * normal
+    face_b = _hull_find_support_face(hull_face_normals, hull_face_adr, hull_face_count, b_idx, n_local_b)
+
+    f_adr_a = hull_face_adr[a_idx]
+    gfi_a = f_adr_a + face_a
+    fn_a_local = wp.vec3(
+        hull_face_normals[gfi_a, 0], hull_face_normals[gfi_a, 1], hull_face_normals[gfi_a, 2]
+    )
+    fn_a_world = R_a * fn_a_local
+    dot_a = wp.abs(wp.dot(fn_a_world, normal))
+
+    f_adr_b = hull_face_adr[b_idx]
+    gfi_b = f_adr_b + face_b
+    fn_b_local = wp.vec3(
+        hull_face_normals[gfi_b, 0], hull_face_normals[gfi_b, 1], hull_face_normals[gfi_b, 2]
+    )
+    fn_b_world = R_b * fn_b_local
+    dot_b = wp.abs(wp.dot(fn_b_world, normal))
+
+    FACE_THRESH = float(0.7)
+    if dot_a < FACE_THRESH and dot_b < FACE_THRESH:
+        neg_n = wp.vec3(-normal[0], -normal[1], -normal[2])
+        sup_a = _support_world(
+            SHAPE_CONVEXHULL,
+            pos_a,
+            R_a,
+            wp.vec4(0.0, 0.0, 0.0, 0.0),
+            hull_verts,
+            hull_vert_adr[a_idx],
+            hull_vert_count[a_idx],
+            neg_n,
+        )
+        sup_b = _support_world(
+            SHAPE_CONVEXHULL,
+            pos_b,
+            R_b,
+            wp.vec4(0.0, 0.0, 0.0, 0.0),
+            hull_verts,
+            hull_vert_adr[b_idx],
+            hull_vert_count[b_idx],
+            normal,
+        )
+        result.p0 = (sup_a + sup_b) * 0.5
+        result.d0 = depth
+        result.count = 1
+        return result
+
+    ref_pos = pos_a
+    ref_R = R_a
+    ref_s_idx = a_idx
+    ref_face = face_a
+    ref_fn_world = fn_a_world
+    inc_pos = pos_b
+    inc_R = R_b
+    inc_s_idx = b_idx
+    inc_face = face_b
+
+    if dot_b > dot_a:
+        ref_pos = pos_b
+        ref_R = R_b
+        ref_s_idx = b_idx
+        ref_face = face_b
+        ref_fn_world = fn_b_world
+        inc_pos = pos_a
+        inc_R = R_a
+        inc_s_idx = a_idx
+        inc_face = face_a
+
+    ref_poly = _hull_face_poly(
+        hull_verts,
+        hull_vert_adr,
+        hull_face_vert_ids,
+        hull_face_vert_adr,
+        hull_face_vert_count,
+        hull_face_adr,
+        ref_s_idx,
+        ref_face,
+        ref_pos,
+        ref_R,
+    )
+    inc_poly = _hull_face_poly(
+        hull_verts,
+        hull_vert_adr,
+        hull_face_vert_ids,
+        hull_face_vert_adr,
+        hull_face_vert_count,
+        hull_face_adr,
+        inc_s_idx,
+        inc_face,
+        inc_pos,
+        inc_R,
+    )
+
+    ref_n = ref_poly.count
+    for ei in range(8):
+        if ei >= ref_n:
+            continue
+        ev0 = _clip_poly_get(ref_poly, ei)
+        ev1 = _clip_poly_get(ref_poly, (ei + 1) % ref_n)
+        edge = ev1 - ev0
+        side_n = wp.normalize(wp.cross(edge, ref_fn_world))
+        side_d = wp.dot(side_n, ev0)
+        inc_poly = _clip_polygon_by_plane(inc_poly, side_n, side_d)
+
+    ref_pt = _clip_poly_get(ref_poly, 0)
+    ref_d = wp.dot(ref_fn_world, ref_pt)
+
+    for ci in range(8):
+        if ci >= inc_poly.count:
+            continue
+        if result.count >= 4:
+            continue
+        p = _clip_poly_get(inc_poly, ci)
+        signed_dist = wp.dot(ref_fn_world, p) - ref_d
+        pt_depth = -signed_dist
+        if pt_depth > -1.0e-6:
+            contact_pt = p - signed_dist * ref_fn_world
+            clamped = pt_depth
+            if clamped < 0.0:
+                clamped = 0.0
+            result = _manifold_set(result, result.count, contact_pt, clamped)
+            result.count = result.count + 1
+
+    if result.count == 0:
+        neg_n = wp.vec3(-normal[0], -normal[1], -normal[2])
+        sup_a = _support_world(
+            SHAPE_CONVEXHULL,
+            pos_a,
+            R_a,
+            wp.vec4(0.0, 0.0, 0.0, 0.0),
+            hull_verts,
+            hull_vert_adr[a_idx],
+            hull_vert_count[a_idx],
+            neg_n,
+        )
+        sup_b = _support_world(
+            SHAPE_CONVEXHULL,
+            pos_b,
+            R_b,
+            wp.vec4(0.0, 0.0, 0.0, 0.0),
+            hull_verts,
+            hull_vert_adr[b_idx],
+            hull_vert_count[b_idx],
+            normal,
+        )
+        result.p0 = (sup_a + sup_b) * 0.5
+        result.d0 = depth
+        result.count = 1
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # ConvexHull support point (GPU linear scan)
 # ---------------------------------------------------------------------------
 

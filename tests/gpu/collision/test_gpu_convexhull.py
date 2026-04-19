@@ -2,10 +2,10 @@
 
 Verifies that ConvexHullShape works on GPU via:
   - Ground contacts: vertex enumeration multi-point
-  - Body-body: GJK closest-distance with convex margin
-  - CPU vs GPU agreement for ground contacts
+  - Body-body: GJK+EPA with convex margin + face-clipping manifold
+  - CPU vs GPU agreement for ground contacts and body-body
 
-Reference: Q41 (OPEN_QUESTIONS), session 29.
+Reference: Q41 (OPEN_QUESTIONS), session 29/33.
 """
 
 from __future__ import annotations
@@ -319,3 +319,126 @@ class TestCpuGpuAgreement:
 
         assert len(cpu_bb) == 0, f"CPU should not detect contact, got {len(cpu_bb)}"
         assert len(gpu_bb) == 0, f"GPU should not detect contact, got {len(gpu_bb)}"
+
+
+# ---------------------------------------------------------------------------
+# EPA + face-clipping manifold tests (Q41 session 33)
+# ---------------------------------------------------------------------------
+
+
+def _diverse_hulls():
+    """Return a list of (name, ConvexHullShape) with diverse geometry."""
+    import trimesh
+
+    shapes = []
+
+    # Box
+    m = trimesh.creation.box(extents=[0.4, 0.4, 0.4])
+    shapes.append(("box", ConvexHullShape(np.array(m.vertices))))
+
+    # Octahedron
+    r = 0.25
+    verts = np.array([[r, 0, 0], [-r, 0, 0], [0, r, 0], [0, -r, 0], [0, 0, r], [0, 0, -r]], dtype=np.float64)
+    shapes.append(("octahedron", ConvexHullShape(verts)))
+
+    # Cylinder approximation (12-gon prism)
+    m = trimesh.creation.cylinder(radius=0.15, height=0.4, sections=12)
+    shapes.append(("cylinder12", ConvexHullShape(np.array(m.vertices))))
+
+    # Icosphere
+    m = trimesh.creation.icosphere(subdivisions=1, radius=0.2)
+    shapes.append(("icosphere", ConvexHullShape(np.array(m.vertices))))
+
+    return shapes
+
+
+class TestEPAFaceClippingManifold:
+    """GPU EPA + Sutherland-Hodgman face clipping for hull-hull (Q41)."""
+
+    def test_box_hull_face_face_multipoint(self):
+        """Two box-hulls in face-face contact → GPU detects ≥1 contact point."""
+        hull_a = _box_as_hull(0.2, 0.2, 0.2)
+        hull_b = _box_as_hull(0.2, 0.2, 0.2)
+        # Overlap 0.05 in Z: a at z=0.55, b at z=0.3 → a bottom at 0.35, b top at 0.5
+        merged, q, qdot = _two_body_model(hull_a, hull_b, z_a=0.55, z_b=0.3)
+        tau = np.zeros(merged.nv)
+
+        gpu = GpuEngine(merged, num_envs=1, dt=2e-4, solver="jacobi_pgs_ms")
+        gpu.step(q, qdot, tau, dt=2e-4)
+        bb = [c for c in gpu.query_contacts(env_idx=0) if c.body_j >= 0]
+
+        assert len(bb) >= 1, f"Expected ≥1 hull-hull contact, got {len(bb)}"
+        for c in bb:
+            assert c.depth > 0, f"Contact depth must be positive, got {c.depth}"
+
+    def test_box_hull_normal_direction(self):
+        """EPA normal should point from b toward a (upward when a is above b)."""
+        hull_a = _box_as_hull(0.2, 0.2, 0.2)
+        hull_b = _box_as_hull(0.2, 0.2, 0.2)
+        merged, q, qdot = _two_body_model(hull_a, hull_b, z_a=0.55, z_b=0.3)
+        tau = np.zeros(merged.nv)
+
+        gpu = GpuEngine(merged, num_envs=1, dt=2e-4, solver="jacobi_pgs_ms")
+        gpu.step(q, qdot, tau, dt=2e-4)
+        bb = [c for c in gpu.query_contacts(env_idx=0) if c.body_j >= 0]
+
+        assert len(bb) >= 1
+        # Normal z-component should be positive (pointing from b up to a)
+        for c in bb:
+            assert c.normal[2] > 0.5, f"Normal should point upward, got {c.normal}"
+
+    def test_hull_hull_depth_agrees_cpu(self):
+        """GPU EPA depth should agree with CPU GJK/EPA within 5mm."""
+        from physics.cpu_engine import CpuEngine
+
+        hull_a = _box_as_hull(0.2, 0.2, 0.2)
+        hull_b = _box_as_hull(0.2, 0.2, 0.2)
+        merged, q, qdot = _two_body_model(hull_a, hull_b, z_a=0.55, z_b=0.3)
+        tau = np.zeros(merged.nv)
+
+        cpu = CpuEngine(merged, dt=2e-4)
+        cpu.step(q.copy(), qdot.copy(), tau, dt=2e-4)
+        cpu_bb = [c for c in cpu.query_contacts() if c.body_j >= 0]
+
+        gpu = GpuEngine(merged, num_envs=1, dt=2e-4, solver="jacobi_pgs_ms")
+        gpu.step(q.copy(), qdot.copy(), tau, dt=2e-4)
+        gpu_bb = [c for c in gpu.query_contacts(env_idx=0) if c.body_j >= 0]
+
+        assert len(cpu_bb) > 0 and len(gpu_bb) > 0
+        cpu_max = max(c.depth for c in cpu_bb)
+        gpu_max = max(c.depth for c in gpu_bb)
+        np.testing.assert_allclose(
+            gpu_max, cpu_max, atol=5e-3, err_msg=f"CPU depth={cpu_max:.4f} GPU depth={gpu_max:.4f}"
+        )
+
+    @pytest.mark.skipif(
+        not pytest.importorskip("trimesh", reason="trimesh required"), reason="trimesh required"
+    )
+    def test_diverse_hull_shapes_detected(self):
+        """Diverse hull shapes (box, octahedron, cylinder, icosphere) all detect contact."""
+        try:
+            shapes = _diverse_hulls()
+        except Exception:
+            pytest.skip("trimesh shape creation failed")
+
+        for name_a, hull_a in shapes:
+            for name_b, hull_b in shapes:
+                merged, q, qdot = _two_body_model(hull_a, hull_b, z_a=0.55, z_b=0.3)
+                tau = np.zeros(merged.nv)
+                gpu = GpuEngine(merged, num_envs=1, dt=2e-4, solver="jacobi_pgs_ms")
+                gpu.step(q, qdot, tau, dt=2e-4)
+                bb = [c for c in gpu.query_contacts(env_idx=0) if c.body_j >= 0]
+                assert len(bb) >= 1, f"{name_a} vs {name_b}: expected contact, got 0"
+
+    def test_hull_hull_stability_100_steps(self):
+        """Two overlapping hull-boxes must stay finite for 100 steps."""
+        hull_a = _box_as_hull(0.1, 0.1, 0.1)
+        hull_b = _box_as_hull(0.1, 0.1, 0.1)
+        merged, q, qdot = _two_body_model(hull_a, hull_b, z_a=0.55, z_b=0.3)
+        tau = np.zeros(merged.nv)
+
+        gpu = GpuEngine(merged, num_envs=1, dt=2e-4, solver="jacobi_pgs_ms")
+        for step in range(100):
+            out = gpu.step(q, qdot, tau, dt=2e-4)
+            q, qdot = out.q_new, out.qdot_new
+            assert np.all(np.isfinite(q)), f"NaN at step {step}"
