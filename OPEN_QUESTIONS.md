@@ -1315,7 +1315,7 @@ Jolt Physics 的做法（[JoltPhysics docs](https://jrouwe.github.io/JoltPhysics
 **触发条件**：下一次涉及 sphere/capsule EPA 不稳定 bug，或开始设计 InterfaceMaterial 时。
 **优先级**：P2（方案 A 补丁已稳定；架构重构有较大工作量，需专项讨论后决定）。
 
-**Q48 — CPU 碰撞检测完备性：session 31/32 已知 bug 与后续缺口** (2026-04-16, session 31; 更新 session 32)
+**Q48 — CPU 碰撞检测完备性：session 31/32 已知 bug 与后续缺口** (2026-04-16, session 31; 更新 session 32/33)
 
 **背景**：Session 31 在 CPU GJK/EPA 管线中发现并修复了多个 bug：
 1. **EPA 退化 simplex**（sphere-sphere/sphere-capsule）：EPA 在 smooth shapes 上生成退化
@@ -1336,17 +1336,21 @@ Jolt Physics 的做法（[JoltPhysics docs](https://jrouwe.github.io/JoltPhysics
    下一步：追查 GJK distance 内部终止条件（signed-distance simplex walk 在这两对上的退化），
    修复后去掉 workaround。**优先级：P4（低优先级，解析 dispatch 已覆盖最常见 pair）**。
 
-2. **CPU 多点接触流形生成**：CPU 当前对大多数 pair 返回 **1 个接触点**；GPU 已实现
-   box-box SAT（1–4 点，session 28）和球-凸体多点（session 29）。
-   box-ground / convex-ground 在 GPU 返回 9 点而 CPU 返回 6 点（Q46 item 6）。
-   CPU 端未更新为多点流形，导致接触力不准确（尤其平面接触时倾翻倾向）。
+2. ✅ **CPU 多点接触流形生成（ground contact path）**（session 33）：
+   `ground_contact_query()` 已升级为顶点枚举多点流形（Box/ConvexHull），与 `halfspace_convex_query()`
+   逻辑对齐。Sphere 仍走单点支撑点路径。验证：`TestMultiPointContactCount`（4 tests）。
+   *Body-body 接触的多点流形（`gjk_epa_query()`路径）已有 face clipping，此处关闭的是
+   FlatTerrain ground contact 路径的缺口。*
 
-3. **CpuEngine 集成级别覆盖**：`test_convex_margin.py` 仅在 primitive 层（GJK/EPA
-   API 直接调用）验证，未测试 CpuEngine → CollisionPipeline → Solver 全链路。
-   应补充集成测试：各形状对在 CpuEngine.step() 循环中稳定接触 N 步不爆炸。
+3. ✅ **CpuEngine 集成级别覆盖**（session 33）：
+   新增 `tests/integration/test_cpu_engine_shapes.py`（12 tests，3 classes）：
+   Class 1 — 5 形状类型逐一 drop + settle（Sphere/Box/Capsule/Cylinder/ConvexHull）；
+   Class 2 — 多点接触数量验证（flat/tilted box, sphere, convexhull）；
+   Class 3 — 两体碰撞（sphere-sphere/box-sphere/box-box）。
+   1174 tests 全部通过（含原有全量）。
 
-**触发条件**：修复 `gjk_distance()` box-cyl/box-hull 早退出；或 CPU 多点流形实现时。
-**优先级**：P2（方案 A 补丁稳定；多点流形影响接触精度，但当前 RL 训练尚未依赖 CPU engine）。
+**触发条件**：修复 `gjk_distance()` box-cyl/box-hull 早退出（唯一残余缺口）。
+**优先级**：P4（仅剩 gjk_distance 早退出，解析 dispatch 已覆盖最常见 pair；集成测试和多点地面接触已补全）。
 
 ---
 
