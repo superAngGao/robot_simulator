@@ -93,6 +93,14 @@ relevant row, read the project detail, then proceed.
    for the lightweight path. Every non-trivial implementation (new feature, bug fix,
    new test module) gets an `implementation-note__claude__v1.md` so Codex can review
    coverage gaps and residual risks before the commit is pushed.
+7. After every commit:
+   - Output a **中文摘要** to the screen — what changed and why, in 3–5 bullet points.
+     Then state what the next pending Codex review file is (if any).
+   - In the `collab/` implementation-note (or review-followup), include a
+     **关键思考** section documenting: (a) non-obvious technical decisions and the
+     alternatives considered, (b) debugging difficulties encountered and how they
+     were diagnosed. This section is for Claude's own future reference and for
+     Codex to understand the reasoning behind the implementation.
 
 ## Reference Files
 
