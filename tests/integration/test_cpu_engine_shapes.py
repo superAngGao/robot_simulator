@@ -31,6 +31,8 @@ from physics.terrain import FlatTerrain
 from robot.model import RobotModel
 
 try:
+    from scipy.spatial import ConvexHull as _ScipyConvexHull  # noqa: F401
+
     from physics.geometry import ConvexHullShape
 
     HAS_CONVEXHULL = True
@@ -172,7 +174,7 @@ class TestSingleShapeGroundContact:
         q, qdot = _run(engine, merged, q, N_SETTLE)
         _assert_stable(q, qdot, "cylinder_vertical", z_min=r * 0.5)
 
-    @pytest.mark.skipif(not HAS_CONVEXHULL, reason="trimesh required")
+    @pytest.mark.skipif(not HAS_CONVEXHULL, reason="scipy required")
     def test_convexhull_drop(self):
         """ConvexHull box-shaped hull drops and settles."""
         half = 0.05
@@ -248,7 +250,7 @@ class TestMultiPointContactCount:
         contacts = engine.query_contacts()
         assert len(contacts) == 1, f"sphere: expected 1 contact point, got {len(contacts)}"
 
-    @pytest.mark.skipif(not HAS_CONVEXHULL, reason="trimesh required")
+    @pytest.mark.skipif(not HAS_CONVEXHULL, reason="scipy required")
     def test_convexhull_flat_contact_count(self):
         """ConvexHull box-shaped hull flat on ground: >=2 contact points after settling."""
         half = 0.05
@@ -339,9 +341,12 @@ class TestBodyBodyContact:
 
         assert not np.any(np.isnan(q)), "sphere-sphere: NaN in q"
         assert not np.any(np.isnan(qdot)), "sphere-sphere: NaN in qdot"
-        # Both bodies above ground
         assert q[6] > 0.0, f"sphere a fell through: z={q[6]:.4f}"
         assert q[13] > 0.0, f"sphere b fell through: z={q[13]:.4f}"
+        # Bodies must have separated horizontally (contact pushed them apart).
+        # Initial x-separation was 2r; after settling it must be >= 2r.
+        sep_x = abs(q[11] - q[4])
+        assert sep_x >= 2 * r * 0.9, f"sphere-sphere: bodies didn't separate, dx={sep_x:.4f}"
 
     def test_box_sphere_collision(self):
         """Box on ground, sphere dropped on top — no NaN, sphere stays above box."""
@@ -370,6 +375,8 @@ class TestBodyBodyContact:
         assert not np.any(np.isnan(qdot)), "box-sphere: NaN in qdot"
         assert q[6] > 0.0, f"box fell through: z={q[6]:.4f}"
         assert q[13] > 0.0, f"sphere fell through: z={q[13]:.4f}"
+        # Sphere must rest above the box top face (z > 2*half), not on the ground.
+        assert q[13] > half * 2 * 0.9, f"sphere resting below box top: z={q[13]:.4f}"
 
     def test_box_box_stacking(self):
         """Two boxes stacked — lower box on ground, upper box on top."""
@@ -397,3 +404,5 @@ class TestBodyBodyContact:
         assert not np.any(np.isnan(qdot)), "box-box: NaN in qdot"
         assert q[6] > 0.0, f"lower box fell through: z={q[6]:.4f}"
         assert q[13] > 0.0, f"upper box fell through: z={q[13]:.4f}"
+        # Upper box must rest above the lower box (z > 2*half), not on the ground.
+        assert q[13] > half * 2 * 0.9, f"upper box resting below lower box top: z={q[13]:.4f}"

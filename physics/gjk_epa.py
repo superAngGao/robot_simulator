@@ -1350,15 +1350,13 @@ def ground_contact_query(
             return None
         points = []
         point_depths = []
-        max_depth = 0.0
         for i in np.where(penetrating)[0]:
             d = float(depths[i])
             cp = verts_world[i].copy()
             cp[2] = ground_z
             points.append(cp)
             point_depths.append(d)
-            if d > max_depth:
-                max_depth = d
+        max_depth = max(point_depths)
         return ContactManifold(
             body_i=-1,
             body_j=-1,
