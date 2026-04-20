@@ -89,6 +89,10 @@ relevant row, read the project detail, then proceed.
 3. If behaviour changed: update **PROGRESS.md** and **REFLECTIONS.md**.
 4. Use `/commit` skill for git commits.
 5. Use `/review` skill to check test coverage before committing new modules.
+6. Write a `collab/` implementation-note for Codex review — see `collab/README.md`
+   for the lightweight path. Every non-trivial implementation (new feature, bug fix,
+   new test module) gets an `implementation-note__claude__v1.md` so Codex can review
+   coverage gaps and residual risks before the commit is pushed.
 
 ## Reference Files
 

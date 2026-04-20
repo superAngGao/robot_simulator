@@ -1337,7 +1337,38 @@ def ground_contact_query(
     if isinstance(shape, CylinderShape):
         return cylinder_halfspace_manifold(shape, pose, n_up, p_ground, margin=margin)
 
-    # Find lowest point of shape
+    # Multi-point contact for polyhedral shapes (Box, ConvexHull).
+    # Enumerate all vertices below ground_z + margin, matching the logic in
+    # halfspace_convex_query.  Smooth shapes (Sphere) fall through to the
+    # single-point path below.
+    verts_local = shape.contact_vertices()
+    if verts_local is not None:
+        verts_world = (pose.R @ verts_local.T).T + pose.r  # (N, 3)
+        depths = ground_z - verts_world[:, 2]  # positive = penetrating
+        penetrating = depths > -margin
+        if not np.any(penetrating):
+            return None
+        points = []
+        point_depths = []
+        max_depth = 0.0
+        for i in np.where(penetrating)[0]:
+            d = float(depths[i])
+            cp = verts_world[i].copy()
+            cp[2] = ground_z
+            points.append(cp)
+            point_depths.append(d)
+            if d > max_depth:
+                max_depth = d
+        return ContactManifold(
+            body_i=-1,
+            body_j=-1,
+            normal=np.array([0.0, 0.0, 1.0]),
+            depth=max_depth,
+            points=points,
+            point_depths=point_depths,
+        )
+
+    # Single-point fallback (Sphere).
     d_local = pose.R.T @ np.array([0.0, 0.0, -1.0])
     s_local = shape.support_point(d_local)
     s_world = pose.R @ s_local + pose.r
@@ -1346,14 +1377,13 @@ def ground_contact_query(
     if depth <= -margin:
         return None
 
-    normal = np.array([0.0, 0.0, 1.0])
     contact_point = s_world.copy()
     contact_point[2] = ground_z
 
     return ContactManifold(
         body_i=-1,
         body_j=-1,
-        normal=normal,
+        normal=np.array([0.0, 0.0, 1.0]),
         depth=depth,
         points=[contact_point],
     )
