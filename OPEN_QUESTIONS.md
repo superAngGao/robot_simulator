@@ -1242,7 +1242,7 @@ Session 29 新增的三个能处理多点接触的 solver（`jacobi_pgs_ms`、`c
 **待验证维度**：
 1. **大规模 RL 训练**：num_envs=1000+，持续 10⁶ steps 的数值稳定性
 2. **复杂机器人**：人形（30+ body）、多足（高 DOF）的接触密集场景
-3. ✅ **Solver 间物理一致性**（2026-04-20 新增定量基线）：`jacobi_pgs_ms`、`colored_pgs`、`admm`
+3. 🔄 **Solver 间物理一致性**（2026-04-20 新增短时基线，未关闭）：`jacobi_pgs_ms`、`colored_pgs`、`admm`
    在 3-robot mixed-shape 场景（50 步）的 link0 z 偏差 < 0.05 m，max|qdot| < 50 rad/s。
    见 `tests/gpu/solvers/test_solver_backends.py::TestCrossSolverConsistency`。
    长时间轨迹（10⁶ steps）和 RL 场景仍待验证（维度 1/2）。
