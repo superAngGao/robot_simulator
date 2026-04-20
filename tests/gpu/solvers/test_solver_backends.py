@@ -51,6 +51,7 @@ def _build_fixture():
 class TestMassSplitting:
     """Jacobi PGS with mass splitting (Tonge et al., SIGGRAPH 2012)."""
 
+    @pytest.mark.slow
     def test_100_steps_no_nan(self):
         """Multi-point ground + body-body: 100 steps must stay finite."""
         merged, q, qdot = _build_fixture()
@@ -98,6 +99,7 @@ class TestMassSplitting:
 class TestColoredPGS:
     """Graph-colored Gauss-Seidel PGS (PhysX/Bullet3 approach)."""
 
+    @pytest.mark.slow
     def test_100_steps_no_nan(self):
         """Multi-point ground + body-body: 100 steps must stay finite."""
         merged, q, qdot = _build_fixture()
@@ -165,6 +167,7 @@ class TestColoredPGS:
 class TestCrossSolverAgreement:
     """All solvers should produce similar physics on simple cases."""
 
+    @pytest.mark.slow
     def test_single_sphere_all_solvers_agree(self):
         """Single sphere on ground: all solvers produce similar z after 50 steps."""
         from physics.geometry import BodyCollisionGeometry, ShapeInstance, SphereShape

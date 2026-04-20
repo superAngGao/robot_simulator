@@ -59,7 +59,7 @@ CPU path complete: URDF `<mesh>` → trimesh 加载 → ConvexHullShape → GJK/
 CPU body-body 碰撞也从球近似升级为 GJK/EPA per-shape。
 - `robot/mesh_loader.py` 隔离 trimesh 依赖（选装 `pip install .[mesh]`）
 - `physics/` 层不依赖 trimesh，只看到 ConvexHullShape(numpy array)
-- **GPU 端未实现**：ConvexHullShape → `SHAPE_NONE` → 球 fallback。见 Q41。
+- **GPU 端已实现**：见 Q41 ✅ RESOLVED (session 29/32)。
 
 **Q8 — Simulator (Layer 2) module location** ✅ RESOLVED
 Decision: top-level `simulator.py` (Option B).
@@ -1092,22 +1092,30 @@ Tests added across Phase 2a/2b/2c + session 2 补全：
 Total: 68 tests，全部通过。
 → Moved to REFLECTIONS.md.
 
-**Q40 — Test suite execution time blocking development velocity** (2026-04-10, session 25)
+**Q40 — Test suite execution time blocking development velocity** 🔄 部分解决 (2026-04-20)
 
-当前 `python -m pytest tests/ -m "not slow"` 运行 723 tests 需要 ~5 分钟。
-每次 commit 前的 HARD GATE 都要等这么久，严重拖慢开发节奏。B(5) staircase
-6 步 = 6 次 commit = ~30 分钟纯等待时间。
+**原始问题**：`python -m pytest tests/ -m "not slow"` 运行 ~1049 tests 需要 ~15 分钟，
+严重拖慢 commit 节奏。
 
-需要调查的方向：
-1. **GPU test warm-up 开销** — 每个 GPU test 文件可能独立初始化 warp/CUDA context，
-   考虑 session-scoped fixture 共享 context。
-2. **Test 分层** — 区分 unit（纯 CPU, <1s）/ integration（CPU+GPU, <10s）/ validation
-   （multi-step sim, >10s），commit gate 只跑 unit + 当前改动相关的 integration。
-3. **并行执行** — `pytest-xdist` 多进程（但 GPU 资源竞争需要处理）。
-4. **增量测试** — `pytest --lf`（last failed）+ `pytest-testmon`（只跑受影响的测试）。
+**已解决（2026-04-20）**：
+- 4 个持续 ≥20s 的 GPU multi-step 测试加了 `@pytest.mark.slow`：
+  - `TestMassSplitting::test_100_steps_no_nan`
+  - `TestColoredPGS::test_100_steps_no_nan`
+  - `TestCrossSolverAgreement::test_single_sphere_all_solvers_agree`
+  - `TestStep5MixedShapesGround::test_simulation_stable_100_steps`
+- commit gate (`not slow`) 从 ~15 分钟降到 ~3–5 分钟
+- CLAUDE.md 更新：commit gate = `not slow`，push gate = 全量
 
-**触发条件**：Phase 3 开始前必须解决。
-**优先级**：P1（直接影响每日开发效率）。
+**双 gate 规则（已写入 CLAUDE.md）**：
+- commit 前：`python -m pytest tests/ -m "not slow" -v`（~3–5 min）
+- push 前：`python -m pytest tests/ -v`（~21 min，全量）
+
+**残余问题**：
+- 20s 阈值是经验值，换慢 GPU 后边界测试可能需要重新评估
+- `test_max_qdot_bounded`（50 steps，~10–30s）未标 slow，若未来超阈值需补标
+- cross-solver agreement 不再进入 commit gate（合理 tradeoff，已显式承认）
+
+**优先级**：P3（commit gate 已可接受，全量 push gate 保证覆盖）。
 
 **Q42 — Contact Manifold Generation: Face Clipping + Edge-Edge** (2026-04-12, session 27)
 
@@ -1148,7 +1156,7 @@ Total: 68 tests，全部通过。
 **触发条件**：使用 >200 面 ConvexHull 且碰撞检测成为性能瓶颈时。
 **优先级**：P2（优化，非正确性）。
 
-**Q44 — Convex Margin (Jolt-style convex radius)** (2026-04-12, session 27; **升级 P1**, session 30)
+**Q44 — Convex Margin (Jolt-style convex radius)** ✅ RESOLVED (2026-04-20, sessions 31/32)
 
 当前 GJK 检测到穿透后必须进入 EPA（expanding polytope），EPA 有已知的数值
 退化问题（degenerate simplex → 错误深度/法线，见 session 27 EPA 诊断）。
@@ -1198,29 +1206,20 @@ Bullet `btConvexInternalShape::getMargin()`、PhysX contact offset。
 **触发条件**：已触发（session 30 bug 复现）。
 **优先级**：**P1**（从 P2 升级 — EPA 退化 bug 在 capsule-convexhull 路径已暴露）。
 
-**Q41 — GPU ConvexHullShape 碰撞支持** (2026-04-10, session 26)
+**Q41 — GPU ConvexHullShape 碰撞支持** ✅ RESOLVED (2026-04-20, sessions 29/32)
 
-CPU 端 mesh → ConvexHullShape → GJK/EPA 已完整（Q7 resolved），但 GPU 端仍缺失：
+四项原始需求全部实现：
+1. ✅ `SHAPE_CONVEXHULL = 5`（`static_data.py:41`，`analytical_collision.py:34`）
+2. ✅ `hull_vertices / hull_vert_adr / hull_vert_count` flat arrays（`static_data.py:165-173`）
+3. ✅ GPU GJK kernel：`_convexhull_support_local` + `gjk_closest_distance` + `gjk_epa_penetration`
+4. ✅ narrowphase dispatch：CONVEXHULL × {SPHERE, BOX, CAPSULE, CONVEXHULL}（GJK/EPA + S-H face clipping）
 
-1. **无 `SHAPE_CONVEXHULL` 枚举** — `static_data.py` 只有 SHAPE_SPHERE/BOX/CYLINDER/CAPSULE (0-4)
-2. **无凸包顶点 GPU 数组** — 需要 `hull_vertices[total_verts, 3]`、`hull_vert_adr[nshape]`、
-   `hull_vert_count[nshape]` 存变长顶点数据
-3. **无 GPU GJK kernel** — 需要 Warp `@wp.func` 实现 support_point（线性扫描顶点）+ GJK/EPA
-4. **无 narrowphase dispatch** — `collision_kernels.py` 的 shape-pair dispatch 表需要添加
-   CONVEXHULL × SPHERE/BOX/CAPSULE/CONVEXHULL 路径
+额外实现（超出原始需求）：
+- `hull_hull_manifold`：S-H face clipping，1–4 接触点（session 32, commit 211fdba）
+- `convexhull_ground_manifold`：顶点枚举多点（session 29）
+- 13 GPU 测试（`tests/gpu/collision/test_gpu_convexhull.py`）
 
-当前行为：ConvexHullShape 在 `static_data.py` 被设为 `SHAPE_NONE`，GPU 碰撞退化为
-`body_collision_radius` 球近似。
-
-**联合设计要求**：GPU 数据布局（flat arrays）、凸分解缓存格式、mesh 预处理管线三者需要
-一起设计，避免返工。缓存格式取决于 GPU 需要什么数据，GPU kernel 设计取决于凸分解输出什么。
-
-**前置工作**：
-- Q7 ✅ CPU mesh loading pipeline
-- Q17 BVH 三角 mesh（Phase 3，GPU ConvexHull 之后）
-
-**触发条件**：需要 GPU 加速的 RL 训练使用带 mesh 碰撞的 URDF 时。
-**优先级**：P1（RL 训练的主要 blocker 之一）。
+→ 详细设计见 REFLECTIONS.md session 29/32。
 
 **Q45 — Jacobi PGS divergence with clustered multi-point contacts** ✅ RESOLVED (2026-04-13, session 29)
 

@@ -8,8 +8,8 @@
 |------|---------|
 | Install (editable) | `pip install -e .` |
 | Run example | `MPLBACKEND=Agg python -m robot_simulator.examples.simple_quadruped [--save out.gif]` |
-| Run tests (fast, ~13s) | `python -m pytest tests/ -m "not (slow or gpu)" -v` |
-| Run tests (fast+gpu, ~2min) | `python -m pytest tests/ -m "not slow" -v` |
+| Run tests (fast, ~2min) | `python -m pytest tests/ -m "not (slow or gpu)" -v` |
+| Run tests (fast+gpu, ~3min) | `python -m pytest tests/ -m "not slow" -v` |
 | Run tests (all, ~21min) | `python -m pytest tests/ -v` |
 | Lint | `ruff check .` |
 | Format | `ruff format .` |
@@ -84,10 +84,11 @@ relevant row, read the project detail, then proceed.
 
 ## After Every Change
 
-1. Run `python -m pytest tests/ -v` — all tests must pass.
-2. If behaviour changed: update **PROGRESS.md** and **REFLECTIONS.md**.
-3. Use `/commit` skill for git commits.
-4. Use `/review` skill to check test coverage before committing new modules.
+1. Run `python -m pytest tests/ -m "not slow" -v` — all tests must pass (commit gate).
+2. Run `python -m pytest tests/ -v` (full suite including slow) before every `git push`.
+3. If behaviour changed: update **PROGRESS.md** and **REFLECTIONS.md**.
+4. Use `/commit` skill for git commits.
+5. Use `/review` skill to check test coverage before committing new modules.
 
 ## Reference Files
 

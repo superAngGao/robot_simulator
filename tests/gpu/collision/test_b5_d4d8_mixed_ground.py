@@ -341,6 +341,7 @@ class TestStep5MixedShapesGround:
             assert np.all(np.isfinite(c.point)), f"Contact {i}: NaN point {c.point}"
             assert np.isfinite(c.depth), f"Contact {i}: NaN depth {c.depth}"
 
+    @pytest.mark.slow
     def test_simulation_stable_100_steps(self):
         """100 steps with mixed shapes + ground must stay finite (no divergence).
 
