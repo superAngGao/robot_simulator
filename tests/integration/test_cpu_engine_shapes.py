@@ -332,8 +332,8 @@ class TestBodyBodyContact:
         q[13] = 3 * r + 0.1  # upper sphere above lower
         qdot = np.zeros(merged.nv)
 
-        # Run until upper sphere has had time to fall and interact (~500 steps)
-        for _ in range(500):
+        # Contact occurs at ~step 714 (0.143s); run 1200 steps to let it settle.
+        for _ in range(1200):
             out = engine.step(q, qdot, np.zeros(merged.nv))
             q, qdot = out.q_new, out.qdot_new
 
