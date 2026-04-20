@@ -14,7 +14,17 @@ Layout:
     Env 0: A(Y=0, Z=0.05), B(Y=0.08, Z=0.05), C(Y=0.25, Z=0.50) — contacts expected
     Env 1: A(Y=0, Z=2.0),  B(Y=2.0, Z=2.0),  C(Y=4.0, Z=2.0)  — no contacts
 
-Reference: OPEN_QUESTIONS Q36, session 25.
+CPU vs GPU box-ground manifold difference (Q46 dim 6 — known, not a bug):
+    GPU uses vertex enumeration (analytical_collision.py:box_ground_manifold):
+        up to 4 deepest vertices per box shape → multi-point manifold.
+    CPU uses GJK/EPA → single support point per box shape.
+    This is a known implementation difference, not a physics error.
+    The two backends agree on: which bodies have ground contact, normal
+    direction, and per-body maximum penetration depth.
+    They do NOT agree on: exact contact count per body, contact point XY.
+    CPU multi-point box-ground is deferred to a future thread (Q46 dim 6).
+
+Reference: OPEN_QUESTIONS Q36, session 25; Q46 dim 6.
 """
 
 from __future__ import annotations
@@ -282,12 +292,13 @@ class TestStep6CpuGpuMultiEnv:
         gpu.step(q_2env, qdot_2env, tau_2d, dt=dt)
         gpu_ground = [c for c in gpu.query_contacts(env_idx=0) if c.body_j == -1]
 
-        # 1. GPU may produce more contacts than CPU due to box-ground multi-point
-        # manifold (GPU: 4 contacts per box, CPU: 1 single-point). Compare bodies
-        # that have contacts, not exact counts.
+        # GPU produces more contacts than CPU per box (multi-point vs single-point).
+        # See module docstring for explanation. Assert semantics, not exact counts.
         assert len(cpu_ground) > 0, "CPU should detect ground contacts"
+        assert len(gpu_ground) > 0, "GPU should detect ground contacts"
         assert len(gpu_ground) >= len(cpu_ground), (
-            f"GPU should have ≥ CPU ground contacts: CPU={len(cpu_ground)}, GPU={len(gpu_ground)}"
+            f"GPU should have ≥ CPU ground contacts (GPU multi-point): "
+            f"CPU={len(cpu_ground)}, GPU={len(gpu_ground)}"
         )
 
         # 2. Sort by (body_i, depth) for deterministic comparison

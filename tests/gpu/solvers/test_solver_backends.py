@@ -6,6 +6,11 @@ diverging — the exact scenario where pure Jacobi PGS fails (Q45).
 
 Reference: Tonge et al. (SIGGRAPH 2012) for mass splitting,
 PhysX/Bullet3 GPU for graph-colored GS.
+
+Q46 dim 3 baseline: TestCrossSolverConsistency establishes quantitative
+agreement between jacobi_pgs_ms, colored_pgs, and admm on the complex
+mixed-shape scene. jacobi_pgs_si is excluded (known step-1 divergence
+in multi-point contact scenes, Q46 benchmark).
 """
 
 from __future__ import annotations
@@ -157,6 +162,76 @@ class TestColoredPGS:
             if bj >= 0:
                 assert bj not in bodies_in_color, f"Color {col}: body {bj} appears in multiple contacts"
                 bodies_in_color.add(bj)
+
+
+# ---------------------------------------------------------------------------
+# Cross-solver consistency (Q46 dim 3 baseline)
+# ---------------------------------------------------------------------------
+
+_STABLE_SOLVERS = ["jacobi_pgs_ms", "colored_pgs", "admm"]
+
+# Robot link0 FreeJoint q layout: [qw,qx,qy,qz,px,py,pz] — z is index 6
+_LINK0_Z = 6
+
+
+def _link0_z(q, merged, robot_name):
+    """Return link0 z-coordinate for a robot."""
+    return q[merged.robot_slices[robot_name].q_slice][_LINK0_Z]
+
+
+class TestCrossSolverConsistency:
+    """Q46 dim 3: jacobi_pgs_ms / colored_pgs / admm must agree on complex scene.
+
+    Uses the 3-robot mixed-shape fixture (9 bodies, multi-point box-ground +
+    body-body contacts). jacobi_pgs_si excluded — known step-1 divergence here.
+
+    Assertions compare physically meaningful derived quantities, not raw q:
+    - per-robot link0 z (base height)
+    - max|qdot| upper bound
+    Quaternion components are not compared directly.
+    """
+
+    def _run_solver(self, solver_name, n_steps=50):
+        merged, q, qdot = _build_fixture()
+        tau = np.zeros(merged.nv)
+        gpu = GpuEngine(merged, num_envs=1, dt=2e-4, solver=solver_name)
+        for _ in range(n_steps):
+            out = gpu.step(q, qdot, tau, dt=2e-4)
+            q, qdot = out.q_new, out.qdot_new
+        return merged, q, qdot
+
+    @pytest.mark.slow
+    def test_3solver_50steps_base_height_agree(self):
+        """All 3 solvers: link0 z within 0.05 m of each other after 50 steps."""
+        results = {}
+        for solver in _STABLE_SOLVERS:
+            merged, q, qdot = self._run_solver(solver)
+            results[solver] = {name: _link0_z(q, merged, name) for name in ["A", "B", "C"]}
+
+        # All solvers must stay finite
+        for solver, heights in results.items():
+            for robot, z in heights.items():
+                assert np.isfinite(z), f"{solver} robot {robot}: z={z} not finite"
+
+        # Pairwise agreement: max link0 z deviation across robots < 0.05 m
+        solvers = _STABLE_SOLVERS
+        for i in range(len(solvers)):
+            for j in range(i + 1, len(solvers)):
+                sa, sb = solvers[i], solvers[j]
+                for robot in ["A", "B", "C"]:
+                    za = results[sa][robot]
+                    zb = results[sb][robot]
+                    assert abs(za - zb) < 0.05, (
+                        f"Robot {robot} link0 z: {sa}={za:.4f} vs {sb}={zb:.4f} "
+                        f"(diff={abs(za - zb):.4f} > 0.05)"
+                    )
+
+    def test_3solver_qdot_bounded(self):
+        """All 3 solvers: max|qdot| < 50 rad/s after 50 steps."""
+        for solver in _STABLE_SOLVERS:
+            _, _, qdot = self._run_solver(solver)
+            max_qdot = np.max(np.abs(qdot))
+            assert max_qdot < 50.0, f"{solver}: max|qdot|={max_qdot:.2f} > 50 (possible hidden divergence)"
 
 
 # ---------------------------------------------------------------------------

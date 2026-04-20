@@ -1242,12 +1242,18 @@ Session 29 新增的三个能处理多点接触的 solver（`jacobi_pgs_ms`、`c
 **待验证维度**：
 1. **大规模 RL 训练**：num_envs=1000+，持续 10⁶ steps 的数值稳定性
 2. **复杂机器人**：人形（30+ body）、多足（高 DOF）的接触密集场景
-3. **Solver 间物理一致性**：不同 solver 在长时间仿真中的轨迹偏差量化
+3. ✅ **Solver 间物理一致性**（2026-04-20 新增定量基线）：`jacobi_pgs_ms`、`colored_pgs`、`admm`
+   在 3-robot mixed-shape 场景（50 步）的 link0 z 偏差 < 0.05 m，max|qdot| < 50 rad/s。
+   见 `tests/gpu/solvers/test_solver_backends.py::TestCrossSolverConsistency`。
+   长时间轨迹（10⁶ steps）和 RL 场景仍待验证（维度 1/2）。
 4. **Colored GS 性能**：960 kernel launch/step 的 overhead 在大 N_envs 下是否可接受
    （当前 254ms/step vs ADMM 66ms/step，需要优化：减少 MAX_COLORS、kernel 内循环）
 5. **Mass splitting 收敛精度**：under-relaxation 导致的力分配误差对 RL reward 的影响
-6. **CPU vs GPU 一致性**：box-ground 多点改变了 GPU 接触数（9 vs CPU 6），
-   需要更新 CPU 端使其也支持多点，或明确文档化差异
+6. 🔄 **CPU vs GPU 一致性**（2026-04-20 差异已显式记录，manifold 尚未统一）：
+   GPU 顶点枚举返回最多 4 个 box-ground 接触点；CPU GJK/EPA 返回 1 个。
+   两者在接触 body 集合、法线方向、per-body 最大深度上一致。
+   差异来源已在 `test_b5_d6d7_cpugpu_multienv.py` docstring 中明确记录。
+   CPU 多点化为独立后续 thread。
 
 **Benchmark 基线**（session 29, 3-robot 9-body fixture, 500 steps）：
 ```
