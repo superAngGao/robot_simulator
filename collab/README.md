@@ -131,7 +131,40 @@ That means:
 
 This keeps routing explicit and auditable.
 
-### 4.4 Git-Tracked Collaboration
+### 4.4 Owner Visibility
+
+Agent-to-agent communication must also remain legible to the project owner.
+
+That means collaboration files should not only contain deep technical detail;
+they should also expose the key takeaways in a form that the owner can route,
+evaluate, and react to quickly.
+
+In practice:
+
+- each stage file should include a short owner-facing summary
+- when an agent creates or updates a `collab/` file, it should also present the key points on screen
+- major disagreements should be stated explicitly, not buried in prose
+- recommendations should be easy for the owner to approve, reject, or defer
+
+The goal is not only traceability between agents, but also visibility for the
+human decision-maker.
+
+### 4.4.1 On-Screen Summary Requirement
+
+Whenever Claude or Codex produces a new collaboration file, or substantially
+updates an existing one, the agent should also show the owner a short on-screen
+summary.
+
+That on-screen summary should highlight:
+
+- the main conclusion
+- the most important risk or disagreement, if any
+- the recommended next step
+
+The file remains the durable record, but the screen output is the owner's
+primary real-time view.
+
+### 4.5 Git-Tracked Collaboration
 
 `collab/` files should normally be committed into the repo.
 
@@ -234,6 +267,7 @@ Version:
 Date:
 Status:
 Related Files:
+Owner Summary:
 ```
 
 Recommended `Status` values:
@@ -245,6 +279,9 @@ Recommended `Status` values:
 - `implemented`
 
 `Related Files` should list prior or downstream files in the same thread when useful.
+
+`Owner Summary` should be short and decision-oriented. It should give the owner
+the most important point of the file without requiring a full technical read.
 
 ---
 
@@ -266,6 +303,9 @@ Expected contents:
 - reference projects consulted
 
 Claude should optimize for domain quality and technical feasibility.
+
+The proposal should also make the recommended direction legible to the owner,
+not only to Codex.
 
 ### 7.2 `challenge` — Codex
 
@@ -294,6 +334,9 @@ For non-trivial proposals, Codex should normally identify:
 - at least 1 future compatibility concern
 - at least 1 alternative design point or narrowing suggestion
 
+Codex should make the main accept / change / defer signals easy for the owner
+to route.
+
 ### 7.3 `decision` — Owner
 
 The owner records the current decision after considering the proposal and challenge.
@@ -306,6 +349,8 @@ Expected contents:
 - acceptance conditions
 
 This file is the handoff target for implementation.
+
+It should be the clearest owner-facing record of what the team is actually doing.
 
 ### 7.4 `implementation-note` — Claude
 
@@ -341,6 +386,9 @@ Required structure:
 - `Residual Risks`
 
 Findings should be prioritized by severity.
+
+The top findings should be understandable to the owner without requiring a
+full patch read.
 
 ### 7.6 `gap-scan` — Codex
 
@@ -378,6 +426,9 @@ Gap types should be labeled when possible:
 - `[performance/stability]`
 
 Important remaining gaps should later be copied into `OPEN_QUESTIONS.md`.
+
+The gap-scan should make it clear to the owner whether the change meaningfully
+advanced the repo's position relative to external projects.
 
 ---
 
@@ -520,6 +571,7 @@ Version: v1
 Date:
 Status: draft
 Related Files:
+Owner Summary:
 
 ## Problem
 
@@ -548,6 +600,7 @@ Version: v1
 Date:
 Status: draft
 Related Files:
+Owner Summary:
 
 ## Keep
 
@@ -570,6 +623,7 @@ Version: v1
 Date:
 Status: accepted
 Related Files:
+Owner Summary:
 
 ## Chosen Direction
 
@@ -592,6 +646,18 @@ Version: v1
 Date:
 Status: implemented
 Related Files:
+Owner Summary:
+
+## Open Questions Addressed
+
+List every OPEN_QUESTIONS.md entry touched by this change:
+- **QXX — <title>**: status before → status after (e.g. P1 open → partially resolved / closed)
+
+If no open questions were affected, write "None."
+
+## REFLECTIONS.md / PROGRESS.md Impact
+
+State whether REFLECTIONS.md or PROGRESS.md need updating, and why or why not.
 
 ## What Changed
 
@@ -614,6 +680,7 @@ Version: v1
 Date:
 Status: draft
 Related Files:
+Owner Summary:
 
 ## Findings
 1. ...
@@ -635,6 +702,7 @@ Version: v1
 Date:
 Status: draft
 Related Files:
+Owner Summary:
 
 ## Compared Against
 
