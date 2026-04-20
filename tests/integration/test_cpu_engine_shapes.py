@@ -317,36 +317,35 @@ class TestBodyBodyContact:
     """Two bodies collide and settle without NaN or divergence."""
 
     def test_sphere_sphere_collision(self):
-        """Two spheres dropped side-by-side, touching."""
+        """Sphere dropped onto a resting sphere — upper sphere must bounce off."""
         r = 0.05
         shape = SphereShape(r)
         I = _sphere_inertia(1.0, r)
         merged, engine = _make_two_body_engine(shape, 1.0, I, SphereShape(r), 1.0, I)
 
-        # Place both spheres at same height, touching horizontally
+        # Body a (lower): resting on ground at z = r
+        # Body b (upper): dropped from directly above, z = 3r + 0.1
         q = np.zeros(merged.nq)
-        # Body a: qw=1, x=-r, z=r+0.3
         q[0] = 1.0
-        q[4] = -r
-        q[6] = r + 0.3
-        # Body b: qw=1, x=+r, z=r+0.3
+        q[6] = r  # lower sphere on ground
         q[7] = 1.0
-        q[11] = r
-        q[13] = r + 0.3
+        q[13] = 3 * r + 0.1  # upper sphere above lower
         qdot = np.zeros(merged.nv)
 
-        for _ in range(N_SETTLE):
+        # Run until upper sphere has had time to fall and interact (~500 steps)
+        for _ in range(500):
             out = engine.step(q, qdot, np.zeros(merged.nv))
             q, qdot = out.q_new, out.qdot_new
 
         assert not np.any(np.isnan(q)), "sphere-sphere: NaN in q"
         assert not np.any(np.isnan(qdot)), "sphere-sphere: NaN in qdot"
-        assert q[6] > 0.0, f"sphere a fell through: z={q[6]:.4f}"
-        assert q[13] > 0.0, f"sphere b fell through: z={q[13]:.4f}"
-        # Bodies must have separated horizontally (contact pushed them apart).
-        # Initial x-separation was 2r; after settling it must be >= 2r.
-        sep_x = abs(q[11] - q[4])
-        assert sep_x >= 2 * r * 0.9, f"sphere-sphere: bodies didn't separate, dx={sep_x:.4f}"
+        assert q[6] > 0.0, f"lower sphere fell through: z={q[6]:.4f}"
+        assert q[13] > 0.0, f"upper sphere fell through: z={q[13]:.4f}"
+        # Upper sphere must be above lower sphere (contact prevented pass-through).
+        assert q[13] > q[6], f"upper sphere below lower: z_upper={q[13]:.4f} z_lower={q[6]:.4f}"
+        # Vertical separation must be >= 2r (no interpenetration).
+        sep_z = q[13] - q[6]
+        assert sep_z >= 2 * r * 0.9, f"spheres interpenetrating: sep_z={sep_z:.4f} < 2r={2 * r}"
 
     def test_box_sphere_collision(self):
         """Box on ground, sphere dropped on top — no NaN, sphere stays above box."""
