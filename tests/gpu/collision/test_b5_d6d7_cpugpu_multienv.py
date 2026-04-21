@@ -8,7 +8,7 @@ Env 1: all robots spread far apart (no contacts at all)
 This catches:
     - env axis cross-talk (env 1 contacts leaking into env 0 or vice versa)
     - CPU vs GPU semantic agreement: same contact body set, normal direction,
-      per-body max depth (exact contact counts differ for box-ground, see below)
+      per-body max depth (exact contact counts intentionally differ, see below)
     - multi-env state independence
 
 Layout:

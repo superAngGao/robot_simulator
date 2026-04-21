@@ -364,6 +364,13 @@ Expected contents:
 - what remains intentionally incomplete
 - commit hash if available
 
+Evidence discipline:
+
+- clearly separate code- or test-verified facts from inferences, expectations, or guesses
+- label uncertain statements explicitly instead of presenting them as settled facts
+- when claiming behavior was verified, name the concrete evidence source when practical
+  (for example: diff inspection, specific test file, test command, runtime output)
+
 This should describe the implemented result, not restate the original plan.
 
 ### 7.5 `review` — Codex
@@ -556,6 +563,26 @@ The gap scan should identify:
 - which reference projects matter here
 - what capability they provide that this repo still lacks
 - whether the gap is algorithmic, architectural, engineering, validation, or performance-related
+
+### 9.4 Evidence and Claim Standard
+
+Claude collaboration notes may contain a mix of:
+
+- verified facts grounded in code, diffs, tests, or command output
+- inferences drawn from partial evidence
+- guesses or expectations about behavior not yet demonstrated
+
+Codex should actively distinguish these categories during review.
+
+In practice:
+
+- do not treat Claude summaries as authoritative by default
+- verify factual claims against the patch, repo state, and runnable evidence when feasible
+- call out when a conclusion appears to rely on inference rather than direct evidence
+- when a disputed or decision-relevant claim lacks support, ask for concrete evidence and continue the discussion through `collab/` files
+- prefer evidence-backed disagreement over summary-level agreement
+
+If evidence is unavailable, the review should say so explicitly and describe what remains assumed.
 
 ---
 
