@@ -15,15 +15,15 @@ Layout:
     Env 0: A(Y=0, Z=0.05), B(Y=0.08, Z=0.05), C(Y=0.25, Z=0.50) — contacts expected
     Env 1: A(Y=0, Z=2.0),  B(Y=2.0, Z=2.0),  C(Y=4.0, Z=2.0)  — no contacts
 
-CPU vs GPU box-ground manifold difference (Q46 dim 6 — known, not a bug):
-    GPU uses vertex enumeration (analytical_collision.py:box_ground_manifold):
-        up to 4 deepest vertices per box shape → multi-point manifold.
-    CPU uses GJK/EPA → single support point per box shape.
-    This is a known implementation difference, not a physics error.
-    The two backends agree on: which bodies have ground contact, normal
-    direction, and per-body maximum penetration depth.
-    They do NOT agree on: exact contact count per body, contact point XY.
-    CPU multi-point box-ground is deferred to a future thread (Q46 dim 6).
+CPU vs GPU box-ground manifold (Q46 dim 6 — partially clarified, session 34):
+    Both CPU and GPU now use vertex enumeration for Box/ConvexHull ground contact
+    (CPU: ground_contact_query contact_vertices() path, session 33 commit 35ca490;
+     GPU: box_ground_manifold() 8-vertex loop).
+    Remaining difference: CPU returns ALL penetrating vertices; GPU caps to 4 deepest.
+    For BoxShape flat on ground (4 bottom vertices), counts agree.
+    For ConvexHull with >4 penetrating vertices, GPU may return fewer.
+    This test verifies: body set, normal, per-body max depth, and per-body count
+    for the one flat-box body in this fixture (body 1, A.link1).
 
 Reference: OPEN_QUESTIONS Q36, session 25; Q46 dim 6.
 """
@@ -293,28 +293,30 @@ class TestStep6CpuGpuMultiEnv:
         gpu.step(q_2env, qdot_2env, tau_2d, dt=dt)
         gpu_ground = [c for c in gpu.query_contacts(env_idx=0) if c.body_j == -1]
 
-        # GPU produces more contacts than CPU per box (multi-point vs single-point).
-        # See module docstring for explanation. Assert semantics, not exact counts.
         assert len(cpu_ground) > 0, "CPU should detect ground contacts"
         assert len(gpu_ground) > 0, "GPU should detect ground contacts"
-        assert len(gpu_ground) >= len(cpu_ground), (
-            f"GPU should have ≥ CPU ground contacts (GPU multi-point): "
-            f"CPU={len(cpu_ground)}, GPU={len(gpu_ground)}"
-        )
 
         # 2. Sort by (body_i, depth) for deterministic comparison
         cpu_sorted = sorted(cpu_ground, key=lambda c: (c.body_i, c.depth))
         gpu_sorted = sorted(gpu_ground, key=lambda c: (c.body_i, c.depth))
 
-        # 3. Same bodies should have ground contacts (GPU may have more per body)
+        # 3. Same bodies should have ground contacts
         cpu_body_set = set(c.body_i for c in cpu_sorted)
         gpu_body_set = set(c.body_i for c in gpu_sorted)
         assert cpu_body_set == gpu_body_set, (
             f"Ground contact body sets differ:\n  CPU: {cpu_body_set}\n  GPU: {gpu_body_set}"
         )
 
-        # 4. Normal must be [0,0,1] for flat terrain (check GPU contacts only,
-        #    CPU count may differ due to multi-point)
+        # 3b. Body 1 (A.link1) has a flat BoxShape at z_world≈0.01 → 4 bottom vertices
+        #     penetrate ground. Both CPU (all-vertices) and GPU (cap-4) should return 4.
+        #     This is the only body in the fixture where box-ground count parity is
+        #     guaranteed: exactly 4 vertices penetrate, and GPU cap is also 4.
+        cpu_body1_count = sum(1 for c in cpu_sorted if c.body_i == 1)
+        gpu_body1_count = sum(1 for c in gpu_sorted if c.body_i == 1)
+        assert cpu_body1_count == 4, f"Body 1 CPU ground contacts: expected 4, got {cpu_body1_count}"
+        assert gpu_body1_count == 4, f"Body 1 GPU ground contacts: expected 4, got {gpu_body1_count}"
+
+        # 4. Normal must be [0,0,1] for flat terrain
         for i, gc in enumerate(gpu_sorted):
             np.testing.assert_allclose(
                 gc.normal,
@@ -348,10 +350,15 @@ class TestStep6CpuGpuMultiEnv:
                 rtol=0.1,
                 err_msg=f"Ground contact depth mismatch CPU vs GPU for body {bi}",
             )
-        # Note: contact point XY is NOT compared because CPU (GJK/EPA) and
-        # GPU (analytical) use different algorithms for box/capsule ground
-        # contact points. The physically meaningful quantities are body_i,
-        # normal, and depth — those are compared above.
+        # 6. Body 1 (A.link1) has a flat BoxShape at origin_xyz=[0,0,-0.04], body z=0.05
+        #    → box bottom at z=0.01, penetrating 0.01 m → exactly 4 ground contacts
+        #    (all 4 bottom vertices penetrate equally for a flat box on flat ground).
+        #    Both CPU (all-penetrating-vertices path) and GPU (cap-4-deepest path) agree here.
+        body1_cpu = [c for c in cpu_sorted if c.body_i == 1]
+        body1_gpu = [c for c in gpu_sorted if c.body_i == 1]
+        assert len(body1_cpu) == 4, f"Body 1 CPU: expected 4 ground contacts (flat box), got {len(body1_cpu)}"
+        assert len(body1_gpu) == 4, f"Body 1 GPU: expected 4 ground contacts (flat box), got {len(body1_gpu)}"
+        # Contact point XY is not compared: float32 vs float64 causes sub-mm differences.
 
     def test_multienv_simulation_stable(self):
         """50 steps with 2 envs must stay finite (no NaN from cross-talk)."""

@@ -1249,11 +1249,14 @@ Session 29 新增的三个能处理多点接触的 solver（`jacobi_pgs_ms`、`c
 4. **Colored GS 性能**：960 kernel launch/step 的 overhead 在大 N_envs 下是否可接受
    （当前 254ms/step vs ADMM 66ms/step，需要优化：减少 MAX_COLORS、kernel 内循环）
 5. **Mass splitting 收敛精度**：under-relaxation 导致的力分配误差对 RL reward 的影响
-6. 🔄 **CPU vs GPU 一致性**（2026-04-20 差异已显式记录，manifold 尚未统一）：
-   GPU 顶点枚举返回最多 4 个 box-ground 接触点；CPU GJK/EPA 返回 1 个。
-   两者在接触 body 集合、法线方向、per-body 最大深度上一致。
-   差异来源已在 `test_b5_d6d7_cpugpu_multienv.py` docstring 中明确记录。
-   CPU 多点化为独立后续 thread。
+6. 🔄 **CPU vs GPU 一致性**（2026-04-21 部分澄清，契约未完全统一）：
+   ~~CPU GJK/EPA 返回 1 个~~ — 此描述已过时（commit `35ca490`，session 33）。
+   CPU `ground_contact_query()` 对 Box/ConvexHull 已走 `contact_vertices()` 顶点枚举，
+   flat box 实测返回 4 个接触点，与 GPU 行为对称。
+   **残余差异**：CPU 返回所有穿透顶点（无数量上限），GPU cap 到 4 个最深点。
+   对 `BoxShape`（恰好 8 顶点）平地场景 count 一致；对任意凸包（>4 底面顶点）
+   仍可能 count mismatch。语义级契约（body set / normal / per-body max depth）已对齐。
+   count-level parity 留待专项 box-ground CPU/GPU parity test 正式固化。
 
 **Benchmark 基线**（session 29, 3-robot 9-body fixture, 500 steps）：
 ```
