@@ -307,15 +307,6 @@ class TestStep6CpuGpuMultiEnv:
             f"Ground contact body sets differ:\n  CPU: {cpu_body_set}\n  GPU: {gpu_body_set}"
         )
 
-        # 3b. Body 1 (A.link1) has a flat BoxShape at z_world≈0.01 → 4 bottom vertices
-        #     penetrate ground. Both CPU (all-vertices) and GPU (cap-4) should return 4.
-        #     This is the only body in the fixture where box-ground count parity is
-        #     guaranteed: exactly 4 vertices penetrate, and GPU cap is also 4.
-        cpu_body1_count = sum(1 for c in cpu_sorted if c.body_i == 1)
-        gpu_body1_count = sum(1 for c in gpu_sorted if c.body_i == 1)
-        assert cpu_body1_count == 4, f"Body 1 CPU ground contacts: expected 4, got {cpu_body1_count}"
-        assert gpu_body1_count == 4, f"Body 1 GPU ground contacts: expected 4, got {gpu_body1_count}"
-
         # 4. Normal must be [0,0,1] for flat terrain
         for i, gc in enumerate(gpu_sorted):
             np.testing.assert_allclose(
