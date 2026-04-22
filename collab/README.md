@@ -378,6 +378,11 @@ Evidence discipline:
   (for example: diff inspection, specific test file, test command, runtime output)
 - when verification depends on a non-default environment (for example a conda env,
   CUDA/GPU path, editable install, or PYTHONPATH), record that context explicitly
+- for this repo, Warp/CUDA validation should normally run in the `robot_sim`
+  conda environment unless the owner specifies a different runtime
+- when using that environment, prefer env-contained commands such as
+  `conda run -n robot_sim python -m pytest ...` over bare `pytest`, since user-
+  level entrypoints may resolve outside the target environment
 
 This should describe the implemented result, not restate the original plan.
 
@@ -402,6 +407,8 @@ Verification expectation:
   probe, or another runnable check that exercises the changed behavior
 - if execution requires a non-default environment, Codex should try that
   environment rather than silently falling back to static inspection
+- for this repo's GPU/Warp paths, default to `conda run -n robot_sim python -m ...`
+  so the interpreter and test runner both come from the runtime that has Warp
 - if runnable verification is truly unavailable, the review must say exactly
   what was attempted, why execution was blocked, and which conclusions remain
   based only on code inspection
