@@ -273,12 +273,12 @@ class GpuEngine(PhysicsEngine):
             self._batched_apply_mass_splitting = batched_apply_mass_splitting
         elif solver == "colored_pgs":
             from .backends.warp.colored_pgs_kernels import (
-                batched_colored_pgs_step,
+                batched_colored_pgs_all_iters,
                 batched_greedy_coloring,
             )
 
             self._batched_greedy_coloring = batched_greedy_coloring
-            self._batched_colored_pgs_step = batched_colored_pgs_step
+            self._batched_colored_pgs_all_iters = batched_colored_pgs_all_iters
 
         # Additional collision buffers
         self._contact_normal = wp.zeros((num_envs, max_contacts, 3), dtype=wp.float32, device=device)
@@ -879,7 +879,7 @@ class GpuEngine(PhysicsEngine):
                     outputs=[sol.lambdas],
                 )
         elif self._solver == "colored_pgs":
-            # 8c. Graph-colored Gauss-Seidel PGS
+            # 8c. Graph-colored Gauss-Seidel PGS (fused: 2 launches/step)
             wp.launch(
                 self._batched_greedy_coloring,
                 dim=N,
@@ -894,25 +894,24 @@ class GpuEngine(PhysicsEngine):
                 outputs=[sol.contact_color, sol.n_colors],
             )
             sol.lambdas.zero_()
-            for _ in range(s.solver_max_iter):
-                for color in range(16):  # MAX_COLORS
-                    wp.launch(
-                        self._batched_colored_pgs_step,
-                        dim=N,
-                        device=self._device,
-                        inputs=[
-                            sol.W,
-                            sol.W_diag,
-                            sol.v_free,
-                            sol.lambdas,
-                            self._contact_active,
-                            sol.contact_color,
-                            s.contact_mu,
-                            color,
-                            self._max_contacts,
-                            self._max_rows,
-                        ],
-                    )
+            wp.launch(
+                self._batched_colored_pgs_all_iters,
+                dim=N,
+                device=self._device,
+                inputs=[
+                    sol.W,
+                    sol.W_diag,
+                    sol.v_free,
+                    sol.lambdas,
+                    self._contact_active,
+                    sol.contact_color,
+                    sol.n_colors,
+                    s.contact_mu,
+                    s.solver_max_iter,
+                    self._max_contacts,
+                    self._max_rows,
+                ],
+            )
         else:
             # 8d. Jacobi PGS iterations (default: jacobi_pgs_si)
             sol.lambdas.zero_()

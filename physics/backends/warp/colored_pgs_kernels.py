@@ -6,9 +6,10 @@ Between colors, results are applied sequentially (GS ordering).
 
 This gives GS convergence properties with partial GPU parallelism.
 
-Two kernels:
-  1. batched_greedy_coloring — assigns colors after collision detection
-  2. batched_colored_pgs_step — one PGS pass for a single color
+Kernels:
+  1. batched_greedy_coloring     — assigns colors after collision detection
+  2. batched_colored_pgs_all_iters — fused iter×color loop (main path, 2 launches/step)
+  3. batched_colored_pgs_step    — one PGS pass for a single color (kept for reference)
 """
 
 import warp as wp
@@ -160,3 +161,78 @@ def batched_colored_pgs_step(
                 delta_t = 0.0
             raw_t = lambdas[env_id, row_t] + delta_t
             lambdas[env_id, row_t] = wp.clamp(raw_t, -limit, limit)
+
+
+@wp.kernel
+def batched_colored_pgs_all_iters(
+    W: wp.array(dtype=wp.float32, ndim=3),
+    W_diag: wp.array2d(dtype=wp.float32),
+    v_free: wp.array2d(dtype=wp.float32),
+    lambdas: wp.array2d(dtype=wp.float32),
+    contact_active: wp.array2d(dtype=wp.int32),
+    contact_color: wp.array2d(dtype=wp.int32),
+    n_colors: wp.array(dtype=wp.int32),
+    mu: float,
+    max_iter: int,
+    nc: int,
+    max_rows: int,
+):
+    """Fused iter×color PGS loop — all iterations inside one kernel launch.
+
+    Each thread handles one environment and runs the full GS sequence:
+      for iter in range(max_iter):
+        for color in range(n_colors[env]):
+          update all contacts with this color (GS in-place)
+
+    Same-color contacts within an env don't share bodies, so intra-color
+    updates are independent.  Inter-color ordering is serial (GS property).
+    Different env threads are fully independent — no data races.
+
+    Reduces Python-side launch count from solver_max_iter × MAX_COLORS (≈960)
+    down to 1, eliminating kernel-launch overhead as the bottleneck.
+    """
+    env_id = wp.tid()
+    n_col = n_colors[env_id]
+    n_rows = nc * CONDIM
+
+    for _iter in range(max_iter):
+        for color in range(n_col):
+            for c in range(nc):
+                if contact_active[env_id, c] == 0:
+                    continue
+                if contact_color[env_id, c] != color:
+                    continue
+
+                base = c * CONDIM
+
+                # -- Normal row --
+                row_n = base
+                Wl_n = float(0.0)
+                for j in range(n_rows):
+                    Wl_n = Wl_n + W[env_id, row_n, j] * lambdas[env_id, j]
+                residual_n = v_free[env_id, row_n] + Wl_n
+                diag_n = W_diag[env_id, row_n]
+                if diag_n > 1.0e-12:
+                    delta_n = -residual_n / diag_n
+                else:
+                    delta_n = 0.0
+                raw_n = lambdas[env_id, row_n] + delta_n
+                lambda_n = wp.max(0.0, raw_n)
+                lambdas[env_id, row_n] = lambda_n
+
+                limit = mu * lambda_n
+
+                # -- Tangent rows --
+                for off in range(1, CONDIM):
+                    row_t = base + off
+                    Wl_t = float(0.0)
+                    for j in range(n_rows):
+                        Wl_t = Wl_t + W[env_id, row_t, j] * lambdas[env_id, j]
+                    residual_t = v_free[env_id, row_t] + Wl_t
+                    diag_t = W_diag[env_id, row_t]
+                    if diag_t > 1.0e-12:
+                        delta_t = -residual_t / diag_t
+                    else:
+                        delta_t = 0.0
+                    raw_t = lambdas[env_id, row_t] + delta_t
+                    lambdas[env_id, row_t] = wp.clamp(raw_t, -limit, limit)

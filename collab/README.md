@@ -107,6 +107,11 @@ In practice:
 - shared process rules belong in neutral repo documents such as this one
 - suggestions about another agent's checked-in project docs are allowed
 - direct edits to the other agent's operating context should not happen by default
+- `CLAUDE.md` should be treated as Claude-owned operating context; Codex should
+  not modify it unless the project owner explicitly asks for that edit
+- if Codex wants a workflow rule to become durable, it should propose or record
+  that rule in a neutral repo document (for example `collab/README.md`) rather
+  than editing `CLAUDE.md` directly
 
 ### 4.2 Shared Files Are the Communication Channel
 
@@ -361,6 +366,7 @@ Expected contents:
 - files changed
 - behavior added or changed
 - tests added or updated
+- commands / environments used to verify the change when non-default or important
 - what remains intentionally incomplete
 - commit hash if available
 
@@ -370,6 +376,8 @@ Evidence discipline:
 - label uncertain statements explicitly instead of presenting them as settled facts
 - when claiming behavior was verified, name the concrete evidence source when practical
   (for example: diff inspection, specific test file, test command, runtime output)
+- when verification depends on a non-default environment (for example a conda env,
+  CUDA/GPU path, editable install, or PYTHONPATH), record that context explicitly
 
 This should describe the implemented result, not restate the original plan.
 
@@ -385,6 +393,18 @@ Expected focus:
 - test completeness beyond happy paths
 - CPU/GPU or old/new interface consistency where relevant
 - documentation, packaging, or user-path drift
+
+Verification expectation:
+
+- for implementation reviews, Codex should normally run the relevant validation
+  commands before concluding that Claude's change works
+- "relevant validation" may be a targeted test, a repro script, a benchmark
+  probe, or another runnable check that exercises the changed behavior
+- if execution requires a non-default environment, Codex should try that
+  environment rather than silently falling back to static inspection
+- if runnable verification is truly unavailable, the review must say exactly
+  what was attempted, why execution was blocked, and which conclusions remain
+  based only on code inspection
 
 Required structure:
 
@@ -468,6 +488,8 @@ Sequence:
 5. Owner writes or confirms `decision`
 6. Claude implements and writes `implementation-note`
 7. Owner sends implementation-note file name and commit hash to Codex
+   plus any required execution context when non-default
+   (for example: conda env, PYTHONPATH, GPU requirement, exact test command)
 8. Codex writes `review`
 9. Codex writes `gap-scan`
 10. durable unresolved items are added to `OPEN_QUESTIONS.md`
@@ -489,6 +511,8 @@ Sequence:
 
 1. Claude implements and writes `implementation-note`
 2. Owner sends implementation-note file name and commit hash to Codex
+   plus any required execution context when non-default
+   (for example: conda env, PYTHONPATH, GPU requirement, exact test command)
 3. Codex writes `review`
 4. if the change has meaningful ecosystem or capability implications, Codex also writes `gap-scan`
 5. durable unresolved items are added to `OPEN_QUESTIONS.md` when needed
@@ -542,6 +566,7 @@ The challenge should answer:
 ### 9.2 Test Audit Standard
 
 When Codex reviews implementation, test review means more than checking whether tests exist.
+It also means trying to execute the most relevant validation path for the changed behavior.
 
 Coverage should be judged across:
 
@@ -577,7 +602,10 @@ Codex should actively distinguish these categories during review.
 In practice:
 
 - do not treat Claude summaries as authoritative by default
-- verify factual claims against the patch, repo state, and runnable evidence when feasible
+- verify factual claims against the patch, repo state, and runnable evidence
+- for implementation reviews, prefer runnable verification over static agreement
+- explicitly record which commands / tests were run, and in which environment,
+  whenever execution evidence is part of the review conclusion
 - call out when a conclusion appears to rely on inference rather than direct evidence
 - when a disputed or decision-relevant claim lacks support, ask for concrete evidence and continue the discussion through `collab/` files
 - prefer evidence-backed disagreement over summary-level agreement
