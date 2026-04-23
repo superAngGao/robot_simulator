@@ -15,11 +15,11 @@ Codex challenge（commit b60452d）发现三个问题，v2 全部收敛：
 
 1. **Finding 2（高风险）— convex_hull 缺 face indices**
    `scene_builder.py` 目前只把 `vertices` 存入 `params`，没有面拓扑。
-   v2 修正：`_shape_to_type_params` 对 `ConvexHullShape` 同时提取
-   `faces`（`shape.face_topology().simplices`），存入 `params["faces"]`。
+   v2 修正（Codex 指出 `simplices` 字段不存在，已核实）：
+   `FaceTopology` 实际字段为 `normals / vertices / face_vertex_ids / edges`，无 `simplices`。
+   方案：在 `scene_builder._shape_to_type_params` 里，基于 `face_vertex_ids` 做一次
+   fan triangulation，把每个多边形面拆成三角形，结果存入 `params["faces"]`（`(F, 3)` int）。
    `RerunBackend` 直接读 `params["faces"]`，不在 backend 内重跑凸包。
-   `MatplotlibBackend` 的 `draw_convex_hull` 已有 `scipy.ConvexHull`，
-   但现在可以直接用 `params["faces"]` 跳过重算（可选优化，不阻塞）。
 
 2. **Finding 3（中风险）— MatplotlibBackend 不是薄包装**
    `RobotViewer` 只有批量 API（`render_pose` / `animate`），没有
@@ -300,16 +300,22 @@ rr.log(f"{prefix}/shape_{i}", rr.Mesh3D(vertex_positions=verts, triangle_indices
 
 ```python
 elif isinstance(shape, ConvexHullShape):
-    topo = shape.face_topology()          # FaceTopology，已有 .simplices (F,3) int
+    topo = shape.face_topology()          # FaceTopology: normals/vertices/face_vertex_ids/edges
+    # Fan-triangulate each polygon face: [v0,v1,v2,v3,...] → (v0,v1,v2), (v0,v2,v3), ...
+    triangles = []
+    for fvids in topo.face_vertex_ids:
+        for k in range(1, len(fvids) - 1):
+            triangles.append([fvids[0], fvids[k], fvids[k + 1]])
+    faces = np.array(triangles, dtype=np.int32)  # (F_tri, 3)
     return "convex_hull", {
-        "vertices": topo.vertices.copy(),  # (N, 3) float64，已是 hull 顶点
-        "faces": topo.simplices.copy(),    # (F, 3) int32
+        "vertices": topo.vertices.copy(),  # (V, 3) float64
+        "faces": faces,                    # (F_tri, 3) int32
     }
 ```
 
-`ConvexHullShape.face_topology()` 已存在（`geometry.py:586`），
-`FaceTopology` 已有 `.simplices`（scipy ConvexHull 在构造时计算，`_build_convexhull_face_topology`）。
-这是纯读取，不新增计算。
+`FaceTopology.face_vertex_ids` 是 `list[NDArray[np.intp]]`，每个元素是一个多边形面的
+有序顶点索引。Fan triangulation 是 O(V) 且对凸多边形面无歧义。
+`ConvexHullShape.face_topology()` 已存在（`geometry.py:586`），纯读取，不新增计算。
 
 #### 4b. `build_render_scene_from_gpu`
 
@@ -336,8 +342,8 @@ def build_render_scene_from_gpu(
     """
     merged = engine.merged  # PhysicsEngine.__init__ sets self.merged
 
-    # 1. Extract q for this env, run FK on CPU
-    q_np = engine._scratch.q[env_idx].numpy().astype(np.float64)
+    # 1. Extract q for this env via public accessor, run FK on CPU
+    q_np = engine.q_wp.numpy()[env_idx].astype(np.float64)
     X_world = merged.tree.forward_kinematics(q_np)
 
     # 2. Build scene via existing CPU builder
