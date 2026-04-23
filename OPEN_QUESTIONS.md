@@ -1492,3 +1492,40 @@ Step 5（中期）：VulkanBackend
 
 **触发条件**：Phase 3 开始实装（当前 session 已到触发点）。
 **优先级**：P1（大规模 RL 验证的前提；Phase 3 主线）。
+
+**Q51 — Force sensor / torque telemetry contract（CPU/GPU 统一观测接口）** (2026-04-23)
+
+**背景**：Q50 Step 4 希望把 IMU、关节力矩、力传感器数据接入 `RenderScene`，用于
+Rerun 训练监控与后续 RL obs 复用。但当前仓库只有一半设计落地：
+- CPU 路径已有 `ForceState` / `StepOutput.force_state`，能表达
+  `qfrc_passive / qfrc_actuator / qfrc_applied / tau_smooth / qacc_*`
+- GPU 路径已有 `qacc_smooth_wp` / `qacc_total_wp`、`contact_force_sensor_wp`
+  等局部 accessor，但 `StepOutput.force_state` 仍为 `None`
+- GPU 内部存在 `tau_passive / tau_total` scratch，但尚未作为公开 API 暴露
+
+**当前判断（2026-04-23）**：
+- 这**不是** Q50 Step 1–3（`RenderBackend` / `RerunBackend` / GPU 几何桥接）的阻塞项
+- 但它是 Q50 Step 4（`RenderScene.sensor_data`）、RL obs 复用、训练期传感器可视化的
+  前置设计问题
+- **方案未定，仍需讨论**；现阶段不应让 rendering 直接读取 `GpuEngine` 私有 scratch
+
+**待决策点**：
+1. **所有权**：传感器/力矩快照应由 `physics/` 定义统一 contract，还是由
+   `rendering/` 定义 `SensorData` 后反向拉取？
+2. **数据粒度**：要暴露的是 `(nv,)` generalized force（MuJoCo 风格 `qfrc_*`），
+   还是 per-joint torque，还是 per-body wrench / contact-force sensor？
+3. **API 形式**：走 `StepOutput.force_state` 的 CPU/GPU 语义对齐，还是新增
+   `GpuEngine` zero-copy accessors（如 `tau_total_wp`），还是单独做
+   `build_sensor_snapshot_from_gpu()`？
+4. **命名与坐标系**：`qfrc_actuator / qfrc_passive / tau_smooth` 是否直接沿用；
+   contact force sensor 用 world frame 还是 body-local；multi-env 如何切片。
+
+**建议的暂时策略**：
+- Q50 先推进几何渲染主线（backend ABC + Rerun + GPU `RenderScene` bridge）
+- 在 telemetry contract 未定前，不把 `joint_torques` / force sensor schema 写死到
+  `RenderScene`
+- 待 Q50 Step 4 或 RL 观测接口进入实现前，专门回到本条讨论并定案
+
+**触发条件**：开始实现 Q50 Step 4（传感器字段）或需要把 GPU 训练信号接入
+Rerun / RL obs 时。
+**优先级**：P2（当前可延后，但进入传感器可视化前必须先收敛）。
