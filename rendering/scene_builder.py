@@ -50,7 +50,13 @@ def _shape_to_type_params(shape: CollisionShape) -> tuple[str, dict]:
     elif isinstance(shape, CapsuleShape):
         return "capsule", {"radius": shape.radius, "length": shape.length}
     elif isinstance(shape, ConvexHullShape):
-        return "convex_hull", {"vertices": shape.vertices.copy()}
+        topo = shape.face_topology()
+        triangles = []
+        for fvids in topo.face_vertex_ids:
+            for k in range(1, len(fvids) - 1):
+                triangles.append([fvids[0], fvids[k], fvids[k + 1]])
+        faces = np.array(triangles, dtype=np.int32)
+        return "convex_hull", {"vertices": topo.vertices.copy(), "faces": faces}
     elif isinstance(shape, MeshShape):
         verts = shape.vertices.copy() if shape.vertices is not None else None
         return "mesh", {"vertices": verts, "filename": shape.filename}
@@ -163,6 +169,38 @@ def build_render_scene(
         body_positions=body_positions,
         body_names=body_names,
     )
+
+
+def build_render_scene_from_gpu(
+    engine,
+    env_idx: int = 0,
+    include_contacts: bool = True,
+) -> RenderScene:
+    """Build a RenderScene from a GPU engine state.
+
+    Reads ``engine.q_wp`` (Warp array), runs CPU forward kinematics on the
+    merged model, and delegates to ``build_render_scene``.
+
+    Args:
+        engine          : GpuPhysicsEngine instance.
+        env_idx         : Which parallel environment to visualise.
+        include_contacts: If False, contacts list will be empty.
+
+    Returns:
+        RenderScene ready for any rendering backend.
+
+    Raises:
+        IndexError: If env_idx >= number of environments.
+    """
+    merged = engine.merged
+    q_all = engine.q_wp.numpy()
+    if env_idx >= q_all.shape[0]:
+        raise IndexError(f"env_idx={env_idx} out of bounds for {q_all.shape[0]} environments")
+    q_np = q_all[env_idx].astype(np.float64)
+    X_world = merged.tree.forward_kinematics(q_np)
+    contacts = engine.query_contacts(env_idx) if include_contacts else None
+    terrain = getattr(merged, "terrain", None)
+    return build_render_scene(merged, X_world, contacts=contacts, terrain=terrain)
 
 
 def build_render_scene_from_tree(
