@@ -12,7 +12,7 @@ Shape mapping:
   convex_hull  -> rr.Mesh3D    (pre-triangulated faces from scene_builder)
   mesh         -> skipped (warning logged)
 
-Reference: Rerun Python SDK 0.16 archetype API.
+Reference: Rerun Python SDK 0.31 archetype API.
 """
 
 from __future__ import annotations
@@ -56,12 +56,12 @@ class RerunBackend(RenderBackend):
         if self._save_path:
             rr.save(self._save_path)
         else:
-            rr.connect()
+            rr.connect_grpc()
 
     def render_frame(self, scene: RenderScene, timestamp: float, env_index: int = 0) -> None:
         import rerun as rr
 
-        rr.set_time_seconds("sim_time", timestamp)
+        rr.set_time("sim_time", timestamp=timestamp)
         prefix = f"env_{env_index}"
 
         # --- Shapes ---
