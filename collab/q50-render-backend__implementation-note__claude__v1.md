@@ -69,4 +69,6 @@ Switched to `FuncAnimation` with the remove-and-redraw pattern (same as `RobotVi
 
 3. **`build_render_scene_from_gpu` mock test** — uses a real `MergedModel` but a mock engine. The `engine.q_wp.numpy()` path is exercised; the `engine.query_contacts()` mock returns `[]`. A real GPU engine integration test is deferred to Q51.
 
+5. **`RerunBackend` does not render terrain** — `render_frame()` logs shapes, contacts, and skeleton but does not consume `scene.terrain`. `MatplotlibBackend` explicitly calls `draw_terrain()` (line 82); `RerunBackend` has no equivalent. "RerunBackend complete" should not be read as feature-parity with the matplotlib backend.
+
 4. **`MatplotlibBackend.render_frame` draws immediately** — calling `_draw_scene` on every `render_frame` call means the axes are always up-to-date for inspection, but it does redundant work if only the GIF export matters. This is acceptable for a debug backend.

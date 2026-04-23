@@ -1484,6 +1484,35 @@ Step 4：RenderScene 加传感器字段（IMU body vel + joint force）
 Step 5（中期）：VulkanBackend
 ```
 
+**当前 feature 语义澄清（2026-04-23）**：
+
+1. **`terrain` 是 scene-level 字段，不是某个 backend 私有 feature**
+   - `RenderScene` 用独立的 `terrain: TerrainInfo` 表达地形，而不是把地形塞进
+     `PositionedShape` 列表。
+   - `scene_builder._terrain_to_info()` 当前把 `FlatTerrain` / `HalfSpaceTerrain`
+     提升为后端无关快照；`TerrainInfo` 预留了 `heightmap` 类型，但尚未端到端打通。
+   - 结论：地形渲染属于所有 backend 都应消费的 scene contract。当前缺口是
+     backend feature parity：matplotlib 已消费 `scene.terrain`，Rerun 尚未实现。
+
+2. **`mesh` 需要区分 collision 语义和 rendering 语义**
+   - collision 路径：URDF `<mesh>` 先解析为 `MeshShape(filename, scale)`，再通过
+     `robot/mesh_loader.py` / 凸分解管线转成 `ConvexHullShape` 供当前碰撞检测使用。
+     当前已解决的是“mesh 作为碰撞输入”的问题，本质上走的是 convex-hull /
+     convex-decomposition 方案，而不是通用三角 mesh narrowphase。
+   - rendering 路径：`scene_builder` 仍会把原始 `MeshShape` 保留为
+     `shape_type="mesh"`（附 `vertices` / `filename`），为未来后端直接显示三角 mesh
+     留出通道；这与 collision 使用 `ConvexHullShape` 是两件事。
+   - 结论：当前 backends 对通用 `mesh` 的处理（skip + warning / silent skip）是
+     rendering parity gap，不应与 Q7 的“mesh collision geometry 已解决”混为一谈。
+
+3. **因此，`terrain` / 通用 `mesh` 都不是 RerunBackend 单点问题**
+   - `terrain`：应由所有可视化 backend 基于 `RenderScene.terrain` 统一消费。
+   - 通用 `mesh`：需要在 rendering 层先明确 raw triangle mesh 的显示 contract
+     （例如：必须提供 triangles / faces，或明确只支持 convex_hull，不支持 raw mesh）。
+   - 在该 contract 明确前，“RerunBackend complete” 只能理解为
+     “基础 primitives + contacts + skeleton 可用”，不能理解为与 matplotlib 或未来 Vulkan
+     在 scene feature 上完全对齐。
+
 **参考项目**：
 - Drake：`SceneGraph` role-based geometry + pluggable renderer（最直接参考）
 - Isaac Lab 3.0：pluggable renderer system，tiled rendering for N envs

@@ -1,11 +1,11 @@
 # Robot Simulator — Project Manifest
 
-> 从零构建的刚体物理仿真器，面向 sim-to-real 腿足机器人 RL 训练。
-> Last updated: 2026-04-16 (session 30)
+> 面向具身智能研究的多物理仿真平台——多物理统一耦合、GPU 原生、渲染与合成数据生成、从第一性原理出发的 API 设计。
+> Last updated: 2026-04-23 (session 31+)
 
 ## 一句话
 
-基于 Featherstone 算法的刚体动力学引擎 + 约束求解器 + GPU 并行环境，目标是在自有硬件上完成四足/双足机器人的 sim-to-real 训练。
+从第一性原理出发构建的物理仿真平台，支持刚体、可变形体、流体的统一耦合，GPU 原生并行，内置渲染管线，面向具身智能研究的高质量物理标注合成数据生成。
 
 ## 架构
 
@@ -66,6 +66,10 @@ GpuEngine 使用解析碰撞函数（shape type dispatch）+ S-H 面裁剪：
 ## 渲染
 
 ```
+RenderBackend (ABC)
+  ├── MatplotlibBackend   调试可视化 + GIF 导出
+  └── RerunBackend        实时流式可视化 (rerun-sdk >= 0.16)
+
 RenderScene (backend-agnostic dataclass)
   ├── PositionedShape: 碰撞形状 + world pose
   ├── ContactPoint: 接触点可视化
@@ -76,11 +80,9 @@ scene_builder.build_render_scene() → RenderScene
   ├── 从 RobotTree FK 提取形状位置
   └── 从 ContactInfo 提取接触点
 
-shape_artists.py → matplotlib 3D artists
-  ├── Box/Sphere/Cylinder/Capsule/ConvexHull 绘制
-  └── 接触法线箭头 + 力大小标注
+build_render_scene_from_gpu() → RenderScene (GPU engine 路径)
 
-viewer.py → matplotlib 交互/导出
+注：RerunBackend 暂不渲染 terrain；MatplotlibBackend 完整支持所有 RenderScene 字段
 ```
 
 ## 关键文件
@@ -126,7 +128,7 @@ viewer.py → matplotlib 交互/导出
 | 2k — GPU ADMM 求解器 + solver dispatch | ✅ |
 | 2l — GPU 多点接触 manifold + solver stability (session 27-29) | ✅ |
 | 2m — EPA 鲁棒性 + convex margin 两道防线 (session 30) | ✅ |
-| 3 — 渲染 (RenderScene 抽象 + matplotlib) | 🔄 开始 |
+| 3 — 渲染 (RenderBackend ABC + MatplotlibBackend + RerunBackend) | ✅ |
 | 4 — 域随机化 | ⬜ |
 | 5 — Sim-to-Real | ⬜ |
 
