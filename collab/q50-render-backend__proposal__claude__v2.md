@@ -233,14 +233,23 @@ class MatplotlibBackend(RenderBackend):
         return True  # Agg backend
 ```
 
-`render_frame` 内部：
+`render_frame` 内部（与 `viewer._draw_scene` 保持一致，不引入可见回归）：
 1. `ax.cla()` 清除上一帧
-2. 遍历 `scene.shapes`，按 `shape_type` 调用 `SHAPE_DRAWERS[shape_type](ax, pos, rot, **params)`
-3. `draw_contacts(ax, scene.contacts)`
-4. `draw_terrain(ax, scene.terrain)`
-5. 如果 `save_path` 设置，把当前 figure 存入帧列表
+2. `draw_terrain(ax, scene.terrain)`
+3. 遍历 `scene.skeleton_links`，用 `ax.plot` 画骨架连线（对应 `viewer.py:292-302`）
+4. 遍历 `scene.shapes`，按 `shape_type` 调用 `SHAPE_DRAWERS[shape_type](ax, pos, rot, **params)`
+5. `draw_contacts(ax, scene.contacts)`
+6. 收集本帧所有 artists，追加到 `self._frame_artists`（list of lists）
 
-`close()` 时如果有帧列表，用 `matplotlib.animation.ArtistAnimation` 保存 gif。
+gif 保存方案（选定方案 A — ArtistAnimation）：
+- `self._frame_artists: list[list[Artist]]` — 每次 `render_frame()` 把本帧所有绘制调用
+  返回的 artist 对象收集成一个列表，追加到 `self._frame_artists`
+- `ArtistAnimation(fig, frame_artists)` 接受的是 `list[list[Artist]]`，
+  **不是** figure snapshot；实现者必须收集 artist 对象，不能存 figure 引用
+- `close()` 时：`ArtistAnimation(self._fig, self._frame_artists).save(save_path, writer="pillow")`
+- 与 `viewer.animate()` 的 `update()` 模式一致（`viewer.py:160-174`）：
+  `update()` 每帧返回 artist 列表，`FuncAnimation` 负责驱动；
+  `MatplotlibBackend` 改为调用方驱动，`render_frame()` 手动收集，`close()` 一次性保存
 
 ### 3. `RerunBackend` — `rendering/backends/rerun_backend.py`
 
@@ -377,10 +386,11 @@ v2 明确策略：
 - 空 `RenderScene` 不崩溃（open → render_frame → close）
 - 含 `mesh` shape 的 scene 不崩溃（unsupported shape policy）
 
-**`test_matplotlib_backend.py`**（4 tests）：
+**`test_matplotlib_backend.py`**（5 tests）：
 - offscreen 渲染不抛异常（MPLBACKEND=Agg）
 - `set_output("out.gif")` → close 后文件存在
-- 含 shapes（box/sphere/capsule/cylinder/convex_hull）+ contacts 的 scene 正常渲染
+- 含 shapes（box/sphere/capsule/cylinder/convex_hull）+ contacts + skeleton_links 的 scene 正常渲染（不抛异常）
+- 含非空 `skeleton_links` 的 scene 渲染后 ax 上有 Line3D 对象（断言骨架线被画出）
 - `env_index` 参数被接受（不报错）
 
 **`test_rerun_backend.py`**（4 tests）：
