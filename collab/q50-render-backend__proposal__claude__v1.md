@@ -5,7 +5,7 @@ Version: v1
 Date: 2026-04-23
 Status: draft
 Related Files: OPEN_QUESTIONS.md#Q50, rendering/render_scene.py, rendering/scene_builder.py, rendering/viewer.py
-Owner Summary: 引入 RenderBackend(ABC) 接口，包装现有 matplotlib viewer，实现 RerunBackend，补充 GPU 桥接和传感器字段。Phase 3 渲染层主线，RL 训练监控的前提。
+Owner Summary: 引入 RenderBackend(ABC) 接口，包装现有 matplotlib viewer，实现 RerunBackend，补充 GPU 桥接。Step 4（传感器字段）延后至 Q51 收敛后再做。Phase 3 渲染层主线，RL 训练监控的前提。
 
 ---
 
@@ -29,12 +29,12 @@ Owner Summary: 引入 RenderBackend(ABC) 接口，包装现有 matplotlib viewer
 
 ## Goal
 
-本 proposal 覆盖 Q50 实施计划的 Step 1–4（Step 5 Vulkan 是中期，不在本轮范围）：
+本 proposal 覆盖 Q50 实施计划的 Step 1–3（Step 4 传感器字段延后至 Q51 收敛，Step 5 Vulkan 是中期，均不在本轮范围）：
 
 - Step 1：引入 `RenderBackend(ABC)`，`MatplotlibBackend` 包装现有 `viewer.py`
 - Step 2：`RerunBackend` 实现（验证接口 + 实际可用）
 - Step 3：GPU 桥接 `build_render_scene_from_gpu(engine, env_idx)`
-- Step 4：`RenderScene` 加传感器字段（IMU body vel + joint torque）
+- ~~Step 4：`RenderScene` 加传感器字段~~ → 延后，见 Q51— **telemetry contract 待 Q51 收敛后再定，Step 4 暂不阻塞 Step 1–3**
 
 ---
 
