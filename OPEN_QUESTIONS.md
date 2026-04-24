@@ -1477,11 +1477,11 @@ class RenderBackend(ABC):
 **实施计划**：
 
 ```
-Step 1：引入 RenderBackend(ABC)，MatplotlibBackend 包装现有 viewer.py
-Step 2：RerunBackend 实现（验证接口 + 实际可用）
-Step 3：GPU 桥接 build_render_scene_from_gpu(engine, env_idx)
-Step 4：RenderScene 加传感器字段（IMU body vel + joint force）
-Step 5（中期）：VulkanBackend
+Step 1：引入 RenderBackend(ABC)，MatplotlibBackend 包装现有 viewer.py  ✅ (session 33)
+Step 2：RerunBackend 实现（验证接口 + 实际可用）                        ✅ (session 33, rerun-sdk 0.31 fix session 34)
+Step 3：GPU 桥接 build_render_scene_from_gpu(engine, env_idx)           ✅ (session 33)
+Step 4：RenderScene 加传感器字段（IMU body vel + joint force）           ⬜ 阻塞于 Q51
+Step 5（中期）：VulkanBackend                                            ⬜
 ```
 
 **当前 feature 语义澄清（2026-04-23）**：
