@@ -75,11 +75,14 @@ from .spatial import (
     spatial_cross_velocity,
 )
 from .step_pipeline import StepPipeline
+from .telemetry import TelemetrySnapshot, build_telemetry_snapshot_from_published_frame
 from .terrain import FlatTerrain, HeightmapTerrain, Terrain
 
 __all__ = [
     # === New pipeline (Phase 2h) ===
     "StepPipeline",
+    "TelemetrySnapshot",
+    "build_telemetry_snapshot_from_published_frame",
     "DynamicsCache",
     "ForceState",
     "ForceSource",

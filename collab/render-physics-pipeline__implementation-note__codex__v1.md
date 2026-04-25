@@ -4,7 +4,7 @@ Author: codex
 Version: v1
 Date: 2026-04-25
 Status: review-request
-Related Files: collab/render-physics-pipeline__proposal__codex__v1.md, OPEN_QUESTIONS.md#Q52, physics/publish.py, physics/engine.py, physics/cpu_engine.py, physics/gpu_engine.py, rendering/debug_exporter.py, rendering/scene_builder.py, rendering/published_frame_renderer.py, tests/unit/physics/test_publish.py, tests/unit/physics/test_cpu_publish_runtime.py, tests/unit/rendering/test_debug_exporter.py, tests/unit/rendering/test_published_frame_bridge.py, tests/integration/test_published_frame_render_backend_integration.py
+Related Files: collab/render-physics-pipeline__proposal__codex__v1.md, OPEN_QUESTIONS.md#Q52, physics/publish.py, physics/engine.py, physics/cpu_engine.py, physics/gpu_engine.py, physics/telemetry.py, rendering/debug_exporter.py, rendering/scene_builder.py, rendering/published_frame_renderer.py, tests/unit/physics/test_publish.py, tests/unit/physics/test_cpu_publish_runtime.py, tests/unit/physics/test_telemetry_snapshot.py, tests/unit/rendering/test_debug_exporter.py, tests/unit/rendering/test_published_frame_bridge.py, tests/integration/test_published_frame_render_backend_integration.py
 Owner Summary: 记录 2026-04-25 基于 2026-04-24 proposal/Q52 的第一阶段代码落地结果，供 Claude 做实现级 review。重点不是重复架构哲学，而是说明：哪些控制平面类型已经变成代码、CPU/GPU engine 已经接上了哪些 publish/runtime 接口、哪些行为已有测试覆盖、当前还缺哪些关键实现。
 
 2026-04-25 review follow-up:
@@ -539,6 +539,55 @@ python -m compileall rendering/published_frame_renderer.py rendering/__init__.py
 
 ---
 
+## Third Consumer Landed: `PublishedFrame -> TelemetrySnapshot`
+
+新增：
+
+- `physics/telemetry.py`
+- `tests/unit/physics/test_telemetry_snapshot.py`
+
+新增 host-side telemetry bridge：
+
+- `TelemetrySnapshot`
+- `build_telemetry_snapshot_from_published_frame(engine, frame=None, env_idx=0)`
+
+当前策略刻意保持保守：
+
+1. 它只消费已经在 published-frame contract 里的 telemetry
+   - CPU：
+     - `ForceState`
+   - GPU：
+     - `telemetry_ref["qacc_smooth_wp"]`
+     - `telemetry_ref["qacc_total_wp"]`
+     - `telemetry_ref["force_sensor_wp"]`
+
+2. 它不反向读取 engine-private scratch
+
+3. 它不把 telemetry schema 写死到 `RenderScene`
+   - 也就是说，这一步是一个独立 telemetry consumer
+   - 不是对 Q51 / `RenderScene.sensor_data` 的提前定案
+
+### 当前覆盖
+
+`tests/unit/physics/test_telemetry_snapshot.py` 覆盖：
+
+- 真实 `CpuEngine` published frame -> `TelemetrySnapshot`
+- mock `GpuPublishedFrame` published telemetry buffers -> `TelemetrySnapshot`
+
+### 更新后的验证结果
+
+```bash
+PYTHONPATH=. pytest -q tests/unit/physics/test_telemetry_snapshot.py tests/unit/physics/test_publish.py tests/unit/physics/test_cpu_publish_runtime.py tests/unit/rendering/test_debug_exporter.py tests/unit/rendering/test_published_frame_bridge.py tests/integration/test_published_frame_render_backend_integration.py
+python -m compileall physics/telemetry.py physics/__init__.py tests/unit/physics/test_telemetry_snapshot.py
+```
+
+当前结果：
+
+- `28 passed`
+- compileall 通过
+
+---
+
 ## Current Gaps / Known Limits
 
 这版实现仍然是 phase-1，不应被误解为“publish pipeline 已 fully implemented”。
@@ -588,6 +637,8 @@ python -m compileall rendering/published_frame_renderer.py rendering/__init__.py
   通过 `build_render_scene_from_published_frame(...)` 消费 `PublishedFrame`
 - backend render
   通过 `render_latest_published_frame(...)` 走到 `MatplotlibBackend`
+- telemetry consumer
+  通过 `build_telemetry_snapshot_from_published_frame(...)` 消费 `PublishedFrame`
 
 但还没有开始真正让：
 
