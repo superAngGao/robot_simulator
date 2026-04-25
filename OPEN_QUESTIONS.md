@@ -1558,3 +1558,113 @@ Rerun 训练监控与后续 RL obs 复用。但当前仓库只有一半设计落
 **触发条件**：开始实现 Q50 Step 4（传感器字段）或需要把 GPU 训练信号接入
 Rerun / RL obs 时。
 **优先级**：P2（当前可延后，但进入传感器可视化前必须先收敛）。
+
+**Q52 — Physics publish pipeline implementation（GpuPublishedFrame / PublishedRing / QoS / reclaim）** (2026-04-24)
+
+**背景**：2026-04-24 围绕“物理层如何把每步结果正式发布给渲染/传感器/日志消费者”进行了较完整的架构收敛，并形成了审查文档：
+
+- `collab/render-physics-pipeline__proposal__codex__v1.md`
+
+本轮结论已经不再停留在哲学层面，而是进入接近实现的接口与控制平面设计，包括：
+
+- `PhysicsModel / PhysicsState / DerivedPhysicsCache / PublishedFrameCore`
+- `PublishPolicy -> PublishPlan -> kernel launches`
+- `GpuPublishedFrame / PublishedSlot / PublishedRing`
+- `best_effort` vs `lossless`
+- `borrow` vs `snapshot`
+- `ConsumerState / AckPolicy / SlotReclaimer`
+
+**当前判断（2026-04-24）**：
+
+- 该方向已经形成了足够稳的 implementation-ready 草案
+- 但尚未真正落地到代码骨架
+- 这是后续 realtime rendering / high-fidelity rendering / sensor export / host logging 共用的数据发布底座
+- 应优先从 GPU path 实装，再让 CPU path 对齐语义做简化 reference 版本
+
+**当前已收敛的关键结论**：
+
+1. **`PublishedRing` 默认大小取 `3`**
+   - 默认 triple buffering
+   - `best_effort` consumer 不应阻塞 physics
+   - `lossless` consumer 必须形成硬 backpressure
+
+2. **`PublishedFrame` 不能直接引用 mutable scratch**
+   - 必须引用 dedicated published slot buffers
+   - 否则 physics 下一步覆盖会破坏 frame 语义
+
+3. **QoS 与读取方式是正交维度**
+   - QoS:
+     - `best_effort`
+     - `lossless`
+   - access mode:
+     - `borrow`
+     - `snapshot`
+
+4. **`borrow` 与 `snapshot` 语义必须强区分**
+   - `borrow`：ephemeral lease，只适合短时消费
+   - `snapshot`：复制/转存到私有 staging，后续不依赖 slot 生命周期
+
+5. **`lossless + snapshot` 的 ack 点**
+   - 不是“copy 被 enqueue 到 stream”
+   - 而是“staging 中已经拥有完整、自持副本；若涉及 async copy，则 copy completion event 已 signal”
+
+6. **slot 回收只看启用中的 `lossless` consumer**
+   - `best_effort` 只影响能看到哪些帧，不参与 reclaim
+   - 多个 `lossless` consumer 并存时，最慢者决定 backpressure
+
+7. **`lossless` QoS 不允许系统静默降级**
+   - 默认行为应是：监控 + 报警 + 阻塞等待
+   - 若要退化为 `best_effort`，必须用户显式 opt-in，并伴随清晰日志/事件
+
+8. **dense `RigidBlock` 第一版可预分配，但写入不应默认每步开启**
+   - `max_contacts` 是 per-env 上限，也是显存主要放大器
+   - `contact_count` 更接近 core 边界信息，可作为轻量 core 条目
+   - dense `RigidBlock` 的实际写入应由 `PublishPlan.do_rigid_block_write` 控制
+
+**建议的第一阶段实施范围**：
+
+1. 增加最小控制平面数据结构：
+   - `PublishedSlotMeta`
+   - `ConsumerState`
+   - `AckPolicy`
+   - `SlotReclaimer`
+
+2. 增加最小 publish 配置与计划层：
+   - `PublishPolicy`
+   - `PublishPlan`
+
+3. 在 GPU path 先落最小 published frame：
+   - core:
+     - `q`
+     - `qdot`
+     - `X_world_R`
+     - `X_world_r`
+     - `v_bodies`
+     - `contact_count`
+   - `TelemetryBlock`
+   - `RigidBlock` 预分配，但按 plan 条件写入
+
+4. 暂不在第一阶段做：
+   - compaction-based compact contacts
+   - full realtime renderer integration
+   - full sensor stack integration
+   - CPU/GPU 两套完全对齐的高层 API 美化
+
+**待实施前仍建议重点复核的点**：
+
+1. `max_contacts` 的默认值与用户调参指引
+2. `PublishedRing=3` 在实际目标任务下的显存压力
+3. `lossless` consumer 的最大时延与 ring sizing 关系
+4. `borrow` API 的 context-manager / ephemeral lease 具体实现方式
+5. `HostExportQueue` 的 staging ownership 与 copy completion 信号时机
+
+**建议的实施顺序**：
+
+1. 先落控制平面（policy/plan/consumer/reclaimer）
+2. 再落 GPU `publish_core`
+3. 再接 `lossless + snapshot` 的 host staging 路径
+4. 再接 `best_effort + borrow` 的 realtime/debug 消费路径
+5. 最后让 CPU path 对齐共享语义
+
+**触发条件**：开始把 2026-04-24 这轮 design proposal 转成代码时。
+**优先级**：P1（已接近实现，且是后续渲染/传感器主线的基础设施）。

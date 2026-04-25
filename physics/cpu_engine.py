@@ -18,6 +18,16 @@ from .dynamics_cache import DynamicsCache
 from .engine import ContactInfo, PhysicsEngine, StepOutput
 from .force_source import PassiveForceSource
 from .gjk_epa import gjk_epa_query, ground_contact_query, halfspace_convex_query
+from .publish import (
+    AckPolicy,
+    BorrowedFrameLease,
+    ConsumerState,
+    CpuPublishedFrame,
+    HostSnapshotSpec,
+    PublishPlan,
+    PublishPolicy,
+    SnapshotHandle,
+)
 from .solvers.pgs_solver import ContactConstraint
 from .solvers.pgs_split_impulse import PGSSplitImpulseSolver
 from .step_pipeline import StepPipeline
@@ -55,6 +65,12 @@ class CpuEngine(PhysicsEngine):
         )
         self._dt = dt
         self._last_contacts: List[ContactConstraint] = []
+        self._publish_policy = PublishPolicy()
+        self._publish_frame_id = -1
+        self._publish_step_index = -1
+        self._publish_sim_time = 0.0
+        self._publish_consumers: list[ConsumerState] = []
+        self._latest_published_frame: CpuPublishedFrame | None = None
 
     def step(
         self,
@@ -82,7 +98,7 @@ class CpuEngine(PhysicsEngine):
         v_bodies = tree.body_velocities(q_new, qdot_new)
         contact_active = np.array([True] * len(contacts) if contacts else [])
 
-        return StepOutput(
+        output = StepOutput(
             q_new=q_new,
             qdot_new=qdot_new,
             X_world=X_world,
@@ -90,6 +106,133 @@ class CpuEngine(PhysicsEngine):
             contact_active=contact_active,
             force_state=self._pipeline.last_force_state,
         )
+        self._publish_after_step(output, dt)
+        return output
+
+    @property
+    def publish_policy(self) -> PublishPolicy:
+        return self._publish_policy
+
+    def set_publish_policy(self, policy: PublishPolicy) -> None:
+        self._publish_policy = policy
+
+    def register_consumer(self, consumer: ConsumerState) -> None:
+        for idx, existing in enumerate(self._publish_consumers):
+            if existing.consumer_id == consumer.consumer_id:
+                self._publish_consumers[idx] = consumer
+                return
+        self._publish_consumers.append(consumer)
+
+    def unregister_consumer(self, consumer_id: str) -> None:
+        self._publish_consumers[:] = [
+            consumer for consumer in self._publish_consumers if consumer.consumer_id != consumer_id
+        ]
+
+    def step_and_publish(
+        self,
+        q: NDArray,
+        qdot: NDArray,
+        tau: NDArray,
+        dt: float | None = None,
+    ) -> CpuPublishedFrame:
+        self.step(q=q, qdot=qdot, tau=tau, dt=dt)
+        if self._latest_published_frame is None:
+            raise RuntimeError("CPU publish failed to produce a latest frame")
+        return self._latest_published_frame
+
+    def _publish_after_step(self, output: StepOutput, dt: float) -> None:
+        # frame_id follows the physics-step timeline, not just the materialized
+        # publish timeline. Skipped publishes therefore create gaps visible to
+        # consumers (e.g. 0, 2, 4, ...) rather than renumbering published
+        # frames densely.
+        next_frame_id = self._publish_frame_id + 1
+        plan = PublishPlan.from_policy(next_frame_id, self._publish_policy)
+        self._publish_frame_id = next_frame_id
+        self._publish_step_index += 1
+        self._publish_sim_time += dt
+        if not plan.do_publish_core:
+            return
+        self._latest_published_frame = CpuPublishedFrame(
+            frame_id=self._publish_frame_id,
+            sim_time=self._publish_sim_time,
+            step_index=self._publish_step_index,
+            env_mask=None,
+            q=np.asarray(output.q_new).copy(),
+            qdot=np.asarray(output.qdot_new).copy(),
+            X_world=output.X_world,
+            v_bodies=output.v_bodies,
+            contact_count=len(self._last_contacts),
+            contacts=self.query_contacts(),
+            telemetry=output.force_state,
+        )
+
+    def latest_published_frame(self) -> CpuPublishedFrame | None:
+        return self._latest_published_frame
+
+    def borrow_latest_frame(self, consumer_id: str) -> BorrowedFrameLease[CpuPublishedFrame]:
+        consumer = self._require_consumer(consumer_id)
+        frame = self._latest_published_frame
+        if frame is None:
+            return BorrowedFrameLease(None)
+
+        consumer.latest_seen_frame_id = frame.frame_id
+        ack_policy = AckPolicy.default_for(consumer)
+
+        def _release_callback(released_frame: CpuPublishedFrame) -> None:
+            if ack_policy.ack_point == "on_borrow_complete":
+                consumer.acked_frame_id = max(consumer.acked_frame_id, released_frame.frame_id)
+
+        return BorrowedFrameLease(frame, on_release=_release_callback)
+
+    def snapshot_frame_to_host(
+        self, consumer_id: str, frame_id: int, spec: HostSnapshotSpec
+    ) -> SnapshotHandle[dict[str, object]]:
+        consumer = self._require_consumer(consumer_id)
+        frame = self._require_published_frame(frame_id)
+        consumer.latest_seen_frame_id = frame.frame_id
+
+        fields = set(spec.fields)
+        snapshot: dict[str, object] = {
+            "frame_id": frame.frame_id,
+            "step_index": frame.step_index,
+            "sim_time": frame.sim_time,
+        }
+        if "q" in fields:
+            snapshot["q"] = np.asarray(frame.q).copy()
+        if "qdot" in fields:
+            snapshot["qdot"] = np.asarray(frame.qdot).copy()
+        if "X_world" in fields:
+            snapshot["X_world"] = frame.X_world
+        if "v_bodies" in fields:
+            snapshot["v_bodies"] = frame.v_bodies
+        if "contact_count" in fields:
+            snapshot["contact_count"] = int(frame.contact_count)
+        if "contacts" in fields:
+            snapshot["contacts"] = frame.contacts
+        if "telemetry" in fields:
+            snapshot["telemetry"] = frame.telemetry
+
+        ack_policy = AckPolicy.default_for(consumer)
+        if ack_policy.ack_point == "on_snapshot_staged":
+            consumer.acked_frame_id = max(consumer.acked_frame_id, frame.frame_id)
+        return SnapshotHandle(snapshot, frame_id=frame.frame_id)
+
+    def _require_consumer(self, consumer_id: str) -> ConsumerState:
+        for consumer in self._publish_consumers:
+            if consumer.consumer_id == consumer_id:
+                return consumer
+        raise KeyError(f"Unknown publish consumer {consumer_id!r}. Register it first.")
+
+    def _require_published_frame(self, frame_id: int) -> CpuPublishedFrame:
+        """Return the current published frame.
+
+        CPU reference path keeps only the latest published frame; therefore
+        `frame_id` must match `latest_published_frame().frame_id`.
+        Historical frame lookup is intentionally unsupported here.
+        """
+        if self._latest_published_frame is None or self._latest_published_frame.frame_id != frame_id:
+            raise KeyError(f"Published frame {frame_id} is not currently available.")
+        return self._latest_published_frame
 
     def _detect_contacts(self, cache: DynamicsCache) -> List[ContactConstraint]:
         """Detect all contacts using GJK/EPA: body-ground + body-body."""

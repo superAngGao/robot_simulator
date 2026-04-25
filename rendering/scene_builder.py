@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, List, Optional
 
 import numpy as np
 
+from physics.engine import ContactInfo
 from physics.geometry import (
     BoxShape,
     CapsuleShape,
@@ -22,12 +23,13 @@ from physics.geometry import (
     MeshShape,
     SphereShape,
 )
+from physics.publish import CpuPublishedFrame, GpuPublishedFrame
+from physics.spatial import SpatialTransform
 from physics.terrain import FlatTerrain, HalfSpaceTerrain
 
 from .render_scene import ContactPoint, PositionedShape, RenderScene, TerrainInfo
 
 if TYPE_CHECKING:
-    from physics.engine import ContactInfo
     from physics.merged_model import MergedModel
     from physics.robot_tree import RobotTreeNumpy
     from physics.spatial import SpatialTransform
@@ -201,6 +203,95 @@ def build_render_scene_from_gpu(
     contacts = engine.query_contacts(env_idx) if include_contacts else None
     terrain = getattr(merged, "terrain", None)
     return build_render_scene(merged, X_world, contacts=contacts, terrain=terrain)
+
+
+def _transforms_from_gpu_published_frame(frame: GpuPublishedFrame, env_idx: int) -> list[SpatialTransform]:
+    R_all = frame.x_world_R_wp.numpy()
+    r_all = frame.x_world_r_wp.numpy()
+    if env_idx >= R_all.shape[0]:
+        raise IndexError(f"env_idx={env_idx} out of bounds for {R_all.shape[0]} environments")
+    return [
+        SpatialTransform(
+            R_all[env_idx, body_idx].astype(np.float64), r_all[env_idx, body_idx].astype(np.float64)
+        )
+        for body_idx in range(R_all.shape[1])
+    ]
+
+
+def _contacts_from_gpu_published_frame(
+    frame: GpuPublishedFrame,
+    env_idx: int,
+    engine=None,
+) -> list[ContactInfo]:
+    if frame.contact_count_wp is None:
+        return [] if engine is None else engine.query_contacts(env_idx)
+
+    count_all = frame.contact_count_wp.numpy()
+    if env_idx >= count_all.shape[0]:
+        raise IndexError(f"env_idx={env_idx} out of bounds for {count_all.shape[0]} environments")
+    n_contacts = int(count_all[env_idx])
+    if n_contacts == 0:
+        return []
+
+    if frame.contact_cache_ref is None:
+        # Phase-1 fallback: if this frame did not materialize the dense contact
+        # block, we fall back to `engine.query_contacts(env_idx)`. That returns
+        # the engine's latest contact state, not a historical frozen copy tied
+        # to `frame.frame_id`, so this path is debug-oriented and should not be
+        # reused as a temporal-accuracy guarantee for future sensor pipelines.
+        return [] if engine is None else engine.query_contacts(env_idx)
+
+    cache = frame.contact_cache_ref
+    bi = cache["contact_bi_wp"].numpy()[env_idx, :n_contacts]
+    bj = cache["contact_bj_wp"].numpy()[env_idx, :n_contacts]
+    depth = cache["contact_depth_wp"].numpy()[env_idx, :n_contacts]
+    normal = cache["contact_normal_wp"].numpy()[env_idx, :n_contacts]
+    point = cache["contact_point_wp"].numpy()[env_idx, :n_contacts]
+    return [
+        ContactInfo(
+            body_i=int(bi[idx]),
+            body_j=int(bj[idx]),
+            depth=float(depth[idx]),
+            normal=np.asarray(normal[idx], dtype=np.float64).copy(),
+            point=np.asarray(point[idx], dtype=np.float64).copy(),
+        )
+        for idx in range(n_contacts)
+    ]
+
+
+def build_render_scene_from_published_frame(
+    engine,
+    frame: CpuPublishedFrame | GpuPublishedFrame | None = None,
+    env_idx: int = 0,
+    include_contacts: bool = True,
+) -> RenderScene:
+    """Build a RenderScene from an engine published frame.
+
+    CPU frames use the already-published `X_world` / `contacts` directly.
+    GPU frames consume published slot buffers and only fall back to
+    `engine.query_contacts(env_idx)` when dense contact buffers were not
+    materialized for that frame.
+    """
+    if frame is None:
+        frame = engine.latest_published_frame()
+    if frame is None:
+        raise RuntimeError("No published frame is available yet.")
+
+    merged = engine.merged
+    terrain = getattr(merged, "terrain", None)
+
+    if isinstance(frame, CpuPublishedFrame):
+        contacts = frame.contacts if include_contacts else None
+        return build_render_scene(merged, frame.X_world, contacts=contacts, terrain=terrain)
+
+    if isinstance(frame, GpuPublishedFrame):
+        X_world = _transforms_from_gpu_published_frame(frame, env_idx=env_idx)
+        contacts = None
+        if include_contacts:
+            contacts = _contacts_from_gpu_published_frame(frame, env_idx=env_idx, engine=engine)
+        return build_render_scene(merged, X_world, contacts=contacts, terrain=terrain)
+
+    raise TypeError(f"Unsupported published frame type: {type(frame).__name__}")
 
 
 def build_render_scene_from_tree(

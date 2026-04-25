@@ -22,6 +22,7 @@ from numpy.typing import NDArray
 if TYPE_CHECKING:
     from .dynamics_cache import ForceState
     from .merged_model import MergedModel
+    from .publish import BorrowedFrameLease, ConsumerState, HostSnapshotSpec, PublishPolicy, SnapshotHandle
 
 
 @dataclass
@@ -95,3 +96,32 @@ class PhysicsEngine(ABC):
         Returns:
             List of ContactInfo snapshots. body_j == -1 means ground contact.
         """
+
+    def set_publish_policy(self, policy: "PublishPolicy") -> None:
+        """Replace the publish policy used by this engine.
+
+        Engines that support frame publishing should override this.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement publish policy control")
+
+    def latest_published_frame(self):
+        """Return the most recent published frame descriptor, if any."""
+        raise NotImplementedError(f"{type(self).__name__} does not implement published frames")
+
+    def register_consumer(self, consumer: "ConsumerState") -> None:
+        """Register a publish consumer for QoS / reclaim accounting."""
+        raise NotImplementedError(f"{type(self).__name__} does not implement publish consumers")
+
+    def unregister_consumer(self, consumer_id: str) -> None:
+        """Remove a publish consumer."""
+        raise NotImplementedError(f"{type(self).__name__} does not implement publish consumers")
+
+    def borrow_latest_frame(self, consumer_id: str) -> "BorrowedFrameLease":
+        """Borrow the latest published frame as an ephemeral lease."""
+        raise NotImplementedError(f"{type(self).__name__} does not implement borrowed frame access")
+
+    def snapshot_frame_to_host(
+        self, consumer_id: str, frame_id: int, spec: "HostSnapshotSpec"
+    ) -> "SnapshotHandle":
+        """Synchronously stage one published frame to host-owned data."""
+        raise NotImplementedError(f"{type(self).__name__} does not implement host frame snapshot")

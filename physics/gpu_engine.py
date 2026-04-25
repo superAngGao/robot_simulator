@@ -39,6 +39,18 @@ from .backends.warp.solver_kernels import (
 from .backends.warp.solver_kernels_v2 import _build_tangent_frame
 from .backends.warp.solver_scratch import SolverScratch
 from .engine import ContactInfo, PhysicsEngine, StepOutput
+from .publish import (
+    AckPolicy,
+    BorrowedFrameLease,
+    ConsumerState,
+    GpuPublishedFrame,
+    HostSnapshotSpec,
+    PublishedSlotMeta,
+    PublishPlan,
+    PublishPolicy,
+    SlotReclaimer,
+    SnapshotHandle,
+)
 
 if TYPE_CHECKING:
     from .merged_model import MergedModel
@@ -374,6 +386,18 @@ class GpuEngine(PhysicsEngine):
         self._default_q = q0.astype(np.float32)
         self._default_qdot = qdot0.astype(np.float32)
 
+        # Publish/control-plane state (phase-1 synchronous implementation).
+        self._publish_policy = PublishPolicy()
+        self._publish_ring_size = 3
+        self._publish_frame_id = -1
+        self._publish_step_index = -1
+        self._publish_sim_time = 0.0
+        self._publish_consumers: list[ConsumerState] = []
+        self._slot_reclaimer = SlotReclaimer(self._publish_consumers)
+        self._published_slot_meta = [PublishedSlotMeta(slot_id=i) for i in range(self._publish_ring_size)]
+        self._published_slots = [self._alloc_published_slot() for _ in range(self._publish_ring_size)]
+        self._latest_published_frame: GpuPublishedFrame | None = None
+
     # ── Public state accessors (zero-copy warp arrays) ──
 
     @property
@@ -452,6 +476,115 @@ class GpuEngine(PhysicsEngine):
         """Number of sensor (contact) bodies."""
         return self._nc_sensor
 
+    @property
+    def publish_policy(self) -> PublishPolicy:
+        return self._publish_policy
+
+    def set_publish_policy(self, policy: PublishPolicy) -> None:
+        """Replace the publish policy used after each physics step."""
+        self._publish_policy = policy
+
+    def register_consumer(self, consumer: ConsumerState) -> None:
+        """Register or replace a publish consumer for ring-reclaim accounting."""
+        for idx, existing in enumerate(self._publish_consumers):
+            if existing.consumer_id == consumer.consumer_id:
+                self._publish_consumers[idx] = consumer
+                return
+        self._publish_consumers.append(consumer)
+
+    def unregister_consumer(self, consumer_id: str) -> None:
+        """Remove one consumer from ring-reclaim accounting."""
+        self._publish_consumers[:] = [
+            consumer for consumer in self._publish_consumers if consumer.consumer_id != consumer_id
+        ]
+
+    def ring_pressure_stats(self):
+        """Return current ring-pressure stats for the next slot that would be reused."""
+        target_slot_id = (self._publish_frame_id + 1) % self._publish_ring_size
+        return self._slot_reclaimer.ring_pressure_stats(self._published_slot_meta[target_slot_id])
+
+    def latest_published_frame(self) -> GpuPublishedFrame | None:
+        """Return the most recent published frame descriptor."""
+        return self._latest_published_frame
+
+    def borrow_latest_frame(self, consumer_id: str) -> BorrowedFrameLease[GpuPublishedFrame]:
+        """Borrow the latest published frame as an ephemeral lease.
+
+        The returned lease must be consumed within the context-manager scope.
+        For lossless+borrow consumers, leaving the scope is treated as the
+        borrow-complete ack point.
+        """
+        consumer = self._require_consumer(consumer_id)
+        frame = self._latest_published_frame
+        if frame is None:
+            return BorrowedFrameLease(None)
+
+        consumer.latest_seen_frame_id = frame.frame_id
+        ack_policy = AckPolicy.default_for(consumer)
+
+        def _release_callback(released_frame: GpuPublishedFrame) -> None:
+            if ack_policy.ack_point == "on_borrow_complete":
+                consumer.acked_frame_id = max(consumer.acked_frame_id, released_frame.frame_id)
+
+        return BorrowedFrameLease(frame, on_release=_release_callback)
+
+    def snapshot_frame_to_host(
+        self, consumer_id: str, frame_id: int, spec: HostSnapshotSpec
+    ) -> SnapshotHandle[dict[str, object]]:
+        """Synchronously stage a published frame to host-owned numpy arrays.
+
+        This is a minimal phase-1 implementation of `snapshot + staged ack`.
+        The returned handle already owns staged data in phase-1, but keeps a
+        future-compatible shape for an eventual async queue implementation.
+        """
+        consumer = self._require_consumer(consumer_id)
+        frame = self._require_published_frame(frame_id)
+        consumer.latest_seen_frame_id = frame.frame_id
+
+        fields = set(spec.fields)
+        snapshot: dict[str, object] = {
+            "frame_id": frame.frame_id,
+            "step_index": frame.step_index,
+            "sim_time": frame.sim_time,
+        }
+
+        if "q" in fields:
+            snapshot["q"] = frame.q_wp.numpy().copy()
+        if "qdot" in fields:
+            snapshot["qdot"] = frame.qdot_wp.numpy().copy()
+        if "x_world_R" in fields:
+            snapshot["x_world_R"] = frame.x_world_R_wp.numpy().copy()
+        if "x_world_r" in fields:
+            snapshot["x_world_r"] = frame.x_world_r_wp.numpy().copy()
+        if "v_bodies" in fields:
+            snapshot["v_bodies"] = frame.v_bodies_wp.numpy().copy()
+        if "contact_count" in fields and frame.contact_count_wp is not None:
+            snapshot["contact_count"] = frame.contact_count_wp.numpy().copy()
+        if "qacc_smooth" in fields and frame.telemetry_ref is not None:
+            snapshot["qacc_smooth"] = frame.telemetry_ref["qacc_smooth_wp"].numpy().copy()
+        if "qacc_total" in fields and frame.telemetry_ref is not None:
+            snapshot["qacc_total"] = frame.telemetry_ref["qacc_total_wp"].numpy().copy()
+        if "force_sensor" in fields and frame.telemetry_ref is not None:
+            snapshot["force_sensor"] = frame.telemetry_ref["force_sensor_wp"].numpy().copy()
+        if "contact_bi" in fields and frame.contact_cache_ref is not None:
+            snapshot["contact_bi"] = frame.contact_cache_ref["contact_bi_wp"].numpy().copy()
+        if "contact_bj" in fields and frame.contact_cache_ref is not None:
+            snapshot["contact_bj"] = frame.contact_cache_ref["contact_bj_wp"].numpy().copy()
+        if "contact_active" in fields and frame.contact_cache_ref is not None:
+            snapshot["contact_active"] = frame.contact_cache_ref["contact_active_wp"].numpy().copy()
+        if "contact_depth" in fields and frame.contact_cache_ref is not None:
+            snapshot["contact_depth"] = frame.contact_cache_ref["contact_depth_wp"].numpy().copy()
+        if "contact_normal" in fields and frame.contact_cache_ref is not None:
+            snapshot["contact_normal"] = frame.contact_cache_ref["contact_normal_wp"].numpy().copy()
+        if "contact_point" in fields and frame.contact_cache_ref is not None:
+            snapshot["contact_point"] = frame.contact_cache_ref["contact_point_wp"].numpy().copy()
+
+        ack_policy = AckPolicy.default_for(consumer)
+        if ack_policy.ack_point == "on_snapshot_staged":
+            consumer.acked_frame_id = max(consumer.acked_frame_id, frame.frame_id)
+
+        return SnapshotHandle(snapshot, frame_id=frame.frame_id)
+
     def query_contacts(self, env_idx: int = 0) -> List[ContactInfo]:
         """Return detected contacts for one environment (call after step).
 
@@ -487,6 +620,18 @@ class GpuEngine(PhysicsEngine):
         wp.copy(sc.q, wp.array(q_np, dtype=wp.float32, device=self._device))
         wp.copy(sc.qdot, wp.array(qdot_np, dtype=wp.float32, device=self._device))
         self._clear_warmstart()
+        self._publish_frame_id = -1
+        self._publish_step_index = -1
+        self._publish_sim_time = 0.0
+        self._latest_published_frame = None
+        for meta in self._published_slot_meta:
+            meta.frame_id = -1
+            meta.step_index = -1
+            meta.sim_time = 0.0
+            meta.state = "free"
+            meta.publish_event = None
+            meta.host_export_queued = False
+            meta.invalidated = False
 
     def reset_envs(self, env_ids: np.ndarray, q0: np.ndarray | None = None) -> None:
         """Reset specific environments by index.
@@ -553,6 +698,7 @@ class GpuEngine(PhysicsEngine):
         """
         for _ in range(n_substeps):
             self._step_physics(tau=tau, dt=dt)
+            self._publish_after_step(dt or self._dt)
         return self._make_output()
 
     def step(self, q=None, qdot=None, tau=None, dt=None):
@@ -568,7 +714,199 @@ class GpuEngine(PhysicsEngine):
             wp.copy(sc.qdot, wp.array(qdot_np, dtype=wp.float32, device=self._device))
 
         self._step_physics(tau=tau, dt=dt)
+        self._publish_after_step(dt or self._dt)
         return self._make_output()
+
+    def _alloc_published_slot(self) -> dict[str, object | None]:
+        """Allocate one published-slot buffer set."""
+        s = self._static
+        device = self._device
+        return {
+            "q": wp.zeros((self._num_envs, s.nq), dtype=wp.float32, device=device),
+            "qdot": wp.zeros((self._num_envs, s.nv), dtype=wp.float32, device=device),
+            "x_world_R": wp.zeros((self._num_envs, s.nb, 3, 3), dtype=wp.float32, device=device),
+            "x_world_r": wp.zeros((self._num_envs, s.nb, 3), dtype=wp.float32, device=device),
+            "v_bodies": wp.zeros((self._num_envs, s.nb, 6), dtype=wp.float32, device=device),
+            "contact_count": wp.zeros(self._num_envs, dtype=wp.int32, device=device),
+            "qacc_smooth": wp.zeros((self._num_envs, s.nv), dtype=wp.float32, device=device),
+            "qacc_total": wp.zeros((self._num_envs, s.nv), dtype=wp.float32, device=device),
+            "force_sensor": wp.zeros(
+                (self._num_envs, max(self._nc_sensor * 3, 1)), dtype=wp.float32, device=device
+            ),
+            "contact_bi": None,
+            "contact_bj": None,
+            "contact_active": None,
+            "contact_depth": None,
+            "contact_normal": None,
+            "contact_point": None,
+        }
+
+    def _require_consumer(self, consumer_id: str) -> ConsumerState:
+        for consumer in self._publish_consumers:
+            if consumer.consumer_id == consumer_id:
+                return consumer
+        raise KeyError(f"Unknown publish consumer {consumer_id!r}. Register it first.")
+
+    def _require_published_frame(self, frame_id: int) -> GpuPublishedFrame:
+        if self._latest_published_frame is not None and self._latest_published_frame.frame_id == frame_id:
+            return self._latest_published_frame
+        for meta, slot in zip(self._published_slot_meta, self._published_slots):
+            if meta.state == "ready" and meta.frame_id == frame_id:
+                return GpuPublishedFrame(
+                    slot_id=meta.slot_id,
+                    frame_id=meta.frame_id,
+                    sim_time=meta.sim_time,
+                    step_index=meta.step_index,
+                    env_mask_wp=None,
+                    q_wp=slot["q"],
+                    qdot_wp=slot["qdot"],
+                    x_world_R_wp=slot["x_world_R"],
+                    x_world_r_wp=slot["x_world_r"],
+                    v_bodies_wp=slot["v_bodies"],
+                    contact_count_wp=slot["contact_count"],
+                    contact_cache_ref=(
+                        None
+                        if slot["contact_bi"] is None
+                        else {
+                            "contact_bi_wp": slot["contact_bi"],
+                            "contact_bj_wp": slot["contact_bj"],
+                            "contact_active_wp": slot["contact_active"],
+                            "contact_depth_wp": slot["contact_depth"],
+                            "contact_normal_wp": slot["contact_normal"],
+                            "contact_point_wp": slot["contact_point"],
+                        }
+                    ),
+                    telemetry_ref={
+                        "qacc_smooth_wp": slot["qacc_smooth"],
+                        "qacc_total_wp": slot["qacc_total"],
+                        "force_sensor_wp": slot["force_sensor"],
+                    },
+                    ready_event=meta.publish_event,
+                    slot_meta=meta,
+                )
+        raise KeyError(f"Published frame {frame_id} is not currently available in the ring.")
+
+    def _ensure_rigid_publish_buffers(self, slot: dict[str, object | None]) -> None:
+        if slot["contact_bi"] is not None:
+            return
+        device = self._device
+        slot["contact_bi"] = wp.zeros((self._num_envs, self._max_contacts), dtype=wp.int32, device=device)
+        slot["contact_bj"] = wp.zeros((self._num_envs, self._max_contacts), dtype=wp.int32, device=device)
+        slot["contact_active"] = wp.zeros((self._num_envs, self._max_contacts), dtype=wp.int32, device=device)
+        slot["contact_depth"] = wp.zeros(
+            (self._num_envs, self._max_contacts), dtype=wp.float32, device=device
+        )
+        slot["contact_normal"] = wp.zeros(
+            (self._num_envs, self._max_contacts, 3), dtype=wp.float32, device=device
+        )
+        slot["contact_point"] = wp.zeros(
+            (self._num_envs, self._max_contacts, 3), dtype=wp.float32, device=device
+        )
+
+    def _acquire_publish_slot(self) -> tuple[int, dict[str, object | None], PublishedSlotMeta] | None:
+        slot_id = (self._publish_frame_id + 1) % self._publish_ring_size
+        meta = self._published_slot_meta[slot_id]
+        if meta.state == "ready" and not self._slot_reclaimer.reclaimable(meta):
+            action = self._publish_policy.on_ring_full
+            blockers = self._slot_reclaimer.ring_pressure_stats(meta).blocking_consumer_ids
+            if action == "skip":
+                return None
+            if action == "block":
+                raise NotImplementedError(
+                    "PublishPolicy(on_ring_full='block') is not implemented in phase-1; "
+                    "use 'raise' or 'skip' until async staging/reclaim lands."
+                )
+            raise RuntimeError(
+                "Published ring backpressure: slot is pinned by lossless consumer(s): " + ", ".join(blockers)
+            )
+        meta.invalidated = True
+        meta.state = "writing"
+        return slot_id, self._published_slots[slot_id], meta
+
+    def _publish_after_step(self, dt: float) -> None:
+        """Synchronously publish core buffers into the next published ring slot."""
+        # frame_id follows the physics-step timeline, not just the materialized
+        # publish timeline. When publish is skipped (policy gating or
+        # on_ring_full='skip'), `_publish_frame_id` still advances so consumers
+        # can observe gaps between materialized frames.
+        next_frame_id = self._publish_frame_id + 1
+        plan = PublishPlan.from_policy(next_frame_id, self._publish_policy)
+        self._publish_step_index += 1
+        self._publish_sim_time += dt
+        if not plan.do_publish_core:
+            self._publish_frame_id = next_frame_id
+            return
+
+        acquired = self._acquire_publish_slot()
+        if acquired is None:
+            self._publish_frame_id = next_frame_id
+            return
+        slot_id, slot, meta = acquired
+        sc = self._scratch
+
+        wp.copy(slot["q"], sc.q)
+        wp.copy(slot["qdot"], sc.qdot)
+        wp.copy(slot["x_world_R"], sc.X_world_R)
+        wp.copy(slot["x_world_r"], sc.X_world_r)
+        wp.copy(slot["v_bodies"], sc.v_bodies)
+        wp.copy(slot["contact_count"], self._contact_count)
+
+        telemetry_ref = None
+        if plan.do_telemetry_block_write:
+            wp.copy(slot["qacc_smooth"], sc.qddot)
+            wp.copy(slot["qacc_total"], sc.qacc_total)
+            wp.copy(slot["force_sensor"], self._contact_force_sensor)
+            telemetry_ref = {
+                "qacc_smooth_wp": slot["qacc_smooth"],
+                "qacc_total_wp": slot["qacc_total"],
+                "force_sensor_wp": slot["force_sensor"],
+            }
+
+        contact_cache_ref = None
+        if plan.do_rigid_block_write:
+            self._ensure_rigid_publish_buffers(slot)
+            wp.copy(slot["contact_bi"], self._contact_bi)
+            wp.copy(slot["contact_bj"], self._contact_bj)
+            wp.copy(slot["contact_active"], self._contact_active)
+            wp.copy(slot["contact_depth"], self._contact_depth)
+            wp.copy(slot["contact_normal"], self._contact_normal)
+            wp.copy(slot["contact_point"], self._contact_point)
+            contact_cache_ref = {
+                "contact_bi_wp": slot["contact_bi"],
+                "contact_bj_wp": slot["contact_bj"],
+                "contact_active_wp": slot["contact_active"],
+                "contact_depth_wp": slot["contact_depth"],
+                "contact_normal_wp": slot["contact_normal"],
+                "contact_point_wp": slot["contact_point"],
+            }
+
+        event = object()
+        meta.frame_id = next_frame_id
+        meta.step_index = self._publish_step_index
+        meta.sim_time = self._publish_sim_time
+        meta.state = "ready"
+        meta.publish_event = event
+        meta.host_export_queued = False
+        meta.invalidated = False
+
+        self._publish_frame_id = next_frame_id
+        self._latest_published_frame = GpuPublishedFrame(
+            slot_id=slot_id,
+            frame_id=next_frame_id,
+            sim_time=self._publish_sim_time,
+            step_index=self._publish_step_index,
+            env_mask_wp=None,
+            q_wp=slot["q"],
+            qdot_wp=slot["qdot"],
+            x_world_R_wp=slot["x_world_R"],
+            x_world_r_wp=slot["x_world_r"],
+            v_bodies_wp=slot["v_bodies"],
+            contact_count_wp=slot["contact_count"],
+            contact_cache_ref=contact_cache_ref,
+            telemetry_ref=telemetry_ref,
+            ready_event=event,
+            slot_meta=meta,
+        )
 
     def _step_physics(self, tau=None, dt=None):
         """Run one physics substep (no output extraction)."""
