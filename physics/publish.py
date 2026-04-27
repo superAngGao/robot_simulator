@@ -45,7 +45,7 @@ class PublishPolicy:
     publish_every_n_steps: int = 1
     on_ring_full: OnRingFull = "raise"
     realtime_render: ViewPolicy = field(default_factory=ViewPolicy)
-    sensor_render: ViewPolicy = field(default_factory=ViewPolicy)
+    render_backed_sensing: ViewPolicy = field(default_factory=ViewPolicy)
     debug_export: ViewPolicy = field(default_factory=ViewPolicy)
     publish_rigid_block: bool = False
     publish_telemetry_block: bool = True
@@ -71,9 +71,9 @@ class PublishPlan:
     realtime_env_ids: object | None
     realtime_variant: DetailLevel | None
 
-    do_sensor_render: bool
-    sensor_env_ids: object | None
-    sensor_variant: DetailLevel | None
+    do_render_backed_sensing: bool
+    render_backed_sensing_env_ids: object | None
+    render_backed_sensing_variant: DetailLevel | None
 
     do_debug_export: bool
     debug_env_ids: object | None
@@ -85,16 +85,20 @@ class PublishPlan:
     @classmethod
     def from_policy(cls, frame_id: int, policy: PublishPolicy) -> "PublishPlan":
         realtime = policy.realtime_render.should_materialize(frame_id)
-        sensor = policy.sensor_render.should_materialize(frame_id)
+        render_backed_sensing = policy.render_backed_sensing.should_materialize(frame_id)
         debug = policy.debug_export.should_materialize(frame_id)
         return cls(
             do_publish_core=policy.publish_core_every_step and frame_id % policy.publish_every_n_steps == 0,
             do_realtime_render=realtime,
             realtime_env_ids=policy.realtime_render.env_selector if realtime else None,
             realtime_variant=policy.realtime_render.detail_level if realtime else None,
-            do_sensor_render=sensor,
-            sensor_env_ids=policy.sensor_render.env_selector if sensor else None,
-            sensor_variant=policy.sensor_render.detail_level if sensor else None,
+            do_render_backed_sensing=render_backed_sensing,
+            render_backed_sensing_env_ids=(
+                policy.render_backed_sensing.env_selector if render_backed_sensing else None
+            ),
+            render_backed_sensing_variant=(
+                policy.render_backed_sensing.detail_level if render_backed_sensing else None
+            ),
             do_debug_export=debug,
             debug_env_ids=policy.debug_export.env_selector if debug else None,
             debug_host_copy=debug,

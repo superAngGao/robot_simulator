@@ -3,8 +3,8 @@ Stage: decision
 Author: codex
 Version: v1
 Date: 2026-04-27
-Status: accepted
-Related Files: OPEN_QUESTIONS.md#Q53, collab/sensing-phase1__decision__codex__v1.md, rendering/render_scene.py, rendering/scene_builder.py, sensing/state_sample.py
+Status: accepted-review-followup-applied
+Related Files: OPEN_QUESTIONS.md#Q53, collab/sensing-phase1__decision__codex__v1.md, physics/publish.py, rendering/render_scene.py, rendering/scene_builder.py, sensing/state_sample.py
 Owner Summary: Q53 decision for non-numeric sensor boundaries. `sensing/` remains the owner of sensor-facing specs/readings and state/query views, `rendering/` remains the owner of renderable scene/backend primitives, and future render-backed camera/imaging execution should live in an integration layer rather than creating a direct `sensing -> rendering` dependency.
 
 ---
@@ -90,10 +90,17 @@ Proposed split:
 
 Deferred:
 
-- exact package name (`sensor_rendering/` vs `sensing_rendering/`)
 - exact camera reading schema
-- whether depth images are produced by rasterization, ray query, or both
 - GPU realtime renderer and camera pipeline surface-cache sharing
+
+Review follow-up:
+
+- Use top-level `sensor_rendering/` rather than `rendering/sensors/` when this
+  integration layer becomes real code. It depends on both `sensing/` and
+  `rendering/`, so it should not appear to be owned by either side.
+- First depth-image implementation should start from surface query / ray-cast
+  depth, not render-backed imaging. RGB/segmentation remain the first clear
+  `sensor_rendering/` use cases.
 
 ---
 
@@ -105,6 +112,8 @@ Decision:
   inside the view builder.
 - The builder should produce a backend-neutral query view/spec.
 - CPU/GPU query execution belongs in an explicit query runtime/executor layer.
+- Until an executor exists, prefer the name `SurfaceQuerySpec` over
+  `SurfaceQueryView`.
 
 Reasoning:
 
@@ -174,19 +183,19 @@ Q52:
 
 - Future GPU publish policies should keep separate knobs for render-facing,
   state-sensing, surface-query, and imaging materialization.
-- `do_sensor_render` should not imply that every sensor consumes `RenderScene`.
+- `PublishPolicy.sensor_render` / `PublishPlan.do_sensor_render` were renamed to
+  `render_backed_sensing` / `do_render_backed_sensing` so the control plane does
+  not imply that every sensor consumes rendering.
 
 ---
 
-## 7. Review Targets
+## 7. Review Follow-Up Decisions
 
-Claude should challenge:
+Claude review accepted these follow-ups:
 
-1. Whether `sensor_rendering/` is worth adding as an integration layer, or
-   whether `rendering/sensors/` would be a better home.
-2. Whether `SurfaceQueryView` should be named `SurfaceQuerySpec` until execution
-   exists.
-3. Whether depth-image sensors should be grouped with imaging or surface query
-   for the first implementation.
-4. Whether any existing `PublishPolicy.sensor_render` naming should be changed
-   before more code depends on it.
+1. Use top-level `sensor_rendering/`.
+2. Prefer `SurfaceQuerySpec` until query execution exists.
+3. Treat first depth-image work as surface query / ray-cast depth; reserve
+   `sensor_rendering/` for render-backed RGB/segmentation-style imaging.
+4. Rename publish control-plane fields from `sensor_render` to
+   `render_backed_sensing`.

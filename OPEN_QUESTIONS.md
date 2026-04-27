@@ -1687,7 +1687,11 @@ Rerun / RL obs 时。
   `sensor_rendering/`，该层允许依赖 `sensing/` 和 `rendering/`
 - `SurfaceQueryView` 属于 `sensing/`，但 builder 只构造 query spec/view；
   CPU/GPU query 结果由显式 executor/runtime 产生
+- 在 executor 存在前，优先命名为 `SurfaceQuerySpec`
+- 第一版 depth image 倾向先走 surface query / ray-cast depth；RGB / segmentation
+  再走 `sensor_rendering/`
 - `RenderScene` 可用于 debug overlay，不作为 LiDAR/camera 的 canonical execution contract
+- `PublishPolicy.sensor_render` 已重命名为 `render_backed_sensing`
 
 **背景**：随着 published-frame phase-1 consumer integration 完成，下一步开始讨论独立的
 `sensing/` 模块。当前已基本收敛：
@@ -1723,10 +1727,9 @@ Rerun / RL obs 时。
 4. CPU/GPU query 差异放在显式 executor/runtime 层，而不是藏进 builder。
 
 **仍待实现前细化**：
-1. `sensor_rendering/` 是否就是最终包名，还是使用 `rendering/sensors/`
-2. `SurfaceQueryView` 是否先命名为 `SurfaceQuerySpec`
-3. depth image 第一版归 imaging 还是 surface query
-4. `PublishPolicy.sensor_render` 是否需要改名以避免暗示所有 sensor 都是 render-backed
+1. camera reading schema
+2. GPU realtime renderer 和 camera pipeline 是否共享 surface cache
+3. `SurfaceQuerySpec` / executor 的具体 dataclass 与 protocol 形状
 
 **建议的暂时策略**：
 - 继续保持 `StateSampleView` / numeric sensing 主线

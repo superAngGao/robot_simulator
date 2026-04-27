@@ -24,7 +24,7 @@ class TestPublishPlan:
 
         assert plan.do_publish_core is True
         assert plan.do_realtime_render is False
-        assert plan.do_sensor_render is False
+        assert plan.do_render_backed_sensing is False
         assert plan.do_debug_export is False
         assert plan.do_rigid_block_write is False
         assert plan.do_telemetry_block_write is True
@@ -34,20 +34,32 @@ class TestPublishPlan:
             realtime_render=ViewPolicy(
                 enabled=True, period_steps=2, detail_level="high", env_selector=(0, 3)
             ),
+            render_backed_sensing=ViewPolicy(
+                enabled=True, period_steps=3, detail_level="low", env_selector=(1,)
+            ),
             publish_rigid_block=True,
         )
 
         frame0 = PublishPlan.from_policy(frame_id=0, policy=policy)
         frame1 = PublishPlan.from_policy(frame_id=1, policy=policy)
+        frame3 = PublishPlan.from_policy(frame_id=3, policy=policy)
 
         assert frame0.do_realtime_render is True
         assert frame0.realtime_variant == "high"
         assert frame0.realtime_env_ids == (0, 3)
+        assert frame0.do_render_backed_sensing is True
+        assert frame0.render_backed_sensing_variant == "low"
+        assert frame0.render_backed_sensing_env_ids == (1,)
         assert frame0.do_rigid_block_write is True
 
         assert frame1.do_realtime_render is False
         assert frame1.realtime_variant is None
         assert frame1.realtime_env_ids is None
+        assert frame1.do_render_backed_sensing is False
+        assert frame1.render_backed_sensing_variant is None
+        assert frame1.render_backed_sensing_env_ids is None
+
+        assert frame3.do_render_backed_sensing is True
 
     def test_invalid_period_is_rejected(self):
         with pytest.raises(ValueError, match="period_steps"):
