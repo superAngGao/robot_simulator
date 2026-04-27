@@ -3,9 +3,93 @@ Stage: implementation-note
 Author: codex
 Version: v1
 Date: 2026-04-25
-Status: review-request
+Status: day-end-summary
 Related Files: collab/render-physics-pipeline__proposal__codex__v1.md, OPEN_QUESTIONS.md#Q52, physics/publish.py, physics/engine.py, physics/cpu_engine.py, physics/gpu_engine.py, physics/telemetry.py, rendering/debug_exporter.py, rendering/scene_builder.py, rendering/published_frame_renderer.py, tests/unit/physics/test_publish.py, tests/unit/physics/test_cpu_publish_runtime.py, tests/unit/physics/test_telemetry_snapshot.py, tests/unit/rendering/test_debug_exporter.py, tests/unit/rendering/test_published_frame_bridge.py, tests/integration/test_published_frame_render_backend_integration.py
 Owner Summary: 记录 2026-04-25 基于 2026-04-24 proposal/Q52 的第一阶段代码落地结果，供 Claude 做实现级 review。重点不是重复架构哲学，而是说明：哪些控制平面类型已经变成代码、CPU/GPU engine 已经接上了哪些 publish/runtime 接口、哪些行为已有测试覆盖、当前还缺哪些关键实现。
+
+## Day-End Summary (2026-04-26)
+
+今天这轮收敛后，phase-1 consumer integration 可以视为完成了一个可提交、可审查的阶段版本。
+
+### 已完成
+
+- `physics/publish.py`
+  - 已形成稳定的 publish/control-plane 骨架：
+    - `PublishPolicy`
+    - `PublishPlan`
+    - `BorrowedFrameLease`
+    - `SnapshotHandle`
+    - `SlotReclaimer`
+    - `GpuPublishedFrame` / `CpuPublishedFrame`
+- `CpuEngine` / `GpuEngine`
+  - 已接上统一的 published-frame surface
+  - `frame_id` 语义、`skip` 语义、`on_ring_full` 语义已明确
+- Debug / render / telemetry 三类真实 consumer 已落地
+  - `PublishedFrame -> host debug snapshot`
+  - `PublishedFrame -> RenderScene`
+  - `PublishedFrame -> RenderScene -> MatplotlibBackend`
+  - `PublishedFrame -> TelemetrySnapshot`
+- review 收尾项已吸收
+  - `LeaseExpiredError`
+  - `SlotReclaimedError`
+  - `SnapshotHandle.is_ready/frame_id`
+  - CPU latest-only 限制文档化
+  - GPU contact fallback 注释化
+  - telemetry CPU/GPU 字段不对称文档化
+
+### 当前测试状态
+
+本阶段关键链路目前已验证：
+
+- `29 passed`
+- compileall 通过
+
+覆盖范围包括：
+
+- publish/control-plane 单测
+- CPU publish runtime 单测
+- debug exporter 单测
+- published-frame -> RenderScene bridge 单测
+- published-frame -> backend 端到端集成测试
+- published-frame -> telemetry snapshot 单测
+
+### 对应提交
+
+- `c0d208f` — `Add published-frame debug export and render pipeline`
+- `5b8e1d6` — `Add published-frame telemetry snapshot bridge`
+
+### 当前边界
+
+现在已经明确做到了：
+
+- 不让 consumer 偷读 engine-private scratch
+- 不把 telemetry schema 提前写死到 `RenderScene`
+- CPU path 保持 reference runtime，不引入 ring
+- GPU path 仍停留在 phase-1 synchronous publish / snapshot bridge
+
+仍未开始的下一阶段内容：
+
+- async host staging / export queue
+- retained / realtime render view
+- 更正式的 sensor path
+- typed published slot / block dataclass
+
+### 明天最自然的起点
+
+如果继续实现，最合适的下一步不是再扩 phase-1，而是开始收敛 phase-2 的入口设计，二选一：
+
+1. `sensor path`
+   - 在不污染 `RenderScene` 的前提下，定义更正式的 sensor-facing view
+2. `async host staging`
+   - 把 `SnapshotHandle` 从同步桥升级成真正的 queue/event 模型
+
+如果先做设计审查，这份文档加上：
+
+- `collab/render-physics-pipeline__proposal__codex__v1.md`
+- `OPEN_QUESTIONS.md#Q51`
+- `OPEN_QUESTIONS.md#Q52`
+
+就已经足够支撑明天继续讨论。
 
 2026-04-25 review follow-up:
 

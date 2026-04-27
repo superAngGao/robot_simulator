@@ -1548,11 +1548,16 @@ Rerun 训练监控与后续 RL obs 复用。但当前仓库只有一半设计落
    `build_sensor_snapshot_from_gpu()`？
 4. **命名与坐标系**：`qfrc_actuator / qfrc_passive / tau_smooth` 是否直接沿用；
    contact force sensor 用 world frame 还是 body-local；multi-env 如何切片。
+5. **模块归属 / 迁移路径**：当前 `physics/telemetry.py` 作为 phase-1 的
+   published-frame telemetry bridge 先保留在 `physics/` 下；若后续 `TelemetrySnapshot`
+   持续长出更强的 sensor-facing 语义，是否应迁移到新的 `sensing/` 包，并仅保留
+   `ForceState / PublishedFrame` 作为 `physics/` 的真值层契约？
 
 **建议的暂时策略**：
 - Q50 先推进几何渲染主线（backend ABC + Rerun + GPU `RenderScene` bridge）
 - 在 telemetry contract 未定前，不把 `joint_torques` / force sensor schema 写死到
   `RenderScene`
+- `physics/telemetry.py` 目前视为过渡层，不把它当成最终 sensor 模块归属的定案
 - 待 Q50 Step 4 或 RL 观测接口进入实现前，专门回到本条讨论并定案
 
 **触发条件**：开始实现 Q50 Step 4（传感器字段）或需要把 GPU 训练信号接入
@@ -1668,3 +1673,54 @@ Rerun / RL obs 时。
 
 **触发条件**：开始把 2026-04-24 这轮 design proposal 转成代码时。
 **优先级**：P1（已接近实现，且是后续渲染/传感器主线的基础设施）。
+
+**Q53 — Sensing / Rendering boundary（ImagingView ownership + SurfaceQuery execution boundary）** (2026-04-26)
+
+**背景**：随着 published-frame phase-1 consumer integration 完成，下一步开始讨论独立的
+`sensing/` 模块。当前已基本收敛：
+
+- `physics/` 负责真值与 `PublishedFrame`
+- `rendering/` 负责 `RenderScene` 与 backend
+- `sensing/` 负责 sensor-facing view / reading / builder
+
+但在继续往 `SurfaceQueryView` / `ImagingView` 推进时，出现了两个结构性边界问题：
+
+1. **`ImagingView` 归属问题**
+   - 若 `ImagingView` 需要几何 + 语义 + 材质/光照，它天然会碰 `rendering/`
+   - 若仍放在 `sensing/`，就等于默认允许 `sensing -> rendering`
+   - 当前依赖图尚未正式允许或禁止这条边
+
+2. **`SurfaceQueryView` 的 CPU/GPU 执行边界**
+   - CPU query 多半走 host-side 几何查询 / BVH / numpy 路径
+   - GPU query 需要单独的 Warp/kernel 执行路径
+   - 差异不只是“字段是否存在”，而是“整个 query 执行方式不同”
+   - 因此应尽早决定：`SurfaceQueryView` builder 是只产出 query scene，还是直接产出 query result
+
+**当前判断（2026-04-26）**：
+
+- `StateSampleView` 已足够稳，可以作为 `sensing/` 第一阶段正式落地方向
+- `SurfaceQueryView` / `ImagingView` 仍应视为待继续收敛项，而不是直接实现
+- 特别是 `ImagingView`，不应在未澄清归属前就默认放进 `sensing/`
+
+**待决策点**：
+1. `ImagingView` 应放在：
+   - `sensing/`
+   - `rendering/`
+   - 还是单独的 `sensor_rendering/`
+2. 是否允许正式依赖边：
+   - `sensing -> rendering`
+3. `SurfaceQueryView` builder 的职责边界：
+   - 只产出可查询表面视图（query scene）
+   - 还是直接产出 sensor query result
+4. CPU/GPU query 差异应隐藏在：
+   - view builder
+   - sensor backend / executor
+   - 还是专门的 query runtime 层
+
+**建议的暂时策略**：
+- 先正式推进 `StateSampleView`
+- `SurfaceQueryView` 只保留为设计方向，不急着落代码
+- `ImagingView` 先不进入 `sensing/` 实现骨架，待本条决策后再定
+
+**触发条件**：开始实现 `LiDAR / depth probe / camera` 这类非纯 numeric sensor 时。
+**优先级**：P1（不阻塞 `StateSampleView`，但阻塞后续 `SurfaceQueryView / ImagingView` 落地）。
