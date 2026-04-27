@@ -45,10 +45,9 @@ from .publish import (
     ConsumerState,
     GpuPublishedFrame,
     HostSnapshotSpec,
-    PublishedSlotMeta,
+    PublishedRing,
     PublishPlan,
     PublishPolicy,
-    SlotReclaimer,
     SnapshotHandle,
 )
 
@@ -388,15 +387,15 @@ class GpuEngine(PhysicsEngine):
 
         # Publish/control-plane state (phase-1 synchronous implementation).
         self._publish_policy = PublishPolicy()
-        self._publish_ring_size = 3
         self._publish_frame_id = -1
         self._publish_step_index = -1
         self._publish_sim_time = 0.0
         self._publish_consumers: list[ConsumerState] = []
-        self._slot_reclaimer = SlotReclaimer(self._publish_consumers)
-        self._published_slot_meta = [PublishedSlotMeta(slot_id=i) for i in range(self._publish_ring_size)]
-        self._published_slots = [self._alloc_published_slot() for _ in range(self._publish_ring_size)]
-        self._latest_published_frame: GpuPublishedFrame | None = None
+        self._published_ring = PublishedRing(
+            slot_buffers=[self._alloc_published_slot() for _ in range(3)],
+            consumers=self._publish_consumers,
+            policy=self._publish_policy,
+        )
 
     # ── Public state accessors (zero-copy warp arrays) ──
 
@@ -483,29 +482,23 @@ class GpuEngine(PhysicsEngine):
     def set_publish_policy(self, policy: PublishPolicy) -> None:
         """Replace the publish policy used after each physics step."""
         self._publish_policy = policy
+        self._published_ring.set_policy(policy)
 
     def register_consumer(self, consumer: ConsumerState) -> None:
         """Register or replace a publish consumer for ring-reclaim accounting."""
-        for idx, existing in enumerate(self._publish_consumers):
-            if existing.consumer_id == consumer.consumer_id:
-                self._publish_consumers[idx] = consumer
-                return
-        self._publish_consumers.append(consumer)
+        self._published_ring.register_consumer(consumer)
 
     def unregister_consumer(self, consumer_id: str) -> None:
         """Remove one consumer from ring-reclaim accounting."""
-        self._publish_consumers[:] = [
-            consumer for consumer in self._publish_consumers if consumer.consumer_id != consumer_id
-        ]
+        self._published_ring.unregister_consumer(consumer_id)
 
     def ring_pressure_stats(self):
         """Return current ring-pressure stats for the next slot that would be reused."""
-        target_slot_id = (self._publish_frame_id + 1) % self._publish_ring_size
-        return self._slot_reclaimer.ring_pressure_stats(self._published_slot_meta[target_slot_id])
+        return self._published_ring.ring_pressure_stats(next_frame_id=self._publish_frame_id + 1)
 
     def latest_published_frame(self) -> GpuPublishedFrame | None:
         """Return the most recent published frame descriptor."""
-        return self._latest_published_frame
+        return self._published_ring.latest_frame
 
     def borrow_latest_frame(self, consumer_id: str) -> BorrowedFrameLease[GpuPublishedFrame]:
         """Borrow the latest published frame as an ephemeral lease.
@@ -515,7 +508,7 @@ class GpuEngine(PhysicsEngine):
         borrow-complete ack point.
         """
         consumer = self._require_consumer(consumer_id)
-        frame = self._latest_published_frame
+        frame = self._published_ring.latest_frame
         if frame is None:
             return BorrowedFrameLease(None)
 
@@ -623,15 +616,7 @@ class GpuEngine(PhysicsEngine):
         self._publish_frame_id = -1
         self._publish_step_index = -1
         self._publish_sim_time = 0.0
-        self._latest_published_frame = None
-        for meta in self._published_slot_meta:
-            meta.frame_id = -1
-            meta.step_index = -1
-            meta.sim_time = 0.0
-            meta.state = "free"
-            meta.publish_event = None
-            meta.host_export_queued = False
-            meta.invalidated = False
+        self._published_ring.reset()
 
     def reset_envs(self, env_ids: np.ndarray, q0: np.ndarray | None = None) -> None:
         """Reset specific environments by index.
@@ -742,48 +727,50 @@ class GpuEngine(PhysicsEngine):
         }
 
     def _require_consumer(self, consumer_id: str) -> ConsumerState:
-        for consumer in self._publish_consumers:
+        for consumer in self._published_ring.consumers:
             if consumer.consumer_id == consumer_id:
                 return consumer
         raise KeyError(f"Unknown publish consumer {consumer_id!r}. Register it first.")
 
     def _require_published_frame(self, frame_id: int) -> GpuPublishedFrame:
-        if self._latest_published_frame is not None and self._latest_published_frame.frame_id == frame_id:
-            return self._latest_published_frame
-        for meta, slot in zip(self._published_slot_meta, self._published_slots):
-            if meta.state == "ready" and meta.frame_id == frame_id:
-                return GpuPublishedFrame(
-                    slot_id=meta.slot_id,
-                    frame_id=meta.frame_id,
-                    sim_time=meta.sim_time,
-                    step_index=meta.step_index,
-                    env_mask_wp=None,
-                    q_wp=slot["q"],
-                    qdot_wp=slot["qdot"],
-                    x_world_R_wp=slot["x_world_R"],
-                    x_world_r_wp=slot["x_world_r"],
-                    v_bodies_wp=slot["v_bodies"],
-                    contact_count_wp=slot["contact_count"],
-                    contact_cache_ref=(
-                        None
-                        if slot["contact_bi"] is None
-                        else {
-                            "contact_bi_wp": slot["contact_bi"],
-                            "contact_bj_wp": slot["contact_bj"],
-                            "contact_active_wp": slot["contact_active"],
-                            "contact_depth_wp": slot["contact_depth"],
-                            "contact_normal_wp": slot["contact_normal"],
-                            "contact_point_wp": slot["contact_point"],
-                        }
-                    ),
-                    telemetry_ref={
-                        "qacc_smooth_wp": slot["qacc_smooth"],
-                        "qacc_total_wp": slot["qacc_total"],
-                        "force_sensor_wp": slot["force_sensor"],
-                    },
-                    ready_event=meta.publish_event,
-                    slot_meta=meta,
-                )
+        latest = self._published_ring.latest_frame
+        if latest is not None and latest.frame_id == frame_id:
+            return latest
+        found = self._published_ring.find_frame(frame_id)
+        if found is not None:
+            meta, slot = found
+            return GpuPublishedFrame(
+                slot_id=meta.slot_id,
+                frame_id=meta.frame_id,
+                sim_time=meta.sim_time,
+                step_index=meta.step_index,
+                env_mask_wp=None,
+                q_wp=slot["q"],
+                qdot_wp=slot["qdot"],
+                x_world_R_wp=slot["x_world_R"],
+                x_world_r_wp=slot["x_world_r"],
+                v_bodies_wp=slot["v_bodies"],
+                contact_count_wp=slot["contact_count"],
+                contact_cache_ref=(
+                    None
+                    if slot["contact_bi"] is None
+                    else {
+                        "contact_bi_wp": slot["contact_bi"],
+                        "contact_bj_wp": slot["contact_bj"],
+                        "contact_active_wp": slot["contact_active"],
+                        "contact_depth_wp": slot["contact_depth"],
+                        "contact_normal_wp": slot["contact_normal"],
+                        "contact_point_wp": slot["contact_point"],
+                    }
+                ),
+                telemetry_ref={
+                    "qacc_smooth_wp": slot["qacc_smooth"],
+                    "qacc_total_wp": slot["qacc_total"],
+                    "force_sensor_wp": slot["force_sensor"],
+                },
+                ready_event=meta.publish_event,
+                slot_meta=meta,
+            )
         raise KeyError(f"Published frame {frame_id} is not currently available in the ring.")
 
     def _ensure_rigid_publish_buffers(self, slot: dict[str, object | None]) -> None:
@@ -803,26 +790,6 @@ class GpuEngine(PhysicsEngine):
             (self._num_envs, self._max_contacts, 3), dtype=wp.float32, device=device
         )
 
-    def _acquire_publish_slot(self) -> tuple[int, dict[str, object | None], PublishedSlotMeta] | None:
-        slot_id = (self._publish_frame_id + 1) % self._publish_ring_size
-        meta = self._published_slot_meta[slot_id]
-        if meta.state == "ready" and not self._slot_reclaimer.reclaimable(meta):
-            action = self._publish_policy.on_ring_full
-            blockers = self._slot_reclaimer.ring_pressure_stats(meta).blocking_consumer_ids
-            if action == "skip":
-                return None
-            if action == "block":
-                raise NotImplementedError(
-                    "PublishPolicy(on_ring_full='block') is not implemented in phase-1; "
-                    "use 'raise' or 'skip' until async staging/reclaim lands."
-                )
-            raise RuntimeError(
-                "Published ring backpressure: slot is pinned by lossless consumer(s): " + ", ".join(blockers)
-            )
-        meta.invalidated = True
-        meta.state = "writing"
-        return slot_id, self._published_slots[slot_id], meta
-
     def _publish_after_step(self, dt: float) -> None:
         """Synchronously publish core buffers into the next published ring slot."""
         # frame_id follows the physics-step timeline, not just the materialized
@@ -837,7 +804,7 @@ class GpuEngine(PhysicsEngine):
             self._publish_frame_id = next_frame_id
             return
 
-        acquired = self._acquire_publish_slot()
+        acquired = self._published_ring.acquire(frame_id=next_frame_id)
         if acquired is None:
             self._publish_frame_id = next_frame_id
             return
@@ -881,16 +848,16 @@ class GpuEngine(PhysicsEngine):
             }
 
         event = object()
-        meta.frame_id = next_frame_id
-        meta.step_index = self._publish_step_index
-        meta.sim_time = self._publish_sim_time
-        meta.state = "ready"
-        meta.publish_event = event
-        meta.host_export_queued = False
-        meta.invalidated = False
+        meta = self._published_ring.mark_ready(
+            slot_id=slot_id,
+            frame_id=next_frame_id,
+            step_index=self._publish_step_index,
+            sim_time=self._publish_sim_time,
+            publish_event=event,
+        )
 
         self._publish_frame_id = next_frame_id
-        self._latest_published_frame = GpuPublishedFrame(
+        frame = GpuPublishedFrame(
             slot_id=slot_id,
             frame_id=next_frame_id,
             sim_time=self._publish_sim_time,
@@ -907,6 +874,7 @@ class GpuEngine(PhysicsEngine):
             ready_event=event,
             slot_meta=meta,
         )
+        self._published_ring.set_latest_frame(frame)
 
     def _step_physics(self, tau=None, dt=None):
         """Run one physics substep (no output extraction)."""

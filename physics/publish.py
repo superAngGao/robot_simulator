@@ -176,11 +176,10 @@ class GpuPublishedFrame:
         }
         if name in guarded:
             slot_meta = object.__getattribute__(self, "slot_meta")
-            if slot_meta is not None and slot_meta.invalidated:
+            frame_id = object.__getattribute__(self, "frame_id")
+            if slot_meta is not None and (slot_meta.invalidated or slot_meta.frame_id != frame_id):
                 raise SlotReclaimedError(
-                    "GpuPublishedFrame slot "
-                    f"{slot_meta.slot_id} for frame {slot_meta.frame_id} "
-                    "has been reclaimed"
+                    f"GpuPublishedFrame slot {slot_meta.slot_id} for frame {frame_id} has been reclaimed"
                 )
         return object.__getattribute__(self, name)
 
@@ -355,6 +354,145 @@ class SlotReclaimer:
         )
 
 
+class PublishedRing:
+    """Control-plane ring for published frame slots.
+
+    The ring owns slot metadata, consumer state, reclaim decisions, and the
+    latest-frame pointer. It only holds references to slot payload buffers; the
+    execution backend remains responsible for allocating and writing those
+    buffers.
+    """
+
+    def __init__(
+        self,
+        *,
+        slot_buffers: list[object],
+        consumers: list[ConsumerState] | None = None,
+        policy: PublishPolicy | None = None,
+    ) -> None:
+        if not slot_buffers:
+            raise ValueError("PublishedRing requires at least one slot buffer")
+        self._slot_buffers = slot_buffers
+        self._slot_meta = [PublishedSlotMeta(slot_id=i) for i in range(len(slot_buffers))]
+        self._consumers = consumers if consumers is not None else []
+        self._reclaimer = SlotReclaimer(self._consumers)
+        self._policy = policy or PublishPolicy()
+        self._latest_frame = None
+
+    @property
+    def ring_size(self) -> int:
+        return len(self._slot_buffers)
+
+    @property
+    def policy(self) -> PublishPolicy:
+        return self._policy
+
+    @property
+    def consumers(self) -> list[ConsumerState]:
+        return self._consumers
+
+    @property
+    def slot_meta(self) -> list[PublishedSlotMeta]:
+        return self._slot_meta
+
+    @property
+    def slot_buffers(self) -> list[object]:
+        return self._slot_buffers
+
+    @property
+    def latest_frame(self):
+        return self._latest_frame
+
+    def set_policy(self, policy: PublishPolicy) -> None:
+        self._policy = policy
+
+    def set_latest_frame(self, frame) -> None:
+        self._latest_frame = frame
+
+    def register_consumer(self, consumer: ConsumerState) -> None:
+        for idx, existing in enumerate(self._consumers):
+            if existing.consumer_id == consumer.consumer_id:
+                self._consumers[idx] = consumer
+                return
+        self._consumers.append(consumer)
+
+    def unregister_consumer(self, consumer_id: str) -> None:
+        self._consumers[:] = [consumer for consumer in self._consumers if consumer.consumer_id != consumer_id]
+
+    def ring_pressure_stats(self, next_frame_id: int | None = None) -> RingPressureStats:
+        target = None if next_frame_id is None else self._target_meta(next_frame_id)
+        return self._reclaimer.ring_pressure_stats(target)
+
+    def acquire(
+        self,
+        *,
+        frame_id: int,
+    ) -> tuple[int, object, PublishedSlotMeta] | None:
+        """Acquire the slot for ``frame_id`` or apply the ring-full policy."""
+
+        slot_id = self._target_slot_id(frame_id)
+        meta = self._slot_meta[slot_id]
+        if meta.state == "ready" and not self._reclaimer.reclaimable(meta):
+            action = self._policy.on_ring_full
+            blockers = self._reclaimer.ring_pressure_stats(meta).blocking_consumer_ids
+            if action == "skip":
+                return None
+            if action == "block":
+                raise NotImplementedError(
+                    "PublishPolicy(on_ring_full='block') is not implemented in phase-1; "
+                    "use 'raise' or 'skip' until async staging/reclaim lands."
+                )
+            raise RuntimeError(
+                "Published ring backpressure: slot is pinned by lossless consumer(s): " + ", ".join(blockers)
+            )
+
+        meta.invalidated = True
+        meta.state = "writing"
+        return slot_id, self._slot_buffers[slot_id], meta
+
+    def mark_ready(
+        self,
+        *,
+        slot_id: int,
+        frame_id: int,
+        step_index: int,
+        sim_time: float,
+        publish_event: object | None,
+    ) -> PublishedSlotMeta:
+        meta = self._slot_meta[slot_id]
+        meta.frame_id = frame_id
+        meta.step_index = step_index
+        meta.sim_time = sim_time
+        meta.state = "ready"
+        meta.publish_event = publish_event
+        meta.host_export_queued = False
+        meta.invalidated = False
+        return meta
+
+    def find_frame(self, frame_id: int) -> tuple[PublishedSlotMeta, object] | None:
+        for meta, slot in zip(self._slot_meta, self._slot_buffers):
+            if meta.state == "ready" and meta.frame_id == frame_id:
+                return meta, slot
+        return None
+
+    def reset(self) -> None:
+        self._latest_frame = None
+        for meta in self._slot_meta:
+            meta.frame_id = -1
+            meta.step_index = -1
+            meta.sim_time = 0.0
+            meta.state = "free"
+            meta.publish_event = None
+            meta.host_export_queued = False
+            meta.invalidated = False
+
+    def _target_slot_id(self, frame_id: int) -> int:
+        return frame_id % self.ring_size
+
+    def _target_meta(self, frame_id: int) -> PublishedSlotMeta:
+        return self._slot_meta[self._target_slot_id(frame_id)]
+
+
 __all__ = [
     "AckPoint",
     "AckPolicy",
@@ -371,6 +509,7 @@ __all__ = [
     "PublishPlan",
     "PublishPolicy",
     "PublishedFrameCore",
+    "PublishedRing",
     "PublishedSlotMeta",
     "QoSMode",
     "RingPressureStats",

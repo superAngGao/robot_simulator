@@ -8,6 +8,7 @@ from physics.publish import (
     ConsumerState,
     GpuPublishedFrame,
     LeaseExpiredError,
+    PublishedRing,
     PublishedSlotMeta,
     PublishPlan,
     PublishPolicy,
@@ -150,6 +151,31 @@ class TestGpuPublishedFrame:
         with pytest.raises(SlotReclaimedError, match="reclaimed"):
             _ = frame.q_wp
 
+    def test_access_raises_after_slot_reuse_even_when_not_invalidated(self):
+        meta = PublishedSlotMeta(slot_id=1, frame_id=11, state="ready", invalidated=False)
+        frame = GpuPublishedFrame(
+            slot_id=1,
+            frame_id=11,
+            sim_time=0.01,
+            step_index=11,
+            env_mask_wp=None,
+            q_wp=object(),
+            qdot_wp=object(),
+            x_world_R_wp=object(),
+            x_world_r_wp=object(),
+            v_bodies_wp=object(),
+            contact_count_wp=None,
+            contact_cache_ref=None,
+            telemetry_ref=None,
+            slot_meta=meta,
+        )
+
+        meta.frame_id = 14
+        meta.invalidated = False
+
+        with pytest.raises(SlotReclaimedError, match="reclaimed"):
+            _ = frame.q_wp
+
 
 class TestAckPolicy:
     def test_best_effort_defaults_to_no_ack(self):
@@ -192,6 +218,79 @@ class TestSlotReclaimer:
 
         assert math.isinf(reclaimer.min_lossless_acked_frame_id())
         assert reclaimer.reclaimable(slot) is True
+
+
+class TestPublishedRing:
+    def test_acquire_marks_target_slot_writing(self):
+        ring = PublishedRing(slot_buffers=[{"slot": 0}, {"slot": 1}])
+
+        acquired = ring.acquire(frame_id=1)
+
+        assert acquired is not None
+        slot_id, slot, meta = acquired
+        assert slot_id == 1
+        assert slot == {"slot": 1}
+        assert meta.state == "writing"
+        assert meta.invalidated is True
+
+    def test_acquire_returns_none_when_pinned_and_policy_is_skip(self):
+        consumer = ConsumerState(
+            consumer_id="dataset",
+            consumer_kind="host_export",
+            qos_mode="lossless",
+            access_mode="snapshot",
+            acked_frame_id=-1,
+        )
+        ring = PublishedRing(
+            slot_buffers=[{"slot": 0}],
+            consumers=[consumer],
+            policy=PublishPolicy(on_ring_full="skip"),
+        )
+        ring.mark_ready(slot_id=0, frame_id=0, step_index=0, sim_time=0.0, publish_event=object())
+
+        assert ring.acquire(frame_id=1) is None
+
+    def test_acquire_raises_when_pinned_and_policy_is_raise(self):
+        consumer = ConsumerState(
+            consumer_id="dataset",
+            consumer_kind="host_export",
+            qos_mode="lossless",
+            access_mode="snapshot",
+            acked_frame_id=-1,
+        )
+        ring = PublishedRing(
+            slot_buffers=[{"slot": 0}],
+            consumers=[consumer],
+            policy=PublishPolicy(on_ring_full="raise"),
+        )
+        ring.mark_ready(slot_id=0, frame_id=0, step_index=0, sim_time=0.0, publish_event=object())
+
+        with pytest.raises(RuntimeError, match="dataset"):
+            ring.acquire(frame_id=1)
+
+    def test_mark_ready_latest_and_find_frame(self):
+        ring = PublishedRing(slot_buffers=[{"slot": 0}, {"slot": 1}])
+        meta = ring.mark_ready(slot_id=0, frame_id=2, step_index=2, sim_time=0.2, publish_event="event")
+        frame = object()
+
+        ring.set_latest_frame(frame)
+        found = ring.find_frame(2)
+
+        assert meta.state == "ready"
+        assert meta.invalidated is False
+        assert ring.latest_frame is frame
+        assert found == (meta, {"slot": 0})
+
+    def test_reset_clears_meta_and_latest_frame(self):
+        ring = PublishedRing(slot_buffers=[{"slot": 0}])
+        ring.mark_ready(slot_id=0, frame_id=3, step_index=3, sim_time=0.3, publish_event=object())
+        ring.set_latest_frame(object())
+
+        ring.reset()
+
+        assert ring.latest_frame is None
+        assert ring.slot_meta[0].state == "free"
+        assert ring.slot_meta[0].frame_id == -1
 
     def test_reclaimer_uses_slowest_lossless_consumer(self):
         consumers = [

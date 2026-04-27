@@ -1623,10 +1623,29 @@ Rerun 训练监控与后续 RL obs 复用。但当前仓库只有一半设计落
 - `borrow` vs `snapshot`
 - `ConsumerState / AckPolicy / SlotReclaimer`
 
-**当前判断（2026-04-24）**：
+**状态更新（2026-04-27）**：
+
+- phase-1 control plane 与同步 published-frame runtime 已经落地：
+  `PublishPolicy / PublishPlan / ConsumerState / AckPolicy / SlotReclaimer /
+  BorrowedFrameLease / SnapshotHandle / CpuPublishedFrame / GpuPublishedFrame`
+- `GpuEngine` 已经同步写 dedicated published slot buffers，`latest_published_frame()`
+  不是 stub
+- Q50/Q51 已经让 debug export / render / telemetry / sensing / `RenderScene.sensor_data`
+  消费 `PublishedFrame`
+- `PublishedRing` 已抽为 `GpuEngine` 内部持有的 physics-runtime 控制组件，slot
+  buffers 仍由 `GpuEngine` 分配和写入
+- `GpuPublishedFrame` stale guard 已加固：除 `invalidated` 外，也检查
+  `slot_meta.frame_id == frame.frame_id`
+
+因此 Q52 的下一阶段不是“从零落控制平面”，而是 phase-2 runtime hardening：
+async host staging、typed slot/block、`on_ring_full="block"`、以及 RL obs 需要的
+contact mask / compact contact-pair published contract。
+
+**历史判断（2026-04-24）**：
 
 - 该方向已经形成了足够稳的 implementation-ready 草案
-- 但尚未真正落地到代码骨架
+- 当时尚未真正落地到代码骨架；该判断已被 2026-04-25 至 2026-04-27 的
+  phase-1/early phase-2 实现取代
 - 这是后续 realtime rendering / high-fidelity rendering / sensor export / host logging 共用的数据发布底座
 - 应优先从 GPU path 实装，再让 CPU path 对齐语义做简化 reference 版本
 
@@ -1709,11 +1728,13 @@ Rerun 训练监控与后续 RL obs 复用。但当前仓库只有一半设计落
 
 **建议的实施顺序**：
 
-1. 先落控制平面（policy/plan/consumer/reclaimer）
-2. 再落 GPU `publish_core`
-3. 再接 `lossless + snapshot` 的 host staging 路径
-4. 再接 `best_effort + borrow` 的 realtime/debug 消费路径
-5. 最后让 CPU path 对齐共享语义
+1. ✅ 控制平面（policy/plan/consumer/reclaimer）已落地
+2. ✅ GPU 同步 `publish_core` 已落地为 dedicated slot buffer copy
+3. ✅ `PublishedRing` 已成为 `GpuEngine` 内部控制组件
+4. 下一步接 `lossless + snapshot` 的 async host staging / queue / completion event
+5. 再接 `on_ring_full="block"` 的真实等待语义
+6. 再为 RL obs / sensing phase-2 补 compact contact-pair 或 per-body contact mask
+   published contract
 
 **触发条件**：开始把 2026-04-24 这轮 design proposal 转成代码时。
 **优先级**：P1（已接近实现，且是后续渲染/传感器主线的基础设施）。
