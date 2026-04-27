@@ -74,6 +74,25 @@ class TerrainInfo:
 
 
 @dataclass
+class RenderSensorData:
+    """Optional numeric/state sensor readings attached to a debug scene.
+
+    This is a narrow Q50 Step 4 bridge: it carries readings produced by
+    `sensing/` for inspection/export, but it is not a camera/LiDAR packet and
+    does not make `RenderScene` the canonical sensor execution contract.
+    """
+
+    frame_id: int
+    sim_time: float
+    env_idx: int
+
+    imu_readings: list = field(default_factory=list)
+    joint_state: object | None = None
+    force: object | None = None
+    contact: object | None = None
+
+
+@dataclass
 class RenderScene:
     """Complete renderable scene snapshot — backend-agnostic.
 
@@ -90,6 +109,7 @@ class RenderScene:
     skeleton_links: list[tuple[NDArray[np.float64], NDArray[np.float64]]]
     body_positions: list[NDArray[np.float64]]
     body_names: list[str]
+    sensor_data: RenderSensorData | None = None
     # Future extension slots
     deformable_meshes: list = field(default_factory=list)
     particles: list = field(default_factory=list)

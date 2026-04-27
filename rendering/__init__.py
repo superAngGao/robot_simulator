@@ -7,7 +7,7 @@ from .backends.matplotlib_backend import MatplotlibBackend
 from .backends.rerun_backend import RerunBackend
 from .debug_exporter import DebugExporter
 from .published_frame_renderer import render_latest_published_frame, render_published_frame
-from .render_scene import ContactPoint, PositionedShape, RenderScene, TerrainInfo
+from .render_scene import ContactPoint, PositionedShape, RenderScene, RenderSensorData, TerrainInfo
 from .scene_builder import (
     build_render_scene,
     build_render_scene_from_gpu,
@@ -22,6 +22,7 @@ __all__ = [
     "PositionedShape",
     "ContactPoint",
     "TerrainInfo",
+    "RenderSensorData",
     "DebugExporter",
     "render_published_frame",
     "render_latest_published_frame",

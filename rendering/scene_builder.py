@@ -27,7 +27,7 @@ from physics.publish import CpuPublishedFrame, GpuPublishedFrame
 from physics.spatial import SpatialTransform
 from physics.terrain import FlatTerrain, HalfSpaceTerrain
 
-from .render_scene import ContactPoint, PositionedShape, RenderScene, TerrainInfo
+from .render_scene import ContactPoint, PositionedShape, RenderScene, RenderSensorData, TerrainInfo
 
 if TYPE_CHECKING:
     from physics.merged_model import MergedModel
@@ -95,6 +95,7 @@ def build_render_scene(
     X_world: List["SpatialTransform"],
     contacts: Optional[List["ContactInfo"]] = None,
     terrain: Optional["Terrain"] = None,
+    sensor_data: RenderSensorData | None = None,
 ) -> RenderScene:
     """Build a RenderScene from merged model state.
 
@@ -103,6 +104,7 @@ def build_render_scene(
         X_world : Body world-frame transforms (from FK or StepOutput).
         contacts: Contact info list (from engine.query_contacts()).
         terrain : Terrain instance (from merged.terrain or Scene).
+        sensor_data: Optional numeric/state readings for debug/export views.
 
     Returns:
         RenderScene ready for any rendering backend.
@@ -170,6 +172,7 @@ def build_render_scene(
         skeleton_links=skeleton_links,
         body_positions=body_positions,
         body_names=body_names,
+        sensor_data=sensor_data,
     )
 
 
@@ -264,6 +267,7 @@ def build_render_scene_from_published_frame(
     frame: CpuPublishedFrame | GpuPublishedFrame | None = None,
     env_idx: int = 0,
     include_contacts: bool = True,
+    include_sensor_data: bool = True,
 ) -> RenderScene:
     """Build a RenderScene from an engine published frame.
 
@@ -279,19 +283,65 @@ def build_render_scene_from_published_frame(
 
     merged = engine.merged
     terrain = getattr(merged, "terrain", None)
+    sensor_data = (
+        _sensor_data_from_published_frame(engine, frame=frame, env_idx=env_idx)
+        if include_sensor_data
+        else None
+    )
 
     if isinstance(frame, CpuPublishedFrame):
         contacts = frame.contacts if include_contacts else None
-        return build_render_scene(merged, frame.X_world, contacts=contacts, terrain=terrain)
+        return build_render_scene(
+            merged,
+            frame.X_world,
+            contacts=contacts,
+            terrain=terrain,
+            sensor_data=sensor_data,
+        )
 
     if isinstance(frame, GpuPublishedFrame):
         X_world = _transforms_from_gpu_published_frame(frame, env_idx=env_idx)
         contacts = None
         if include_contacts:
             contacts = _contacts_from_gpu_published_frame(frame, env_idx=env_idx, engine=engine)
-        return build_render_scene(merged, X_world, contacts=contacts, terrain=terrain)
+        return build_render_scene(
+            merged,
+            X_world,
+            contacts=contacts,
+            terrain=terrain,
+            sensor_data=sensor_data,
+        )
 
     raise TypeError(f"Unsupported published frame type: {type(frame).__name__}")
+
+
+def _sensor_data_from_published_frame(
+    engine,
+    frame: CpuPublishedFrame | GpuPublishedFrame,
+    env_idx: int,
+) -> RenderSensorData:
+    from sensing import (
+        build_contact_state_reading,
+        build_force_sensor_reading,
+        build_imu_reading,
+        build_joint_state_reading,
+        build_state_sample_view,
+    )
+
+    view = build_state_sample_view(engine, frame=frame, env_idx=env_idx)
+    imu_readings = []
+    if view.X_world is not None:
+        imu_readings = [build_imu_reading(view, body_index=body_idx) for body_idx in range(len(view.X_world))]
+
+    return RenderSensorData(
+        frame_id=view.frame_id,
+        sim_time=view.sim_time,
+        env_idx=view.env_idx,
+        imu_readings=imu_readings,
+        joint_state=build_joint_state_reading(view),
+        force=build_force_sensor_reading(view),
+        contact=build_contact_state_reading(view),
+    )
 
 
 def build_render_scene_from_tree(

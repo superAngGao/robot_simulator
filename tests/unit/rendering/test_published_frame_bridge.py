@@ -63,6 +63,25 @@ class TestPublishedFrameBridge:
         assert scene.shapes[0].shape_type == "box"
         assert len(scene.body_names) == 1
         assert scene.body_names[0].endswith("box")
+        assert scene.sensor_data is not None
+        assert scene.sensor_data.frame_id == 0
+        assert len(scene.sensor_data.imu_readings) == 1
+        assert scene.sensor_data.joint_state is not None
+        assert scene.sensor_data.force is not None
+        assert scene.sensor_data.force.qfrc_applied is not None
+        assert scene.sensor_data.contact is not None
+        assert scene.sensor_data.contact.contact_count is not None
+
+    def test_published_frame_sensor_data_can_be_disabled(self):
+        merged = merge_models({"r": _single_body_model(body_name="ball")}, terrain=FlatTerrain())
+        engine = CpuEngine(merged, dt=1e-3)
+        q, qdot = merged.tree.default_state()
+        tau = np.zeros(merged.nv)
+        engine.step(q=q, qdot=qdot, tau=tau, dt=1e-3)
+
+        scene = build_render_scene_from_published_frame(engine, include_sensor_data=False)
+
+        assert scene.sensor_data is None
 
     def test_gpu_published_frame_builds_render_scene_from_slot_buffers(self):
         merged = merge_models(
@@ -70,6 +89,7 @@ class TestPublishedFrameBridge:
         )
         engine = MagicMock()
         engine.merged = merged
+        engine.nc_sensor = 1
         engine.query_contacts.return_value = []
 
         frame = GpuPublishedFrame(
@@ -92,7 +112,11 @@ class TestPublishedFrameBridge:
                 "contact_point_wp": _ArrayWrapper(np.array([[[0.0, 0.0, 0.0]]], dtype=np.float32)),
                 "contact_active_wp": _ArrayWrapper(np.array([[1]], dtype=np.int32)),
             },
-            telemetry_ref=None,
+            telemetry_ref={
+                "qacc_smooth_wp": _ArrayWrapper(np.array([[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]], dtype=np.float32)),
+                "qacc_total_wp": _ArrayWrapper(np.array([[1.1, 1.2, 1.3, 1.4, 1.5, 1.6]], dtype=np.float32)),
+                "force_sensor_wp": _ArrayWrapper(np.array([[7.0, 8.0, 9.0]], dtype=np.float32)),
+            },
         )
         engine.latest_published_frame.return_value = frame
 
@@ -102,12 +126,19 @@ class TestPublishedFrameBridge:
         assert scene.shapes[0].shape_type == "box"
         assert len(scene.contacts) == 1
         assert scene.contacts[0].body_j == -1
+        assert scene.sensor_data is not None
+        assert scene.sensor_data.frame_id == 3
+        assert len(scene.sensor_data.imu_readings) == 1
+        np.testing.assert_allclose(scene.sensor_data.force.contact_force, [[7.0, 8.0, 9.0]])
+        assert scene.sensor_data.force.qfrc_applied is None
+        assert scene.sensor_data.contact.contact_count == 1
         engine.query_contacts.assert_not_called()
 
     def test_gpu_published_frame_falls_back_to_engine_query_contacts_when_dense_block_missing(self):
         merged = merge_models({"r": _single_body_model(body_name="ball")}, terrain=FlatTerrain())
         engine = MagicMock()
         engine.merged = merged
+        engine.nc_sensor = 0
         engine.query_contacts.return_value = [
             ContactInfo(
                 body_i=0,

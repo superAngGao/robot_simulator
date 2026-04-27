@@ -19,6 +19,7 @@ from physics.merged_model import merge_models
 from physics.robot_tree import Body, RobotTreeNumpy
 from physics.spatial import SpatialInertia, SpatialTransform
 from physics.terrain import FlatTerrain, HalfSpaceTerrain
+from rendering import RenderScene, TerrainInfo
 from rendering.scene_builder import build_render_scene, build_render_scene_from_tree
 from robot.model import RobotModel
 
@@ -61,6 +62,18 @@ def _make_merged(model, terrain=None):
 
 
 class TestBuildRenderScene:
+    def test_render_scene_sensor_data_defaults_to_none(self):
+        scene = RenderScene(
+            shapes=[],
+            contacts=[],
+            terrain=TerrainInfo(terrain_type="flat", params={"z": 0.0}),
+            skeleton_links=[],
+            body_positions=[],
+            body_names=[],
+        )
+
+        assert scene.sensor_data is None
+
     def test_single_box(self):
         model = _single_body_model(BoxShape((0.2, 0.3, 0.4)))
         merged = _make_merged(model)
