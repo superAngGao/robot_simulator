@@ -76,6 +76,16 @@ Still deferred after this pass:
 - cancellation/shutdown behavior for long-running export queues
 - typed host snapshot payloads instead of `dict[str, object]`
 
+Known risk in the current future-backed bridge:
+
+- worker-thread staging errors surface through the `SnapshotHandle` future.
+  For example, if a slot is reclaimed unexpectedly before a lossless snapshot
+  finishes staging, `SlotReclaimedError` will be raised from `handle.result()`,
+  not from `snapshot_frame_to_host(...)`.
+- this is acceptable for phase-1 because lossless ack should pin the source
+  slot until staging completes, but phase-2 should add explicit error-state
+  reporting and queue-level failure accounting.
+
 ## 5. Verification
 
 Commands:
