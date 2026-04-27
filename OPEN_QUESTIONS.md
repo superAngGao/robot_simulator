@@ -1676,6 +1676,19 @@ Rerun / RL obs 时。
 
 **Q53 — Sensing / Rendering boundary（ImagingView ownership + SurfaceQuery execution boundary）** (2026-04-26)
 
+**状态更新（2026-04-27）**：依赖方向与归属已形成 phase-2 决策，见
+`collab/q53-sensing-rendering-boundary__decision__codex__v1.md`。
+
+当前决定：
+
+- `sensing/` 继续负责 sensor-facing specs/readings/views，不直接依赖 `rendering/`
+- `rendering/` 继续负责 `RenderScene` / render backend，不承载通用 sensor packet
+- future camera / RGB / segmentation / render-backed depth 走集成层，暂定
+  `sensor_rendering/`，该层允许依赖 `sensing/` 和 `rendering/`
+- `SurfaceQueryView` 属于 `sensing/`，但 builder 只构造 query spec/view；
+  CPU/GPU query 结果由显式 executor/runtime 产生
+- `RenderScene` 可用于 debug overlay，不作为 LiDAR/camera 的 canonical execution contract
+
 **背景**：随着 published-frame phase-1 consumer integration 完成，下一步开始讨论独立的
 `sensing/` 模块。当前已基本收敛：
 
@@ -1696,31 +1709,31 @@ Rerun / RL obs 时。
    - 差异不只是“字段是否存在”，而是“整个 query 执行方式不同”
    - 因此应尽早决定：`SurfaceQueryView` builder 是只产出 query scene，还是直接产出 query result
 
-**当前判断（2026-04-26）**：
+**当前判断（2026-04-26；2026-04-27 更新）**：
 
 - `StateSampleView` 已足够稳，可以作为 `sensing/` 第一阶段正式落地方向
-- `SurfaceQueryView` / `ImagingView` 仍应视为待继续收敛项，而不是直接实现
-- 特别是 `ImagingView`，不应在未澄清归属前就默认放进 `sensing/`
+- `SurfaceQueryView` 可以进入 `sensing/` 设计，但 query execution 必须独立于 builder
+- `ImagingView` 不直接进入 `sensing/`，后续通过 `sensor_rendering/` 这类集成层处理
 
-**待决策点**：
-1. `ImagingView` 应放在：
-   - `sensing/`
-   - `rendering/`
-   - 还是单独的 `sensor_rendering/`
-2. 是否允许正式依赖边：
-   - `sensing -> rendering`
-3. `SurfaceQueryView` builder 的职责边界：
-   - 只产出可查询表面视图（query scene）
-   - 还是直接产出 sensor query result
-4. CPU/GPU query 差异应隐藏在：
-   - view builder
-   - sensor backend / executor
-   - 还是专门的 query runtime 层
+**已决策点（phase-2 边界）**：
+1. `ImagingView` / camera execution 不直接放进 `sensing/` 或 `RenderScene`；
+   后续由 `sensor_rendering/` 集成层拥有。
+2. 不引入正式依赖边 `sensing -> rendering`。
+3. `SurfaceQueryView` builder 只产出 query spec/view，不直接产出 sensor query result。
+4. CPU/GPU query 差异放在显式 executor/runtime 层，而不是藏进 builder。
+
+**仍待实现前细化**：
+1. `sensor_rendering/` 是否就是最终包名，还是使用 `rendering/sensors/`
+2. `SurfaceQueryView` 是否先命名为 `SurfaceQuerySpec`
+3. depth image 第一版归 imaging 还是 surface query
+4. `PublishPolicy.sensor_render` 是否需要改名以避免暗示所有 sensor 都是 render-backed
 
 **建议的暂时策略**：
-- 先正式推进 `StateSampleView`
-- `SurfaceQueryView` 只保留为设计方向，不急着落代码
-- `ImagingView` 先不进入 `sensing/` 实现骨架，待本条决策后再定
+- 继续保持 `StateSampleView` / numeric sensing 主线
+- 下一步若实现 LiDAR / range finder，先做 `SurfaceQuerySpec/View + executor`，不要复用
+  `RenderScene` 当 query scene
+- 下一步若实现 camera / render-backed depth，先创建集成层设计，不让 `sensing/`
+  直接 import `rendering/`
 
 **触发条件**：开始实现 `LiDAR / depth probe / camera` 这类非纯 numeric sensor 时。
-**优先级**：P1（不阻塞 `StateSampleView`，但阻塞后续 `SurfaceQueryView / ImagingView` 落地）。
+**优先级**：P1（归属阻塞已解除；具体执行 schema 仍需在实现前细化）。
