@@ -245,6 +245,7 @@ class CpuEngine(PhysicsEngine):
             return mask
         index_by_body = {int(body_idx): idx for idx, body_idx in enumerate(body_indices)}
         for contact in contacts:
+            # Ground contacts use body_j == -1, which is not in the contact body index.
             for body_idx in (contact.body_i, contact.body_j):
                 idx = index_by_body.get(int(body_idx))
                 if idx is not None:

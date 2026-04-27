@@ -137,7 +137,10 @@ def _build_contact_mask(
     nc_sensor: int,
     mask_out: wp.array2d(dtype=wp.int32),
 ):
-    """Build a per-contact-body active mask in `contact_body_idx` order."""
+    """Build a per-contact-body active mask in `contact_body_idx` order.
+
+    contact_bj == -1 denotes ground contact and is never a sensor body index.
+    """
     env_id = wp.tid()
 
     for s in range(nc_sensor):
