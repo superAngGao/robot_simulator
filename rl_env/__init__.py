@@ -16,6 +16,7 @@
 from .base_env import Env
 from .cfg import EnvCfg, NoiseCfg, ObsTermCfg
 from .controllers import Controller, PDController, TorqueController
+from .obs import ObsFieldSpec, ObsSchema, locomotion_obs_schema, obs_cfg_from_schema
 
 __all__ = [
     "Env",
@@ -25,4 +26,8 @@ __all__ = [
     "Controller",
     "PDController",
     "TorqueController",
+    "ObsFieldSpec",
+    "ObsSchema",
+    "locomotion_obs_schema",
+    "obs_cfg_from_schema",
 ]

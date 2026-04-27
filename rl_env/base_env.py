@@ -67,7 +67,7 @@ class Env(gym.Env):
         # Root body index (body 0 is always the root after BFS ordering)
         self.root_body_idx: int = 0
 
-        # Root body q slice (FreeJoint: 7 values [qx,qy,qz,qw,px,py,pz])
+        # Root body q slice (FreeJoint: 7 values [qw,qx,qy,qz,px,py,pz])
         root_body = tree.bodies[self.root_body_idx]
         self.root_q_slice: slice = root_body.q_idx
 

@@ -24,7 +24,7 @@ def base_ang_vel(env, **params) -> torch.Tensor:
 
 
 def base_orientation(env, **params) -> torch.Tensor:
-    """Root body quaternion [qx, qy, qz, qw]. Shape (4,)."""
+    """Root body quaternion [qw, qx, qy, qz]. Shape (4,)."""
     return torch.tensor(env.q[env.root_q_slice][:4], dtype=torch.float32)
 
 
