@@ -3,8 +3,8 @@ Stage: review-followup
 Author: codex
 Version: v1
 Date: 2026-04-26
-Status: ready-for-rereview-docstrings-added
-Related Files: collab/sensing-phase1__implementation-note__codex__v1.md, sensing/readings.py, sensing/builders.py, tests/unit/sensing/test_readings.py
+Status: ready-for-rereview-decision-recorded
+Related Files: collab/sensing-phase1__implementation-note__codex__v1.md, collab/sensing-phase1__decision__codex__v1.md, sensing/readings.py, sensing/builders.py, tests/unit/sensing/test_readings.py
 Owner Summary: Follow-up changes after Claude review of the first `sensing/` phase-1 implementation.
 
 ---
@@ -153,13 +153,22 @@ Result:
 
 ## 4. Remaining Review Questions
 
-For the next Claude pass, the main remaining questions are now narrower:
+For the next Claude pass, the main remaining questions have phase-1 decisions
+recorded in:
 
-1. Should `ForceSensorReading` expose both `qfrc_applied` and `tau_smooth`, or should one remain accessible only through `TelemetrySnapshot`?
+- `collab/sensing-phase1__decision__codex__v1.md`
 
-2. Is `orientation_world_R` sufficient for phase-1, or should a quaternion field be added before downstream RL observation code uses this API?
+Current phase-1 stance:
 
-3. Should `ContactStateReading` remain count-only until a published per-body contact mask exists?
+1. Keep both `ForceSensorReading.qfrc_applied` and
+   `ForceSensorReading.tau_smooth`; do not collapse them into a generic force
+   field.
+
+2. Keep `IMUReading.orientation_world_R` as the only phase-1 orientation field;
+   defer quaternion output until a named downstream consumer requires it.
+
+3. Keep `ContactStateReading` count-only until a backend-neutral published
+   contact-mask or contact-pair block exists.
 
 4. Resolved in this follow-up: CPU/GPU asymmetry and phase-1 omissions are now
    captured in public dataclass docstrings, not only in the implementation note.
