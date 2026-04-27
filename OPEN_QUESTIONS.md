@@ -1643,9 +1643,14 @@ published contract 已收敛）。
   不需要默认打开 dense `RigidBlock`
 - `lossless + snapshot` 已接入 future-aware host staging：GPU lossless host
   snapshot 通过 `SnapshotHandle` 的 staged-completion 点推进 ack
+- consumer/backpressure 语义已拆成四条轴：
+  `consumer_kind / consumer_location / access_mode / qos_mode`
+- `PublishedRing` 不应成为 RL 训练热路径的必经入口；RL obs kernel 可直接读
+  current GPU buffers / scratch，ring 主要服务外部或异步消费者的稳定 slot 生命周期
 
 因此 Q52 的下一阶段不是“从零落控制平面”，而是 phase-2 runtime hardening：
-stream/event staging、typed slot/block、`on_ring_full="block"`、以及更丰富的 compact
+host/device consumer 边界、stream/event staging、typed slot/block、host-only
+`on_ring_full="block"`、以及更丰富的 compact
 contact-pair published contract。
 
 **历史判断（2026-04-24）**：
@@ -1732,6 +1737,8 @@ contact-pair published contract。
 3. `lossless` consumer 的最大时延与 ring sizing 关系
 4. `borrow` API 的 context-manager / ephemeral lease 具体实现方式
 5. `HostExportQueue` 的 staging ownership 与 copy completion 信号时机
+6. RL 训练热路径是否应始终绕过 `PublishedRing`，直接读 current GPU
+   buffers / scratch 或 current-frame device pointer
 
 **建议的实施顺序**：
 
@@ -1739,10 +1746,12 @@ contact-pair published contract。
 2. ✅ GPU 同步 `publish_core` 已落地为 dedicated slot buffer copy
 3. ✅ `PublishedRing` 已成为 `GpuEngine` 内部控制组件
 4. ✅ `lossless + snapshot` 已具备 future-aware host staging / completion ack
-5. 再接 `on_ring_full="block"` 的真实等待语义
-6. ✅ RL obs / sensing phase-2 的 per-body contact mask published contract 已落地
-7. 后续按需要补 compact contact-pair published contract
-8. 后续把 host staging 从 Python future 升级为 Warp stream/event + bounded queue
+5. 先给 `ConsumerState` 显式增加 `consumer_location="host"` 默认字段
+6. 再接 host-only `on_ring_full="block"` 的真实等待语义
+7. ✅ RL obs / sensing phase-2 的 per-body contact mask published contract 已落地
+8. 后续按需要补 compact contact-pair published contract
+9. 后续把 host staging 从 Python future 升级为 Warp stream/event + bounded queue
+10. 未来 GPU render-backed sensing 使用 stream event/fence，不走 CPU condition wait
 
 **触发条件**：开始把 2026-04-24 这轮 design proposal 转成代码时。
 **优先级**：P1（已接近实现，且是后续渲染/传感器主线的基础设施）。

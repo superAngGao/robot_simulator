@@ -236,7 +236,74 @@ DeviceEventBlocker
 The current `ConsumerState.acked_frame_id` is adequate for host consumers, but
 not expressive enough for device event/fence completion.
 
-## 7. Proposed Near-Term Decision
+## 7. RL Hot Path Is Not A Ring Consumer
+
+The main RL training loop should not be forced through `PublishedRing`.
+
+Typical GPU training loop:
+
+```text
+physics kernels -> obs kernels -> policy network -> action writeback -> next physics step
+```
+
+If this loop runs on one CUDA/Warp stream, kernel launch order already gives the
+required read-after-write ordering. If it spans multiple streams, explicit
+stream events are the right dependency primitive.
+
+`PublishedRing` has a different job:
+
+```text
+provide stable slot lifetime for external or asynchronous consumers
+```
+
+Examples:
+
+- host debug export
+- dataset logging
+- realtime viewers
+- lower-rate render/sensor side channels
+- consumers that need a frame to remain stable after physics moves on
+
+RL observation schema can still define a published contract. The important
+distinction is:
+
+```text
+contract:
+  field names, shapes, ordering, units, and optionality
+
+PublishedRing:
+  retained slot lifetime for consumers outside the training hot path
+```
+
+For example, `contact_mask` now has a stable contract. A host snapshot can read
+it from a published ring slot, while a GPU obs kernel can read the current
+device buffer directly if it is executing in the main training stream.
+
+This avoids making Python ring acquire/mark-ready bookkeeping a mandatory cost
+at high physics rates such as 5000 Hz.
+
+## 8. Best-Effort Borrow Safety
+
+Best-effort consumers do not pin slots.
+
+That means a borrowed GPU frame can become stale if physics reuses the slot
+while the consumer still holds a descriptor. The stale-slot guard will raise
+`SlotReclaimedError` on guarded field access, but it does not make the borrow a
+retention guarantee.
+
+Correct usage for best-effort borrow is:
+
+```text
+enter borrow scope
+read/copy the required fields immediately
+leave borrow scope
+```
+
+Realtime renderers should either finish their read within the borrow scope or
+explicitly snapshot/copy the fields they need. A long-lived renderer reference
+to a borrowed frame is a misuse.
+
+## 9. Proposed Near-Term Decision
 
 Do not implement generic `on_ring_full="block"` yet as a plain host condition
 wait without naming its scope.
@@ -248,10 +315,11 @@ Instead:
    implemented;
 3. keep host export on the existing `SnapshotHandle` / `acked_frame_id` path;
 4. design GPU render-backed sensing around stream/event dependencies;
-5. only then implement a unified reclaim decision that can consider both host
+5. keep the RL training hot path free to read current GPU buffers directly;
+6. only then implement a unified reclaim decision that can consider both host
    ack and device event/fence blockers.
 
-## 8. Review Targets
+## 10. Review Targets
 
 Questions for Claude/review:
 
@@ -266,7 +334,25 @@ Questions for Claude/review:
 5. Should host export and device sensing share one `PublishedRing`, or should
    device pipelines eventually use a separate device-visible ring/queue?
 
-## 9. Current Recommendation
+## 11. Review Response
+
+Current response after review:
+
+1. Add `consumer_location: Literal["host", "device"] = "host"` to
+   `ConsumerState` in the near term.
+2. Do not split `DeviceConsumerState` yet; introduce it when there are real
+   device event/fence handles to store.
+3. Treat `on_ring_full="block"` as host-only until device consumer semantics
+   exist. If a device consumer is registered, a host condition wait should not
+   be used as the device blocking mechanism.
+4. Use CUDA/Warp stream events for GPU render-backed sensing. mbarrier and
+   global atomics are useful primitives, but they are not the first tool for
+   cross-stream physics-to-sensor ordering.
+5. Keep a shared host-side `PublishedRing` for now. Consider a separate
+   device-visible ring only if the full GPU pipeline needs to run without CPU
+   control-plane involvement.
+
+## 12. Current Recommendation
 
 For Q52 phase-1:
 
@@ -279,7 +365,10 @@ Host-side block:
 
 GPU render/sensing:
   defer to a separate device-consumer design using event/fence ordering
+
+RL hot path:
+  bypass PublishedRing and consume current device buffers / scratch directly
 ```
 
 This avoids baking a CPU-centric blocking model into GPU-only render/sensing
-paths.
+paths or the main training loop.
