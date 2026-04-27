@@ -217,9 +217,12 @@ class CpuEngine(PhysicsEngine):
             snapshot["telemetry"] = frame.telemetry
 
         ack_policy = AckPolicy.default_for(consumer)
-        if ack_policy.ack_point == "on_snapshot_staged":
-            consumer.acked_frame_id = max(consumer.acked_frame_id, frame.frame_id)
-        return SnapshotHandle(snapshot, frame_id=frame.frame_id)
+
+        def _ack_staged(_snapshot: dict[str, object]) -> None:
+            if ack_policy.ack_point == "on_snapshot_staged":
+                consumer.acked_frame_id = max(consumer.acked_frame_id, frame.frame_id)
+
+        return SnapshotHandle(snapshot, frame_id=frame.frame_id, on_staged=_ack_staged)
 
     def _require_consumer(self, consumer_id: str) -> ConsumerState:
         for consumer in self._publish_consumers:

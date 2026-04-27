@@ -7,8 +7,10 @@ shared contract that both CPU and GPU execution paths can implement.
 
 from __future__ import annotations
 
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from math import inf
+from threading import Lock
 from typing import Callable, Generic, Literal, TypeVar
 
 QoSMode = Literal["best_effort", "lossless"]
@@ -235,17 +237,80 @@ class BorrowedFrameLease(Generic[T]):
             raise LeaseExpiredError("Borrowed frame lease is no longer active")
 
 
-@dataclass
 class SnapshotHandle(Generic[T]):
-    """Phase-1 synchronous snapshot handle with a future-compatible surface."""
+    """Handle for a host/device snapshot that may still be staging."""
 
-    _result: T
-    frame_id: int | None = None
-    staged: bool = True
-    is_ready: bool = True
+    def __init__(
+        self,
+        result: T | None = None,
+        *,
+        frame_id: int | None = None,
+        staged: bool = True,
+        is_ready: bool = True,
+        future: Future[T] | None = None,
+        on_staged: Callable[[T], None] | None = None,
+    ) -> None:
+        self._result = result
+        self.frame_id = frame_id
+        self._future = future
+        self._on_staged = on_staged
+        self._lock = Lock()
+        self._staged = staged and future is None
+        self._is_ready = is_ready and future is None
+        if future is not None:
+            self._staged = False
+            self._is_ready = False
+            future.add_done_callback(self._complete_future)
+        elif self._staged and result is not None:
+            self._notify_staged(result)
+
+    @classmethod
+    def from_future(
+        cls,
+        future: Future[T],
+        *,
+        frame_id: int | None = None,
+        on_staged: Callable[[T], None] | None = None,
+    ) -> "SnapshotHandle[T]":
+        return cls(None, frame_id=frame_id, staged=False, is_ready=False, future=future, on_staged=on_staged)
+
+    @property
+    def staged(self) -> bool:
+        self._refresh_if_done()
+        return self._staged
+
+    @property
+    def is_ready(self) -> bool:
+        self._refresh_if_done()
+        return self._is_ready
 
     def result(self) -> T:
+        if self._future is not None and not self._staged:
+            self._complete_future(self._future)
+        if not self._staged:
+            raise RuntimeError("Snapshot is not staged yet")
         return self._result
+
+    def _refresh_if_done(self) -> None:
+        if self._future is not None and self._future.done() and not self._staged:
+            self._complete_future(self._future)
+
+    def _complete_future(self, future: Future[T]) -> None:
+        result = future.result()
+        with self._lock:
+            if self._staged:
+                return
+            self._result = result
+            self._staged = True
+            self._is_ready = True
+        self._notify_staged(result)
+
+    def _notify_staged(self, result: T) -> None:
+        callback = self._on_staged
+        if callback is None:
+            return
+        self._on_staged = None
+        callback(result)
 
 
 @dataclass(frozen=True)

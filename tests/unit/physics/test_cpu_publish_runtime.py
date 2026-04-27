@@ -123,6 +123,7 @@ class TestCpuPublishRuntime:
             frame.frame_id,
             HostSnapshotSpec(fields=frozenset({"q", "qdot", "contact_count"})),
         )
+        assert consumer.acked_frame_id == frame.frame_id
         snapshot = handle.result()
 
         assert handle.is_ready is True

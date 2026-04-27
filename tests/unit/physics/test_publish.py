@@ -1,4 +1,5 @@
 import math
+from concurrent.futures import Future
 
 import pytest
 
@@ -123,6 +124,40 @@ class TestSnapshotHandle:
         assert handle.is_ready is True
         assert handle.frame_id == 5
         assert handle.result()["frame_id"] == 5
+
+    def test_future_snapshot_marks_ready_after_staging(self):
+        future: Future[dict[str, object]] = Future()
+        acked = []
+        handle = SnapshotHandle.from_future(
+            future,
+            frame_id=8,
+            on_staged=lambda snapshot: acked.append(snapshot["frame_id"]),
+        )
+
+        assert handle.staged is False
+        assert handle.is_ready is False
+
+        future.set_result({"frame_id": 8, "q": [1, 2, 3]})
+
+        assert handle.staged is True
+        assert handle.is_ready is True
+        assert handle.result()["frame_id"] == 8
+        assert acked == [8]
+
+    def test_future_snapshot_ack_callback_runs_once(self):
+        future: Future[dict[str, object]] = Future()
+        acked = []
+        handle = SnapshotHandle.from_future(
+            future,
+            frame_id=9,
+            on_staged=lambda snapshot: acked.append(snapshot["frame_id"]),
+        )
+
+        future.set_result({"frame_id": 9})
+
+        assert handle.result()["frame_id"] == 9
+        assert handle.result()["frame_id"] == 9
+        assert acked == [9]
 
 
 class TestGpuPublishedFrame:

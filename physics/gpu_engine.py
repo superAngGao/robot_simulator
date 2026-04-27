@@ -12,6 +12,7 @@ The full physics step runs as a sequence of GPU kernel launches:
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, List
 
 import numpy as np
@@ -426,6 +427,7 @@ class GpuEngine(PhysicsEngine):
             consumers=self._publish_consumers,
             policy=self._publish_policy,
         )
+        self._host_snapshot_executor: ThreadPoolExecutor | None = None
 
     # ── Public state accessors (zero-copy warp arrays) ──
 
@@ -559,17 +561,38 @@ class GpuEngine(PhysicsEngine):
     def snapshot_frame_to_host(
         self, consumer_id: str, frame_id: int, spec: HostSnapshotSpec
     ) -> SnapshotHandle[dict[str, object]]:
-        """Synchronously stage a published frame to host-owned numpy arrays.
+        """Stage a published frame to host-owned numpy arrays.
 
-        This is a minimal phase-1 implementation of `snapshot + staged ack`.
-        The returned handle already owns staged data in phase-1, but keeps a
-        future-compatible shape for an eventual async queue implementation.
+        Lossless snapshot consumers stage through a host-side future; their
+        ack advances only after the staged copy owns all requested fields.
+        Best-effort snapshots stage synchronously so the slot is not kept alive
+        by reclaim accounting.
         """
         consumer = self._require_consumer(consumer_id)
         frame = self._require_published_frame(frame_id)
         consumer.latest_seen_frame_id = frame.frame_id
 
         fields = set(spec.fields)
+        ack_policy = AckPolicy.default_for(consumer)
+
+        def _ack_staged(_snapshot: dict[str, object]) -> None:
+            if ack_policy.ack_point == "on_snapshot_staged":
+                consumer.acked_frame_id = max(consumer.acked_frame_id, frame.frame_id)
+
+        if ack_policy.ack_point == "on_snapshot_staged":
+            future = self._host_snapshot_staging_executor().submit(
+                self._build_host_snapshot_from_frame,
+                frame,
+                fields,
+            )
+            return SnapshotHandle.from_future(future, frame_id=frame.frame_id, on_staged=_ack_staged)
+
+        snapshot = self._build_host_snapshot_from_frame(frame, fields)
+        return SnapshotHandle(snapshot, frame_id=frame.frame_id)
+
+    def _build_host_snapshot_from_frame(
+        self, frame: GpuPublishedFrame, fields: set[str]
+    ) -> dict[str, object]:
         snapshot: dict[str, object] = {
             "frame_id": frame.frame_id,
             "step_index": frame.step_index,
@@ -609,11 +632,15 @@ class GpuEngine(PhysicsEngine):
         if "contact_point" in fields and frame.contact_cache_ref is not None:
             snapshot["contact_point"] = frame.contact_cache_ref["contact_point_wp"].numpy().copy()
 
-        ack_policy = AckPolicy.default_for(consumer)
-        if ack_policy.ack_point == "on_snapshot_staged":
-            consumer.acked_frame_id = max(consumer.acked_frame_id, frame.frame_id)
+        return snapshot
 
-        return SnapshotHandle(snapshot, frame_id=frame.frame_id)
+    def _host_snapshot_staging_executor(self) -> ThreadPoolExecutor:
+        if self._host_snapshot_executor is None:
+            self._host_snapshot_executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="gpu-host-snapshot",
+            )
+        return self._host_snapshot_executor
 
     def query_contacts(self, env_idx: int = 0) -> List[ContactInfo]:
         """Return detected contacts for one environment (call after step).

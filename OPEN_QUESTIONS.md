@@ -1641,9 +1641,11 @@ published contract 已收敛）。
   `slot_meta.frame_id == frame.frame_id`
 - published `contact_mask` 已作为轻量 summary block 接入 CPU/GPU published frame，
   不需要默认打开 dense `RigidBlock`
+- `lossless + snapshot` 已接入 future-aware host staging：GPU lossless host
+  snapshot 通过 `SnapshotHandle` 的 staged-completion 点推进 ack
 
 因此 Q52 的下一阶段不是“从零落控制平面”，而是 phase-2 runtime hardening：
-async host staging、typed slot/block、`on_ring_full="block"`、以及更丰富的 compact
+stream/event staging、typed slot/block、`on_ring_full="block"`、以及更丰富的 compact
 contact-pair published contract。
 
 **历史判断（2026-04-24）**：
@@ -1736,10 +1738,11 @@ contact-pair published contract。
 1. ✅ 控制平面（policy/plan/consumer/reclaimer）已落地
 2. ✅ GPU 同步 `publish_core` 已落地为 dedicated slot buffer copy
 3. ✅ `PublishedRing` 已成为 `GpuEngine` 内部控制组件
-4. 下一步接 `lossless + snapshot` 的 async host staging / queue / completion event
+4. ✅ `lossless + snapshot` 已具备 future-aware host staging / completion ack
 5. 再接 `on_ring_full="block"` 的真实等待语义
 6. ✅ RL obs / sensing phase-2 的 per-body contact mask published contract 已落地
 7. 后续按需要补 compact contact-pair published contract
+8. 后续把 host staging 从 Python future 升级为 Warp stream/event + bounded queue
 
 **触发条件**：开始把 2026-04-24 这轮 design proposal 转成代码时。
 **优先级**：P1（已接近实现，且是后续渲染/传感器主线的基础设施）。

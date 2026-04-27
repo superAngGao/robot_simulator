@@ -27,11 +27,18 @@ Already real in phase-1:
 
 Still phase-2 work:
 
-- async host staging / export queue
+- Warp stream/event host staging / bounded export queue
 - `on_ring_full="block"`
 - typed slot/block dataclasses
 - compact contact-pair published contract
 - stronger retained-frame/runtime safety beyond this synchronous ring pass
+
+Partially landed after this note:
+
+- `SnapshotHandle` is now future-aware.
+- GPU `lossless + snapshot` host snapshots stage through a host-side future.
+- `on_snapshot_staged` ack advances from the handle's staged-completion point,
+  not from the call site.
 
 ---
 

@@ -14,6 +14,7 @@ import pytest
 from physics.geometry import BodyCollisionGeometry, ShapeInstance, SphereShape
 from physics.joint import FreeJoint
 from physics.merged_model import merge_models
+from physics.publish import ConsumerState, HostSnapshotSpec
 from physics.robot_tree import Body, RobotTreeNumpy
 from physics.spatial import SpatialInertia, SpatialTransform
 from robot.model import RobotModel
@@ -199,6 +200,31 @@ class TestStepOutputFields:
         q = out.q_new
         # FreeJoint: q[4:7] = px, py, pz
         np.testing.assert_allclose(r[0, :3], q[4:7], atol=1e-4)
+
+    def test_lossless_snapshot_acks_after_staging(self):
+        engine, _ = _make_engine(num_envs=1)
+        engine.step()
+        frame = engine.latest_published_frame()
+        assert frame is not None
+        consumer = ConsumerState(
+            consumer_id="dataset",
+            consumer_kind="host_export",
+            qos_mode="lossless",
+            access_mode="snapshot",
+        )
+        engine.register_consumer(consumer)
+
+        handle = engine.snapshot_frame_to_host(
+            "dataset",
+            frame.frame_id,
+            HostSnapshotSpec(fields=frozenset({"q", "qdot", "contact_mask"})),
+        )
+        snapshot = handle.result()
+
+        assert handle.frame_id == frame.frame_id
+        assert snapshot["q"].shape[0] == 1
+        assert snapshot["contact_mask"].shape == (1, engine.nc_sensor)
+        assert consumer.acked_frame_id == frame.frame_id
 
 
 # ---------------------------------------------------------------------------
