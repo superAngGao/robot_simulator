@@ -72,7 +72,30 @@ physics stream waits done_event[slot] before reuse
 
 That is a separate device-consumer phase.
 
-## 4. Verification
+## 4. Threading Constraint
+
+Host-only `block` assumes the blocking publish/control path is not the only
+execution context that can advance the blocking consumer's ack.
+
+Valid release sources include:
+
+- a host snapshot staging future callback
+- another host consumer thread
+- an external caller unregistering the consumer
+- an external caller changing the publish policy
+
+Invalid usage:
+
+```text
+single host thread enters PublishedRing.acquire(...)
+same host thread is also responsible for completing the snapshot/borrow ack
+```
+
+That shape can self-deadlock. Single-threaded loops that cannot rely on a
+separate ack source should use `on_ring_full="raise"` or `on_ring_full="skip"`
+instead of `block`.
+
+## 5. Verification
 
 Command:
 
