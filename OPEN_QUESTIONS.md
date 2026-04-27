@@ -1645,6 +1645,8 @@ published contract 已收敛）。
   snapshot 通过 `SnapshotHandle` 的 staged-completion 点推进 ack
 - consumer/backpressure 语义已拆成四条轴：
   `consumer_kind / consumer_location / access_mode / qos_mode`
+- `ConsumerState.consumer_location` 已显式加入，默认 `"host"`；device
+  consumer 的 event/fence 状态类仍推迟到真实 device consumer 出现时
 - `PublishedRing` 不应成为 RL 训练热路径的必经入口；RL obs kernel 可直接读
   current GPU buffers / scratch，ring 主要服务外部或异步消费者的稳定 slot 生命周期
 
@@ -1746,8 +1748,7 @@ contact-pair published contract。
 2. ✅ GPU 同步 `publish_core` 已落地为 dedicated slot buffer copy
 3. ✅ `PublishedRing` 已成为 `GpuEngine` 内部控制组件
 4. ✅ `lossless + snapshot` 已具备 future-aware host staging / completion ack
-5. ⬜ 给 `ConsumerState` 显式增加 `consumer_location="host"` 默认字段
-   （在实现 host-only block 之前必须先做）
+5. ✅ `ConsumerState.consumer_location="host"` 默认字段已落地
 6. 再接 host-only `on_ring_full="block"` 的真实等待语义
 7. ✅ RL obs / sensing phase-2 的 per-body contact mask published contract 已落地
 8. 后续按需要补 compact contact-pair published contract

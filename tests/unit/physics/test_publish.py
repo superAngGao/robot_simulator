@@ -213,6 +213,27 @@ class TestGpuPublishedFrame:
 
 
 class TestAckPolicy:
+    def test_consumer_location_defaults_to_host(self):
+        consumer = ConsumerState(
+            consumer_id="rt",
+            consumer_kind="realtime_render",
+            qos_mode="best_effort",
+            access_mode="borrow",
+        )
+
+        assert consumer.consumer_location == "host"
+
+    def test_consumer_location_accepts_device(self):
+        consumer = ConsumerState(
+            consumer_id="camera",
+            consumer_kind="render_backed_sensing",
+            qos_mode="lossless",
+            access_mode="borrow",
+            consumer_location="device",
+        )
+
+        assert consumer.consumer_location == "device"
+
     def test_best_effort_defaults_to_no_ack(self):
         consumer = ConsumerState(
             consumer_id="rt",

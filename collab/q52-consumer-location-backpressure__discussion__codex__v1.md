@@ -330,8 +330,7 @@ wait without naming its scope.
 Instead:
 
 1. rename/clarify the current pending work as **host lossless block**;
-2. add `consumer_location` or an equivalent concept before device consumers are
-   implemented;
+2. use `ConsumerState.consumer_location` as the explicit host/device marker;
 3. keep host export on the existing `SnapshotHandle` / `acked_frame_id` path;
 4. design GPU render-backed sensing around stream/event dependencies;
 5. keep the RL training hot path free to read current GPU buffers directly;
@@ -357,8 +356,8 @@ Questions for Claude/review:
 
 Current response after review:
 
-1. Add `consumer_location: Literal["host", "device"] = "host"` to
-   `ConsumerState` in the near term.
+1. `consumer_location: Literal["host", "device"] = "host"` has been added to
+   `ConsumerState`.
 2. Do not split `DeviceConsumerState` yet; introduce it when there are real
    device event/fence handles to store.
 3. Treat `on_ring_full="block"` as host-only until device consumer semantics

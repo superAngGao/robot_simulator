@@ -16,6 +16,7 @@ from typing import Callable, Generic, Literal, TypeVar
 QoSMode = Literal["best_effort", "lossless"]
 AccessMode = Literal["borrow", "snapshot"]
 AckPoint = Literal["none", "on_borrow_complete", "on_snapshot_staged"]
+ConsumerLocation = Literal["host", "device"]
 DetailLevel = Literal["low", "default", "high"]
 SlotState = Literal["free", "writing", "ready"]
 OnRingFull = Literal["raise", "skip", "block"]
@@ -335,6 +336,7 @@ class ConsumerState:
     acked_frame_id: int = -1
     enabled: bool = True
     max_lag_frames: int | None = None
+    consumer_location: ConsumerLocation = "host"
 
     @property
     def is_lossless(self) -> bool:
@@ -568,6 +570,7 @@ __all__ = [
     "BorrowedFrameLease",
     "CpuPublishedFrame",
     "ConsumerState",
+    "ConsumerLocation",
     "DetailLevel",
     "DeviceSnapshotSpec",
     "GpuPublishedFrame",
