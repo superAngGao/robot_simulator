@@ -33,13 +33,11 @@ try:
         sphere_vs_ground,
     )
 
-    HAS_WARP = True
 except Exception:
-    HAS_WARP = False
+    pytest.skip("Warp or CUDA not available", allow_module_level=True)
 
 pytestmark = [
     pytest.mark.gpu,
-    pytest.mark.skipif(not HAS_WARP, reason="Warp or CUDA not available"),
 ]
 
 
