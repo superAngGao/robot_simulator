@@ -28,7 +28,7 @@ Already real in phase-1:
 Still phase-2 work:
 
 - Warp stream/event host staging / bounded export queue
-- `on_ring_full="block"`
+- device-consumer event/fence reclaim
 - typed slot/block dataclasses
 - compact contact-pair published contract
 - stronger retained-frame/runtime safety beyond this synchronous ring pass
@@ -39,6 +39,8 @@ Partially landed after this note:
 - GPU `lossless + snapshot` host snapshots stage through a host-side future.
 - `on_snapshot_staged` ack advances from the handle's staged-completion point,
   not from the call site.
+- host-only `PublishPolicy(on_ring_full="block")` is implemented; device
+  blockers still require stream/event reclaim.
 
 ---
 

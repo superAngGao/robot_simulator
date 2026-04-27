@@ -1651,8 +1651,8 @@ published contract 已收敛）。
   current GPU buffers / scratch，ring 主要服务外部或异步消费者的稳定 slot 生命周期
 
 因此 Q52 的下一阶段不是“从零落控制平面”，而是 phase-2 runtime hardening：
-host/device consumer 边界、stream/event staging、typed slot/block、host-only
-`on_ring_full="block"`、以及更丰富的 compact
+host/device consumer 边界、stream/event staging、typed slot/block、device
+consumer event/fence、以及更丰富的 compact
 contact-pair published contract。
 
 **历史判断（2026-04-24）**：
@@ -1749,7 +1749,7 @@ contact-pair published contract。
 3. ✅ `PublishedRing` 已成为 `GpuEngine` 内部控制组件
 4. ✅ `lossless + snapshot` 已具备 future-aware host staging / completion ack
 5. ✅ `ConsumerState.consumer_location="host"` 默认字段已落地
-6. 再接 host-only `on_ring_full="block"` 的真实等待语义
+6. ✅ host-only `on_ring_full="block"` 的真实等待语义已落地
 7. ✅ RL obs / sensing phase-2 的 per-body contact mask published contract 已落地
 8. 后续按需要补 compact contact-pair published contract
 9. 后续把 host staging 从 Python future 升级为 Warp stream/event + bounded queue

@@ -379,7 +379,7 @@ Host export:
   keep current SnapshotHandle + acked_frame_id design
 
 Host-side block:
-  implement only after naming it explicitly as host lossless backpressure
+  implemented as host lossless backpressure only
 
 GPU render/sensing:
   defer to a separate device-consumer design using event/fence ordering

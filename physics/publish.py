@@ -10,7 +10,7 @@ from __future__ import annotations
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from math import inf
-from threading import Lock
+from threading import Condition, Lock
 from typing import Callable, Generic, Literal, TypeVar
 
 QoSMode = Literal["best_effort", "lossless"]
@@ -448,6 +448,7 @@ class PublishedRing:
         self._reclaimer = SlotReclaimer(self._consumers)
         self._policy = policy or PublishPolicy()
         self._latest_frame = None
+        self._condition = Condition()
 
     @property
     def ring_size(self) -> int:
@@ -474,20 +475,34 @@ class PublishedRing:
         return self._latest_frame
 
     def set_policy(self, policy: PublishPolicy) -> None:
-        self._policy = policy
+        with self._condition:
+            self._policy = policy
+            self._condition.notify_all()
 
     def set_latest_frame(self, frame) -> None:
         self._latest_frame = frame
 
     def register_consumer(self, consumer: ConsumerState) -> None:
-        for idx, existing in enumerate(self._consumers):
-            if existing.consumer_id == consumer.consumer_id:
-                self._consumers[idx] = consumer
-                return
-        self._consumers.append(consumer)
+        with self._condition:
+            for idx, existing in enumerate(self._consumers):
+                if existing.consumer_id == consumer.consumer_id:
+                    self._consumers[idx] = consumer
+                    self._condition.notify_all()
+                    return
+            self._consumers.append(consumer)
+            self._condition.notify_all()
 
     def unregister_consumer(self, consumer_id: str) -> None:
-        self._consumers[:] = [consumer for consumer in self._consumers if consumer.consumer_id != consumer_id]
+        with self._condition:
+            self._consumers[:] = [
+                consumer for consumer in self._consumers if consumer.consumer_id != consumer_id
+            ]
+            self._condition.notify_all()
+
+    def acknowledge_consumer(self, consumer: ConsumerState, frame_id: int) -> None:
+        with self._condition:
+            consumer.acked_frame_id = max(consumer.acked_frame_id, frame_id)
+            self._condition.notify_all()
 
     def ring_pressure_stats(self, next_frame_id: int | None = None) -> RingPressureStats:
         target = None if next_frame_id is None else self._target_meta(next_frame_id)
@@ -500,25 +515,37 @@ class PublishedRing:
     ) -> tuple[int, object, PublishedSlotMeta] | None:
         """Acquire the slot for ``frame_id`` or apply the ring-full policy."""
 
-        slot_id = self._target_slot_id(frame_id)
-        meta = self._slot_meta[slot_id]
-        if meta.state == "ready" and not self._reclaimer.reclaimable(meta):
-            action = self._policy.on_ring_full
-            blockers = self._reclaimer.ring_pressure_stats(meta).blocking_consumer_ids
-            if action == "skip":
-                return None
-            if action == "block":
-                raise NotImplementedError(
-                    "PublishPolicy(on_ring_full='block') is not implemented in phase-1; "
-                    "use 'raise' or 'skip' until async staging/reclaim lands."
+        with self._condition:
+            slot_id = self._target_slot_id(frame_id)
+            meta = self._slot_meta[slot_id]
+            while meta.state == "ready" and not self._reclaimer.reclaimable(meta):
+                action = self._policy.on_ring_full
+                blockers = self._blocking_consumers(meta)
+                blocker_ids = tuple(consumer.consumer_id for consumer in blockers)
+                if action == "skip":
+                    return None
+                if action == "block":
+                    device_blockers = tuple(
+                        consumer.consumer_id
+                        for consumer in blockers
+                        if consumer.consumer_location == "device"
+                    )
+                    if device_blockers:
+                        raise NotImplementedError(
+                            "PublishPolicy(on_ring_full='block') is host-only; "
+                            "device lossless consumers require stream/event reclaim: "
+                            + ", ".join(device_blockers)
+                        )
+                    self._condition.wait()
+                    continue
+                raise RuntimeError(
+                    "Published ring backpressure: slot is pinned by lossless consumer(s): "
+                    + ", ".join(blocker_ids)
                 )
-            raise RuntimeError(
-                "Published ring backpressure: slot is pinned by lossless consumer(s): " + ", ".join(blockers)
-            )
 
-        meta.invalidated = True
-        meta.state = "writing"
-        return slot_id, self._slot_buffers[slot_id], meta
+            meta.invalidated = True
+            meta.state = "writing"
+            return slot_id, self._slot_buffers[slot_id], meta
 
     def mark_ready(
         self,
@@ -561,6 +588,13 @@ class PublishedRing:
 
     def _target_meta(self, frame_id: int) -> PublishedSlotMeta:
         return self._slot_meta[self._target_slot_id(frame_id)]
+
+    def _blocking_consumers(self, meta: PublishedSlotMeta) -> tuple[ConsumerState, ...]:
+        return tuple(
+            consumer
+            for consumer in self._consumers
+            if consumer.is_lossless and consumer.acked_frame_id < meta.frame_id
+        )
 
 
 __all__ = [

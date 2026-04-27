@@ -554,7 +554,7 @@ class GpuEngine(PhysicsEngine):
 
         def _release_callback(released_frame: GpuPublishedFrame) -> None:
             if ack_policy.ack_point == "on_borrow_complete":
-                consumer.acked_frame_id = max(consumer.acked_frame_id, released_frame.frame_id)
+                self._published_ring.acknowledge_consumer(consumer, released_frame.frame_id)
 
         return BorrowedFrameLease(frame, on_release=_release_callback)
 
@@ -577,7 +577,7 @@ class GpuEngine(PhysicsEngine):
 
         def _ack_staged(_snapshot: dict[str, object]) -> None:
             if ack_policy.ack_point == "on_snapshot_staged":
-                consumer.acked_frame_id = max(consumer.acked_frame_id, frame.frame_id)
+                self._published_ring.acknowledge_consumer(consumer, frame.frame_id)
 
         if ack_policy.ack_point == "on_snapshot_staged":
             future = self._host_snapshot_staging_executor().submit(

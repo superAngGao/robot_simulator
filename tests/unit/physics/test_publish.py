@@ -1,5 +1,5 @@
 import math
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 
 import pytest
 
@@ -322,6 +322,55 @@ class TestPublishedRing:
         ring.mark_ready(slot_id=0, frame_id=0, step_index=0, sim_time=0.0, publish_event=object())
 
         with pytest.raises(RuntimeError, match="dataset"):
+            ring.acquire(frame_id=1)
+
+    def test_acquire_blocks_until_host_lossless_consumer_acks(self):
+        consumer = ConsumerState(
+            consumer_id="dataset",
+            consumer_kind="host_export",
+            qos_mode="lossless",
+            access_mode="snapshot",
+            acked_frame_id=-1,
+            consumer_location="host",
+        )
+        ring = PublishedRing(
+            slot_buffers=[{"slot": 0}],
+            consumers=[consumer],
+            policy=PublishPolicy(on_ring_full="block"),
+        )
+        ring.mark_ready(slot_id=0, frame_id=0, step_index=0, sim_time=0.0, publish_event=object())
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(ring.acquire, frame_id=1)
+            with pytest.raises(TimeoutError):
+                future.result(timeout=0.05)
+
+            ring.acknowledge_consumer(consumer, 0)
+            acquired = future.result(timeout=1.0)
+
+        assert acquired is not None
+        slot_id, slot, meta = acquired
+        assert slot_id == 0
+        assert slot == {"slot": 0}
+        assert meta.state == "writing"
+
+    def test_acquire_block_rejects_device_lossless_consumer(self):
+        consumer = ConsumerState(
+            consumer_id="camera",
+            consumer_kind="render_backed_sensing",
+            qos_mode="lossless",
+            access_mode="borrow",
+            acked_frame_id=-1,
+            consumer_location="device",
+        )
+        ring = PublishedRing(
+            slot_buffers=[{"slot": 0}],
+            consumers=[consumer],
+            policy=PublishPolicy(on_ring_full="block"),
+        )
+        ring.mark_ready(slot_id=0, frame_id=0, step_index=0, sim_time=0.0, publish_event=object())
+
+        with pytest.raises(NotImplementedError, match="device lossless consumers"):
             ring.acquire(frame_id=1)
 
     def test_mark_ready_latest_and_find_frame(self):

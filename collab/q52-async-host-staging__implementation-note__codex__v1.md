@@ -72,7 +72,6 @@ Still deferred after this pass:
 
 - real Warp stream/event-based device-to-host copies
 - explicit host staging queue capacity and overflow policy
-- `PublishPolicy(on_ring_full="block")` wait semantics
 - cancellation/shutdown behavior for long-running export queues
 - typed host snapshot payloads instead of `dict[str, object]`
 
