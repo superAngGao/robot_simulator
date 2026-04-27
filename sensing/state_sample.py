@@ -13,7 +13,13 @@ from physics.telemetry import TelemetrySnapshot, build_telemetry_snapshot_from_p
 
 @dataclass
 class StateSampleView:
-    """Host-side numeric/state sensor view for one published frame / env."""
+    """Host-side numeric/state sensor view for one published frame / env.
+
+    Phase-1 is a conservative view over published physics data. Numeric arrays
+    are copied out of published frames, while optional fields stay `None` until
+    a CPU/GPU path publishes them through the shared contract. Telemetry remains
+    composed as `TelemetrySnapshot` so backend asymmetries are explicit.
+    """
 
     frame_id: int
     step_index: int

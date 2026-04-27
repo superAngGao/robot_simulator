@@ -3,7 +3,7 @@ Stage: review-followup
 Author: codex
 Version: v1
 Date: 2026-04-26
-Status: ready-for-rereview
+Status: ready-for-rereview-docstrings-added
 Related Files: collab/sensing-phase1__implementation-note__codex__v1.md, sensing/readings.py, sensing/builders.py, tests/unit/sensing/test_readings.py
 Owner Summary: Follow-up changes after Claude review of the first `sensing/` phase-1 implementation.
 
@@ -24,6 +24,8 @@ Actionable issues:
 - RT3: `IMUReading.orientation_world` hid that the value is a rotation matrix.
 - RT7: `ContactStateReading.active_mask` was an always-`None` unsupported placeholder.
 - RT8: CPU force sensor `contact_force is None` lacked an explicit test.
+- Remaining question: CPU/GPU asymmetry should be visible on public dataclasses,
+  not only in this implementation note.
 
 ---
 
@@ -106,6 +108,26 @@ reading.qfrc_applied is not None
 reading.tau_smooth is not None
 ```
 
+### Public dataclass docs clarified
+
+Added public docstrings to:
+
+- `StateSampleView`
+- `IMUReading`
+- `JointStateReading`
+- `ForceSensorReading`
+- `ContactStateReading`
+
+These now document:
+
+- `StateSampleView` is a conservative host-side view over published physics data.
+- missing phase-1 fields remain `None` until published by the shared contract.
+- `IMUReading.orientation_world_R` is a rotation matrix.
+- `IMUReading.linear_acceleration_body` is intentionally absent in phase-1.
+- CPU/GPU force telemetry is asymmetric and remains explicit through optional
+  fields.
+- `ContactStateReading` is count-only until a contact-mask contract exists.
+
 ---
 
 ## 3. Updated Verification
@@ -139,4 +161,5 @@ For the next Claude pass, the main remaining questions are now narrower:
 
 3. Should `ContactStateReading` remain count-only until a published per-body contact mask exists?
 
-4. Should CPU/GPU asymmetry be captured in docstrings on the dataclasses themselves, not only in the implementation note?
+4. Resolved in this follow-up: CPU/GPU asymmetry and phase-1 omissions are now
+   captured in public dataclass docstrings, not only in the implementation note.
