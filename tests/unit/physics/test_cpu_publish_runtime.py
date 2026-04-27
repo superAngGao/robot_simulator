@@ -45,6 +45,8 @@ class TestCpuPublishRuntime:
         assert engine.latest_published_frame() is frame
         assert frame.frame_id == 0
         assert frame.contact_count is not None
+        assert frame.contact_mask is not None
+        assert frame.contact_mask.shape == (1,)
 
     def test_plain_step_also_updates_latest_published_frame(self):
         merged = merge_models({"r": _single_body_model()}, terrain=FlatTerrain())
@@ -130,3 +132,26 @@ class TestCpuPublishRuntime:
         assert snapshot["qdot"].shape == qdot.shape
         assert consumer.latest_seen_frame_id == frame.frame_id
         assert consumer.acked_frame_id == frame.frame_id
+
+    def test_snapshot_can_include_contact_mask(self):
+        merged = merge_models({"r": _single_body_model()}, terrain=FlatTerrain())
+        engine = CpuEngine(merged, dt=1e-3)
+        q, qdot = merged.tree.default_state()
+        tau = np.zeros(merged.nv)
+        frame = engine.step_and_publish(q=q, qdot=qdot, tau=tau, dt=1e-3)
+
+        consumer = ConsumerState(
+            consumer_id="dataset",
+            consumer_kind="host_export",
+            qos_mode="lossless",
+            access_mode="snapshot",
+        )
+        engine.register_consumer(consumer)
+
+        handle = engine.snapshot_frame_to_host(
+            "dataset",
+            frame.frame_id,
+            HostSnapshotSpec(fields=frozenset({"contact_mask"})),
+        )
+
+        np.testing.assert_array_equal(handle.result()["contact_mask"], frame.contact_mask)

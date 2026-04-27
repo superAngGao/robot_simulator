@@ -104,6 +104,7 @@ class TestPublishedFrameBridge:
             x_world_r_wp=_ArrayWrapper(np.array([[[0.0, 0.0, 0.4]]], dtype=np.float32)),
             v_bodies_wp=_ArrayWrapper(np.zeros((1, 1, 6), dtype=np.float32)),
             contact_count_wp=_ArrayWrapper(np.array([1], dtype=np.int32)),
+            contact_mask_wp=_ArrayWrapper(np.array([[1]], dtype=np.int32)),
             contact_cache_ref={
                 "contact_bi_wp": _ArrayWrapper(np.array([[0]], dtype=np.int32)),
                 "contact_bj_wp": _ArrayWrapper(np.array([[-1]], dtype=np.int32)),
@@ -132,6 +133,7 @@ class TestPublishedFrameBridge:
         np.testing.assert_allclose(scene.sensor_data.force.contact_force, [[7.0, 8.0, 9.0]])
         assert scene.sensor_data.force.qfrc_applied is None
         assert scene.sensor_data.contact.contact_count == 1
+        np.testing.assert_allclose(scene.sensor_data.contact.contact_mask, [1])
         engine.query_contacts.assert_not_called()
 
     def test_gpu_published_frame_falls_back_to_engine_query_contacts_when_dense_block_missing(self):
@@ -160,6 +162,7 @@ class TestPublishedFrameBridge:
             x_world_r_wp=_ArrayWrapper(np.array([[[0.0, 0.0, 0.2]]], dtype=np.float32)),
             v_bodies_wp=_ArrayWrapper(np.zeros((1, 1, 6), dtype=np.float32)),
             contact_count_wp=_ArrayWrapper(np.array([1], dtype=np.int32)),
+            contact_mask_wp=_ArrayWrapper(np.array([[1]], dtype=np.int32)),
             contact_cache_ref=None,
             telemetry_ref=None,
         )

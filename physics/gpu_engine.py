@@ -128,6 +128,32 @@ def _aggregate_contact_forces(
 
 
 @wp.kernel
+def _build_contact_mask(
+    contact_active: wp.array2d(dtype=wp.int32),
+    contact_bi: wp.array2d(dtype=wp.int32),
+    contact_bj: wp.array2d(dtype=wp.int32),
+    contact_body_idx: wp.array(dtype=wp.int32),
+    max_contacts: int,
+    nc_sensor: int,
+    mask_out: wp.array2d(dtype=wp.int32),
+):
+    """Build a per-contact-body active mask in `contact_body_idx` order."""
+    env_id = wp.tid()
+
+    for s in range(nc_sensor):
+        body_idx = contact_body_idx[s]
+        active = int(0)
+        for c in range(max_contacts):
+            if contact_active[env_id, c] == 0:
+                continue
+            bi = contact_bi[env_id, c]
+            bj = contact_bj[env_id, c]
+            if bi == body_idx or bj == body_idx:
+                active = 1
+        mask_out[env_id, s] = active
+
+
+@wp.kernel
 def _compute_qacc_total(
     qacc_smooth: wp.array2d(dtype=wp.float32),  # (N, nv) — H⁻¹(τ - C)
     dqdot: wp.array2d(dtype=wp.float32),  # (N, nv) — contact impulse Δq̇ = H⁻¹ Jᵀ λ
@@ -325,6 +351,7 @@ class GpuEngine(PhysicsEngine):
         # Layout: (N, nc_sensor * 3) flattened for wp.atomic_add compatibility
         self._nc_sensor = s.nc  # sensor bodies = contact bodies
         self._contact_force_sensor = wp.zeros((num_envs, max(s.nc * 3, 1)), dtype=wp.float32, device=device)
+        self._contact_mask = wp.zeros((num_envs, max(s.nc, 1)), dtype=wp.int32, device=device)
 
         # Upload static data
         self._gpu_joint_type = wp.array(s.joint_type, dtype=wp.int32, device=device)
@@ -471,6 +498,11 @@ class GpuEngine(PhysicsEngine):
         return self._contact_force_sensor
 
     @property
+    def contact_mask_wp(self):
+        """Warp array (N, nc_sensor) int32 — active mask in contact-body order."""
+        return self._contact_mask
+
+    @property
     def nc_sensor(self) -> int:
         """Number of sensor (contact) bodies."""
         return self._nc_sensor
@@ -553,6 +585,8 @@ class GpuEngine(PhysicsEngine):
             snapshot["v_bodies"] = frame.v_bodies_wp.numpy().copy()
         if "contact_count" in fields and frame.contact_count_wp is not None:
             snapshot["contact_count"] = frame.contact_count_wp.numpy().copy()
+        if "contact_mask" in fields and frame.contact_mask_wp is not None:
+            snapshot["contact_mask"] = frame.contact_mask_wp.numpy()[:, : self._nc_sensor].copy()
         if "qacc_smooth" in fields and frame.telemetry_ref is not None:
             snapshot["qacc_smooth"] = frame.telemetry_ref["qacc_smooth_wp"].numpy().copy()
         if "qacc_total" in fields and frame.telemetry_ref is not None:
@@ -718,6 +752,9 @@ class GpuEngine(PhysicsEngine):
             "force_sensor": wp.zeros(
                 (self._num_envs, max(self._nc_sensor * 3, 1)), dtype=wp.float32, device=device
             ),
+            "contact_mask": wp.zeros(
+                (self._num_envs, max(self._nc_sensor, 1)), dtype=wp.int32, device=device
+            ),
             "contact_bi": None,
             "contact_bj": None,
             "contact_active": None,
@@ -751,6 +788,7 @@ class GpuEngine(PhysicsEngine):
                 x_world_r_wp=slot["x_world_r"],
                 v_bodies_wp=slot["v_bodies"],
                 contact_count_wp=slot["contact_count"],
+                contact_mask_wp=slot["contact_mask"],
                 contact_cache_ref=(
                     None
                     if slot["contact_bi"] is None
@@ -817,6 +855,7 @@ class GpuEngine(PhysicsEngine):
         wp.copy(slot["x_world_r"], sc.X_world_r)
         wp.copy(slot["v_bodies"], sc.v_bodies)
         wp.copy(slot["contact_count"], self._contact_count)
+        wp.copy(slot["contact_mask"], self._contact_mask)
 
         telemetry_ref = None
         if plan.do_telemetry_block_write:
@@ -869,6 +908,7 @@ class GpuEngine(PhysicsEngine):
             x_world_r_wp=slot["x_world_r"],
             v_bodies_wp=slot["v_bodies"],
             contact_count_wp=slot["contact_count"],
+            contact_mask_wp=slot["contact_mask"],
             contact_cache_ref=contact_cache_ref,
             telemetry_ref=telemetry_ref,
             ready_event=event,
@@ -1304,6 +1344,21 @@ class GpuEngine(PhysicsEngine):
         # 13. Aggregate contact forces for sensor bodies
         if self._nc_sensor > 0:
             self._contact_force_sensor.zero_()
+            self._contact_mask.zero_()
+            wp.launch(
+                _build_contact_mask,
+                dim=N,
+                device=self._device,
+                inputs=[
+                    self._contact_active,
+                    self._contact_bi,
+                    self._contact_bj,
+                    self._gpu_contact_body_idx,
+                    self._max_contacts,
+                    self._nc_sensor,
+                ],
+                outputs=[self._contact_mask],
+            )
             wp.launch(
                 _aggregate_contact_forces,
                 dim=N,

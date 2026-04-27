@@ -152,6 +152,7 @@ class CpuEngine(PhysicsEngine):
         self._publish_sim_time += dt
         if not plan.do_publish_core:
             return
+        contacts = self.query_contacts()
         self._latest_published_frame = CpuPublishedFrame(
             frame_id=self._publish_frame_id,
             sim_time=self._publish_sim_time,
@@ -162,8 +163,9 @@ class CpuEngine(PhysicsEngine):
             X_world=output.X_world,
             v_bodies=output.v_bodies,
             contact_count=len(self._last_contacts),
-            contacts=self.query_contacts(),
+            contacts=contacts,
             telemetry=output.force_state,
+            contact_mask=self._build_contact_mask(contacts),
         )
 
     def latest_published_frame(self) -> CpuPublishedFrame | None:
@@ -207,6 +209,8 @@ class CpuEngine(PhysicsEngine):
             snapshot["v_bodies"] = frame.v_bodies
         if "contact_count" in fields:
             snapshot["contact_count"] = int(frame.contact_count)
+        if "contact_mask" in fields and frame.contact_mask is not None:
+            snapshot["contact_mask"] = np.asarray(frame.contact_mask).copy()
         if "contacts" in fields:
             snapshot["contacts"] = frame.contacts
         if "telemetry" in fields:
@@ -233,6 +237,19 @@ class CpuEngine(PhysicsEngine):
         if self._latest_published_frame is None or self._latest_published_frame.frame_id != frame_id:
             raise KeyError(f"Published frame {frame_id} is not currently available.")
         return self._latest_published_frame
+
+    def _build_contact_mask(self, contacts: list[ContactInfo]) -> np.ndarray:
+        body_indices = [body_idx for body_idx, _ in self.merged.contact_points]
+        mask = np.zeros(len(body_indices), dtype=np.int32)
+        if not body_indices:
+            return mask
+        index_by_body = {int(body_idx): idx for idx, body_idx in enumerate(body_indices)}
+        for contact in contacts:
+            for body_idx in (contact.body_i, contact.body_j):
+                idx = index_by_body.get(int(body_idx))
+                if idx is not None:
+                    mask[idx] = 1
+        return mask
 
     def _detect_contacts(self, cache: DynamicsCache) -> List[ContactConstraint]:
         """Detect all contacts using GJK/EPA: body-ground + body-body."""

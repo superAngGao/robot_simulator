@@ -32,6 +32,7 @@ class StateSampleView:
     X_world: object | None
     v_bodies: np.ndarray | None
     contact_count: int | None
+    contact_mask: np.ndarray | None
 
     telemetry: TelemetrySnapshot | None
 
@@ -51,6 +52,7 @@ def _build_from_cpu_frame(
         X_world=frame.X_world,
         v_bodies=np.asarray(frame.v_bodies).copy() if frame.v_bodies is not None else None,
         contact_count=None if frame.contact_count is None else int(frame.contact_count),
+        contact_mask=None if frame.contact_mask is None else np.asarray(frame.contact_mask).copy(),
         telemetry=build_telemetry_snapshot_from_published_frame(engine, frame=frame, env_idx=env_idx),
     )
 
@@ -78,9 +80,17 @@ def _build_from_gpu_frame(
     qdot_all = frame.qdot_wp.numpy()
     v_all = frame.v_bodies_wp.numpy()
     count_all = None if frame.contact_count_wp is None else frame.contact_count_wp.numpy()
+    mask_all = None if frame.contact_mask_wp is None else frame.contact_mask_wp.numpy()
 
     if env_idx >= q_all.shape[0]:
         raise IndexError(f"env_idx={env_idx} out of bounds for {q_all.shape[0]} environments")
+
+    contact_mask = None
+    if mask_all is not None:
+        contact_mask = mask_all[env_idx].copy()
+        nc_sensor = getattr(engine, "nc_sensor", None)
+        if isinstance(nc_sensor, (int, np.integer)):
+            contact_mask = contact_mask[: int(nc_sensor)].copy()
 
     return StateSampleView(
         frame_id=frame.frame_id,
@@ -92,6 +102,7 @@ def _build_from_gpu_frame(
         X_world=_rebuild_spatial_transforms(frame, env_idx=env_idx),
         v_bodies=v_all[env_idx].copy(),
         contact_count=None if count_all is None else int(count_all[env_idx]),
+        contact_mask=contact_mask,
         telemetry=build_telemetry_snapshot_from_published_frame(engine, frame=frame, env_idx=env_idx),
     )
 

@@ -38,6 +38,7 @@ def _make_view() -> StateSampleView:
         ],
         v_bodies=np.array([[1.0, 2.0, 3.0, 0.4, 0.5, 0.6]], dtype=np.float64),
         contact_count=2,
+        contact_mask=np.array([1, 0], dtype=np.int32),
         telemetry=TelemetrySnapshot(
             frame_id=3,
             step_index=3,
@@ -172,3 +173,4 @@ class TestContactStateReading:
 
         assert reading.frame_id == 3
         assert reading.contact_count == 2
+        np.testing.assert_allclose(reading.contact_mask, [1, 0])

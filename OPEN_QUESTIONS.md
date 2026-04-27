@@ -148,8 +148,9 @@ Env (CPU 调试路径，保留)                          ← 已有
 - normalization 采用显式 scale 语义：`obs[field] = raw_term * field.scale`。
   默认 scale 保持 `1.0`，不在通用层写死 robot/task-specific range。
 - contact mask 是 optional field，语义为 `contact_body_names` 顺序下的 binary
-  `0.0/1.0`；GPU/RLEnv 路径需要 published per-body mask 或 contact-pair block，
-  不应从 private contact scratch 推断。
+  `0.0/1.0`；2026-04-27 已通过 published `contact_mask` 接入
+  `StateSampleView.contact_mask` / `ContactStateReading.contact_mask`。GPU/RLEnv
+  路径应消费该 published field，不应从 private contact scratch 推断。
 - 现有 CPU debug `Env` 可通过 `obs_cfg_from_schema()` 复用该 schema，但该 schema
   不是最终 Manager-based `RLEnv` 的实现本体。
 
@@ -1562,7 +1563,8 @@ PublishedFrame -> TelemetrySnapshot -> StateSampleView -> sensing readings -> Re
 - `physics/telemetry.py` 仍是过渡 bridge，不作为最终 sensor package 归属定案
 
 因此 Q51 对 Q50 Step 4 的阻塞已关闭；RL obs schema 已给 phase-2 压力点命名；
-剩余问题转为 telemetry parity / 传感器坐标系扩展时再处理。
+contact mask 已作为第一条 sensing phase-2 published contract 落地；剩余问题转为
+telemetry parity / 传感器坐标系扩展时再处理。
 
 **背景**：Q50 Step 4 希望把 IMU、关节力矩、力传感器数据接入 `RenderScene`，用于
 Rerun 训练监控与后续 RL obs 复用。但当前仓库只有一半设计落地：
@@ -1575,8 +1577,8 @@ Rerun 训练监控与后续 RL obs 复用。但当前仓库只有一半设计落
 **当前判断（2026-04-23；2026-04-27 更新）**：
 - 这**不是** Q50 Step 1–3（`RenderBackend` / `RerunBackend` / GPU 几何桥接）的阻塞项
 - 对 Q50 Step 4 的 phase-1 numeric/state 合同已收敛并落地
-- RL obs schema 草案已落地；训练期更完整传感器可视化仍需后续 scalar/tensor
-  timeline 设计
+- RL obs schema 草案已落地；contact mask 已接 published contract；训练期更完整
+  传感器可视化仍需后续 scalar/tensor timeline 设计
 - rendering 不读取 `GpuEngine` 私有 scratch，只消费 published-frame / sensing bridge
 
 **phase-1 已决策点**：
@@ -1602,11 +1604,12 @@ Rerun 训练监控与后续 RL obs 复用。但当前仓库只有一半设计落
 - Q50 Step 4 已接 numeric/state sensor data；保持窄口，不扩成 camera/LiDAR packet
 - `physics/telemetry.py` 目前视为过渡层，不把它当成最终 sensor 模块归属的定案
 - RL 观测接口已明确 quaternion / contact mask / normalization 的 phase-2 合同：
-  wxyz quaternion、显式 scale、optional published contact mask
+  wxyz quaternion、显式 scale、optional published contact mask；contact mask 已落地
 
 **触发条件**：需要把 GPU 训练信号接入更完整的 Rerun scalar/tensor timeline，或
 需要扩展 RL obs 到 force/contact-force 字段时。
-**优先级**：P2（Q50 Step 4 阻塞已解除；RL obs phase-1 schema 已收敛）。
+**优先级**：P2（Q50 Step 4 阻塞已解除；RL obs phase-1 schema 与 contact-mask
+published contract 已收敛）。
 
 **Q52 — Physics publish pipeline implementation（GpuPublishedFrame / PublishedRing / QoS / reclaim）** (2026-04-24)
 
@@ -1636,10 +1639,12 @@ Rerun 训练监控与后续 RL obs 复用。但当前仓库只有一半设计落
   buffers 仍由 `GpuEngine` 分配和写入
 - `GpuPublishedFrame` stale guard 已加固：除 `invalidated` 外，也检查
   `slot_meta.frame_id == frame.frame_id`
+- published `contact_mask` 已作为轻量 summary block 接入 CPU/GPU published frame，
+  不需要默认打开 dense `RigidBlock`
 
 因此 Q52 的下一阶段不是“从零落控制平面”，而是 phase-2 runtime hardening：
-async host staging、typed slot/block、`on_ring_full="block"`、以及 RL obs 需要的
-contact mask / compact contact-pair published contract。
+async host staging、typed slot/block、`on_ring_full="block"`、以及更丰富的 compact
+contact-pair published contract。
 
 **历史判断（2026-04-24）**：
 
@@ -1733,8 +1738,8 @@ contact mask / compact contact-pair published contract。
 3. ✅ `PublishedRing` 已成为 `GpuEngine` 内部控制组件
 4. 下一步接 `lossless + snapshot` 的 async host staging / queue / completion event
 5. 再接 `on_ring_full="block"` 的真实等待语义
-6. 再为 RL obs / sensing phase-2 补 compact contact-pair 或 per-body contact mask
-   published contract
+6. ✅ RL obs / sensing phase-2 的 per-body contact mask published contract 已落地
+7. 后续按需要补 compact contact-pair published contract
 
 **触发条件**：开始把 2026-04-24 这轮 design proposal 转成代码时。
 **优先级**：P1（已接近实现，且是后续渲染/传感器主线的基础设施）。

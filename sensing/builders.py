@@ -115,4 +115,5 @@ def build_contact_state_reading(view: StateSampleView) -> ContactStateReading:
         sim_time=view.sim_time,
         env_idx=view.env_idx,
         contact_count=view.contact_count,
+        contact_mask=_copy_optional_array(view.contact_mask),
     )

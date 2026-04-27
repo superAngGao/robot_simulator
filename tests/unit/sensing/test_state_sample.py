@@ -61,6 +61,7 @@ class TestStateSampleView:
         assert view.v_bodies is not None
         assert view.telemetry is not None
         assert view.contact_count is not None
+        np.testing.assert_allclose(view.contact_mask, [1])
 
     def test_gpu_frame_builds_state_sample_view(self):
         engine = MagicMock()
@@ -77,6 +78,7 @@ class TestStateSampleView:
             x_world_r_wp=_ArrayWrapper(np.array([[[0.0, 0.0, 0.3]]], dtype=np.float32)),
             v_bodies_wp=_ArrayWrapper(np.array([[[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]]], dtype=np.float32)),
             contact_count_wp=_ArrayWrapper(np.array([2], dtype=np.int32)),
+            contact_mask_wp=_ArrayWrapper(np.array([[1]], dtype=np.int32)),
             contact_cache_ref=None,
             telemetry_ref={
                 "qacc_smooth_wp": _ArrayWrapper(np.array([[7.0, 8.0]], dtype=np.float32)),
@@ -93,5 +95,6 @@ class TestStateSampleView:
         np.testing.assert_allclose(view.v_bodies, [[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]])
         assert len(view.X_world) == 1
         assert view.contact_count == 2
+        np.testing.assert_allclose(view.contact_mask, [1])
         assert view.telemetry is not None
         np.testing.assert_allclose(view.telemetry.qacc_total, [9.0, 10.0])

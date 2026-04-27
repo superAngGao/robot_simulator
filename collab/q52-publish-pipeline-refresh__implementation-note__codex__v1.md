@@ -30,7 +30,7 @@ Still phase-2 work:
 - async host staging / export queue
 - `on_ring_full="block"`
 - typed slot/block dataclasses
-- compact contact-pair or per-body contact-mask published contract
+- compact contact-pair published contract
 - stronger retained-frame/runtime safety beyond this synchronous ring pass
 
 ---

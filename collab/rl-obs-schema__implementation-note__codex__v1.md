@@ -92,13 +92,14 @@ field order.
 ```
 
 The current CPU debug `Env` can produce this from its legacy
-`active_contacts`. For GPU/RLEnv, the schema records a phase-2 requirement:
+`active_contacts`. As of the contact-mask published-contract follow-up,
+CPU/GPU published frames also expose a backend-neutral `contact_mask`:
 
-- publish a backend-neutral per-body contact mask, or
-- publish enough contact-pair data to build one without reading private scratch.
+- `StateSampleView.contact_mask`
+- `ContactStateReading.contact_mask`
 
-This keeps `ContactStateReading.contact_count` valid for sensing phase-1 while
-documenting why RL needs a richer contact contract later.
+GPU/RLEnv should consume that published field instead of reading private
+contact scratch.
 
 ---
 

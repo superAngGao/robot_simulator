@@ -90,7 +90,7 @@ def test_contact_mask_is_optional_and_records_phase2_requirement():
 
     assert "contact_mask" not in without_contacts.names
     assert "contact_mask" in with_contacts.names
-    assert any("published per-body mask" in item for item in with_contacts.phase2_requirements)
+    assert any("published contact_mask" in item for item in with_contacts.phase2_requirements)
 
 
 def test_obs_field_scale_supports_scalar_and_vector_scales():

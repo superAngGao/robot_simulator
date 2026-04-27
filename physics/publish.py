@@ -139,6 +139,7 @@ class CpuPublishedFrame:
     contact_count: object | None
     contacts: object | None
     telemetry: object | None
+    contact_mask: object | None = None
 
 
 @dataclass
@@ -158,6 +159,7 @@ class GpuPublishedFrame:
     contact_count_wp: object | None
     contact_cache_ref: object | None
     telemetry_ref: object | None
+    contact_mask_wp: object | None = None
 
     ready_event: object | None = None
     slot_meta: PublishedSlotMeta | None = None
@@ -170,6 +172,7 @@ class GpuPublishedFrame:
             "x_world_r_wp",
             "v_bodies_wp",
             "contact_count_wp",
+            "contact_mask_wp",
             "contact_cache_ref",
             "telemetry_ref",
             "ready_event",

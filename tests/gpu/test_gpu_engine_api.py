@@ -123,6 +123,12 @@ class TestStateAccessors:
         assert cc.shape == (4,)
         assert cc.dtype == wp.int32
 
+    def test_contact_mask_shape(self):
+        engine, _ = _make_engine()
+        mask = engine.contact_mask_wp
+        assert mask.shape == (4, engine.nc_sensor)
+        assert mask.dtype == wp.int32
+
     def test_q_wp_reflects_state(self):
         """q_wp should match the reset state."""
         engine, merged = _make_engine()

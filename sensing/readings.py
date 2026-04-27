@@ -58,8 +58,8 @@ class ForceSensorReading:
 class ContactStateReading:
     """Minimal contact-state reading.
 
-    Phase-1 exposes only `contact_count`; per-body active masks wait for a
-    published contact-mask contract.
+    `contact_mask` is optional and, when present, is ordered by the published
+    contact-body list. Missing backend fields remain `None`.
     """
 
     frame_id: int
@@ -67,3 +67,4 @@ class ContactStateReading:
     env_idx: int
 
     contact_count: int | None
+    contact_mask: object | None = None

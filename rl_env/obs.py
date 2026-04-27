@@ -151,11 +151,10 @@ def locomotion_obs_schema(
                 dim=num_contact_bodies,
                 term=obs_terms.contact_mask,
                 convention="binary 0.0/1.0 in contact_body_names order",
-                source="published contact mask or contact-pair block",
+                source="published contact_mask in contact_body_names order",
                 phase2_requirement=(
-                    "Contact-mask observations require a backend-neutral "
-                    "published per-body mask or contact-pair block; do not "
-                    "infer masks from private contact scratch."
+                    "GPU/RLEnv observations should consume published contact_mask; "
+                    "do not infer masks from private contact scratch."
                 ),
             )
         )
