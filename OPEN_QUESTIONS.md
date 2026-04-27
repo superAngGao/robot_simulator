@@ -1746,7 +1746,8 @@ contact-pair published contract。
 2. ✅ GPU 同步 `publish_core` 已落地为 dedicated slot buffer copy
 3. ✅ `PublishedRing` 已成为 `GpuEngine` 内部控制组件
 4. ✅ `lossless + snapshot` 已具备 future-aware host staging / completion ack
-5. 先给 `ConsumerState` 显式增加 `consumer_location="host"` 默认字段
+5. ⬜ 给 `ConsumerState` 显式增加 `consumer_location="host"` 默认字段
+   （在实现 host-only block 之前必须先做）
 6. 再接 host-only `on_ring_full="block"` 的真实等待语义
 7. ✅ RL obs / sensing phase-2 的 per-body contact mask published contract 已落地
 8. 后续按需要补 compact contact-pair published contract

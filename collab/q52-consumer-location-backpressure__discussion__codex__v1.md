@@ -279,6 +279,20 @@ For example, `contact_mask` now has a stable contract. A host snapshot can read
 it from a published ring slot, while a GPU obs kernel can read the current
 device buffer directly if it is executing in the main training stream.
 
+The bypass applies to numeric state observations such as:
+
+- `q`
+- `qdot`
+- `X_world`
+- `v_bodies`
+- `contact_mask`
+
+Render-backed sensors are different. Camera, depth, LiDAR, and similar
+render/surface-query sensors need stable frame lifetime while their render or
+query pass executes. Those paths should consume through the ring or an
+equivalent retained-slot/event mechanism, not directly through transient
+scratch buffers.
+
 This avoids making Python ring acquire/mark-ready bookkeeping a mandatory cost
 at high physics rates such as 5000 Hz.
 
@@ -302,6 +316,11 @@ leave borrow scope
 Realtime renderers should either finish their read within the borrow scope or
 explicitly snapshot/copy the fields they need. A long-lived renderer reference
 to a borrowed frame is a misuse.
+
+If `SlotReclaimedError` is raised during a best-effort borrow, the consumer
+should skip that frame and try again with the latest available frame on its next
+attempt. Retrying the same slot is never correct because the slot lifetime has
+already been lost.
 
 ## 9. Proposed Near-Term Decision
 
