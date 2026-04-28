@@ -588,17 +588,23 @@ class ConvexHullShape(CollisionShape):
 
 
 class MeshShape(CollisionShape):
-    """Mesh geometry with optional vertex data.
+    """Mesh geometry with optional vertex and triangle data.
 
     When vertices are provided, supports GJK queries (support_point) and
     AABB computation. When only a filename is given (no vertices loaded),
     these operations raise NotImplementedError.
+
+    The optional ``faces`` field stores triangle topology from the source mesh
+    for rendering/export consumers. Collision code does not use mesh faces
+    directly; current mesh collision paths use loaded vertices as convex
+    support geometry or convert the mesh to convex hull/decomposition shapes.
     """
 
     def __init__(
         self,
         filename: str,
         vertices: NDArray[np.float64] | None = None,
+        faces: NDArray[np.integer] | None = None,
         scale: tuple[float, float, float] | NDArray[np.float64] | None = None,
     ) -> None:
         self.filename = filename
@@ -614,6 +620,15 @@ class MeshShape(CollisionShape):
             if not np.allclose(self._scale, 1.0):
                 v = v * self._scale
             self._vertices = v
+        self._faces: NDArray[np.int32] | None = None
+        if faces is not None:
+            f = np.asarray(faces, dtype=np.int32)
+            if f.ndim != 2 or f.shape[1] != 3:
+                raise ValueError(f"MeshShape faces must be (N, 3), got {f.shape}")
+            if self._vertices is not None and f.size > 0:
+                if int(np.min(f)) < 0 or int(np.max(f)) >= self._vertices.shape[0]:
+                    raise ValueError("MeshShape faces contain vertex indices outside vertices")
+            self._faces = f
 
     @property
     def scale(self) -> NDArray[np.float64]:
@@ -622,6 +637,10 @@ class MeshShape(CollisionShape):
     @property
     def vertices(self) -> NDArray[np.float64] | None:
         return self._vertices
+
+    @property
+    def faces(self) -> NDArray[np.int32] | None:
+        return self._faces
 
     def half_extents_approx(self) -> NDArray[np.float64]:
         if self._vertices is None:

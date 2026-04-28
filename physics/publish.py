@@ -337,10 +337,18 @@ class ConsumerState:
     enabled: bool = True
     max_lag_frames: int | None = None
     consumer_location: ConsumerLocation = "host"
+    device_completed_frame_id: int = -1
+    device_done_event: object | None = None
 
     @property
     def is_lossless(self) -> bool:
         return self.enabled and self.qos_mode == "lossless"
+
+    @property
+    def reclaim_frame_id(self) -> int:
+        if self.consumer_location == "device":
+            return self.device_completed_frame_id
+        return self.acked_frame_id
 
 
 @dataclass(frozen=True)
@@ -398,7 +406,7 @@ class SlotReclaimer:
         return self._consumers
 
     def min_lossless_acked_frame_id(self) -> float:
-        lossless = [c.acked_frame_id for c in self._consumers if c.is_lossless]
+        lossless = [c.reclaim_frame_id for c in self._consumers if c.is_lossless]
         if not lossless:
             return inf
         return min(lossless)
@@ -415,7 +423,7 @@ class SlotReclaimer:
             blockers = tuple(
                 c.consumer_id
                 for c in self._consumers
-                if c.is_lossless and c.acked_frame_id < target_slot.frame_id
+                if c.is_lossless and c.reclaim_frame_id < target_slot.frame_id
             )
         return RingPressureStats(
             min_lossless_acked_frame_id=min_ack,
@@ -502,6 +510,20 @@ class PublishedRing:
     def acknowledge_consumer(self, consumer: ConsumerState, frame_id: int) -> None:
         with self._condition:
             consumer.acked_frame_id = max(consumer.acked_frame_id, frame_id)
+            self._condition.notify_all()
+
+    def mark_device_consumer_complete(
+        self,
+        consumer: ConsumerState,
+        frame_id: int,
+        *,
+        done_event: object | None = None,
+    ) -> None:
+        if consumer.consumer_location != "device":
+            raise ValueError("mark_device_consumer_complete requires a device consumer")
+        with self._condition:
+            consumer.device_completed_frame_id = max(consumer.device_completed_frame_id, frame_id)
+            consumer.device_done_event = done_event
             self._condition.notify_all()
 
     def ring_pressure_stats(self, next_frame_id: int | None = None) -> RingPressureStats:
@@ -593,7 +615,7 @@ class PublishedRing:
         return tuple(
             consumer
             for consumer in self._consumers
-            if consumer.is_lossless and consumer.acked_frame_id < meta.frame_id
+            if consumer.is_lossless and consumer.reclaim_frame_id < meta.frame_id
         )
 
 

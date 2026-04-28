@@ -27,6 +27,11 @@ def _make_scene(shape_types=None) -> RenderScene:
                 ),
                 "faces": np.array([[0, 2, 4], [0, 4, 3], [1, 2, 4]], dtype=np.int32),
             },
+            "mesh": {
+                "vertices": np.array([[0, 0, 0], [0.1, 0, 0], [0, 0.1, 0]], dtype=np.float64),
+                "faces": np.array([[0, 1, 2]], dtype=np.int32),
+                "filename": "tri.obj",
+            },
         }
         for i, st in enumerate(shape_types):
             shapes.append(
@@ -81,7 +86,7 @@ class TestMatplotlibBackend:
     def test_all_shape_types_render(self):
         b = MatplotlibBackend()
         b.open()
-        scene = _make_scene(["box", "sphere", "capsule", "cylinder", "convex_hull"])
+        scene = _make_scene(["box", "sphere", "capsule", "cylinder", "convex_hull", "mesh"])
         b.render_frame(scene, timestamp=0.0)
         b.close()
 

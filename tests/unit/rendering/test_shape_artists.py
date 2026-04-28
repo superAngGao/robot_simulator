@@ -18,6 +18,7 @@ from rendering.shape_artists import (
     draw_contacts,
     draw_convex_hull,
     draw_cylinder,
+    draw_mesh,
     draw_sphere,
     draw_terrain,
 )
@@ -80,6 +81,30 @@ class TestShapeArtists:
         artists = draw_convex_hull(ax3d, _POS, _ROT, vertices=verts)
         assert len(artists) > 0
 
+    def test_draw_convex_hull_with_precomputed_faces(self, ax3d):
+        verts = np.array([[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float64)
+        faces = np.array([[0, 2, 3], [1, 3, 2]], dtype=np.int32)
+        artists = draw_convex_hull(ax3d, _POS, _ROT, vertices=verts, faces=faces)
+        assert len(artists) > 0
+
+    def test_draw_mesh(self, ax3d):
+        verts = np.array([[0, 0, 0], [0.1, 0, 0], [0, 0.1, 0]], dtype=np.float64)
+        faces = np.array([[0, 1, 2]], dtype=np.int32)
+        artists = draw_mesh(ax3d, _POS, _ROT, vertices=verts, faces=faces)
+        assert len(artists) > 0
+
+    def test_draw_mesh_missing_faces_skips(self, ax3d):
+        verts = np.array([[0, 0, 0], [0.1, 0, 0], [0, 0.1, 0]], dtype=np.float64)
+        artists = draw_mesh(ax3d, _POS, _ROT, vertices=verts, faces=None)
+        assert len(artists) == 0
+
+    def test_draw_mesh_malformed_arrays_warns(self, ax3d, caplog):
+        verts = np.array([0, 0, 0], dtype=np.float64)
+        faces = np.array([[0, 1, 2]], dtype=np.int32)
+        artists = draw_mesh(ax3d, _POS, _ROT, vertices=verts, faces=faces)
+        assert len(artists) == 0
+        assert "expected vertices" in caplog.text
+
     def test_draw_box_rotated(self, ax3d):
         artists = draw_box(ax3d, np.array([1, 0, 0.5]), _ROT45, size=(0.1, 0.1, 0.1))
         assert len(artists) > 0
@@ -93,7 +118,14 @@ class TestShapeArtists:
         draw_capsule(ax3d, pos, _ROT45, radius=0.02, length=0.08)
 
     def test_dispatch_table_complete(self):
-        assert set(SHAPE_DRAWERS.keys()) == {"box", "sphere", "cylinder", "capsule", "convex_hull"}
+        assert set(SHAPE_DRAWERS.keys()) == {
+            "box",
+            "sphere",
+            "cylinder",
+            "capsule",
+            "convex_hull",
+            "mesh",
+        }
 
 
 class TestContactArtists:

@@ -106,9 +106,32 @@ class TestMeshShape:
         sp = s.support_point(np.array([0, 1, 0]))
         np.testing.assert_allclose(sp, [0, 1, 0], atol=ATOL)
 
+    def test_with_triangle_faces(self):
+        verts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float)
+        faces = np.array([[0, 1, 2]], dtype=np.int64)
+        s = MeshShape("test.stl", vertices=verts, faces=faces)
+        assert s.faces is not None
+        np.testing.assert_array_equal(s.faces, np.array([[0, 1, 2]], dtype=np.int32))
+
+    def test_faces_without_vertices_are_allowed(self):
+        faces = np.array([[0, 1, 2]], dtype=np.int64)
+        s = MeshShape("test.stl", faces=faces)
+        assert s.vertices is None
+        np.testing.assert_array_equal(s.faces, np.array([[0, 1, 2]], dtype=np.int32))
+
     def test_rejects_bad_vertices(self):
         with pytest.raises(ValueError):
             MeshShape("test.stl", vertices=np.array([1, 2, 3]))
+
+    def test_rejects_bad_faces(self):
+        verts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float)
+        with pytest.raises(ValueError):
+            MeshShape("test.stl", vertices=verts, faces=np.array([0, 1, 2]))
+
+    def test_rejects_faces_outside_vertices(self):
+        verts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float)
+        with pytest.raises(ValueError):
+            MeshShape("test.stl", vertices=verts, faces=np.array([[0, 1, 3]]))
 
     def test_contact_vertices_with_data(self):
         verts = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float)

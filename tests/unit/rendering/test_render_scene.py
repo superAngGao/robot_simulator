@@ -11,6 +11,7 @@ from physics.geometry import (
     CapsuleShape,
     ConvexHullShape,
     CylinderShape,
+    MeshShape,
     ShapeInstance,
     SphereShape,
 )
@@ -176,6 +177,29 @@ class TestBuildRenderScene:
         s = scene.shapes[0]
         assert s.shape_type == "convex_hull"
         assert s.params["vertices"].shape == (8, 3)
+
+    def test_mesh_params_include_optional_faces(self):
+        verts = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float64,
+        )
+        faces = np.array([[0, 1, 2]], dtype=np.int32)
+        model = _single_body_model(MeshShape("tri.obj", vertices=verts, faces=faces))
+        merged = _make_merged(model)
+        q = np.zeros(merged.nq)
+        q[0] = 1.0
+        X = merged.tree.forward_kinematics(q)
+
+        scene = build_render_scene(merged, X)
+
+        s = scene.shapes[0]
+        assert s.shape_type == "mesh"
+        np.testing.assert_allclose(s.params["vertices"], verts, atol=ATOL)
+        np.testing.assert_array_equal(s.params["faces"], faces)
 
     def test_world_pose_applied(self):
         """Body translated to (1,2,3) → shape position matches."""

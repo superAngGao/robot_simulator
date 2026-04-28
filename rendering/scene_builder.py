@@ -61,7 +61,8 @@ def _shape_to_type_params(shape: CollisionShape) -> tuple[str, dict]:
         return "convex_hull", {"vertices": topo.vertices.copy(), "faces": faces}
     elif isinstance(shape, MeshShape):
         verts = shape.vertices.copy() if shape.vertices is not None else None
-        return "mesh", {"vertices": verts, "filename": shape.filename}
+        faces = shape.faces.copy() if shape.faces is not None else None
+        return "mesh", {"vertices": verts, "faces": faces, "filename": shape.filename}
     elif isinstance(shape, HalfSpaceShape):
         return "halfspace", {}
     return "unknown", {}

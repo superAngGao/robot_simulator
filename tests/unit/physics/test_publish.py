@@ -233,6 +233,7 @@ class TestAckPolicy:
         )
 
         assert consumer.consumer_location == "device"
+        assert consumer.reclaim_frame_id == -1
 
     def test_best_effort_defaults_to_no_ack(self):
         consumer = ConsumerState(
@@ -274,6 +275,22 @@ class TestSlotReclaimer:
 
         assert math.isinf(reclaimer.min_lossless_acked_frame_id())
         assert reclaimer.reclaimable(slot) is True
+
+    def test_device_lossless_uses_device_completion_for_reclaim(self):
+        consumer = ConsumerState(
+            consumer_id="camera",
+            consumer_kind="render_backed_sensing",
+            qos_mode="lossless",
+            access_mode="borrow",
+            acked_frame_id=10,
+            device_completed_frame_id=4,
+            consumer_location="device",
+        )
+        reclaimer = SlotReclaimer([consumer])
+
+        assert reclaimer.min_lossless_acked_frame_id() == 4
+        assert reclaimer.reclaimable(PublishedSlotMeta(slot_id=0, frame_id=5, state="ready")) is False
+        assert reclaimer.reclaimable(PublishedSlotMeta(slot_id=0, frame_id=4, state="ready")) is True
 
 
 class TestPublishedRing:
@@ -372,6 +389,44 @@ class TestPublishedRing:
 
         with pytest.raises(NotImplementedError, match="device lossless consumers"):
             ring.acquire(frame_id=1)
+
+    def test_device_completion_allows_slot_reuse(self):
+        done_event = object()
+        consumer = ConsumerState(
+            consumer_id="camera",
+            consumer_kind="render_backed_sensing",
+            qos_mode="lossless",
+            access_mode="borrow",
+            acked_frame_id=-1,
+            device_completed_frame_id=-1,
+            consumer_location="device",
+        )
+        ring = PublishedRing(
+            slot_buffers=[{"slot": 0}],
+            consumers=[consumer],
+            policy=PublishPolicy(on_ring_full="block"),
+        )
+        ring.mark_ready(slot_id=0, frame_id=0, step_index=0, sim_time=0.0, publish_event=object())
+
+        ring.mark_device_consumer_complete(consumer, 0, done_event=done_event)
+        acquired = ring.acquire(frame_id=1)
+
+        assert acquired is not None
+        assert consumer.device_completed_frame_id == 0
+        assert consumer.device_done_event is done_event
+
+    def test_mark_device_consumer_complete_rejects_host_consumer(self):
+        consumer = ConsumerState(
+            consumer_id="dataset",
+            consumer_kind="host_export",
+            qos_mode="lossless",
+            access_mode="snapshot",
+            consumer_location="host",
+        )
+        ring = PublishedRing(slot_buffers=[{"slot": 0}], consumers=[consumer])
+
+        with pytest.raises(ValueError, match="device consumer"):
+            ring.mark_device_consumer_complete(consumer, 0)
 
     def test_mark_ready_latest_and_find_frame(self):
         ring = PublishedRing(slot_buffers=[{"slot": 0}, {"slot": 1}])

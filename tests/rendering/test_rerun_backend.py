@@ -15,10 +15,10 @@ import numpy as np
 import pytest
 
 from rendering.backends.rerun_backend import RerunBackend
-from rendering.render_scene import ContactPoint, PositionedShape, RenderScene, TerrainInfo
+from rendering.render_scene import ContactPoint, PositionedShape, RenderScene, RenderSensorData, TerrainInfo
+from sensing.readings import ContactStateReading, ForceSensorReading, IMUReading, JointStateReading
 
 rr_available = importlib.util.find_spec("rerun") is not None
-pytestmark = pytest.mark.skipif(not rr_available, reason="rerun not installed")
 
 
 def _make_scene(shape_types=None) -> RenderScene:
@@ -34,6 +34,11 @@ def _make_scene(shape_types=None) -> RenderScene:
                 dtype=np.float64,
             ),
             "faces": np.array([[0, 2, 4], [0, 4, 3], [1, 2, 4]], dtype=np.int32),
+        },
+        "mesh": {
+            "vertices": np.array([[0, 0, 0], [0.1, 0, 0], [0, 0.1, 0]], dtype=np.float64),
+            "faces": np.array([[0, 1, 2]], dtype=np.int32),
+            "filename": "tri.obj",
         },
     }
     for i, st in enumerate(shape_types or []):
@@ -67,6 +72,18 @@ def _make_scene(shape_types=None) -> RenderScene:
 
 
 class TestRerunBackend:
+    def test_constructor_rejects_invalid_config(self):
+        with pytest.raises(ValueError, match="terrain_half_size"):
+            RerunBackend(terrain_half_size=0.0)
+        with pytest.raises(ValueError, match="max_sensor_array_scalars"):
+            RerunBackend(max_sensor_array_scalars=-1)
+        with pytest.raises(ValueError, match="unknown sensor_scalar_groups"):
+            RerunBackend(sensor_scalar_groups=("contact", "camera"))
+
+    def test_sensor_scalar_groups_accepts_single_string(self):
+        RerunBackend(sensor_scalar_groups="contact")
+
+    @pytest.mark.skipif(not rr_available, reason="rerun not installed")
     def test_set_output_saves_rrd(self, tmp_path):
         """open() with save_path -> .rrd file created."""
         out = str(tmp_path / "debug.rrd")
@@ -83,7 +100,7 @@ class TestRerunBackend:
         with patch.dict("sys.modules", {"rerun": mock_rr}):
             b = RerunBackend()
             b.open()
-            scene = _make_scene(["box", "sphere", "capsule", "cylinder", "convex_hull"])
+            scene = _make_scene(["box", "sphere", "capsule", "cylinder", "convex_hull", "mesh"])
             b.render_frame(scene, timestamp=0.0)
             b.close()
 
@@ -123,6 +140,66 @@ class TestRerunBackend:
         assert passed_faces is not None
         assert passed_faces.shape == (2, 3)
 
+    def test_mesh_missing_topology_skips_without_warning(self, caplog):
+        mock_rr = MagicMock()
+        mock_rr.Quaternion = MagicMock(return_value=MagicMock())
+        scene = _make_scene([])
+        scene.shapes.append(
+            PositionedShape(
+                shape_type="mesh",
+                params={
+                    "vertices": np.array([[0, 0, 0], [0.1, 0, 0], [0, 0.1, 0]], dtype=np.float64),
+                    "faces": None,
+                    "filename": "tri.obj",
+                },
+                position=np.zeros(3),
+                rotation=np.eye(3),
+                body_index=0,
+                body_name="mesh",
+            )
+        )
+
+        with patch.dict("sys.modules", {"rerun": mock_rr}):
+            b = RerunBackend()
+            b.open()
+            with caplog.at_level("WARNING", logger="rendering.backends.rerun_backend"):
+                b.render_frame(scene, timestamp=0.0)
+
+        assert "requires vertices + faces" not in caplog.text
+
+    def test_mesh_malformed_faces_warns_and_skips(self, caplog):
+        mock_rr = MagicMock()
+        mock_rr.Quaternion = MagicMock(return_value=MagicMock())
+        scene = _make_scene([])
+        scene.shapes.append(
+            PositionedShape(
+                shape_type="mesh",
+                params={
+                    "vertices": np.array([[0, 0, 0], [0.1, 0, 0], [0, 0.1, 0]], dtype=np.float64),
+                    "faces": np.array([0, 1, 2], dtype=np.int32),
+                    "filename": "tri.obj",
+                },
+                position=np.zeros(3),
+                rotation=np.eye(3),
+                body_index=0,
+                body_name="mesh",
+            )
+        )
+
+        with patch.dict("sys.modules", {"rerun": mock_rr}):
+            b = RerunBackend()
+            b.open()
+            with caplog.at_level("WARNING", logger="rendering.backends.rerun_backend"):
+                b.render_frame(scene, timestamp=0.0)
+
+        assert "expected mesh vertices" in caplog.text
+        mesh_entities = [
+            call.args[0]
+            for call in mock_rr.log.call_args_list
+            if call.args and "shape_0_mesh" in call.args[0]
+        ]
+        assert mesh_entities == []
+
     def test_contacts_render_as_arrows(self):
         """Contacts are logged as rr.Arrows3D."""
         mock_rr = MagicMock()
@@ -132,3 +209,212 @@ class TestRerunBackend:
             b.open()
             b.render_frame(_make_scene([]), timestamp=0.0)
         mock_rr.Arrows3D.assert_called_once()
+
+    def test_flat_terrain_logs_mesh3d(self):
+        """Rerun consumes scene.terrain instead of dropping it."""
+        mock_rr = MagicMock()
+        mock_rr.Quaternion = MagicMock(return_value=MagicMock())
+        mock_rr.Mesh3D.side_effect = lambda **kwargs: {"mesh_kwargs": kwargs}
+        with patch.dict("sys.modules", {"rerun": mock_rr}):
+            b = RerunBackend()
+            b.open()
+            b.render_frame(_make_scene([]), timestamp=0.0)
+
+        terrain_calls = [
+            call for call in mock_rr.log.call_args_list if call.args and call.args[0] == "env_0/terrain"
+        ]
+        assert len(terrain_calls) == 1
+        mesh_kwargs = terrain_calls[0].args[1]["mesh_kwargs"]
+        assert mesh_kwargs["vertex_positions"].shape == (4, 3)
+        assert mesh_kwargs["triangle_indices"].shape == (2, 3)
+
+    def test_terrain_half_size_is_configurable(self):
+        mock_rr = MagicMock()
+        mock_rr.Quaternion = MagicMock(return_value=MagicMock())
+        mock_rr.Mesh3D.side_effect = lambda **kwargs: {"mesh_kwargs": kwargs}
+        with patch.dict("sys.modules", {"rerun": mock_rr}):
+            b = RerunBackend(terrain_half_size=2.5)
+            b.open()
+            b.render_frame(_make_scene([]), timestamp=0.0)
+
+        terrain_calls = [
+            call for call in mock_rr.log.call_args_list if call.args and call.args[0] == "env_0/terrain"
+        ]
+        mesh_kwargs = terrain_calls[0].args[1]["mesh_kwargs"]
+        np.testing.assert_allclose(mesh_kwargs["vertex_positions"][0], [-2.5, -2.5, 0.0])
+
+    def test_halfspace_terrain_logs_mesh3d(self):
+        mock_rr = MagicMock()
+        mock_rr.Quaternion = MagicMock(return_value=MagicMock())
+        scene = _make_scene([])
+        scene.terrain = TerrainInfo(
+            terrain_type="halfspace",
+            params={
+                "normal": np.array([0.0, 1.0, 1.0], dtype=np.float64),
+                "point": np.array([0.0, 0.0, 0.2], dtype=np.float64),
+            },
+        )
+        with patch.dict("sys.modules", {"rerun": mock_rr}):
+            b = RerunBackend()
+            b.open()
+            b.render_frame(scene, timestamp=0.0)
+
+        terrain_calls = [
+            call for call in mock_rr.log.call_args_list if call.args and call.args[0] == "env_0/terrain"
+        ]
+        assert len(terrain_calls) == 1
+
+    def test_sensor_data_logs_scalar_timelines(self):
+        mock_rr = MagicMock()
+        mock_rr.Quaternion = MagicMock(return_value=MagicMock())
+        mock_rr.Scalars.side_effect = lambda value: {"scalar": value}
+        scene = _make_scene([])
+        scene.sensor_data = RenderSensorData(
+            frame_id=2,
+            sim_time=0.02,
+            env_idx=0,
+            imu_readings=[
+                IMUReading(
+                    frame_id=2,
+                    sim_time=0.02,
+                    env_idx=0,
+                    body_index=0,
+                    orientation_world_R=np.eye(3),
+                    angular_velocity_body=np.array([0.1, 0.2, 0.3]),
+                    linear_acceleration_body=None,
+                )
+            ],
+            joint_state=JointStateReading(
+                frame_id=2,
+                sim_time=0.02,
+                env_idx=0,
+                joint_pos=np.array([1.0, 2.0]),
+                joint_vel=np.array([3.0, 4.0]),
+            ),
+            force=ForceSensorReading(
+                frame_id=2,
+                sim_time=0.02,
+                env_idx=0,
+                qfrc_applied=np.array([5.0, 6.0]),
+                tau_smooth=None,
+                body_force=None,
+                contact_force=np.array([[7.0, 8.0, 9.0]]),
+            ),
+            contact=ContactStateReading(
+                frame_id=2,
+                sim_time=0.02,
+                env_idx=0,
+                contact_count=3,
+                contact_mask=np.array([1, 0]),
+            ),
+        )
+
+        with patch.dict("sys.modules", {"rerun": mock_rr}):
+            b = RerunBackend()
+            b.open()
+            b.render_frame(scene, timestamp=0.02)
+
+        logged_entities = [call.args[0] for call in mock_rr.log.call_args_list if call.args]
+        assert "env_0/sensors/contact/contact_count" in logged_entities
+        assert "env_0/sensors/contact/contact_mask/0" in logged_entities
+        assert "env_0/sensors/joint/q/0" in logged_entities
+        assert "env_0/sensors/joint/qdot/1" in logged_entities
+        assert "env_0/sensors/force/qfrc_applied/1" in logged_entities
+        assert "env_0/sensors/force/contact_force/norm" in logged_entities
+        assert "env_0/sensors/imu/body_0/angular_velocity_body/2" in logged_entities
+
+    def test_sensor_array_scalar_limit_is_configurable(self):
+        mock_rr = MagicMock()
+        mock_rr.Quaternion = MagicMock(return_value=MagicMock())
+        mock_rr.Scalars.side_effect = lambda value: {"scalar": value}
+        scene = _make_scene([])
+        scene.sensor_data = RenderSensorData(
+            frame_id=2,
+            sim_time=0.02,
+            env_idx=0,
+            joint_state=JointStateReading(
+                frame_id=2,
+                sim_time=0.02,
+                env_idx=0,
+                joint_pos=np.array([1.0, 2.0, 3.0]),
+                joint_vel=None,
+            ),
+        )
+
+        with patch.dict("sys.modules", {"rerun": mock_rr}):
+            b = RerunBackend(max_sensor_array_scalars=1)
+            b.open()
+            b.render_frame(scene, timestamp=0.02)
+
+        logged_entities = [call.args[0] for call in mock_rr.log.call_args_list if call.args]
+        assert "env_0/sensors/joint/q/norm" in logged_entities
+        assert "env_0/sensors/joint/q/0" in logged_entities
+        assert "env_0/sensors/joint/q/1" not in logged_entities
+        assert "env_0/sensors/joint/q/truncated_size" in logged_entities
+
+    def test_sensor_logging_can_be_disabled(self):
+        mock_rr = MagicMock()
+        mock_rr.Quaternion = MagicMock(return_value=MagicMock())
+        mock_rr.Scalars.side_effect = lambda value: {"scalar": value}
+        scene = _make_scene([])
+        scene.sensor_data = RenderSensorData(
+            frame_id=2,
+            sim_time=0.02,
+            env_idx=0,
+            contact=ContactStateReading(frame_id=2, sim_time=0.02, env_idx=0, contact_count=3),
+        )
+
+        with patch.dict("sys.modules", {"rerun": mock_rr}):
+            b = RerunBackend(log_sensor_data=False)
+            b.open()
+            b.render_frame(scene, timestamp=0.02)
+
+        logged_entities = [call.args[0] for call in mock_rr.log.call_args_list if call.args]
+        assert "env_0/sensors/contact/contact_count" not in logged_entities
+
+    def test_sensor_scalar_groups_filter_logged_timelines(self):
+        mock_rr = MagicMock()
+        mock_rr.Quaternion = MagicMock(return_value=MagicMock())
+        mock_rr.Scalars.side_effect = lambda value: {"scalar": value}
+        scene = _make_scene([])
+        scene.sensor_data = RenderSensorData(
+            frame_id=2,
+            sim_time=0.02,
+            env_idx=0,
+            imu_readings=[
+                IMUReading(
+                    frame_id=2,
+                    sim_time=0.02,
+                    env_idx=0,
+                    body_index=0,
+                    orientation_world_R=np.eye(3),
+                    angular_velocity_body=np.array([0.1, 0.2, 0.3]),
+                    linear_acceleration_body=None,
+                )
+            ],
+            joint_state=JointStateReading(
+                frame_id=2,
+                sim_time=0.02,
+                env_idx=0,
+                joint_pos=np.array([1.0, 2.0]),
+                joint_vel=np.array([3.0, 4.0]),
+            ),
+            contact=ContactStateReading(
+                frame_id=2,
+                sim_time=0.02,
+                env_idx=0,
+                contact_count=3,
+                contact_mask=np.array([1, 0]),
+            ),
+        )
+
+        with patch.dict("sys.modules", {"rerun": mock_rr}):
+            b = RerunBackend(sensor_scalar_groups=("contact",))
+            b.open()
+            b.render_frame(scene, timestamp=0.02)
+
+        logged_entities = [call.args[0] for call in mock_rr.log.call_args_list if call.args]
+        assert "env_0/sensors/contact/contact_count" in logged_entities
+        assert "env_0/sensors/contact/contact_mask/0" in logged_entities
+        assert "env_0/sensors/joint/q/0" not in logged_entities
+        assert "env_0/sensors/imu/body_0/angular_velocity_body/0" not in logged_entities

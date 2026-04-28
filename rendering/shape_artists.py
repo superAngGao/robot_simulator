@@ -8,12 +8,15 @@ Stateless pure functions — easy to test and extend.
 
 from __future__ import annotations
 
+import logging
 from typing import List
 
 import numpy as np
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 from .render_scene import ContactPoint, TerrainInfo
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Color defaults
@@ -161,17 +164,56 @@ def draw_capsule(
 
 
 def draw_convex_hull(
-    ax, position, rotation, vertices, color=_SHAPE_COLOR, alpha=_SHAPE_ALPHA, **kwargs
+    ax, position, rotation, vertices, faces=None, color=_SHAPE_COLOR, alpha=_SHAPE_ALPHA, **kwargs
 ) -> list:
-    """Draw a convex hull from vertices using scipy triangulation."""
+    """Draw a convex hull, preferring precomputed triangle faces when available."""
+    vertices = np.asarray(vertices, dtype=np.float64)
+    world_verts = (rotation @ vertices.T).T + position
+    if faces is not None:
+        faces = np.asarray(faces, dtype=np.intp)
+        if faces.ndim == 2 and faces.shape[1] == 3:
+            polys = [[world_verts[idx] for idx in tri] for tri in faces]
+            pc = Poly3DCollection(polys, alpha=alpha, facecolor=color, edgecolor=_SHAPE_EDGE, linewidth=0.3)
+            ax.add_collection3d(pc)
+            return [pc]
+        log.warning("draw_convex_hull: expected faces with shape (F, 3), got %s", faces.shape)
+
     from scipy.spatial import ConvexHull
 
-    # Transform vertices to world frame
-    world_verts = (rotation @ vertices.T).T + position
     hull = ConvexHull(world_verts)
-
     faces = [[world_verts[idx] for idx in simplex] for simplex in hull.simplices]
     pc = Poly3DCollection(faces, alpha=alpha, facecolor=color, edgecolor=_SHAPE_EDGE, linewidth=0.3)
+    ax.add_collection3d(pc)
+    return [pc]
+
+
+def draw_mesh(
+    ax,
+    position,
+    rotation,
+    vertices=None,
+    faces=None,
+    color=_SHAPE_COLOR,
+    alpha=_SHAPE_ALPHA,
+    **kwargs,
+) -> list:
+    """Draw a triangle mesh when vertices and faces are available."""
+    if vertices is None or faces is None:
+        return []
+
+    vertices = np.asarray(vertices, dtype=np.float64)
+    faces = np.asarray(faces, dtype=np.intp)
+    if vertices.ndim != 2 or vertices.shape[1] != 3 or faces.ndim != 2 or faces.shape[1] != 3:
+        log.warning(
+            "draw_mesh: expected vertices (N, 3) and faces (F, 3), got %s and %s",
+            vertices.shape,
+            faces.shape,
+        )
+        return []
+
+    world_verts = (rotation @ vertices.T).T + position
+    polys = [[world_verts[idx] for idx in tri] for tri in faces]
+    pc = Poly3DCollection(polys, alpha=alpha, facecolor=color, edgecolor=_SHAPE_EDGE, linewidth=0.3)
     ax.add_collection3d(pc)
     return [pc]
 
@@ -274,4 +316,5 @@ SHAPE_DRAWERS = {
     "cylinder": draw_cylinder,
     "capsule": draw_capsule,
     "convex_hull": draw_convex_hull,
+    "mesh": draw_mesh,
 }
