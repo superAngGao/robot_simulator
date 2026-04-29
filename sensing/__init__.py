@@ -8,6 +8,12 @@ from .builders import (
 )
 from .readings import ContactStateReading, ForceSensorReading, IMUReading, JointStateReading
 from .state_sample import StateSampleView, build_state_sample_view
+from .surface_query import (
+    CpuPlaneSurfaceQueryExecutor,
+    SurfaceQueryExecutor,
+    SurfaceQueryResult,
+    SurfaceQuerySpec,
+)
 
 __all__ = [
     "ContactStateReading",
@@ -15,6 +21,10 @@ __all__ = [
     "IMUReading",
     "JointStateReading",
     "StateSampleView",
+    "SurfaceQueryExecutor",
+    "SurfaceQueryResult",
+    "SurfaceQuerySpec",
+    "CpuPlaneSurfaceQueryExecutor",
     "build_contact_state_reading",
     "build_force_sensor_reading",
     "build_imu_reading",

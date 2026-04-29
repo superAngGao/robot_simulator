@@ -533,6 +533,24 @@ class GpuEngine(PhysicsEngine):
         """Return current ring-pressure stats for the next slot that would be reused."""
         return self._published_ring.ring_pressure_stats(next_frame_id=self._publish_frame_id + 1)
 
+    def publish_stats(self):
+        """Return a lightweight publish-ring monitor snapshot.
+
+        The snapshot is counter/metadata only: it reports ring slots, consumer
+        lag, blockers, and backpressure counters. It intentionally avoids CUDA
+        event timing so callers can poll it in a render/training loop without
+        forcing GPU synchronization.
+
+        `is_stalled` is a static lag-budget flag. The producer raises
+        `DeviceConsumerStalledError` only when a stalled device consumer is also
+        blocking the target slot being acquired.
+        """
+        latest = self._published_ring.latest_frame
+        return self._published_ring.publish_stats(
+            next_frame_id=self._publish_frame_id + 1,
+            latest_frame_id=None if latest is None else latest.frame_id,
+        )
+
     def latest_published_frame(self) -> GpuPublishedFrame | None:
         """Return the most recent published frame descriptor."""
         return self._published_ring.latest_frame
@@ -557,6 +575,81 @@ class GpuEngine(PhysicsEngine):
                 self._published_ring.acknowledge_consumer(consumer, released_frame.frame_id)
 
         return BorrowedFrameLease(frame, on_release=_release_callback)
+
+    def borrow_device_frame(
+        self,
+        consumer_id: str,
+        frame_id: int | None = None,
+        *,
+        stream=None,
+    ) -> GpuPublishedFrame:
+        """Borrow a GPU published frame for a device-side consumer.
+
+        The blocking model here is *logical slot blocking*, not host blocking:
+        the lossless consumer pins the slot in `PublishedRing` until it records
+        completion, while the actual ordering is a device-side stream wait.
+
+        Warp mapping today:
+          - consumer stream waits `frame.ready_event`
+          - future work enqueued on that stream may read the published slot
+
+        CUDA mapping after the Warp-to-CUDA migration:
+          - `cudaStreamWaitEvent(consumer_stream, publish_event)`
+
+        Hot-path code must not use host synchronization here
+        (`cudaEventSynchronize`, `wp.synchronize_event`, or equivalent), because
+        that would turn render/sensor backpressure into a CPU scheduling bubble.
+
+        Device borrows must be paired with `complete_device_consumer(...)` after
+        all consumer-stream work has been enqueued. Unlike host
+        `borrow_latest_frame(...)`, this method cannot infer borrow completion
+        from a Python context-manager exit: the reclaim point is the recorded
+        device done event. Forgetting the completion call leaves the lossless
+        device consumer pinning the slot until stall detection fires, if
+        `max_lag_frames` is configured.
+        """
+        consumer = self._require_consumer(consumer_id)
+        if consumer.consumer_location != "device":
+            raise ValueError("borrow_device_frame requires a device consumer")
+        if consumer.access_mode != "borrow":
+            raise ValueError("borrow_device_frame requires access_mode='borrow'")
+
+        frame = (
+            self._published_ring.latest_frame if frame_id is None else self._require_published_frame(frame_id)
+        )
+        if frame is None:
+            raise KeyError("No published frame is currently available")
+
+        consumer.latest_seen_frame_id = frame.frame_id
+        self._wait_on_event(frame.ready_event, stream=stream)
+        return frame
+
+    def complete_device_consumer(
+        self,
+        consumer_id: str,
+        frame_id: int,
+        *,
+        stream=None,
+    ):
+        """Record a device-side done event and advance device reclaim state.
+
+        The returned event represents "all previously enqueued consumer work on
+        this stream has finished." Slot reuse later waits on that event from the
+        physics/current stream, keeping the dependency on the GPU timeline.
+
+        CUDA migration equivalent: `cudaEventRecord(done_event, consumer_stream)`.
+        """
+        consumer = self._require_consumer(consumer_id)
+        if consumer.consumer_location != "device":
+            raise ValueError("complete_device_consumer requires a device consumer")
+
+        done_event = self._record_event(stream=stream)
+        self._published_ring.mark_device_consumer_complete(
+            consumer,
+            frame_id,
+            done_event=done_event,
+        )
+        return done_event
 
     def snapshot_frame_to_host(
         self, consumer_id: str, frame_id: int, spec: HostSnapshotSpec
@@ -841,6 +934,67 @@ class GpuEngine(PhysicsEngine):
             )
         raise KeyError(f"Published frame {frame_id} is not currently available in the ring.")
 
+    def _current_stream(self):
+        """Return the stream used by this physics step's Warp launches.
+
+        `GpuEngine` currently relies on Warp's per-device current stream rather
+        than owning a dedicated `_physics_stream`. Keeping this accessor explicit
+        makes the handoff easy to migrate to a first-class CUDA stream later.
+        """
+        return wp.get_stream(self._device)
+
+    def _record_event(self, *, stream=None):
+        """Record an event on `stream` or the current physics stream.
+
+        This is the Warp equivalent of `cudaEventRecord(event, stream)`.
+        """
+        return (stream or self._current_stream()).record_event()
+
+    def _wait_on_event(self, event, *, stream=None) -> None:
+        """Enqueue a stream wait without synchronizing the host.
+
+        Warp's `Stream.wait_event` maps to CUDA stream/event dependency
+        (`cudaStreamWaitEvent`). It is deliberately not a CPU wait. Do not
+        replace this with `wp.synchronize_event` / `cudaEventSynchronize` in the
+        render or publish hot path.
+        """
+        if event is None:
+            return
+        (stream or self._current_stream()).wait_event(event)
+
+    def _wait_for_device_consumers_before_reuse(self, meta) -> None:
+        """Fence slot reuse behind completed device consumers.
+
+        A lossless device consumer "blocks" reuse in the control plane until it
+        calls `complete_device_consumer(...)`. Once completion is recorded, the
+        slot can be selected again, but the physics/current stream still waits
+        the consumer's done event before overwriting the buffers.
+
+        Invariant: `PublishedRing.acquire(...)` must only return a ready slot
+        for reuse after every enabled lossless device consumer has completed at
+        least `meta.frame_id`. If that invariant is violated, reusing the slot
+        could overwrite buffers still being read by a device consumer.
+
+        CUDA migration equivalent:
+          `cudaStreamWaitEvent(physics_stream, consumer_done_event)`
+        """
+        if meta.frame_id < 0:
+            return
+        for consumer in self._published_ring.consumers:
+            if not (
+                consumer.enabled
+                and consumer.qos_mode == "lossless"
+                and consumer.consumer_location == "device"
+            ):
+                continue
+            if consumer.device_completed_frame_id < meta.frame_id:
+                raise RuntimeError(
+                    "PublishedRing returned a slot before lossless device consumer "
+                    f"{consumer.consumer_id!r} completed frame {meta.frame_id}"
+                )
+            if consumer.device_done_event is not None:
+                self._wait_on_event(consumer.device_done_event)
+
     def _ensure_rigid_publish_buffers(self, slot: dict[str, object | None]) -> None:
         if slot["contact_bi"] is not None:
             return
@@ -877,6 +1031,7 @@ class GpuEngine(PhysicsEngine):
             self._publish_frame_id = next_frame_id
             return
         slot_id, slot, meta = acquired
+        self._wait_for_device_consumers_before_reuse(meta)
         sc = self._scratch
 
         wp.copy(slot["q"], sc.q)
@@ -916,7 +1071,7 @@ class GpuEngine(PhysicsEngine):
                 "contact_point_wp": slot["contact_point"],
             }
 
-        event = object()
+        event = self._record_event()
         meta = self._published_ring.mark_ready(
             slot_id=slot_id,
             frame_id=next_frame_id,

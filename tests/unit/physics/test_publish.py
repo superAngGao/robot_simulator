@@ -7,6 +7,7 @@ from physics.publish import (
     AckPolicy,
     BorrowedFrameLease,
     ConsumerState,
+    DeviceConsumerStalledError,
     GpuPublishedFrame,
     LeaseExpiredError,
     PublishedRing,
@@ -235,6 +236,16 @@ class TestAckPolicy:
         assert consumer.consumer_location == "device"
         assert consumer.reclaim_frame_id == -1
 
+    def test_negative_max_lag_frames_is_rejected(self):
+        with pytest.raises(ValueError, match="max_lag_frames"):
+            ConsumerState(
+                consumer_id="camera",
+                consumer_kind="render_backed_sensing",
+                qos_mode="lossless",
+                access_mode="borrow",
+                max_lag_frames=-1,
+            )
+
     def test_best_effort_defaults_to_no_ack(self):
         consumer = ConsumerState(
             consumer_id="rt",
@@ -305,6 +316,10 @@ class TestPublishedRing:
         assert slot == {"slot": 1}
         assert meta.state == "writing"
         assert meta.invalidated is True
+
+    def test_invalid_stats_window_size_is_rejected(self):
+        with pytest.raises(ValueError, match="stats_window_size"):
+            PublishedRing(slot_buffers=[{"slot": 0}], stats_window_size=0)
 
     def test_acquire_returns_none_when_pinned_and_policy_is_skip(self):
         consumer = ConsumerState(
@@ -390,6 +405,60 @@ class TestPublishedRing:
         with pytest.raises(NotImplementedError, match="device lossless consumers"):
             ring.acquire(frame_id=1)
 
+    def test_device_lossless_stall_raises_when_max_lag_is_exceeded(self):
+        consumer = ConsumerState(
+            consumer_id="camera",
+            consumer_kind="render_backed_sensing",
+            qos_mode="lossless",
+            access_mode="borrow",
+            device_completed_frame_id=-1,
+            consumer_location="device",
+            max_lag_frames=1,
+        )
+        ring = PublishedRing(
+            slot_buffers=[{"slot": 0}],
+            consumers=[consumer],
+            policy=PublishPolicy(on_ring_full="block"),
+        )
+        ring.mark_ready(slot_id=0, frame_id=0, step_index=0, sim_time=0.0, publish_event=object())
+
+        with pytest.raises(DeviceConsumerStalledError) as exc_info:
+            ring.acquire(frame_id=1)
+
+        exc = exc_info.value
+        assert exc.consumer_id == "camera"
+        assert exc.producer_frame_id == 1
+        assert exc.reclaim_frame_id == -1
+        assert exc.lag_frames == 2
+        assert exc.max_lag_frames == 1
+        assert exc.target_slot_id == 0
+        assert exc.target_slot_frame_id == 0
+        assert ring.publish_stats(next_frame_id=1).stall_count == 1
+
+        with pytest.raises(DeviceConsumerStalledError):
+            ring.acquire(frame_id=1)
+        assert ring.publish_stats(next_frame_id=1).stall_count == 2
+
+    def test_device_lossless_under_max_lag_keeps_existing_block_behavior(self):
+        consumer = ConsumerState(
+            consumer_id="camera",
+            consumer_kind="render_backed_sensing",
+            qos_mode="lossless",
+            access_mode="borrow",
+            device_completed_frame_id=-1,
+            consumer_location="device",
+            max_lag_frames=4,
+        )
+        ring = PublishedRing(
+            slot_buffers=[{"slot": 0}],
+            consumers=[consumer],
+            policy=PublishPolicy(on_ring_full="block"),
+        )
+        ring.mark_ready(slot_id=0, frame_id=0, step_index=0, sim_time=0.0, publish_event=object())
+
+        with pytest.raises(NotImplementedError, match="device lossless consumers"):
+            ring.acquire(frame_id=1)
+
     def test_device_completion_allows_slot_reuse(self):
         done_event = object()
         consumer = ConsumerState(
@@ -442,15 +511,35 @@ class TestPublishedRing:
         assert found == (meta, {"slot": 0})
 
     def test_reset_clears_meta_and_latest_frame(self):
-        ring = PublishedRing(slot_buffers=[{"slot": 0}])
+        consumer = ConsumerState(
+            consumer_id="dataset",
+            consumer_kind="host_export",
+            qos_mode="lossless",
+            access_mode="snapshot",
+            acked_frame_id=-1,
+        )
+        ring = PublishedRing(
+            slot_buffers=[{"slot": 0}],
+            consumers=[consumer],
+            policy=PublishPolicy(on_ring_full="skip"),
+        )
         ring.mark_ready(slot_id=0, frame_id=3, step_index=3, sim_time=0.3, publish_event=object())
         ring.set_latest_frame(object())
+        assert ring.acquire(frame_id=1) is None
+        assert ring.publish_stats(next_frame_id=1).backpressure_count == 1
 
         ring.reset()
 
         assert ring.latest_frame is None
         assert ring.slot_meta[0].state == "free"
         assert ring.slot_meta[0].frame_id == -1
+        stats = ring.publish_stats(next_frame_id=1)
+        assert stats.backpressure_count == 0
+        assert stats.materialized_publish_count == 0
+        assert stats.rolling_publish_sample_count == 0
+        assert stats.last_publish_host_time_s is None
+        assert stats.rolling_publish_interval_s is None
+        assert stats.rolling_publish_fps is None
 
     def test_reclaimer_uses_slowest_lossless_consumer(self):
         consumers = [
@@ -500,3 +589,107 @@ class TestPublishedRing:
         slot = PublishedSlotMeta(slot_id=2, frame_id=12, state="ready")
 
         assert reclaimer.reclaimable(slot) is True
+
+    def test_publish_stats_reports_slots_lag_blockers_and_counters(self):
+        camera = ConsumerState(
+            consumer_id="camera",
+            consumer_kind="render_backed_sensing",
+            qos_mode="lossless",
+            access_mode="borrow",
+            device_completed_frame_id=0,
+            latest_seen_frame_id=1,
+            consumer_location="device",
+            max_lag_frames=2,
+        )
+        dataset = ConsumerState(
+            consumer_id="dataset",
+            consumer_kind="host_export",
+            qos_mode="lossless",
+            access_mode="snapshot",
+            acked_frame_id=1,
+            latest_seen_frame_id=2,
+            consumer_location="host",
+        )
+        ring = PublishedRing(
+            slot_buffers=[{"slot": 0}, {"slot": 1}],
+            consumers=[camera, dataset],
+            policy=PublishPolicy(on_ring_full="skip"),
+        )
+        ring.mark_ready(slot_id=0, frame_id=2, step_index=2, sim_time=0.2, publish_event=object())
+        ring.mark_ready(slot_id=1, frame_id=1, step_index=1, sim_time=0.1, publish_event=object())
+
+        assert ring.acquire(frame_id=2) is None
+        stats = ring.publish_stats(next_frame_id=2, latest_frame_id=2)
+
+        assert stats.ring_size == 2
+        assert stats.next_frame_id == 2
+        assert stats.latest_frame_id == 2
+        assert stats.target_slot_id == 0
+        assert stats.blocking_consumer_ids == ("camera", "dataset")
+        assert stats.stalled_consumer_ids == ()
+        assert stats.backpressure_count == 1
+        assert stats.skip_count == 1
+        assert stats.slots[0].pinned_by_consumer_ids == ("camera", "dataset")
+        assert stats.slots[1].pinned_by_consumer_ids == ("camera",)
+
+        camera_stats = next(consumer for consumer in stats.consumers if consumer.consumer_id == "camera")
+        assert camera_stats.consumer_location == "device"
+        assert camera_stats.reclaim_frame_id == 0
+        assert camera_stats.lag_frames == 2
+        assert camera_stats.max_lag_frames == 2
+        assert camera_stats.is_blocking_target_slot is True
+        assert camera_stats.is_stalled is False
+
+    def test_publish_stats_reports_rolling_host_publish_fps(self):
+        clock_values = iter([10.0, 10.5, 11.0])
+        ring = PublishedRing(
+            slot_buffers=[{"slot": 0}, {"slot": 1}, {"slot": 2}],
+            clock=lambda: next(clock_values),
+            stats_window_size=2,
+        )
+
+        empty = ring.publish_stats(next_frame_id=0)
+        assert empty.materialized_publish_count == 0
+        assert empty.rolling_publish_window_size == 2
+        assert empty.rolling_publish_sample_count == 0
+        assert empty.last_publish_host_time_s is None
+        assert empty.rolling_publish_interval_s is None
+        assert empty.rolling_publish_fps is None
+
+        ring.mark_ready(slot_id=0, frame_id=0, step_index=0, sim_time=0.0, publish_event=object())
+        first = ring.publish_stats(next_frame_id=1)
+        assert first.materialized_publish_count == 1
+        assert first.rolling_publish_sample_count == 1
+        assert first.last_publish_host_time_s == 10.0
+        assert first.rolling_publish_interval_s is None
+        assert first.rolling_publish_fps is None
+
+        ring.mark_ready(slot_id=1, frame_id=1, step_index=1, sim_time=0.1, publish_event=object())
+        second = ring.publish_stats(next_frame_id=2)
+        assert second.materialized_publish_count == 2
+        assert second.rolling_publish_sample_count == 2
+        assert second.last_publish_host_time_s == 10.5
+        assert second.rolling_publish_interval_s == pytest.approx(0.5)
+        assert second.rolling_publish_fps == pytest.approx(2.0)
+
+        ring.mark_ready(slot_id=2, frame_id=2, step_index=2, sim_time=0.2, publish_event=object())
+        third = ring.publish_stats(next_frame_id=3)
+        assert third.materialized_publish_count == 3
+        assert third.rolling_publish_sample_count == 2
+        assert third.last_publish_host_time_s == 11.0
+        assert third.rolling_publish_interval_s == pytest.approx(0.5)
+        assert third.rolling_publish_fps == pytest.approx(2.0)
+
+    def test_publish_stats_returns_no_fps_when_clock_does_not_advance(self):
+        clock_values = iter([10.0, 10.0])
+        ring = PublishedRing(
+            slot_buffers=[{"slot": 0}, {"slot": 1}],
+            clock=lambda: next(clock_values),
+        )
+
+        ring.mark_ready(slot_id=0, frame_id=0, step_index=0, sim_time=0.0, publish_event=object())
+        ring.mark_ready(slot_id=1, frame_id=1, step_index=1, sim_time=0.1, publish_event=object())
+        stats = ring.publish_stats(next_frame_id=2)
+
+        assert stats.rolling_publish_interval_s is None
+        assert stats.rolling_publish_fps is None

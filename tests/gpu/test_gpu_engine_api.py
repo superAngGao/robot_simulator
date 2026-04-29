@@ -8,13 +8,15 @@ Tests for GpuEngine API extensions (session 16):
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
 from physics.geometry import BodyCollisionGeometry, ShapeInstance, SphereShape
 from physics.joint import FreeJoint
 from physics.merged_model import merge_models
-from physics.publish import ConsumerState, HostSnapshotSpec
+from physics.publish import ConsumerState, DeviceConsumerStalledError, HostSnapshotSpec, PublishPolicy
 from physics.robot_tree import Body, RobotTreeNumpy
 from physics.spatial import SpatialInertia, SpatialTransform
 from robot.model import RobotModel
@@ -32,6 +34,25 @@ pytestmark = [
     pytest.mark.gpu,
     pytest.mark.skipif(not HAS_WARP, reason="Warp or CUDA not available"),
 ]
+
+
+if HAS_WARP:
+
+    @wp.kernel
+    def _slow_q_checksum(
+        q: wp.array2d(dtype=wp.float32),
+        nq: int,
+        spin_iters: int,
+        out: wp.array(dtype=wp.float32),
+    ):
+        delay = float(0.0)
+        for i in range(spin_iters):
+            delay = delay + float(i % 2) * 1.0e-30
+
+        checksum = delay
+        for i in range(nq):
+            checksum = checksum + q[0, i] * float(i + 1)
+        out[0] = checksum
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +246,222 @@ class TestStepOutputFields:
         assert snapshot["q"].shape[0] == 1
         assert snapshot["contact_mask"].shape == (1, engine.nc_sensor)
         assert consumer.acked_frame_id == frame.frame_id
+
+    def test_published_frame_ready_event_is_warp_event(self):
+        engine, _ = _make_engine(num_envs=1)
+        engine.step()
+        frame = engine.latest_published_frame()
+
+        assert frame is not None
+        assert isinstance(frame.ready_event, wp.Event)
+
+    def test_device_consumer_waits_and_records_done_event(self):
+        engine, _ = _make_engine(num_envs=1)
+        engine.step()
+        frame = engine.latest_published_frame()
+        assert frame is not None
+        consumer = ConsumerState(
+            consumer_id="camera",
+            consumer_kind="render_backed_sensing",
+            qos_mode="lossless",
+            access_mode="borrow",
+            consumer_location="device",
+        )
+        engine.register_consumer(consumer)
+        stream = wp.Stream(device=engine._device)
+
+        borrowed = engine.borrow_device_frame("camera", frame.frame_id, stream=stream)
+        done_event = engine.complete_device_consumer("camera", frame.frame_id, stream=stream)
+
+        assert borrowed.frame_id == frame.frame_id
+        assert consumer.latest_seen_frame_id == frame.frame_id
+        assert consumer.device_completed_frame_id == frame.frame_id
+        assert consumer.device_done_event is done_event
+        assert isinstance(done_event, wp.Event)
+
+    def test_borrow_device_frame_defaults_to_latest_frame(self):
+        engine, _ = _make_engine(num_envs=1)
+        engine.step()
+        frame = engine.latest_published_frame()
+        assert frame is not None
+        consumer = ConsumerState(
+            consumer_id="camera",
+            consumer_kind="render_backed_sensing",
+            qos_mode="lossless",
+            access_mode="borrow",
+            consumer_location="device",
+        )
+        engine.register_consumer(consumer)
+        stream = wp.Stream(device=engine._device)
+
+        borrowed = engine.borrow_device_frame("camera", stream=stream)
+        engine.complete_device_consumer("camera", borrowed.frame_id, stream=stream)
+
+        assert borrowed.frame_id == frame.frame_id
+        assert consumer.latest_seen_frame_id == frame.frame_id
+
+    def test_borrow_device_frame_without_latest_frame_raises(self):
+        engine, _ = _make_engine(num_envs=1)
+        consumer = ConsumerState(
+            consumer_id="camera",
+            consumer_kind="render_backed_sensing",
+            qos_mode="lossless",
+            access_mode="borrow",
+            consumer_location="device",
+        )
+        engine.register_consumer(consumer)
+
+        with pytest.raises(KeyError, match="No published frame"):
+            engine.borrow_device_frame("camera")
+
+    def test_wait_for_device_consumers_before_reuse_waits_done_events(self):
+        engine = GpuEngine.__new__(GpuEngine)
+        done_event = object()
+        waited = []
+        engine._published_ring = SimpleNamespace(
+            consumers=[
+                ConsumerState(
+                    consumer_id="camera",
+                    consumer_kind="render_backed_sensing",
+                    qos_mode="lossless",
+                    access_mode="borrow",
+                    consumer_location="device",
+                    device_completed_frame_id=2,
+                    device_done_event=done_event,
+                ),
+                ConsumerState(
+                    consumer_id="imu",
+                    consumer_kind="render_backed_sensing",
+                    qos_mode="lossless",
+                    access_mode="borrow",
+                    consumer_location="device",
+                    device_completed_frame_id=2,
+                    device_done_event=None,
+                ),
+            ]
+        )
+        engine._wait_on_event = lambda event, **_: waited.append(event)
+
+        engine._wait_for_device_consumers_before_reuse(SimpleNamespace(frame_id=2))
+
+        assert waited == [done_event]
+
+    def test_wait_for_device_consumers_before_reuse_rejects_incomplete_consumer(self):
+        engine = GpuEngine.__new__(GpuEngine)
+        engine._published_ring = SimpleNamespace(
+            consumers=[
+                ConsumerState(
+                    consumer_id="camera",
+                    consumer_kind="render_backed_sensing",
+                    qos_mode="lossless",
+                    access_mode="borrow",
+                    consumer_location="device",
+                    device_completed_frame_id=1,
+                    device_done_event=object(),
+                )
+            ]
+        )
+        engine._wait_on_event = lambda event, **_: None
+
+        with pytest.raises(RuntimeError, match="camera"):
+            engine._wait_for_device_consumers_before_reuse(SimpleNamespace(frame_id=2))
+
+    def test_device_lossless_consumer_must_complete_before_slot_reuse(self):
+        engine, _ = _make_engine(num_envs=1)
+        engine.set_publish_policy(PublishPolicy(on_ring_full="block"))
+        consumer = ConsumerState(
+            consumer_id="camera",
+            consumer_kind="render_backed_sensing",
+            qos_mode="lossless",
+            access_mode="borrow",
+            consumer_location="device",
+        )
+        engine.register_consumer(consumer)
+
+        first = engine.step()
+        frame = engine.latest_published_frame()
+        assert first is not None
+        assert frame is not None
+
+        # Slots 1 and 2 are still free; slot 0 is reused on the fourth publish.
+        engine.step()
+        engine.step()
+        with pytest.raises(NotImplementedError, match="device lossless consumers"):
+            engine.step()
+
+        stream = wp.Stream(device=engine._device)
+        engine.borrow_device_frame("camera", frame.frame_id, stream=stream)
+        engine.complete_device_consumer("camera", frame.frame_id, stream=stream)
+
+        # Now slot 0 can be reused. The physics stream waits the recorded done event.
+        engine.step()
+
+    def test_device_lossless_consumer_max_lag_raises_stall_error(self):
+        engine, _ = _make_engine(num_envs=1)
+        engine.set_publish_policy(PublishPolicy(on_ring_full="block"))
+        consumer = ConsumerState(
+            consumer_id="camera",
+            consumer_kind="render_backed_sensing",
+            qos_mode="lossless",
+            access_mode="borrow",
+            consumer_location="device",
+            max_lag_frames=3,
+        )
+        engine.register_consumer(consumer)
+
+        engine.step()
+        engine.step()
+        engine.step()
+
+        with pytest.raises(DeviceConsumerStalledError) as exc_info:
+            engine.step()
+
+        assert exc_info.value.consumer_id == "camera"
+        assert exc_info.value.lag_frames == 4
+        stats = engine.publish_stats()
+        assert stats.stalled_consumer_ids == ("camera",)
+        assert stats.stall_count == 1
+        assert stats.blocking_consumer_ids == ("camera",)
+
+    def test_device_consumer_reads_consistent_frame_across_slot_reuse(self):
+        engine, merged = _make_engine(num_envs=1)
+        engine.set_publish_policy(PublishPolicy(on_ring_full="block"))
+        consumer = ConsumerState(
+            consumer_id="camera",
+            consumer_kind="render_backed_sensing",
+            qos_mode="lossless",
+            access_mode="borrow",
+            consumer_location="device",
+        )
+        engine.register_consumer(consumer)
+
+        first = engine.step()
+        frame = engine.latest_published_frame()
+        assert first is not None
+        assert frame is not None
+        expected = np.sum(first.q_new.astype(np.float32) * np.arange(1, merged.tree.nq + 1, dtype=np.float32))
+
+        stream = wp.Stream(device=engine._device)
+        checksum = wp.zeros(1, dtype=wp.float32, device=engine._device)
+        borrowed = engine.borrow_device_frame("camera", frame.frame_id, stream=stream)
+        wp.launch(
+            _slow_q_checksum,
+            dim=1,
+            device=engine._device,
+            inputs=[borrowed.q_wp, merged.tree.nq, 200_000],
+            outputs=[checksum],
+            stream=stream,
+        )
+        engine.complete_device_consumer("camera", frame.frame_id, stream=stream)
+
+        # The fourth publish reuses slot 0. It must wait on the consumer's
+        # done event before overwriting the slot the checksum kernel reads.
+        engine.step()
+        engine.step()
+        engine.step()
+        wp.synchronize()
+
+        assert checksum.numpy()[0] == pytest.approx(expected, rel=1e-6, abs=1e-6)
 
 
 # ---------------------------------------------------------------------------

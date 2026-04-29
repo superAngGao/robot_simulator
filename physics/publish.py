@@ -7,6 +7,8 @@ shared contract that both CPU and GPU execution paths can implement.
 
 from __future__ import annotations
 
+import time
+from collections import deque
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from math import inf
@@ -328,6 +330,15 @@ class DeviceSnapshotSpec:
 
 @dataclass
 class ConsumerState:
+    """Runtime state for one publish consumer.
+
+    `max_lag_frames=None` disables stall detection and preserves unbounded
+    lossless semantics. A finite value enables fail-fast protection for
+    lossless device consumers. `max_lag_frames=0` is valid but strict: because
+    a never-completed consumer starts at reclaim frame `-1`, it can stall as
+    soon as the first pinned-slot backpressure check observes lag.
+    """
+
     consumer_id: str
     consumer_kind: str
     qos_mode: QoSMode
@@ -340,6 +351,10 @@ class ConsumerState:
     device_completed_frame_id: int = -1
     device_done_event: object | None = None
 
+    def __post_init__(self) -> None:
+        if self.max_lag_frames is not None and self.max_lag_frames < 0:
+            raise ValueError("max_lag_frames must be >= 0 when set")
+
     @property
     def is_lossless(self) -> bool:
         return self.enabled and self.qos_mode == "lossless"
@@ -349,6 +364,38 @@ class ConsumerState:
         if self.consumer_location == "device":
             return self.device_completed_frame_id
         return self.acked_frame_id
+
+    def lag_frames(self, producer_frame_id: int) -> int:
+        return max(0, producer_frame_id - self.reclaim_frame_id)
+
+
+class DeviceConsumerStalledError(RuntimeError):
+    """Raised when a lossless device consumer exceeds its frame-lag budget."""
+
+    def __init__(
+        self,
+        *,
+        consumer_id: str,
+        producer_frame_id: int,
+        reclaim_frame_id: int,
+        lag_frames: int,
+        max_lag_frames: int,
+        target_slot_id: int,
+        target_slot_frame_id: int,
+    ) -> None:
+        self.consumer_id = consumer_id
+        self.producer_frame_id = producer_frame_id
+        self.reclaim_frame_id = reclaim_frame_id
+        self.lag_frames = lag_frames
+        self.max_lag_frames = max_lag_frames
+        self.target_slot_id = target_slot_id
+        self.target_slot_frame_id = target_slot_frame_id
+        super().__init__(
+            f"Device publish consumer {consumer_id!r} stalled: "
+            f"lag_frames={lag_frames} exceeds max_lag_frames={max_lag_frames} "
+            f"(producer_frame_id={producer_frame_id}, reclaim_frame_id={reclaim_frame_id}, "
+            f"target_slot_id={target_slot_id}, target_slot_frame_id={target_slot_frame_id})"
+        )
 
 
 @dataclass(frozen=True)
@@ -395,6 +442,59 @@ class RingPressureStats:
     min_lossless_acked_frame_id: float
     enabled_lossless_consumers: tuple[str, ...]
     blocking_consumer_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PublishedSlotStats:
+    slot_id: int
+    frame_id: int
+    step_index: int
+    sim_time: float
+    state: SlotState
+    invalidated: bool
+    pinned_by_consumer_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ConsumerPublishStats:
+    consumer_id: str
+    consumer_kind: str
+    consumer_location: ConsumerLocation
+    qos_mode: QoSMode
+    access_mode: AccessMode
+    enabled: bool
+    latest_seen_frame_id: int
+    acked_frame_id: int
+    device_completed_frame_id: int
+    reclaim_frame_id: int
+    lag_frames: int
+    max_lag_frames: int | None
+    is_blocking_target_slot: bool
+    is_stalled: bool
+
+
+@dataclass(frozen=True)
+class PublishRuntimeStats:
+    ring_size: int
+    next_frame_id: int
+    latest_frame_id: int | None
+    target_slot_id: int
+    min_lossless_reclaim_frame_id: float
+    blocking_consumer_ids: tuple[str, ...]
+    stalled_consumer_ids: tuple[str, ...]
+    slots: tuple[PublishedSlotStats, ...]
+    consumers: tuple[ConsumerPublishStats, ...]
+    backpressure_count: int
+    skip_count: int
+    block_wait_count: int
+    stall_count: int
+    raise_count: int
+    materialized_publish_count: int
+    rolling_publish_window_size: int
+    rolling_publish_sample_count: int
+    last_publish_host_time_s: float | None
+    rolling_publish_interval_s: float | None
+    rolling_publish_fps: float | None
 
 
 class SlotReclaimer:
@@ -447,9 +547,13 @@ class PublishedRing:
         slot_buffers: list[object],
         consumers: list[ConsumerState] | None = None,
         policy: PublishPolicy | None = None,
+        clock: Callable[[], float] = time.perf_counter,
+        stats_window_size: int = 64,
     ) -> None:
         if not slot_buffers:
             raise ValueError("PublishedRing requires at least one slot buffer")
+        if stats_window_size <= 0:
+            raise ValueError("stats_window_size must be >= 1")
         self._slot_buffers = slot_buffers
         self._slot_meta = [PublishedSlotMeta(slot_id=i) for i in range(len(slot_buffers))]
         self._consumers = consumers if consumers is not None else []
@@ -457,6 +561,14 @@ class PublishedRing:
         self._policy = policy or PublishPolicy()
         self._latest_frame = None
         self._condition = Condition()
+        self._clock = clock
+        self._publish_host_times: deque[float] = deque(maxlen=stats_window_size)
+        self._materialized_publish_count = 0
+        self._backpressure_count = 0
+        self._skip_count = 0
+        self._block_wait_count = 0
+        self._stall_count = 0
+        self._raise_count = 0
 
     @property
     def ring_size(self) -> int:
@@ -530,6 +642,76 @@ class PublishedRing:
         target = None if next_frame_id is None else self._target_meta(next_frame_id)
         return self._reclaimer.ring_pressure_stats(target)
 
+    def publish_stats(
+        self,
+        *,
+        next_frame_id: int,
+        latest_frame_id: int | None = None,
+    ) -> PublishRuntimeStats:
+        """Return a metadata-only publish runtime snapshot.
+
+        `ConsumerPublishStats.is_stalled` is a static lag-budget observation for
+        every configured consumer. It does not mean the next `acquire(...)` call
+        must raise `DeviceConsumerStalledError`: acquire raises only when that
+        stalled device consumer is also blocking the target slot being reused.
+
+        Rolling FPS uses host-observed `mark_ready(...)` timestamps only. It is
+        useful for producer/publish cadence monitoring, but it is not a GPU
+        kernel-completion measurement and does not synchronize device work.
+        """
+        target = self._target_meta(next_frame_id)
+        target_blockers = self._blocking_consumers(target)
+        target_blocker_ids = tuple(consumer.consumer_id for consumer in target_blockers)
+        consumer_stats = tuple(
+            self._consumer_stats(
+                consumer,
+                producer_frame_id=next_frame_id,
+                target_blocker_ids=target_blocker_ids,
+            )
+            for consumer in self._consumers
+        )
+        stalled_ids = tuple(stats.consumer_id for stats in consumer_stats if stats.is_stalled)
+        rolling_interval_s = self._rolling_publish_interval_s()
+        rolling_fps = None if rolling_interval_s is None else 1.0 / rolling_interval_s
+        slot_stats = tuple(
+            PublishedSlotStats(
+                slot_id=meta.slot_id,
+                frame_id=meta.frame_id,
+                step_index=meta.step_index,
+                sim_time=meta.sim_time,
+                state=meta.state,
+                invalidated=meta.invalidated,
+                pinned_by_consumer_ids=tuple(
+                    consumer.consumer_id
+                    for consumer in self._consumers
+                    if consumer.is_lossless and consumer.reclaim_frame_id < meta.frame_id
+                ),
+            )
+            for meta in self._slot_meta
+        )
+        return PublishRuntimeStats(
+            ring_size=self.ring_size,
+            next_frame_id=next_frame_id,
+            latest_frame_id=latest_frame_id,
+            target_slot_id=target.slot_id,
+            min_lossless_reclaim_frame_id=self._reclaimer.min_lossless_acked_frame_id(),
+            blocking_consumer_ids=target_blocker_ids,
+            stalled_consumer_ids=stalled_ids,
+            slots=slot_stats,
+            consumers=consumer_stats,
+            backpressure_count=self._backpressure_count,
+            skip_count=self._skip_count,
+            block_wait_count=self._block_wait_count,
+            stall_count=self._stall_count,
+            raise_count=self._raise_count,
+            materialized_publish_count=self._materialized_publish_count,
+            rolling_publish_window_size=self._publish_host_times.maxlen,
+            rolling_publish_sample_count=len(self._publish_host_times),
+            last_publish_host_time_s=(self._publish_host_times[-1] if self._publish_host_times else None),
+            rolling_publish_interval_s=rolling_interval_s,
+            rolling_publish_fps=rolling_fps,
+        )
+
     def acquire(
         self,
         *,
@@ -540,11 +722,21 @@ class PublishedRing:
         with self._condition:
             slot_id = self._target_slot_id(frame_id)
             meta = self._slot_meta[slot_id]
+            saw_backpressure = False
             while meta.state == "ready" and not self._reclaimer.reclaimable(meta):
+                if not saw_backpressure:
+                    self._backpressure_count += 1
+                    saw_backpressure = True
                 action = self._policy.on_ring_full
                 blockers = self._blocking_consumers(meta)
+                self._raise_if_stalled_device_consumers(
+                    blockers,
+                    producer_frame_id=frame_id,
+                    target_slot=meta,
+                )
                 blocker_ids = tuple(consumer.consumer_id for consumer in blockers)
                 if action == "skip":
+                    self._skip_count += 1
                     return None
                 if action == "block":
                     device_blockers = tuple(
@@ -554,12 +746,14 @@ class PublishedRing:
                     )
                     if device_blockers:
                         raise NotImplementedError(
-                            "PublishPolicy(on_ring_full='block') is host-only; "
-                            "device lossless consumers require stream/event reclaim: "
+                            "PublishPolicy(on_ring_full='block') still requires pending "
+                            "device lossless consumers to complete before slot reuse: "
                             + ", ".join(device_blockers)
                         )
+                    self._block_wait_count += 1
                     self._condition.wait()
                     continue
+                self._raise_count += 1
                 raise RuntimeError(
                     "Published ring backpressure: slot is pinned by lossless consumer(s): "
                     + ", ".join(blocker_ids)
@@ -586,6 +780,8 @@ class PublishedRing:
         meta.publish_event = publish_event
         meta.host_export_queued = False
         meta.invalidated = False
+        self._materialized_publish_count += 1
+        self._publish_host_times.append(self._clock())
         return meta
 
     def find_frame(self, frame_id: int) -> tuple[PublishedSlotMeta, object] | None:
@@ -596,6 +792,13 @@ class PublishedRing:
 
     def reset(self) -> None:
         self._latest_frame = None
+        self._publish_host_times.clear()
+        self._materialized_publish_count = 0
+        self._backpressure_count = 0
+        self._skip_count = 0
+        self._block_wait_count = 0
+        self._stall_count = 0
+        self._raise_count = 0
         for meta in self._slot_meta:
             meta.frame_id = -1
             meta.step_index = -1
@@ -618,6 +821,70 @@ class PublishedRing:
             if consumer.is_lossless and consumer.reclaim_frame_id < meta.frame_id
         )
 
+    def _rolling_publish_interval_s(self) -> float | None:
+        if len(self._publish_host_times) < 2:
+            return None
+        # n timestamps span n - 1 intervals.
+        elapsed = self._publish_host_times[-1] - self._publish_host_times[0]
+        if elapsed <= 0.0:
+            return None
+        return elapsed / (len(self._publish_host_times) - 1)
+
+    def _consumer_stats(
+        self,
+        consumer: ConsumerState,
+        *,
+        producer_frame_id: int,
+        target_blocker_ids: tuple[str, ...],
+    ) -> ConsumerPublishStats:
+        lag = consumer.lag_frames(producer_frame_id)
+        is_stalled = (
+            consumer.is_lossless
+            and consumer.consumer_location == "device"
+            and consumer.max_lag_frames is not None
+            and lag > consumer.max_lag_frames
+        )
+        return ConsumerPublishStats(
+            consumer_id=consumer.consumer_id,
+            consumer_kind=consumer.consumer_kind,
+            consumer_location=consumer.consumer_location,
+            qos_mode=consumer.qos_mode,
+            access_mode=consumer.access_mode,
+            enabled=consumer.enabled,
+            latest_seen_frame_id=consumer.latest_seen_frame_id,
+            acked_frame_id=consumer.acked_frame_id,
+            device_completed_frame_id=consumer.device_completed_frame_id,
+            reclaim_frame_id=consumer.reclaim_frame_id,
+            lag_frames=lag,
+            max_lag_frames=consumer.max_lag_frames,
+            is_blocking_target_slot=consumer.consumer_id in target_blocker_ids,
+            is_stalled=is_stalled,
+        )
+
+    def _raise_if_stalled_device_consumers(
+        self,
+        blockers: tuple[ConsumerState, ...],
+        *,
+        producer_frame_id: int,
+        target_slot: PublishedSlotMeta,
+    ) -> None:
+        for consumer in blockers:
+            if consumer.consumer_location != "device" or consumer.max_lag_frames is None:
+                continue
+            lag = consumer.lag_frames(producer_frame_id)
+            if lag <= consumer.max_lag_frames:
+                continue
+            self._stall_count += 1
+            raise DeviceConsumerStalledError(
+                consumer_id=consumer.consumer_id,
+                producer_frame_id=producer_frame_id,
+                reclaim_frame_id=consumer.reclaim_frame_id,
+                lag_frames=lag,
+                max_lag_frames=consumer.max_lag_frames,
+                target_slot_id=target_slot.slot_id,
+                target_slot_frame_id=target_slot.frame_id,
+            )
+
 
 __all__ = [
     "AckPoint",
@@ -628,6 +895,7 @@ __all__ = [
     "ConsumerState",
     "ConsumerLocation",
     "DetailLevel",
+    "DeviceConsumerStalledError",
     "DeviceSnapshotSpec",
     "GpuPublishedFrame",
     "HostSnapshotSpec",
@@ -638,7 +906,10 @@ __all__ = [
     "PublishedFrameCore",
     "PublishedRing",
     "PublishedSlotMeta",
+    "PublishedSlotStats",
+    "PublishRuntimeStats",
     "QoSMode",
+    "ConsumerPublishStats",
     "RingPressureStats",
     "SnapshotHandle",
     "SlotReclaimedError",

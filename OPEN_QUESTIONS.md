@@ -1674,9 +1674,21 @@ published contract 已收敛）。
   consumer 的 event/fence 状态类仍推迟到真实 device consumer 出现时
 - `ConsumerState.device_completed_frame_id` / `device_done_event` 与
   `PublishedRing.mark_device_consumer_complete(...)` 已作为 device consumer
-  reclaim 控制面落地；真实 Warp/CUDA event 仍待接入
-- device lossless consumer stall detection / `max_lag_frames` enforcement 尚未
-  落地；若 device consumer 不推进 completion，ring 仍可能永久阻塞
+  reclaim 控制面落地；`GpuEngine` 已用真实 Warp/CUDA event 完成第一版
+  device-side handoff（publish_event wait + done_event record + slot reuse wait）
+  这里的“阻塞”分成两层：control plane 上 slot 被 lossless device consumer
+  pin 住；device timeline 上用 stream wait/event 排序。热路径不应使用
+  `wp.synchronize_event` / `cudaEventSynchronize`，后续 Warp→CUDA 迁移时直接
+  映射为 `cudaEventRecord` + `cudaStreamWaitEvent`
+- device lossless consumer stall detection / `max_lag_frames` enforcement 已
+  落第一版：默认 `None` 保持 lossless 原语义；显式配置上限后，超出 lag
+  budget 会抛 `DeviceConsumerStalledError`，并进入 `publish_stats()`
+  监控快照
+- `GpuEngine.publish_stats()` 已提供第一版 ring monitor：slot state/pin、
+  consumer lag/blocker/stalled、以及 backpressure/skip/wait/stall/raise
+  counters；并加入 host-observed rolling publish FPS / interval。该 FPS
+  来自 CPU `mark_ready()` 时间戳，只衡量 materialized publish cadence，不读
+  CUDA event elapsed time，也不引入 GPU 同步
 - `PublishedRing` 不应成为 RL 训练热路径的必经入口；RL obs kernel 可直接读
   current GPU buffers / scratch，ring 主要服务外部或异步消费者的稳定 slot 生命周期
 
@@ -1781,12 +1793,16 @@ contact-pair published contract。
 5. ✅ `ConsumerState.consumer_location="host"` 默认字段已落地
 6. ✅ host-only `on_ring_full="block"` 的真实等待语义已落地
 7. ✅ RL obs / sensing phase-2 的 per-body contact mask published contract 已落地
-8. ✅ device consumer completion 控制面已落地（`device_completed_frame_id`），
-   真实 event/fence handle 接入仍待做
-9. 后续按需要补 compact contact-pair published contract
-10. 后续补 device consumer stall detection / max-lag enforcement
-11. 后续把 host staging 从 Python future 升级为 Warp stream/event + bounded queue
-12. 未来 GPU render-backed sensing 使用 stream event/fence，不走 CPU condition wait
+8. ✅ device consumer completion 控制面已落地（`device_completed_frame_id`）
+9. ✅ `GpuEngine` 第一版 Warp/CUDA stream-event handoff 已落地：
+   published slot 写完 record `publish_event`，device consumer stream wait 后
+   record `done_event`，slot 复用前 physics stream wait `done_event`
+10. ✅ device consumer stall detection / max-lag enforcement 已落地
+11. ✅ `GpuEngine.publish_stats()` 第一版 ring/consumer lag monitor 已落地
+12. ✅ host-observed FPS/rolling monitor buffer 已落地（不在默认路径做 CUDA timing）
+13. 后续按需要补 compact contact-pair published contract
+14. 后续把 host staging 从 Python future 升级为 Warp stream/event + bounded queue
+15. 未来 GPU render-backed sensing 使用 stream event/fence，不走 CPU condition wait
 
 **触发条件**：开始把 2026-04-24 这轮 design proposal 转成代码时。
 **优先级**：P1（已接近实现，且是后续渲染/传感器主线的基础设施）。
@@ -1796,6 +1812,17 @@ contact-pair published contract。
 **状态更新（2026-04-27）**：依赖方向与归属已形成 phase-2 决策，见
 `collab/q53-sensing-rendering-boundary__decision__codex__v1.md`。
 
+**状态更新（2026-04-29）**：第一版 `SurfaceQuerySpec` / executor 骨架已落地：
+
+- `sensing.surface_query.SurfaceQuerySpec` 描述 world-frame ray batch；
+  directions 在 spec 层统一 normalize，因此 result distance 保持米制语义
+- `SurfaceQueryResult` 承载 hit mask、distance、hit position、normal
+- `SurfaceQueryExecutor` protocol 明确 query execution 是显式 runtime 层
+- `CpuPlaneSurfaceQueryExecutor` 支持 `FlatTerrain` / `HalfSpaceTerrain`
+  的无限平面 ray query；`HeightmapTerrain` / mesh / body geometry 明确延后
+- 该实现不 import `rendering`，不把 query result 塞进 `RenderScene`，符合
+  Q53 的 sensing/rendering 边界
+
 当前决定：
 
 - `sensing/` 继续负责 sensor-facing specs/readings/views，不直接依赖 `rendering/`
@@ -1804,7 +1831,7 @@ contact-pair published contract。
   `sensor_rendering/`，该层允许依赖 `sensing/` 和 `rendering/`
 - `SurfaceQueryView` 属于 `sensing/`，但 builder 只构造 query spec/view；
   CPU/GPU query 结果由显式 executor/runtime 产生
-- 在 executor 存在前，优先命名为 `SurfaceQuerySpec`
+- 已优先命名为 `SurfaceQuerySpec`，第一版 CPU plane executor 已落地
 - 第一版 depth image 倾向先走 surface query / ray-cast depth；RGB / segmentation
   再走 `sensor_rendering/`
 - `RenderScene` 可用于 debug overlay，不作为 LiDAR/camera 的 canonical execution contract
@@ -1846,11 +1873,12 @@ contact-pair published contract。
 **仍待实现前细化**：
 1. camera reading schema
 2. GPU realtime renderer 和 camera pipeline 是否共享 surface cache
-3. `SurfaceQuerySpec` / executor 的具体 dataclass 与 protocol 形状
+3. GPU / mesh / body-geometry `SurfaceQueryExecutor` 的具体执行路径
 
 **建议的暂时策略**：
 - 继续保持 `StateSampleView` / numeric sensing 主线
-- 下一步若实现 LiDAR / range finder，先做 `SurfaceQuerySpec/View + executor`，不要复用
+- 下一步若实现 LiDAR / range finder，可在现有 `SurfaceQuerySpec + executor`
+  上扩展 query origin/direction builders 和 GPU/mesh executor，不要复用
   `RenderScene` 当 query scene
 - 下一步若实现 camera / render-backed depth，先创建集成层设计，不让 `sensing/`
   直接 import `rendering/`
