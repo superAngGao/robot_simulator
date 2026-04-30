@@ -994,6 +994,12 @@ Implemented:
   - aggregate scene input for frame-aligned producer streams;
   - Phase A carries only `rigid: CpuPublishedFrame`;
   - validates rigid frame id / sim time alignment.
+- `optics.build_optical_registry_from_robot_model(...)`
+  - Phase-A `collision_only` registry builder for `RobotModel.geometries`;
+  - returns `OpticalBindingBuildResult`;
+  - records `OpticalSourceKey` provenance maps;
+  - emits diagnostics for unsupported shapes instead of silently
+    approximating them.
 - `optics.OpticalSceneSnapshot`
   - frame id / sim time / env idx;
   - immutable tuple of executable optical instances;
@@ -1019,6 +1025,7 @@ PYTHONPATH=. pytest tests/unit/optics tests/unit/sensing -q
 Still deferred:
 
 - sensor pose/ray-pattern builders;
+- visual-preferred / explicit optical asset registry builders;
 - Rerun optical result sink;
 - accelerated CPU mesh traversal / Embree;
 - GPU/device result buffers and Q52 device-consumer integration;

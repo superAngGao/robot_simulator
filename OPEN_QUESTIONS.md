@@ -2033,6 +2033,9 @@ PublishedFrame N
   - `OpticalExecutor`
   - `OpticalComputeResult`
   - `CpuReferenceOpticalExecutor`
+  - `OpticalBindingBuildResult`
+  - `OpticalSourceKey`
+  - `build_optical_registry_from_robot_model(...)`
 - Phase A snapshot 只支持 CPU one-env `CpuPublishedFrame`；
   body-bound geometry 通过 `PublishedFrame.X_world` 组合 transform。
 - registry 在 `add_instance(...)` 时分配稳定 `numeric_instance_id`；cache 只携带
@@ -2042,6 +2045,15 @@ PublishedFrame N
 - reference executor 只做 first-hit `range_m`、`material_id`、`instance_id`、
   `numeric_instance_id`、hit position/normal；明确不做 direct-light intensity 或
   camera-style projected `depth_m`。
+- 已新增 Phase-A registry builder：
+  `build_optical_registry_from_robot_model(..., source_policy="collision_only")`。
+  该 builder 从 `RobotModel.geometries` 生成 `OpticalWorldRegistry`、
+  `OpticalInstanceSpec`、source/instance provenance maps 和 diagnostics。
+- collision-derived builder 默认 roles 为 `{"depth", "lidar", "segmentation"}`，
+  不默认进入 RGB。
+- builder 支持可三角化 polyhedral shapes、带 faces 的 `MeshShape` 和
+  `HalfSpaceShape`；对 sphere/capsule/缺 faces mesh 等暂不支持形状输出 warning
+  diagnostic，不偷偷生成低保真近似。
 - 新增 `tests/unit/optics/test_optics_phase_a.py` 覆盖 registry、snapshot transform、
   plane first-hit、triangle first-hit、frame mismatch。
 
