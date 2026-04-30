@@ -16,13 +16,16 @@ from sensing import (
     ForceSensorReading,
     IMUReading,
     JointStateReading,
+    RangeSensorReading,
     StateSampleView,
     build_contact_state_reading,
     build_force_sensor_reading,
     build_imu_reading,
     build_joint_state_reading,
+    build_range_sensor_reading,
     build_state_sample_view,
 )
+from sensing.surface_query import SurfaceQueryResult
 
 
 def _make_view() -> StateSampleView:
@@ -77,6 +80,7 @@ class TestJointStateReading:
         assert IMUReading is not None
         assert ForceSensorReading is not None
         assert ContactStateReading is not None
+        assert RangeSensorReading is not None
 
     def test_builds_full_joint_state_from_view(self):
         view = _make_view()
@@ -174,3 +178,63 @@ class TestContactStateReading:
         assert reading.frame_id == 3
         assert reading.contact_count == 2
         np.testing.assert_allclose(reading.contact_mask, [1, 0])
+
+
+class TestRangeSensorReading:
+    def test_builds_range_reading_from_surface_query_result(self):
+        result = SurfaceQueryResult(
+            frame_id=8,
+            sim_time=0.008,
+            env_idx=2,
+            hit_mask=np.array([True, False], dtype=bool),
+            distance=np.array([1.5, np.inf], dtype=np.float32),
+            position_world=np.array([[0.0, 0.0, 0.0], [np.nan, np.nan, np.nan]], dtype=np.float64),
+            normal_world=np.array([[0.0, 0.0, 1.0], [np.nan, np.nan, np.nan]], dtype=np.float64),
+        )
+
+        reading = build_range_sensor_reading(result)
+
+        assert reading.frame_id == 8
+        assert reading.sim_time == 0.008
+        assert reading.env_idx == 2
+        np.testing.assert_array_equal(reading.hit_mask, [True, False])
+        np.testing.assert_allclose(reading.range_m, [1.5, np.inf])
+        assert reading.range_m.dtype == np.float64
+        np.testing.assert_allclose(reading.hit_position_world[0], [0.0, 0.0, 0.0])
+        np.testing.assert_allclose(reading.hit_normal_world[0], [0.0, 0.0, 1.0])
+
+    def test_can_omit_hit_payloads(self):
+        result = SurfaceQueryResult(
+            frame_id=8,
+            sim_time=0.008,
+            env_idx=2,
+            hit_mask=np.array([True], dtype=bool),
+            distance=np.array([1.5], dtype=np.float64),
+            position_world=np.array([[0.0, 0.0, 0.0]], dtype=np.float64),
+            normal_world=np.array([[0.0, 0.0, 1.0]], dtype=np.float64),
+        )
+
+        reading = build_range_sensor_reading(result, include_hits=False)
+
+        np.testing.assert_allclose(reading.range_m, [1.5])
+        np.testing.assert_array_equal(reading.hit_mask, [True])
+        assert reading.hit_position_world is None
+        assert reading.hit_normal_world is None
+
+    def test_preserves_nan_hit_payloads_for_all_miss_result(self):
+        result = SurfaceQueryResult(
+            frame_id=9,
+            sim_time=0.009,
+            env_idx=0,
+            hit_mask=np.array([False, False], dtype=bool),
+            distance=np.array([np.inf, np.inf], dtype=np.float64),
+            position_world=np.full((2, 3), np.nan, dtype=np.float64),
+            normal_world=np.full((2, 3), np.nan, dtype=np.float64),
+        )
+
+        reading = build_range_sensor_reading(result)
+
+        np.testing.assert_array_equal(reading.hit_mask, [False, False])
+        assert np.all(np.isinf(reading.range_m))
+        assert np.all(np.isnan(reading.hit_position_world))
+        assert np.all(np.isnan(reading.hit_normal_world))

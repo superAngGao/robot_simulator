@@ -17,6 +17,8 @@ This pass implements the first non-numeric sensing boundary from Q53:
 - `SurfaceQueryResult`
 - `SurfaceQueryExecutor` protocol
 - `CpuPlaneSurfaceQueryExecutor`
+- `RangeSensorReading`
+- `build_range_sensor_reading(...)`
 
 The implementation intentionally does not import `rendering`, does not use
 `RenderScene` as a query scene, and does not produce camera/image payloads.
@@ -77,6 +79,20 @@ It deliberately rejects:
 Those need future CPU/GPU acceleration structures and should not be hidden inside
 the spec builder.
 
+## Range Reading
+
+`build_range_sensor_reading(...)` converts `SurfaceQueryResult` into a
+sensor-facing `RangeSensorReading`:
+
+- `range_m`
+- `hit_mask`
+- optional hit positions
+- optional hit normals
+
+This is intentionally thin. It does not generate ray patterns, attach sensors to
+bodies, apply noise, or execute queries. Those belong in later builders/runtime
+layers.
+
 ## Boundary
 
 This pass follows Q53:
@@ -99,7 +115,7 @@ python -m compileall sensing tests/unit/sensing
 Results:
 
 - surface-query unit tests: `14 passed`
-- sensing unit tests: `26 passed`
+- sensing unit tests: `29 passed`
 - sensing/publish/render bridge subset: `73 passed`
 - GPU API: `40 passed`
 - `ruff` passed
@@ -110,5 +126,5 @@ Results:
 1. Query builders from sensor attachments / scan patterns.
 2. Body-geometry and mesh terrain queries.
 3. GPU/Warp surface-query executor.
-4. LiDAR/range-finder readings built on query results.
+4. LiDAR/range-finder schemas beyond raw range readings.
 5. Render-backed RGB / segmentation in the future `sensor_rendering/` layer.

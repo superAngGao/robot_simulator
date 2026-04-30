@@ -4,8 +4,15 @@ from __future__ import annotations
 
 import numpy as np
 
-from .readings import ContactStateReading, ForceSensorReading, IMUReading, JointStateReading
+from .readings import (
+    ContactStateReading,
+    ForceSensorReading,
+    IMUReading,
+    JointStateReading,
+    RangeSensorReading,
+)
 from .state_sample import StateSampleView
+from .surface_query import SurfaceQueryResult
 
 
 def _copy_optional_array(value) -> np.ndarray | None:
@@ -116,4 +123,31 @@ def build_contact_state_reading(view: StateSampleView) -> ContactStateReading:
         env_idx=view.env_idx,
         contact_count=view.contact_count,
         contact_mask=_copy_optional_array(view.contact_mask),
+    )
+
+
+def build_range_sensor_reading(
+    result: SurfaceQueryResult,
+    *,
+    include_hits: bool = True,
+) -> RangeSensorReading:
+    """Build a range reading from a surface-query result.
+
+    This is intentionally a thin conversion layer: query execution and ray
+    pattern generation stay outside the reading builder. CPU results become
+    owned NumPy arrays. Future device-array results should be staged by the
+    caller before using this host-side builder.
+    """
+    return RangeSensorReading(
+        frame_id=result.frame_id,
+        sim_time=result.sim_time,
+        env_idx=result.env_idx,
+        range_m=np.asarray(result.distance, dtype=np.float64).copy(),
+        hit_mask=np.asarray(result.hit_mask, dtype=bool).copy(),
+        hit_position_world=(
+            None if not include_hits else np.asarray(result.position_world, dtype=np.float64).copy()
+        ),
+        hit_normal_world=(
+            None if not include_hits else np.asarray(result.normal_world, dtype=np.float64).copy()
+        ),
     )

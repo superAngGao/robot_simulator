@@ -1820,6 +1820,9 @@ contact-pair published contract。
 - `SurfaceQueryExecutor` protocol 明确 query execution 是显式 runtime 层
 - `CpuPlaneSurfaceQueryExecutor` 支持 `FlatTerrain` / `HalfSpaceTerrain`
   的无限平面 ray query；`HeightmapTerrain` / mesh / body geometry 明确延后
+- `RangeSensorReading` / `build_range_sensor_reading(...)` 已作为
+  `SurfaceQueryResult -> sensor-facing reading` 的薄转换层落地；ray pattern /
+  sensor pose builder 仍延后
 - 该实现不 import `rendering`，不把 query result 塞进 `RenderScene`，符合
   Q53 的 sensing/rendering 边界
 
@@ -1874,6 +1877,8 @@ contact-pair published contract。
 1. camera reading schema
 2. GPU realtime renderer 和 camera pipeline 是否共享 surface cache
 3. GPU / mesh / body-geometry `SurfaceQueryExecutor` 的具体执行路径
+4. ray pattern / sensor pose builder（body attachment、scan angle convention、
+   noise/clipping policy）
 
 **建议的暂时策略**：
 - 继续保持 `StateSampleView` / numeric sensing 主线
@@ -1885,3 +1890,176 @@ contact-pair published contract。
 
 **触发条件**：开始实现 `LiDAR / depth probe / camera` 这类非纯 numeric sensor 时。
 **优先级**：P1（归属阻塞已解除；具体执行 schema 仍需在实现前细化）。
+
+**Q54 — Optical computation workflow（PublishedFrame -> executable optical scene -> results）** (2026-04-29)
+
+**背景**：Q53 已经把 `sensing/` / `rendering/` / future integration layer 的依赖边界守住，
+并落地了第一版 `SurfaceQuerySpec` / `SurfaceQueryExecutor`。但进一步讨论光源、材质、
+反射/折射、camera/RGB/optical sensors 时发现：真正缺的不是给 `PublishedFrame`
+再加几个字段，而是一条明确的 optical scene synchronization pipeline。
+
+详见：
+`collab/q54-optical-computation-workflow__discussion__codex__v1.md`。
+
+**真正需求**：
+
+刚体仿真完成 frame `N` 后，系统需要能把该帧的物理状态与光学世界数据组合起来，
+执行光学计算，并把结果交给 sensor readings / RL obs / Rerun / debug exporters 消费：
+
+```
+PublishedFrame N
+  + optical geometry/material/light/medium/sensor registry
+  -> OpticalSceneSnapshot N
+  -> OpticalExecutor
+  -> OpticalComputeResult
+  -> sensing / RL / Rerun / export consumers
+```
+
+**当前 gap**：
+
+1. `PublishedFrame` 只有物理时间线状态：`q/qdot/X_world/contact/telemetry` 等；
+   它不拥有光源、材质、render/query mesh、texture、medium 或 acceleration structure。
+2. `RenderScene` 是 debug/inspection snapshot，不是物理真实的 optical world model。
+3. `RerunBackend` 是 visualization/logging sink，不是 optical transport executor。
+4. `SurfaceQuerySpec` 只描述几何 ray batch；它适合 first-hit range/depth probe，
+   不包含光照、材质、反射、折射、曝光或 camera response。
+5. 缺少 `OpticalWorldRegistry / OpticalSceneCache / OpticalSceneSnapshot /
+   OpticalExecutor / OpticalComputeResult` 这一层，把物理帧和光学资产变成可执行场景。
+
+**当前倾向设计**：
+
+- 不把 optical state 塞进 `PublishedFrame`。
+- 不把 `RenderScene` 升级成 canonical optical scene。
+- 不把 Rerun 当 optical executor；Rerun 只消费已经算好的 scene/result/debug artifacts。
+- 新增独立 integration layer，命名为 `optics/`。`sensor_rendering/` 太窄，
+  容易暗示这层只是 camera/render-backed sensing；Q54 实际覆盖 material/light/
+  medium/acceleration structure/light transport contracts。
+- 该层拥有：
+  - `OpticalWorldRegistry`：materials/lights/media/geometry bindings；
+  - `OpticalSceneCache`：CPU/GPU geometry buffers、material/light buffers、BVH/TLAS/dirty flags；
+  - `OpticalSceneSnapshot`：frame-aligned immutable executable view；
+  - `OpticalExecutor`：CPU/GPU/external renderer execution boundary；
+  - `OpticalComputeResult`：host/device/external result buffers + readiness/fence metadata。
+- optical sensor specs 留在 `sensing/`，不进入 `OpticalWorldRegistry`；
+  registry 描述世界状态，sensor spec 描述每次要问的问题，二者生命周期不同。
+- `OpticalSceneSnapshot` 不持有 Python-level `GpuPublishedFrame` borrow lease；
+  GPU/device path 通过 Q52 device-consumer event 管 slot reclaim。
+
+**执行后端当前建议**：
+
+- 自己拥有 `OpticalExecutor` / `OpticalComputeResult` 合同和生命周期；
+- 不立刻绑定某个完整 renderer，也不从零承诺自研完整光追；
+- 先实现一个 tiny in-repo reference executor：first-hit depth + material-id
+  segmentation，不做 direct-light intensity；用于验证
+  `OpticalSceneSnapshot -> OpticalComputeResult`、material binding、result ownership、
+  Rerun/logging 消费、未来 RL hot path 语义；
+- Rerun 只作为 result/debug visualization sink，不作为 optical executor；
+- 后续后端作为 adapter 接入：
+  - Embree：CPU ray/intersection acceleration；
+  - OptiX：未来 NVIDIA GPU ray tracing；
+  - Warp/CUDA custom executor：简单传感器 kernel；
+  - Mitsuba：offline/high-fidelity/reference 或 differentiable rendering。
+- phase-2 minimal material schema 倾向：
+  `material_id: str`、`albedo_rgb: tuple[float, float, float]`、`extension: dict`；
+  PBR 字段等 executor 需要时再加。
+- phase-2 minimal light schema 倾向：
+  point/directional、position_or_direction、intensity、color_rgb、enabled；
+  但 first reference executor 暂不消费 lights。
+- multi-env batching semantics 尚未定：Phase A 可用 one-env CPU snapshot，
+  Phase C 前必须决定 all-env snapshot、selected-env snapshot，还是 one snapshot per env。
+
+**Multi-physics scene producer 补充决策**：
+
+- 当前 `CpuPublishedFrame.X_world` 只是 Phase A rigid-body producer，不应成为
+  `OpticalSceneCache` 的唯一长期输入模型。
+- 后续 scene/cache 应消费 frame-aligned producer streams：
+  - rigid body：frame 提供 body transforms，scene/cache 组合
+    `X_world_geometry`；
+  - cloth：frame 提供动态 vertices/normals，topology version 变化时 rebuild；
+  - soft body：frame 提供当前 surface mesh / boundary representation；
+  - fluid：frame 提供 particles / level-set / volume / solver-published surface
+    mesh，registry 提供 identity/material/medium 语义。
+- scene/cache 可以做 sensor-independent executable geometry preparation：
+  buffer packing、dynamic vertex update、BVH/BLAS/TLAS refit/rebuild、可选
+  fluid surface realization。
+- scene/cache 仍不能做 ray traversal、shading、RGB/depth/intensity result、
+  sensor noise/response 或 result-to-reading conversion。
+- `OpticalInstanceSpec` 后续应从 rigid-only `body_index` 扩展到 binding/source
+  kind：`world_static`、`rigid_body`、`deformable_mesh`、`particle_set`、
+  `surface_mesh`、`volume_field`、`procedural`。
+- 已引入 `OpticalFrameInputs` aggregate 作为 `OpticalSceneCache` 主入口；
+  Phase A 只填 `rigid: CpuPublishedFrame`。
+- `snapshot_from_published_frame(...)` 保留为便利包装，内部构造
+  `OpticalFrameInputs.from_published_frame(...)`。
+
+**Executor contract 补充决策**：
+
+- `OpticalSceneSnapshot` 只回答 frame `N` 有什么、在哪里、如何编码；
+  不做 ray traversal、shading、segmentation resolve 或 sensor response。
+- `OpticalExecutor.execute(snapshot, spec)` 才做 sensor/query-specific
+  optical computation，并返回 `OpticalComputeResult`。
+- executor 不修改 registry，不重新取 frame，不做 asset binding，不强制 host reading，
+  不把 Rerun/debug sink 作为计算路径。
+- canonical channels 先固定语义：`hit_mask`、`depth_m`、`range_m`、
+  `position_world`、`normal_world`、`instance_id`、`numeric_instance_id`、
+  `material_id`、`numeric_material_id`、`semantic_id`、`rgb`、`intensity`。
+- `range_m` 是沿 normalized ray 的真实 first-hit 距离；`depth_m` 是 camera /
+  optical-axis sensor 语义下的投影深度。当前 `OpticalRaySensorSpec` reference
+  executor 输出 `range_m`，不输出 `depth_m`。
+- misses 语义属于 contract：`hit_mask=False`，距离为 `np.inf`，
+  position/normal 为 NaN，human-readable ids 为 `None`，numeric background id
+  需文档化。
+- executor 分阶段：
+  1. reference CPU first-hit depth + material/instance id；
+  2. 内部分层 `validate / prepare_workload / intersect / resolve_channels /
+     build_result`；
+  3. Embree/simple CPU acceleration；
+  4. direct-light/RGB capability；
+  5. device result buffers + Q52 device-consumer completion；
+  6. Mitsuba/offline adapter。
+
+**2026-04-30 Phase A 落地状态**：
+
+- 已新增 `sensing.OpticalRaySensorSpec`，保持 sensor spec 在 `sensing/`。
+- 已新增 `optics/` package：
+  - `OpticalWorldRegistry`
+  - `OpticalMaterialSpec`
+  - `OpticalLightSpec`
+  - plane / triangle-mesh geometry handles
+  - `OpticalInstanceSpec`
+  - `OpticalFrameInputs`
+  - `OpticalSceneCache`
+  - `OpticalSceneSnapshot`
+  - `OpticalExecutor`
+  - `OpticalComputeResult`
+  - `CpuReferenceOpticalExecutor`
+- Phase A snapshot 只支持 CPU one-env `CpuPublishedFrame`；
+  body-bound geometry 通过 `PublishedFrame.X_world` 组合 transform。
+- registry 在 `add_instance(...)` 时分配稳定 `numeric_instance_id`；cache 只携带
+  和打包，不重新编号。
+- `OpticalInstanceSpec.roles` 已作为最小 visibility/role 字段加入，executor
+  按 `OpticalRaySensorSpec.sensor_role` 过滤 instances。
+- reference executor 只做 first-hit `range_m`、`material_id`、`instance_id`、
+  `numeric_instance_id`、hit position/normal；明确不做 direct-light intensity 或
+  camera-style projected `depth_m`。
+- 新增 `tests/unit/optics/test_optics_phase_a.py` 覆盖 registry、snapshot transform、
+  plane first-hit、triangle first-hit、frame mismatch。
+
+**待 review 问题**：
+
+1. `optics/` 命名和依赖方向是否足够清晰？
+2. sensor specs 留在 `sensing/`，由 `OpticalExecutor.execute(snapshot, spec)` 消费，
+   是否是正确生命周期边界？
+3. first-hit depth + material-id segmentation 作为第一版 reference executor 是否足够？
+4. Q52 device-consumer event 是否足以覆盖 optical snapshot 的 GPU slot 生命周期？
+5. minimal material/light schema 是否还应更小？
+6. 后端分阶段是否合理：reference executor -> Embree CPU -> Warp/CUDA/OptiX GPU ->
+   Mitsuba offline/reference？
+7. Phase C 前 multi-env batching 应选择什么语义？
+
+**建议优先级**：
+
+先做 Q54 decision，不急着写 reflection/refraction。确认 layer split、package name、
+result ownership、device/host result lifecycle、executor adapter contract 后，再实现最小
+`OpticalWorldRegistry + OpticalSceneCache + OpticalComputeResult + reference executor`
+骨架。

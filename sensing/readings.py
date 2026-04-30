@@ -68,3 +68,23 @@ class ContactStateReading:
 
     contact_count: int | None
     contact_mask: object | None = None
+
+
+@dataclass
+class RangeSensorReading:
+    """Range/ray reading derived from a surface-query result.
+
+    `range_m` is metric distance along normalized query rays. Misses keep
+    `hit_mask=False` and `range_m=np.inf`. Hit positions and normals are
+    optional payloads for downstream debugging or richer sensor models. When
+    hit payloads are omitted, `hit_mask` still indicates which rays hit.
+    """
+
+    frame_id: int
+    sim_time: float
+    env_idx: int
+
+    range_m: object
+    hit_mask: object
+    hit_position_world: object | None = None
+    hit_normal_world: object | None = None
