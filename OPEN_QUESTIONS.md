@@ -2021,6 +2021,15 @@ PublishedFrame N
 **2026-04-30 Phase A 落地状态**：
 
 - 已新增 `sensing.OpticalRaySensorSpec`，保持 sensor spec 在 `sensing/`。
+- 已新增 L1 camera semantics：
+  - `sensing.OpticalPinholeCameraSpec`
+  - `build_pinhole_camera_rays(...)`
+  - `build_pinhole_camera_image_result(...)`
+  - `OpticalCameraImageResult`
+- `OpticalRaySensorSpec.ray_shape` 记录 image-shaped ray producer 的 reshape
+  metadata；executor 仍然只消费 flat ray batch。
+- camera postprocessor 从 executor 的 `range_m` 生成 projected `depth_m`：
+  `depth_m = range_m * dot(ray_direction_world, optical_axis_world)`。
 - 已新增 `optics/` package：
   - `OpticalWorldRegistry`
   - `OpticalMaterialSpec`
@@ -2045,6 +2054,12 @@ PublishedFrame N
 - reference executor 只做 first-hit `range_m`、`material_id`、`instance_id`、
   `numeric_instance_id`、hit position/normal；明确不做 direct-light intensity 或
   camera-style projected `depth_m`。
+- executor Phase B 内部分层已落地：
+  `_validate / _prepare_workload / _intersect / _resolve_channels /
+  _build_result`，public `execute(snapshot, spec) -> OpticalComputeResult`
+  不变。
+- `CpuReferenceOpticalExecutor.capabilities` 已声明返回 channels；
+  schema 测试覆盖 channel names、shape、dtype 和 miss values。
 - 已新增 Phase-A registry builder：
   `build_optical_registry_from_robot_model(..., source_policy="collision_only")`。
   该 builder 从 `RobotModel.geometries` 生成 `OpticalWorldRegistry`、
@@ -2075,3 +2090,16 @@ PublishedFrame N
 result ownership、device/host result lifecycle、executor adapter contract 后，再实现最小
 `OpticalWorldRegistry + OpticalSceneCache + OpticalComputeResult + reference executor`
 骨架。
+
+2026-04-30 algorithm-path 调研 / L1 落地结论：
+
+- L0 first-hit range/material/instance reference executor 已完成。
+- L1 image-shaped depth/range/segmentation camera semantics 已完成第一版；
+  不先做 direct-light RGB 的决策保持不变。
+- L2 再做 CPU acceleration（Embree / optional Open3D / simple BVH）。
+- L3 才进入 direct-light/simple RGB。
+- L5 后续处理 GPU/Warp/OptiX + Q52 device result lifecycle。
+- L6 保留给 Mitsuba/offline/high-fidelity/volume。
+
+详见：
+`collab/q54-optical-executor-algorithm-path__research__codex__v1.md`。

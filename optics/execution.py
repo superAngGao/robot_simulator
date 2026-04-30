@@ -39,71 +39,112 @@ class CpuReferenceOpticalExecutor:
     exposure, or camera response.
     """
 
+    capabilities = frozenset(
+        {
+            "range_m",
+            "hit_mask",
+            "position_world",
+            "normal_world",
+            "material_id",
+            "instance_id",
+            "numeric_instance_id",
+        }
+    )
+
     def execute(self, snapshot: OpticalSceneSnapshot, spec: OpticalRaySensorSpec) -> OpticalComputeResult:
+        self._validate(snapshot, spec)
+        workload = self._prepare_workload(spec)
+        hits = self._intersect(snapshot, workload)
+        channels = self._resolve_channels(hits)
+        return self._build_result(snapshot, spec, channels)
+
+    def _validate(self, snapshot: OpticalSceneSnapshot, spec: OpticalRaySensorSpec) -> None:
         if snapshot.frame_id != spec.frame_id:
             raise ValueError("snapshot.frame_id must match spec.frame_id")
         if snapshot.env_idx != spec.env_idx:
             raise ValueError("snapshot.env_idx must match spec.env_idx")
 
-        origins = np.asarray(spec.origins_world, dtype=np.float64)
-        directions = np.asarray(spec.directions_world, dtype=np.float64)
-        range_m = np.full(spec.num_rays, np.inf, dtype=np.float64)
-        hit_mask = np.zeros(spec.num_rays, dtype=bool)
-        position_world = np.full((spec.num_rays, 3), np.nan, dtype=np.float64)
-        normal_world = np.full((spec.num_rays, 3), np.nan, dtype=np.float64)
-        material_id = np.full(spec.num_rays, None, dtype=object)
-        instance_id = np.full(spec.num_rays, None, dtype=object)
-        numeric_instance_id = np.zeros(spec.num_rays, dtype=np.int64)
+    def _prepare_workload(self, spec: OpticalRaySensorSpec) -> "_RayWorkload":
+        return _RayWorkload(
+            origins_world=np.asarray(spec.origins_world, dtype=np.float64),
+            directions_world=np.asarray(spec.directions_world, dtype=np.float64),
+            max_distance=float(spec.max_distance),
+            sensor_role=spec.sensor_role,
+        )
 
+    def _intersect(self, snapshot: OpticalSceneSnapshot, workload: "_RayWorkload") -> "_ReferenceHitBatch":
+        hits = _empty_reference_hits(workload.num_rays)
         for instance in snapshot.instances:
-            if spec.sensor_role not in instance.roles:
+            if workload.sensor_role not in instance.roles:
                 continue
             geometry = instance.geometry
             if isinstance(geometry, OpticalPlaneGeometry):
-                hits = _intersect_plane(
-                    origins,
-                    directions,
-                    max_distance=spec.max_distance,
+                instance_hits = _intersect_plane(
+                    workload.origins_world,
+                    workload.directions_world,
+                    max_distance=workload.max_distance,
                     plane=geometry,
                     X_world_geometry=instance.X_world_geometry,
                 )
             elif isinstance(geometry, OpticalTriangleMeshGeometry):
-                hits = _intersect_triangle_mesh(
-                    origins,
-                    directions,
-                    max_distance=spec.max_distance,
+                instance_hits = _intersect_triangle_mesh(
+                    workload.origins_world,
+                    workload.directions_world,
+                    max_distance=workload.max_distance,
                     mesh=geometry,
                     X_world_geometry=instance.X_world_geometry,
                 )
             else:
                 continue
 
-            closer = hits.hit_mask & (hits.distance < range_m)
+            closer = instance_hits.hit_mask & (instance_hits.distance < hits.range_m)
             if not np.any(closer):
                 continue
-            range_m[closer] = hits.distance[closer]
-            hit_mask[closer] = True
-            position_world[closer] = hits.position_world[closer]
-            normal_world[closer] = hits.normal_world[closer]
-            material_id[closer] = instance.material.material_id
-            instance_id[closer] = instance.instance_id
-            numeric_instance_id[closer] = instance.numeric_instance_id
+            hits.range_m[closer] = instance_hits.distance[closer]
+            hits.hit_mask[closer] = True
+            hits.position_world[closer] = instance_hits.position_world[closer]
+            hits.normal_world[closer] = instance_hits.normal_world[closer]
+            hits.material_id[closer] = instance.material.material_id
+            hits.instance_id[closer] = instance.instance_id
+            hits.numeric_instance_id[closer] = instance.numeric_instance_id
+        return hits
 
+    def _resolve_channels(self, hits: "_ReferenceHitBatch") -> dict[str, object]:
+        return {
+            "range_m": hits.range_m,
+            "hit_mask": hits.hit_mask,
+            "position_world": hits.position_world,
+            "normal_world": hits.normal_world,
+            "material_id": hits.material_id,
+            "instance_id": hits.instance_id,
+            "numeric_instance_id": hits.numeric_instance_id,
+        }
+
+    def _build_result(
+        self,
+        snapshot: OpticalSceneSnapshot,
+        spec: OpticalRaySensorSpec,
+        channels: dict[str, object],
+    ) -> OpticalComputeResult:
         return OpticalComputeResult(
             frame_id=snapshot.frame_id,
             sim_time=snapshot.sim_time,
             env_idx=snapshot.env_idx,
             sensor_id=spec.sensor_id,
-            channels={
-                "range_m": range_m,
-                "hit_mask": hit_mask,
-                "position_world": position_world,
-                "normal_world": normal_world,
-                "material_id": material_id,
-                "instance_id": instance_id,
-                "numeric_instance_id": numeric_instance_id,
-            },
+            channels=channels,
         )
+
+
+@dataclass(frozen=True)
+class _RayWorkload:
+    origins_world: np.ndarray
+    directions_world: np.ndarray
+    max_distance: float
+    sensor_role: str
+
+    @property
+    def num_rays(self) -> int:
+        return int(self.origins_world.shape[0])
 
 
 @dataclass(frozen=True)
@@ -112,6 +153,29 @@ class _HitBatch:
     distance: np.ndarray
     position_world: np.ndarray
     normal_world: np.ndarray
+
+
+@dataclass(frozen=True)
+class _ReferenceHitBatch:
+    hit_mask: np.ndarray
+    range_m: np.ndarray
+    position_world: np.ndarray
+    normal_world: np.ndarray
+    material_id: np.ndarray
+    instance_id: np.ndarray
+    numeric_instance_id: np.ndarray
+
+
+def _empty_reference_hits(num_rays: int) -> _ReferenceHitBatch:
+    return _ReferenceHitBatch(
+        hit_mask=np.zeros(num_rays, dtype=bool),
+        range_m=np.full(num_rays, np.inf, dtype=np.float64),
+        position_world=np.full((num_rays, 3), np.nan, dtype=np.float64),
+        normal_world=np.full((num_rays, 3), np.nan, dtype=np.float64),
+        material_id=np.full(num_rays, None, dtype=object),
+        instance_id=np.full(num_rays, None, dtype=object),
+        numeric_instance_id=np.zeros(num_rays, dtype=np.int64),
+    )
 
 
 def _empty_hits(num_rays: int) -> _HitBatch:

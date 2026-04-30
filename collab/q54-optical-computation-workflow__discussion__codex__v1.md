@@ -730,6 +730,11 @@ Phase B:
   unchanged;
 - add capability/schema tests so future backends must preserve result semantics.
 
+2026-04-30 status: implemented for `CpuReferenceOpticalExecutor`.
+`execute(...)` now delegates to `_validate`, `_prepare_workload`, `_intersect`,
+`_resolve_channels`, and `_build_result`. `capabilities` declares returned
+channels, and schema tests cover shape, dtype, and miss-value contracts.
+
 Phase C:
 
 - add Embree or a simple accelerated CPU backend for mesh ray queries;
@@ -977,7 +982,16 @@ Implemented:
 - `sensing.OpticalRaySensorSpec`
   - sensor-side ray batch spec;
   - normalized world-frame directions;
+  - optional `ray_shape` metadata for image-shaped producers;
   - kept in `sensing/`, not `optics/`.
+- `sensing.OpticalPinholeCameraSpec`
+  - OpenCV-style pinhole camera query;
+  - lowers to `OpticalRaySensorSpec` through `build_pinhole_camera_rays(...)`;
+  - keeps camera intrinsics/extrinsics/resolution in `sensing/`.
+- `sensing.OpticalCameraImageResult`
+  - image-shaped camera postprocess result;
+  - reshapes flat executor channels;
+  - adds projected `depth_m` from `range_m` and camera optical axis.
 - `optics.OpticalWorldRegistry`
   - material specs;
   - minimal point/directional light specs;
@@ -1010,6 +1024,7 @@ Implemented:
   - instance-id segmentation;
   - numeric instance-id segmentation;
   - hit position/normal channels;
+  - internal Phase-B split and channel schema tests;
   - no direct-light intensity.
 - `optics.OpticalComputeResult`
   - host result channels;
@@ -1019,12 +1034,12 @@ Tests:
 
 ```text
 PYTHONPATH=. pytest tests/unit/optics tests/unit/sensing -q
-38 passed
+53 passed
 ```
 
 Still deferred:
 
-- sensor pose/ray-pattern builders;
+- non-pinhole sensor pose/ray-pattern builders;
 - visual-preferred / explicit optical asset registry builders;
 - Rerun optical result sink;
 - accelerated CPU mesh traversal / Embree;

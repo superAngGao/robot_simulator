@@ -7,7 +7,13 @@ from .builders import (
     build_joint_state_reading,
     build_range_sensor_reading,
 )
-from .optical import OpticalRaySensorSpec
+from .optical import (
+    OpticalCameraImageResult,
+    OpticalPinholeCameraSpec,
+    OpticalRaySensorSpec,
+    build_pinhole_camera_image_result,
+    build_pinhole_camera_rays,
+)
 from .readings import (
     ContactStateReading,
     ForceSensorReading,
@@ -28,6 +34,8 @@ __all__ = [
     "ForceSensorReading",
     "IMUReading",
     "JointStateReading",
+    "OpticalCameraImageResult",
+    "OpticalPinholeCameraSpec",
     "OpticalRaySensorSpec",
     "RangeSensorReading",
     "StateSampleView",
@@ -39,6 +47,8 @@ __all__ = [
     "build_force_sensor_reading",
     "build_imu_reading",
     "build_joint_state_reading",
+    "build_pinhole_camera_image_result",
+    "build_pinhole_camera_rays",
     "build_range_sensor_reading",
     "build_state_sample_view",
 ]
