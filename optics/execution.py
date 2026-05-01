@@ -12,6 +12,14 @@ from sensing.optical import OpticalRaySensorSpec
 from .registry import OpticalPlaneGeometry, OpticalTriangleMeshGeometry
 from .scene import OpticalSceneSnapshot, transform_directions, transform_points
 
+_BUILD_EPS = 1e-12
+_DIR_EPS = 1e-12
+_T_EPS = 1e-9
+
+
+class MissingAccelerationError(RuntimeError):
+    """Raised when an accelerated executor receives a snapshot without acceleration."""
+
 
 @dataclass(frozen=True)
 class OpticalComputeResult:
@@ -135,6 +143,143 @@ class CpuReferenceOpticalExecutor:
         )
 
 
+class CpuBvhOpticalExecutor(CpuReferenceOpticalExecutor):
+    """CPU BVH first-hit executor over snapshot-owned acceleration data."""
+
+    def _intersect(self, snapshot: OpticalSceneSnapshot, workload: "_RayWorkload") -> "_ReferenceHitBatch":
+        acceleration = snapshot.acceleration
+        if acceleration is None or acceleration.kind != "cpu_bvh":
+            raise MissingAccelerationError("snapshot does not contain CPU BVH acceleration")
+
+        hits = _empty_reference_hits(workload.num_rays)
+        source_order_keys = np.full((workload.num_rays, 2), np.iinfo(np.int64).max, dtype=np.int64)
+        self._intersect_bvh_triangles(snapshot, workload, hits, source_order_keys)
+        self._intersect_planes(snapshot, workload, hits, source_order_keys)
+        return hits
+
+    def _intersect_bvh_triangles(
+        self,
+        snapshot: OpticalSceneSnapshot,
+        workload: "_RayWorkload",
+        hits: "_ReferenceHitBatch",
+        source_order_keys: np.ndarray,
+    ) -> None:
+        acceleration = snapshot.acceleration
+        if acceleration is None or not acceleration.nodes:
+            return
+
+        for ray_index in range(workload.num_rays):
+            origin = workload.origins_world[ray_index]
+            direction = workload.directions_world[ray_index]
+            stack = [0]
+            while stack:
+                node_index = stack.pop()
+                node = acceleration.nodes[node_index]
+                node_hit, _ = _intersect_aabb_scalar(
+                    origin,
+                    direction,
+                    node.bounds_min,
+                    node.bounds_max,
+                    max_distance=hits.range_m[ray_index] + _T_EPS,
+                )
+                if not node_hit:
+                    continue
+
+                if node.is_leaf:
+                    leaf_ids = acceleration.primitive_indices[node.start : node.start + node.count]
+                    for primitive_id in leaf_ids:
+                        instance_index = int(acceleration.primitive_instance_indices[primitive_id])
+                        instance = snapshot.instances[instance_index]
+                        if workload.sensor_role not in instance.roles:
+                            continue
+                        tri = acceleration.triangles_world[primitive_id]
+                        hit = _intersect_triangle_scalar(
+                            origin,
+                            direction,
+                            hits.range_m[ray_index] + _T_EPS,
+                            tri[0],
+                            tri[1],
+                            tri[2],
+                        )
+                        if hit is None:
+                            continue
+                        source_order_key = acceleration.primitive_source_order_keys[primitive_id]
+                        _update_reference_hit(
+                            hits,
+                            source_order_keys,
+                            ray_index,
+                            distance=hit.distance,
+                            position_world=hit.position_world,
+                            normal_world=hit.normal_world,
+                            material_id=instance.material.material_id,
+                            instance_id=instance.instance_id,
+                            numeric_instance_id=instance.numeric_instance_id,
+                            source_order_key=source_order_key,
+                        )
+                    continue
+
+                left = acceleration.nodes[node.left]
+                right = acceleration.nodes[node.right]
+                left_hit, left_t = _intersect_aabb_scalar(
+                    origin,
+                    direction,
+                    left.bounds_min,
+                    left.bounds_max,
+                    max_distance=hits.range_m[ray_index] + _T_EPS,
+                )
+                right_hit, right_t = _intersect_aabb_scalar(
+                    origin,
+                    direction,
+                    right.bounds_min,
+                    right.bounds_max,
+                    max_distance=hits.range_m[ray_index] + _T_EPS,
+                )
+                if left_hit and right_hit:
+                    if left_t <= right_t:
+                        stack.extend([node.right, node.left])
+                    else:
+                        stack.extend([node.left, node.right])
+                elif left_hit:
+                    stack.append(node.left)
+                elif right_hit:
+                    stack.append(node.right)
+
+    def _intersect_planes(
+        self,
+        snapshot: OpticalSceneSnapshot,
+        workload: "_RayWorkload",
+        hits: "_ReferenceHitBatch",
+        source_order_keys: np.ndarray,
+    ) -> None:
+        for instance_index, instance in enumerate(snapshot.instances):
+            if workload.sensor_role not in instance.roles:
+                continue
+            geometry = instance.geometry
+            if not isinstance(geometry, OpticalPlaneGeometry):
+                continue
+            plane_hits = _intersect_plane(
+                workload.origins_world,
+                workload.directions_world,
+                max_distance=workload.max_distance,
+                plane=geometry,
+                X_world_geometry=instance.X_world_geometry,
+            )
+            source_order_key = np.array([instance_index, 0], dtype=np.int64)
+            for ray_index in np.flatnonzero(plane_hits.hit_mask):
+                _update_reference_hit(
+                    hits,
+                    source_order_keys,
+                    int(ray_index),
+                    distance=float(plane_hits.distance[ray_index]),
+                    position_world=plane_hits.position_world[ray_index],
+                    normal_world=plane_hits.normal_world[ray_index],
+                    material_id=instance.material.material_id,
+                    instance_id=instance.instance_id,
+                    numeric_instance_id=instance.numeric_instance_id,
+                    source_order_key=source_order_key,
+                )
+
+
 @dataclass(frozen=True)
 class _RayWorkload:
     origins_world: np.ndarray
@@ -164,6 +309,13 @@ class _ReferenceHitBatch:
     material_id: np.ndarray
     instance_id: np.ndarray
     numeric_instance_id: np.ndarray
+
+
+@dataclass(frozen=True)
+class _ScalarHit:
+    distance: float
+    position_world: np.ndarray
+    normal_world: np.ndarray
 
 
 def _empty_reference_hits(num_rays: int) -> _ReferenceHitBatch:
@@ -278,3 +430,112 @@ def _intersect_triangle(
         normals[away] *= -1.0
         hits.normal_world[mask] = normals[mask]
     return hits
+
+
+def _intersect_aabb_scalar(
+    origin: np.ndarray,
+    direction: np.ndarray,
+    bounds_min: np.ndarray,
+    bounds_max: np.ndarray,
+    *,
+    max_distance: float,
+) -> tuple[bool, float]:
+    t_enter = 0.0
+    t_exit = float(max_distance)
+    for axis in range(3):
+        ray_origin = float(origin[axis])
+        ray_direction = float(direction[axis])
+        lower = float(bounds_min[axis])
+        upper = float(bounds_max[axis])
+        if abs(ray_direction) <= _DIR_EPS:
+            if ray_origin < lower or ray_origin > upper:
+                return False, np.inf
+            continue
+        inv_direction = 1.0 / ray_direction
+        t0 = (lower - ray_origin) * inv_direction
+        t1 = (upper - ray_origin) * inv_direction
+        if t0 > t1:
+            t0, t1 = t1, t0
+        t_enter = max(t_enter, t0)
+        t_exit = min(t_exit, t1)
+        if t_exit < t_enter:
+            return False, np.inf
+    if t_exit < max(t_enter, 0.0):
+        return False, np.inf
+    if t_enter > max_distance:
+        return False, np.inf
+    return True, t_enter
+
+
+def _intersect_triangle_scalar(
+    origin: np.ndarray,
+    direction: np.ndarray,
+    max_distance: float,
+    v0: np.ndarray,
+    v1: np.ndarray,
+    v2: np.ndarray,
+) -> _ScalarHit | None:
+    edge1 = v1 - v0
+    edge2 = v2 - v0
+    face_normal = np.cross(edge1, edge2)
+    normal_norm = np.linalg.norm(face_normal)
+    if normal_norm <= _BUILD_EPS:
+        return None
+    face_normal = face_normal / normal_norm
+
+    pvec = np.cross(direction, edge2)
+    det = float(pvec @ edge1)
+    if abs(det) <= _BUILD_EPS:
+        return None
+    inv_det = 1.0 / det
+    tvec = origin - v0
+    u = float(pvec @ tvec) * inv_det
+    if u < 0.0:
+        return None
+    qvec = np.cross(tvec, edge1)
+    v = float(qvec @ direction) * inv_det
+    if v < 0.0 or (u + v) > 1.0:
+        return None
+    t = float(qvec @ edge2) * inv_det
+    if t < 0.0 or t > max_distance:
+        return None
+
+    normal_world = face_normal.copy()
+    if float(normal_world @ direction) > 0.0:
+        normal_world *= -1.0
+    return _ScalarHit(
+        distance=t,
+        position_world=origin + direction * t,
+        normal_world=normal_world,
+    )
+
+
+def _update_reference_hit(
+    hits: _ReferenceHitBatch,
+    source_order_keys: np.ndarray,
+    ray_index: int,
+    *,
+    distance: float,
+    position_world: np.ndarray,
+    normal_world: np.ndarray,
+    material_id: str,
+    instance_id: str,
+    numeric_instance_id: int,
+    source_order_key: np.ndarray,
+) -> None:
+    current_distance = float(hits.range_m[ray_index])
+    current_key = source_order_keys[ray_index]
+    should_update = distance < current_distance - _T_EPS
+    if not should_update and abs(distance - current_distance) <= _T_EPS:
+        should_update = tuple(source_order_key) < tuple(current_key)
+    if not should_update:
+        return
+
+    hits.hit_mask[ray_index] = True
+    hits.range_m[ray_index] = distance
+    hits.position_world[ray_index] = position_world
+    hits.normal_world[ray_index] = normal_world
+    hits.material_id[ray_index] = material_id
+    hits.instance_id[ray_index] = instance_id
+    hits.numeric_instance_id[ray_index] = numeric_instance_id
+    source_order_keys[ray_index] = source_order_key

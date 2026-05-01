@@ -1017,7 +1017,13 @@ Implemented:
 - `optics.OpticalSceneSnapshot`
   - frame id / sim time / env idx;
   - immutable tuple of executable optical instances;
+  - optional scene/cache-owned `OpticalSceneAcceleration`;
   - no Python-level `GpuPublishedFrame` borrow lease.
+- `optics.OpticalSceneAcceleration`
+  - first L2 payload is `kind="cpu_bvh"`;
+  - world-space packed triangles;
+  - source-order keys for reference-parity tie-breaks;
+  - `CpuBvhNode` list and compact leaf primitive indices.
 - `optics.CpuReferenceOpticalExecutor`
   - first-hit range;
   - material-id segmentation;
@@ -1026,6 +1032,11 @@ Implemented:
   - hit position/normal channels;
   - internal Phase-B split and channel schema tests;
   - no direct-light intensity.
+- `optics.CpuBvhOpticalExecutor`
+  - consumes snapshot-owned CPU BVH acceleration;
+  - preserves the reference executor result schema;
+  - runs analytical infinite-plane side pass;
+  - raises `MissingAccelerationError` instead of silently building acceleration.
 - `optics.OpticalComputeResult`
   - host result channels;
   - location/readiness fields reserved for device/external backends.
@@ -1034,7 +1045,7 @@ Tests:
 
 ```text
 PYTHONPATH=. pytest tests/unit/optics tests/unit/sensing -q
-53 passed
+66 passed
 ```
 
 Still deferred:
@@ -1042,7 +1053,8 @@ Still deferred:
 - non-pinhole sensor pose/ray-pattern builders;
 - visual-preferred / explicit optical asset registry builders;
 - Rerun optical result sink;
-- accelerated CPU mesh traversal / Embree;
+- Embree adapter;
+- BVH refit / SAH / role-specific BVHs;
 - GPU/device result buffers and Q52 device-consumer integration;
 - Phase C multi-env batching semantics.
 
@@ -1076,3 +1088,26 @@ Start with a tiny in-repo reference executor.
 Treat Embree / OptiX / Mitsuba as optional adapters behind that contract.
 Treat Rerun as a result/debug sink, not as the optical executor.
 ```
+
+## 17. Self-Authored Algorithm Review Rule
+
+2026-04-30 end-of-day note: for self-authored optical algorithms, especially
+the planned L2 in-repo BVH, implementation should not begin until the algorithm
+has been written out and reviewed.
+
+Each such step should describe:
+
+```text
+inputs and outputs
+data layout
+core algorithm
+edge cases and degeneracy behavior
+complexity expectations
+test strategy
+explicit non-goals
+```
+
+This applies to BVH construction/traversal, future shadow-ray direct lighting,
+and any later in-repo GPU/simple optical kernels. Adapter work for Embree,
+OptiX, or Mitsuba can be reviewed mainly through interface and lifecycle
+contracts because those algorithms are owned by the external backend.

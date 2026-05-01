@@ -6,7 +6,13 @@ from .builder import (
     OpticalSourceKey,
     build_optical_registry_from_robot_model,
 )
-from .execution import CpuReferenceOpticalExecutor, OpticalComputeResult, OpticalExecutor
+from .execution import (
+    CpuBvhOpticalExecutor,
+    CpuReferenceOpticalExecutor,
+    MissingAccelerationError,
+    OpticalComputeResult,
+    OpticalExecutor,
+)
 from .registry import (
     OpticalInstanceSpec,
     OpticalLightSpec,
@@ -15,10 +21,20 @@ from .registry import (
     OpticalTriangleMeshGeometry,
     OpticalWorldRegistry,
 )
-from .scene import OpticalFrameInputs, OpticalInstanceSnapshot, OpticalSceneCache, OpticalSceneSnapshot
+from .scene import (
+    CpuBvhNode,
+    OpticalFrameInputs,
+    OpticalInstanceSnapshot,
+    OpticalSceneAcceleration,
+    OpticalSceneCache,
+    OpticalSceneSnapshot,
+)
 
 __all__ = [
+    "CpuBvhNode",
+    "CpuBvhOpticalExecutor",
     "CpuReferenceOpticalExecutor",
+    "MissingAccelerationError",
     "OpticalBindingBuildResult",
     "OpticalBindingDiagnostic",
     "OpticalComputeResult",
@@ -29,6 +45,7 @@ __all__ = [
     "OpticalLightSpec",
     "OpticalMaterialSpec",
     "OpticalPlaneGeometry",
+    "OpticalSceneAcceleration",
     "OpticalSceneCache",
     "OpticalSceneSnapshot",
     "OpticalSourceKey",
