@@ -2162,3 +2162,28 @@ Claude follow-up 确认：
 
 详见：
 `collab/q54-optical-l2-bvh__implementation-note__codex__v1.md`。
+
+2026-05-01 L3 direct-light/simple RGB algorithm plan：
+
+- 已新增 `CpuDirectLightOpticalExecutor`，默认基于 `CpuBvhOpticalExecutor`。
+- 第一版实现 deterministic two-sided Lambertian direct lighting：`albedo_rgb`、
+  point / directional lights、optional shadow rays。
+- 输出沿用 first-hit geometry channels，并新增 unbounded linear
+  `rgb: float64[N,3]` 和 BT.709 luminance `intensity: float64[N]`。
+- shadow occlusion 走 module-level helper，直接读取 `snapshot.acceleration`，
+  不调用 executor 私有方法，也不为每条 shadow ray 分配完整 result。
+- directional light 方向约定为“从 shaded point 指向 light”；point light 使用
+  inverse-square attenuation。
+- 不做 PBR、tone mapping、exposure、reflection/refraction、indirect light、
+  raster framebuffer 或 GPU path。
+- 新增 `tests/unit/optics/test_direct_light_executor.py` 覆盖 direct light、
+  point attenuation、shadow occlusion、role filtering、camera reshape、schema 和
+  missing acceleration。
+- 验证：`PYTHONPATH=. pytest tests/unit/optics tests/unit/sensing -q` -> `81 passed`。
+
+详见：
+`collab/q54-optical-l3-direct-light__algorithm-plan__codex__v1.md`。
+Claude review 归档：
+`collab/q54-optical-l3-direct-light__review__claude__v1.md`。
+Implementation note：
+`collab/q54-optical-l3-direct-light__implementation-note__codex__v1.md`。

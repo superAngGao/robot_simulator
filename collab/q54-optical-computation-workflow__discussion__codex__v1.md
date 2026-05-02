@@ -1037,15 +1037,24 @@ Implemented:
   - preserves the reference executor result schema;
   - runs analytical infinite-plane side pass;
   - raises `MissingAccelerationError` instead of silently building acceleration.
+- `optics.CpuDirectLightOpticalExecutor`
+  - shades first-hit geometry with deterministic two-sided Lambertian direct
+    light;
+  - defaults to `CpuBvhOpticalExecutor`;
+  - supports point and directional `OpticalLightSpec`;
+  - emits unbounded linear `rgb` and BT.709 luminance `intensity`;
+  - uses module-level BVH/plane any-hit helpers for shadow occlusion.
 - `optics.OpticalComputeResult`
   - host result channels;
+  - `rgb`, when present, is unbounded linear float64 and may exceed 1.0;
+  - `intensity`, when produced by the L3 executor, is BT.709 luminance;
   - location/readiness fields reserved for device/external backends.
 
 Tests:
 
 ```text
 PYTHONPATH=. pytest tests/unit/optics tests/unit/sensing -q
-66 passed
+81 passed
 ```
 
 Still deferred:
@@ -1055,6 +1064,7 @@ Still deferred:
 - Rerun optical result sink;
 - Embree adapter;
 - BVH refit / SAH / role-specific BVHs;
+- PBR / texture / exposure / tone mapping / reflection / refraction;
 - GPU/device result buffers and Q52 device-consumer integration;
 - Phase C multi-env batching semantics.
 

@@ -8,6 +8,7 @@ from .builder import (
 )
 from .execution import (
     CpuBvhOpticalExecutor,
+    CpuDirectLightOpticalExecutor,
     CpuReferenceOpticalExecutor,
     MissingAccelerationError,
     OpticalComputeResult,
@@ -33,6 +34,7 @@ from .scene import (
 __all__ = [
     "CpuBvhNode",
     "CpuBvhOpticalExecutor",
+    "CpuDirectLightOpticalExecutor",
     "CpuReferenceOpticalExecutor",
     "MissingAccelerationError",
     "OpticalBindingBuildResult",

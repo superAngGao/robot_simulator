@@ -17,6 +17,12 @@ from physics.spatial import SpatialTransform
 
 @dataclass(frozen=True)
 class OpticalMaterialSpec:
+    """Optical material metadata.
+
+    `albedo_rgb` is linear RGB reflectance used by the simple L3 Lambertian
+    direct-light executor. It is not a full BRDF/PBR material.
+    """
+
     material_id: str
     albedo_rgb: tuple[float, float, float] = (1.0, 1.0, 1.0)
     extension: dict[str, object] = field(default_factory=dict)
@@ -32,6 +38,15 @@ class OpticalMaterialSpec:
 
 @dataclass(frozen=True)
 class OpticalLightSpec:
+    """Simple optical light metadata.
+
+    Directional lights interpret `position_or_direction_world` as the direction
+    from the shaded point toward the light. Point lights interpret it as a world
+    position. In the L3 direct-light executor, directional `intensity` is a
+    linear multiplier while point `intensity` is inverse-square attenuated; this
+    is a deterministic simple-light model, not calibrated photometry.
+    """
+
     light_id: str
     kind: Literal["point", "directional"]
     position_or_direction_world: object

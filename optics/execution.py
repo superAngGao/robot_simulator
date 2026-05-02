@@ -15,6 +15,8 @@ from .scene import OpticalSceneSnapshot, transform_directions, transform_points
 _BUILD_EPS = 1e-12
 _DIR_EPS = 1e-12
 _T_EPS = 1e-9
+_ATTENUATION_EPS = 1e-12
+_BT709_LUMINANCE = np.array([0.2126, 0.7152, 0.0722], dtype=np.float64)
 
 
 class MissingAccelerationError(RuntimeError):
@@ -23,6 +25,14 @@ class MissingAccelerationError(RuntimeError):
 
 @dataclass(frozen=True)
 class OpticalComputeResult:
+    """Optical executor result.
+
+    `rgb` channels, when present, are unbounded float64 linear RGB. Values may
+    exceed 1.0; clipping, tone mapping, and display conversion belong to
+    consumers. `intensity`, when produced by the direct-light executor, is
+    BT.709 luminance of `rgb`.
+    """
+
     frame_id: int
     sim_time: float
     env_idx: int
@@ -280,6 +290,90 @@ class CpuBvhOpticalExecutor(CpuReferenceOpticalExecutor):
                 )
 
 
+class CpuDirectLightOpticalExecutor:
+    """Deterministic two-sided Lambertian direct-light executor.
+
+    This is a small shading pass over first-hit geometry, not a full renderer.
+    It emits unbounded linear RGB and BT.709 luminance intensity.
+    """
+
+    capabilities = CpuReferenceOpticalExecutor.capabilities | frozenset({"rgb", "intensity"})
+
+    def __init__(
+        self,
+        *,
+        geometric_executor: OpticalExecutor | None = None,
+        shadows: bool = True,
+        ambient_rgb: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        background_rgb: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        shadow_bias: float = 1e-6,
+    ) -> None:
+        self.geometric_executor = (
+            CpuBvhOpticalExecutor() if geometric_executor is None else geometric_executor
+        )
+        self.shadows = bool(shadows)
+        self.ambient_rgb = _as_rgb_tuple(ambient_rgb, name="ambient_rgb")
+        self.background_rgb = _as_rgb_tuple(background_rgb, name="background_rgb")
+        self.shadow_bias = float(shadow_bias)
+        if self.shadow_bias < 0.0:
+            raise ValueError("shadow_bias must be >= 0")
+
+    def execute(self, snapshot: OpticalSceneSnapshot, spec: OpticalRaySensorSpec) -> OpticalComputeResult:
+        self._validate(snapshot)
+        geometry = self.geometric_executor.execute(snapshot, spec)
+        channels = dict(geometry.channels)
+        num_rays = int(geometry.channel("hit_mask").shape[0])
+        rgb = np.repeat(np.asarray(self.background_rgb, dtype=np.float64)[None, :], num_rays, axis=0)
+        intensity = np.zeros(num_rays, dtype=np.float64)
+        instances_by_id = {instance.instance_id: instance for instance in snapshot.instances}
+        ambient = np.asarray(self.ambient_rgb, dtype=np.float64)
+
+        for ray_index in np.flatnonzero(geometry.channel("hit_mask")):
+            instance_id = geometry.channel("instance_id")[ray_index]
+            instance = instances_by_id.get(instance_id)
+            if instance is None:
+                continue
+            albedo = np.asarray(instance.material.albedo_rgb, dtype=np.float64)
+            position = np.asarray(geometry.channel("position_world")[ray_index], dtype=np.float64)
+            normal = np.asarray(geometry.channel("normal_world")[ray_index], dtype=np.float64)
+            accumulated = ambient * albedo
+            for light in snapshot.lights:
+                contribution = _evaluate_direct_light(
+                    snapshot,
+                    light,
+                    position,
+                    normal,
+                    albedo,
+                    spec.sensor_role,
+                    shadows=self.shadows,
+                    shadow_bias=self.shadow_bias,
+                )
+                accumulated += contribution
+            rgb[ray_index] = accumulated
+            intensity[ray_index] = float(accumulated @ _BT709_LUMINANCE)
+
+        channels["rgb"] = rgb
+        channels["intensity"] = intensity
+        return OpticalComputeResult(
+            frame_id=geometry.frame_id,
+            sim_time=geometry.sim_time,
+            env_idx=geometry.env_idx,
+            sensor_id=geometry.sensor_id,
+            location=geometry.location,
+            channels=channels,
+            ready_event=geometry.ready_event,
+        )
+
+    def _validate(self, snapshot: OpticalSceneSnapshot) -> None:
+        for light in snapshot.lights:
+            if not light.enabled:
+                continue
+            if light.kind == "directional":
+                direction = np.asarray(light.position_or_direction_world, dtype=np.float64)
+                if np.linalg.norm(direction) <= _DIR_EPS:
+                    raise ValueError("directional light direction must be non-zero")
+
+
 @dataclass(frozen=True)
 class _RayWorkload:
     origins_world: np.ndarray
@@ -510,6 +604,160 @@ def _intersect_triangle_scalar(
     )
 
 
+def _evaluate_direct_light(
+    snapshot: OpticalSceneSnapshot,
+    light: object,
+    position_world: np.ndarray,
+    normal_world: np.ndarray,
+    albedo_rgb: np.ndarray,
+    sensor_role: str,
+    *,
+    shadows: bool,
+    shadow_bias: float,
+) -> np.ndarray:
+    if not light.enabled:
+        return np.zeros(3, dtype=np.float64)
+
+    light_color = np.asarray(light.color_rgb, dtype=np.float64)
+    if light.kind == "directional":
+        to_light = np.asarray(light.position_or_direction_world, dtype=np.float64)
+        norm = np.linalg.norm(to_light)
+        if norm <= _DIR_EPS:
+            raise ValueError("directional light direction must be non-zero")
+        light_direction = to_light / norm
+        light_distance = np.inf
+        attenuation = 1.0
+    elif light.kind == "point":
+        to_light = np.asarray(light.position_or_direction_world, dtype=np.float64) - position_world
+        light_distance = float(np.linalg.norm(to_light))
+        if light_distance <= _DIR_EPS:
+            # Direction is undefined at the exact light position. The clamped
+            # attenuation below avoids blow-up; zero direction gives zero
+            # Lambertian contribution for this singular first version.
+            return np.zeros(3, dtype=np.float64)
+        light_direction = to_light / light_distance
+        attenuation = 1.0 / max(light_distance * light_distance, _ATTENUATION_EPS)
+    else:
+        raise ValueError("light.kind must be 'point' or 'directional'")
+
+    n_dot_l = float(normal_world @ light_direction)
+    if n_dot_l <= 0.0:
+        return np.zeros(3, dtype=np.float64)
+
+    if shadows:
+        shadow_origin = position_world + normal_world * shadow_bias
+        max_distance = np.inf
+        if light.kind == "point":
+            max_distance = light_distance - shadow_bias
+            if max_distance <= 0.0:
+                # The biased origin has reached or passed the light; there is
+                # no segment left on which an occluder can block the light.
+                max_distance = 0.0
+        if max_distance > 0.0 and _is_occluded(
+            snapshot,
+            shadow_origin,
+            light_direction,
+            max_distance,
+            sensor_role,
+        ):
+            return np.zeros(3, dtype=np.float64)
+
+    return albedo_rgb * light_color * float(light.intensity) * attenuation * n_dot_l
+
+
+def _is_occluded(
+    snapshot: OpticalSceneSnapshot,
+    origin: np.ndarray,
+    direction: np.ndarray,
+    max_distance: float,
+    sensor_role: str,
+) -> bool:
+    acceleration = snapshot.acceleration
+    if acceleration is None or acceleration.kind != "cpu_bvh":
+        raise MissingAccelerationError("snapshot does not contain CPU BVH acceleration")
+    if max_distance <= 0.0:
+        return False
+    if _is_occluded_by_bvh(snapshot, origin, direction, max_distance, sensor_role):
+        return True
+    return _is_occluded_by_planes(snapshot, origin, direction, max_distance, sensor_role)
+
+
+def _is_occluded_by_bvh(
+    snapshot: OpticalSceneSnapshot,
+    origin: np.ndarray,
+    direction: np.ndarray,
+    max_distance: float,
+    sensor_role: str,
+) -> bool:
+    acceleration = snapshot.acceleration
+    if acceleration is None or not acceleration.nodes:
+        return False
+    stack = [0]
+    while stack:
+        node_index = stack.pop()
+        node = acceleration.nodes[node_index]
+        node_hit, _ = _intersect_aabb_scalar(
+            origin,
+            direction,
+            node.bounds_min,
+            node.bounds_max,
+            max_distance=max_distance,
+        )
+        if not node_hit:
+            continue
+        if node.is_leaf:
+            leaf_ids = acceleration.primitive_indices[node.start : node.start + node.count]
+            for primitive_id in leaf_ids:
+                instance_index = int(acceleration.primitive_instance_indices[primitive_id])
+                instance = snapshot.instances[instance_index]
+                if sensor_role not in instance.roles:
+                    continue
+                tri = acceleration.triangles_world[primitive_id]
+                if (
+                    _intersect_triangle_scalar(
+                        origin,
+                        direction,
+                        max_distance,
+                        tri[0],
+                        tri[1],
+                        tri[2],
+                    )
+                    is not None
+                ):
+                    return True
+            continue
+        stack.append(node.left)
+        stack.append(node.right)
+    return False
+
+
+def _is_occluded_by_planes(
+    snapshot: OpticalSceneSnapshot,
+    origin: np.ndarray,
+    direction: np.ndarray,
+    max_distance: float,
+    sensor_role: str,
+) -> bool:
+    origins = np.asarray(origin, dtype=np.float64)[None, :]
+    directions = np.asarray(direction, dtype=np.float64)[None, :]
+    for instance in snapshot.instances:
+        if sensor_role not in instance.roles:
+            continue
+        geometry = instance.geometry
+        if not isinstance(geometry, OpticalPlaneGeometry):
+            continue
+        hits = _intersect_plane(
+            origins,
+            directions,
+            max_distance=max_distance,
+            plane=geometry,
+            X_world_geometry=instance.X_world_geometry,
+        )
+        if bool(hits.hit_mask[0]):
+            return True
+    return False
+
+
 def _update_reference_hit(
     hits: _ReferenceHitBatch,
     source_order_keys: np.ndarray,
@@ -539,3 +787,9 @@ def _update_reference_hit(
     hits.instance_id[ray_index] = instance_id
     hits.numeric_instance_id[ray_index] = numeric_instance_id
     source_order_keys[ray_index] = source_order_key
+
+
+def _as_rgb_tuple(value: tuple[float, float, float], *, name: str) -> tuple[float, float, float]:
+    if len(value) != 3:
+        raise ValueError(f"{name} must contain exactly three values")
+    return tuple(float(channel) for channel in value)
