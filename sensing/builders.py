@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 import numpy as np
 
+from .optical import OpticalCameraImageResult
 from .readings import (
     ContactStateReading,
     ForceSensorReading,
     IMUReading,
     JointStateReading,
+    OpticalCameraReading,
     RangeSensorReading,
 )
 from .state_sample import StateSampleView
@@ -150,4 +154,42 @@ def build_range_sensor_reading(
         hit_normal_world=(
             None if not include_hits else np.asarray(result.normal_world, dtype=np.float64).copy()
         ),
+    )
+
+
+def build_optical_camera_reading(
+    result: OpticalCameraImageResult,
+    *,
+    channels: Iterable[str] | None = None,
+) -> OpticalCameraReading:
+    """Build a host-owned camera reading from an optical image result.
+
+    Execution and image postprocessing stay outside this builder. This function
+    only validates the host-side result packet and copies selected image-shaped
+    channels into a sensor-facing reading.
+    """
+    if result.location != "host":
+        raise ValueError("optical camera readings require host result channels")
+
+    image_shape = tuple(int(dim) for dim in result.image_shape)
+    if len(image_shape) != 2 or image_shape[0] <= 0 or image_shape[1] <= 0:
+        raise ValueError("result.image_shape must be a positive (height, width) tuple")
+
+    channel_names = tuple(result.channels) if channels is None else tuple(channels)
+    copied_channels: dict[str, np.ndarray] = {}
+    for name in channel_names:
+        if name not in result.channels:
+            raise KeyError(name)
+        array = np.asarray(result.channels[name])
+        if array.shape[:2] != image_shape:
+            raise ValueError("optical camera channels must start with result.image_shape")
+        copied_channels[name] = array.copy()
+
+    return OpticalCameraReading(
+        frame_id=result.frame_id,
+        sim_time=result.sim_time,
+        env_idx=result.env_idx,
+        sensor_id=result.sensor_id,
+        image_shape=image_shape,
+        channels=copied_channels,
     )

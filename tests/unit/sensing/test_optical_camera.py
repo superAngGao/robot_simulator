@@ -14,7 +14,10 @@ from optics import (
 from physics.publish import CpuPublishedFrame
 from physics.spatial import SpatialTransform, rot_y
 from sensing import (
+    OpticalCameraImageResult,
+    OpticalCameraReading,
     OpticalPinholeCameraSpec,
+    build_optical_camera_reading,
     build_pinhole_camera_image_result,
     build_pinhole_camera_rays,
 )
@@ -219,3 +222,65 @@ class TestOpticalPinholeCameraImageResult:
 
         with pytest.raises(ValueError, match="rays.sensor_id"):
             build_pinhole_camera_image_result(flat, spec, rays=mismatched_rays)
+
+
+class TestOpticalCameraReading:
+    def test_builds_host_owned_reading_from_camera_image_result(self):
+        snapshot = _flat_plane_snapshot()
+        spec = OpticalPinholeCameraSpec(
+            frame_id=9,
+            sim_time=0.09,
+            env_idx=0,
+            sensor_id="cam",
+            width=3,
+            height=3,
+            fx=1.0,
+            fy=1.0,
+            cx=1.0,
+            cy=1.0,
+            sensor_role="depth",
+        )
+        rays = build_pinhole_camera_rays(spec)
+        flat = CpuReferenceOpticalExecutor().execute(snapshot, rays)
+        image = build_pinhole_camera_image_result(flat, spec, rays=rays)
+
+        reading = build_optical_camera_reading(image, channels=("range_m", "depth_m", "instance_id"))
+
+        assert isinstance(reading, OpticalCameraReading)
+        assert reading.frame_id == image.frame_id
+        assert reading.sensor_id == "cam"
+        assert reading.image_shape == (3, 3)
+        assert tuple(reading.channels) == ("range_m", "depth_m", "instance_id")
+        np.testing.assert_allclose(reading.channel("depth_m"), np.full((3, 3), 2.0))
+        assert reading.channel("range_m").dtype == np.float64
+        assert reading.channel("instance_id").shape == (3, 3)
+
+        image.channel("range_m")[1, 1] = 123.0
+        np.testing.assert_allclose(reading.channel("range_m")[1, 1], 2.0)
+
+    def test_building_reading_requires_host_result(self):
+        image = OpticalCameraImageResult(
+            frame_id=1,
+            sim_time=0.01,
+            env_idx=0,
+            sensor_id="cam",
+            image_shape=(1, 1),
+            location="device",
+            channels={"depth_m": np.array([[1.0]], dtype=np.float64)},
+        )
+
+        with pytest.raises(ValueError, match="host"):
+            build_optical_camera_reading(image)
+
+    def test_building_reading_rejects_non_image_shaped_channels(self):
+        image = OpticalCameraImageResult(
+            frame_id=1,
+            sim_time=0.01,
+            env_idx=0,
+            sensor_id="cam",
+            image_shape=(2, 2),
+            channels={"depth_m": np.array([1.0, 2.0], dtype=np.float64)},
+        )
+
+        with pytest.raises(ValueError, match="image_shape"):
+            build_optical_camera_reading(image)

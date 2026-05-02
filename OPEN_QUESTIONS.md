@@ -2185,5 +2185,64 @@ Claude follow-up 确认：
 `collab/q54-optical-l3-direct-light__algorithm-plan__codex__v1.md`。
 Claude review 归档：
 `collab/q54-optical-l3-direct-light__review__claude__v1.md`。
-Implementation note：
+Implementation note（Codex）：
 `collab/q54-optical-l3-direct-light__implementation-note__codex__v1.md`。
+Implementation note（Claude）：
+`collab/q54-optical-l3-direct-light__implementation-note__claude__v1.md`。
+
+2026-05-02 optical camera reading consumer bridge：
+
+- 已新增 `sensing.OpticalCameraReading` 和
+  `build_optical_camera_reading(...)`。
+- 该 builder 将 host-side `OpticalCameraImageResult` 的 image-shaped channels
+  复制成 sensor-facing reading；支持 channel subset，保持 channel names 来自
+  `OpticalComputeResult` contract。
+- 这一步不接 Rerun，不把 camera/image payload 塞进 `RenderScene`，继续保持
+  Q53 的 sensing/rendering 边界。
+
+详见：
+`collab/q54-optical-camera-reading__implementation-note__codex__v1.md`。
+
+2026-05-02 optical Rerun camera sink：
+
+- 已新增 `RerunBackend.log_optical_camera_reading(...)`，显式消费
+  `OpticalCameraReading`，不经过 `RenderScene`。
+- Rerun sink 支持 `depth_m/range_m` -> `DepthImage`、
+  numeric segmentation channels -> `SegmentationImage`、`rgb/intensity` ->
+  debug preview `Image`。
+- `rendering/` 不 import `sensing`；backend 以 duck-typed reading 作为 sink
+  输入，保持 rendering/sensing 边界。
+
+详见：
+`collab/q54-optical-rerun-camera-sink__implementation-note__codex__v1.md`。
+
+2026-05-02 optical direct-light preview example：
+
+- 已新增 `examples/optical_direct_light_preview.py`，不依赖 Rerun，直接用当前
+  in-repo CPU optical stack 渲染一个 floor / wall / two cubes 场景。
+- 示例输出 `rgb.png`、`depth_m.png`、`numeric_instance_id.png` 和 `panel.png`；
+  RGB/depth/segmentation 都来自 `CpuDirectLightOpticalExecutor` + camera
+  postprocessor。
+- 已新增 smoke test，确保示例能渲染小分辨率图片并写出预览 PNG。
+
+详见：
+`collab/q54-optical-direct-light-preview-example__implementation-note__codex__v1.md`。
+
+2026-05-02 GPU optical executor plan：
+
+- 已拟定第一版 GPU 光学执行路线：先做 Warp brute-force first-hit executor，
+  验证 device `OpticalComputeResult` 与 CPU parity，再接入
+  `GpuPublishedFrame` / Q52 device-consumer completion。
+- 第一版 GPU 不做 BVH、direct-light、shadow、Rerun 或 raster framebuffer；
+  目标是先打通 device scene/result contract 和生命周期。
+- Claude review 已接受该计划，并已写回 follow-up：保持单一
+  `OpticalComputeResult(location="device")`、staging 放 `optics/device.py`、
+  L5A host-side role filtering、L5B 显式 Q52 helper、per-call result allocation、
+  float32 robot-scale scope，以及 packed int64 source-order key。
+
+详见：
+`collab/q54-gpu-optical-executor-plan__review-request__codex__v1.md`。
+Claude review：
+`collab/q54-gpu-optical-executor-plan__review__claude__v1.md`。
+Codex follow-up：
+`collab/q54-gpu-optical-executor-plan__review-followup__codex__v1.md`。

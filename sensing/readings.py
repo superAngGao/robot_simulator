@@ -88,3 +88,25 @@ class RangeSensorReading:
     hit_mask: object
     hit_position_world: object | None = None
     hit_normal_world: object | None = None
+
+
+@dataclass
+class OpticalCameraReading:
+    """Host-owned camera reading derived from an optical image result.
+
+    The channel names keep the optical result contract (`rgb`, `depth_m`,
+    `range_m`, `intensity`, segmentation ids, and so on). The builder owns
+    NumPy copies so downstream consumers can retain readings independently of
+    executor result lifetimes.
+    """
+
+    frame_id: int
+    sim_time: float
+    env_idx: int
+    sensor_id: str
+    image_shape: tuple[int, int]
+
+    channels: dict[str, object]
+
+    def channel(self, name: str) -> object:
+        return self.channels[name]

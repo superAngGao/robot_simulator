@@ -16,6 +16,7 @@ from sensing import (
     ForceSensorReading,
     IMUReading,
     JointStateReading,
+    OpticalCameraReading,
     RangeSensorReading,
     StateSampleView,
     build_contact_state_reading,
@@ -80,6 +81,7 @@ class TestJointStateReading:
         assert IMUReading is not None
         assert ForceSensorReading is not None
         assert ContactStateReading is not None
+        assert OpticalCameraReading is not None
         assert RangeSensorReading is not None
 
     def test_builds_full_joint_state_from_view(self):

@@ -29,6 +29,10 @@ from .base import RenderBackend
 log = logging.getLogger(__name__)
 
 _SENSOR_SCALAR_GROUPS = frozenset({"contact", "joint", "force", "imu"})
+_OPTICAL_RGB_CHANNELS = frozenset({"rgb"})
+_OPTICAL_DEPTH_CHANNELS = frozenset({"depth_m", "range_m"})
+_OPTICAL_SEGMENTATION_CHANNELS = frozenset({"numeric_instance_id", "numeric_material_id", "semantic_id"})
+_OPTICAL_SCALAR_IMAGE_CHANNELS = frozenset({"intensity"})
 
 
 class RerunBackend(RenderBackend):
@@ -198,6 +202,28 @@ class RerunBackend(RenderBackend):
                 max_array_scalars=self._max_sensor_array_scalars,
                 sensor_groups=self._sensor_scalar_groups,
             )
+
+    def log_optical_camera_reading(
+        self,
+        reading,
+        *,
+        timestamp: float | None = None,
+        env_index: int | None = None,
+        channels: Iterable[str] | None = None,
+        entity_prefix: str | None = None,
+    ) -> None:
+        """Log a host-side optical camera reading as Rerun image archetypes.
+
+        This is an explicit sink entrypoint, separate from `RenderScene`.
+        Metric depth/range channels are preserved as `DepthImage`; RGB and
+        scalar intensity are converted to byte debug previews for visualization.
+        """
+        import rerun as rr
+
+        sim_time = float(reading.sim_time if timestamp is None else timestamp)
+        rr.set_time("sim_time", timestamp=sim_time)
+        prefix = _optical_camera_entity_prefix(reading, env_index, entity_prefix)
+        _log_optical_camera_reading(rr, prefix, reading, channels=channels)
 
     def close(self) -> None:
         pass  # Rerun handles flush automatically
@@ -406,3 +432,97 @@ def _log_array_scalars(rr, entity: str, values, max_array_scalars: int) -> None:
 
     if flat.size > max_array_scalars:
         rr.log(f"{entity}/truncated_size", rr.Scalars(float(flat.size)))
+
+
+def _optical_camera_entity_prefix(reading, env_index: int | None, entity_prefix: str | None) -> str:
+    if entity_prefix is not None:
+        return str(entity_prefix).rstrip("/")
+    env = int(reading.env_idx if env_index is None else env_index)
+    sensor_id = _safe_entity_token(getattr(reading, "sensor_id", "camera"))
+    return f"env_{env}/sensors/optical/{sensor_id}"
+
+
+def _log_optical_camera_reading(rr, prefix: str, reading, *, channels: Iterable[str] | None) -> None:
+    image_shape = _validate_optical_camera_reading_shape(reading)
+    explicit_channels = channels is not None
+    channel_names = tuple(getattr(reading, "channels")) if channels is None else tuple(channels)
+
+    for name in channel_names:
+        if name not in reading.channels:
+            raise KeyError(name)
+        value = reading.channels[name]
+        if name in _OPTICAL_RGB_CHANNELS:
+            rr.log(f"{prefix}/{name}", rr.Image(_rgb_preview_uint8(value, image_shape)))
+        elif name in _OPTICAL_DEPTH_CHANNELS:
+            rr.log(
+                f"{prefix}/{name}",
+                rr.DepthImage(_metric_image_float32(value, image_shape), meter=1.0),
+            )
+        elif name in _OPTICAL_SEGMENTATION_CHANNELS:
+            rr.log(
+                f"{prefix}/{name}",
+                rr.SegmentationImage(_segmentation_image_uint32(value, image_shape)),
+            )
+        elif name in _OPTICAL_SCALAR_IMAGE_CHANNELS:
+            rr.log(f"{prefix}/{name}", rr.Image(_scalar_preview_uint8(value, image_shape)))
+        elif explicit_channels:
+            raise ValueError(f"unsupported optical camera Rerun channel: {name}")
+
+
+def _validate_optical_camera_reading_shape(reading) -> tuple[int, int]:
+    image_shape = tuple(int(dim) for dim in getattr(reading, "image_shape"))
+    if len(image_shape) != 2 or image_shape[0] <= 0 or image_shape[1] <= 0:
+        raise ValueError("optical camera reading image_shape must be positive (height, width)")
+    return image_shape
+
+
+def _metric_image_float32(value, image_shape: tuple[int, int]) -> np.ndarray:
+    array = np.asarray(value, dtype=np.float32)
+    if array.shape != image_shape:
+        raise ValueError("metric optical camera channels must have shape image_shape")
+    return array.copy()
+
+
+def _segmentation_image_uint32(value, image_shape: tuple[int, int]) -> np.ndarray:
+    array = np.asarray(value)
+    if array.shape != image_shape:
+        raise ValueError("segmentation optical camera channels must have shape image_shape")
+    if np.issubdtype(array.dtype, np.floating):
+        array = np.nan_to_num(array, nan=0.0, posinf=0.0, neginf=0.0)
+    return np.maximum(array, 0).astype(np.uint32, copy=False).copy()
+
+
+def _rgb_preview_uint8(value, image_shape: tuple[int, int]) -> np.ndarray:
+    array = np.asarray(value)
+    expected_shape = (*image_shape, 3)
+    if array.shape != expected_shape:
+        raise ValueError("rgb optical camera channel must have shape (height, width, 3)")
+    if array.dtype == np.uint8:
+        return array.copy()
+    finite = np.nan_to_num(array.astype(np.float64, copy=False), nan=0.0, posinf=1.0, neginf=0.0)
+    return np.rint(np.clip(finite, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+
+def _scalar_preview_uint8(value, image_shape: tuple[int, int]) -> np.ndarray:
+    array = np.asarray(value, dtype=np.float64)
+    if array.shape != image_shape:
+        raise ValueError("scalar optical camera channels must have shape image_shape")
+    finite_mask = np.isfinite(array)
+    if not np.any(finite_mask):
+        return np.zeros(image_shape, dtype=np.uint8)
+    finite = array[finite_mask]
+    lo = float(np.min(finite))
+    hi = float(np.max(finite))
+    if hi <= lo:
+        normalized = np.zeros(image_shape, dtype=np.float64)
+        normalized[finite_mask] = 1.0 if hi > 0.0 else 0.0
+    else:
+        normalized = np.zeros(image_shape, dtype=np.float64)
+        normalized[finite_mask] = (array[finite_mask] - lo) / (hi - lo)
+    return np.rint(np.clip(normalized, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+
+def _safe_entity_token(value) -> str:
+    text = str(value)
+    safe = "".join(ch if ch.isalnum() or ch in {"_", "-", "."} else "_" for ch in text)
+    return safe or "camera"

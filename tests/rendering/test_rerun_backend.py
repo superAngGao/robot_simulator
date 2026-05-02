@@ -16,7 +16,13 @@ import pytest
 
 from rendering.backends.rerun_backend import RerunBackend
 from rendering.render_scene import ContactPoint, PositionedShape, RenderScene, RenderSensorData, TerrainInfo
-from sensing.readings import ContactStateReading, ForceSensorReading, IMUReading, JointStateReading
+from sensing.readings import (
+    ContactStateReading,
+    ForceSensorReading,
+    IMUReading,
+    JointStateReading,
+    OpticalCameraReading,
+)
 
 rr_available = importlib.util.find_spec("rerun") is not None
 
@@ -418,3 +424,126 @@ class TestRerunBackend:
         assert "env_0/sensors/contact/contact_mask/0" in logged_entities
         assert "env_0/sensors/joint/q/0" not in logged_entities
         assert "env_0/sensors/imu/body_0/angular_velocity_body/0" not in logged_entities
+
+    def test_log_optical_camera_reading_logs_supported_image_channels(self):
+        mock_rr = MagicMock()
+        mock_rr.Image.side_effect = lambda image: {"image": np.asarray(image)}
+        mock_rr.DepthImage.side_effect = lambda image, **kwargs: {
+            "depth": np.asarray(image),
+            "kwargs": kwargs,
+        }
+        mock_rr.SegmentationImage.side_effect = lambda image: {"segmentation": np.asarray(image)}
+        reading = OpticalCameraReading(
+            frame_id=4,
+            sim_time=0.04,
+            env_idx=2,
+            sensor_id="cam/main",
+            image_shape=(2, 2),
+            channels={
+                "rgb": np.array(
+                    [
+                        [[0.0, 0.5, 1.0], [2.0, -1.0, np.nan]],
+                        [[0.25, 0.25, 0.25], [1.0, 1.0, 1.0]],
+                    ],
+                    dtype=np.float64,
+                ),
+                "depth_m": np.array([[1.0, np.inf], [2.0, 3.0]], dtype=np.float64),
+                "range_m": np.array([[1.5, np.inf], [2.5, 3.5]], dtype=np.float64),
+                "numeric_instance_id": np.array([[1, 0], [2, 3]], dtype=np.int64),
+                "intensity": np.array([[0.0, 0.5], [1.0, 2.0]], dtype=np.float64),
+                "position_world": np.zeros((2, 2, 3), dtype=np.float64),
+            },
+        )
+
+        with patch.dict("sys.modules", {"rerun": mock_rr}):
+            b = RerunBackend()
+            b.open()
+            b.log_optical_camera_reading(reading)
+
+        mock_rr.set_time.assert_called_with("sim_time", timestamp=0.04)
+        logged = {call.args[0]: call.args[1] for call in mock_rr.log.call_args_list if call.args}
+
+        prefix = "env_2/sensors/optical/cam_main"
+        assert f"{prefix}/rgb" in logged
+        assert f"{prefix}/depth_m" in logged
+        assert f"{prefix}/range_m" in logged
+        assert f"{prefix}/numeric_instance_id" in logged
+        assert f"{prefix}/intensity" in logged
+        assert f"{prefix}/position_world" not in logged
+
+        rgb_payload = logged[f"{prefix}/rgb"]["image"]
+        assert rgb_payload.dtype == np.uint8
+        np.testing.assert_array_equal(rgb_payload[0, 0], [0, 128, 255])
+        np.testing.assert_array_equal(rgb_payload[0, 1], [255, 0, 0])
+
+        depth_payload = logged[f"{prefix}/depth_m"]["depth"]
+        assert depth_payload.dtype == np.float32
+        assert logged[f"{prefix}/depth_m"]["kwargs"] == {"meter": 1.0}
+
+        segmentation_payload = logged[f"{prefix}/numeric_instance_id"]["segmentation"]
+        assert segmentation_payload.dtype == np.uint32
+        np.testing.assert_array_equal(segmentation_payload, [[1, 0], [2, 3]])
+
+        intensity_payload = logged[f"{prefix}/intensity"]["image"]
+        assert intensity_payload.dtype == np.uint8
+        assert intensity_payload.shape == (2, 2)
+
+    def test_log_optical_camera_reading_supports_explicit_prefix_and_channels(self):
+        mock_rr = MagicMock()
+        mock_rr.DepthImage.side_effect = lambda image, **kwargs: {
+            "depth": np.asarray(image),
+            "kwargs": kwargs,
+        }
+        reading = OpticalCameraReading(
+            frame_id=4,
+            sim_time=0.04,
+            env_idx=0,
+            sensor_id="cam",
+            image_shape=(1, 2),
+            channels={
+                "depth_m": np.array([[1.0, 2.0]], dtype=np.float64),
+                "range_m": np.array([[1.5, 2.5]], dtype=np.float64),
+            },
+        )
+
+        with patch.dict("sys.modules", {"rerun": mock_rr}):
+            RerunBackend().log_optical_camera_reading(
+                reading,
+                timestamp=0.5,
+                channels=("range_m",),
+                entity_prefix="custom/camera",
+            )
+
+        mock_rr.set_time.assert_called_with("sim_time", timestamp=0.5)
+        logged_entities = [call.args[0] for call in mock_rr.log.call_args_list if call.args]
+        assert logged_entities == ["custom/camera/range_m"]
+
+    def test_log_optical_camera_reading_rejects_explicit_unsupported_channel(self):
+        mock_rr = MagicMock()
+        reading = OpticalCameraReading(
+            frame_id=4,
+            sim_time=0.04,
+            env_idx=0,
+            sensor_id="cam",
+            image_shape=(1, 1),
+            channels={"position_world": np.zeros((1, 1, 3), dtype=np.float64)},
+        )
+
+        with patch.dict("sys.modules", {"rerun": mock_rr}):
+            with pytest.raises(ValueError, match="unsupported"):
+                RerunBackend().log_optical_camera_reading(reading, channels=("position_world",))
+
+    def test_log_optical_camera_reading_rejects_malformed_image_channel(self):
+        mock_rr = MagicMock()
+        reading = OpticalCameraReading(
+            frame_id=4,
+            sim_time=0.04,
+            env_idx=0,
+            sensor_id="cam",
+            image_shape=(2, 2),
+            channels={"depth_m": np.array([1.0, 2.0], dtype=np.float64)},
+        )
+
+        with patch.dict("sys.modules", {"rerun": mock_rr}):
+            with pytest.raises(ValueError, match="metric"):
+                RerunBackend().log_optical_camera_reading(reading)
