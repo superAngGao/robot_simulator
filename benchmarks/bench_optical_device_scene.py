@@ -1,0 +1,524 @@
+"""Benchmark L5C GPU optical device-scene update and traversal.
+
+This script is intentionally outside pytest. It is a decision aid for L5C.1c
+and later acceleration work, not a correctness or CI performance assertion.
+
+Example:
+
+    conda run -n env_tilelang_20260119 python benchmarks/bench_optical_device_scene.py
+    conda run -n env_tilelang_20260119 python benchmarks/bench_optical_device_scene.py --case smoke
+    conda run -n env_tilelang_20260119 python benchmarks/bench_optical_device_scene.py --case large
+    conda run -n env_tilelang_20260119 python benchmarks/bench_optical_device_scene.py \
+      --case custom --num-rays 8192 --num-triangles 1048576
+"""
+
+# ruff: noqa: E402
+
+from __future__ import annotations
+
+import argparse
+import math
+import statistics
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from benchmarks.robot_optical_scene import (
+    build_robot_optical_scene,
+    make_robot_camera_rays,
+    make_robot_gpu_frame,
+)
+from optics import (
+    DeviceOpticalSceneCache,
+    GpuDeviceBvhOpticalExecutor,
+    GpuDeviceSceneOpticalExecutor,
+    OpticalInstanceSpec,
+    OpticalMaterialSpec,
+    OpticalWorldRegistry,
+    build_device_bvh_from_snapshot,
+    stage_optical_compute_result_to_host,
+)
+from physics.publish import GpuPublishedFrame
+from sensing import OpticalRaySensorSpec
+
+try:
+    import warp as wp
+except Exception as exc:  # pragma: no cover - script-only guard.
+    wp = None
+    _WARP_IMPORT_ERROR = exc
+else:
+    _WARP_IMPORT_ERROR = None
+
+
+@dataclass(frozen=True)
+class BenchCase:
+    name: str
+    num_rays: int
+    num_triangles: int
+    scene: str = "grid"
+    visible_stride: int = 1
+    robot_detail: str = "dense"
+    num_robots: int = 1
+    camera_view: str = "front"
+    stage: bool = False
+
+
+DEFAULT_CASES = (
+    BenchCase("few_rays_few_prims", num_rays=128, num_triangles=64),
+    BenchCase("camera_rays_few_prims", num_rays=16_384, num_triangles=64),
+    BenchCase("camera_rays_mid_prims", num_rays=16_384, num_triangles=512),
+    BenchCase("camera_rays_many_prims", num_rays=65_536, num_triangles=2_048),
+    BenchCase("role_filtered_many_prims", num_rays=16_384, num_triangles=2_048, visible_stride=8),
+)
+
+LARGE_CASES = (
+    BenchCase("large_camera_mid_prims", num_rays=262_144, num_triangles=2_048),
+    BenchCase("large_camera_many_prims", num_rays=262_144, num_triangles=8_192),
+    BenchCase("role_filtered_large_prims", num_rays=262_144, num_triangles=8_192, visible_stride=8),
+)
+
+XLARGE_CASES = (
+    BenchCase("xlarge_camera_256k_tris", num_rays=65_536, num_triangles=262_144),
+    BenchCase("xlarge_mesh_1m_tris", num_rays=8_192, num_triangles=1_048_576),
+    BenchCase("role_filtered_xlarge_mesh", num_rays=65_536, num_triangles=1_048_576, visible_stride=32),
+)
+
+ROBOT_CASES = (
+    BenchCase("robot_proxy_pose", num_rays=16_384, num_triangles=0, scene="robot", robot_detail="proxy"),
+    BenchCase("robot_dense_single", num_rays=65_536, num_triangles=0, scene="robot", robot_detail="dense"),
+    BenchCase(
+        "robot_dense_pack",
+        num_rays=65_536,
+        num_triangles=0,
+        scene="robot",
+        robot_detail="dense",
+        num_robots=4,
+    ),
+    BenchCase(
+        "robot_ego_camera",
+        num_rays=65_536,
+        num_triangles=0,
+        scene="robot",
+        robot_detail="dense",
+        camera_view="ego",
+    ),
+)
+
+SMOKE_CASE = BenchCase("smoke", num_rays=256, num_triangles=64, stage=True)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--warmup", type=int, default=None)
+    parser.add_argument("--repeat", type=int, default=None)
+    parser.add_argument(
+        "--case",
+        choices=(
+            "all",
+            "large",
+            "xlarge",
+            "robot",
+            "smoke",
+            "custom",
+            *(case.name for case in DEFAULT_CASES),
+            *(case.name for case in LARGE_CASES),
+            *(case.name for case in XLARGE_CASES),
+            *(case.name for case in ROBOT_CASES),
+        ),
+        default="all",
+        help="Benchmark case to run.",
+    )
+    parser.add_argument("--num-rays", type=int, default=None, help="Ray count for --case custom.")
+    parser.add_argument("--num-triangles", type=int, default=None, help="Triangle count for --case custom.")
+    parser.add_argument(
+        "--visible-stride",
+        type=int,
+        default=1,
+        help="For custom cases, only every Nth triangle is visible to the depth role.",
+    )
+    parser.add_argument("--stage", action="store_true", help="Also time device-result staging to host.")
+    parser.add_argument(
+        "--use-aabb",
+        action="store_true",
+        help="Use the L5C.1c per-triangle AABB traversal variant.",
+    )
+    parser.add_argument(
+        "--use-bvh",
+        action="store_true",
+        help="Use the L5C.2a CPU-build/GPU-traverse BVH variant.",
+    )
+    args = parser.parse_args()
+    if args.use_aabb and args.use_bvh:
+        raise SystemExit("--use-aabb and --use-bvh are mutually exclusive traversal modes")
+    if wp is None:
+        raise SystemExit(
+            "bench_optical_device_scene.py requires warp with CUDA support"
+        ) from _WARP_IMPORT_ERROR
+
+    wp.init()
+    device = wp.get_device(args.device)
+
+    cases = _select_cases(
+        args.case,
+        num_rays=args.num_rays,
+        num_triangles=args.num_triangles,
+        visible_stride=args.visible_stride,
+    )
+    warmup = int(args.warmup) if args.warmup is not None else _default_warmup(cases)
+    repeat = int(args.repeat) if args.repeat is not None else _default_repeat(cases)
+    print(
+        "case,mode,num_rays,num_triangles,"
+        "update_ms_mean,update_ms_p50,cpu_build_ms_mean,cpu_build_ms_p50,"
+        "gpu_traverse_ms_mean,gpu_traverse_ms_p50,stage_ms_mean,"
+        "bvh_nodes,bvh_max_depth,bvh_sah_quality_cost"
+    )
+    for case in cases:
+        stats = run_case(
+            case,
+            device=device,
+            warmup=warmup,
+            repeat=repeat,
+            stage=bool(args.stage or case.stage),
+            use_aabb=bool(args.use_aabb),
+            use_bvh=bool(args.use_bvh),
+        )
+        mode = "bvh" if args.use_bvh else "aabb" if args.use_aabb else "linear"
+        print(
+            f"{case.name},{mode},{int(stats['num_rays'])},{int(stats['num_triangles'])},"
+            f"{stats['update_mean_ms']:.4f},{stats['update_p50_ms']:.4f},"
+            f"{stats['cpu_build_mean_ms']:.4f},{stats['cpu_build_p50_ms']:.4f},"
+            f"{stats['gpu_traverse_mean_ms']:.4f},{stats['gpu_traverse_p50_ms']:.4f},"
+            f"{stats['stage_mean_ms']:.4f},"
+            f"{int(stats['bvh_nodes'])},{int(stats['bvh_max_depth'])},"
+            f"{stats['bvh_sah_quality_cost']:.4f}"
+        )
+
+
+def run_case(
+    case: BenchCase,
+    *,
+    device,
+    warmup: int,
+    repeat: int,
+    stage: bool,
+    use_aabb: bool,
+    use_bvh: bool,
+) -> dict[str, float]:
+    setup = _build_scene_setup(case, device=device)
+    registry = setup["registry"]
+    cache = DeviceOpticalSceneCache(registry, device=device)
+    frame = setup["frame"]
+    spec = setup["spec"]
+    scene_executor = GpuDeviceSceneOpticalExecutor(device=device, use_aabb=use_aabb)
+    bvh_executor = GpuDeviceBvhOpticalExecutor(device=device) if use_bvh else None
+
+    for _ in range(warmup):
+        snapshot = cache.snapshot_from_gpu_frame(frame, include_aabb=use_aabb or use_bvh)
+        if use_bvh:
+            bvh = build_device_bvh_from_snapshot(snapshot, device=device)
+            result = bvh_executor.execute(snapshot, bvh, spec)
+        else:
+            result = scene_executor.execute(snapshot, spec)
+        wp.synchronize_event(result.ready_event)
+
+    update_ms: list[float] = []
+    cpu_build_ms: list[float] = []
+    gpu_traverse_ms: list[float] = []
+    stage_ms: list[float] = []
+    last_bvh_nodes = 0
+    last_bvh_max_depth = 0
+    last_bvh_sah_quality_cost = 0.0
+
+    for _ in range(repeat):
+        t0 = time.perf_counter()
+        snapshot = cache.snapshot_from_gpu_frame(frame, include_aabb=use_aabb or use_bvh)
+        wp.synchronize_event(snapshot.ready_event)
+        t1 = time.perf_counter()
+
+        if use_bvh:
+            bvh = build_device_bvh_from_snapshot(snapshot, device=device)
+            t_build = time.perf_counter()
+            last_bvh_nodes = bvh.stats.num_nodes
+            last_bvh_max_depth = bvh.stats.max_depth
+            last_bvh_sah_quality_cost = bvh.stats.sah_quality_cost
+            result = bvh_executor.execute(snapshot, bvh, spec)
+        else:
+            t_build = t1
+            result = scene_executor.execute(snapshot, spec)
+        wp.synchronize_event(result.ready_event)
+        t2 = time.perf_counter()
+
+        if stage:
+            stage_optical_compute_result_to_host(result)
+            t3 = time.perf_counter()
+            stage_ms.append((t3 - t2) * 1000.0)
+
+        update_ms.append((t1 - t0) * 1000.0)
+        cpu_build_ms.append((t_build - t1) * 1000.0)
+        gpu_traverse_ms.append((t2 - t_build) * 1000.0)
+
+    return {
+        "update_mean_ms": statistics.fmean(update_ms),
+        "update_p50_ms": statistics.median(update_ms),
+        "cpu_build_mean_ms": statistics.fmean(cpu_build_ms),
+        "cpu_build_p50_ms": statistics.median(cpu_build_ms),
+        "gpu_traverse_mean_ms": statistics.fmean(gpu_traverse_ms),
+        "gpu_traverse_p50_ms": statistics.median(gpu_traverse_ms),
+        "stage_mean_ms": statistics.fmean(stage_ms) if stage_ms else 0.0,
+        "num_rays": float(spec.num_rays),
+        "num_triangles": float(setup["num_triangles"]),
+        "bvh_nodes": float(last_bvh_nodes),
+        "bvh_max_depth": float(last_bvh_max_depth),
+        "bvh_sah_quality_cost": float(last_bvh_sah_quality_cost),
+    }
+
+
+def _select_cases(
+    name: str,
+    *,
+    num_rays: int | None,
+    num_triangles: int | None,
+    visible_stride: int,
+) -> tuple[BenchCase, ...]:
+    if name == "all":
+        return DEFAULT_CASES
+    if name == "large":
+        return LARGE_CASES
+    if name == "xlarge":
+        return XLARGE_CASES
+    if name == "robot":
+        return ROBOT_CASES
+    if name == "smoke":
+        return (SMOKE_CASE,)
+    if name == "custom":
+        if num_rays is None or num_triangles is None:
+            raise SystemExit("--case custom requires --num-rays and --num-triangles")
+        return (
+            BenchCase(
+                "custom",
+                num_rays=int(num_rays),
+                num_triangles=int(num_triangles),
+                visible_stride=int(visible_stride),
+            ),
+        )
+    return tuple(
+        case for case in (*DEFAULT_CASES, *LARGE_CASES, *XLARGE_CASES, *ROBOT_CASES) if case.name == name
+    )
+
+
+def _build_scene_setup(case: BenchCase, *, device) -> dict[str, object]:
+    if case.scene == "robot":
+        robot_scene = build_robot_optical_scene(detail=case.robot_detail, num_robots=case.num_robots)
+        frame = make_robot_gpu_frame(robot_scene, device=device)
+        spec = make_robot_camera_rays(
+            num_rays=case.num_rays,
+            frame_id=frame.frame_id,
+            sim_time=frame.sim_time,
+            num_robots=case.num_robots,
+            view=case.camera_view,
+        )
+        return {
+            "registry": robot_scene.registry,
+            "frame": frame,
+            "spec": spec,
+            "num_triangles": robot_scene.num_triangles,
+        }
+    if case.scene != "grid":
+        raise ValueError(f"Unknown benchmark scene: {case.scene}")
+    return {
+        "registry": _build_triangle_registry(case.num_triangles, visible_stride=case.visible_stride),
+        "frame": _static_gpu_frame(device=device),
+        "spec": _build_downward_ray_spec(case.num_rays),
+        "num_triangles": case.num_triangles,
+    }
+
+
+def _default_warmup(cases: tuple[BenchCase, ...]) -> int:
+    max_work = max(
+        case.num_rays * max(case.num_triangles, _estimated_robot_triangles(case)) for case in cases
+    )
+    if max_work >= 8_000_000_000:
+        return 1
+    return 3
+
+
+def _default_repeat(cases: tuple[BenchCase, ...]) -> int:
+    max_work = max(
+        case.num_rays * max(case.num_triangles, _estimated_robot_triangles(case)) for case in cases
+    )
+    if max_work >= 8_000_000_000:
+        return 3
+    return 10
+
+
+def _estimated_robot_triangles(case: BenchCase) -> int:
+    if case.scene != "robot":
+        return 0
+    if case.robot_detail == "proxy":
+        return 5_000 * case.num_robots
+    if case.robot_detail == "xlarge":
+        return 520_000 * case.num_robots
+    return 230_000 * case.num_robots
+
+
+def _build_triangle_registry(num_triangles: int, *, visible_stride: int = 1) -> OpticalWorldRegistry:
+    vertices, triangles = _grid_triangles(num_triangles)
+    registry = OpticalWorldRegistry()
+    registry.add_material(OpticalMaterialSpec("mat_bench"))
+    if visible_stride <= 1:
+        registry.add_triangle_mesh_geometry("bench_mesh", vertices_local=vertices, triangles=triangles)
+        registry.add_instance(
+            OpticalInstanceSpec(
+                "bench_mesh",
+                "bench_mesh",
+                "mat_bench",
+                roles=frozenset({"depth", "bench"}),
+            )
+        )
+        return registry
+
+    visible = np.arange(num_triangles) % visible_stride == 0
+    visible_vertices, visible_triangles = _subset_mesh(vertices, triangles, visible)
+    hidden_vertices, hidden_triangles = _subset_mesh(vertices, triangles, ~visible)
+    registry.add_triangle_mesh_geometry(
+        "visible_mesh",
+        vertices_local=visible_vertices,
+        triangles=visible_triangles,
+    )
+    registry.add_triangle_mesh_geometry(
+        "hidden_mesh",
+        vertices_local=hidden_vertices,
+        triangles=hidden_triangles,
+    )
+    registry.add_instance(
+        OpticalInstanceSpec(
+            "visible_mesh",
+            "visible_mesh",
+            "mat_bench",
+            roles=frozenset({"depth", "bench"}),
+        )
+    )
+    registry.add_instance(
+        OpticalInstanceSpec(
+            "hidden_mesh",
+            "hidden_mesh",
+            "mat_bench",
+            roles=frozenset({"hidden"}),
+        )
+    )
+    return registry
+
+
+def _grid_triangles(num_triangles: int) -> tuple[np.ndarray, np.ndarray]:
+    side = int(math.ceil(math.sqrt(num_triangles)))
+    spacing = 0.05
+    half = side * spacing * 0.5
+    indices = np.arange(num_triangles, dtype=np.int64)
+    rows = indices // side
+    cols = indices % side
+    x = cols.astype(np.float64) * spacing - half
+    y = rows.astype(np.float64) * spacing - half
+
+    vertices = np.empty((num_triangles * 3, 3), dtype=np.float64)
+    vertices[0::3, 0] = x
+    vertices[0::3, 1] = y
+    vertices[0::3, 2] = 0.0
+    vertices[1::3, 0] = x + spacing * 0.8
+    vertices[1::3, 1] = y
+    vertices[1::3, 2] = 0.0
+    vertices[2::3, 0] = x
+    vertices[2::3, 1] = y + spacing * 0.8
+    vertices[2::3, 2] = 0.0
+
+    triangles = np.arange(num_triangles * 3, dtype=np.int64).reshape(num_triangles, 3)
+    return vertices, triangles
+
+
+def _subset_mesh(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    mask: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    selected = triangles[mask]
+    if selected.size == 0:
+        return np.empty((0, 3), dtype=np.float64), np.empty((0, 3), dtype=np.int64)
+    if _has_unique_triangle_vertices(vertices, triangles):
+        out_vertices = vertices[selected.reshape(-1)].copy()
+        out_triangles = np.arange(out_vertices.shape[0], dtype=np.int64).reshape(-1, 3)
+        return out_vertices, out_triangles
+    remap: dict[int, int] = {}
+    out_vertices: list[np.ndarray] = []
+    out_triangles: list[list[int]] = []
+    for triangle in selected:
+        out_triangle: list[int] = []
+        for old_index in triangle:
+            old_key = int(old_index)
+            if old_key not in remap:
+                remap[old_key] = len(out_vertices)
+                out_vertices.append(vertices[old_key])
+            out_triangle.append(remap[old_key])
+        out_triangles.append(out_triangle)
+    return np.asarray(out_vertices, dtype=np.float64), np.asarray(out_triangles, dtype=np.int64)
+
+
+def _has_unique_triangle_vertices(vertices: np.ndarray, triangles: np.ndarray) -> bool:
+    if vertices.shape[0] != triangles.shape[0] * 3:
+        return False
+    expected = np.arange(triangles.shape[0] * 3, dtype=triangles.dtype).reshape(-1, 3)
+    return bool(np.array_equal(triangles, expected))
+
+
+def _build_downward_ray_spec(num_rays: int) -> OpticalRaySensorSpec:
+    side = int(math.ceil(math.sqrt(num_rays)))
+    xs = np.linspace(-1.0, 1.0, side, dtype=np.float64)
+    ys = np.linspace(-1.0, 1.0, side, dtype=np.float64)
+    xx, yy = np.meshgrid(xs, ys)
+    origins = np.stack([xx.ravel(), yy.ravel(), np.full(side * side, 2.0)], axis=1)[:num_rays]
+    directions = np.tile(np.array([[0.0, 0.0, -1.0]], dtype=np.float64), (num_rays, 1))
+    return OpticalRaySensorSpec(
+        frame_id=1,
+        sim_time=0.0,
+        env_idx=0,
+        sensor_id="bench_depth",
+        origins_world=origins,
+        directions_world=directions,
+        max_distance=10.0,
+        sensor_role="depth",
+    )
+
+
+def _static_gpu_frame(*, device) -> GpuPublishedFrame:
+    x_world_R = wp.zeros((1, 0, 3, 3), dtype=wp.float32, device=device)
+    x_world_r = wp.zeros((1, 0, 3), dtype=wp.float32, device=device)
+    return GpuPublishedFrame(
+        slot_id=0,
+        frame_id=1,
+        sim_time=0.0,
+        step_index=1,
+        env_mask_wp=None,
+        q_wp=None,
+        qdot_wp=None,
+        x_world_R_wp=x_world_R,
+        x_world_r_wp=x_world_r,
+        v_bodies_wp=None,
+        contact_count_wp=None,
+        contact_cache_ref=None,
+        telemetry_ref=None,
+        ready_event=None,
+        slot_meta=None,
+    )
+
+
+if __name__ == "__main__":
+    main()

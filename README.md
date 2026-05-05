@@ -15,6 +15,16 @@
 | 2 | GPU acceleration — NVIDIA Warp, parallel VecEnv | 🔄 In progress |
 | 3–5 | Rendering pipeline, deformable/fluid subsystems, synthetic data generation | ⬜ Planned |
 
+## Optical rendering preview
+
+The optical pipeline can render RGB, metric depth, and numeric instance segmentation from the same scene query. The preview below uses the Unitree Go2 visual mesh from Google DeepMind's MuJoCo Menagerie, imported into the in-repo optical registry and rendered with the CPU BVH/direct-light reference executor.
+
+![Unitree Go2 optical preview, front view](docs/assets/optical/menagerie_go2_front/panel.png)
+
+![Unitree Go2 optical preview, side view](docs/assets/optical/menagerie_go2_side/panel.png)
+
+The Go2 assets are not vendored in this repository. They were loaded from a local checkout of `google-deepmind/mujoco_menagerie`; consult the model directory's BSD-3-Clause `LICENSE` before redistributing those assets.
+
 ## Running tests
 
 | Scope | Command |

@@ -25,4 +25,5 @@ venv/
 *.gif
 *.mp4
 *.png
+!docs/assets/**/*.png
 out/

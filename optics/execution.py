@@ -40,6 +40,7 @@ class OpticalComputeResult:
     location: Literal["host", "device", "external"] = "host"
     channels: dict[str, object] = field(default_factory=dict)
     ready_event: object | None = None
+    resources: tuple[object, ...] = field(default_factory=tuple, repr=False, compare=False)
 
     def channel(self, name: str) -> object:
         return self.channels[name]

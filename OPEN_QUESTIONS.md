@@ -2246,3 +2246,307 @@ Claude review：
 `collab/q54-gpu-optical-executor-plan__review__claude__v1.md`。
 Codex follow-up：
 `collab/q54-gpu-optical-executor-plan__review-followup__codex__v1.md`。
+
+2026-05-03 L5A GPU optical executor implementation：
+
+- 已新增 `optics/device.py`：host primitive workload packing、packed int64
+  source-order key、device result -> host result staging。
+- 已新增 `GpuBruteForceOpticalExecutor`：Warp brute-force first-hit executor，
+  从 host `OpticalSceneSnapshot` 上传当前 query 可见 primitives，返回
+  `OpticalComputeResult(location="device")`。
+- L5A device channels 为 `hit_mask/range_m/position_world/normal_world/
+  numeric_instance_id`；staging 后恢复 host canonical dtypes。
+- GPU parity 测试已覆盖 plane、triangle、source-order tie-break、role filtering
+  和 camera postprocess。
+- L5B 仍待做：`GpuPublishedFrame` borrow/complete、Q52 device-consumer
+  lifecycle、ready_event、result pooling / device scene cache。
+
+详见：
+`collab/q54-gpu-optical-executor-l5a__implementation-note__codex__v1.md`。
+Claude implementation note：
+`collab/q54-gpu-optical-executor-l5a__implementation-note__claude__v1.md`。
+
+2026-05-03 L5B.0 GPU optical device lifecycle implementation：
+
+- 已新增 `optics/gpu_runtime.py`，提供显式 helper：
+  `execute_optical_on_gpu_published_frame(...)`。
+- helper 保持 Q52 device lifecycle 在一个调用点内可见：
+  `borrow_device_frame(...) -> GpuBruteForceOpticalExecutor.execute(...) ->
+  complete_device_consumer(...)`。
+- `OpticalComputeResult(location="device")` 继续由 optical executor/runtime
+  拥有 result buffers；published GPU frame slot completion 只表示 optical kernel
+  已读完 frame slot，不表示 result 已被下游消费完。
+- `OpticalComputeResult.resources` 用于持有 device input arrays，避免异步 kernel
+  尚未完成时输入 buffer 被 Python GC。
+- device staging 会等待 `result.ready_event`，再把 device channels 转回 canonical
+  host dtypes。
+- L5B.0 只支持 world-static optical instances。若 registry 中存在 `body_index`
+  bound instance，helper 明确 raise；body-bound GPU scene packing 等到 kernel
+  直接读取 `GpuPublishedFrame.x_world_*` transform 时实现。
+- 新增 GPU tests 覆盖 Q52 consumer complete、ready_event propagation、published
+  slot reuse 后 result buffer 仍可 stage、body-bound registry rejection 和 timeline
+  mismatch rejection。
+
+详见：
+`collab/q54-gpu-optical-executor-l5b__implementation-note__codex__v1.md`。
+
+2026-05-03 L5B.1 body-bound GPU optical runtime implementation：
+
+- `execute_optical_on_gpu_published_frame(...)` 已从 world-static-only 推进到
+  支持 rigid body-bound optical instances。
+- 当前算法是过渡版：borrow GPU frame 后，若 registry 中存在 `body_index`
+  bound instance，则同步 frame ready event，并把选中 `env_idx` 的
+  `GpuPublishedFrame.x_world_R_wp / x_world_r_wp` stage 到 host，构造
+  `SpatialTransform` 列表，再复用 `OpticalSceneCache` 生成 frame-aligned
+  `OpticalSceneSnapshot`。
+- first-hit 计算仍然走 `GpuBruteForceOpticalExecutor` / Warp kernel；
+  host staging 只用于 body transform 获取和 primitive world-space packing。
+- 该版本的边界很明确：它验证了 Q52 lifecycle + body-bound optical registry
+  语义，但还不是 fully device-resident scene cache。L5C 应把 body transform
+  读取、primitive transform、role/instance metadata packing 缓存在 device-side
+  scene buffers 中。
+- 新增 GPU tests 覆盖 body-bound plane 随 `GpuPublishedFrame` body transform
+  移动，以及 published slot reuse 后 body-bound result 仍可 stage。
+
+详见：
+`collab/q54-gpu-optical-executor-l5b1__implementation-note__codex__v1.md`。
+
+2026-05-03 L5C device scene cache plan：
+
+- 下一步不建议直接跳 GPU BVH；先把 device-resident scene/cache 边界立起来。
+- L5C.0 建议新增 `DeviceOpticalSceneCache` / `DeviceOpticalSceneSnapshot`：
+  registry geometry、instance metadata、role/source-order/id buffers 长驻 device。
+- 每帧通过 sensor-independent update kernel 从 `GpuPublishedFrame.x_world_*`
+  生成 world-space primitive buffers；ray traversal 仍留给 executor。
+- L5C.1 再新增 `GpuDeviceSceneOpticalExecutor`，复用 brute-force first-hit 数学，
+  但直接消费 device scene buffers，不再每次 host pack + upload primitives。
+- GPU BVH / OptiX 评估推到 L5C.2，等 device scene 数据边界稳定后再做。
+
+详见：
+`collab/q54-gpu-optical-l5c-device-scene-cache-plan__codex__v1.md`。
+
+2026-05-03 L5C.0 device scene cache implementation：
+
+- 已新增 `optics/device_scene.py`，实现 L5C.0 的 device-resident optical
+  scene cache。
+- `DeviceOpticalRoleTable` 使用 deterministic sorted role -> bitmask；
+  unknown sensor role 映射为 0，后续 device executor 将自然返回全 miss。
+- `DeviceOpticalScene` 长驻 device 的 buffers 包括 local triangle/plane
+  geometry、primitive -> instance index、source-order key、role mask、
+  numeric instance id、instance body index 和 `X_body_geometry`。
+- `DeviceOpticalSceneSnapshot` 每帧 fresh 分配 world primitive buffers：
+  `triangles_world`、`plane_normal_world`、`plane_point_world`。这是有意
+  绑定 snapshot lifetime，暂不引入 buffer ring。
+- update kernel 直接读取 `GpuPublishedFrame.x_world_R_wp / x_world_r_wp`，
+  按 `X_world_geometry = X_world_body @ X_body_geometry` 生成 world-space
+  primitives；这一步是 scene/cache 的 sensor-independent geometry
+  preparation，不做 ray traversal。
+- 新增测试覆盖 role mask 契约、world-static plane device update、body-bound
+  triangle device update。
+- L5C.1 下一步应让 GPU executor 直接消费 `DeviceOpticalSceneSnapshot`，
+  先保持 brute-force first-hit；L5C.2 再评估 GPU BVH / OptiX。
+
+详见：
+`collab/q54-gpu-optical-l5c-device-scene-cache__implementation-note__codex__v1.md`。
+
+2026-05-04 L5C.1 device-scene executor kernel/layout plan：
+
+- 已整理 L5C.1 kernel/layout review request：先实现
+  `GpuDeviceSceneOpticalExecutor` 直接消费 `DeviceOpticalSceneSnapshot`，
+  L5C.1a 沿用当前 `triangles_world[num_triangles, 9]` 做 correctness parity；
+  L5C.1b 再引入 `v0/e1/e2/normal` derived triangle buffers；L5C.1c
+  实现可 benchmark 的 per-triangle AABB variant；L5C.2 再评估 GPU BVH /
+  OptiX。
+- Claude review 接受分阶段顺序、临时保留 `triangles_world`、以及
+  `OpticalComputeResult.resources` 不应持有过宽 snapshot/frame 对象的
+  lifetime 风险提醒。
+- Codex/user follow-up 调整两点决策：
+  1. AABB 不默认启用，但仍保留为 L5C.1c 可测 kernel/layout variant；
+     不能把“benchmark-gated”理解成取消实现。
+  2. role mask 应在 L5C.1 device-scene executor API 固化前从 int32/31 roles
+     升级到 int64/63 roles；这是 device scene ABI，越早改越便宜。
+- 更新后的实现顺序：L5C.1-pre 先升级 role mask 到 int64 并加 GPU smoke
+  test；L5C.1a device-scene brute-force executor；L5C.1b derived buffers；
+  L5C.1c AABB variant；L5C.2 BVH / OptiX。
+
+详见：
+`collab/q54-gpu-optical-l5c1-kernel-layout-plan__review-request__codex__v1.md`。
+Follow-up：
+`collab/q54-gpu-optical-l5c1-kernel-layout-plan__review-followup__codex__v1.md`。
+
+2026-05-04 L5C.1-pre / L5C.1a implementation：
+
+- 已将 `DeviceOpticalRoleTable` 和 device scene role mask buffers 从
+  int32/31 roles 升级到 int64/63 roles；unknown role 仍映射为 mask 0。
+- 已新增 `GpuDeviceSceneOpticalExecutor`：直接消费
+  `DeviceOpticalSceneSnapshot`，等待 `snapshot.ready_event`，上传当前
+  `OpticalRaySensorSpec` rays，使用 device role-mask/source-order/numeric-id
+  buffers 做 ray-major brute-force first-hit。
+- L5C.1a 仍沿用当前 `triangles_world[num_triangles, 9]` layout，保持和 L5A
+  数学接近；derived `v0/e1/e2/normal` buffers 推迟到 L5C.1b。
+- `OpticalComputeResult.resources` 只持有 traversal 所需的具体 device arrays
+  （ray arrays、world primitive buffers、primitive metadata buffers），不持有
+  整个 `DeviceOpticalSceneSnapshot` 或 borrowed `GpuPublishedFrame`，避免延长
+  Q52 frame slot lifetime。
+- 新增 GPU tests 覆盖 L5C.1a 与 L5B.1 body-bound plane parity、L5C.1a 与
+  L5A world-static triangle mesh parity、unknown role all-miss、以及超过 31 位的
+  int64 role mask（`role_40`）在 Warp kernel 中可见性判断正确。
+- 验证：
+  `PYTHONPATH=. pytest tests/unit/optics tests/unit/sensing -q` -> 93 passed；
+  `conda run -n env_tilelang_20260119 python -m pytest tests/gpu/test_optical_warp_executor.py tests/gpu/test_optical_gpu_runtime.py -q`
+  -> 16 passed。
+
+详见：
+`collab/q54-gpu-optical-l5c1-device-scene-executor__implementation-note__codex__v1.md`。
+
+2026-05-04 L5C.1b derived triangle layout implementation：
+
+- 已将 `DeviceOpticalSceneSnapshot` 的 triangle payload 从
+  `triangles_world[num_triangles, 9]` 切换为 derived buffers：
+  `triangle_v0_world`、`triangle_e1_world`、`triangle_e2_world`、
+  `triangle_normal_world`。
+- triangle update kernel 每帧一次性计算
+  `v0_world`、`e1_world`、`e2_world`、`normal_world`；法向量使用刚体旋转性质
+  `normal_world = R_world_geometry @ normalize(cross(e1_local, e2_local))`，
+  不在世界坐标下重复 cross。
+- `GpuDeviceSceneOpticalExecutor` traversal 已改为直接消费 derived buffers，
+  不再在每个 ray×triangle pair 中重建 `e1/e2/normal`。
+- device-scene live path 已移除 `triangles_world` buffer；测试中通过
+  `v0/e1/e2` 重建三角形顶点检查 update kernel 数值。
+- 已将 world-static triangle mesh parity 明确为 L5C.1b derived executor vs
+  L5A traversal parity，覆盖 `range_m/position_world/normal_world` 等数值输出。
+- 验证：
+  `PYTHONPATH=. pytest tests/unit/optics tests/unit/sensing -q` -> 93 passed；
+  `conda run -n env_tilelang_20260119 python -m pytest tests/gpu/test_optical_warp_executor.py tests/gpu/test_optical_gpu_runtime.py -q`
+  -> 16 passed。
+- 下一步：L5C.1c 增加 `triangle_aabb_min/max` 和可 benchmark 的 AABB traversal
+  variant；默认启用仍需 benchmark 数据支持。
+
+详见：
+`collab/q54-gpu-optical-l5c1b-derived-triangle-layout__implementation-note__codex__v1.md`。
+
+2026-05-04 L5C.1c benchmark harness：
+
+- 已新增 `benchmarks/bench_optical_device_scene.py`，作为独立 benchmark 脚本，
+  不进入 pytest 性能断言。
+- benchmark 生成 world-static triangle mesh + downward camera-like rays，分别
+  计量 device-scene update 与当前 derived-layout executor/traversal 时间；支持
+  smoke、单 case、默认 5 case、large、xlarge、custom。
+- 默认 5 case 覆盖 few rays/few prims、camera rays/few prims、
+  camera rays/mid prims、camera rays/many prims，以及真正 role-filtered many
+  prims（约 1/8 triangles 对 `depth` 可见）。
+- H200 短基线（`--warmup 2 --repeat 5`）：
+  `few_rays_few_prims` update/exe mean ≈ 0.109/0.278 ms；
+  `camera_rays_few_prims` ≈ 0.107/0.421 ms；
+  `camera_rays_mid_prims` ≈ 0.117/0.598 ms；
+  `camera_rays_many_prims` ≈ 0.119/2.307 ms；
+  `role_filtered_many_prims` ≈ 0.112/0.671 ms。
+- 初步判断：update 不是当前瓶颈，大 ray/triangle case 中 traversal 主导；
+  AABB 作为可测 variant 有价值，但默认启用仍需 with-AABB 对比数据。
+- 已把 xlarge preset 从“比 smoke/large 大一点”改为真正 mesh-heavy：
+  `xlarge_camera_256k_tris` = 65,536 rays × 262,144 tris，
+  `xlarge_mesh_1m_tris` = 8,192 rays × 1,048,576 tris，
+  `role_filtered_xlarge_mesh` = 65,536 rays × 1,048,576 tris（约 1/32
+  triangles 对 `depth` 可见）。百万级 mesh 生成已改为 numpy 向量化，避免
+  Python list 构建污染 benchmark。
+- AABB 已拆成真正 optional path：no-AABB 不分配 `triangle_aabb_min/max`、
+  不传 AABB 参数、不在 traversal kernel 中保留运行时 AABB 分支；with-AABB
+  使用独立 AABB update/traversal variant。旧 64k/256k xlarge regular-grid
+  结果显示 AABB traversal 有约 20-30% 常数因子收益，但这不是 BVH 级别的
+  复杂度改进，仍需 random/clustered/robot-like mesh case 后再定默认策略。
+- 新百万 tris 短跑（H200，`--warmup 1 --repeat 1`）：
+  `xlarge_mesh_1m_tris` no-AABB update/exe ≈ 2.403/1195.427 ms；
+  with-AABB ≈ 2.483/919.292 ms。AABB 在这个 regular-grid 场景下仍是
+  约 23% traversal 常数收益，但 brute-force 总体已经明显不可作为长期方案。
+- 已新增 robot-like benchmark scene：
+  `benchmarks/robot_optical_scene.py` 生成 deterministic body-bound quadruped
+  mesh，13 个 body-bound mesh instances/robot，覆盖 clustered links、
+  self-occlusion、多 body transforms 和 camera-like rays；同一 scene generator
+  被 `examples/optical_robot_scene_preview.py` 复用来保存 RGB/depth/segmentation
+  preview。
+- Robot cases：
+  `robot_proxy_pose` = 16,384 rays × 1,104 tris；
+  `robot_dense_single` = 65,536 rays × 161,280 tris；
+  `robot_dense_pack` = 65,536 rays × 645,120 tris；
+  `robot_ego_camera` = 65,536 rays × 161,280 tris close ego view。
+- H200 `robot_dense_single --warmup 1 --repeat 3`：
+  no-AABB update/exe ≈ 2.444/331.502 ms；
+  with-AABB ≈ 2.441/267.054 ms。AABB 在该 robot-like clustered scene 下
+  约 19% traversal 收益，低于第一次 repeat=1 短跑的偶然值，因此当前只记录
+  repeat=3 结果作为初步 baseline。
+
+详见：
+`collab/q54-gpu-optical-l5c1c-benchmark-harness__implementation-note__codex__v1.md`。
+
+2026-05-05 L5C.2 GPU BVH / high-resolution optical rendering decision：
+
+- 已用 MuJoCo Menagerie Unitree Go2 visual mesh 做 CPU optical preview：
+  33 visual geoms、398,432 triangles，输出 RGB/depth/segmentation panel 到
+  `docs/assets/optical/menagerie_go2_{front,side}/panel.png`。该图用于 README
+  的临时 visual checkpoint。
+- 该 preview 走 CPU `CpuDirectLightOpticalExecutor` + CPU BVH + shadow rays。
+  960×640 已经是 614,400 primary rays，并且命中后还会做 direct-light shadow
+  queries；继续用 CPU reference 路径堆更高分辨率不划算。
+- 决策：README 里的 Go2 图片暂时保留为 960×640 级别；不要继续在 CPU
+  reference renderer 上追求 1080p/2K。后续等 GPU traversal 路线成熟后，用同一
+  Menagerie Go2 importer/scene 重新输出高分辨率 README 图片。
+- 下一阶段进入 L5C.2：GPU BVH / OptiX 评估。目标不是继续优化 brute-force
+  常数因子，而是把 triangle traversal 从 `O(num_rays * num_triangles)` 推到
+  可支撑真实 visual mesh 和高分辨率 camera 的层级结构。
+- L5C.2 第一版应保留 L5C.1 的语义合同：role mask、numeric instance id、
+  source-order tie-break、planes analytical side pass、`OpticalComputeResult`
+  device result schema、Q52 frame lifecycle/resource lifetime。
+- L5C.2 路线更新为三段：
+  1. L5C.2a：CPU-built / GPU-traversed BVH。CPU 端构建 deterministic BVH，
+     上传 SoA node arrays 到 device，GPU kernel 做 stack traversal。该阶段目标是
+     parity、payload/lifetime 验证和 Menagerie Go2/robot_dense benchmark。
+  2. L5C.2b：GPU refit / GPU build 设计与原型。固定拓扑 rigid mesh 先走
+     bottom-up refit；拓扑变化或 rebuild 需求走 Morton-code LBVH 方向。暂不做
+     GPU SAH，SAH/spatial split 作为 benchmark 证明 LBVH/refit 不够后再考虑。
+  3. L5C.2c：OptiX adapter spike。OptiX 应作为 executor/backend adapter，
+     不替代 optical scene contract；评估 GAS/TLAS lifecycle、role filtering、
+     primitive payload、source-order tie-break、Q52 resource lifetime 和 future
+     shadow/direct-light 支持。
+- 碰撞 BVH 与 optical BVH 暂不共享同一个 live executable BVH。可以共享 mesh
+  asset/local triangle buffers/build utilities；不要共享 role/material/source-order、
+  collision margin/contact inflation、closest-feature/contact manifold 等 query-specific
+  payload。
+- L5C.2 完成功能后必须进入 performance alignment，而不是只看内部 benchmark。
+  对齐方法：
+  1. 内部 baseline：L5C.1 brute-force、L5C.1c AABB、L5C.2a GPU BVH、
+     L5C.2b GPU refit/LBVH、L5C.2c OptiX。
+  2. 外部参考：pbrt-v4 GPU/OptiX、Embree CPU、TinyBVH GPU-friendly layouts。
+  3. 只比较可对齐的 ray-query 阶段：primary first-hit、visibility/shadow rays；
+     不把完整 path-traced image time 和当前 first-hit depth/segmentation kernel
+     直接混比。
+  4. 指标拆分：scene import、device upload、triangle update、BVH build/refit、
+     traversal、staging、end-to-end frame；同时报告 MRays/s、node visits/ray、
+     primitive tests/ray、hit rate、stack overflow、memory footprint。
+  5. 固定场景：grid_regular、robot_dense、Menagerie Go2、multi-Go2 pack，以及
+     后续 license 清楚的大型静态 mesh。GPU backend 成熟后用该套场景重画
+     README 高分辨率图。
+- Claude review 后采纳的 L5C.2 计划调整：
+  1. L5C.2a.0 的 primitive metadata 必须包含
+     `instance_index`、`primitive_index_within_instance`、
+     `geometry_primitive_index` 等 BLAS/TLAS 迁移所需字段；这些不再是
+     future note，而是第一版硬性要求。
+  2. BVH benchmark 必须拆分 `cpu_build_ms`、`gpu_traverse_ms`、`staging_ms`；
+     不用合并的 execute time 判断 traversal 收益。
+  3. 初始 `MAX_BVH_STACK` 从 64 改为 32，并记录 CPU build max tree depth、
+     traversal observed max stack depth、overflow count；register pressure /
+     occupancy 是 L5C.2a 的主要 GPU 性能风险。
+  4. Plane analytical side pass 的推荐 kernel 顺序明确为：
+     plane pass -> BVH mesh traversal -> `_is_better_hit` merge。
+  5. GPU refit 第一版坚持 level-by-level，并要求 build metadata 记录
+     `level_ranges: int32[num_levels, 2]`。
+  6. L5C.2b 前必须评估 Warp sort / Torch CUDA sort / design-only blocker；
+     LBVH sort 依赖不能留到实现时才发现不可用。
+  7. TinyBVH 作为 L5C.2a.3 的第一个外部对比目标；Embree 用于 CPU BVH
+     build quality sanity；pbrt-v4 GPU/OptiX 暂作 aspirational reference。
+  8. performance metrics 增加 BVH SAH quality cost：
+     `sum((leaf_area/root_area) * leaf_prim_count)`。
+  9. L5C.2a 只报告 primary first-hit；shadow/visibility any-hit 语义等
+     first-hit correctness bridge 稳定后再加入。
+
+详见：
+`collab/q54-gpu-optical-l5c2-gpu-bvh-plan__review-request__codex__v1.md`。

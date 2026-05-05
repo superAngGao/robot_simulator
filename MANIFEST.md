@@ -1,7 +1,7 @@
 # Robot Simulator — Project Manifest
 
 > 面向具身智能研究的多物理仿真平台——多物理统一耦合、GPU 原生、渲染与合成数据生成、从第一性原理出发的 API 设计。
-> Last updated: 2026-04-23 (session 31+)
+> Last updated: 2026-05-04 (Q54 L5C.1a device optical scene executor)
 
 ## 一句话
 
@@ -17,9 +17,14 @@ Layer 1  Physics Core        刚体动力学管线 (StepPipeline → ForceSource
 Layer 0  Math                空间代数 (6D Plücker, [linear; angular] 约定)
 
 rendering/                   Backend-agnostic RenderScene + matplotlib viewer
+sensing/                     Sensor specs/readings/views + optical camera postprocess
+optics/                      Optical registry/scene/executor/result pipeline
 ```
 
-依赖方向：`rl_env/ → simulator.py → robot/ → physics/`（不可逆）
+依赖方向：`rl_env/ → simulator.py → robot/ → physics/`（不可逆）。
+`sensing/` 与 `rendering/` 都消费 physics/public published state；`optics/`
+作为独立 integration layer 消费 `PublishedFrame + OpticalWorldRegistry`，不把
+Rerun/debug sink 放进计算路径。
 
 ## 物理管线（StepPipeline）
 
@@ -82,8 +87,47 @@ scene_builder.build_render_scene() → RenderScene
 
 build_render_scene_from_gpu() → RenderScene (GPU engine 路径)
 
-注：RerunBackend 暂不渲染 terrain；MatplotlibBackend 完整支持所有 RenderScene 字段
+RerunBackend 也可显式消费已经算好的 `OpticalCameraReading`，记录
+depth/range/segmentation/RGB preview；这只是 visualization sink，不参与光学计算。
 ```
+
+## 感知与光学
+
+```
+sensing/
+  ├── StateSampleView + IMU/Joint/Force/Contact/Range readings
+  ├── SurfaceQuerySpec + CpuPlaneSurfaceQueryExecutor
+  └── OpticalPinholeCameraSpec + OpticalCameraImageResult/Reading
+
+optics/
+  ├── OpticalWorldRegistry: geometry/material/light/instance identity
+  ├── OpticalSceneCache: PublishedFrame + registry → OpticalSceneSnapshot
+  ├── CpuReferenceOpticalExecutor: first-hit range/material/instance ids
+  ├── CpuBvhOpticalExecutor: scene-owned CPU BVH acceleration
+  ├── CpuDirectLightOpticalExecutor: deterministic two-sided Lambertian RGB
+  ├── GpuBruteForceOpticalExecutor: L5A Warp first-hit device result path
+  ├── execute_optical_on_gpu_published_frame: L5B.1 Q52 GPU optical runtime helper
+  ├── DeviceOpticalSceneCache: L5C.0 device-resident optical scene update
+  └── GpuDeviceSceneOpticalExecutor: L5C.1a first-hit executor over device scene buffers
+
+Q54 current flow:
+  OpticalWorldRegistry + OpticalFrameInputs
+    → OpticalSceneSnapshot
+    → OpticalExecutor.execute(snapshot, sensor_spec)
+    → OpticalComputeResult(host/device/external)
+    → sensing readings / Rerun sink / examples / future RL consumers
+```
+
+当前 L5 GPU optical 只做 Warp first-hit：
+`hit_mask/range_m/position_world/normal_world/numeric_instance_id`。L5B.1 已接入
+`GpuPublishedFrame` Q52 borrow/complete lifecycle，并支持 world-static 与 rigid
+body-bound optical instances。L5C.0 已新增 device-resident scene cache：registry
+geometry/metadata 长驻 device，每帧从 `GpuPublishedFrame.x_world_*` 生成 world
+primitive buffers。L5C.1a 已让 GPU executor 直接消费 device scene buffers；
+L5C.1b 已切到 derived triangle payload（`v0/e1/e2/normal`）。L5C.1c 已有
+可选 per-triangle AABB update/traversal variant 与 million-triangle benchmark
+harness；默认启用仍需更多 scene distribution 数据。GPU BVH、GPU
+direct-light/shadow 属于后续。
 
 ## 关键文件
 
@@ -101,17 +145,38 @@ build_render_scene_from_gpu() → RenderScene (GPU engine 路径)
 | `physics/backends/warp/colored_pgs_kernels.py` | Graph-colored GS (PhysX 方案) |
 | `physics/gpu_engine.py` | GPU 物理引擎 (Warp kernel 管线, 4 solver dispatch) |
 | `physics/cpu_engine.py` | CPU 物理引擎 (GJK/EPA + PGS/ADMM) |
+| `sensing/state_sample.py` | PublishedFrame → sensor-facing state sample |
+| `sensing/surface_query.py` | Surface/range query spec + CPU plane executor |
+| `sensing/optical.py` | Optical ray/camera specs + camera image postprocess |
+| `sensing/readings.py` | Sensor-facing readings, including `OpticalCameraReading` |
+| `sensing/builders.py` | State/query/result → host-owned sensor readings |
+| `optics/registry.py` | Optical materials/lights/geometry/instances and stable numeric ids |
+| `optics/builder.py` | RobotModel collision geometry → OpticalWorldRegistry builder |
+| `optics/scene.py` | OpticalFrameInputs + OpticalSceneSnapshot + CPU BVH payload |
+| `optics/execution.py` | CPU reference/BVH/direct-light optical executors |
+| `optics/device.py` | Device workload packing + device→host result staging |
+| `optics/device_scene.py` | L5C.0/L5C.1b device-resident registry geometry + derived world primitive update |
+| `optics/warp_execution.py` | L5A host-snapshot + L5C.1a/b device-scene Warp first-hit optical executors |
+| `optics/gpu_runtime.py` | L5B.1 Q52 `GpuPublishedFrame` optical runtime helper |
+| `benchmarks/bench_optical_device_scene.py` | L5C.1c AABB/BVH decision benchmark harness |
+| `benchmarks/robot_optical_scene.py` | Shared robot-like optical scene generator for benchmarks/examples |
 | `rendering/render_scene.py` | Backend-agnostic 场景描述 |
 | `rendering/scene_builder.py` | Physics state → RenderScene |
 | `rendering/shape_artists.py` | matplotlib 形状绘制 |
+| `examples/optical_direct_light_preview.py` | In-repo CPU optical RGB/depth/segmentation preview |
+| `examples/optical_robot_scene_preview.py` | Robot-like optical preview writer using benchmark scene generator |
+| `examples/mujoco_menagerie_robot_preview.py` | Open-source MuJoCo Menagerie visual mesh preview importer/writer |
 | `simulator.py` | 多机器人编排 |
 | `robot/urdf_loader.py` | URDF → RobotModel |
 | `robot/mesh_loader.py` | trimesh 网格加载 → ConvexHullShape |
 
 ## 规模
 
-- **703 个非慢速测试**（+112 slow，共 1098），全部通过
-- physics/ ~16,000 行，rendering/ ~960 行，总计 ~44,000 行
+- Q54 sensing/optics 子系统当前收集 **109 个测试**：
+  `tests/unit/optics` + `tests/unit/sensing` + `tests/gpu/test_optical_warp_executor.py`
+  + `tests/gpu/test_optical_gpu_runtime.py`
+  （93 CPU optics/sensing + 16 GPU optical）
+- physics/ ~16,000 行，rendering/ ~960 行；新增 sensing/ 与 optics/ 作为独立感知/光学子系统
 - 支持多机器人场景 + 静态几何 + 碰撞过滤 + 多点接触 manifold
 
 ## 进度
@@ -129,6 +194,16 @@ build_render_scene_from_gpu() → RenderScene (GPU engine 路径)
 | 2l — GPU 多点接触 manifold + solver stability (session 27-29) | ✅ |
 | 2m — EPA 鲁棒性 + convex margin 两道防线 (session 30) | ✅ |
 | 3 — 渲染 (RenderBackend ABC + MatplotlibBackend + RerunBackend) | ✅ |
+| Q53 — sensing/rendering 边界 + sensor-facing readings | ✅ |
+| Q54 L0-L3 — optical registry/scene/CPU BVH/direct-light | ✅ |
+| Q54 L5A — Warp brute-force GPU optical first-hit executor | ✅ |
+| Q54 L5B.0 — GpuPublishedFrame/Q52 world-static optical device lifecycle | ✅ |
+| Q54 L5B.1 — host-staged body-bound GPU optical runtime | ✅ |
+| Q54 L5C.0 — device-resident optical scene cache/update | ✅ |
+| Q54 L5C.1a — GPU executor over device scene buffers | ✅ |
+| Q54 L5C.1b — derived triangle buffers | ✅ |
+| Q54 L5C.1c — AABB traversal variant + benchmark harness | 🟡 |
+| Q54 L5C.2 — GPU BVH / OptiX evaluation | ⬜ |
 | 4 — 域随机化 | ⬜ |
 | 5 — Sim-to-Real | ⬜ |
 
