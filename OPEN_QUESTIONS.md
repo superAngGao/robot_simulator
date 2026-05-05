@@ -2550,3 +2550,30 @@ Follow-up：
 
 详见：
 `collab/q54-gpu-optical-l5c2-gpu-bvh-plan__review-request__codex__v1.md`。
+
+2026-05-05 L5C.3 GPU direct light / shadow status and deferred path tracing:
+
+- 已新增 GPU BVH direct-light executor：first-hit 输出 `material_index`，device
+  scene pack `material_albedo_rgb`、per-primitive material index、enabled light
+  buffers，GPU shading 输出 `rgb` 和 `intensity`。
+- L5C.3 支持 ambient、directional light、point light inverse-square attenuation、
+  background miss color，以及可选 shadow any-hit。shadow 当前内联在 shade kernel
+  中，遍历 triangle BVH 并补 analytical plane occlusion。
+- 当前决策：L5C.3 先保留 inline shadow any-hit，不拆 split shadow-ray buffer /
+  shadow kernel。触发重新设计的条件是目标场景里 shadow execute time 超过 primary
+  first-hit 约 3x，或多光源/高分辨率渲染显示 shade kernel occupancy 明显受损。
+- 最近 `--refit-bvh` benchmark p50：
+  `robot_dense_single` first-hit/direct/shadow execute ≈ 1.055/1.327/2.930 ms；
+  `robot_dense_pack` first-hit/direct/shadow execute ≈ 2.263/1.370/1.808 ms。
+  pack 数字存在进程间噪声，不应解读为 direct no-shadow 一定快于 first-hit；核心
+  结论是当前 inline shadow 没有进入失控的性能区间。
+- 下一步短线：补 shadow traversal diagnostics（shadow stack overflow / max stack
+  depth）、plane/triangle occluder parity、多光源 additive parity、GPU direct-light
+  Go2 preview，并清理 benchmark 让 first-hit/no-shadow/shadow 尽量同进程比较。
+- Path tracing / 杂散光暂不进入当前实现。后续应作为独立 executor family 规划：
+  先定义 diffuse/specular/refraction/glare/volumetric 范围，再扩展 BSDF、emissive
+  surface/area light、RNG state、sample accumulation、variance diagnostics。不要把
+  Monte Carlo 多 bounce transport 混入现在 deterministic direct-light executor。
+
+详见：
+`collab/q54-gpu-optical-l5c3-progress-and-next-plan__review-request__codex__v1.md`。

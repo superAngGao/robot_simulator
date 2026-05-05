@@ -37,6 +37,7 @@ from benchmarks.robot_optical_scene import (
 )
 from optics import (
     DeviceOpticalSceneCache,
+    GpuDeviceBvhDirectLightOpticalExecutor,
     GpuDeviceBvhOpticalExecutor,
     GpuDeviceSceneOpticalExecutor,
     OpticalInstanceSpec,
@@ -164,9 +165,23 @@ def main() -> None:
         action="store_true",
         help="Build BVH topology once, then GPU-refit bounds per snapshot before traversal.",
     )
+    parser.add_argument(
+        "--direct-light",
+        action="store_true",
+        help="Run the GPU BVH direct-light executor instead of first-hit only.",
+    )
+    parser.add_argument(
+        "--shadows",
+        action="store_true",
+        help="Enable shadow rays for --direct-light.",
+    )
     args = parser.parse_args()
+    if args.direct_light:
+        args.use_bvh = True
     if args.refit_bvh:
         args.use_bvh = True
+    if args.shadows and not args.direct_light:
+        raise SystemExit("--shadows requires --direct-light")
     if args.use_aabb and args.use_bvh:
         raise SystemExit("--use-aabb and --use-bvh are mutually exclusive traversal modes")
     if wp is None:
@@ -202,15 +217,15 @@ def main() -> None:
             use_aabb=bool(args.use_aabb),
             use_bvh=bool(args.use_bvh),
             refit_bvh=bool(args.refit_bvh),
+            direct_light=bool(args.direct_light),
+            shadows=bool(args.shadows),
         )
-        mode = (
-            "bvh_refit"
-            if args.refit_bvh
-            else "bvh"
-            if args.use_bvh
-            else "aabb"
-            if args.use_aabb
-            else "linear"
+        mode = _mode_name(
+            use_aabb=bool(args.use_aabb),
+            use_bvh=bool(args.use_bvh),
+            refit_bvh=bool(args.refit_bvh),
+            direct_light=bool(args.direct_light),
+            shadows=bool(args.shadows),
         )
         print(
             f"{case.name},{mode},{int(stats['num_rays'])},{int(stats['num_triangles'])},"
@@ -234,6 +249,8 @@ def run_case(
     use_aabb: bool,
     use_bvh: bool,
     refit_bvh: bool,
+    direct_light: bool,
+    shadows: bool,
 ) -> dict[str, float]:
     setup = _build_scene_setup(case, device=device)
     registry = setup["registry"]
@@ -241,7 +258,10 @@ def run_case(
     frame = setup["frame"]
     spec = setup["spec"]
     scene_executor = GpuDeviceSceneOpticalExecutor(device=device, use_aabb=use_aabb)
-    bvh_executor = GpuDeviceBvhOpticalExecutor(device=device) if use_bvh else None
+    if direct_light:
+        bvh_executor = GpuDeviceBvhDirectLightOpticalExecutor(device=device, shadows=shadows)
+    else:
+        bvh_executor = GpuDeviceBvhOpticalExecutor(device=device) if use_bvh else None
     reusable_bvh = None
     if refit_bvh:
         topology_snapshot = cache.snapshot_from_gpu_frame(frame, include_aabb=True)
@@ -324,6 +344,27 @@ def run_case(
         "bvh_max_depth": float(last_bvh_max_depth),
         "bvh_sah_quality_cost": float(last_bvh_sah_quality_cost),
     }
+
+
+def _mode_name(
+    *,
+    use_aabb: bool,
+    use_bvh: bool,
+    refit_bvh: bool,
+    direct_light: bool,
+    shadows: bool,
+) -> str:
+    if direct_light:
+        base = "bvh_refit" if refit_bvh else "bvh"
+        suffix = "shadow" if shadows else "direct"
+        return f"{base}_{suffix}"
+    if refit_bvh:
+        return "bvh_refit"
+    if use_bvh:
+        return "bvh"
+    if use_aabb:
+        return "aabb"
+    return "linear"
 
 
 def _select_cases(

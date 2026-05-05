@@ -55,6 +55,7 @@ from .scene import (
 )
 from .warp_execution import (
     GpuBruteForceOpticalExecutor,
+    GpuDeviceBvhDirectLightOpticalExecutor,
     GpuDeviceBvhOpticalExecutor,
     GpuDeviceSceneOpticalExecutor,
 )
@@ -72,6 +73,7 @@ __all__ = [
     "DeviceOpticalSceneCache",
     "DeviceOpticalSceneSnapshot",
     "GpuBruteForceOpticalExecutor",
+    "GpuDeviceBvhDirectLightOpticalExecutor",
     "GpuDeviceBvhOpticalExecutor",
     "GpuDeviceSceneOpticalExecutor",
     "HostOpticalPrimitiveWorkload",

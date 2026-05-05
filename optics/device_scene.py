@@ -70,9 +70,16 @@ class DeviceOpticalScene:
     device: object
     role_table: DeviceOpticalRoleTable
     num_instances: int
+    num_materials: int
+    num_lights: int
     num_triangles: int
     num_planes: int
     max_body_index: int
+    material_albedo_rgb: object
+    light_kind: object
+    light_position_or_direction_world: object
+    light_intensity: object
+    light_color_rgb: object
     triangle_vertices_local: object
     triangle_instance_index: object
     triangle_primitive_global_id: object
@@ -82,12 +89,14 @@ class DeviceOpticalScene:
     triangle_source_order_key: object
     triangle_role_mask: object
     triangle_numeric_instance_id: object
+    triangle_material_index: object
     plane_normal_local: object
     plane_point_local: object
     plane_instance_index: object
     plane_source_order_key: object
     plane_role_mask: object
     plane_numeric_instance_id: object
+    plane_material_index: object
     instance_body_index: object
     instance_X_body_geometry_R: object
     instance_X_body_geometry_r: object
@@ -159,9 +168,36 @@ def build_device_optical_scene(
             device=resolved_device,
             role_table=role_table,
             num_instances=int(packed["instance_body_index"].shape[0]),
+            num_materials=int(packed["material_albedo_rgb"].shape[0]),
+            num_lights=int(packed["light_kind"].shape[0]),
             num_triangles=int(packed["triangle_vertices_local"].shape[0]),
             num_planes=int(packed["plane_normal_local"].shape[0]),
             max_body_index=int(packed["max_body_index"]),
+            material_albedo_rgb=_wp_array(
+                packed["material_albedo_rgb"],
+                dtype=wp.float32,
+                device=resolved_device,
+            ),
+            light_kind=_wp_array(
+                packed["light_kind"],
+                dtype=wp.int32,
+                device=resolved_device,
+            ),
+            light_position_or_direction_world=_wp_array(
+                packed["light_position_or_direction_world"],
+                dtype=wp.float32,
+                device=resolved_device,
+            ),
+            light_intensity=_wp_array(
+                packed["light_intensity"],
+                dtype=wp.float32,
+                device=resolved_device,
+            ),
+            light_color_rgb=_wp_array(
+                packed["light_color_rgb"],
+                dtype=wp.float32,
+                device=resolved_device,
+            ),
             triangle_vertices_local=_wp_array(
                 packed["triangle_vertices_local"],
                 dtype=wp.float32,
@@ -205,6 +241,11 @@ def build_device_optical_scene(
                 dtype=wp.int32,
                 device=resolved_device,
             ),
+            triangle_material_index=_wp_array(
+                packed["triangle_material_index"],
+                dtype=wp.int32,
+                device=resolved_device,
+            ),
             plane_normal_local=_wp_array(
                 packed["plane_normal_local"], dtype=wp.float32, device=resolved_device
             ),
@@ -224,6 +265,11 @@ def build_device_optical_scene(
             plane_role_mask=_wp_array(packed["plane_role_mask"], dtype=wp.int64, device=resolved_device),
             plane_numeric_instance_id=_wp_array(
                 packed["plane_numeric_instance_id"],
+                dtype=wp.int32,
+                device=resolved_device,
+            ),
+            plane_material_index=_wp_array(
+                packed["plane_material_index"],
                 dtype=wp.int32,
                 device=resolved_device,
             ),
@@ -342,7 +388,26 @@ def _pack_registry_for_device(
 ) -> dict[str, np.ndarray]:
     geometry = registry.geometry
     instances = registry.instances
+    materials = registry.materials
+    lights = registry.lights
     geometry_index_by_id = {geometry_id: index for index, geometry_id in enumerate(geometry.keys())}
+    material_index_by_id = {material_id: index for index, material_id in enumerate(materials.keys())}
+    material_albedo_rgb = [
+        np.asarray(material.albedo_rgb, dtype=np.float32) for material in materials.values()
+    ]
+    light_kind: list[int] = []
+    light_position_or_direction_world: list[np.ndarray] = []
+    light_intensity: list[float] = []
+    light_color_rgb: list[np.ndarray] = []
+    for light in lights.values():
+        if not light.enabled:
+            continue
+        light_kind.append(0 if light.kind == "directional" else 1)
+        light_position_or_direction_world.append(
+            np.asarray(light.position_or_direction_world, dtype=np.float32)
+        )
+        light_intensity.append(float(light.intensity))
+        light_color_rgb.append(np.asarray(light.color_rgb, dtype=np.float32))
 
     instance_body_index: list[int] = []
     instance_X_R: list[np.ndarray] = []
@@ -356,12 +421,14 @@ def _pack_registry_for_device(
     triangle_source_order_key: list[int] = []
     triangle_role_mask: list[int] = []
     triangle_numeric_instance_id: list[int] = []
+    triangle_material_index: list[int] = []
     plane_normals: list[np.ndarray] = []
     plane_points: list[np.ndarray] = []
     plane_instance_index: list[int] = []
     plane_source_order_key: list[int] = []
     plane_role_mask: list[int] = []
     plane_numeric_instance_id: list[int] = []
+    plane_material_index: list[int] = []
 
     for instance_index, instance in enumerate(instances):
         if instance.numeric_instance_id is None:
@@ -370,6 +437,7 @@ def _pack_registry_for_device(
         instance_X_R.append(np.asarray(instance.X_body_geometry.R, dtype=np.float32).reshape(9))
         instance_X_r.append(np.asarray(instance.X_body_geometry.r, dtype=np.float32))
         role_mask = role_table.mask_for_roles(instance.roles)
+        material_index = material_index_by_id[instance.material_id]
 
         instance_geometry = geometry[instance.geometry_id]
         if isinstance(instance_geometry, OpticalPlaneGeometry):
@@ -379,6 +447,7 @@ def _pack_registry_for_device(
             plane_source_order_key.append(pack_source_order_key(instance_index, 0))
             plane_role_mask.append(role_mask)
             plane_numeric_instance_id.append(int(instance.numeric_instance_id))
+            plane_material_index.append(material_index)
             continue
 
         if isinstance(instance_geometry, OpticalTriangleMeshGeometry):
@@ -401,8 +470,18 @@ def _pack_registry_for_device(
                 triangle_source_order_key.append(pack_source_order_key(instance_index, primitive_index))
                 triangle_role_mask.append(role_mask)
                 triangle_numeric_instance_id.append(int(instance.numeric_instance_id))
+                triangle_material_index.append(material_index)
 
     return {
+        "material_albedo_rgb": _array_or_empty(material_albedo_rgb, shape=(0, 3), dtype=np.float32),
+        "light_kind": np.asarray(light_kind, dtype=np.int32),
+        "light_position_or_direction_world": _array_or_empty(
+            light_position_or_direction_world,
+            shape=(0, 3),
+            dtype=np.float32,
+        ),
+        "light_intensity": np.asarray(light_intensity, dtype=np.float32),
+        "light_color_rgb": _array_or_empty(light_color_rgb, shape=(0, 3), dtype=np.float32),
         "triangle_vertices_local": _array_or_empty(triangles, shape=(0, 9), dtype=np.float32),
         "triangle_instance_index": np.asarray(triangle_instance_index, dtype=np.int32),
         "triangle_primitive_global_id": np.asarray(triangle_primitive_global_id, dtype=np.int32),
@@ -418,12 +497,14 @@ def _pack_registry_for_device(
         "triangle_source_order_key": np.asarray(triangle_source_order_key, dtype=np.int64),
         "triangle_role_mask": np.asarray(triangle_role_mask, dtype=np.int64),
         "triangle_numeric_instance_id": np.asarray(triangle_numeric_instance_id, dtype=np.int32),
+        "triangle_material_index": np.asarray(triangle_material_index, dtype=np.int32),
         "plane_normal_local": _array_or_empty(plane_normals, shape=(0, 3), dtype=np.float32),
         "plane_point_local": _array_or_empty(plane_points, shape=(0, 3), dtype=np.float32),
         "plane_instance_index": np.asarray(plane_instance_index, dtype=np.int32),
         "plane_source_order_key": np.asarray(plane_source_order_key, dtype=np.int64),
         "plane_role_mask": np.asarray(plane_role_mask, dtype=np.int64),
         "plane_numeric_instance_id": np.asarray(plane_numeric_instance_id, dtype=np.int32),
+        "plane_material_index": np.asarray(plane_material_index, dtype=np.int32),
         "instance_body_index": np.asarray(instance_body_index, dtype=np.int32),
         "instance_X_body_geometry_R": _array_or_empty(instance_X_R, shape=(0, 9), dtype=np.float32),
         "instance_X_body_geometry_r": _array_or_empty(instance_X_r, shape=(0, 3), dtype=np.float32),
