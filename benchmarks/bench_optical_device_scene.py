@@ -43,6 +43,7 @@ from optics import (
     OpticalMaterialSpec,
     OpticalWorldRegistry,
     build_device_bvh_from_snapshot,
+    refit_device_bvh_from_snapshot,
     stage_optical_compute_result_to_host,
 )
 from physics.publish import GpuPublishedFrame
@@ -158,7 +159,14 @@ def main() -> None:
         action="store_true",
         help="Use the L5C.2a CPU-build/GPU-traverse BVH variant.",
     )
+    parser.add_argument(
+        "--refit-bvh",
+        action="store_true",
+        help="Build BVH topology once, then GPU-refit bounds per snapshot before traversal.",
+    )
     args = parser.parse_args()
+    if args.refit_bvh:
+        args.use_bvh = True
     if args.use_aabb and args.use_bvh:
         raise SystemExit("--use-aabb and --use-bvh are mutually exclusive traversal modes")
     if wp is None:
@@ -180,6 +188,7 @@ def main() -> None:
     print(
         "case,mode,num_rays,num_triangles,"
         "update_ms_mean,update_ms_p50,cpu_build_ms_mean,cpu_build_ms_p50,"
+        "gpu_refit_ms_mean,gpu_refit_ms_p50,"
         "gpu_traverse_ms_mean,gpu_traverse_ms_p50,stage_ms_mean,"
         "bvh_nodes,bvh_max_depth,bvh_sah_quality_cost"
     )
@@ -192,12 +201,22 @@ def main() -> None:
             stage=bool(args.stage or case.stage),
             use_aabb=bool(args.use_aabb),
             use_bvh=bool(args.use_bvh),
+            refit_bvh=bool(args.refit_bvh),
         )
-        mode = "bvh" if args.use_bvh else "aabb" if args.use_aabb else "linear"
+        mode = (
+            "bvh_refit"
+            if args.refit_bvh
+            else "bvh"
+            if args.use_bvh
+            else "aabb"
+            if args.use_aabb
+            else "linear"
+        )
         print(
             f"{case.name},{mode},{int(stats['num_rays'])},{int(stats['num_triangles'])},"
             f"{stats['update_mean_ms']:.4f},{stats['update_p50_ms']:.4f},"
             f"{stats['cpu_build_mean_ms']:.4f},{stats['cpu_build_p50_ms']:.4f},"
+            f"{stats['gpu_refit_mean_ms']:.4f},{stats['gpu_refit_p50_ms']:.4f},"
             f"{stats['gpu_traverse_mean_ms']:.4f},{stats['gpu_traverse_p50_ms']:.4f},"
             f"{stats['stage_mean_ms']:.4f},"
             f"{int(stats['bvh_nodes'])},{int(stats['bvh_max_depth'])},"
@@ -214,6 +233,7 @@ def run_case(
     stage: bool,
     use_aabb: bool,
     use_bvh: bool,
+    refit_bvh: bool,
 ) -> dict[str, float]:
     setup = _build_scene_setup(case, device=device)
     registry = setup["registry"]
@@ -222,11 +242,20 @@ def run_case(
     spec = setup["spec"]
     scene_executor = GpuDeviceSceneOpticalExecutor(device=device, use_aabb=use_aabb)
     bvh_executor = GpuDeviceBvhOpticalExecutor(device=device) if use_bvh else None
+    reusable_bvh = None
+    if refit_bvh:
+        topology_snapshot = cache.snapshot_from_gpu_frame(frame, include_aabb=True)
+        wp.synchronize_event(topology_snapshot.ready_event)
+        reusable_bvh = build_device_bvh_from_snapshot(topology_snapshot, device=device)
 
     for _ in range(warmup):
         snapshot = cache.snapshot_from_gpu_frame(frame, include_aabb=use_aabb or use_bvh)
         if use_bvh:
-            bvh = build_device_bvh_from_snapshot(snapshot, device=device)
+            if refit_bvh:
+                bvh = refit_device_bvh_from_snapshot(snapshot, reusable_bvh)
+                reusable_bvh = bvh
+            else:
+                bvh = build_device_bvh_from_snapshot(snapshot, device=device)
             result = bvh_executor.execute(snapshot, bvh, spec)
         else:
             result = scene_executor.execute(snapshot, spec)
@@ -234,6 +263,7 @@ def run_case(
 
     update_ms: list[float] = []
     cpu_build_ms: list[float] = []
+    gpu_refit_ms: list[float] = []
     gpu_traverse_ms: list[float] = []
     stage_ms: list[float] = []
     last_bvh_nodes = 0
@@ -247,14 +277,23 @@ def run_case(
         t1 = time.perf_counter()
 
         if use_bvh:
-            bvh = build_device_bvh_from_snapshot(snapshot, device=device)
-            t_build = time.perf_counter()
+            if refit_bvh:
+                bvh = refit_device_bvh_from_snapshot(snapshot, reusable_bvh)
+                reusable_bvh = bvh
+                wp.synchronize_event(bvh.ready_event)
+                t_refit = time.perf_counter()
+                t_build = t1
+            else:
+                bvh = build_device_bvh_from_snapshot(snapshot, device=device)
+                t_build = time.perf_counter()
+                t_refit = t_build
             last_bvh_nodes = bvh.stats.num_nodes
             last_bvh_max_depth = bvh.stats.max_depth
             last_bvh_sah_quality_cost = bvh.stats.sah_quality_cost
             result = bvh_executor.execute(snapshot, bvh, spec)
         else:
             t_build = t1
+            t_refit = t1
             result = scene_executor.execute(snapshot, spec)
         wp.synchronize_event(result.ready_event)
         t2 = time.perf_counter()
@@ -266,13 +305,16 @@ def run_case(
 
         update_ms.append((t1 - t0) * 1000.0)
         cpu_build_ms.append((t_build - t1) * 1000.0)
-        gpu_traverse_ms.append((t2 - t_build) * 1000.0)
+        gpu_refit_ms.append((t_refit - t_build) * 1000.0)
+        gpu_traverse_ms.append((t2 - t_refit) * 1000.0)
 
     return {
         "update_mean_ms": statistics.fmean(update_ms),
         "update_p50_ms": statistics.median(update_ms),
         "cpu_build_mean_ms": statistics.fmean(cpu_build_ms),
         "cpu_build_p50_ms": statistics.median(cpu_build_ms),
+        "gpu_refit_mean_ms": statistics.fmean(gpu_refit_ms),
+        "gpu_refit_p50_ms": statistics.median(gpu_refit_ms),
         "gpu_traverse_mean_ms": statistics.fmean(gpu_traverse_ms),
         "gpu_traverse_p50_ms": statistics.median(gpu_traverse_ms),
         "stage_mean_ms": statistics.fmean(stage_ms) if stage_ms else 0.0,

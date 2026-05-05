@@ -18,6 +18,7 @@ from .device_bvh import (
     DeviceBvhBuildStats,
     DeviceOpticalBvh,
     build_device_bvh_from_snapshot,
+    refit_device_bvh_from_snapshot,
 )
 from .device_scene import (
     DeviceOpticalRoleTable,
@@ -98,6 +99,7 @@ __all__ = [
     "build_optical_registry_from_robot_model",
     "execute_optical_on_gpu_published_frame",
     "pack_source_order_key",
+    "refit_device_bvh_from_snapshot",
     "stage_optical_compute_result_to_host",
     "update_device_optical_scene_from_gpu_frame",
 ]

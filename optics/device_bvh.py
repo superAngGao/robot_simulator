@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -29,6 +29,7 @@ class DeviceBvhBuildStats:
     max_depth: int
     leaf_size: int
     sah_quality_cost: float
+    level_ranges: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,7 @@ class DeviceOpticalBvh:
     primitive_geometry_primitive_index: object
     primitive_source_order_key: object
     stats: DeviceBvhBuildStats
+    ready_event: object | None = None
     resources: tuple[object, ...] = ()
 
     @property
@@ -139,6 +141,7 @@ def build_device_bvh_from_snapshot(
             device=resolved_device,
         )
         primitive_source_order_key_wp = _wp_array(source_keys, dtype=wp.int64, device=resolved_device)
+        ready_event = (stream or wp.get_stream(resolved_device)).record_event()
 
     resources = (
         bounds_min,
@@ -177,7 +180,68 @@ def build_device_bvh_from_snapshot(
         primitive_geometry_primitive_index=primitive_geometry_primitive_index_wp,
         primitive_source_order_key=primitive_source_order_key_wp,
         stats=host_bvh["stats"],
+        ready_event=ready_event,
         resources=resources,
+    )
+
+
+def refit_device_bvh_from_snapshot(
+    snapshot: DeviceOpticalSceneSnapshot,
+    bvh: DeviceOpticalBvh,
+    *,
+    stream=None,
+) -> DeviceOpticalBvh:
+    """Refit an existing BVH topology from per-frame triangle AABBs on the GPU."""
+    _require_warp()
+    if snapshot.triangle_aabb_min is None or snapshot.triangle_aabb_max is None:
+        raise ValueError("refit_device_bvh_from_snapshot requires AABB snapshot buffers")
+    if snapshot.scene.device != bvh.device:
+        raise ValueError("DeviceOpticalBvh device must match DeviceOpticalSceneSnapshot device")
+    if snapshot.scene.num_triangles != bvh.num_primitives:
+        raise ValueError("DeviceOpticalBvh primitive count must match DeviceOpticalSceneSnapshot")
+
+    with _scoped_stream(stream):
+        _wait_on_event(snapshot.ready_event, stream=stream, device=bvh.device)
+        _wait_on_event(bvh.ready_event, stream=stream, device=bvh.device)
+        if bvh.num_nodes > 0:
+            wp.launch(
+                _refit_bvh_leaf_bounds_kernel,
+                dim=bvh.num_nodes,
+                inputs=[
+                    snapshot.triangle_aabb_min,
+                    snapshot.triangle_aabb_max,
+                    bvh.start,
+                    bvh.count,
+                    bvh.prim_ids,
+                    bvh.bounds_min,
+                    bvh.bounds_max,
+                ],
+                device=bvh.device,
+                stream=stream,
+            )
+            for depth in range(bvh.stats.max_depth - 1, -1, -1):
+                level_start, level_end = bvh.stats.level_ranges[depth]
+                wp.launch(
+                    _refit_bvh_internal_bounds_kernel,
+                    dim=level_end - level_start,
+                    inputs=[
+                        int(level_start),
+                        bvh.left,
+                        bvh.right,
+                        bvh.count,
+                        bvh.bounds_min,
+                        bvh.bounds_max,
+                    ],
+                    device=bvh.device,
+                    stream=stream,
+                )
+        ready_event = (stream or wp.get_stream(bvh.device)).record_event()
+
+    return replace(
+        bvh,
+        frame_id=snapshot.frame_id,
+        env_idx=snapshot.env_idx,
+        ready_event=ready_event,
     )
 
 
@@ -209,6 +273,7 @@ def _build_host_bvh(
             max_depth=0,
             leaf_size=leaf_size,
             sah_quality_cost=0.0,
+            level_ranges=(),
         )
         return {
             "bounds_min": np.empty((0, 3), dtype=np.float32),
@@ -320,6 +385,7 @@ def _build_host_bvh(
         max_depth=max_depth,
         leaf_size=leaf_size,
         sah_quality_cost=float(sah_quality_cost),
+        level_ranges=tuple((int(start), int(end)) for start, end in level_ranges),
     )
     return {
         "bounds_min": bounds_min,
@@ -358,6 +424,80 @@ def _synchronize_event(event) -> None:
     wp.synchronize_event(event)
 
 
+def _wait_on_event(event, *, stream, device) -> None:
+    if event is None:
+        return
+    (stream or wp.get_stream(device)).wait_event(event)
+
+
 def _require_warp() -> None:
     if not _HAS_WARP:
+        raise ImportError("DeviceOpticalBvh requires the optional warp package")
+
+
+if _HAS_WARP:
+
+    @wp.kernel
+    def _refit_bvh_leaf_bounds_kernel(
+        triangle_aabb_min: wp.array2d(dtype=wp.float32),
+        triangle_aabb_max: wp.array2d(dtype=wp.float32),
+        bvh_start: wp.array(dtype=wp.int32),
+        bvh_count: wp.array(dtype=wp.int32),
+        bvh_prim_ids: wp.array(dtype=wp.int32),
+        bvh_bounds_min: wp.array2d(dtype=wp.float32),
+        bvh_bounds_max: wp.array2d(dtype=wp.float32),
+    ):
+        node = wp.tid()
+        count = bvh_count[node]
+        if count > 0:
+            start = bvh_start[node]
+            first_prim = bvh_prim_ids[start]
+            min_x = triangle_aabb_min[first_prim, 0]
+            min_y = triangle_aabb_min[first_prim, 1]
+            min_z = triangle_aabb_min[first_prim, 2]
+            max_x = triangle_aabb_max[first_prim, 0]
+            max_y = triangle_aabb_max[first_prim, 1]
+            max_z = triangle_aabb_max[first_prim, 2]
+            for offset in range(1, count):
+                prim = bvh_prim_ids[start + offset]
+                min_x = wp.min(min_x, triangle_aabb_min[prim, 0])
+                min_y = wp.min(min_y, triangle_aabb_min[prim, 1])
+                min_z = wp.min(min_z, triangle_aabb_min[prim, 2])
+                max_x = wp.max(max_x, triangle_aabb_max[prim, 0])
+                max_y = wp.max(max_y, triangle_aabb_max[prim, 1])
+                max_z = wp.max(max_z, triangle_aabb_max[prim, 2])
+            bvh_bounds_min[node, 0] = min_x
+            bvh_bounds_min[node, 1] = min_y
+            bvh_bounds_min[node, 2] = min_z
+            bvh_bounds_max[node, 0] = max_x
+            bvh_bounds_max[node, 1] = max_y
+            bvh_bounds_max[node, 2] = max_z
+
+    @wp.kernel
+    def _refit_bvh_internal_bounds_kernel(
+        level_start: int,
+        bvh_left: wp.array(dtype=wp.int32),
+        bvh_right: wp.array(dtype=wp.int32),
+        bvh_count: wp.array(dtype=wp.int32),
+        bvh_bounds_min: wp.array2d(dtype=wp.float32),
+        bvh_bounds_max: wp.array2d(dtype=wp.float32),
+    ):
+        node = level_start + wp.tid()
+        if bvh_count[node] == 0:
+            left = bvh_left[node]
+            right = bvh_right[node]
+            if left >= 0 and right >= 0:
+                bvh_bounds_min[node, 0] = wp.min(bvh_bounds_min[left, 0], bvh_bounds_min[right, 0])
+                bvh_bounds_min[node, 1] = wp.min(bvh_bounds_min[left, 1], bvh_bounds_min[right, 1])
+                bvh_bounds_min[node, 2] = wp.min(bvh_bounds_min[left, 2], bvh_bounds_min[right, 2])
+                bvh_bounds_max[node, 0] = wp.max(bvh_bounds_max[left, 0], bvh_bounds_max[right, 0])
+                bvh_bounds_max[node, 1] = wp.max(bvh_bounds_max[left, 1], bvh_bounds_max[right, 1])
+                bvh_bounds_max[node, 2] = wp.max(bvh_bounds_max[left, 2], bvh_bounds_max[right, 2])
+
+else:
+
+    def _refit_bvh_leaf_bounds_kernel(*args, **kwargs):  # pragma: no cover
+        raise ImportError("DeviceOpticalBvh requires the optional warp package")
+
+    def _refit_bvh_internal_bounds_kernel(*args, **kwargs):  # pragma: no cover
         raise ImportError("DeviceOpticalBvh requires the optional warp package")

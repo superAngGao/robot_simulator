@@ -380,6 +380,7 @@ class GpuDeviceBvhOpticalExecutor:
 
         with _scoped_stream(self.stream):
             _wait_on_event(snapshot.ready_event, stream=self.stream, device=self.device)
+            _wait_on_event(bvh.ready_event, stream=self.stream, device=self.device)
             origins = wp.array(
                 np.asarray(spec.origins_world, dtype=np.float32),
                 dtype=wp.float32,

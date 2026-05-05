@@ -14,6 +14,7 @@ from optics import (
     OpticalWorldRegistry,
     build_device_bvh_from_snapshot,
     execute_optical_on_gpu_published_frame,
+    refit_device_bvh_from_snapshot,
     stage_optical_compute_result_to_host,
 )
 from physics.geometry import BodyCollisionGeometry, ShapeInstance, SphereShape
@@ -770,6 +771,68 @@ def test_device_bvh_executor_preserves_plane_triangle_tie_break():
     np.testing.assert_allclose(staged.channel("range_m"), [2.0], atol=1e-6)
     np.testing.assert_array_equal(staged.channel("numeric_instance_id"), [1])
     np.testing.assert_array_equal(staged.channel("bvh_stack_overflow_count"), [0])
+
+
+def test_device_bvh_refit_matches_fresh_build_for_triangle_grid():
+    engine = _make_engine()
+    consumer = _consumer()
+    engine.register_consumer(consumer)
+    engine.step()
+    frame = engine.latest_published_frame()
+    registry = _world_static_triangle_grid_registry()
+    spec = OpticalRaySensorSpec(
+        frame_id=frame.frame_id,
+        sim_time=frame.sim_time,
+        env_idx=0,
+        sensor_id="gpu_camera",
+        origins_world=[
+            [-0.75, -0.75, 2.0],
+            [-0.35, 0.05, 2.0],
+            [0.45, 0.45, 2.0],
+            [2.0, 2.0, 2.0],
+        ],
+        directions_world=[
+            [0.0, 0.0, -1.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 0.0, -1.0],
+        ],
+        max_distance=10.0,
+    )
+    stream = wp.Stream(device=engine._device)
+    borrowed = engine.borrow_device_frame(consumer.consumer_id, frame.frame_id, stream=stream)
+    cache = DeviceOpticalSceneCache(registry, device=engine._device, stream=stream)
+    snapshot = cache.snapshot_from_gpu_frame(borrowed, env_idx=0, stream=stream, include_aabb=True)
+    topology_bvh = build_device_bvh_from_snapshot(snapshot, device=engine._device, stream=stream)
+    fresh_bvh = build_device_bvh_from_snapshot(snapshot, device=engine._device, stream=stream)
+    refit_bvh = refit_device_bvh_from_snapshot(snapshot, topology_bvh, stream=stream)
+    executor = GpuDeviceBvhOpticalExecutor(device=engine._device, stream=stream)
+    fresh = executor.execute(snapshot, fresh_bvh, spec)
+    refit = executor.execute(snapshot, refit_bvh, spec)
+    done_event = engine.complete_device_consumer(consumer.consumer_id, frame.frame_id, stream=stream)
+
+    wp.synchronize_event(done_event)
+    fresh_host = stage_optical_compute_result_to_host(fresh)
+    refit_host = stage_optical_compute_result_to_host(refit)
+    np.testing.assert_array_equal(refit_host.channel("hit_mask"), fresh_host.channel("hit_mask"))
+    np.testing.assert_allclose(refit_host.channel("range_m"), fresh_host.channel("range_m"), atol=1e-6)
+    np.testing.assert_allclose(
+        refit_host.channel("position_world"),
+        fresh_host.channel("position_world"),
+        atol=1e-6,
+        equal_nan=True,
+    )
+    np.testing.assert_allclose(
+        refit_host.channel("normal_world"),
+        fresh_host.channel("normal_world"),
+        atol=1e-6,
+        equal_nan=True,
+    )
+    np.testing.assert_array_equal(
+        refit_host.channel("numeric_instance_id"),
+        fresh_host.channel("numeric_instance_id"),
+    )
+    np.testing.assert_array_equal(refit_host.channel("bvh_stack_overflow_count"), [0])
 
 
 def test_device_scene_executor_unknown_role_returns_all_misses():
