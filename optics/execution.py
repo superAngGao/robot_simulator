@@ -27,10 +27,14 @@ class MissingAccelerationError(RuntimeError):
 class OpticalComputeResult:
     """Optical executor result.
 
-    `rgb` channels, when present, are unbounded float64 linear RGB. Values may
-    exceed 1.0; clipping, tone mapping, and display conversion belong to
-    consumers. `intensity`, when produced by the direct-light executor, is
-    BT.709 luminance of `rgb`.
+    First-hit channels such as `hit_mask`, `range_m`, `position_world`,
+    `normal_world`, and `numeric_instance_id` are geometric query results.
+    `rgb` and `intensity`, when present, are direct-light shading channels:
+    `rgb` is unbounded linear RGB and `intensity` is BT.709 luminance of that
+    direct-light RGB. Future path-tracing executors should define their own
+    radiance/sample-accumulation channels instead of reusing `intensity` as a
+    Monte Carlo transport contract. Clipping, tone mapping, and display
+    conversion belong to consumers.
     """
 
     frame_id: int

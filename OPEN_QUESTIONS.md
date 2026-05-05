@@ -2574,6 +2574,42 @@ Follow-up：
   先定义 diffuse/specular/refraction/glare/volumetric 范围，再扩展 BSDF、emissive
   surface/area light、RNG state、sample accumulation、variance diagnostics。不要把
   Monte Carlo 多 bounce transport 混入现在 deterministic direct-light executor。
+- Claude review 后的 L5C.3a hardening 已部分落地：
+  1. `GpuDeviceBvhDirectLightOpticalExecutor` 输出
+     `shadow_stack_overflow_count` 和 `shadow_max_stack_depth`，保持 async result
+     channel 诊断，不在 executor 内同步 raise。
+  2. 新增 zero-light parity：无光源时 GPU 输出 ambient hit color / background miss
+     color，与 CPU direct-light executor 对齐。
+  3. 新增 point-light shadow parity：点光源到 hit point 的 shadow segment 被三角形
+     blocker 遮挡时，GPU RGB/intensity 与 CPU 对齐。
+  4. 新增 multi-light additive parity：多个 directional lights 逐光源累加，与
+     CPU direct-light executor 对齐。
+  5. 新增 plane occluder shadow parity：primary ray 命中 triangle floor patch，
+     shadow ray 被 analytical plane 遮挡；该 case 不访问 shadow BVH stack，
+     因此 `shadow_max_stack_depth == 0` 是正确诊断。
+  6. 文档明确：`GpuDeviceSceneOpticalExecutor` 只做 first-hit；GPU RGB 走
+     `GpuDeviceBvhDirectLightOpticalExecutor`。`rgb/intensity` 是 direct-light
+     channel，不是 path-tracing radiance/sample accumulation 合同。
+- L5C.3a review 要求的 parity / hardening 项已完成。未来可选补充：role-filtered
+  shadow rays、equal-distance shadow blocker 语义（如后续变成可观察行为）。
+- L5C.3c benchmark cleanup 已开始落地：新增 `--compare-direct-light`，在同一
+  进程、同一 snapshot/BVH 序列里连续测 first-hit / direct no-shadow / direct
+  shadow，避免三次独立进程带来的 Warp module load、GPU clock、host jitter 差异。
+  stdout 默认保持 parseable CSV（Warp logs 默认 quiet，可用 `--verbose-warp`
+  打开）；CSV 同时输出 warmup/repeat、mean/p50/p90/std、primary/shadow stack
+  overflow 与 observed max stack。新增 `--fail-on-overflow`，preview/README
+  图像生成和 decision run 应使用该选项。
+- 同进程 `--refit-bvh --compare-direct-light` p50 结果：
+  `robot_dense_single` first/direct/shadow ≈ 2.364/2.876/3.267 ms；
+  `robot_dense_pack` first/direct/shadow ≈ 1.199/1.347/1.876 ms。之前
+  `robot_dense_pack` direct no-shadow 快于 first-hit 的倒置没有复现，暂解释为
+  跨进程测量噪声而非 executor 语义问题。inline shadow 仍低于 3x 触发阈值。
+- benchmark 基础设施原则：同类 kernel A/B 用同进程 compare；单模式运行只作
+  smoke 或趋势检查；p50 必须和 p90/std 一起看；host wall-time 继续作为端到端
+  组件时间，未来如加入 CUDA event timing 必须作为显式 backend/额外列，不应
+  悄悄改变现有列语义。
 
 详见：
-`collab/q54-gpu-optical-l5c3-progress-and-next-plan__review-request__codex__v1.md`。
+`collab/q54-gpu-optical-l5c3-progress-and-next-plan__review-request__codex__v1.md`，
+`collab/q54-gpu-optical-l5c3a-shadow-hardening__implementation-note__codex__v1.md`，
+`collab/q54-gpu-optical-l5c3c-benchmark-cleanup__implementation-note__codex__v1.md`。

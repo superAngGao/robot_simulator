@@ -259,6 +259,116 @@ def _point_lit_triangle_registry() -> OpticalWorldRegistry:
     return registry
 
 
+def _zero_light_triangle_registry() -> OpticalWorldRegistry:
+    registry = OpticalWorldRegistry()
+    registry.add_material(OpticalMaterialSpec("mat_unlit", albedo_rgb=(0.3, 0.5, 0.7)))
+    registry.add_triangle_mesh_geometry(
+        "tri",
+        vertices_local=[
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+        triangles=[[0, 1, 2]],
+    )
+    registry.add_instance(OpticalInstanceSpec("tri_instance", "tri", "mat_unlit"))
+    return registry
+
+
+def _multi_light_triangle_registry() -> OpticalWorldRegistry:
+    registry = OpticalWorldRegistry()
+    registry.add_material(OpticalMaterialSpec("mat_lit", albedo_rgb=(0.5, 0.25, 0.75)))
+    registry.add_light(
+        OpticalLightSpec(
+            "key",
+            kind="directional",
+            position_or_direction_world=[0.0, 0.0, 1.0],
+            intensity=1.0,
+            color_rgb=(1.0, 0.5, 0.25),
+        )
+    )
+    registry.add_light(
+        OpticalLightSpec(
+            "fill",
+            kind="directional",
+            position_or_direction_world=[0.0, 1.0, 1.0],
+            intensity=2.0,
+            color_rgb=(0.25, 1.0, 0.5),
+        )
+    )
+    registry.add_triangle_mesh_geometry(
+        "tri",
+        vertices_local=[
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+        triangles=[[0, 1, 2]],
+    )
+    registry.add_instance(OpticalInstanceSpec("tri_instance", "tri", "mat_lit"))
+    return registry
+
+
+def _point_shadowed_floor_registry() -> OpticalWorldRegistry:
+    registry = OpticalWorldRegistry()
+    registry.add_material(OpticalMaterialSpec("mat_floor", albedo_rgb=(0.6, 0.4, 0.2)))
+    registry.add_material(OpticalMaterialSpec("mat_blocker", albedo_rgb=(0.1, 0.1, 0.1)))
+    registry.add_light(
+        OpticalLightSpec(
+            "lamp",
+            kind="point",
+            position_or_direction_world=[2.0, 0.0, 2.0],
+            intensity=16.0,
+            color_rgb=(1.0, 1.0, 1.0),
+        )
+    )
+    registry.add_plane_geometry("floor", normal_local=[0.0, 0.0, 1.0], point_local=[0.0, 0.0, 0.0])
+    registry.add_triangle_mesh_geometry(
+        "point_shadow_blocker",
+        vertices_local=[
+            [1.0, -1.0, 0.5],
+            [1.0, 1.0, 0.5],
+            [1.0, 0.0, 1.5],
+        ],
+        triangles=[[0, 1, 2]],
+    )
+    registry.add_instance(OpticalInstanceSpec("floor_instance", "floor", "mat_floor"))
+    registry.add_instance(OpticalInstanceSpec("blocker_instance", "point_shadow_blocker", "mat_blocker"))
+    return registry
+
+
+def _plane_shadowed_floor_registry() -> OpticalWorldRegistry:
+    registry = OpticalWorldRegistry()
+    registry.add_material(OpticalMaterialSpec("mat_floor", albedo_rgb=(0.6, 0.4, 0.2)))
+    registry.add_material(OpticalMaterialSpec("mat_occluder", albedo_rgb=(0.1, 0.1, 0.1)))
+    registry.add_light(
+        OpticalLightSpec(
+            "lamp",
+            kind="point",
+            position_or_direction_world=[2.0, 0.0, 2.0],
+            intensity=16.0,
+            color_rgb=(1.0, 1.0, 1.0),
+        )
+    )
+    registry.add_triangle_mesh_geometry(
+        "floor_patch",
+        vertices_local=[
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+        triangles=[[0, 1, 2]],
+    )
+    registry.add_plane_geometry(
+        "shadow_plane",
+        normal_local=[1.0, 0.0, 0.0],
+        point_local=[1.0, 0.0, 0.0],
+    )
+    registry.add_instance(OpticalInstanceSpec("floor_patch_instance", "floor_patch", "mat_floor"))
+    registry.add_instance(OpticalInstanceSpec("shadow_plane_instance", "shadow_plane", "mat_occluder"))
+    return registry
+
+
 def _shadowed_floor_registry() -> OpticalWorldRegistry:
     registry = OpticalWorldRegistry()
     registry.add_material(OpticalMaterialSpec("mat_floor", albedo_rgb=(0.7, 0.6, 0.5)))
@@ -1029,6 +1139,8 @@ def test_device_bvh_no_shadow_direct_light_matches_cpu():
         rtol=1e-5,
         atol=1e-5,
     )
+    np.testing.assert_array_equal(gpu_host.channel("shadow_stack_overflow_count"), [0])
+    np.testing.assert_array_equal(gpu_host.channel("shadow_max_stack_depth"), [0])
 
 
 def test_device_bvh_no_shadow_point_light_matches_cpu():
@@ -1082,6 +1194,121 @@ def test_device_bvh_no_shadow_point_light_matches_cpu():
         rtol=1e-5,
         atol=1e-5,
     )
+    np.testing.assert_array_equal(gpu_host.channel("shadow_stack_overflow_count"), [0])
+    np.testing.assert_array_equal(gpu_host.channel("shadow_max_stack_depth"), [0])
+
+
+def test_device_bvh_zero_light_direct_light_matches_cpu():
+    engine = _make_engine()
+    consumer = _consumer()
+    engine.register_consumer(consumer)
+    engine.step()
+    frame = engine.latest_published_frame()
+    registry = _zero_light_triangle_registry()
+    spec = OpticalRaySensorSpec(
+        frame_id=frame.frame_id,
+        sim_time=frame.sim_time,
+        env_idx=0,
+        sensor_id="gpu_camera",
+        origins_world=[[0.0, 0.0, 2.0], [2.0, 2.0, 2.0]],
+        directions_world=[[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]],
+        max_distance=10.0,
+        sensor_role="rgb",
+    )
+    host_snapshot = OpticalSceneCache(registry).snapshot_from_frame_inputs(
+        OpticalFrameInputs.from_published_frame(_cpu_frame_like(frame)),
+        acceleration="cpu_bvh",
+    )
+    cpu = CpuDirectLightOpticalExecutor(
+        shadows=True,
+        ambient_rgb=(0.2, 0.1, 0.05),
+        background_rgb=(0.01, 0.02, 0.03),
+    ).execute(host_snapshot, spec)
+
+    stream = wp.Stream(device=engine._device)
+    borrowed = engine.borrow_device_frame(consumer.consumer_id, frame.frame_id, stream=stream)
+    cache = DeviceOpticalSceneCache(registry, device=engine._device, stream=stream)
+    snapshot = cache.snapshot_from_gpu_frame(borrowed, env_idx=0, stream=stream, include_aabb=True)
+    bvh = build_device_bvh_from_snapshot(snapshot, device=engine._device, stream=stream)
+    gpu = GpuDeviceBvhDirectLightOpticalExecutor(
+        device=engine._device,
+        stream=stream,
+        shadows=True,
+        ambient_rgb=(0.2, 0.1, 0.05),
+        background_rgb=(0.01, 0.02, 0.03),
+    ).execute(snapshot, bvh, spec)
+    done_event = engine.complete_device_consumer(consumer.consumer_id, frame.frame_id, stream=stream)
+
+    wp.synchronize_event(done_event)
+    gpu_host = stage_optical_compute_result_to_host(gpu)
+    np.testing.assert_array_equal(gpu_host.channel("hit_mask"), cpu.channel("hit_mask"))
+    np.testing.assert_allclose(gpu_host.channel("rgb"), cpu.channel("rgb"), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(
+        gpu_host.channel("intensity"),
+        cpu.channel("intensity"),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(gpu_host.channel("rgb")[0], [0.06, 0.05, 0.035], atol=1e-6)
+    np.testing.assert_allclose(gpu_host.channel("rgb")[1], [0.01, 0.02, 0.03], atol=1e-6)
+    np.testing.assert_array_equal(gpu_host.channel("shadow_stack_overflow_count"), [0])
+    np.testing.assert_array_equal(gpu_host.channel("shadow_max_stack_depth"), [0])
+
+
+def test_device_bvh_multi_light_direct_light_matches_cpu():
+    engine = _make_engine()
+    consumer = _consumer()
+    engine.register_consumer(consumer)
+    engine.step()
+    frame = engine.latest_published_frame()
+    registry = _multi_light_triangle_registry()
+    spec = OpticalRaySensorSpec(
+        frame_id=frame.frame_id,
+        sim_time=frame.sim_time,
+        env_idx=0,
+        sensor_id="gpu_camera",
+        origins_world=[[0.0, 0.0, 2.0]],
+        directions_world=[[0.0, 0.0, -1.0]],
+        max_distance=10.0,
+        sensor_role="rgb",
+    )
+    host_snapshot = OpticalSceneCache(registry).snapshot_from_frame_inputs(
+        OpticalFrameInputs.from_published_frame(_cpu_frame_like(frame)),
+        acceleration="cpu_bvh",
+    )
+    cpu = CpuDirectLightOpticalExecutor(
+        shadows=False,
+        ambient_rgb=(0.1, 0.0, 0.2),
+        background_rgb=(0.0, 0.0, 0.0),
+    ).execute(host_snapshot, spec)
+
+    stream = wp.Stream(device=engine._device)
+    borrowed = engine.borrow_device_frame(consumer.consumer_id, frame.frame_id, stream=stream)
+    cache = DeviceOpticalSceneCache(registry, device=engine._device, stream=stream)
+    snapshot = cache.snapshot_from_gpu_frame(borrowed, env_idx=0, stream=stream, include_aabb=True)
+    bvh = build_device_bvh_from_snapshot(snapshot, device=engine._device, stream=stream)
+    gpu = GpuDeviceBvhDirectLightOpticalExecutor(
+        device=engine._device,
+        stream=stream,
+        shadows=False,
+        ambient_rgb=(0.1, 0.0, 0.2),
+        background_rgb=(0.0, 0.0, 0.0),
+    ).execute(snapshot, bvh, spec)
+    done_event = engine.complete_device_consumer(consumer.consumer_id, frame.frame_id, stream=stream)
+
+    wp.synchronize_event(done_event)
+    gpu_host = stage_optical_compute_result_to_host(gpu)
+    np.testing.assert_array_equal(gpu_host.channel("hit_mask"), cpu.channel("hit_mask"))
+    np.testing.assert_allclose(gpu_host.channel("rgb"), cpu.channel("rgb"), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(
+        gpu_host.channel("intensity"),
+        cpu.channel("intensity"),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+    assert float(gpu_host.channel("intensity")[0]) > 0.0
+    np.testing.assert_array_equal(gpu_host.channel("shadow_stack_overflow_count"), [0])
+    np.testing.assert_array_equal(gpu_host.channel("shadow_max_stack_depth"), [0])
 
 
 def test_device_bvh_shadowed_direct_light_matches_cpu():
@@ -1136,6 +1363,120 @@ def test_device_bvh_shadowed_direct_light_matches_cpu():
         atol=1e-5,
     )
     np.testing.assert_allclose(gpu_host.channel("rgb")[0], [[0.07, 0.06, 0.05]][0], atol=1e-5)
+    np.testing.assert_array_equal(gpu_host.channel("shadow_stack_overflow_count"), [0])
+    assert 1 <= int(gpu_host.channel("shadow_max_stack_depth")[0]) <= 32
+
+
+def test_device_bvh_point_light_shadow_matches_cpu():
+    engine = _make_engine()
+    consumer = _consumer()
+    engine.register_consumer(consumer)
+    engine.step()
+    frame = engine.latest_published_frame()
+    registry = _point_shadowed_floor_registry()
+    spec = OpticalRaySensorSpec(
+        frame_id=frame.frame_id,
+        sim_time=frame.sim_time,
+        env_idx=0,
+        sensor_id="gpu_camera",
+        origins_world=[[0.0, 0.0, 2.0]],
+        directions_world=[[0.0, 0.0, -1.0]],
+        max_distance=10.0,
+        sensor_role="rgb",
+    )
+    host_snapshot = OpticalSceneCache(registry).snapshot_from_frame_inputs(
+        OpticalFrameInputs.from_published_frame(_cpu_frame_like(frame)),
+        acceleration="cpu_bvh",
+    )
+    cpu = CpuDirectLightOpticalExecutor(
+        shadows=True,
+        ambient_rgb=(0.05, 0.05, 0.05),
+        background_rgb=(0.0, 0.0, 0.0),
+    ).execute(host_snapshot, spec)
+
+    stream = wp.Stream(device=engine._device)
+    borrowed = engine.borrow_device_frame(consumer.consumer_id, frame.frame_id, stream=stream)
+    cache = DeviceOpticalSceneCache(registry, device=engine._device, stream=stream)
+    snapshot = cache.snapshot_from_gpu_frame(borrowed, env_idx=0, stream=stream, include_aabb=True)
+    bvh = build_device_bvh_from_snapshot(snapshot, device=engine._device, stream=stream)
+    gpu = GpuDeviceBvhDirectLightOpticalExecutor(
+        device=engine._device,
+        stream=stream,
+        shadows=True,
+        ambient_rgb=(0.05, 0.05, 0.05),
+        background_rgb=(0.0, 0.0, 0.0),
+    ).execute(snapshot, bvh, spec)
+    done_event = engine.complete_device_consumer(consumer.consumer_id, frame.frame_id, stream=stream)
+
+    wp.synchronize_event(done_event)
+    gpu_host = stage_optical_compute_result_to_host(gpu)
+    np.testing.assert_array_equal(gpu_host.channel("hit_mask"), cpu.channel("hit_mask"))
+    np.testing.assert_allclose(gpu_host.channel("rgb"), cpu.channel("rgb"), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(
+        gpu_host.channel("intensity"),
+        cpu.channel("intensity"),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(gpu_host.channel("rgb")[0], [0.03, 0.02, 0.01], atol=1e-5)
+    np.testing.assert_array_equal(gpu_host.channel("shadow_stack_overflow_count"), [0])
+    assert 1 <= int(gpu_host.channel("shadow_max_stack_depth")[0]) <= 32
+
+
+def test_device_bvh_plane_shadow_matches_cpu():
+    engine = _make_engine()
+    consumer = _consumer()
+    engine.register_consumer(consumer)
+    engine.step()
+    frame = engine.latest_published_frame()
+    registry = _plane_shadowed_floor_registry()
+    spec = OpticalRaySensorSpec(
+        frame_id=frame.frame_id,
+        sim_time=frame.sim_time,
+        env_idx=0,
+        sensor_id="gpu_camera",
+        origins_world=[[0.0, 0.0, 2.0]],
+        directions_world=[[0.0, 0.0, -1.0]],
+        max_distance=10.0,
+        sensor_role="rgb",
+    )
+    host_snapshot = OpticalSceneCache(registry).snapshot_from_frame_inputs(
+        OpticalFrameInputs.from_published_frame(_cpu_frame_like(frame)),
+        acceleration="cpu_bvh",
+    )
+    cpu = CpuDirectLightOpticalExecutor(
+        shadows=True,
+        ambient_rgb=(0.05, 0.05, 0.05),
+        background_rgb=(0.0, 0.0, 0.0),
+    ).execute(host_snapshot, spec)
+
+    stream = wp.Stream(device=engine._device)
+    borrowed = engine.borrow_device_frame(consumer.consumer_id, frame.frame_id, stream=stream)
+    cache = DeviceOpticalSceneCache(registry, device=engine._device, stream=stream)
+    snapshot = cache.snapshot_from_gpu_frame(borrowed, env_idx=0, stream=stream, include_aabb=True)
+    bvh = build_device_bvh_from_snapshot(snapshot, device=engine._device, stream=stream)
+    gpu = GpuDeviceBvhDirectLightOpticalExecutor(
+        device=engine._device,
+        stream=stream,
+        shadows=True,
+        ambient_rgb=(0.05, 0.05, 0.05),
+        background_rgb=(0.0, 0.0, 0.0),
+    ).execute(snapshot, bvh, spec)
+    done_event = engine.complete_device_consumer(consumer.consumer_id, frame.frame_id, stream=stream)
+
+    wp.synchronize_event(done_event)
+    gpu_host = stage_optical_compute_result_to_host(gpu)
+    np.testing.assert_array_equal(gpu_host.channel("hit_mask"), cpu.channel("hit_mask"))
+    np.testing.assert_allclose(gpu_host.channel("rgb"), cpu.channel("rgb"), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(
+        gpu_host.channel("intensity"),
+        cpu.channel("intensity"),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(gpu_host.channel("rgb")[0], [0.03, 0.02, 0.01], atol=1e-5)
+    np.testing.assert_array_equal(gpu_host.channel("shadow_stack_overflow_count"), [0])
+    np.testing.assert_array_equal(gpu_host.channel("shadow_max_stack_depth"), [0])
 
 
 def test_device_scene_executor_unknown_role_returns_all_misses():

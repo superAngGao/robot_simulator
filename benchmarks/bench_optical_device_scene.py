@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import statistics
 import sys
 import time
 from dataclasses import dataclass
@@ -125,6 +124,11 @@ def main() -> None:
     parser.add_argument("--warmup", type=int, default=None)
     parser.add_argument("--repeat", type=int, default=None)
     parser.add_argument(
+        "--verbose-warp",
+        action="store_true",
+        help="Allow Warp initialization/module-load logs on stdout. By default CSV output is kept clean.",
+    )
+    parser.add_argument(
         "--case",
         choices=(
             "all",
@@ -175,13 +179,30 @@ def main() -> None:
         action="store_true",
         help="Enable shadow rays for --direct-light.",
     )
+    parser.add_argument(
+        "--compare-direct-light",
+        action="store_true",
+        help=(
+            "In one process, measure first-hit BVH, direct-light without shadows, "
+            "and direct-light with shadows on the same snapshots/BVHs."
+        ),
+    )
+    parser.add_argument(
+        "--fail-on-overflow",
+        action="store_true",
+        help="Exit non-zero if any reported primary or shadow BVH stack overflow counter is non-zero.",
+    )
     args = parser.parse_args()
+    if args.compare_direct_light:
+        args.use_bvh = True
     if args.direct_light:
         args.use_bvh = True
     if args.refit_bvh:
         args.use_bvh = True
     if args.shadows and not args.direct_light:
         raise SystemExit("--shadows requires --direct-light")
+    if args.compare_direct_light and (args.direct_light or args.shadows):
+        raise SystemExit("--compare-direct-light cannot be combined with --direct-light or --shadows")
     if args.use_aabb and args.use_bvh:
         raise SystemExit("--use-aabb and --use-bvh are mutually exclusive traversal modes")
     if wp is None:
@@ -189,6 +210,8 @@ def main() -> None:
             "bench_optical_device_scene.py requires warp with CUDA support"
         ) from _WARP_IMPORT_ERROR
 
+    if not args.verbose_warp:
+        wp.config.quiet = True
     wp.init()
     device = wp.get_device(args.device)
 
@@ -201,42 +224,57 @@ def main() -> None:
     warmup = int(args.warmup) if args.warmup is not None else _default_warmup(cases)
     repeat = int(args.repeat) if args.repeat is not None else _default_repeat(cases)
     print(
-        "case,mode,num_rays,num_triangles,"
-        "update_ms_mean,update_ms_p50,cpu_build_ms_mean,cpu_build_ms_p50,"
-        "gpu_refit_ms_mean,gpu_refit_ms_p50,"
-        "gpu_traverse_ms_mean,gpu_traverse_ms_p50,stage_ms_mean,"
-        "bvh_nodes,bvh_max_depth,bvh_sah_quality_cost"
+        "case,mode,num_rays,num_triangles,warmup,repeat,"
+        "update_ms_mean,update_ms_p50,update_ms_p90,update_ms_std,"
+        "cpu_build_ms_mean,cpu_build_ms_p50,cpu_build_ms_p90,cpu_build_ms_std,"
+        "gpu_refit_ms_mean,gpu_refit_ms_p50,gpu_refit_ms_p90,gpu_refit_ms_std,"
+        "gpu_traverse_ms_mean,gpu_traverse_ms_p50,gpu_traverse_ms_p90,gpu_traverse_ms_std,"
+        "stage_ms_mean,stage_ms_p50,stage_ms_p90,stage_ms_std,"
+        "bvh_nodes,bvh_max_depth,bvh_sah_quality_cost,"
+        "bvh_stack_overflow,bvh_max_stack_observed,"
+        "shadow_stack_overflow,shadow_max_stack_observed"
     )
+    saw_overflow = False
     for case in cases:
-        stats = run_case(
-            case,
-            device=device,
-            warmup=warmup,
-            repeat=repeat,
-            stage=bool(args.stage or case.stage),
-            use_aabb=bool(args.use_aabb),
-            use_bvh=bool(args.use_bvh),
-            refit_bvh=bool(args.refit_bvh),
-            direct_light=bool(args.direct_light),
-            shadows=bool(args.shadows),
-        )
-        mode = _mode_name(
-            use_aabb=bool(args.use_aabb),
-            use_bvh=bool(args.use_bvh),
-            refit_bvh=bool(args.refit_bvh),
-            direct_light=bool(args.direct_light),
-            shadows=bool(args.shadows),
-        )
-        print(
-            f"{case.name},{mode},{int(stats['num_rays'])},{int(stats['num_triangles'])},"
-            f"{stats['update_mean_ms']:.4f},{stats['update_p50_ms']:.4f},"
-            f"{stats['cpu_build_mean_ms']:.4f},{stats['cpu_build_p50_ms']:.4f},"
-            f"{stats['gpu_refit_mean_ms']:.4f},{stats['gpu_refit_p50_ms']:.4f},"
-            f"{stats['gpu_traverse_mean_ms']:.4f},{stats['gpu_traverse_p50_ms']:.4f},"
-            f"{stats['stage_mean_ms']:.4f},"
-            f"{int(stats['bvh_nodes'])},{int(stats['bvh_max_depth'])},"
-            f"{stats['bvh_sah_quality_cost']:.4f}"
-        )
+        if args.compare_direct_light:
+            rows = run_direct_light_compare_case(
+                case,
+                device=device,
+                warmup=warmup,
+                repeat=repeat,
+                stage=bool(args.stage or case.stage),
+                refit_bvh=bool(args.refit_bvh),
+            )
+        else:
+            stats = run_case(
+                case,
+                device=device,
+                warmup=warmup,
+                repeat=repeat,
+                stage=bool(args.stage or case.stage),
+                use_aabb=bool(args.use_aabb),
+                use_bvh=bool(args.use_bvh),
+                refit_bvh=bool(args.refit_bvh),
+                direct_light=bool(args.direct_light),
+                shadows=bool(args.shadows),
+            )
+            rows = (
+                (
+                    _mode_name(
+                        use_aabb=bool(args.use_aabb),
+                        use_bvh=bool(args.use_bvh),
+                        refit_bvh=bool(args.refit_bvh),
+                        direct_light=bool(args.direct_light),
+                        shadows=bool(args.shadows),
+                    ),
+                    stats,
+                ),
+            )
+        for mode, stats in rows:
+            _print_stats(case, mode, stats)
+            saw_overflow = saw_overflow or _has_overflow(stats)
+    if args.fail_on_overflow and saw_overflow:
+        raise SystemExit("benchmark detected BVH stack overflow")
 
 
 def run_case(
@@ -289,6 +327,10 @@ def run_case(
     last_bvh_nodes = 0
     last_bvh_max_depth = 0
     last_bvh_sah_quality_cost = 0.0
+    last_bvh_stack_overflow = 0
+    last_bvh_max_stack_observed = 0
+    last_shadow_stack_overflow = 0
+    last_shadow_max_stack_observed = 0
 
     for _ in range(repeat):
         t0 = time.perf_counter()
@@ -317,6 +359,11 @@ def run_case(
             result = scene_executor.execute(snapshot, spec)
         wp.synchronize_event(result.ready_event)
         t2 = time.perf_counter()
+        diagnostics = _read_result_diagnostics(result)
+        last_bvh_stack_overflow = diagnostics["bvh_stack_overflow"]
+        last_bvh_max_stack_observed = diagnostics["bvh_max_stack"]
+        last_shadow_stack_overflow = diagnostics["shadow_stack_overflow"]
+        last_shadow_max_stack_observed = diagnostics["shadow_max_stack"]
 
         if stage:
             stage_optical_compute_result_to_host(result)
@@ -329,21 +376,242 @@ def run_case(
         gpu_traverse_ms.append((t2 - t_refit) * 1000.0)
 
     return {
-        "update_mean_ms": statistics.fmean(update_ms),
-        "update_p50_ms": statistics.median(update_ms),
-        "cpu_build_mean_ms": statistics.fmean(cpu_build_ms),
-        "cpu_build_p50_ms": statistics.median(cpu_build_ms),
-        "gpu_refit_mean_ms": statistics.fmean(gpu_refit_ms),
-        "gpu_refit_p50_ms": statistics.median(gpu_refit_ms),
-        "gpu_traverse_mean_ms": statistics.fmean(gpu_traverse_ms),
-        "gpu_traverse_p50_ms": statistics.median(gpu_traverse_ms),
-        "stage_mean_ms": statistics.fmean(stage_ms) if stage_ms else 0.0,
+        "warmup": float(warmup),
+        "repeat": float(repeat),
         "num_rays": float(spec.num_rays),
         "num_triangles": float(setup["num_triangles"]),
         "bvh_nodes": float(last_bvh_nodes),
         "bvh_max_depth": float(last_bvh_max_depth),
         "bvh_sah_quality_cost": float(last_bvh_sah_quality_cost),
+        "bvh_stack_overflow": float(last_bvh_stack_overflow),
+        "bvh_max_stack_observed": float(last_bvh_max_stack_observed),
+        "shadow_stack_overflow": float(last_shadow_stack_overflow),
+        "shadow_max_stack_observed": float(last_shadow_max_stack_observed),
+    } | _timing_stats(
+        update_ms=update_ms,
+        cpu_build_ms=cpu_build_ms,
+        gpu_refit_ms=gpu_refit_ms,
+        gpu_traverse_ms=gpu_traverse_ms,
+        stage_ms=stage_ms,
+    )
+
+
+def run_direct_light_compare_case(
+    case: BenchCase,
+    *,
+    device,
+    warmup: int,
+    repeat: int,
+    stage: bool,
+    refit_bvh: bool,
+) -> tuple[tuple[str, dict[str, float]], ...]:
+    """Measure first-hit/direct/shadow modes in one process on matching BVHs."""
+
+    setup = _build_scene_setup(case, device=device)
+    registry = setup["registry"]
+    cache = DeviceOpticalSceneCache(registry, device=device)
+    frame = setup["frame"]
+    spec = setup["spec"]
+    executors = {
+        _mode_name(
+            use_aabb=False,
+            use_bvh=True,
+            refit_bvh=refit_bvh,
+            direct_light=False,
+            shadows=False,
+        ): GpuDeviceBvhOpticalExecutor(device=device),
+        _mode_name(
+            use_aabb=False,
+            use_bvh=True,
+            refit_bvh=refit_bvh,
+            direct_light=True,
+            shadows=False,
+        ): GpuDeviceBvhDirectLightOpticalExecutor(device=device, shadows=False),
+        _mode_name(
+            use_aabb=False,
+            use_bvh=True,
+            refit_bvh=refit_bvh,
+            direct_light=True,
+            shadows=True,
+        ): GpuDeviceBvhDirectLightOpticalExecutor(device=device, shadows=True),
     }
+    reusable_bvh = None
+    if refit_bvh:
+        topology_snapshot = cache.snapshot_from_gpu_frame(frame, include_aabb=True)
+        wp.synchronize_event(topology_snapshot.ready_event)
+        reusable_bvh = build_device_bvh_from_snapshot(topology_snapshot, device=device)
+
+    for _ in range(warmup):
+        snapshot = cache.snapshot_from_gpu_frame(frame, include_aabb=True)
+        if refit_bvh:
+            bvh = refit_device_bvh_from_snapshot(snapshot, reusable_bvh)
+            reusable_bvh = bvh
+        else:
+            bvh = build_device_bvh_from_snapshot(snapshot, device=device)
+        for executor in executors.values():
+            result = executor.execute(snapshot, bvh, spec)
+            wp.synchronize_event(result.ready_event)
+
+    update_ms: list[float] = []
+    cpu_build_ms: list[float] = []
+    gpu_refit_ms: list[float] = []
+    per_mode_ms: dict[str, list[float]] = {mode: [] for mode in executors}
+    per_mode_stage_ms: dict[str, list[float]] = {mode: [] for mode in executors}
+    per_mode_diagnostics: dict[str, dict[str, int]] = {
+        mode: {
+            "bvh_stack_overflow": 0,
+            "bvh_max_stack": 0,
+            "shadow_stack_overflow": 0,
+            "shadow_max_stack": 0,
+        }
+        for mode in executors
+    }
+    last_bvh_nodes = 0
+    last_bvh_max_depth = 0
+    last_bvh_sah_quality_cost = 0.0
+
+    for _ in range(repeat):
+        t0 = time.perf_counter()
+        snapshot = cache.snapshot_from_gpu_frame(frame, include_aabb=True)
+        wp.synchronize_event(snapshot.ready_event)
+        t1 = time.perf_counter()
+
+        if refit_bvh:
+            bvh = refit_device_bvh_from_snapshot(snapshot, reusable_bvh)
+            reusable_bvh = bvh
+            wp.synchronize_event(bvh.ready_event)
+            t_refit = time.perf_counter()
+            t_build = t1
+        else:
+            bvh = build_device_bvh_from_snapshot(snapshot, device=device)
+            t_build = time.perf_counter()
+            t_refit = t_build
+
+        last_bvh_nodes = bvh.stats.num_nodes
+        last_bvh_max_depth = bvh.stats.max_depth
+        last_bvh_sah_quality_cost = bvh.stats.sah_quality_cost
+        update_ms.append((t1 - t0) * 1000.0)
+        cpu_build_ms.append((t_build - t1) * 1000.0)
+        gpu_refit_ms.append((t_refit - t_build) * 1000.0)
+
+        for mode, executor in executors.items():
+            t_start = time.perf_counter()
+            result = executor.execute(snapshot, bvh, spec)
+            wp.synchronize_event(result.ready_event)
+            t_done = time.perf_counter()
+            per_mode_ms[mode].append((t_done - t_start) * 1000.0)
+            per_mode_diagnostics[mode] = _read_result_diagnostics(result)
+            if stage:
+                stage_optical_compute_result_to_host(result)
+                t_stage = time.perf_counter()
+                per_mode_stage_ms[mode].append((t_stage - t_done) * 1000.0)
+
+    rows: list[tuple[str, dict[str, float]]] = []
+    for mode in executors:
+        diagnostics = per_mode_diagnostics[mode]
+        rows.append(
+            (
+                mode,
+                {
+                    "warmup": float(warmup),
+                    "repeat": float(repeat),
+                    "num_rays": float(spec.num_rays),
+                    "num_triangles": float(setup["num_triangles"]),
+                    "bvh_nodes": float(last_bvh_nodes),
+                    "bvh_max_depth": float(last_bvh_max_depth),
+                    "bvh_sah_quality_cost": float(last_bvh_sah_quality_cost),
+                    "bvh_stack_overflow": float(diagnostics["bvh_stack_overflow"]),
+                    "bvh_max_stack_observed": float(diagnostics["bvh_max_stack"]),
+                    "shadow_stack_overflow": float(diagnostics["shadow_stack_overflow"]),
+                    "shadow_max_stack_observed": float(diagnostics["shadow_max_stack"]),
+                }
+                | _timing_stats(
+                    update_ms=update_ms,
+                    cpu_build_ms=cpu_build_ms,
+                    gpu_refit_ms=gpu_refit_ms,
+                    gpu_traverse_ms=per_mode_ms[mode],
+                    stage_ms=per_mode_stage_ms[mode],
+                ),
+            )
+        )
+    return tuple(rows)
+
+
+def _print_stats(case: BenchCase, mode: str, stats: dict[str, float]) -> None:
+    print(
+        f"{case.name},{mode},{int(stats['num_rays'])},{int(stats['num_triangles'])},"
+        f"{int(stats['warmup'])},{int(stats['repeat'])},"
+        f"{stats['update_mean_ms']:.4f},{stats['update_p50_ms']:.4f},"
+        f"{stats['update_p90_ms']:.4f},{stats['update_std_ms']:.4f},"
+        f"{stats['cpu_build_mean_ms']:.4f},{stats['cpu_build_p50_ms']:.4f},"
+        f"{stats['cpu_build_p90_ms']:.4f},{stats['cpu_build_std_ms']:.4f},"
+        f"{stats['gpu_refit_mean_ms']:.4f},{stats['gpu_refit_p50_ms']:.4f},"
+        f"{stats['gpu_refit_p90_ms']:.4f},{stats['gpu_refit_std_ms']:.4f},"
+        f"{stats['gpu_traverse_mean_ms']:.4f},{stats['gpu_traverse_p50_ms']:.4f},"
+        f"{stats['gpu_traverse_p90_ms']:.4f},{stats['gpu_traverse_std_ms']:.4f},"
+        f"{stats['stage_mean_ms']:.4f},{stats['stage_p50_ms']:.4f},"
+        f"{stats['stage_p90_ms']:.4f},{stats['stage_std_ms']:.4f},"
+        f"{int(stats['bvh_nodes'])},{int(stats['bvh_max_depth'])},"
+        f"{stats['bvh_sah_quality_cost']:.4f},"
+        f"{int(stats['bvh_stack_overflow'])},{int(stats['bvh_max_stack_observed'])},"
+        f"{int(stats['shadow_stack_overflow'])},{int(stats['shadow_max_stack_observed'])}"
+    )
+
+
+def _timing_stats(
+    *,
+    update_ms: list[float],
+    cpu_build_ms: list[float],
+    gpu_refit_ms: list[float],
+    gpu_traverse_ms: list[float],
+    stage_ms: list[float],
+) -> dict[str, float]:
+    return (
+        _series_stats("update", update_ms)
+        | _series_stats("cpu_build", cpu_build_ms)
+        | _series_stats("gpu_refit", gpu_refit_ms)
+        | _series_stats("gpu_traverse", gpu_traverse_ms)
+        | _series_stats("stage", stage_ms)
+    )
+
+
+def _series_stats(prefix: str, values: list[float]) -> dict[str, float]:
+    if not values:
+        return {
+            f"{prefix}_mean_ms": 0.0,
+            f"{prefix}_p50_ms": 0.0,
+            f"{prefix}_p90_ms": 0.0,
+            f"{prefix}_std_ms": 0.0,
+        }
+    array = np.asarray(values, dtype=np.float64)
+    return {
+        f"{prefix}_mean_ms": float(np.mean(array)),
+        f"{prefix}_p50_ms": float(np.percentile(array, 50.0)),
+        f"{prefix}_p90_ms": float(np.percentile(array, 90.0)),
+        f"{prefix}_std_ms": float(np.std(array)),
+    }
+
+
+def _has_overflow(stats: dict[str, float]) -> bool:
+    return bool(stats["bvh_stack_overflow"] > 0.0 or stats["shadow_stack_overflow"] > 0.0)
+
+
+def _read_result_diagnostics(result) -> dict[str, int]:
+    return {
+        "bvh_stack_overflow": _read_scalar_channel(result, "bvh_stack_overflow_count"),
+        "bvh_max_stack": _read_scalar_channel(result, "bvh_max_stack_depth"),
+        "shadow_stack_overflow": _read_scalar_channel(result, "shadow_stack_overflow_count"),
+        "shadow_max_stack": _read_scalar_channel(result, "shadow_max_stack_depth"),
+    }
+
+
+def _read_scalar_channel(result, name: str) -> int:
+    channel = result.channels.get(name)
+    if channel is None:
+        return 0
+    if hasattr(channel, "numpy"):
+        return int(channel.numpy()[0])
+    return int(np.asarray(channel).reshape(-1)[0])
 
 
 def _mode_name(

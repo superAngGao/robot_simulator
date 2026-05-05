@@ -185,7 +185,10 @@ class GpuDeviceSceneOpticalExecutor:
     L5C.1a keeps the same ray-major brute-force traversal as L5A, but consumes
     `DeviceOpticalSceneSnapshot` buffers directly. Geometry and primitive
     metadata stay on device; per-call host work is limited to uploading ray
-    origins/directions.
+    origins/directions. This executor is first-hit only. Shaded RGB output is
+    intentionally available through `GpuDeviceBvhDirectLightOpticalExecutor`,
+    because direct-light shadows require BVH any-hit traversal for production
+    robot mesh scenes.
     """
 
     capabilities = GpuBruteForceOpticalExecutor.capabilities
@@ -538,7 +541,13 @@ class GpuDeviceBvhOpticalExecutor:
 
 
 class GpuDeviceBvhDirectLightOpticalExecutor:
-    """Direct-light executor over a device scene plus flat triangle BVH."""
+    """Direct-light executor over a device scene plus flat triangle BVH.
+
+    `rgb` and `intensity` are deterministic direct-light shading outputs, not
+    path-traced radiance/sample accumulation channels. Shadow rays use an
+    explicit `shadow_bias` and report aggregate shadow traversal diagnostics in
+    the result channels.
+    """
 
     capabilities = GpuDeviceBvhOpticalExecutor.capabilities | frozenset({"rgb", "intensity"})
 
@@ -587,6 +596,16 @@ class GpuDeviceBvhDirectLightOpticalExecutor:
                 dtype=wp.float32,
                 device=self.device,
             )
+            shadow_stack_overflow_count = wp.array(
+                np.zeros(1, dtype=np.int32),
+                dtype=wp.int32,
+                device=self.device,
+            )
+            shadow_max_stack_depth = wp.array(
+                np.zeros(1, dtype=np.int32),
+                dtype=wp.int32,
+                device=self.device,
+            )
             wp.launch(
                 _device_scene_direct_light_kernel,
                 dim=num_rays,
@@ -629,6 +648,8 @@ class GpuDeviceBvhDirectLightOpticalExecutor:
                     float(self.background_rgb[2]),
                     rgb,
                     intensity,
+                    shadow_stack_overflow_count,
+                    shadow_max_stack_depth,
                 ],
                 device=self.device,
                 stream=self.stream,
@@ -638,6 +659,8 @@ class GpuDeviceBvhDirectLightOpticalExecutor:
         channels = dict(geometry.channels)
         channels["rgb"] = rgb
         channels["intensity"] = intensity
+        channels["shadow_stack_overflow_count"] = shadow_stack_overflow_count
+        channels["shadow_max_stack_depth"] = shadow_max_stack_depth
         return OpticalComputeResult(
             frame_id=geometry.frame_id,
             sim_time=geometry.sim_time,
@@ -655,6 +678,8 @@ class GpuDeviceBvhDirectLightOpticalExecutor:
                 scene.light_color_rgb,
                 rgb,
                 intensity,
+                shadow_stack_overflow_count,
+                shadow_max_stack_depth,
             ),
         )
 
@@ -1521,6 +1546,8 @@ if _HAS_WARP:
         bvh_prim_ids: wp.array(dtype=wp.int32),
         num_bvh_nodes: int,
         sensor_role_mask: wp.int64,
+        shadow_stack_overflow_count: wp.array(dtype=wp.int32),
+        shadow_max_stack_depth: wp.array(dtype=wp.int32),
     ):
         occluded = bool(False)
         if max_distance <= 0.0:
@@ -1529,6 +1556,7 @@ if _HAS_WARP:
         stack = wp.zeros(shape=_MAX_BVH_STACK, dtype=wp.int32)
         stack_t = wp.zeros(shape=_MAX_BVH_STACK, dtype=wp.float32)
         stack_size = wp.int32(0)
+        local_max_stack = wp.int32(0)
         if num_bvh_nodes > 0:
             root_hit, root_t, _root_exit_t = _intersect_aabb_for_ray_with_interval(
                 ox,
@@ -1549,6 +1577,7 @@ if _HAS_WARP:
                 stack[0] = wp.int32(0)
                 stack_t[0] = root_t
                 stack_size = wp.int32(1)
+                local_max_stack = wp.int32(1)
 
         while stack_size > 0 and not occluded:
             stack_size = stack_size - wp.int32(1)
@@ -1596,10 +1625,13 @@ if _HAS_WARP:
                             bvh_bounds_max[right, 2],
                             max_distance,
                         )
-                        if right_hit and stack_size < _MAX_BVH_STACK:
-                            stack[stack_size] = right
-                            stack_t[stack_size] = right_t
-                            stack_size = stack_size + wp.int32(1)
+                        if right_hit:
+                            if stack_size < _MAX_BVH_STACK:
+                                stack[stack_size] = right
+                                stack_t[stack_size] = right_t
+                                stack_size = stack_size + wp.int32(1)
+                            else:
+                                wp.atomic_add(shadow_stack_overflow_count, 0, wp.int32(1))
                     if left >= 0:
                         left_hit, left_t, _left_exit_t = _intersect_aabb_for_ray_with_interval(
                             ox,
@@ -1616,10 +1648,17 @@ if _HAS_WARP:
                             bvh_bounds_max[left, 2],
                             max_distance,
                         )
-                        if left_hit and stack_size < _MAX_BVH_STACK:
-                            stack[stack_size] = left
-                            stack_t[stack_size] = left_t
-                            stack_size = stack_size + wp.int32(1)
+                        if left_hit:
+                            if stack_size < _MAX_BVH_STACK:
+                                stack[stack_size] = left
+                                stack_t[stack_size] = left_t
+                                stack_size = stack_size + wp.int32(1)
+                            else:
+                                wp.atomic_add(shadow_stack_overflow_count, 0, wp.int32(1))
+                    if stack_size > local_max_stack:
+                        local_max_stack = stack_size
+
+        wp.atomic_max(shadow_max_stack_depth, 0, local_max_stack)
 
         for plane_idx in range(num_planes):
             if not occluded and (plane_role_masks[plane_idx] & sensor_role_mask) != wp.int64(0):
@@ -1678,6 +1717,8 @@ if _HAS_WARP:
         background_b: float,
         rgb: wp.array2d(dtype=wp.float32),
         intensity: wp.array(dtype=wp.float32),
+        shadow_stack_overflow_count: wp.array(dtype=wp.int32),
+        shadow_max_stack_depth: wp.array(dtype=wp.int32),
     ):
         ray = wp.tid()
         out_r = wp.float32(background_r)
@@ -1774,6 +1815,8 @@ if _HAS_WARP:
                                 bvh_prim_ids,
                                 num_bvh_nodes,
                                 sensor_role_mask,
+                                shadow_stack_overflow_count,
+                                shadow_max_stack_depth,
                             )
                     if visible_to_light:
                         scale = light_intensity[light_idx] * attenuation * n_dot_l
@@ -1803,5 +1846,5 @@ else:
     def _device_scene_bvh_first_hit_kernel(*args, **kwargs):  # pragma: no cover
         raise ImportError("GpuDeviceBvhOpticalExecutor requires the optional warp package")
 
-    def _device_scene_no_shadow_direct_light_kernel(*args, **kwargs):  # pragma: no cover
+    def _device_scene_direct_light_kernel(*args, **kwargs):  # pragma: no cover
         raise ImportError("GpuDeviceBvhDirectLightOpticalExecutor requires the optional warp package")
