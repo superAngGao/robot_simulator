@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 
@@ -29,6 +30,12 @@ class DeviceBvhBuildStats:
     max_depth: int
     leaf_size: int
     sah_quality_cost: float
+    device_to_host_ms: float = 0.0
+    host_build_ms: float = 0.0
+    upload_ms: float = 0.0
+    total_ms: float = 0.0
+    split_strategy: str = "sort"
+    supports_refit: bool = True
     level_ranges: tuple[tuple[int, int], ...] = ()
 
 
@@ -75,13 +82,17 @@ def build_device_bvh_from_snapshot(
     snapshot: DeviceOpticalSceneSnapshot,
     *,
     leaf_size: int = 4,
+    split_strategy: str = "sort",
     device=None,
     stream=None,
 ) -> DeviceOpticalBvh:
     """Build a median-split triangle BVH and upload flat buffers to device."""
+    total_start = time.perf_counter()
     _require_warp()
     if leaf_size <= 0:
         raise ValueError("leaf_size must be > 0")
+    if split_strategy not in {"sort", "partition"}:
+        raise ValueError("split_strategy must be 'sort' or 'partition'")
     if snapshot.triangle_aabb_min is None or snapshot.triangle_aabb_max is None:
         raise ValueError("build_device_bvh_from_snapshot requires AABB snapshot buffers")
     wp.init()
@@ -89,6 +100,7 @@ def build_device_bvh_from_snapshot(
     if resolved_device != snapshot.scene.device:
         raise ValueError("DeviceOpticalBvh device must match DeviceOpticalSceneSnapshot device")
 
+    device_to_host_start = time.perf_counter()
     _synchronize_event(snapshot.ready_event)
     scene = snapshot.scene
     aabb_min = np.asarray(snapshot.triangle_aabb_min.numpy(), dtype=np.float32)
@@ -105,14 +117,19 @@ def build_device_bvh_from_snapshot(
         scene.triangle_geometry_primitive_index.numpy(),
         dtype=np.int32,
     )
+    device_to_host_ms = (time.perf_counter() - device_to_host_start) * 1000.0
 
+    host_build_start = time.perf_counter()
     host_bvh = _build_host_bvh(
         aabb_min,
         aabb_max,
         source_keys,
         leaf_size=int(leaf_size),
+        split_strategy=split_strategy,
     )
+    host_build_ms = (time.perf_counter() - host_build_start) * 1000.0
 
+    upload_start = time.perf_counter()
     with _scoped_stream(stream):
         bounds_min = _wp_array(host_bvh["bounds_min"], dtype=wp.float32, device=resolved_device)
         bounds_max = _wp_array(host_bvh["bounds_max"], dtype=wp.float32, device=resolved_device)
@@ -142,6 +159,15 @@ def build_device_bvh_from_snapshot(
         )
         primitive_source_order_key_wp = _wp_array(source_keys, dtype=wp.int64, device=resolved_device)
         ready_event = (stream or wp.get_stream(resolved_device)).record_event()
+    upload_ms = (time.perf_counter() - upload_start) * 1000.0
+    stats = replace(
+        host_bvh["stats"],
+        device_to_host_ms=device_to_host_ms,
+        host_build_ms=host_build_ms,
+        upload_ms=upload_ms,
+        total_ms=(time.perf_counter() - total_start) * 1000.0,
+        split_strategy=split_strategy,
+    )
 
     resources = (
         bounds_min,
@@ -179,7 +205,7 @@ def build_device_bvh_from_snapshot(
         primitive_geometry_index=primitive_geometry_index_wp,
         primitive_geometry_primitive_index=primitive_geometry_primitive_index_wp,
         primitive_source_order_key=primitive_source_order_key_wp,
-        stats=host_bvh["stats"],
+        stats=stats,
         ready_event=ready_event,
         resources=resources,
     )
@@ -199,6 +225,8 @@ def refit_device_bvh_from_snapshot(
         raise ValueError("DeviceOpticalBvh device must match DeviceOpticalSceneSnapshot device")
     if snapshot.scene.num_triangles != bvh.num_primitives:
         raise ValueError("DeviceOpticalBvh primitive count must match DeviceOpticalSceneSnapshot")
+    if not bvh.stats.supports_refit:
+        raise ValueError("DeviceOpticalBvh topology does not support GPU refit")
 
     with _scoped_stream(stream):
         _wait_on_event(snapshot.ready_event, stream=stream, device=bvh.device)
@@ -262,7 +290,10 @@ def _build_host_bvh(
     source_keys: np.ndarray,
     *,
     leaf_size: int,
+    split_strategy: str = "sort",
 ) -> dict[str, object]:
+    if split_strategy not in {"sort", "partition"}:
+        raise ValueError("split_strategy must be 'sort' or 'partition'")
     num_primitives = int(aabb_min.shape[0])
     if num_primitives != int(aabb_max.shape[0]) or num_primitives != int(source_keys.shape[0]):
         raise ValueError("BVH AABB and source-key buffers must have matching lengths")
@@ -315,7 +346,10 @@ def _build_host_bvh(
             return node_index
 
         axis = int(np.argmax(extent))
-        order = np.lexsort((source_keys[prim_ids], centroids[prim_ids, axis]))
+        if split_strategy == "sort":
+            order = np.lexsort((source_keys[prim_ids], centroids[prim_ids, axis]))
+        else:
+            order = np.argpartition(centroids[prim_ids, axis], len(prim_ids) // 2)
         ordered = prim_ids[order]
         mid = len(ordered) // 2
         if mid <= 0 or mid >= len(ordered):
@@ -385,6 +419,7 @@ def _build_host_bvh(
         max_depth=max_depth,
         leaf_size=leaf_size,
         sah_quality_cost=float(sah_quality_cost),
+        split_strategy=split_strategy,
         level_ranges=tuple((int(start), int(end)) for start, end in level_ranges),
     )
     return {

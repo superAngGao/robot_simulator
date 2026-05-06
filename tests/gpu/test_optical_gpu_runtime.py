@@ -16,6 +16,7 @@ from optics import (
     OpticalMaterialSpec,
     OpticalSceneCache,
     OpticalWorldRegistry,
+    build_cuda_lbvh_from_snapshot,
     build_device_bvh_from_snapshot,
     execute_optical_on_gpu_published_frame,
     refit_device_bvh_from_snapshot,
@@ -988,8 +989,90 @@ def test_device_bvh_executor_matches_device_scene_for_world_static_triangle_mesh
         bvh_host.channel("numeric_instance_id"),
         scene_host.channel("numeric_instance_id"),
     )
-    np.testing.assert_array_equal(bvh_host.channel("bvh_stack_overflow_count"), [0])
-    assert 1 <= int(bvh_host.channel("bvh_max_stack_depth")[0]) <= 32
+
+
+@pytest.mark.cuda_ext
+def test_cuda_lbvh_executor_matches_cpu_bvh_for_world_static_triangle_mesh():
+    pytest.importorskip("torch")
+    engine = _make_engine()
+    cpu_bvh_consumer = _consumer("cpu_bvh")
+    cuda_bvh_consumer = _consumer("cuda_bvh")
+    engine.register_consumer(cpu_bvh_consumer)
+    engine.register_consumer(cuda_bvh_consumer)
+    engine.step()
+    frame = engine.latest_published_frame()
+    registry = _world_static_triangle_grid_registry()
+    spec = OpticalRaySensorSpec(
+        frame_id=frame.frame_id,
+        sim_time=frame.sim_time,
+        env_idx=0,
+        sensor_id="gpu_camera",
+        origins_world=[
+            [-0.75, -0.75, 2.0],
+            [-0.35, 0.05, 2.0],
+            [0.45, 0.45, 2.0],
+            [2.0, 2.0, 2.0],
+        ],
+        directions_world=[
+            [0.0, 0.0, -1.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 0.0, -1.0],
+        ],
+        max_distance=10.0,
+    )
+
+    cpu_bvh, _, _, _, cpu_done = _execute_device_bvh_scene(
+        engine,
+        consumer_id=cpu_bvh_consumer.consumer_id,
+        registry=registry,
+        spec=spec,
+        frame=frame,
+    )
+
+    stream = wp.Stream(device=engine._device)
+    borrowed = engine.borrow_device_frame(cuda_bvh_consumer.consumer_id, frame.frame_id, stream=stream)
+    cache = DeviceOpticalSceneCache(registry, device=engine._device, stream=stream)
+    snapshot = cache.snapshot_from_gpu_frame(
+        borrowed,
+        env_idx=spec.env_idx,
+        stream=stream,
+        include_aabb=True,
+    )
+    cuda_bvh = build_cuda_lbvh_from_snapshot(snapshot, device=engine._device, stream=stream)
+    assert cuda_bvh.stats.split_strategy == "cuda_lbvh"
+    assert not cuda_bvh.stats.supports_refit
+    assert cuda_bvh.resources
+    cuda_result = GpuDeviceBvhOpticalExecutor(
+        device=engine._device,
+        stream=stream,
+    ).execute(snapshot, cuda_bvh, spec)
+    cuda_done = engine.complete_device_consumer(cuda_bvh_consumer.consumer_id, frame.frame_id, stream=stream)
+
+    wp.synchronize_event(cpu_done)
+    wp.synchronize_event(cuda_done)
+    cpu_host = stage_optical_compute_result_to_host(cpu_bvh)
+    cuda_host = stage_optical_compute_result_to_host(cuda_result)
+    np.testing.assert_array_equal(cuda_host.channel("hit_mask"), cpu_host.channel("hit_mask"))
+    np.testing.assert_allclose(cuda_host.channel("range_m"), cpu_host.channel("range_m"), atol=1e-6)
+    np.testing.assert_allclose(
+        cuda_host.channel("position_world"),
+        cpu_host.channel("position_world"),
+        atol=1e-6,
+        equal_nan=True,
+    )
+    np.testing.assert_allclose(
+        cuda_host.channel("normal_world"),
+        cpu_host.channel("normal_world"),
+        atol=1e-6,
+        equal_nan=True,
+    )
+    np.testing.assert_array_equal(
+        cuda_host.channel("numeric_instance_id"),
+        cpu_host.channel("numeric_instance_id"),
+    )
+    np.testing.assert_array_equal(cuda_host.channel("bvh_stack_overflow_count"), [0])
+    assert 1 <= int(cuda_host.channel("bvh_max_stack_depth")[0]) <= 32
 
 
 def test_device_bvh_executor_preserves_plane_triangle_tie_break():

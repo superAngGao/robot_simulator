@@ -22,4 +22,5 @@ testpaths = ["tests"]
 markers = [
     "slow: long-running tests (MuJoCo/Bullet reference comparisons, multi-step validation)",
     "gpu: tests requiring CUDA (Warp kernels, GPU engines)",
+    "cuda_ext: tests requiring optional CUDA/C++ extension compilation",
 ]

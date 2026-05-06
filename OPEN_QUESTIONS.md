@@ -2608,8 +2608,145 @@ Follow-up：
   smoke 或趋势检查；p50 必须和 p90/std 一起看；host wall-time 继续作为端到端
   组件时间，未来如加入 CUDA event timing 必须作为显式 backend/额外列，不应
   悄悄改变现有列语义。
+- L5C.3b GPU preview 已落地：新增
+  `examples/mujoco_menagerie_gpu_preview.py`，复用 Menagerie Go2 visual mesh
+  importer，使用 `GpuDeviceBvhDirectLightOpticalExecutor(shadows=True)` 渲染
+  RGB/depth/segmentation/panel。960x640 front/side 均成功，398,432 triangles，
+  primary/shadow overflow 均为 0，hard shadows 可见。当前 elapsed wall time
+  包含 mesh import、device upload、BVH build、render、staging、PNG writing，
+  不作为纯 kernel timing。Path tracing 仍延期到独立 executor family。
+- L5C.3d / L5C.4 preview performance open question：GPU preview 端到端仍偏慢。
+  2026-05-05 重测 Go2 Menagerie 960x640 front view：CPU direct-light preview
+  wall time ≈ 119.23s；GPU direct-light + shadows preview wall time ≈ 23.29s。
+  GPU 已有约 5x 端到端收益，但 23s 对 README/high-res preview 仍不理想。
+  下一轮不要先猜 kernel，而应拆分 timing：MJCF/mesh import、device scene pack、
+  BVH build/refit、first-hit traversal、shade/shadow traversal、host staging、
+  PNG/panel writing。再按数据决定优化顺序。
+- 2026-05-06 初步拆解：`examples/mujoco_menagerie_gpu_preview.py` 已增加
+  structured timing / optional CSV / render-only warmup-repeat。Go2 Menagerie
+  960x640 front view（398,432 triangles, shadows on）实测：
+  `import_scene≈1.41s`、`device_scene_snapshot≈9.46s`、`bvh_build≈11.37s`、
+  warmed `render_execute_wait p50≈27.3ms`、`stage_host≈84ms`、`write_images≈387ms`、
+  total≈23.44s。当前瓶颈不是 ray traversal/shadow kernel，而是每次 preview
+  都重新生成 device snapshot 并 CPU-build/upload BVH。下一步要继续区分
+  `device_scene_snapshot` 中的 Warp first-launch/compile、buffer allocation、实际
+  update kernel；并优先做 scene/BVH 复用或 refit，而不是先改 ray kernel。
+- 同日追加 warm setup repeat：320x220 smoke 中初始
+  `device_scene_snapshot≈9.51s`、`bvh_build≈11.29s`，但同进程 warm 后
+  `snapshot_benchmark p50≈0.30ms`、`refit_benchmark p50≈0.34ms`、
+  `render_execute_wait p50≈4.1ms`。因此 `device_scene_snapshot` 的 9s
+  主要是 Warp first-launch/compile 或 cold allocation，不代表 steady-state
+  per-frame update。真正的 persistent blocker 是 CPU BVH build/upload 的
+  cold cost 以及 preview 脚本每次进程都冷启动。
+- 同日继续拆 CPU BVH build：新增 build detail timing 后，Go2 320x220 smoke
+  显示 `device_to_host≈2.6ms`、`upload≈6.2ms`、`host_build≈11.68s`。
+  因此 11s 不是 PCIe 拷贝，而是当前 Python median-split builder 本身。
+  实验性 `--bvh-split-strategy partition` 将每层 full `lexsort` 替换为
+  `argpartition` median split，但 host build 仅降到 ≈10.94s（约 6% 改善）。
+  结论：慢点不只是排序，而是 Python 递归、每节点 bounds reduce、小数组切片、
+  `_HostNode` 对象构造和 breadth-first 重排的综合成本。下一步若要加速 rebuild，
+  不应继续微调纯 Python；应比较：
+  1. preallocated/iterative host builder + top-level parallel subtree build；
+  2. TinyBVH/Embree/native extension 作为 CPU build baseline；
+  3. GPU LBVH（Morton code + radix/torch sort + parallel node build）；
+  4. OptiX GAS/TLAS build/refit。
+- 2026-05-06 CUDA build backend 决策：不把整个 Warp renderer 一次性改写为
+  CUDA。先新增 optional CUDA LBVH builder，专门处理当前实测瓶颈：
+  Morton code、CUB radix sort、parallel topology build、bounds reduction，并输出
+  与 `DeviceOpticalBvh` 兼容的 SoA node arrays。Warp traversal/direct-light/shadow
+  继续作为 correctness/reference path，CUDA build 只替换 BVH topology/bounds
+  生成阶段。当前仓库没有 `.cu/.cpp` extension 目录，`setup.py` 仍是纯 Python
+  package；第一步应 spike `torch.utils.cpp_extension` + CUB 可行性，再决定是否
+  固化为 optional package extension。Claude review 后补充：spike 阶段明确走
+  `wp.from_torch` 零拷贝 interop，Torch tensor 持有内存、Warp array 只做 view，
+  `DeviceOpticalBvh.resources` 必须保存 owning tensors；CUDA LBVH 必须让
+  `prim_ids` 保留原始 primitive id，source-order tie-break 继续查
+  `primitive_source_order_key[prim_id]`；`node_depth/level_ranges` 若要支持现有
+  GPU refit 必须真实填充，否则要显式标记 refit unsupported；CUDA extension
+  测试用 `cuda_ext` marker / importorskip 隔离。不要在这个阶段做 CUDA
+  traversal、CUDA shading、path tracing 或 OptiX adapter，也不要改变
+  `DeviceOpticalBvh` 的公开 consumer API。
+- CUDA/CUB interop spike 已通过：新增 `examples/cuda_lbvh_extension_spike.py`，
+  使用 `torch.utils.cpp_extension.load_inline` JIT 编译最小 CUDA extension，
+  include CUB 并调用 `cub::DeviceRadixSort::SortPairs`；extension 返回 Torch
+  CUDA tensors，Warp 通过 `wp.from_torch` 读取排序后的 primitive ids 并写回
+  Torch tensor。实测环境为 Torch 2.9.1+cu128、Warp 1.12.0、H200、nvcc
+  `/usr/local/cuda/bin/nvcc`。排序结果保留原始 primitive id：
+  `sorted_codes=[0,3,3,9,9,17,31,42]`，
+  `sorted_primitive_ids=[6,1,3,4,7,0,5,2]`。首次 JIT compile 很慢，cache warm
+  后独立进程仍约 14.6s，因此 CUDA extension build/compile 必须隔离在显式
+  spike/benchmark 或安装步骤中，不能混入默认 preview/test 冷路径。
+- L5C.4 LBVH 算法记录已补入 decision note：第一版走 Karras-style binary radix
+  tree，使用 30-bit Morton code（10 bits/axis）和
+  `extended_key=(morton_code << 32) | primitive_id` 处理 duplicate Morton
+  code；`prim_ids` 始终保存原始 global primitive id，不能变成 sorted local id。
+  外部对齐参考包括 NVIDIA/Karras GPU LBVH、ToruNiina/lbvh duplicate Morton
+  处理、pbrt HLBVH treelets + upper SAH、Warp.Bvh 的 GPU LBVH / CPU SAH
+  取舍。`node_depth/level_ranges` 分三步处理：先 Morton sort，再 topology +
+  traversal parity，最后填真实 level metadata 或 level-order reorder 以兼容
+  现有 GPU refit。
+- CUDA LBVH spike 已推进到第一段真实算法：`examples/cuda_lbvh_extension_spike.py`
+  新增 `morton_sort_aabbs`，在 CUDA 中从 AABB centroid 计算 30-bit Morton code，
+  构造 `extended_key=(morton_code << 32) | primitive_id`，再用 CUB radix sort
+  输出 sorted keys / original primitive ids。已验证 sorted keys 单调、
+  sorted ids 是原始 primitive id 的 permutation、且 `low_32_bits(key)==primitive_id`。
+  这确认了 topology construction 之前的关键不变量：Morton 排序确定且 primitive
+  identity 没丢。
+- CUDA LBVH topology spike 也已通过：同一脚本新增 Karras-style topology kernel，
+  每个 internal node 一个 CUDA thread，通过 common-prefix 确定 range 和 split，
+  输出 internal nodes `[0,n-2]`、leaves `[n-1,2n-2]` 的 full node arrays。
+  Python validator 已检查 root parent、parent/child 回链、leaf start/count、以及
+  root DFS 全节点唯一可达。下一步是 leaf/internal bounds construction，并把这些
+  arrays 包装为真正 `DeviceOpticalBvh` 供现有 Warp traversal parity。
+- CUDA LBVH bounds spike 已通过：leaf bounds 从 `sorted_prim_ids[leaf_rank]`
+  对应的原始 primitive AABB 填充，internal bounds 使用 parent links + atomic child
+  counters 自底向上归并；每个 child 先 atomic min/max 贡献给 parent，第二个到达的
+  child 继续向上。sample root bounds 为 `[0,0,0]` 到
+  `[0.55,0.55,0.55]`，validator 已检查 root bounds 等于全 primitive AABB
+  union，且 leaf bounds 与 sorted primitive id 对应的原始 AABB 一致。下一步是
+  将这些 owning Torch tensors 通过 `wp.from_torch` 包装为 `DeviceOpticalBvh`，
+  并把 owning tensors 放进 `resources` 防止生命周期悬空。
+- 第一版 integrated CUDA LBVH builder 已落地：新增
+  `optics/cuda_lbvh.py::build_cuda_lbvh_from_snapshot`，返回真正
+  `DeviceOpticalBvh`，bounds/left/right/start/count/prim_ids 等由 Torch owning
+  tensors 持有，Warp arrays 通过 `wp.from_torch` 作为 non-owning views，
+  owning tensors 保存在 `DeviceOpticalBvh.resources`。新增
+  `DeviceBvhBuildStats.supports_refit`，CUDA LBVH 当前设置
+  `split_strategy="cuda_lbvh"`、`supports_refit=False`；`refit_device_bvh_from_snapshot`
+  会拒绝 unsupported topology，避免误用未填真实 `node_depth/level_ranges` 的
+  CUDA tree。新增 `cuda_ext` parity test：
+  `test_cuda_lbvh_executor_matches_cpu_bvh_for_world_static_triangle_mesh`，对比
+  CPU median BVH + Warp traversal 与 CUDA LBVH + Warp traversal，已通过。
+  注意：第一版 integrated builder 仍复用 example spike 的 extension source；
+  在进入 preview 默认路径或 benchmark 正式路径前，应把 CUDA source 移到内部
+  extension 模块或 package extension 边界。
+- Go2 Menagerie preview 已可用 `--bvh-backend cuda_lbvh` 走新 tree build path。
+  2026-05-06 实测 398,432 triangles：320x220 shadows-on smoke 中
+  `bvh_build≈512ms`，其中 CUDA build kernel/window 约 `3.1ms`；960x640
+  front view 中 `bvh_build≈473ms`，CUDA build window 约 `3.35ms`，
+  warmed render p50≈22.6ms，总端到端≈12.19s。对比 CPU median build 之前
+  `bvh_build≈11.37s`、total≈23.44s，tree build 已从 11s 级降到约 0.5s
+  端到端，真正算法窗口为 ms 级。当前剩余最大端到端瓶颈变成首次
+  `device_scene_snapshot≈9.5s` 的 Warp first-launch/cold allocation，以及
+  Torch/JIT/module/cache/interop 的 build cold overhead。下一轮性能工作应拆
+  CUDA LBVH builder 内部 timing（extension load vs kernel execution）并处理
+  device scene cold path。
+- 候选优化方向：
+  1. preview script 增加 structured timing / optional CSV，区分 cold start 与
+     warm cache，不把 Warp compile / mesh import 混入 steady-state render 结论。
+  2. 对静态 Go2 mesh 复用 device scene、BVH node arrays、material/light buffers；
+     多 view / 多分辨率 preview 只重发 camera rays 和 output buffers。
+  3. 用 refit 替代 rebuild 的路径在 preview 中显式可选；静态 world mesh 应避免
+     每张图重新构建 BVH。
+  4. 检查 staging 与 PNG 写盘占比；README 图生成可先保存 raw channels 或分离
+     render 与 visualization。
+  5. 若 shade/shadow kernel 成为主要瓶颈，再评估 split shadow kernel、
+     shadow-ray compaction、多 light batching、stack/register pressure、CUDA/OptiX
+     backend。Warp path 先作为 correctness/backend contract，不急于过早改写 CUDA。
 
 详见：
 `collab/q54-gpu-optical-l5c3-progress-and-next-plan__review-request__codex__v1.md`，
 `collab/q54-gpu-optical-l5c3a-shadow-hardening__implementation-note__codex__v1.md`，
-`collab/q54-gpu-optical-l5c3c-benchmark-cleanup__implementation-note__codex__v1.md`。
+`collab/q54-gpu-optical-l5c3c-benchmark-cleanup__implementation-note__codex__v1.md`，
+`collab/q54-gpu-optical-l5c3b-gpu-preview__implementation-note__codex__v1.md`，
+`collab/q54-gpu-optical-l5c4-cuda-lbvh-build__decision-note__codex__v1.md`。

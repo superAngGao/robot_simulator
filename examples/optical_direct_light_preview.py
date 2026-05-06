@@ -145,7 +145,12 @@ def make_preview_camera(
     )
 
 
-def write_preview_images(image, out_dir: Path) -> dict[str, Path]:
+def write_preview_images(
+    image,
+    out_dir: Path,
+    *,
+    rgb_title: str = "CPU direct-light RGB",
+) -> dict[str, Path]:
     rgb = np.asarray(image.channel("rgb"), dtype=np.float64)
     depth = np.asarray(image.channel("depth_m"), dtype=np.float64)
     segmentation = np.asarray(image.channel("numeric_instance_id"), dtype=np.int64)
@@ -163,7 +168,7 @@ def write_preview_images(image, out_dir: Path) -> dict[str, Path]:
     Image.fromarray(rgb_preview).save(paths["rgb"])
     Image.fromarray(depth_preview).save(paths["depth"])
     Image.fromarray(segmentation_preview).save(paths["segmentation"])
-    write_panel(rgb_preview, depth_preview, segmentation_preview, paths["panel"])
+    write_panel(rgb_preview, depth_preview, segmentation_preview, paths["panel"], rgb_title=rgb_title)
     return paths
 
 
@@ -197,10 +202,17 @@ def segmentation_to_preview_uint8(segmentation: np.ndarray) -> np.ndarray:
     return palette[np.mod(np.maximum(segmentation, 0), len(palette))]
 
 
-def write_panel(rgb: np.ndarray, depth: np.ndarray, segmentation: np.ndarray, path: Path) -> None:
+def write_panel(
+    rgb: np.ndarray,
+    depth: np.ndarray,
+    segmentation: np.ndarray,
+    path: Path,
+    *,
+    rgb_title: str = "CPU direct-light RGB",
+) -> None:
     fig, axes = plt.subplots(1, 3, figsize=(12, 4), dpi=140)
     panels = (
-        (rgb, "CPU direct-light RGB", None),
+        (rgb, rgb_title, None),
         (depth, "projected depth_m", "magma"),
         (segmentation, "numeric_instance_id", None),
     )

@@ -6,6 +6,7 @@ from .builder import (
     OpticalSourceKey,
     build_optical_registry_from_robot_model,
 )
+from .cuda_lbvh import build_cuda_lbvh_from_snapshot
 from .device import (
     DEVICE_FLOAT32_RECOMMENDED_SCENE_SCALE_M,
     MAX_PRIMITIVES_PER_INSTANCE,
@@ -97,6 +98,7 @@ __all__ = [
     "OpticalWorldRegistry",
     "build_host_optical_primitive_workload",
     "build_device_bvh_from_snapshot",
+    "build_cuda_lbvh_from_snapshot",
     "build_device_optical_scene",
     "build_optical_registry_from_robot_model",
     "execute_optical_on_gpu_published_frame",
