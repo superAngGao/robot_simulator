@@ -11,6 +11,7 @@ from optics import (
     OpticalInstanceSpec,
     OpticalLightSpec,
     OpticalMaterialSpec,
+    OpticalOutputProfile,
     OpticalSceneCache,
     OpticalWorldRegistry,
 )
@@ -112,6 +113,49 @@ class TestCpuDirectLightOpticalExecutor:
         np.testing.assert_allclose(result.channel("rgb"), expected_rgb)
         np.testing.assert_allclose(result.channel("intensity"), expected_rgb @ [0.2126, 0.7152, 0.0722])
         assert set(result.channels) == CpuDirectLightOpticalExecutor.capabilities
+        assert result.output_profile is OpticalOutputProfile.DIRECT_LIGHT_FULL
+
+    def test_rgb_preview_profile_filters_to_rgb_hit_mask_and_diagnostics(self):
+        registry = _registry_with_vertical_plane()
+        snapshot = _snapshot(registry)
+        spec = _rgb_ray(snapshot)
+
+        result = CpuDirectLightOpticalExecutor(shadows=False).execute(
+            snapshot,
+            spec,
+            output_profile=OpticalOutputProfile.RGB_PREVIEW,
+        )
+
+        assert result.output_profile is OpticalOutputProfile.RGB_PREVIEW
+        assert set(result.channels) == OpticalOutputProfile.RGB_PREVIEW.guaranteed_channels
+        assert result.has_channel("rgb")
+        assert result.has_channel("hit_mask")
+        assert not result.has_channel("range_m")
+        assert not result.has_channel("intensity")
+
+    def test_render_only_profile_keeps_diagnostics_only(self):
+        registry = _registry_with_vertical_plane()
+        snapshot = _snapshot(registry)
+
+        result = CpuDirectLightOpticalExecutor(shadows=False).execute(
+            snapshot,
+            _rgb_ray(snapshot),
+            output_profile="render_only",
+        )
+
+        assert result.output_profile is OpticalOutputProfile.RENDER_ONLY
+        assert set(result.channels) == OpticalOutputProfile.RENDER_ONLY.guaranteed_channels
+
+    def test_rejects_unsupported_profile(self):
+        registry = _registry_with_vertical_plane()
+        snapshot = _snapshot(registry)
+
+        with pytest.raises(ValueError, match="output_profile"):
+            CpuDirectLightOpticalExecutor(shadows=False).execute(
+                snapshot,
+                _rgb_ray(snapshot),
+                output_profile=OpticalOutputProfile.GEOMETRY_FULL,
+            )
 
     def test_directional_light_back_facing_surface_contributes_zero(self):
         registry = _registry_with_vertical_plane()

@@ -13,6 +13,7 @@ from optics import (
     OpticalWorldRegistry,
     build_host_optical_primitive_workload,
     pack_source_order_key,
+    stage_optical_channels,
     stage_optical_compute_result_to_host,
 )
 from physics.publish import CpuPublishedFrame
@@ -129,8 +130,38 @@ def test_stage_optical_compute_result_to_host_normalizes_device_channels():
     np.testing.assert_allclose(host.channel("range_m"), [1.5, np.inf])
 
 
+def test_stage_optical_channels_stages_selected_channels_only():
+    device_result = OpticalComputeResult(
+        frame_id=7,
+        sim_time=0.07,
+        env_idx=2,
+        sensor_id="gpu_probe",
+        location="device",
+        channels={
+            "hit_mask": _ArrayLike(np.array([1, 0], dtype=np.int32)),
+            "rgb": _ArrayLike(np.array([[0.1, 0.2, 0.3]], dtype=np.float32)),
+            "numeric_instance_id": _ArrayLike(np.array([4, 0], dtype=np.int32)),
+        },
+    )
+
+    staged = stage_optical_channels(device_result, ("rgb", "numeric_instance_id"))
+
+    assert set(staged) == {"rgb", "numeric_instance_id"}
+    assert staged["rgb"].dtype == np.float64
+    assert staged["numeric_instance_id"].dtype == np.int64
+    np.testing.assert_allclose(staged["rgb"], [[0.1, 0.2, 0.3]], rtol=1e-6)
+    np.testing.assert_array_equal(staged["numeric_instance_id"], [4, 0])
+
+
 def test_stage_optical_compute_result_to_host_rejects_host_result():
     result = OpticalComputeResult(frame_id=1, sim_time=0.0, env_idx=0, sensor_id="probe")
 
     with pytest.raises(ValueError, match="device result"):
         stage_optical_compute_result_to_host(result)
+
+
+def test_stage_optical_channels_rejects_host_result():
+    result = OpticalComputeResult(frame_id=1, sim_time=0.0, env_idx=0, sensor_id="probe")
+
+    with pytest.raises(ValueError, match="device result"):
+        stage_optical_channels(result, ("rgb",))

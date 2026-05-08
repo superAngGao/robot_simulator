@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Literal, Protocol
 
 import numpy as np
@@ -23,6 +24,76 @@ class MissingAccelerationError(RuntimeError):
     """Raised when an accelerated executor receives a snapshot without acceleration."""
 
 
+class OpticalOutputProfile(Enum):
+    """Public output-channel contract requested from an optical executor."""
+
+    GEOMETRY_FULL = "geometry_full"
+    DIRECT_LIGHT_FULL = "direct_light_full"
+    RGB_PREVIEW = "rgb_preview"
+    RENDER_ONLY = "render_only"
+
+    @property
+    def guaranteed_channels(self) -> frozenset[str]:
+        if self is OpticalOutputProfile.GEOMETRY_FULL:
+            return frozenset(
+                {
+                    "hit_mask",
+                    "range_m",
+                    "position_world",
+                    "normal_world",
+                    "numeric_instance_id",
+                }
+            )
+        if self is OpticalOutputProfile.DIRECT_LIGHT_FULL:
+            return frozenset(
+                {
+                    "hit_mask",
+                    "range_m",
+                    "position_world",
+                    "normal_world",
+                    "numeric_instance_id",
+                    "rgb",
+                    "intensity",
+                    "bvh_stack_overflow_count",
+                    "bvh_max_stack_depth",
+                    "shadow_stack_overflow_count",
+                    "shadow_max_stack_depth",
+                }
+            )
+        if self is OpticalOutputProfile.RGB_PREVIEW:
+            return frozenset(
+                {
+                    "hit_mask",
+                    "rgb",
+                    "bvh_stack_overflow_count",
+                    "bvh_max_stack_depth",
+                    "shadow_stack_overflow_count",
+                    "shadow_max_stack_depth",
+                }
+            )
+        return frozenset(
+            {
+                "bvh_stack_overflow_count",
+                "bvh_max_stack_depth",
+                "shadow_stack_overflow_count",
+                "shadow_max_stack_depth",
+            }
+        )
+
+    def is_superset_of(self, other: "OpticalOutputProfile") -> bool:
+        return self.guaranteed_channels.issuperset(other.guaranteed_channels)
+
+
+def normalize_output_profile(value: OpticalOutputProfile | str) -> OpticalOutputProfile:
+    if isinstance(value, OpticalOutputProfile):
+        return value
+    try:
+        return OpticalOutputProfile(str(value))
+    except ValueError as exc:
+        choices = ", ".join(profile.value for profile in OpticalOutputProfile)
+        raise ValueError(f"Unsupported optical output profile {value!r}; expected one of: {choices}") from exc
+
+
 @dataclass(frozen=True)
 class OpticalComputeResult:
     """Optical executor result.
@@ -35,6 +106,10 @@ class OpticalComputeResult:
     radiance/sample-accumulation channels instead of reusing `intensity` as a
     Monte Carlo transport contract. Clipping, tone mapping, and display
     conversion belong to consumers.
+
+    For device results, `ready_event` means the channels present in `channels`
+    for the requested `output_profile` have been written to device buffers.
+    Host readback/staging remains the caller's responsibility.
     """
 
     frame_id: int
@@ -43,11 +118,15 @@ class OpticalComputeResult:
     sensor_id: str
     location: Literal["host", "device", "external"] = "host"
     channels: dict[str, object] = field(default_factory=dict)
+    output_profile: OpticalOutputProfile = OpticalOutputProfile.DIRECT_LIGHT_FULL
     ready_event: object | None = None
     resources: tuple[object, ...] = field(default_factory=tuple, repr=False, compare=False)
 
     def channel(self, name: str) -> object:
         return self.channels[name]
+
+    def has_channel(self, name: str) -> bool:
+        return name in self.channels
 
 
 class OpticalExecutor(Protocol):
@@ -73,6 +152,7 @@ class CpuReferenceOpticalExecutor:
             "numeric_instance_id",
         }
     )
+    supported_profiles = frozenset({OpticalOutputProfile.GEOMETRY_FULL})
 
     def execute(self, snapshot: OpticalSceneSnapshot, spec: OpticalRaySensorSpec) -> OpticalComputeResult:
         self._validate(snapshot, spec)
@@ -155,6 +235,7 @@ class CpuReferenceOpticalExecutor:
             env_idx=snapshot.env_idx,
             sensor_id=spec.sensor_id,
             channels=channels,
+            output_profile=OpticalOutputProfile.GEOMETRY_FULL,
         )
 
 
@@ -302,7 +383,23 @@ class CpuDirectLightOpticalExecutor:
     It emits unbounded linear RGB and BT.709 luminance intensity.
     """
 
-    capabilities = CpuReferenceOpticalExecutor.capabilities | frozenset({"rgb", "intensity"})
+    capabilities = CpuReferenceOpticalExecutor.capabilities | frozenset(
+        {
+            "rgb",
+            "intensity",
+            "bvh_stack_overflow_count",
+            "bvh_max_stack_depth",
+            "shadow_stack_overflow_count",
+            "shadow_max_stack_depth",
+        }
+    )
+    supported_profiles = frozenset(
+        {
+            OpticalOutputProfile.DIRECT_LIGHT_FULL,
+            OpticalOutputProfile.RGB_PREVIEW,
+            OpticalOutputProfile.RENDER_ONLY,
+        }
+    )
 
     def __init__(
         self,
@@ -323,7 +420,19 @@ class CpuDirectLightOpticalExecutor:
         if self.shadow_bias < 0.0:
             raise ValueError("shadow_bias must be >= 0")
 
-    def execute(self, snapshot: OpticalSceneSnapshot, spec: OpticalRaySensorSpec) -> OpticalComputeResult:
+    def execute(
+        self,
+        snapshot: OpticalSceneSnapshot,
+        spec: OpticalRaySensorSpec,
+        *,
+        output_profile: OpticalOutputProfile | str = OpticalOutputProfile.DIRECT_LIGHT_FULL,
+    ) -> OpticalComputeResult:
+        output_profile = normalize_output_profile(output_profile)
+        _validate_supported_profile(
+            output_profile,
+            self.supported_profiles,
+            executor_name=type(self).__name__,
+        )
         self._validate(snapshot)
         geometry = self.geometric_executor.execute(snapshot, spec)
         channels = dict(geometry.channels)
@@ -359,6 +468,11 @@ class CpuDirectLightOpticalExecutor:
 
         channels["rgb"] = rgb
         channels["intensity"] = intensity
+        channels["bvh_stack_overflow_count"] = np.zeros(1, dtype=np.int32)
+        channels["bvh_max_stack_depth"] = np.zeros(1, dtype=np.int32)
+        channels["shadow_stack_overflow_count"] = np.zeros(1, dtype=np.int32)
+        channels["shadow_max_stack_depth"] = np.zeros(1, dtype=np.int32)
+        channels = _filter_channels_for_profile(channels, output_profile)
         return OpticalComputeResult(
             frame_id=geometry.frame_id,
             sim_time=geometry.sim_time,
@@ -366,6 +480,7 @@ class CpuDirectLightOpticalExecutor:
             sensor_id=geometry.sensor_id,
             location=geometry.location,
             channels=channels,
+            output_profile=output_profile,
             ready_event=geometry.ready_event,
         )
 
@@ -685,6 +800,29 @@ def _is_occluded(
     if _is_occluded_by_bvh(snapshot, origin, direction, max_distance, sensor_role):
         return True
     return _is_occluded_by_planes(snapshot, origin, direction, max_distance, sensor_role)
+
+
+def _validate_supported_profile(
+    output_profile: OpticalOutputProfile,
+    supported_profiles: frozenset[OpticalOutputProfile],
+    *,
+    executor_name: str,
+) -> None:
+    if output_profile not in supported_profiles:
+        choices = ", ".join(sorted(profile.value for profile in supported_profiles))
+        raise ValueError(
+            f"{executor_name} does not support output_profile={output_profile.value!r}; expected {choices}"
+        )
+
+
+def _filter_channels_for_profile(
+    channels: dict[str, object],
+    output_profile: OpticalOutputProfile,
+) -> dict[str, object]:
+    if output_profile is OpticalOutputProfile.DIRECT_LIGHT_FULL:
+        return channels
+    guaranteed = output_profile.guaranteed_channels
+    return {name: value for name, value in channels.items() if name in guaranteed}
 
 
 def _is_occluded_by_bvh(

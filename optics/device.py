@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Sequence
 
 import numpy as np
 
@@ -121,15 +122,7 @@ def stage_optical_compute_result_to_host(result: OpticalComputeResult) -> Optica
 
     channels: dict[str, object] = {}
     for name, value in result.channels.items():
-        array = _channel_to_numpy(value)
-        if name == "hit_mask":
-            channels[name] = np.asarray(array, dtype=bool).copy()
-        elif name in ("range_m", "position_world", "normal_world"):
-            channels[name] = np.asarray(array, dtype=np.float64).copy()
-        elif name == "numeric_instance_id":
-            channels[name] = np.asarray(array, dtype=np.int64).copy()
-        else:
-            channels[name] = np.asarray(array).copy()
+        channels[name] = _stage_channel_to_host(name, value)
 
     return OpticalComputeResult(
         frame_id=result.frame_id,
@@ -138,9 +131,38 @@ def stage_optical_compute_result_to_host(result: OpticalComputeResult) -> Optica
         sensor_id=result.sensor_id,
         location="host",
         channels=channels,
+        output_profile=result.output_profile,
         ready_event=None,
         resources=(),
     )
+
+
+def stage_optical_channels(result: OpticalComputeResult, channels: Sequence[str]) -> dict[str, np.ndarray]:
+    """Stage selected device result channels into host NumPy arrays.
+
+    This helper is intentionally narrow: callers choose explicit channel names,
+    while this function centralizes the ready-event synchronization and canonical
+    dtype conversion used by full-result staging.
+    """
+    if result.location != "device":
+        raise ValueError("stage_optical_channels requires a device result")
+    _synchronize_ready_event(result.ready_event)
+
+    staged: dict[str, np.ndarray] = {}
+    for name in channels:
+        staged[name] = _stage_channel_to_host(name, result.channel(name))
+    return staged
+
+
+def _stage_channel_to_host(name: str, value: object) -> np.ndarray:
+    array = _channel_to_numpy(value)
+    if name == "hit_mask":
+        return np.asarray(array, dtype=bool).copy()
+    if name in ("range_m", "position_world", "normal_world", "rgb", "intensity"):
+        return np.asarray(array, dtype=np.float64).copy()
+    if name == "numeric_instance_id":
+        return np.asarray(array, dtype=np.int64).copy()
+    return np.asarray(array).copy()
 
 
 def _channel_to_numpy(value: object) -> np.ndarray:

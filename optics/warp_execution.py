@@ -11,7 +11,7 @@ from sensing.optical import OpticalRaySensorSpec
 from .device import build_host_optical_primitive_workload
 from .device_bvh import DeviceOpticalBvh
 from .device_scene import DeviceOpticalSceneSnapshot
-from .execution import OpticalComputeResult
+from .execution import OpticalComputeResult, OpticalOutputProfile, normalize_output_profile
 from .scene import OpticalSceneSnapshot
 
 try:  # pragma: no cover - exercised in GPU environments.
@@ -363,6 +363,7 @@ class GpuDeviceBvhOpticalExecutor:
     """Warp first-hit executor over a device scene plus flat triangle BVH."""
 
     capabilities = GpuBruteForceOpticalExecutor.capabilities | frozenset({"material_index"})
+    supported_profiles = frozenset({OpticalOutputProfile.GEOMETRY_FULL})
 
     def __init__(self, *, device=None, stream=None) -> None:
         if not _HAS_WARP:
@@ -493,6 +494,7 @@ class GpuDeviceBvhOpticalExecutor:
                 "bvh_stack_overflow_count": bvh_stack_overflow_count,
                 "bvh_max_stack_depth": bvh_max_stack_depth,
             },
+            output_profile=OpticalOutputProfile.GEOMETRY_FULL,
             ready_event=ready_event,
             resources=(
                 origins,
@@ -550,6 +552,13 @@ class GpuDeviceBvhDirectLightOpticalExecutor:
     """
 
     capabilities = GpuDeviceBvhOpticalExecutor.capabilities | frozenset({"rgb", "intensity"})
+    supported_profiles = frozenset(
+        {
+            OpticalOutputProfile.DIRECT_LIGHT_FULL,
+            OpticalOutputProfile.RGB_PREVIEW,
+            OpticalOutputProfile.RENDER_ONLY,
+        }
+    )
 
     def __init__(
         self,
@@ -579,7 +588,11 @@ class GpuDeviceBvhDirectLightOpticalExecutor:
         snapshot: DeviceOpticalSceneSnapshot,
         bvh: DeviceOpticalBvh,
         spec: OpticalRaySensorSpec,
+        *,
+        output_profile: OpticalOutputProfile | str = OpticalOutputProfile.DIRECT_LIGHT_FULL,
     ) -> OpticalComputeResult:
+        output_profile = normalize_output_profile(output_profile)
+        _validate_supported_output_profile(output_profile, self.supported_profiles, type(self).__name__)
         geometry = self._first_hit.execute(snapshot, bvh, spec)
         scene = snapshot.scene
         num_rays = spec.num_rays
@@ -661,6 +674,7 @@ class GpuDeviceBvhDirectLightOpticalExecutor:
         channels["intensity"] = intensity
         channels["shadow_stack_overflow_count"] = shadow_stack_overflow_count
         channels["shadow_max_stack_depth"] = shadow_max_stack_depth
+        channels = _filter_device_channels_for_profile(channels, output_profile)
         return OpticalComputeResult(
             frame_id=geometry.frame_id,
             sim_time=geometry.sim_time,
@@ -668,6 +682,7 @@ class GpuDeviceBvhDirectLightOpticalExecutor:
             sensor_id=geometry.sensor_id,
             location="device",
             channels=channels,
+            output_profile=output_profile,
             ready_event=ready_event,
             resources=geometry.resources
             + (
@@ -689,6 +704,28 @@ def _as_rgb_array(value: tuple[float, float, float], *, name: str) -> np.ndarray
     if array.shape != (3,):
         raise ValueError(f"{name} must contain exactly three values")
     return array.copy()
+
+
+def _validate_supported_output_profile(
+    output_profile: OpticalOutputProfile,
+    supported_profiles: frozenset[OpticalOutputProfile],
+    executor_name: str,
+) -> None:
+    if output_profile not in supported_profiles:
+        choices = ", ".join(sorted(profile.value for profile in supported_profiles))
+        raise ValueError(
+            f"{executor_name} does not support output_profile={output_profile.value!r}; expected {choices}"
+        )
+
+
+def _filter_device_channels_for_profile(
+    channels: dict[str, object],
+    output_profile: OpticalOutputProfile,
+) -> dict[str, object]:
+    if output_profile is OpticalOutputProfile.DIRECT_LIGHT_FULL:
+        return channels
+    guaranteed = output_profile.guaranteed_channels
+    return {name: value for name, value in channels.items() if name in guaranteed}
 
 
 def _scoped_stream(stream):

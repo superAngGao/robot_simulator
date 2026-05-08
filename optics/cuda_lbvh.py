@@ -46,22 +46,36 @@ def build_cuda_lbvh_from_snapshot(
     if resolved_device != snapshot.scene.device:
         raise ValueError("DeviceOpticalBvh device must match DeviceOpticalSceneSnapshot device")
 
+    detail_ms: list[tuple[str, float]] = []
     if snapshot.ready_event is not None:
+        wait_start = time.perf_counter()
         wp.synchronize_event(snapshot.ready_event)
+        detail_ms.append(("wait_snapshot_ready", (time.perf_counter() - wait_start) * 1000.0))
 
+    load_start = time.perf_counter()
     module = _load_cuda_lbvh_extension()
+    detail_ms.append(("load_extension", (time.perf_counter() - load_start) * 1000.0))
+
+    convert_start = time.perf_counter()
     aabb_min_t = wp.to_torch(snapshot.triangle_aabb_min).contiguous()
     aabb_max_t = wp.to_torch(snapshot.triangle_aabb_max).contiguous()
+    detail_ms.append(("warp_to_torch_aabb", (time.perf_counter() - convert_start) * 1000.0))
+
+    scene_bounds_start = _record_torch_event()
     scene_min_t = torch.min(aabb_min_t, dim=0).values.contiguous()
     scene_max_t = torch.max(aabb_max_t, dim=0).values.contiguous()
+    scene_bounds_end = _record_torch_event()
 
     build_start = time.perf_counter()
+    morton_start = _record_torch_event()
     sorted_keys_t, sorted_prim_ids_t = module.morton_sort_aabbs(
         aabb_min_t,
         aabb_max_t,
         scene_min_t,
         scene_max_t,
     )
+    morton_end = _record_torch_event()
+    topology_start = _record_torch_event()
     (
         left_t,
         right_t,
@@ -79,14 +93,29 @@ def build_cuda_lbvh_from_snapshot(
         aabb_min_t,
         aabb_max_t,
     )
+    topology_end = _record_torch_event()
+    sync_start = time.perf_counter()
     torch.cuda.synchronize()
+    sync_ms = (time.perf_counter() - sync_start) * 1000.0
     build_ms = (time.perf_counter() - build_start) * 1000.0
+    detail_ms.extend(
+        (
+            ("scene_bounds_device", _elapsed_torch_ms(scene_bounds_start, scene_bounds_end)),
+            ("morton_sort_device", _elapsed_torch_ms(morton_start, morton_end)),
+            ("topology_bounds_device", _elapsed_torch_ms(topology_start, topology_end)),
+            ("cuda_build_wait", build_ms),
+            ("torch_synchronize_wait", sync_ms),
+        )
+    )
 
+    metadata_start = time.perf_counter()
     num_primitives = int(sorted_prim_ids_t.shape[0])
     num_nodes = int(left_t.shape[0])
     node_depth_t = torch.zeros((num_nodes,), dtype=torch.int32, device=sorted_prim_ids_t.device)
     level_ranges_t = torch.empty((0, 2), dtype=torch.int32, device=sorted_prim_ids_t.device)
+    detail_ms.append(("metadata_tensor_alloc", (time.perf_counter() - metadata_start) * 1000.0))
 
+    wrap_start = time.perf_counter()
     bounds_min = wp.from_torch(bounds_min_t, dtype=wp.float32)
     bounds_max = wp.from_torch(bounds_max_t, dtype=wp.float32)
     left = wp.from_torch(left_t, dtype=wp.int32)
@@ -96,7 +125,11 @@ def build_cuda_lbvh_from_snapshot(
     node_depth = wp.from_torch(node_depth_t, dtype=wp.int32)
     level_ranges = wp.from_torch(level_ranges_t, dtype=wp.int32)
     prim_ids = wp.from_torch(sorted_prim_ids_t, dtype=wp.int32)
+    detail_ms.append(("torch_to_warp_views", (time.perf_counter() - wrap_start) * 1000.0))
+
+    event_start = time.perf_counter()
     ready_event = (stream or wp.get_stream(resolved_device)).record_event()
+    detail_ms.append(("record_ready_event", (time.perf_counter() - event_start) * 1000.0))
 
     stats = DeviceBvhBuildStats(
         num_nodes=num_nodes,
@@ -110,6 +143,7 @@ def build_cuda_lbvh_from_snapshot(
         split_strategy="cuda_lbvh",
         supports_refit=False,
         level_ranges=(),
+        detail_ms=tuple(detail_ms),
     )
     resources = (
         bounds_min_t,
@@ -171,3 +205,13 @@ def _require_cuda_lbvh_deps() -> None:
         raise ImportError("CUDA LBVH builder requires torch, warp, and torch CUDA extension tooling")
     if not torch.cuda.is_available():
         raise ImportError("CUDA LBVH builder requires torch CUDA availability")
+
+
+def _record_torch_event():
+    event = torch.cuda.Event(enable_timing=True)
+    event.record()
+    return event
+
+
+def _elapsed_torch_ms(start, end) -> float:
+    return float(start.elapsed_time(end))

@@ -258,6 +258,184 @@ which backend produced the arrays. CUDA build should be an internal backend
 choice, for example through a backend argument or dispatch helper. Existing
 callers should keep receiving a `DeviceOpticalBvh` with the same public fields.
 
+## Runtime Architecture Follow-Up
+
+The CUDA LBVH spike is still an experiment path, not the final warmed rendering
+architecture. Keep warmed preview/video behavior in examples until the
+acceleration policy is better understood.
+
+The likely production boundary is:
+
+```text
+DeviceOpticalSceneCache
+  owns static device scene buffers and produces per-frame world/AABB snapshots
+
+DeviceOpticalAccelerationManager
+  owns BVH slots, builder backend, refit/rebuild policy, workspace, and events
+
+GpuOpticalRenderSession
+  owns warmup orchestration, camera-ray cache, executor, and preview/video IO
+```
+
+Do not hardcode this around rigid Go2 meshes. The same manager must eventually
+handle several geometry update families:
+
+```text
+rigid mesh / robot links
+  build local/instance acceleration once, then refit or update TLAS-like state
+
+deformable mesh / cloth
+  topology is often stable, but bounds may inflate; refit every frame and
+  trigger periodic async topology rebuild from quality/traversal metrics
+
+dynamic topology / marching surface
+  triangle count/connectivity changes; prefer GPU LBVH rebuild or active
+  primitive compaction plus rebuild
+
+particles / fluid surface proxies
+  spatial distribution changes heavily; consider GPU LBVH rebuild or grid/hash
+
+smoke / volume
+  use a separate volume hierarchy, sparse voxel, or brick-grid accelerator
+```
+
+## Async Build/Render Overlap
+
+Async overlap is a scheduling feature, not a substitute for reducing build
+latency.
+
+The safe rule is:
+
+```text
+Render correctness:
+  every rendered frame uses bounds refit to current geometry
+
+Async rebuild:
+  build a better topology from a recent geometry snapshot in a separate BVH slot
+
+Publish:
+  before the rebuilt topology can be read by traversal, refit its bounds against
+  the current frame and signal a build_done/publish event
+```
+
+The latency of the async rebuild therefore affects tree topology quality, not
+AABB correctness. If a rebuild finishes many frames late, it may still be
+usable after a current-frame refit, but traversal efficiency may be worse than a
+fresh topology.
+
+Use stream/event ownership at the pipeline boundary:
+
+```text
+render stream reads current immutable BVH slot
+build stream writes next BVH slot
+publish swaps slots only after build/refit completion event
+old slots are recycled only after render_done
+```
+
+Inside a pure-device builder, prefer same-stream kernel launch order as the
+global barrier between build stages. A future persistent-kernel design may use
+cooperative groups, but device-side spin waits across independent kernels are
+not a baseline design.
+
+## Build Timing Split
+
+The current integrated CUDA path exposes detailed build timings through
+`DeviceBvhBuildStats.detail_ms`. Initial phases to track:
+
+```text
+wait_snapshot_ready
+load_extension
+warp_to_torch_aabb
+scene_bounds_device
+morton_sort_device
+topology_bounds_device
+cuda_build_wait
+torch_synchronize_wait
+metadata_tensor_alloc
+torch_to_warp_views
+record_ready_event
+```
+
+The next optimization decision should use this split rather than the single
+`bvh_build` wall time. Candidate follow-ups are extension preloading, workspace
+reuse, stream-aware Torch/Warp handoff, moving the extension source out of the
+example spike, and eventually a less Torch-dependent CUDA backend if interop
+overhead remains dominant.
+
+## Load Extension Timing Probe
+
+Do not treat `load_extension` as only reading a cached `.so`.
+
+Current Torch extension cache location:
+
+```text
+~/.cache/torch_extensions/py312_cu128/robot_sim_cuda_lbvh_spike_v2
+```
+
+Observed cache contents:
+
+```text
+build.ninja                         ~= 2.1 KB
+cuda.cu                             ~= 16 KB
+main.cpp                            ~= 1 KB
+main.o                              ~= 310 KB
+cuda.cuda.o                         ~= 427 KB
+robot_sim_cuda_lbvh_spike_v2.so     ~= 487 KB
+.ninja_deps                         ~= 763 KB
+```
+
+These files are small enough that raw cache file read/write is unlikely to
+explain a 0.4-0.5s `load_extension` cost.
+
+Monkeypatch timing of `torch.utils.cpp_extension.load_inline` on a fresh
+process cache hit showed roughly:
+
+```text
+_maybe_write main.cpp/cuda.cu           ~= 0.07 ms
+version hash check                      ~= 0.04 ms
+_write_ninja_file_to_build_library      ~= 113-119 ms
+_run_ninja_build no-op                  ~= 15-22 ms
+_import_module_from_library .so         ~= 0.6-1.0 ms
+_jit_compile total                      ~= 376-380 ms
+```
+
+Further decomposition found two non-obvious costs:
+
+```text
+torch.utils.hipify import / build branch overhead  ~= 230 ms class
+_get_cuda_arch_flags without TORCH_CUDA_ARCH_LIST  ~= 113 ms
+```
+
+With hipify pre-imported, the same cache-hit path dropped to about `147ms`.
+With both hipify pre-imported and a fixed `TORCH_CUDA_ARCH_LIST=9.0`, the
+cache-hit path dropped to about `26.6ms`:
+
+```text
+_get_cuda_arch_flags:                  ~= 0.02 ms
+_run_ninja_build no-op:                ~= 18 ms
+_jit_compile total:                    ~= 26 ms
+```
+
+Important caveat: changing `TORCH_CUDA_ARCH_LIST` changes build configuration
+and can invalidate the existing cached binary. In one probe, the first run with
+`TORCH_CUDA_ARCH_LIST=9.0` triggered a full rebuild:
+
+```text
+_run_ninja_build:                      ~= 87.9 s
+```
+
+Therefore the next cache experiments should be controlled:
+
+```text
+1. Keep extension name, source, flags, and TORCH_CUDA_ARCH_LIST stable.
+2. Measure first compile, fresh-process cache-hit, and in-process lru_cache hit
+   separately.
+3. Treat extension preload as warmup accounting, not as proof that build is
+   intrinsically fast.
+4. Only consider fixed arch config if it becomes part of a stable backend
+   configuration for the target deployment GPU class.
+```
+
 ## Spike Result: CUDA/CUB + Torch/Warp Interop
 
 Added:

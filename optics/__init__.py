@@ -13,6 +13,7 @@ from .device import (
     HostOpticalPrimitiveWorkload,
     build_host_optical_primitive_workload,
     pack_source_order_key,
+    stage_optical_channels,
     stage_optical_compute_result_to_host,
 )
 from .device_bvh import (
@@ -36,6 +37,7 @@ from .execution import (
     MissingAccelerationError,
     OpticalComputeResult,
     OpticalExecutor,
+    OpticalOutputProfile,
 )
 from .gpu_runtime import execute_optical_on_gpu_published_frame
 from .registry import (
@@ -84,6 +86,7 @@ __all__ = [
     "OpticalBindingDiagnostic",
     "OpticalComputeResult",
     "OpticalExecutor",
+    "OpticalOutputProfile",
     "OpticalFrameInputs",
     "OpticalInstanceSpec",
     "OpticalInstanceSnapshot",
@@ -104,6 +107,7 @@ __all__ = [
     "execute_optical_on_gpu_published_frame",
     "pack_source_order_key",
     "refit_device_bvh_from_snapshot",
+    "stage_optical_channels",
     "stage_optical_compute_result_to_host",
     "update_device_optical_scene_from_gpu_frame",
 ]

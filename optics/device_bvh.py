@@ -37,6 +37,7 @@ class DeviceBvhBuildStats:
     split_strategy: str = "sort"
     supports_refit: bool = True
     level_ranges: tuple[tuple[int, int], ...] = ()
+    detail_ms: tuple[tuple[str, float], ...] = ()
 
 
 @dataclass(frozen=True)

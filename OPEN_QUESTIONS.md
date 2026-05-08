@@ -2731,6 +2731,42 @@ Follow-up：
   Torch/JIT/module/cache/interop 的 build cold overhead。下一轮性能工作应拆
   CUDA LBVH builder 内部 timing（extension load vs kernel execution）并处理
   device scene cold path。
+- Acceleration architecture follow-up：不要把 optical acceleration 写死成
+  `build once + refit forever`。后续柔体/流体会改变几何更新模式，需要显式
+  geometry-family policy：
+  1. rigid mesh / robot links：mesh connectivity 稳定，优先 BLAS build once +
+     instance/TLAS update，或当前 global BVH topology refit。
+  2. deformable mesh / cloth：triangle connectivity 通常稳定，但 vertex positions
+     大幅变化；默认每帧 update AABB + refit，并用 tree quality / traversal cost /
+     bounds inflation 触发 periodic async rebuild。
+  3. dynamic topology mesh / marching surface：triangle count/connectivity 可变，
+     不能复用旧 topology；优先 GPU LBVH rebuild every frame 或 active triangle
+     compaction + rebuild。
+  4. particles / splats / fluid surface proxies：空间分布每帧大变，适合 GPU LBVH
+     rebuild 或 uniform grid / spatial hash，而不是固定 BVH refit。
+  5. smoke / volume：不是 triangle BVH 主问题，未来应走 volume hierarchy /
+     sparse voxel / brick grid 等独立 accelerator。
+  因此后续应引入类似 `AccelerationPolicy` / `GeometryUpdatePolicy` 的抽象，至少
+  记录 `topology_stable`、`supports_refit`、`preferred_update =
+  refit|rebuild|grid|volume`、`rebuild_trigger(...)`。当前 CUDA LBVH 的长期价值
+  是 dynamic geometry 的 fast rebuild backend；rigid robot path 仍应保留 refit /
+  TLAS 方向。
+- Warmup/session 架构决策：当前不要把 preview 的 warmed runtime 固化进核心 API。
+  先在 `examples/mujoco_menagerie_gpu_preview.py` 里验证 single-process warmup、
+  multi-view BVH/ray/executor 复用和 structured timing。未来若正式化，候选边界是：
+  `DeviceOpticalSceneCache` 继续负责 static scene buffers + per-frame snapshot/AABB；
+  新的 `DeviceOpticalAccelerationManager` 负责 BVH slots、builder backend、
+  refit/rebuild policy、workspace、events；`GpuOpticalRenderSession` 只编排 warmup、
+  camera-ray cache、executor 和 preview/video 输出。该抽象必须支持 rigid、
+  deformable、dynamic-topology、particle/fluid proxy 和 volume accelerator，而不是
+  专门为 Go2 preview 写死。
+- Async build/render overlap 决策：它不是 build 优化的替代品。每一帧用于 traversal
+  的 AABB bounds 必须来自 current geometry（通常通过 refit），以保证 correctness；
+  后台 async rebuild 只刷新 topology/leaf order，用较近的 geometry snapshot 改善
+  tree quality。新 topology publish 前必须先对当前帧 bounds 做 refit，再允许 render
+  stream 读取。双/环形 BVH buffer 的 ownership 应由外层 stream/event 管，build 内部
+  阶段同步则优先依赖 same-stream kernel launch boundary 或未来 cooperative groups；
+  不使用 device-side spin wait 作为跨 kernel pipeline barrier。
 - 候选优化方向：
   1. preview script 增加 structured timing / optional CSV，区分 cold start 与
      warm cache，不把 Warp compile / mesh import 混入 steady-state render 结论。
@@ -2743,6 +2779,167 @@ Follow-up：
   5. 若 shade/shadow kernel 成为主要瓶颈，再评估 split shadow kernel、
      shadow-ray compaction、多 light batching、stack/register pressure、CUDA/OptiX
      backend。Warp path 先作为 correctness/backend contract，不急于过早改写 CUDA。
+  6. CUDA LBVH builder 增加 phase-level timing，先拆清楚 extension load、
+     Warp/Torch interop、scene bounds、Morton sort、topology+bounds、sync wait、
+     Warp view wrapping 的占比，再决定 workspace 复用、stream-aware handoff、
+     extension packaging 或纯 CUDA backend 的优先级。
+- CUDA LBVH `load_extension` 机制拆解（2026-05-06）：当前 cache 目录为
+  `~/.cache/torch_extensions/py312_cu128/robot_sim_cuda_lbvh_spike_v2`，缓存文件
+  很小：`build.ninja≈2.1KB`、`cuda.cu≈16KB`、`main.cpp≈1KB`、
+  `main.o≈310KB`、`cuda.cuda.o≈427KB`、`.so≈487KB`、`.ninja_deps≈763KB`。
+  因此 `load_extension≈490ms` 不应粗略归因于“大文件读写”。对
+  `torch.utils.cpp_extension.load_inline` monkeypatch timing 显示：source
+  `_maybe_write` 约 `0.07ms`，version hash check 约 `0.04ms`，`.so` import
+  约 `0.6-1.0ms`，ninja no-op 约 `15-22ms`；大头来自 Torch JIT extension
+  每进程管理开销。进一步拆解发现 fresh process cache-hit 中，`torch.utils.hipify`
+  import / build branch overhead 可贡献约 `230ms` 级；`_get_cuda_arch_flags`
+  在未设置 `TORCH_CUDA_ARCH_LIST` 时约 `113ms`，主要是在推断 visible GPU
+  architecture。预先 import hipify 后，cache-hit load 约从 `~380ms` 降到
+  `~147ms`；再固定 `TORCH_CUDA_ARCH_LIST=9.0` 后，cache-hit 可降到
+  `~26.6ms`。但改变 `TORCH_CUDA_ARCH_LIST` 属于 build config/cache key
+  变化，首次会触发重编译，本机一次实测 `ninja build≈87.9s`。结论：Torch JIT
+  cache hit 不等于运行时只 `dlopen` `.so`；短期优化应先把 extension preload /
+  arch config 作为受控实验，不能轻率把问题描述成“缓存读写慢”。
+- CUDA arch 配置 refactor follow-up：项目需要服务多类 NVIDIA GPU，不能把
+  `sm_90` / `TORCH_CUDA_ARCH_LIST=9.0` 写死到 CUDA LBVH builder。阶段性完成
+  渲染管线后，正式 refactor 应把 CUDA arch 作为 backend/session 初始化配置：
+  1. 环境变量 / deployment config：继续支持 `TORCH_CUDA_ARCH_LIST`，适合 CI、
+     benchmark、固定 GPU 集群。
+  2. example/benchmark CLI：可暴露 `--cuda-arch-list`，但只能在 extension 首次
+     load 前设置；若 module 已 load，必须 warning/raise，不能 silent change。
+  3. 正式 API：未来放入 `CudaLbvhBuildConfig` /
+     `DeviceOpticalAccelerationManager` / `GpuOpticalRenderSession` 初始化参数，
+     而不是 `build_cuda_lbvh_from_snapshot(...)` 的 per-call 参数。arch 是 extension
+     load-time build config，变更它会改变 cache key 并可能触发完整 nvcc rebuild。
+  4. 文档必须明确：`cuda_arch_list=None` 使用 PyTorch visible-GPU 推断，通用但
+     fresh-process prepare cost 较高；显式 arch 可降低 cache-hit prepare cost，但
+     首次/切换时可能很慢，且适合部署配置而非渲染算法参数。
+- Benchmark infrastructure gate：CUDA LBVH tree build 阶段性完成后，必须花时间
+  完善 benchmark 基础设施，再决定 double-buffer build/render、path tracing 和更深
+  kernel 优化。当前 `mujoco_menagerie_gpu_preview.py` 只有 summary timing/CSV，
+  够做 preview 和 microbenchmark，不够支撑视频级 pipeline 决策。后续应先在 example
+  层补 per-frame telemetry：
+  1. CLI：`--video-frames`、`--video-fps`、`--frame-timing-csv`、
+     `--progress-every`、`--video-mode camera_orbit|pose_sequence`、
+     `--write-frames/--no-write-frames`。
+  2. 逐帧 CSV 字段：`frame_index`、`sim_time`、`snapshot_ms`、`refit_ms` 或
+     `rebuild_ms`、`render_execute_ms`、`stage_host_ms`、`image_build_ms`、
+     `encode_or_write_ms`、`frame_total_ms`、`instant_fps`、`rolling_fps`、
+     `primary/shadow overflow`、`primary/shadow max_stack`。
+  3. stdout 实时进度：每 N 帧打印 total/render/build-or-refit/fps/rolling_fps 和
+     overflow 状态。
+  4. 场景模式分层：先做 camera-orbit video（scene/BVH/snapshot 不变，只变 camera
+     rays，隔离 render/stage/encode 吞吐），再做 pose-changing published frames
+     （每帧 snapshot + refit/rebuild），最后再评估 async double-buffer overlap。
+  5. benchmark 报告必须区分 cold start、session warmup、steady-state per-frame、
+     frame writing/encoding，不再用单张 preview 的 total time 推断视频性能。
+- Video benchmark optimization V1：Claude review 后采纳以下 V1 决策，并已在
+  2026-05-07 落地：
+  1. V1 只做 ray cache、selected staging、RGB-only write；暂不并行做 render
+     kernel profiling。
+  2. `--video-ray-cache off|precompute`，默认 off；benchmark notes 同时报 uncached
+     和 precompute 行。
+  3. selected staging 放到窄的 optics helper，例如
+     `stage_optical_channels(result, channels)`，避免 example 重复处理 Warp
+     ownership / stream sync 细节。
+  4. V1 CLI 用 `--video-stage full|rgb|none`，暂不做自由 channel list。
+  5. RGB-only write 可绕过 `build_pinhole_camera_image_result`，但必须标注
+     benchmark-only，并复用正式 preview 的 gamma/clip/channel ordering。
+  6. static `camera_orbit` 复用同一 `snapshot.frame_id/sim_time` 可接受，但
+     frame CSV/output 必须标注 `geometry_mode=static`，另用 `video_time` 表示播放
+     时间。
+  7. skipped/not-applicable phases 用 `NaN`，不用 `0`，避免把“未测”误读为“耗时
+     为零”。
+  8. double-buffer go/no-go gate：先拿到 V1 render-only p50/p90（precomputed
+     rays + no stage）、V2 changing-geometry warm `refit_ms` p50、V2 warm CUDA
+     LBVH `rebuild_ms` p50。只有当 `rebuild_ms` 接近或大于 `render_execute_ms`
+     时，double-buffer overlap 才值得进入实现；如果 rigid refit 已远快于 render，
+     则 rigid path 不应优先做 overlap。
+  9. V1 960x640 static Go2 camera-orbit matrix（direct-light + shadow）：
+     - uncached rays + full stage + no write：`frame_total_mean≈108.10ms`，
+       `fps_mean≈9.25`，`camera_rays≈45.89ms`，`render≈27.40ms`，
+       `stage≈34.81ms`。
+     - precomputed rays + full stage + no write：`frame_total_mean≈58.63ms`，
+       `fps_mean≈17.06`，`render≈26.86ms`，`stage≈31.77ms`。
+     - precomputed rays + no stage + no write：`frame_total_mean≈29.19ms`，
+       `fps_mean≈34.26`，`render≈29.18ms`。
+     - precomputed rays + rgb stage + RGB PNG：`frame_total_mean≈90.19ms`，
+       `fps_mean≈11.09`，`render≈27.25ms`，`stage≈5.86ms`，
+       `image_build≈18.98ms`，`png_write≈38.09ms`。
+     结论：ray cache 和 selected RGB staging 是明确的大收益；PNG 输出仍应与
+     renderer 性能分开报告。V2 下一步是 changing-geometry snapshot/refit/rebuild
+     benchmark。
+- GPU camera ray generation follow-up：2026-05-07 讨论后明确，CPU
+  `build_pinhole_camera_rays(...)` + full ray-batch upload 只是历史上的
+  correctness bridge 和 V1 benchmark bridge，不应作为生产 GPU camera renderer
+  的最终形态。后续计划：
+  1. 保留 `OpticalRaySensorSpec` / `execute(..., rays)`，继续服务 LiDAR、
+     arbitrary ray queries、CPU reference 和 parity 测试。
+  2. 新增 compact camera params / `GpuPinholeCameraSpec` 一类结构，包含
+     `width/height/fx/fy/cx/cy/X_world_camera/max_distance/sensor_role`。
+  3. 新增 camera-specific GPU executor entry point，例如
+     `execute_camera(snapshot, bvh, camera_spec, output_profile=...)`。
+  4. GPU kernel 按 pixel id 计算 pinhole ray：
+     `dir_camera = normalize(((x-cx)/fx, (y-cy)/fy, 1))`，
+     `dir_world = R_world_camera @ dir_camera`，`origin = camera_position`。
+  5. 第一版目标是消除 per-frame CPU ray materialization 和 host->device ray
+     upload；后续再把 raygen + BVH first-hit + direct-light shade fuse 到
+     `rgb_preview/render_only` fast path。
+  6. 测试 gate：小场景中 GPU camera raygen path 与
+     `build_pinhole_camera_rays(...) + execute(..., rays)` 的
+     range/rgb/hit parity；benchmark 需分开报告 cached CPU rays、GPU raygen、
+     readback、uint8 pack 和 PNG/encoding。
+- Optical output profile API review follow-up：Claude review 后采纳正式 result
+  contract 方向，开始实现：
+  1. `OpticalOutputProfile` 用 Enum，不用 string Literal，并在 Enum 上编码
+     `guaranteed_channels` 与 `is_superset_of(...)`。
+  2. `OpticalComputeResult` 增加 `output_profile`；`has_channel(name)` 保持运行时
+     `name in channels` 语义，静态 profile guarantee 通过
+     `result.output_profile.guaranteed_channels` 查询。
+  3. `direct_light_full` 继续作为默认 profile，保证现有测试/preview 不破坏。
+  4. `rgb_preview` 保证 `hit_mask + rgb + diagnostics`，不保证
+     `range/position/normal/id/intensity`。
+  5. `render_only` 保留 diagnostics，因为 BVH/shadow overflow 是 safety signal，
+     且标量成本很低。
+  6. executor 声明 `supported_profiles` 并在 `execute()` 入口验证。
+  7. CPU direct-light 同步支持 profile（先用过滤 channels 实现），保证
+     `rgb_preview` 可做 CPU/GPU parity。
+  8. `build_pinhole_camera_image_result` 遇到缺 required channels 要 fail-fast。
+  9. `ready_event` 文档明确：表示 result 中 guaranteed/present device channels 已
+     写完；host readback 仍是 caller responsibility。
+- Readback/materialization microbench review follow-up：Claude review 后采纳为
+  V1.5 分析任务，已实现并初步运行，先测再决定 RGB fast path 是否需要 GPU
+  uint8 pack：
+  1. 独立 example：`examples/optical_readback_microbench.py`，不要继续膨胀
+     `mujoco_menagerie_gpu_preview.py`。
+  2. 第一轮必须包含 `rgb_float32_only` 下界、`rgb_current`、`geometry_heavy`、
+     `full_current`、`diagnostics_only`、`image_build_breakdown`、`png/raw encoding`
+     groups。
+  3. CSV 增加 `sync_strategy`、`warmup_rounds`、`transfer_ratio =
+     bytes_host / bytes_device`，默认 `warmup=3`、`repeat=20`。
+  4. `image_build≈19ms` 必须拆成 clip、gamma、scale/cast uint8、
+     `PIL.Image.fromarray` 等子项，避免漏掉真正瓶颈。
+  5. GPU uint8 pack 暂放 V1.6；触发阈值：
+     `(float32_rgb_readback_ms + cpu_gamma_uint8_ms) >
+     float32_rgb_readback_ms * 1.3`。
+  6. pinned memory / async copy / staging ring defer；microbench 可以记录同步策略，
+     但不实现 async pipeline。
+  7. PNG/encoding 放同一份报告但用 `group=encoding` 分开，不纳入 renderer/readback
+     结论。
+  8. V1.5 960x640 Go2 结果：
+     - `rgb_float32_only`: p50≈3.842ms, mean≈4.219ms。
+     - `rgb_current`: p50≈11.669ms, mean≈11.828ms。
+     - `diagnostics_only`: p50≈0.115ms。
+     - `geometry_heavy`: p50≈24.907ms。
+     - `full_current`: p50≈41.887ms。
+     - `rgb_float32_linear_rgb_to_preview_uint8`: p50≈8.915ms。
+     - `rgb_float64_linear_rgb_to_preview_uint8`: p50≈22.806ms。
+     - `png_default`: p50≈34.401ms，mean≈53.393ms（IO tail 明显）。
+     - `raw_write`/`npy_write`: p50≈1.9-2.0ms。
+     结论：full staging 的大头是 geometry-heavy channels + canonical float64
+     materialization；RGB current 和 float32 下界差距明显。CPU float32 RGB->uint8
+     preview 转换已超过 float32 RGB readback 的 2x，满足 V1.6 GPU uint8 pack
+     spike 条件。PNG 不应作为 renderer throughput 指标。
 
 详见：
 `collab/q54-gpu-optical-l5c3-progress-and-next-plan__review-request__codex__v1.md`，

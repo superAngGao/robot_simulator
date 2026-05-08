@@ -176,6 +176,7 @@ def build_pinhole_camera_image_result(
     if rays is None:
         rays = build_pinhole_camera_rays(spec)
     _validate_camera_rays(rays, spec)
+    _validate_required_camera_result_channels(result, {"range_m"})
     channels = {
         name: _reshape_flat_channel(value, spec.image_shape) for name, value in result.channels.items()
     }
@@ -215,6 +216,15 @@ def _validate_camera_result_timeline(result: object, spec: OpticalPinholeCameraS
         raise ValueError("result.env_idx must match spec.env_idx")
     if result.sensor_id != spec.sensor_id:
         raise ValueError("result.sensor_id must match spec.sensor_id")
+
+
+def _validate_required_camera_result_channels(result: object, required_channels: set[str]) -> None:
+    missing = sorted(name for name in required_channels if name not in result.channels)
+    if missing:
+        output_profile = getattr(result, "output_profile", None)
+        profile = getattr(output_profile, "value", output_profile)
+        detail = f" for output_profile={profile!r}" if profile is not None else ""
+        raise ValueError(f"camera image result requires channels {missing}{detail}")
 
 
 def _validate_camera_rays(rays: OpticalRaySensorSpec, spec: OpticalPinholeCameraSpec) -> None:

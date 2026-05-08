@@ -5,9 +5,11 @@ import pytest
 
 from optics import (
     CpuReferenceOpticalExecutor,
+    OpticalComputeResult,
     OpticalFrameInputs,
     OpticalInstanceSpec,
     OpticalMaterialSpec,
+    OpticalOutputProfile,
     OpticalSceneCache,
     OpticalWorldRegistry,
 )
@@ -222,6 +224,32 @@ class TestOpticalPinholeCameraImageResult:
 
         with pytest.raises(ValueError, match="rays.sensor_id"):
             build_pinhole_camera_image_result(flat, spec, rays=mismatched_rays)
+
+    def test_postprocessor_rejects_result_without_range_channel(self):
+        spec = OpticalPinholeCameraSpec(
+            frame_id=9,
+            sim_time=0.09,
+            env_idx=0,
+            sensor_id="cam",
+            width=1,
+            height=1,
+            fx=1.0,
+            fy=1.0,
+            cx=0.0,
+            cy=0.0,
+        )
+        rays = build_pinhole_camera_rays(spec)
+        result = OpticalComputeResult(
+            frame_id=9,
+            sim_time=0.09,
+            env_idx=0,
+            sensor_id="cam",
+            channels={"rgb": np.zeros((1, 3), dtype=np.float64)},
+            output_profile=OpticalOutputProfile.RGB_PREVIEW,
+        )
+
+        with pytest.raises(ValueError, match="range_m"):
+            build_pinhole_camera_image_result(result, spec, rays=rays)
 
 
 class TestOpticalCameraReading:
