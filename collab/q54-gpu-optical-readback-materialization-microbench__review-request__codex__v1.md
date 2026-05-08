@@ -5,7 +5,7 @@ Version: v1
 Date: 2026-05-07
 Status: v1-implemented
 Related Files: optics/device.py, optics/warp_execution.py, examples/mujoco_menagerie_gpu_preview.py
-Owner Summary: V1 video benchmark showed full host staging at ~32-35 ms and RGB-only staging at ~5.9 ms for 960x640 Go2 direct-light frames. The byte count alone does not explain the full latency. Before optimizing the pure RGB route, we should isolate device-to-host transfer, NumPy materialization, dtype conversion, per-channel Python overhead, CPU gamma/uint8 conversion, and potential GPU uint8 packing.
+Owner Summary: V1 video benchmark showed full host readback at ~32-35 ms and RGB-only readback at ~5.9 ms for 960x640 Go2 direct-light frames. The byte count alone does not explain the full latency. Before optimizing the pure RGB route, we should isolate device-to-host transfer, NumPy materialization, dtype conversion, per-channel Python overhead, CPU gamma/uint8 conversion, and potential GPU uint8 packing.
 
 # Q54 GPU Optical Readback / Materialization Microbenchmark Plan
 
@@ -14,19 +14,19 @@ Owner Summary: V1 video benchmark showed full host staging at ~32-35 ms and RGB-
 V1 video benchmark results at 960x640:
 
 ```text
-precomputed rays + full stage + no write:
+precomputed rays + full readback + no write:
   render_execute_mean:  ~26.9 ms
-  stage_host_mean:      ~31.8 ms
+  readback_host_mean:      ~31.8 ms
 
-precomputed rays + rgb stage + RGB PNG:
+precomputed rays + rgb readback + RGB PNG:
   render_execute_mean:  ~27.3 ms
-  stage_host_mean:       ~5.9 ms
+  readback_host_mean:       ~5.9 ms
   image_build_mean:     ~19.0 ms
   png_write_mean:       ~38.1 ms
 ```
 
-The difference between full staging and RGB-only staging is large, but it is
-not explained by PCIe bandwidth alone. Current staging includes:
+The difference between full readback and RGB-only readback is large, but it is
+not explained by PCIe bandwidth alone. Current readback includes:
 
 ```text
 ready-event synchronization
@@ -56,7 +56,7 @@ For this microbenchmark:
 
 ```text
 do not redesign OpticalComputeResult
-do not implement async staging rings
+do not implement async readback rings
 do not implement final video encoder integration
 do not rewrite traversal/shading kernels
 do not conflate readback timing with render timing
@@ -72,10 +72,10 @@ The goal is measurement clarity.
 2. How much extra cost is introduced by converting that same channel to
    float64?
 
-3. How much of `full stage` is due to the large geometry channels
+3. How much of `full readback` is due to the large geometry channels
    (`position_world`, `normal_world`, `range_m`)?
 
-4. How much overhead comes from staging many channels separately vs one or two
+4. How much overhead comes from reading back many channels separately vs one or two
    channels?
 
 5. How much does CPU RGB preview conversion cost:
@@ -180,7 +180,7 @@ geometry_heavy:
   range_m + position_world + normal_world + numeric_instance_id + hit_mask
 ```
 
-This answers whether full staging is dominated by geometry-heavy channels or by
+This answers whether full readback is dominated by geometry-heavy channels or by
 per-channel overhead.
 
 ### C. Host RGB Materialization
@@ -303,7 +303,7 @@ If readback bytes dominate:
   Add GPU uint8 pack and read back uint8.
 
 If per-channel overhead dominates:
-  Add grouped/batched staging helper or structured result buffer.
+  Add grouped/batched readback helper or structured result buffer.
 
 If PNG dominates:
   Keep PNG only for smoke; use raw/ffmpeg for video throughput tests.
@@ -330,7 +330,7 @@ If diagnostics are negligible:
    readback-only measurements?
 
 6. Should we measure pinned host memory / async copy now, or defer until the
-   async staging-ring design?
+   async readback-ring design?
 
 7. What threshold should trigger GPU uint8 pack? For example:
 
@@ -376,7 +376,7 @@ Accepted decisions:
    examples/optical_readback_microbench.py
 3. Defer GPU uint8 pack to V1.6 unless the measurements show CPU conversion is
    clearly dominant.
-4. Defer pinned memory / async copy / staging ring work. The microbench may
+4. Defer pinned memory / async copy / readback ring work. The microbench may
    record sync strategy, but it should not implement the async pipeline.
 5. Keep PNG/encoding in the same report as a separate group=encoding so the
    output bottleneck remains visible without mixing it into readback timings.
@@ -415,7 +415,7 @@ readback / rgb_float32_only:
   rgb device float32 -> host float32
 
 readback / rgb_current:
-  current selected RGB staging path
+  current selected RGB readback path
 
 readback / geometry_heavy:
   range_m + position_world + normal_world + numeric_instance_id + hit_mask
@@ -566,11 +566,11 @@ encoding/npy_write:
 Interpretation:
 
 ```text
-Full staging is dominated by geometry-heavy channels plus float64 host
+Full readback is dominated by geometry-heavy channels plus float64 host
 materialization, not by RGB alone.
 
-Current rgb staging is much slower than the rgb_float32_only lower bound because
-the canonical staging helper converts rgb to float64 and stages diagnostics.
+Current rgb readback is much slower than the rgb_float32_only lower bound because
+the canonical staging helper converts rgb to float64 and reads back diagnostics.
 
 CPU float32 RGB -> uint8 preview conversion is ~9 ms p50. This is more than
 2x the float32 RGB readback p50, so GPU uint8 pack is worth a V1.6 spike under
@@ -582,3 +582,45 @@ the adopted trigger rule:
 PNG remains expensive and noisy. Raw/NPY output is ~2 ms, so PNG should remain a
 visual-smoke path, not a renderer throughput metric.
 ```
+
+## Follow-Up: Video RGB Readback Fix
+
+Date: 2026-05-08
+
+Applied after the GPU raygen spike:
+
+```text
+video benchmark CLI/CSV/stdout renamed from stage to readback
+--video-readback full|rgb|none
+readback_mode
+readback_host_ms
+```
+
+The old name was misleading: current video readback is blocking
+device-to-host transfer plus host materialization. It does not hide latency
+behind later frames. A true latency-hiding path should be designed separately
+as pinned host memory + async copy + readback ring.
+
+RGB preview readback now avoids canonical float64 conversion:
+
+```text
+stage_optical_channels(..., canonical_dtypes=False)
+rgb host dtype: float32
+diagnostic host dtype: int32
+```
+
+Full readback remains canonical for debug/parity paths.
+
+Follow-up measurement:
+
+```text
+960x640 Go2, video-raygen=gpu, readback=rgb, no write:
+  render_mean:          ~16.85 ms
+  readback_host_mean:   ~ 4.91 ms
+  frame_total_mean:     ~21.91 ms
+  fps_mean:             ~45.64
+```
+
+This confirms the first readback fix was the right cut: selected RGB readback
+is now near the float32 readback lower bound instead of the old float64
+materialization path.

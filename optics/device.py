@@ -137,12 +137,18 @@ def stage_optical_compute_result_to_host(result: OpticalComputeResult) -> Optica
     )
 
 
-def stage_optical_channels(result: OpticalComputeResult, channels: Sequence[str]) -> dict[str, np.ndarray]:
+def stage_optical_channels(
+    result: OpticalComputeResult,
+    channels: Sequence[str],
+    *,
+    canonical_dtypes: bool = True,
+) -> dict[str, np.ndarray]:
     """Stage selected device result channels into host NumPy arrays.
 
     This helper is intentionally narrow: callers choose explicit channel names,
     while this function centralizes the ready-event synchronization and canonical
-    dtype conversion used by full-result staging.
+    dtype conversion used by full-result staging. Preview/readback paths may set
+    `canonical_dtypes=False` to preserve device dtypes such as float32 RGB.
     """
     if result.location != "device":
         raise ValueError("stage_optical_channels requires a device result")
@@ -150,8 +156,16 @@ def stage_optical_channels(result: OpticalComputeResult, channels: Sequence[str]
 
     staged: dict[str, np.ndarray] = {}
     for name in channels:
-        staged[name] = _stage_channel_to_host(name, result.channel(name))
+        staged[name] = (
+            _stage_channel_to_host(name, result.channel(name))
+            if canonical_dtypes
+            else _stage_channel_to_host_native(result.channel(name))
+        )
     return staged
+
+
+def _stage_channel_to_host_native(value: object) -> np.ndarray:
+    return np.asarray(_channel_to_numpy(value)).copy()
 
 
 def _stage_channel_to_host(name: str, value: object) -> np.ndarray:

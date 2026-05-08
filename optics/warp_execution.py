@@ -6,7 +6,7 @@ from contextlib import nullcontext
 
 import numpy as np
 
-from sensing.optical import OpticalRaySensorSpec
+from sensing.optical import OpticalPinholeCameraSpec, OpticalRaySensorSpec
 
 from .device import build_host_optical_primitive_workload
 from .device_bvh import DeviceOpticalBvh
@@ -380,12 +380,8 @@ class GpuDeviceBvhOpticalExecutor:
     ) -> OpticalComputeResult:
         self._validate(snapshot, bvh, spec)
         num_rays = spec.num_rays
-        scene = snapshot.scene
-        sensor_role_mask = np.int64(scene.role_table.mask_for(spec.sensor_role))
 
         with _scoped_stream(self.stream):
-            _wait_on_event(snapshot.ready_event, stream=self.stream, device=self.device)
-            _wait_on_event(bvh.ready_event, stream=self.stream, device=self.device)
             origins = wp.array(
                 np.asarray(spec.origins_world, dtype=np.float32),
                 dtype=wp.float32,
@@ -396,6 +392,101 @@ class GpuDeviceBvhOpticalExecutor:
                 dtype=wp.float32,
                 device=self.device,
             )
+
+        return self._execute_device_ray_arrays(
+            snapshot,
+            bvh,
+            frame_id=spec.frame_id,
+            sim_time=spec.sim_time,
+            env_idx=spec.env_idx,
+            sensor_id=spec.sensor_id,
+            origins=origins,
+            directions=directions,
+            num_rays=num_rays,
+            max_distance=spec.max_distance,
+            sensor_role=spec.sensor_role,
+        )
+
+    def execute_camera(
+        self,
+        snapshot: DeviceOpticalSceneSnapshot,
+        bvh: DeviceOpticalBvh,
+        camera: OpticalPinholeCameraSpec,
+    ) -> OpticalComputeResult:
+        """Execute first-hit BVH traversal for a pinhole camera without host ray materialization."""
+
+        self._validate_camera(snapshot, bvh, camera)
+        num_rays = int(camera.width * camera.height)
+        R = np.asarray(camera.X_world_camera.R, dtype=np.float32)
+        r = np.asarray(camera.X_world_camera.r, dtype=np.float32)
+
+        with _scoped_stream(self.stream):
+            origins = wp.zeros((num_rays, 3), dtype=wp.float32, device=self.device)
+            directions = wp.zeros((num_rays, 3), dtype=wp.float32, device=self.device)
+            wp.launch(
+                _pinhole_camera_raygen_kernel,
+                dim=num_rays,
+                inputs=[
+                    int(camera.width),
+                    int(camera.height),
+                    float(camera.fx),
+                    float(camera.fy),
+                    float(camera.cx),
+                    float(camera.cy),
+                    float(r[0]),
+                    float(r[1]),
+                    float(r[2]),
+                    float(R[0, 0]),
+                    float(R[0, 1]),
+                    float(R[0, 2]),
+                    float(R[1, 0]),
+                    float(R[1, 1]),
+                    float(R[1, 2]),
+                    float(R[2, 0]),
+                    float(R[2, 1]),
+                    float(R[2, 2]),
+                    origins,
+                    directions,
+                ],
+                device=self.device,
+                stream=self.stream,
+            )
+
+        return self._execute_device_ray_arrays(
+            snapshot,
+            bvh,
+            frame_id=camera.frame_id,
+            sim_time=camera.sim_time,
+            env_idx=camera.env_idx,
+            sensor_id=camera.sensor_id,
+            origins=origins,
+            directions=directions,
+            num_rays=num_rays,
+            max_distance=camera.max_distance,
+            sensor_role=camera.sensor_role,
+        )
+
+    def _execute_device_ray_arrays(
+        self,
+        snapshot: DeviceOpticalSceneSnapshot,
+        bvh: DeviceOpticalBvh,
+        *,
+        frame_id: int,
+        sim_time: float,
+        env_idx: int,
+        sensor_id: str,
+        origins,
+        directions,
+        num_rays: int,
+        max_distance: float,
+        sensor_role: str,
+    ) -> OpticalComputeResult:
+        scene = snapshot.scene
+        sensor_role_mask = np.int64(scene.role_table.mask_for(sensor_role))
+
+        with _scoped_stream(self.stream):
+            _wait_on_event(snapshot.ready_event, stream=self.stream, device=self.device)
+            _wait_on_event(bvh.ready_event, stream=self.stream, device=self.device)
             hit_mask = wp.array(np.zeros(num_rays, dtype=np.int32), dtype=wp.int32, device=self.device)
             range_m = wp.array(
                 np.full(num_rays, np.inf, dtype=np.float32),
@@ -439,7 +530,7 @@ class GpuDeviceBvhOpticalExecutor:
                 inputs=[
                     origins,
                     directions,
-                    float(spec.max_distance),
+                    float(max_distance),
                     snapshot.plane_normal_world,
                     snapshot.plane_point_world,
                     scene.plane_numeric_instance_id,
@@ -479,10 +570,10 @@ class GpuDeviceBvhOpticalExecutor:
             ready_event = (self.stream or wp.get_stream(self.device)).record_event()
 
         return OpticalComputeResult(
-            frame_id=snapshot.frame_id,
-            sim_time=snapshot.sim_time,
-            env_idx=snapshot.env_idx,
-            sensor_id=spec.sensor_id,
+            frame_id=frame_id,
+            sim_time=sim_time,
+            env_idx=env_idx,
+            sensor_id=sensor_id,
             location="device",
             channels={
                 "hit_mask": hit_mask,
@@ -541,6 +632,27 @@ class GpuDeviceBvhOpticalExecutor:
         if not np.isfinite(spec.max_distance):
             raise ValueError("GpuDeviceBvhOpticalExecutor requires finite max_distance")
 
+    def _validate_camera(
+        self,
+        snapshot: DeviceOpticalSceneSnapshot,
+        bvh: DeviceOpticalBvh,
+        camera: OpticalPinholeCameraSpec,
+    ) -> None:
+        if snapshot.frame_id != camera.frame_id:
+            raise ValueError("snapshot.frame_id must match camera.frame_id")
+        if snapshot.env_idx != camera.env_idx:
+            raise ValueError("snapshot.env_idx must match camera.env_idx")
+        if snapshot.scene.device != self.device:
+            raise ValueError("DeviceOpticalSceneSnapshot device must match executor device")
+        if bvh.device != self.device:
+            raise ValueError("DeviceOpticalBvh device must match executor device")
+        if bvh.frame_id != snapshot.frame_id:
+            raise ValueError("DeviceOpticalBvh frame_id must match DeviceOpticalSceneSnapshot frame_id")
+        if bvh.env_idx != snapshot.env_idx:
+            raise ValueError("DeviceOpticalBvh env_idx must match DeviceOpticalSceneSnapshot env_idx")
+        if not np.isfinite(camera.max_distance):
+            raise ValueError("GpuDeviceBvhOpticalExecutor requires finite max_distance")
+
 
 class GpuDeviceBvhDirectLightOpticalExecutor:
     """Direct-light executor over a device scene plus flat triangle BVH.
@@ -594,8 +706,46 @@ class GpuDeviceBvhDirectLightOpticalExecutor:
         output_profile = normalize_output_profile(output_profile)
         _validate_supported_output_profile(output_profile, self.supported_profiles, type(self).__name__)
         geometry = self._first_hit.execute(snapshot, bvh, spec)
+        return self._shade_geometry(
+            snapshot,
+            bvh,
+            geometry,
+            sensor_role=spec.sensor_role,
+            output_profile=output_profile,
+        )
+
+    def execute_camera(
+        self,
+        snapshot: DeviceOpticalSceneSnapshot,
+        bvh: DeviceOpticalBvh,
+        camera: OpticalPinholeCameraSpec,
+        *,
+        output_profile: OpticalOutputProfile | str = OpticalOutputProfile.DIRECT_LIGHT_FULL,
+    ) -> OpticalComputeResult:
+        """Render a pinhole camera without materializing/uploading host ray buffers."""
+
+        output_profile = normalize_output_profile(output_profile)
+        _validate_supported_output_profile(output_profile, self.supported_profiles, type(self).__name__)
+        geometry = self._first_hit.execute_camera(snapshot, bvh, camera)
+        return self._shade_geometry(
+            snapshot,
+            bvh,
+            geometry,
+            sensor_role=camera.sensor_role,
+            output_profile=output_profile,
+        )
+
+    def _shade_geometry(
+        self,
+        snapshot: DeviceOpticalSceneSnapshot,
+        bvh: DeviceOpticalBvh,
+        geometry: OpticalComputeResult,
+        *,
+        sensor_role: str,
+        output_profile: OpticalOutputProfile,
+    ) -> OpticalComputeResult:
         scene = snapshot.scene
-        num_rays = spec.num_rays
+        num_rays = int(geometry.channels["hit_mask"].shape[0])
 
         with _scoped_stream(self.stream):
             _wait_on_event(geometry.ready_event, stream=self.stream, device=self.device)
@@ -650,7 +800,7 @@ class GpuDeviceBvhDirectLightOpticalExecutor:
                     scene.light_intensity,
                     scene.light_color_rgb,
                     int(scene.num_lights),
-                    np.int64(scene.role_table.mask_for(spec.sensor_role)),
+                    np.int64(scene.role_table.mask_for(sensor_role)),
                     int(self.shadows),
                     float(self.shadow_bias),
                     float(self.ambient_rgb[0]),
@@ -741,6 +891,56 @@ def _wait_on_event(event, *, stream, device) -> None:
 
 
 if _HAS_WARP:
+
+    @wp.kernel
+    def _pinhole_camera_raygen_kernel(
+        width: int,
+        height: int,
+        fx: float,
+        fy: float,
+        cx: float,
+        cy: float,
+        origin_x: float,
+        origin_y: float,
+        origin_z: float,
+        R00: float,
+        R01: float,
+        R02: float,
+        R10: float,
+        R11: float,
+        R12: float,
+        R20: float,
+        R21: float,
+        R22: float,
+        origins: wp.array2d(dtype=wp.float32),
+        directions: wp.array2d(dtype=wp.float32),
+    ):
+        ray = wp.tid()
+        px = ray - (ray / width) * width
+        py = ray / width
+        if py < height:
+            camera_x = (wp.float32(px) - wp.float32(cx)) / wp.float32(fx)
+            camera_y = (wp.float32(py) - wp.float32(cy)) / wp.float32(fy)
+            camera_z = wp.float32(1.0)
+            inv_norm = wp.float32(1.0) / wp.sqrt(
+                camera_x * camera_x + camera_y * camera_y + camera_z * camera_z
+            )
+            camera_x = camera_x * inv_norm
+            camera_y = camera_y * inv_norm
+            camera_z = camera_z * inv_norm
+
+            origins[ray, 0] = wp.float32(origin_x)
+            origins[ray, 1] = wp.float32(origin_y)
+            origins[ray, 2] = wp.float32(origin_z)
+            directions[ray, 0] = (
+                wp.float32(R00) * camera_x + wp.float32(R01) * camera_y + wp.float32(R02) * camera_z
+            )
+            directions[ray, 1] = (
+                wp.float32(R10) * camera_x + wp.float32(R11) * camera_y + wp.float32(R12) * camera_z
+            )
+            directions[ray, 2] = (
+                wp.float32(R20) * camera_x + wp.float32(R21) * camera_y + wp.float32(R22) * camera_z
+            )
 
     @wp.kernel
     def _brute_force_first_hit_kernel(

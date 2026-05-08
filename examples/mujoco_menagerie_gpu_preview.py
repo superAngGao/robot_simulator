@@ -42,6 +42,7 @@ from examples.optical_direct_light_preview import linear_rgb_to_preview_uint8, w
 from optics import (
     DeviceOpticalSceneCache,
     GpuDeviceBvhDirectLightOpticalExecutor,
+    OpticalOutputProfile,
     build_cuda_lbvh_from_snapshot,
     build_device_bvh_from_snapshot,
     refit_device_bvh_from_snapshot,
@@ -149,12 +150,33 @@ def _render_many_views(args: argparse.Namespace) -> None:
         timings.add("refit_benchmark", refit_ms)
 
     for _ in range(max(args.warmup_renders, 0)):
+        if args.video_frames > 0 and args.video_raygen == "gpu":
+            with timings.measure("warmup_camera_spec"):
+                warmup_camera = make_model_camera(
+                    bounds_min=scene.bounds_min,
+                    bounds_max=scene.bounds_max,
+                    width=args.width,
+                    height=args.height,
+                    frame_id=scene.frame.frame_id,
+                    sim_time=scene.frame.sim_time,
+                    view=args.views[0],
+                )
+            _execute_warmup_render(
+                executor,
+                snapshot,
+                bvh,
+                (warmup_camera, None),
+                timings,
+                use_gpu_raygen=True,
+            )
+            continue
         _execute_warmup_render(
             executor,
             snapshot,
             bvh,
             _build_camera_rays_for_view(scene, args, args.views[0], timings, phase="warmup"),
             timings,
+            use_gpu_raygen=False,
         )
 
     if args.video_frames > 0:
@@ -193,7 +215,7 @@ def _render_many_views(args: argparse.Namespace) -> None:
         with timings.measure(f"view_{view}_render_execute_wait"):
             result = executor.execute(snapshot, bvh, rays)
             wp.synchronize_event(result.ready_event)
-        with timings.measure(f"view_{view}_stage_host"):
+        with timings.measure(f"view_{view}_readback_host"):
             host_result = stage_optical_compute_result_to_host(result)
         with timings.measure(f"view_{view}_image_build"):
             image = build_pinhole_camera_image_result(
@@ -287,8 +309,9 @@ def _print_video_summary(args: argparse.Namespace, video_rows: "_FrameTimingReco
         "  video_benchmark: "
         f"frames={args.video_frames}, mode={args.video_mode}, "
         "geometry=static, "
+        f"raygen={args.video_raygen}, "
         f"ray_cache={args.video_ray_cache}, "
-        f"stage={args.video_stage}, "
+        f"readback={args.video_readback}, "
         f"write_frames={args.write_frames}, "
         f"fps_mean={summary['fps_mean']:.2f}, "
         f"frame_p50_ms={summary['frame_p50_ms']:.3f}, "
@@ -396,10 +419,22 @@ def _build_video_camera(scene, args: argparse.Namespace, frame_index: int) -> Op
     )
 
 
-def _execute_warmup_render(executor, snapshot, bvh, camera_and_rays, timings: "_TimingRecorder") -> None:
-    _camera, rays = camera_and_rays
+def _execute_warmup_render(
+    executor,
+    snapshot,
+    bvh,
+    camera_and_rays,
+    timings: "_TimingRecorder",
+    *,
+    use_gpu_raygen: bool,
+) -> None:
+    camera, rays = camera_and_rays
     with timings.measure("warmup_render_execute_wait"):
-        result = executor.execute(snapshot, bvh, rays)
+        result = (
+            executor.execute_camera(snapshot, bvh, camera)
+            if use_gpu_raygen
+            else executor.execute(snapshot, bvh, rays)
+        )
         wp.synchronize_event(result.ready_event)
 
 
@@ -468,15 +503,25 @@ def _run_video_benchmark(
     frame_dir = out_dir / "frames"
     if args.write_frames:
         frame_dir.mkdir(parents=True, exist_ok=True)
+    if args.video_raygen == "gpu" and args.video_ray_cache != "off":
+        raise SystemExit("--video-raygen gpu computes camera rays on device; use --video-ray-cache off")
     csv_path = Path(args.frame_timing_csv) if args.frame_timing_csv else out_dir / "frame_timing.csv"
     rows = _FrameTimingRecorder(csv_path=csv_path)
     rolling_window_ms: list[float] = []
-    ray_cache = _precompute_video_camera_rays(scene, args) if args.video_ray_cache == "precompute" else None
+    ray_cache = (
+        _precompute_video_camera_rays(scene, args)
+        if args.video_raygen == "host" and args.video_ray_cache == "precompute"
+        else None
+    )
 
     for frame_index in range(int(args.video_frames)):
         frame_start = time.perf_counter()
 
-        if ray_cache is None:
+        if args.video_raygen == "gpu":
+            camera = _build_video_camera(scene, args, frame_index)
+            rays = None
+            camera_rays_ms = _NAN
+        elif ray_cache is None:
             camera_start = time.perf_counter()
             camera = _build_video_camera(scene, args, frame_index)
             rays = build_pinhole_camera_rays(camera)
@@ -486,13 +531,20 @@ def _run_video_benchmark(
             camera_rays_ms = _NAN
 
         render_start = time.perf_counter()
-        result = executor.execute(snapshot, bvh, rays)
+        output_profile = _video_output_profile(args.video_readback)
+        result = (
+            executor.execute_camera(snapshot, bvh, camera, output_profile=output_profile)
+            if args.video_raygen == "gpu"
+            else executor.execute(snapshot, bvh, rays, output_profile=output_profile)
+        )
         wp.synchronize_event(result.ready_event)
         render_execute_ms = (time.perf_counter() - render_start) * 1000.0
 
-        stage_start = time.perf_counter()
-        host_channels = _stage_video_result(result, args.video_stage)
-        stage_host_ms = (time.perf_counter() - stage_start) * 1000.0 if args.video_stage != "none" else _NAN
+        readback_start = time.perf_counter()
+        host_channels = _readback_video_result(result, args.video_readback)
+        readback_host_ms = (
+            (time.perf_counter() - readback_start) * 1000.0 if args.video_readback != "none" else _NAN
+        )
 
         image_build_ms = _NAN
         encode_or_write_ms = _NAN
@@ -534,15 +586,16 @@ def _run_video_benchmark(
                 "sim_time": camera.sim_time,
                 "video_time": float(frame_index) / float(args.video_fps),
                 "geometry_mode": "static",
+                "raygen_mode": args.video_raygen,
                 "ray_cache_mode": args.video_ray_cache,
-                "stage_mode": args.video_stage,
+                "readback_mode": args.video_readback,
                 "write_mode": "rgb_png" if args.write_frames else "none",
                 "camera_rays_ms": camera_rays_ms,
                 "snapshot_ms": _NAN,
                 "refit_ms": _NAN,
                 "rebuild_ms": _NAN,
                 "render_execute_ms": render_execute_ms,
-                "stage_host_ms": stage_host_ms,
+                "readback_host_ms": readback_host_ms,
                 "image_build_ms": image_build_ms,
                 "encode_or_write_ms": encode_or_write_ms,
                 "frame_total_ms": frame_total_ms,
@@ -565,7 +618,7 @@ def _run_video_benchmark(
                 f"{frame_index + 1}/{args.video_frames}: "
                 f"total={frame_total_ms:.3f}ms, "
                 f"render={render_execute_ms:.3f}ms, "
-                f"stage={_format_ms(stage_host_ms)}, "
+                f"readback={_format_ms(readback_host_ms)}, "
                 f"fps={instant_fps:.2f}, rolling_fps={rolling_fps:.2f}, "
                 f"overflow=({_format_scalar(primary_overflow)},{_format_scalar(shadow_overflow)})"
             )
@@ -592,12 +645,20 @@ def _precompute_video_camera_rays(
     return ray_cache
 
 
-def _stage_video_result(result, stage_mode: str) -> dict[str, np.ndarray]:
-    if stage_mode == "none":
+def _readback_video_result(result, readback_mode: str) -> dict[str, np.ndarray]:
+    if readback_mode == "none":
         return {}
-    if stage_mode == "rgb":
-        return stage_optical_channels(result, _VIDEO_RGB_CHANNELS)
+    if readback_mode == "rgb":
+        return stage_optical_channels(result, _VIDEO_RGB_CHANNELS, canonical_dtypes=False)
     return stage_optical_compute_result_to_host(result).channels
+
+
+def _video_output_profile(readback_mode: str) -> OpticalOutputProfile:
+    if readback_mode == "rgb":
+        return OpticalOutputProfile.RGB_PREVIEW
+    if readback_mode == "none":
+        return OpticalOutputProfile.RENDER_ONLY
+    return OpticalOutputProfile.DIRECT_LIGHT_FULL
 
 
 def _rgb_array_to_preview_uint8(rgb: np.ndarray) -> np.ndarray:
@@ -673,15 +734,16 @@ class _FrameTimingRecorder:
         "sim_time",
         "video_time",
         "geometry_mode",
+        "raygen_mode",
         "ray_cache_mode",
-        "stage_mode",
+        "readback_mode",
         "write_mode",
         "camera_rays_ms",
         "snapshot_ms",
         "refit_ms",
         "rebuild_ms",
         "render_execute_ms",
-        "stage_host_ms",
+        "readback_host_ms",
         "image_build_ms",
         "encode_or_write_ms",
         "frame_total_ms",
@@ -708,7 +770,7 @@ class _FrameTimingRecorder:
             "refit",
             "rebuild",
             "render_execute",
-            "stage_host",
+            "readback_host",
             "image_build",
             "encode_or_write",
             "frame_total",
@@ -861,10 +923,17 @@ def _parse_args() -> argparse.Namespace:
         help="Cache video camera rays outside the timed frame loop.",
     )
     parser.add_argument(
-        "--video-stage",
+        "--video-raygen",
+        choices=("host", "gpu"),
+        default="host",
+        help="Generate video camera rays as host ray batches or inside the GPU camera path.",
+    )
+    parser.add_argument(
+        "--video-readback",
+        dest="video_readback",
         choices=("full", "rgb", "none"),
         default="full",
-        help="Host staging mode used by the video benchmark.",
+        help="Host readback mode used by the video benchmark.",
     )
     parser.add_argument(
         "--frame-timing-csv",
@@ -898,10 +967,10 @@ def _parse_args() -> argparse.Namespace:
         parser.error("--video-fps must be > 0")
     if args.progress_every < 0:
         parser.error("--progress-every must be >= 0")
-    if args.video_stage == "none" and args.write_frames:
-        parser.error("--video-stage=none cannot be combined with --write-frames")
-    if args.video_stage == "none" and args.fail_on_overflow:
-        parser.error("--video-stage=none cannot honor --fail-on-overflow")
+    if args.video_readback == "none" and args.write_frames:
+        parser.error("--video-readback=none cannot be combined with --write-frames")
+    if args.video_readback == "none" and args.fail_on_overflow:
+        parser.error("--video-readback=none cannot honor --fail-on-overflow")
     return args
 
 

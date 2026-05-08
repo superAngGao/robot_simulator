@@ -1,7 +1,7 @@
 # Robot Simulator — Project Manifest
 
 > 面向具身智能研究的多物理仿真平台——多物理统一耦合、GPU 原生、渲染与合成数据生成、从第一性原理出发的 API 设计。
-> Last updated: 2026-05-04 (Q54 L5C.1a device optical scene executor)
+> Last updated: 2026-05-08 (Q54 GPU BVH direct-light, CUDA LBVH, GPU camera raygen/readback)
 
 ## 一句话
 
@@ -108,7 +108,10 @@ optics/
   ├── GpuBruteForceOpticalExecutor: L5A Warp first-hit device result path
   ├── execute_optical_on_gpu_published_frame: L5B.1 Q52 GPU optical runtime helper
   ├── DeviceOpticalSceneCache: L5C.0 device-resident optical scene update
-  └── GpuDeviceSceneOpticalExecutor: L5C.1a first-hit executor over device scene buffers
+  ├── GpuDeviceSceneOpticalExecutor: L5C.1 first-hit executor over device scene buffers
+  ├── GpuDeviceBvhOpticalExecutor: device-scene BVH first-hit traversal
+  ├── GpuDeviceBvhDirectLightOpticalExecutor: GPU direct-light + hard shadows
+  └── build_cuda_lbvh_from_snapshot: CUDA LBVH builder for warmed-session BVH rebuild
 
 Q54 current flow:
   OpticalWorldRegistry + OpticalFrameInputs
@@ -118,16 +121,18 @@ Q54 current flow:
     → sensing readings / Rerun sink / examples / future RL consumers
 ```
 
-当前 L5 GPU optical 只做 Warp first-hit：
-`hit_mask/range_m/position_world/normal_world/numeric_instance_id`。L5B.1 已接入
-`GpuPublishedFrame` Q52 borrow/complete lifecycle，并支持 world-static 与 rigid
-body-bound optical instances。L5C.0 已新增 device-resident scene cache：registry
-geometry/metadata 长驻 device，每帧从 `GpuPublishedFrame.x_world_*` 生成 world
-primitive buffers。L5C.1a 已让 GPU executor 直接消费 device scene buffers；
-L5C.1b 已切到 derived triangle payload（`v0/e1/e2/normal`）。L5C.1c 已有
-可选 per-triangle AABB update/traversal variant 与 million-triangle benchmark
-harness；默认启用仍需更多 scene distribution 数据。GPU BVH、GPU
-direct-light/shadow 属于后续。
+当前 L5 GPU optical 已从 first-hit bridge 推进到 device-scene BVH、
+direct-light/shadow、CUDA LBVH build spike 和 GPU pinhole camera raygen。
+L5B.1 已接入 `GpuPublishedFrame` Q52 borrow/complete lifecycle，并支持
+world-static 与 rigid body-bound optical instances。L5C.0/L5C.1b 让 registry
+geometry/metadata 长驻 device，并以 derived triangle payload
+（`v0/e1/e2/normal`）生成 world primitive buffers。L5C.2 现有 flat BVH
+first-hit traversal 与 refit instrumentation；L5C.3 加入 deterministic RGB、
+ambient/directional/point light 和 inline shadow any-hit；L5C.4 CUDA LBVH spike
+已把 warmed tree build 压到 ms 级。Video benchmark 使用 `--video-readback`
+区分 blocking host readback，不把它误称为 pipeline stage；`--video-raygen gpu`
+可在 GPU 上按 pixel id 生成 pinhole rays，保留 `OpticalRaySensorSpec` 作为
+LiDAR/arbitrary ray query 和 CPU/GPU parity reference。
 
 ## 关键文件
 
@@ -154,9 +159,11 @@ direct-light/shadow 属于后续。
 | `optics/builder.py` | RobotModel collision geometry → OpticalWorldRegistry builder |
 | `optics/scene.py` | OpticalFrameInputs + OpticalSceneSnapshot + CPU BVH payload |
 | `optics/execution.py` | CPU reference/BVH/direct-light optical executors |
-| `optics/device.py` | Device workload packing + device→host result staging |
+| `optics/device.py` | Device workload packing + device→host result staging/readback helpers |
+| `optics/device_bvh.py` | Device BVH layout, CPU-build upload, refit, and traversal support buffers |
 | `optics/device_scene.py` | L5C.0/L5C.1b device-resident registry geometry + derived world primitive update |
-| `optics/warp_execution.py` | L5A host-snapshot + L5C.1a/b device-scene Warp first-hit optical executors |
+| `optics/cuda_lbvh.py` | CUDA LBVH extension spike and device BVH builder backend |
+| `optics/warp_execution.py` | GPU optical Warp executors: brute-force, device scene, BVH, direct-light/shadow, GPU camera raygen |
 | `optics/gpu_runtime.py` | L5B.1 Q52 `GpuPublishedFrame` optical runtime helper |
 | `benchmarks/bench_optical_device_scene.py` | L5C.1c AABB/BVH decision benchmark harness |
 | `benchmarks/robot_optical_scene.py` | Shared robot-like optical scene generator for benchmarks/examples |
@@ -166,6 +173,8 @@ direct-light/shadow 属于后续。
 | `examples/optical_direct_light_preview.py` | In-repo CPU optical RGB/depth/segmentation preview |
 | `examples/optical_robot_scene_preview.py` | Robot-like optical preview writer using benchmark scene generator |
 | `examples/mujoco_menagerie_robot_preview.py` | Open-source MuJoCo Menagerie visual mesh preview importer/writer |
+| `examples/mujoco_menagerie_gpu_preview.py` | GPU Go2 preview/video benchmark with CUDA LBVH, GPU raygen, readback modes |
+| `examples/optical_readback_microbench.py` | Device→host readback/materialization microbenchmark |
 | `simulator.py` | 多机器人编排 |
 | `robot/urdf_loader.py` | URDF → RobotModel |
 | `robot/mesh_loader.py` | trimesh 网格加载 → ConvexHullShape |
@@ -203,7 +212,9 @@ direct-light/shadow 属于后续。
 | Q54 L5C.1a — GPU executor over device scene buffers | ✅ |
 | Q54 L5C.1b — derived triangle buffers | ✅ |
 | Q54 L5C.1c — AABB traversal variant + benchmark harness | 🟡 |
-| Q54 L5C.2 — GPU BVH / OptiX evaluation | ⬜ |
+| Q54 L5C.2 — GPU BVH traversal/refit correctness bridge | ✅ |
+| Q54 L5C.3 — GPU direct-light + shadow any-hit | ✅ |
+| Q54 L5C.4 — CUDA LBVH build + GPU raygen/readback optimization | 🟡 |
 | 4 — 域随机化 | ⬜ |
 | 5 — Sim-to-Real | ⬜ |
 

@@ -2613,20 +2613,20 @@ Follow-up：
   importer，使用 `GpuDeviceBvhDirectLightOpticalExecutor(shadows=True)` 渲染
   RGB/depth/segmentation/panel。960x640 front/side 均成功，398,432 triangles，
   primary/shadow overflow 均为 0，hard shadows 可见。当前 elapsed wall time
-  包含 mesh import、device upload、BVH build、render、staging、PNG writing，
+  包含 mesh import、device upload、BVH build、render、readback、PNG writing，
   不作为纯 kernel timing。Path tracing 仍延期到独立 executor family。
 - L5C.3d / L5C.4 preview performance open question：GPU preview 端到端仍偏慢。
   2026-05-05 重测 Go2 Menagerie 960x640 front view：CPU direct-light preview
   wall time ≈ 119.23s；GPU direct-light + shadows preview wall time ≈ 23.29s。
   GPU 已有约 5x 端到端收益，但 23s 对 README/high-res preview 仍不理想。
   下一轮不要先猜 kernel，而应拆分 timing：MJCF/mesh import、device scene pack、
-  BVH build/refit、first-hit traversal、shade/shadow traversal、host staging、
+  BVH build/refit、first-hit traversal、shade/shadow traversal、host readback、
   PNG/panel writing。再按数据决定优化顺序。
 - 2026-05-06 初步拆解：`examples/mujoco_menagerie_gpu_preview.py` 已增加
   structured timing / optional CSV / render-only warmup-repeat。Go2 Menagerie
   960x640 front view（398,432 triangles, shadows on）实测：
   `import_scene≈1.41s`、`device_scene_snapshot≈9.46s`、`bvh_build≈11.37s`、
-  warmed `render_execute_wait p50≈27.3ms`、`stage_host≈84ms`、`write_images≈387ms`、
+  warmed `render_execute_wait p50≈27.3ms`、`readback_host≈84ms`、`write_images≈387ms`、
   total≈23.44s。当前瓶颈不是 ray traversal/shadow kernel，而是每次 preview
   都重新生成 device snapshot 并 CPU-build/upload BVH。下一步要继续区分
   `device_scene_snapshot` 中的 Warp first-launch/compile、buffer allocation、实际
@@ -2823,26 +2823,26 @@ Follow-up：
      `--progress-every`、`--video-mode camera_orbit|pose_sequence`、
      `--write-frames/--no-write-frames`。
   2. 逐帧 CSV 字段：`frame_index`、`sim_time`、`snapshot_ms`、`refit_ms` 或
-     `rebuild_ms`、`render_execute_ms`、`stage_host_ms`、`image_build_ms`、
+     `rebuild_ms`、`render_execute_ms`、`readback_host_ms`、`image_build_ms`、
      `encode_or_write_ms`、`frame_total_ms`、`instant_fps`、`rolling_fps`、
      `primary/shadow overflow`、`primary/shadow max_stack`。
   3. stdout 实时进度：每 N 帧打印 total/render/build-or-refit/fps/rolling_fps 和
      overflow 状态。
   4. 场景模式分层：先做 camera-orbit video（scene/BVH/snapshot 不变，只变 camera
-     rays，隔离 render/stage/encode 吞吐），再做 pose-changing published frames
+     rays，隔离 render/readback/encode 吞吐），再做 pose-changing published frames
      （每帧 snapshot + refit/rebuild），最后再评估 async double-buffer overlap。
   5. benchmark 报告必须区分 cold start、session warmup、steady-state per-frame、
      frame writing/encoding，不再用单张 preview 的 total time 推断视频性能。
 - Video benchmark optimization V1：Claude review 后采纳以下 V1 决策，并已在
   2026-05-07 落地：
-  1. V1 只做 ray cache、selected staging、RGB-only write；暂不并行做 render
+  1. V1 只做 ray cache、selected readback、RGB-only write；暂不并行做 render
      kernel profiling。
   2. `--video-ray-cache off|precompute`，默认 off；benchmark notes 同时报 uncached
      和 precompute 行。
-  3. selected staging 放到窄的 optics helper，例如
+  3. selected readback 放到窄的 optics helper，例如
      `stage_optical_channels(result, channels)`，避免 example 重复处理 Warp
      ownership / stream sync 细节。
-  4. V1 CLI 用 `--video-stage full|rgb|none`，暂不做自由 channel list。
+  4. V1 CLI 已统一为 `--video-readback full|rgb|none`，暂不做自由 channel list。
   5. RGB-only write 可绕过 `build_pinhole_camera_image_result`，但必须标注
      benchmark-only，并复用正式 preview 的 gamma/clip/channel ordering。
   6. static `camera_orbit` 复用同一 `snapshot.frame_id/sim_time` 可接受，但
@@ -2851,22 +2851,22 @@ Follow-up：
   7. skipped/not-applicable phases 用 `NaN`，不用 `0`，避免把“未测”误读为“耗时
      为零”。
   8. double-buffer go/no-go gate：先拿到 V1 render-only p50/p90（precomputed
-     rays + no stage）、V2 changing-geometry warm `refit_ms` p50、V2 warm CUDA
+     rays + no readback）、V2 changing-geometry warm `refit_ms` p50、V2 warm CUDA
      LBVH `rebuild_ms` p50。只有当 `rebuild_ms` 接近或大于 `render_execute_ms`
      时，double-buffer overlap 才值得进入实现；如果 rigid refit 已远快于 render，
      则 rigid path 不应优先做 overlap。
   9. V1 960x640 static Go2 camera-orbit matrix（direct-light + shadow）：
-     - uncached rays + full stage + no write：`frame_total_mean≈108.10ms`，
+     - uncached rays + full readback + no write：`frame_total_mean≈108.10ms`，
        `fps_mean≈9.25`，`camera_rays≈45.89ms`，`render≈27.40ms`，
-       `stage≈34.81ms`。
-     - precomputed rays + full stage + no write：`frame_total_mean≈58.63ms`，
-       `fps_mean≈17.06`，`render≈26.86ms`，`stage≈31.77ms`。
-     - precomputed rays + no stage + no write：`frame_total_mean≈29.19ms`，
+       `readback≈34.81ms`。
+     - precomputed rays + full readback + no write：`frame_total_mean≈58.63ms`，
+       `fps_mean≈17.06`，`render≈26.86ms`，`readback≈31.77ms`。
+     - precomputed rays + no readback + no write：`frame_total_mean≈29.19ms`，
        `fps_mean≈34.26`，`render≈29.18ms`。
-     - precomputed rays + rgb stage + RGB PNG：`frame_total_mean≈90.19ms`，
-       `fps_mean≈11.09`，`render≈27.25ms`，`stage≈5.86ms`，
+     - precomputed rays + rgb readback + RGB PNG：`frame_total_mean≈90.19ms`，
+       `fps_mean≈11.09`，`render≈27.25ms`，`readback≈5.86ms`，
        `image_build≈18.98ms`，`png_write≈38.09ms`。
-     结论：ray cache 和 selected RGB staging 是明确的大收益；PNG 输出仍应与
+     结论：ray cache 和 selected RGB readback 是明确的大收益；PNG 输出仍应与
      renderer 性能分开报告。V2 下一步是 changing-geometry snapshot/refit/rebuild
      benchmark。
 - GPU camera ray generation follow-up：2026-05-07 讨论后明确，CPU
@@ -2889,6 +2889,33 @@ Follow-up：
      `build_pinhole_camera_rays(...) + execute(..., rays)` 的
      range/rgb/hit parity；benchmark 需分开报告 cached CPU rays、GPU raygen、
      readback、uint8 pack 和 PNG/encoding。
+  7. 2026-05-08 已完成第一版 spike：
+     - `GpuDeviceBvhOpticalExecutor.execute_camera(...)` 和
+       `GpuDeviceBvhDirectLightOpticalExecutor.execute_camera(...)`。
+     - `_pinhole_camera_raygen_kernel` 在 GPU 上按 pixel id 生成
+       origins/directions；现阶段仍复用现有 BVH traversal/direct-light kernels，
+       还不是最终 fused renderer。
+     - video preview 增加 `--video-raygen host|gpu` 和 CSV `raygen_mode`。
+     - parity：`camera_raygen` GPU tests 2 passed；direct-light/device-BVH 相关
+       targeted tests 7 passed。
+     - 960x640 Go2 direct-light + shadow：
+       `video-raygen=gpu, readback=none` 时 `render≈16.61ms`、
+       `frame_total≈16.76ms`、`fps≈59.68`；
+       `video-raygen=gpu, readback=rgb` 时 `render≈18.79ms`、
+       `readback≈16.09ms`、`frame_total≈35.03ms`、`fps≈28.55`。
+       结论：CPU ray generation/upload 已经从 frame loop 移除；下一瓶颈回到
+       RGB readback/materialization 和尚未 fuse 的 trace/shade path。
+  8. 2026-05-08 readback 命名与语义修正：video benchmark 外部接口统一用
+     `--video-readback full|rgb|none`、CSV `readback_mode/readback_host_ms`、
+     stdout `readback=...`。当前 readback 是 blocking host transfer +
+     Warp `.numpy()` materialization + host copy/conversion，不会隐藏 latency；
+     未来若要隐藏延迟，应另做 pinned host memory + async copy + readback ring。
+     内部 `stage_optical_channels(...)` 名称保留，因为它描述底层 device-result
+     staging contract。RGB readback 现在走 `rgb_preview` 并保留 float32 host RGB；
+     full readback 继续使用 canonical host dtypes。修复后 960x640 Go2
+     `video-raygen=gpu, readback=rgb, no write` 为 `render≈16.85ms`、
+     `readback≈4.91ms`、`frame_total≈21.91ms`、`fps≈45.64`，相比此前
+     canonical float64 RGB readback 的 `readback≈16.09ms` 明显下降。
 - Optical output profile API review follow-up：Claude review 后采纳正式 result
   contract 方向，开始实现：
   1. `OpticalOutputProfile` 用 Enum，不用 string Literal，并在 Enum 上编码
@@ -2922,7 +2949,7 @@ Follow-up：
   5. GPU uint8 pack 暂放 V1.6；触发阈值：
      `(float32_rgb_readback_ms + cpu_gamma_uint8_ms) >
      float32_rgb_readback_ms * 1.3`。
-  6. pinned memory / async copy / staging ring defer；microbench 可以记录同步策略，
+  6. pinned memory / async copy / readback ring defer；microbench 可以记录同步策略，
      但不实现 async pipeline。
   7. PNG/encoding 放同一份报告但用 `group=encoding` 分开，不纳入 renderer/readback
      结论。
@@ -2936,7 +2963,7 @@ Follow-up：
      - `rgb_float64_linear_rgb_to_preview_uint8`: p50≈22.806ms。
      - `png_default`: p50≈34.401ms，mean≈53.393ms（IO tail 明显）。
      - `raw_write`/`npy_write`: p50≈1.9-2.0ms。
-     结论：full staging 的大头是 geometry-heavy channels + canonical float64
+     结论：full readback 的大头是 geometry-heavy channels + canonical float64
      materialization；RGB current 和 float32 下界差距明显。CPU float32 RGB->uint8
      preview 转换已超过 float32 RGB readback 的 2x，满足 V1.6 GPU uint8 pack
      spike 条件。PNG 不应作为 renderer throughput 指标。

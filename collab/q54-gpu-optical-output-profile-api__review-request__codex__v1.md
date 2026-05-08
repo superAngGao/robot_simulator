@@ -30,7 +30,7 @@ shadow_max_stack_depth
 The V1 video benchmark added:
 
 ```text
---video-stage full|rgb|none
+--video-readback full|rgb|none
 stage_optical_channels(result, channels)
 ```
 
@@ -227,7 +227,7 @@ Open detail:
 Should `render_only` still return overflow diagnostics? Returning diagnostics
 requires some output buffers and optional host readback, but having them is very
 useful for safety. V1 benchmark currently treats diagnostics as NaN in
-`--video-stage none`.
+`--video-readback none`.
 
 ## API Surface
 

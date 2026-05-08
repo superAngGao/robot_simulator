@@ -14,6 +14,7 @@ from optics import (
     OpticalInstanceSpec,
     OpticalLightSpec,
     OpticalMaterialSpec,
+    OpticalOutputProfile,
     OpticalSceneCache,
     OpticalWorldRegistry,
     build_cuda_lbvh_from_snapshot,
@@ -29,7 +30,7 @@ from physics.publish import ConsumerState, CpuPublishedFrame, GpuPublishedFrame,
 from physics.robot_tree import Body, RobotTreeNumpy
 from physics.spatial import SpatialInertia, SpatialTransform
 from robot.model import RobotModel
-from sensing import OpticalRaySensorSpec
+from sensing import OpticalPinholeCameraSpec, OpticalRaySensorSpec, build_pinhole_camera_rays
 
 try:
     import warp as wp
@@ -417,6 +418,34 @@ def _ray_spec(frame) -> OpticalRaySensorSpec:
         origins_world=[[0.0, 0.0, 2.0], [0.0, 0.0, 2.0]],
         directions_world=[[0.0, 0.0, -1.0], [1.0, 0.0, 0.0]],
         max_distance=10.0,
+    )
+
+
+def _downward_camera_spec(frame) -> OpticalPinholeCameraSpec:
+    return OpticalPinholeCameraSpec(
+        frame_id=frame.frame_id,
+        sim_time=frame.sim_time,
+        env_idx=0,
+        sensor_id="gpu_camera",
+        width=2,
+        height=1,
+        fx=1.0,
+        fy=1.0,
+        cx=0.0,
+        cy=0.0,
+        X_world_camera=SpatialTransform(
+            np.array(
+                [
+                    [1.0, 0.0, 0.0],
+                    [0.0, -1.0, 0.0],
+                    [0.0, 0.0, -1.0],
+                ],
+                dtype=np.float64,
+            ),
+            np.array([0.0, 0.0, 2.0], dtype=np.float64),
+        ),
+        max_distance=10.0,
+        sensor_role="rgb",
     )
 
 
@@ -1106,6 +1135,100 @@ def test_device_bvh_executor_preserves_plane_triangle_tie_break():
     np.testing.assert_allclose(staged.channel("range_m"), [2.0], atol=1e-6)
     np.testing.assert_array_equal(staged.channel("numeric_instance_id"), [1])
     np.testing.assert_array_equal(staged.channel("bvh_stack_overflow_count"), [0])
+
+
+def test_device_bvh_camera_raygen_matches_materialized_rays():
+    engine = _make_engine()
+    consumer = _consumer()
+    engine.register_consumer(consumer)
+    engine.step()
+    frame = engine.latest_published_frame()
+    registry = _lit_triangle_registry()
+    camera = _downward_camera_spec(frame)
+    rays = build_pinhole_camera_rays(camera)
+
+    stream = wp.Stream(device=engine._device)
+    borrowed = engine.borrow_device_frame(consumer.consumer_id, frame.frame_id, stream=stream)
+    cache = DeviceOpticalSceneCache(registry, device=engine._device, stream=stream)
+    snapshot = cache.snapshot_from_gpu_frame(borrowed, env_idx=0, stream=stream, include_aabb=True)
+    bvh = build_device_bvh_from_snapshot(snapshot, device=engine._device, stream=stream)
+    executor = GpuDeviceBvhOpticalExecutor(device=engine._device, stream=stream)
+    materialized = executor.execute(snapshot, bvh, rays)
+    camera_result = executor.execute_camera(snapshot, bvh, camera)
+    done_event = engine.complete_device_consumer(consumer.consumer_id, frame.frame_id, stream=stream)
+
+    wp.synchronize_event(done_event)
+    materialized_host = stage_optical_compute_result_to_host(materialized)
+    camera_host = stage_optical_compute_result_to_host(camera_result)
+    np.testing.assert_array_equal(camera_host.channel("hit_mask"), materialized_host.channel("hit_mask"))
+    np.testing.assert_allclose(
+        camera_host.channel("range_m"),
+        materialized_host.channel("range_m"),
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        camera_host.channel("position_world"),
+        materialized_host.channel("position_world"),
+        atol=1e-6,
+        equal_nan=True,
+    )
+    np.testing.assert_allclose(
+        camera_host.channel("normal_world"),
+        materialized_host.channel("normal_world"),
+        atol=1e-6,
+        equal_nan=True,
+    )
+    np.testing.assert_array_equal(
+        camera_host.channel("numeric_instance_id"),
+        materialized_host.channel("numeric_instance_id"),
+    )
+    np.testing.assert_array_equal(
+        camera_host.channel("material_index"),
+        materialized_host.channel("material_index"),
+    )
+    np.testing.assert_array_equal(camera_host.channel("bvh_stack_overflow_count"), [0])
+
+
+def test_device_bvh_direct_light_camera_raygen_rgb_preview_matches_materialized_rays():
+    engine = _make_engine()
+    consumer = _consumer()
+    engine.register_consumer(consumer)
+    engine.step()
+    frame = engine.latest_published_frame()
+    registry = _lit_triangle_registry()
+    camera = _downward_camera_spec(frame)
+    rays = build_pinhole_camera_rays(camera)
+
+    stream = wp.Stream(device=engine._device)
+    borrowed = engine.borrow_device_frame(consumer.consumer_id, frame.frame_id, stream=stream)
+    cache = DeviceOpticalSceneCache(registry, device=engine._device, stream=stream)
+    snapshot = cache.snapshot_from_gpu_frame(borrowed, env_idx=0, stream=stream, include_aabb=True)
+    bvh = build_device_bvh_from_snapshot(snapshot, device=engine._device, stream=stream)
+    executor = GpuDeviceBvhDirectLightOpticalExecutor(
+        device=engine._device,
+        stream=stream,
+        shadows=False,
+        ambient_rgb=(0.1, 0.2, 0.3),
+        background_rgb=(0.01, 0.02, 0.03),
+    )
+    materialized = executor.execute(snapshot, bvh, rays, output_profile=OpticalOutputProfile.RGB_PREVIEW)
+    camera_result = executor.execute_camera(
+        snapshot,
+        bvh,
+        camera,
+        output_profile=OpticalOutputProfile.RGB_PREVIEW,
+    )
+    done_event = engine.complete_device_consumer(consumer.consumer_id, frame.frame_id, stream=stream)
+
+    wp.synchronize_event(done_event)
+    materialized_host = stage_optical_compute_result_to_host(materialized)
+    camera_host = stage_optical_compute_result_to_host(camera_result)
+    assert camera_result.output_profile is OpticalOutputProfile.RGB_PREVIEW
+    assert set(camera_result.channels) == OpticalOutputProfile.RGB_PREVIEW.guaranteed_channels
+    np.testing.assert_array_equal(camera_host.channel("hit_mask"), materialized_host.channel("hit_mask"))
+    np.testing.assert_allclose(camera_host.channel("rgb"), materialized_host.channel("rgb"), atol=1e-5)
+    np.testing.assert_array_equal(camera_host.channel("bvh_stack_overflow_count"), [0])
+    np.testing.assert_array_equal(camera_host.channel("shadow_stack_overflow_count"), [0])
 
 
 def test_device_bvh_refit_matches_fresh_build_for_triangle_grid():

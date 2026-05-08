@@ -153,6 +153,32 @@ def test_stage_optical_channels_stages_selected_channels_only():
     np.testing.assert_array_equal(staged["numeric_instance_id"], [4, 0])
 
 
+def test_stage_optical_channels_can_preserve_device_dtypes_for_preview_readback():
+    device_result = OpticalComputeResult(
+        frame_id=7,
+        sim_time=0.07,
+        env_idx=2,
+        sensor_id="gpu_probe",
+        location="device",
+        channels={
+            "hit_mask": _ArrayLike(np.array([1, 0], dtype=np.int32)),
+            "rgb": _ArrayLike(np.array([[0.1, 0.2, 0.3]], dtype=np.float32)),
+            "bvh_stack_overflow_count": _ArrayLike(np.array([0], dtype=np.int32)),
+        },
+    )
+
+    staged = stage_optical_channels(
+        device_result,
+        ("hit_mask", "rgb", "bvh_stack_overflow_count"),
+        canonical_dtypes=False,
+    )
+
+    assert staged["hit_mask"].dtype == np.int32
+    assert staged["rgb"].dtype == np.float32
+    assert staged["bvh_stack_overflow_count"].dtype == np.int32
+    np.testing.assert_allclose(staged["rgb"], [[0.1, 0.2, 0.3]], rtol=1e-6)
+
+
 def test_stage_optical_compute_result_to_host_rejects_host_result():
     result = OpticalComputeResult(frame_id=1, sim_time=0.0, env_idx=0, sensor_id="probe")
 
