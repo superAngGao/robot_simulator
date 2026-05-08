@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from contextlib import nullcontext
 
 import numpy as np
@@ -377,11 +378,15 @@ class GpuDeviceBvhOpticalExecutor:
         snapshot: DeviceOpticalSceneSnapshot,
         bvh: DeviceOpticalBvh,
         spec: OpticalRaySensorSpec,
+        *,
+        initialize_full_outputs: bool = True,
+        render_profile: list[tuple[str, float]] | None = None,
     ) -> OpticalComputeResult:
         self._validate(snapshot, bvh, spec)
         num_rays = spec.num_rays
 
         with _scoped_stream(self.stream):
+            start = time.perf_counter()
             origins = wp.array(
                 np.asarray(spec.origins_world, dtype=np.float32),
                 dtype=wp.float32,
@@ -392,6 +397,7 @@ class GpuDeviceBvhOpticalExecutor:
                 dtype=wp.float32,
                 device=self.device,
             )
+            _add_profile_ms(render_profile, "host_ray_upload_ms", start)
 
         return self._execute_device_ray_arrays(
             snapshot,
@@ -405,6 +411,8 @@ class GpuDeviceBvhOpticalExecutor:
             num_rays=num_rays,
             max_distance=spec.max_distance,
             sensor_role=spec.sensor_role,
+            initialize_full_outputs=initialize_full_outputs,
+            render_profile=render_profile,
         )
 
     def execute_camera(
@@ -412,17 +420,25 @@ class GpuDeviceBvhOpticalExecutor:
         snapshot: DeviceOpticalSceneSnapshot,
         bvh: DeviceOpticalBvh,
         camera: OpticalPinholeCameraSpec,
+        *,
+        initialize_full_outputs: bool = True,
+        render_profile: list[tuple[str, float]] | None = None,
     ) -> OpticalComputeResult:
         """Execute first-hit BVH traversal for a pinhole camera without host ray materialization."""
 
         self._validate_camera(snapshot, bvh, camera)
         num_rays = int(camera.width * camera.height)
+        start = time.perf_counter()
         R = np.asarray(camera.X_world_camera.R, dtype=np.float32)
         r = np.asarray(camera.X_world_camera.r, dtype=np.float32)
+        _add_profile_ms(render_profile, "raygen_camera_params_ms", start)
 
         with _scoped_stream(self.stream):
-            origins = wp.zeros((num_rays, 3), dtype=wp.float32, device=self.device)
-            directions = wp.zeros((num_rays, 3), dtype=wp.float32, device=self.device)
+            start = time.perf_counter()
+            origins = wp.empty((num_rays, 3), dtype=wp.float32, device=self.device)
+            directions = wp.empty((num_rays, 3), dtype=wp.float32, device=self.device)
+            _add_profile_ms(render_profile, "raygen_buffer_alloc_ms", start)
+            start = time.perf_counter()
             wp.launch(
                 _pinhole_camera_raygen_kernel,
                 dim=num_rays,
@@ -451,6 +467,7 @@ class GpuDeviceBvhOpticalExecutor:
                 device=self.device,
                 stream=self.stream,
             )
+            _record_profiled_event(self.stream, self.device, render_profile, "raygen_kernel_ms", start)
 
         return self._execute_device_ray_arrays(
             snapshot,
@@ -464,6 +481,8 @@ class GpuDeviceBvhOpticalExecutor:
             num_rays=num_rays,
             max_distance=camera.max_distance,
             sensor_role=camera.sensor_role,
+            initialize_full_outputs=initialize_full_outputs,
+            render_profile=render_profile,
         )
 
     def _execute_device_ray_arrays(
@@ -480,50 +499,95 @@ class GpuDeviceBvhOpticalExecutor:
         num_rays: int,
         max_distance: float,
         sensor_role: str,
+        initialize_full_outputs: bool = True,
+        render_profile: list[tuple[str, float]] | None = None,
     ) -> OpticalComputeResult:
         scene = snapshot.scene
         sensor_role_mask = np.int64(scene.role_table.mask_for(sensor_role))
 
         with _scoped_stream(self.stream):
+            start = time.perf_counter()
             _wait_on_event(snapshot.ready_event, stream=self.stream, device=self.device)
             _wait_on_event(bvh.ready_event, stream=self.stream, device=self.device)
-            hit_mask = wp.array(np.zeros(num_rays, dtype=np.int32), dtype=wp.int32, device=self.device)
-            range_m = wp.array(
-                np.full(num_rays, np.inf, dtype=np.float32),
-                dtype=wp.float32,
-                device=self.device,
-            )
-            position_world = wp.array(
-                np.full((num_rays, 3), np.nan, dtype=np.float32),
-                dtype=wp.float32,
-                device=self.device,
-            )
-            normal_world = wp.array(
-                np.full((num_rays, 3), np.nan, dtype=np.float32),
-                dtype=wp.float32,
-                device=self.device,
-            )
-            numeric_instance_id = wp.array(
-                np.zeros(num_rays, dtype=np.int32),
-                dtype=wp.int32,
-                device=self.device,
-            )
-            material_index = wp.array(
-                np.zeros(num_rays, dtype=np.int32),
-                dtype=wp.int32,
-                device=self.device,
-            )
-            bvh_stack_overflow_count = wp.array(
-                np.zeros(1, dtype=np.int32),
-                dtype=wp.int32,
-                device=self.device,
-            )
-            bvh_max_stack_depth = wp.array(
-                np.zeros(1, dtype=np.int32),
-                dtype=wp.int32,
-                device=self.device,
-            )
+            _add_profile_ms(render_profile, "first_hit_wait_inputs_ms", start)
+            output_alloc_start = time.perf_counter()
+            start = time.perf_counter()
+            if initialize_full_outputs:
+                hit_mask = wp.array(np.zeros(num_rays, dtype=np.int32), dtype=wp.int32, device=self.device)
+                _add_profile_ms(render_profile, "first_hit_alloc_hit_mask_ms", start)
+                start = time.perf_counter()
+                range_m = wp.array(
+                    np.full(num_rays, np.inf, dtype=np.float32),
+                    dtype=wp.float32,
+                    device=self.device,
+                )
+                _add_profile_ms(render_profile, "first_hit_alloc_range_m_ms", start)
+                start = time.perf_counter()
+                position_world = wp.array(
+                    np.full((num_rays, 3), np.nan, dtype=np.float32),
+                    dtype=wp.float32,
+                    device=self.device,
+                )
+                _add_profile_ms(render_profile, "first_hit_alloc_position_world_ms", start)
+                start = time.perf_counter()
+                normal_world = wp.array(
+                    np.full((num_rays, 3), np.nan, dtype=np.float32),
+                    dtype=wp.float32,
+                    device=self.device,
+                )
+                _add_profile_ms(render_profile, "first_hit_alloc_normal_world_ms", start)
+                start = time.perf_counter()
+                numeric_instance_id = wp.array(
+                    np.zeros(num_rays, dtype=np.int32),
+                    dtype=wp.int32,
+                    device=self.device,
+                )
+                material_index = wp.array(
+                    np.zeros(num_rays, dtype=np.int32),
+                    dtype=wp.int32,
+                    device=self.device,
+                )
+                _add_profile_ms(render_profile, "first_hit_alloc_ids_ms", start)
+            else:
+                hit_mask = wp.empty(num_rays, dtype=wp.int32, device=self.device)
+                _add_profile_ms(render_profile, "first_hit_alloc_hit_mask_ms", start)
+                start = time.perf_counter()
+                range_m = wp.empty(num_rays, dtype=wp.float32, device=self.device)
+                _add_profile_ms(render_profile, "first_hit_alloc_range_m_ms", start)
+                start = time.perf_counter()
+                position_world = wp.empty((num_rays, 3), dtype=wp.float32, device=self.device)
+                _add_profile_ms(render_profile, "first_hit_alloc_position_world_ms", start)
+                start = time.perf_counter()
+                normal_world = wp.empty((num_rays, 3), dtype=wp.float32, device=self.device)
+                _add_profile_ms(render_profile, "first_hit_alloc_normal_world_ms", start)
+                start = time.perf_counter()
+                numeric_instance_id = wp.empty(num_rays, dtype=wp.int32, device=self.device)
+                material_index = wp.empty(num_rays, dtype=wp.int32, device=self.device)
+                _add_profile_ms(render_profile, "first_hit_alloc_ids_ms", start)
+            start = time.perf_counter()
+            bvh_stack_overflow_count = wp.zeros(1, dtype=wp.int32, device=self.device)
+            bvh_max_stack_depth = wp.zeros(1, dtype=wp.int32, device=self.device)
+            _add_profile_ms(render_profile, "first_hit_alloc_diagnostics_ms", start)
+            _add_profile_ms(render_profile, "first_hit_output_alloc_ms", output_alloc_start)
 
+            if not initialize_full_outputs:
+                start = time.perf_counter()
+                wp.launch(
+                    _init_bvh_hit_mask_kernel,
+                    dim=num_rays,
+                    inputs=[hit_mask],
+                    device=self.device,
+                    stream=self.stream,
+                )
+                _record_profiled_event(
+                    self.stream,
+                    self.device,
+                    render_profile,
+                    "first_hit_init_outputs_ms",
+                    start,
+                )
+
+            start = time.perf_counter()
             wp.launch(
                 _device_scene_bvh_first_hit_kernel,
                 dim=num_rays,
@@ -568,6 +632,7 @@ class GpuDeviceBvhOpticalExecutor:
                 stream=self.stream,
             )
             ready_event = (self.stream or wp.get_stream(self.device)).record_event()
+            _sync_profiled_event(ready_event, render_profile, "first_hit_kernel_ms", start)
 
         return OpticalComputeResult(
             frame_id=frame_id,
@@ -702,16 +767,25 @@ class GpuDeviceBvhDirectLightOpticalExecutor:
         spec: OpticalRaySensorSpec,
         *,
         output_profile: OpticalOutputProfile | str = OpticalOutputProfile.DIRECT_LIGHT_FULL,
+        render_profile: list[tuple[str, float]] | None = None,
     ) -> OpticalComputeResult:
         output_profile = normalize_output_profile(output_profile)
         _validate_supported_output_profile(output_profile, self.supported_profiles, type(self).__name__)
-        geometry = self._first_hit.execute(snapshot, bvh, spec)
+        initialize_full_outputs = output_profile is OpticalOutputProfile.DIRECT_LIGHT_FULL
+        geometry = self._first_hit.execute(
+            snapshot,
+            bvh,
+            spec,
+            initialize_full_outputs=initialize_full_outputs,
+            render_profile=render_profile,
+        )
         return self._shade_geometry(
             snapshot,
             bvh,
             geometry,
             sensor_role=spec.sensor_role,
             output_profile=output_profile,
+            render_profile=render_profile,
         )
 
     def execute_camera(
@@ -721,18 +795,27 @@ class GpuDeviceBvhDirectLightOpticalExecutor:
         camera: OpticalPinholeCameraSpec,
         *,
         output_profile: OpticalOutputProfile | str = OpticalOutputProfile.DIRECT_LIGHT_FULL,
+        render_profile: list[tuple[str, float]] | None = None,
     ) -> OpticalComputeResult:
         """Render a pinhole camera without materializing/uploading host ray buffers."""
 
         output_profile = normalize_output_profile(output_profile)
         _validate_supported_output_profile(output_profile, self.supported_profiles, type(self).__name__)
-        geometry = self._first_hit.execute_camera(snapshot, bvh, camera)
+        initialize_full_outputs = output_profile is OpticalOutputProfile.DIRECT_LIGHT_FULL
+        geometry = self._first_hit.execute_camera(
+            snapshot,
+            bvh,
+            camera,
+            initialize_full_outputs=initialize_full_outputs,
+            render_profile=render_profile,
+        )
         return self._shade_geometry(
             snapshot,
             bvh,
             geometry,
             sensor_role=camera.sensor_role,
             output_profile=output_profile,
+            render_profile=render_profile,
         )
 
     def _shade_geometry(
@@ -743,32 +826,28 @@ class GpuDeviceBvhDirectLightOpticalExecutor:
         *,
         sensor_role: str,
         output_profile: OpticalOutputProfile,
+        render_profile: list[tuple[str, float]] | None = None,
     ) -> OpticalComputeResult:
         scene = snapshot.scene
         num_rays = int(geometry.channels["hit_mask"].shape[0])
 
         with _scoped_stream(self.stream):
+            start = time.perf_counter()
             _wait_on_event(geometry.ready_event, stream=self.stream, device=self.device)
-            rgb = wp.array(
-                np.repeat(self.background_rgb[None, :], num_rays, axis=0),
-                dtype=wp.float32,
-                device=self.device,
-            )
-            intensity = wp.array(
-                np.zeros(num_rays, dtype=np.float32),
-                dtype=wp.float32,
-                device=self.device,
-            )
-            shadow_stack_overflow_count = wp.array(
-                np.zeros(1, dtype=np.int32),
-                dtype=wp.int32,
-                device=self.device,
-            )
-            shadow_max_stack_depth = wp.array(
-                np.zeros(1, dtype=np.int32),
-                dtype=wp.int32,
-                device=self.device,
-            )
+            _add_profile_ms(render_profile, "shade_wait_geometry_ms", start)
+            start = time.perf_counter()
+            output_alloc_start = start
+            rgb = wp.empty((num_rays, 3), dtype=wp.float32, device=self.device)
+            _add_profile_ms(render_profile, "shade_alloc_rgb_ms", start)
+            start = time.perf_counter()
+            intensity = wp.empty(num_rays, dtype=wp.float32, device=self.device)
+            _add_profile_ms(render_profile, "shade_alloc_intensity_ms", start)
+            start = time.perf_counter()
+            shadow_stack_overflow_count = wp.zeros(1, dtype=wp.int32, device=self.device)
+            shadow_max_stack_depth = wp.zeros(1, dtype=wp.int32, device=self.device)
+            _add_profile_ms(render_profile, "shade_alloc_diagnostics_ms", start)
+            _add_profile_ms(render_profile, "shade_output_alloc_ms", output_alloc_start)
+            start = time.perf_counter()
             wp.launch(
                 _device_scene_direct_light_kernel,
                 dim=num_rays,
@@ -818,6 +897,7 @@ class GpuDeviceBvhDirectLightOpticalExecutor:
                 stream=self.stream,
             )
             ready_event = (self.stream or wp.get_stream(self.device)).record_event()
+            _sync_profiled_event(ready_event, render_profile, "shade_kernel_ms", start)
 
         channels = dict(geometry.channels)
         channels["rgb"] = rgb
@@ -888,6 +968,40 @@ def _wait_on_event(event, *, stream, device) -> None:
     if event is None:
         return
     (stream or wp.get_stream(device)).wait_event(event)
+
+
+def _add_profile_ms(
+    render_profile: list[tuple[str, float]] | None,
+    name: str,
+    start: float,
+) -> None:
+    if render_profile is not None:
+        render_profile.append((name, (time.perf_counter() - start) * 1000.0))
+
+
+def _record_profiled_event(
+    stream,
+    device,
+    render_profile: list[tuple[str, float]] | None,
+    name: str,
+    start: float,
+) -> None:
+    if render_profile is None:
+        return
+    event = (stream or wp.get_stream(device)).record_event()
+    _sync_profiled_event(event, render_profile, name, start)
+
+
+def _sync_profiled_event(
+    event,
+    render_profile: list[tuple[str, float]] | None,
+    name: str,
+    start: float,
+) -> None:
+    if render_profile is None:
+        return
+    wp.synchronize_event(event)
+    render_profile.append((name, (time.perf_counter() - start) * 1000.0))
 
 
 if _HAS_WARP:
@@ -1518,6 +1632,13 @@ if _HAS_WARP:
             normal_world[ray, 1] = best_ny
             normal_world[ray, 2] = best_nz
             numeric_instance_id[ray] = best_id
+
+    @wp.kernel
+    def _init_bvh_hit_mask_kernel(
+        hit_mask: wp.array(dtype=wp.int32),
+    ):
+        ray = wp.tid()
+        hit_mask[ray] = wp.int32(0)
 
     @wp.kernel
     def _device_scene_bvh_first_hit_kernel(

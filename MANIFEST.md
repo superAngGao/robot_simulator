@@ -132,7 +132,9 @@ ambient/directional/point light 和 inline shadow any-hit；L5C.4 CUDA LBVH spik
 已把 warmed tree build 压到 ms 级。Video benchmark 使用 `--video-readback`
 区分 blocking host readback，不把它误称为 pipeline stage；`--video-raygen gpu`
 可在 GPU 上按 pixel id 生成 pinhole rays，保留 `OpticalRaySensorSpec` 作为
-LiDAR/arbitrary ray query 和 CPU/GPU parity reference。
+LiDAR/arbitrary ray query 和 CPU/GPU parity reference。GPU optical/rendering
+管线的长期设计基线已固化到 `GPU_OPTICAL_PIPELINE_DESIGN.md`；`collab/`
+继续作为 Codex/Claude review 与讨论工作区。
 
 ## 关键文件
 
@@ -165,6 +167,7 @@ LiDAR/arbitrary ray query 和 CPU/GPU parity reference。
 | `optics/cuda_lbvh.py` | CUDA LBVH extension spike and device BVH builder backend |
 | `optics/warp_execution.py` | GPU optical Warp executors: brute-force, device scene, BVH, direct-light/shadow, GPU camera raygen |
 | `optics/gpu_runtime.py` | L5B.1 Q52 `GpuPublishedFrame` optical runtime helper |
+| `GPU_OPTICAL_PIPELINE_DESIGN.md` | Q54 GPU optical/rendering pipeline repo-level design baseline: scenarios, delivery policies, Optical Pipeline Lab, roadmap |
 | `benchmarks/bench_optical_device_scene.py` | L5C.1c AABB/BVH decision benchmark harness |
 | `benchmarks/robot_optical_scene.py` | Shared robot-like optical scene generator for benchmarks/examples |
 | `rendering/render_scene.py` | Backend-agnostic 场景描述 |

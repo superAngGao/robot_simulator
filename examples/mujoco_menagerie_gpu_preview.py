@@ -76,6 +76,28 @@ _VIDEO_DIAGNOSTIC_CHANNELS = (
     "shadow_max_stack_depth",
 )
 _VIDEO_RGB_CHANNELS = ("rgb",) + _VIDEO_DIAGNOSTIC_CHANNELS
+_RENDER_PROFILE_PHASES = (
+    "host_ray_upload",
+    "raygen_camera_params",
+    "raygen_buffer_alloc",
+    "raygen_kernel",
+    "first_hit_wait_inputs",
+    "first_hit_output_alloc",
+    "first_hit_init_outputs",
+    "first_hit_alloc_hit_mask",
+    "first_hit_alloc_range_m",
+    "first_hit_alloc_position_world",
+    "first_hit_alloc_normal_world",
+    "first_hit_alloc_ids",
+    "first_hit_alloc_diagnostics",
+    "first_hit_kernel",
+    "shade_wait_geometry",
+    "shade_output_alloc",
+    "shade_alloc_rgb",
+    "shade_alloc_intensity",
+    "shade_alloc_diagnostics",
+    "shade_kernel",
+)
 _NAN = float("nan")
 
 
@@ -312,6 +334,7 @@ def _print_video_summary(args: argparse.Namespace, video_rows: "_FrameTimingReco
         f"raygen={args.video_raygen}, "
         f"ray_cache={args.video_ray_cache}, "
         f"readback={args.video_readback}, "
+        f"render_profile={args.render_profile}, "
         f"write_frames={args.write_frames}, "
         f"fps_mean={summary['fps_mean']:.2f}, "
         f"frame_p50_ms={summary['frame_p50_ms']:.3f}, "
@@ -532,13 +555,27 @@ def _run_video_benchmark(
 
         render_start = time.perf_counter()
         output_profile = _video_output_profile(args.video_readback)
+        render_profile = [] if args.render_profile else None
         result = (
-            executor.execute_camera(snapshot, bvh, camera, output_profile=output_profile)
+            executor.execute_camera(
+                snapshot,
+                bvh,
+                camera,
+                output_profile=output_profile,
+                render_profile=render_profile,
+            )
             if args.video_raygen == "gpu"
-            else executor.execute(snapshot, bvh, rays, output_profile=output_profile)
+            else executor.execute(
+                snapshot,
+                bvh,
+                rays,
+                output_profile=output_profile,
+                render_profile=render_profile,
+            )
         )
         wp.synchronize_event(result.ready_event)
         render_execute_ms = (time.perf_counter() - render_start) * 1000.0
+        render_profile_row = _render_profile_row(render_profile)
 
         readback_start = time.perf_counter()
         host_channels = _readback_video_result(result, args.video_readback)
@@ -595,6 +632,7 @@ def _run_video_benchmark(
                 "refit_ms": _NAN,
                 "rebuild_ms": _NAN,
                 "render_execute_ms": render_execute_ms,
+                **render_profile_row,
                 "readback_host_ms": readback_host_ms,
                 "image_build_ms": image_build_ms,
                 "encode_or_write_ms": encode_or_write_ms,
@@ -618,6 +656,7 @@ def _run_video_benchmark(
                 f"{frame_index + 1}/{args.video_frames}: "
                 f"total={frame_total_ms:.3f}ms, "
                 f"render={render_execute_ms:.3f}ms, "
+                f"{_format_render_profile(render_profile_row)}"
                 f"readback={_format_ms(readback_host_ms)}, "
                 f"fps={instant_fps:.2f}, rolling_fps={rolling_fps:.2f}, "
                 f"overflow=({_format_scalar(primary_overflow)},{_format_scalar(shadow_overflow)})"
@@ -659,6 +698,35 @@ def _video_output_profile(readback_mode: str) -> OpticalOutputProfile:
     if readback_mode == "none":
         return OpticalOutputProfile.RENDER_ONLY
     return OpticalOutputProfile.DIRECT_LIGHT_FULL
+
+
+def _render_profile_row(render_profile: list[tuple[str, float]] | None) -> dict[str, float]:
+    row = {f"render_{phase}_ms": _NAN for phase in _RENDER_PROFILE_PHASES}
+    if render_profile is None:
+        return row
+    for name, elapsed_ms in render_profile:
+        phase = name.removesuffix("_ms")
+        key = f"render_{phase}_ms"
+        if key in row:
+            previous = row[key]
+            row[key] = float(elapsed_ms) if math.isnan(previous) else previous + float(elapsed_ms)
+    return row
+
+
+def _format_render_profile(row: dict[str, float]) -> str:
+    first_hit = float(row["render_first_hit_kernel_ms"])
+    shade = float(row["render_shade_kernel_ms"])
+    raygen = float(row["render_raygen_kernel_ms"])
+    if math.isnan(first_hit) and math.isnan(shade) and math.isnan(raygen):
+        return ""
+    parts = []
+    if not math.isnan(raygen):
+        parts.append(f"raygen={raygen:.3f}ms")
+    if not math.isnan(first_hit):
+        parts.append(f"first_hit={first_hit:.3f}ms")
+    if not math.isnan(shade):
+        parts.append(f"shade={shade:.3f}ms")
+    return f"profile=({', '.join(parts)}), "
 
 
 def _rgb_array_to_preview_uint8(rgb: np.ndarray) -> np.ndarray:
@@ -743,6 +811,7 @@ class _FrameTimingRecorder:
         "refit_ms",
         "rebuild_ms",
         "render_execute_ms",
+        *(f"render_{phase}_ms" for phase in _RENDER_PROFILE_PHASES),
         "readback_host_ms",
         "image_build_ms",
         "encode_or_write_ms",
@@ -770,6 +839,7 @@ class _FrameTimingRecorder:
             "refit",
             "rebuild",
             "render_execute",
+            *(f"render_{phase}" for phase in _RENDER_PROFILE_PHASES),
             "readback_host",
             "image_build",
             "encode_or_write",
@@ -944,6 +1014,14 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=10,
         help="Print video benchmark progress every N frames; use 0 to disable.",
+    )
+    parser.add_argument(
+        "--render-profile",
+        action="store_true",
+        help=(
+            "Record diagnostic sub-step render timings in video mode. This inserts "
+            "extra GPU synchronizations and should not be used as a throughput number."
+        ),
     )
     parser.add_argument(
         "--write-frames",
