@@ -251,6 +251,38 @@ class TestOpticalPinholeCameraImageResult:
         with pytest.raises(ValueError, match="range_m"):
             build_pinhole_camera_image_result(result, spec, rays=rays)
 
+    def test_postprocessor_skips_frame_scalar_diagnostics(self):
+        spec = OpticalPinholeCameraSpec(
+            frame_id=9,
+            sim_time=0.09,
+            env_idx=0,
+            sensor_id="cam",
+            width=2,
+            height=1,
+            fx=1.0,
+            fy=1.0,
+            cx=0.0,
+            cy=0.0,
+        )
+        rays = build_pinhole_camera_rays(spec)
+        result = OpticalComputeResult(
+            frame_id=9,
+            sim_time=0.09,
+            env_idx=0,
+            sensor_id="cam",
+            channels={
+                "range_m": np.ones(2, dtype=np.float64),
+                "hit_mask": np.ones(2, dtype=bool),
+                "bvh_stack_overflow_count": np.zeros(1, dtype=np.int32),
+            },
+            output_profile=OpticalOutputProfile.GEOMETRY_FULL,
+        )
+
+        image = build_pinhole_camera_image_result(result, spec, rays=rays)
+
+        assert "bvh_stack_overflow_count" not in image.channels
+        assert image.channel("range_m").shape == (1, 2)
+
 
 class TestOpticalCameraReading:
     def test_builds_host_owned_reading_from_camera_image_result(self):

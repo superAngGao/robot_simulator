@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Set, Tuple
+from typing import Set, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
@@ -26,6 +26,7 @@ from numpy.typing import NDArray
 @dataclass
 class AABB:
     """Axis-aligned bounding box."""
+
     min_pt: NDArray[np.float64]  # (3,)
     max_pt: NDArray[np.float64]  # (3,)
 
@@ -40,7 +41,7 @@ class AABB:
 
     def surface_area(self) -> float:
         d = self.max_pt - self.min_pt
-        return 2.0 * (d[0]*d[1] + d[1]*d[2] + d[0]*d[2])
+        return 2.0 * (d[0] * d[1] + d[1] * d[2] + d[0] * d[2])
 
 
 class BroadPhase(ABC):
@@ -165,6 +166,7 @@ class AABBTreeBroadPhase(BroadPhase):
 @dataclass
 class _Node:
     """AABB tree node."""
+
     aabb: AABB = None
     body_idx: int = -1  # >= 0 for leaves
     left: "_Node | None" = None

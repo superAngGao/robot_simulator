@@ -9,6 +9,15 @@ import numpy as np
 
 from physics.spatial import SpatialTransform
 
+_FRAME_SCALAR_OPTICAL_CHANNELS = frozenset(
+    {
+        "bvh_stack_overflow_count",
+        "bvh_max_stack_depth",
+        "shadow_stack_overflow_count",
+        "shadow_max_stack_depth",
+    }
+)
+
 
 @dataclass
 class OpticalRaySensorSpec:
@@ -177,9 +186,7 @@ def build_pinhole_camera_image_result(
         rays = build_pinhole_camera_rays(spec)
     _validate_camera_rays(rays, spec)
     _validate_required_camera_result_channels(result, {"range_m"})
-    channels = {
-        name: _reshape_flat_channel(value, spec.image_shape) for name, value in result.channels.items()
-    }
+    channels = _reshape_camera_channels(result.channels, spec.image_shape)
     range_m = np.asarray(result.channel("range_m"), dtype=np.float64)
     projection = rays.directions_world @ spec.optical_axis_world
     channels["depth_m"] = (range_m * projection).reshape(spec.image_shape).copy()
@@ -246,3 +253,19 @@ def _reshape_flat_channel(value: object, image_shape: tuple[int, int]) -> np.nda
     if array.shape[:1] != (ray_count,):
         raise ValueError("camera result channels must have flat ray count as their first dimension")
     return array.reshape((*image_shape, *array.shape[1:])).copy()
+
+
+def _reshape_camera_channels(
+    channels: dict[str, object],
+    image_shape: tuple[int, int],
+) -> dict[str, np.ndarray]:
+    ray_count = image_shape[0] * image_shape[1]
+    reshaped = {}
+    for name, value in channels.items():
+        array = np.asarray(value)
+        if array.shape[:1] != (ray_count,):
+            if name in _FRAME_SCALAR_OPTICAL_CHANNELS:
+                continue
+            raise ValueError("camera result channels must have flat ray count as their first dimension")
+        reshaped[name] = array.reshape((*image_shape, *array.shape[1:])).copy()
+    return reshaped

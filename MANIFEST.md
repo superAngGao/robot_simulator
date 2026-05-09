@@ -1,7 +1,7 @@
 # Robot Simulator — Project Manifest
 
 > 面向具身智能研究的多物理仿真平台——多物理统一耦合、GPU 原生、渲染与合成数据生成、从第一性原理出发的 API 设计。
-> Last updated: 2026-05-08 (Q54 GPU BVH direct-light, CUDA LBVH, GPU camera raygen/readback)
+> Last updated: 2026-05-09 (Q54 Optical Pipeline Lab foundation/runner)
 
 ## 一句话
 
@@ -19,6 +19,7 @@ Layer 0  Math                空间代数 (6D Plücker, [linear; angular] 约定
 rendering/                   Backend-agnostic RenderScene + matplotlib viewer
 sensing/                     Sensor specs/readings/views + optical camera postprocess
 optics/                      Optical registry/scene/executor/result pipeline
+tools/optical_pipeline_lab/   Q54 optical pipeline scenario/timing/preset lab tooling
 ```
 
 依赖方向：`rl_env/ → simulator.py → robot/ → physics/`（不可逆）。
@@ -134,7 +135,9 @@ ambient/directional/point light 和 inline shadow any-hit；L5C.4 CUDA LBVH spik
 可在 GPU 上按 pixel id 生成 pinhole rays，保留 `OpticalRaySensorSpec` 作为
 LiDAR/arbitrary ray query 和 CPU/GPU parity reference。GPU optical/rendering
 管线的长期设计基线已固化到 `GPU_OPTICAL_PIPELINE_DESIGN.md`；`collab/`
-继续作为 Codex/Claude review 与讨论工作区。
+继续作为 Codex/Claude review 与讨论工作区。`tools/optical_pipeline_lab/`
+已开始承接 video/export tuning 的 scenario config、timing schema、preset
+metadata 和 thin runner，避免继续把实验编排塞进 example runtime。
 
 ## 关键文件
 
@@ -168,6 +171,10 @@ LiDAR/arbitrary ray query 和 CPU/GPU parity reference。GPU optical/rendering
 | `optics/warp_execution.py` | GPU optical Warp executors: brute-force, device scene, BVH, direct-light/shadow, GPU camera raygen |
 | `optics/gpu_runtime.py` | L5B.1 Q52 `GpuPublishedFrame` optical runtime helper |
 | `GPU_OPTICAL_PIPELINE_DESIGN.md` | Q54 GPU optical/rendering pipeline repo-level design baseline: scenarios, delivery policies, Optical Pipeline Lab, roadmap |
+| `tools/optical_pipeline_lab/` | Optical Pipeline Lab: scenario configs, presets, timing CSV schema, report helpers, thin Go2 runner |
+| `tools/optical_pipeline_lab/async_readback.py` | Optical Pipeline Lab async D2H readback ring helper for pinned Torch copies |
+| `tools/optical_pipeline_lab/go2_backend.py` | Shared Go2 Menagerie GPU backend used by the lab runner and example CLI |
+| `tools/optical_pipeline_lab/rgb_pack.py` | Optical Pipeline Lab GPU RGB8 preview packing helper |
 | `benchmarks/bench_optical_device_scene.py` | L5C.1c AABB/BVH decision benchmark harness |
 | `benchmarks/robot_optical_scene.py` | Shared robot-like optical scene generator for benchmarks/examples |
 | `rendering/render_scene.py` | Backend-agnostic 场景描述 |
@@ -176,7 +183,7 @@ LiDAR/arbitrary ray query 和 CPU/GPU parity reference。GPU optical/rendering
 | `examples/optical_direct_light_preview.py` | In-repo CPU optical RGB/depth/segmentation preview |
 | `examples/optical_robot_scene_preview.py` | Robot-like optical preview writer using benchmark scene generator |
 | `examples/mujoco_menagerie_robot_preview.py` | Open-source MuJoCo Menagerie visual mesh preview importer/writer |
-| `examples/mujoco_menagerie_gpu_preview.py` | GPU Go2 preview/video benchmark with CUDA LBVH, GPU raygen, readback modes |
+| `examples/mujoco_menagerie_gpu_preview.py` | Thin CLI wrapper for the shared Go2 Menagerie GPU backend |
 | `examples/optical_readback_microbench.py` | Device→host readback/materialization microbenchmark |
 | `simulator.py` | 多机器人编排 |
 | `robot/urdf_loader.py` | URDF → RobotModel |
@@ -184,11 +191,12 @@ LiDAR/arbitrary ray query 和 CPU/GPU parity reference。GPU optical/rendering
 
 ## 规模
 
-- Q54 sensing/optics 子系统当前收集 **109 个测试**：
+- Q54 sensing/optics 子系统当前收集 **165 个测试**：
   `tests/unit/optics` + `tests/unit/sensing` + `tests/gpu/test_optical_warp_executor.py`
   + `tests/gpu/test_optical_gpu_runtime.py`
-  （93 CPU optics/sensing + 16 GPU optical）
-- physics/ ~16,000 行，rendering/ ~960 行；新增 sensing/ 与 optics/ 作为独立感知/光学子系统
+  （133 CPU optics/sensing/lab + 32 GPU optical）
+- physics/ ~16,000 行，rendering/ ~960 行；新增 sensing/、optics/ 与
+  tools/optical_pipeline_lab/ 作为独立感知/光学与 pipeline tuning 子系统
 - 支持多机器人场景 + 静态几何 + 碰撞过滤 + 多点接触 manifold
 
 ## 进度
@@ -218,6 +226,7 @@ LiDAR/arbitrary ray query 和 CPU/GPU parity reference。GPU optical/rendering
 | Q54 L5C.2 — GPU BVH traversal/refit correctness bridge | ✅ |
 | Q54 L5C.3 — GPU direct-light + shadow any-hit | ✅ |
 | Q54 L5C.4 — CUDA LBVH build + GPU raygen/readback optimization | 🟡 |
+| Q54 Stage B/C1 — Optical Pipeline Lab foundation + shared Go2 backend | 🟡 |
 | 4 — 域随机化 | ⬜ |
 | 5 — Sim-to-Real | ⬜ |
 

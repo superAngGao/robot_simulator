@@ -4,7 +4,7 @@ Stage: design-baseline
 Author: codex
 Version: v1
 Date: 2026-05-08
-Last Updated: 2026-05-08
+Last Updated: 2026-05-09
 Status: active-design-baseline
 Related Files: optics/execution.py, optics/device.py, optics/device_scene.py, optics/device_bvh.py, optics/cuda_lbvh.py, optics/warp_execution.py, examples/mujoco_menagerie_gpu_preview.py, collab/q54-gpu-optical-output-profile-api__review-request__codex__v1.md, collab/q54-gpu-optical-readback-delivery-policy__review-request__codex__v2.md
 Owner Summary: This is the repo-level architecture design for the GPU optical/rendering pipeline. It reframes recent performance work around explicit use scenarios, a shared stage pipeline, per-scenario overlap policies, CPU/GPU boundary responsibilities, CUDA-first performance direction, the Optical Pipeline Lab, and a staged roadmap. Collab files remain review/discussion artifacts; this document is the durable design baseline.
@@ -604,24 +604,24 @@ Current measurements:
 Go2 960x640 cuda:1:
 
 shadows, readback=none:
-  render_execute_mean ~= 2.55 ms
-  frame_total_mean    ~= 2.65 ms
+  render_execute_mean ~= 2.58 ms
+  frame_total_p50     ~= 2.75 ms
 
 no shadows, readback=none:
-  render_execute_mean ~= 1.20 ms
-  frame_total_mean    ~= 1.29 ms
+  render_execute_mean ~= 1.23 ms
+  frame_total_p50     ~= 1.31 ms
 
 shadows, readback=rgb:
-  render_execute_mean ~= 2.57 ms
-  readback_host_mean  ~= 5.07 ms
-  frame_total_mean    ~= 7.77 ms
+  render_execute_mean ~= 2.61 ms
+  readback_host_mean  ~= 4.01 ms
+  frame_total_p50     ~= 6.64 ms
 ```
 
 Expected next target:
 
 ```text
 async ordered RGB:
-  frame_total should approach max(render, readback) ~= 5.1 ms
+  frame_total should approach max(render, readback) ~= 4.0 ms
 
 async ordered RGB8:
   frame_total may approach render cost if readback falls below render
@@ -1906,14 +1906,14 @@ Current measurements:
 Go2 960x640 cuda:1:
 
 render-only + shadows:
-  ~2.55 ms
+  ~2.58 ms render, ~2.75 ms frame p50
 
 render-only no shadows:
-  ~1.20 ms
+  ~1.23 ms render, ~1.31 ms frame p50
 
 blocking rgb readback + shadows:
-  frame ~7.77 ms
-  readback ~5.07 ms
+  frame p50 ~6.64 ms
+  readback ~4.01 ms
 ```
 
 Implication:
@@ -2172,6 +2172,53 @@ CUDA/event timing that proves real overlap
 overlap_ratio > 0.2 to justify scheduler work
 ```
 
+First D1 spike result:
+
+```text
+1080p shadow RGB, warmup_renders=5, torch_async readback:
+  all10 frame_mean       ~= 13.75 ms
+  all10 render_mean      ~= 6.23 ms
+  all10 readback_copy    ~= 9.26 ms
+  all10 overlap_ratio    ~= 0.11
+
+  steady frames 3-8:
+    frame_mean           ~= 9.20 ms
+    render_mean          ~= 6.31 ms
+    readback_copy        ~= 9.19 ms
+    readback_wait        ~= 2.18 ms
+    overlap_ratio        ~= 0.41
+```
+
+This clears the overlap go/no-go threshold. The first two frames still include
+pinned allocation/submit overhead, so D1 reports should distinguish all-frame
+and steady-tail metrics.
+
+D1 ring-slot follow-up:
+
+```text
+1080p shadow RGB, warmup_renders=5, torch_async readback, ring_depth=2:
+  all10 frame_mean       ~= 10.78 ms
+  all10 render_mean      ~= 6.33 ms
+  all10 readback_copy    ~= 10.21 ms
+  all10 readback_submit  ~= 0.11 ms
+  all10 overlap_ratio    ~= 0.35
+
+  steady frames 2-8:
+    frame_mean           ~= 10.20 ms
+    render_mean          ~= 6.40 ms
+    readback_copy        ~= 10.20 ms
+    readback_wait        ~= 3.42 ms
+    overlap_ratio        ~= 0.39
+```
+
+The ring version moves pinned host allocation out of the timed frame loop and
+keeps submit overhead around 0.1 ms from the first measured frame.
+
+The ring machinery now lives in `tools/optical_pipeline_lab/async_readback.py`
+as a reusable lab helper. Go2 remains responsible for render/camera metadata
+and ordered row emission, while the helper owns pinned host slots, copy stream,
+submit timing, copy event timing, and host channel access.
+
 Go/no-go:
 
 ```text
@@ -2258,8 +2305,25 @@ lab rgb8 mode
 compare sync and async ordered
 ```
 
-CUDA is a good candidate here, but CUDA-first migration should be data-driven
-after lab baselines are stable.
+Initial lab implementation:
+
+```text
+tools/optical_pipeline_lab/rgb_pack.py
+  Warp kernel for linear RGB float32 -> preview RGB8
+  clip + NaN sanitize + gamma 1/2.2 + uint8 round
+  returns a new OpticalComputeResult with rgb8 channel and ready_event
+
+go2_backend.py
+  --video-readback=rgb8
+  sync readback supports rgb8 host staging
+  torch_async readback supports rgb8 ring delivery
+```
+
+This is the first D2 delivery-pack implementation. It is Warp-based rather than
+a dedicated CUDA extension, which keeps it close to the existing optical
+executor and lets the lab quantify the payload reduction first. A CUDA pack
+extension remains a candidate only if the measured pack cost becomes visible
+after the async/readback path is stable.
 
 ### Stage I: Render Session / Workspace Refactor
 
@@ -2781,21 +2845,27 @@ Menagerie static scene at 960x640:
 
 ```text
 shadow, readback=none:
-  render_mean ~= 2.55 ms
-  frame_mean  ~= 2.65 ms
-  fps         ~= 377
+  render_mean ~= 2.58 ms
+  frame_p50   ~= 2.75 ms
+  frame_p90   ~= 2.84 ms
+  fps         ~= 372
 
 no-shadow, readback=none:
-  render_mean ~= 1.20 ms
-  frame_mean  ~= 1.29 ms
-  fps         ~= 777
+  render_mean ~= 1.23 ms
+  frame_p50   ~= 1.31 ms
+  frame_p90   ~= 1.45 ms
+  fps         ~= 750
 
 shadow, readback=rgb:
-  render_mean   ~= 2.57 ms
-  readback_mean ~= 5.07 ms
-  frame_mean    ~= 7.77 ms
-  fps           ~= 129
+  render_mean   ~= 2.61 ms
+  readback_mean ~= 4.01 ms
+  frame_p50     ~= 6.64 ms
+  frame_p90     ~= 7.04 ms
+  fps           ~= 148
 ```
+
+These are Optical Pipeline Lab C2 measurements from
+`go2_video_ordered_legacy_960` on `cuda:1`.
 
 Diagnostic render profiling with additional synchronization showed roughly:
 
@@ -2890,26 +2960,136 @@ is worth formalizing for VIDEO_ORDERED_EXPORT.
 For the measured shadow RGB case:
 
 ```text
-render_mean   ~= 2.57 ms
-readback_mean ~= 5.07 ms
-frame_mean    ~= 7.77 ms
+render_mean   ~= 2.61 ms
+readback_mean ~= 4.01 ms
+frame_p50     ~= 6.64 ms
 ```
 
 If real overlap works and encode is disabled, the theoretical steady-state
 target becomes closer to:
 
 ```text
-max(2.57 ms, 5.07 ms) + scheduling overhead
+max(2.61 ms, 4.01 ms) + scheduling overhead
 ```
 
 rather than:
 
 ```text
-2.57 ms + 5.07 ms
+2.61 ms + 4.01 ms
 ```
 
-This would move the RGB path from roughly 129 FPS toward a higher ceiling before
+This would move the RGB path from roughly 148 FPS toward a higher ceiling before
 any RGB8 packing or CUDA render rewrite.
+
+For the new default 1080p baseline, an early C2 matrix run with only two warmup
+renders exposed large initial readback spikes. The measured stable tail after
+those spikes was approximately:
+
+```text
+render_mean   ~= 6.08 ms
+readback_mean ~= 44.53 ms
+frame_mean    ~= 50.91 ms
+```
+
+If D1 achieves true ordered overlap for this case, the useful target is close
+to:
+
+```text
+max(6.08 ms, 44.53 ms) + scheduling overhead
+```
+
+That implies the first async D2H spike should be judged against a ceiling near
+44-50 ms steady-state frame time before RGB8 packing, not against the 960x640
+readback target.
+
+A follow-up single-case run with `warmup_renders=5` removed the hundreds of
+milliseconds readback spikes:
+
+```text
+1080p shadow RGB, warmup_renders=5:
+  render_mean        ~= 5.56 ms
+  readback_mean      ~= 18.74 ms
+  frame_mean         ~= 24.42 ms
+  last3 readback     ~= 12.26 ms
+  last3 frame_mean   ~= 17.65 ms
+```
+
+The lab default warmup is therefore five render passes for subsequent C2/D1
+baselines. D1 should still record both all-frame and tail metrics because
+readback allocation/context effects can otherwise pollute overlap conclusions.
+
+The first D1 `torch_async` readback spike used the same 1080p shadow RGB setup:
+
+```text
+all10:
+  frame_mean         ~= 13.75 ms
+  render_mean        ~= 6.23 ms
+  readback_copy      ~= 9.26 ms
+  readback_wait      ~= 2.43 ms
+  overlap_ratio      ~= 0.11
+
+steady frames 3-8:
+  frame_mean         ~= 9.20 ms
+  render_mean        ~= 6.31 ms
+  readback_copy      ~= 9.19 ms
+  readback_wait      ~= 2.18 ms
+  overlap_ratio      ~= 0.41
+```
+
+The steady result beats the D1 go/no-go threshold (`overlap_ratio > 0.2`) and
+shows that a pinned Torch D2H path can overlap with the next render on this
+hardware. The remaining work is to turn the spike into a real ordered delivery
+primitive with reusable slots, explicit ownership, and cleaner first-frame
+allocation behavior.
+
+The immediate ring-slot follow-up preallocated two pinned host slots before the
+timed frame loop:
+
+```text
+torch_async ring_depth=2:
+  all10:
+    frame_mean       ~= 10.78 ms
+    render_mean      ~= 6.33 ms
+    readback_copy    ~= 10.21 ms
+    readback_submit  ~= 0.11 ms
+    overlap_ratio    ~= 0.35
+
+  steady frames 2-8:
+    frame_mean       ~= 10.20 ms
+    render_mean      ~= 6.40 ms
+    readback_copy    ~= 10.20 ms
+    readback_wait    ~= 3.42 ms
+    overlap_ratio    ~= 0.39
+```
+
+This removes the first-frame pinned allocation penalty from timed rows and is a
+better baseline for the next delivery primitive extraction.
+
+The first D2 RGB8 pack run used the same 1080p shadow setup, still on GPU1, with
+`torch_async` ring_depth=2:
+
+```text
+torch_async rgb8 ring_depth=2:
+  all10:
+    frame_mean       ~= 6.71 ms
+    render+pack_mean ~= 6.04 ms
+    readback_copy    ~= 2.33 ms
+    readback_submit  ~= 0.11 ms
+    overlap_ratio    ~= 0.20
+
+  steady frames 1-8:
+    frame_mean       ~= 6.44 ms
+    render+pack_mean ~= 6.13 ms
+    readback_copy    ~= 2.33 ms
+    readback_wait    ~= 0.08 ms
+    overlap_ratio    ~= 0.24
+```
+
+Against the float32 RGB async ring baseline, RGB8 cuts measured copy time from
+about 10.21 ms to 2.33 ms (roughly 4.4x lower) and reduces all-frame ordered
+frame time from about 10.78 ms to 6.71 ms (roughly 1.6x faster). Against the
+sync RGB warmup=5 baseline, it reduces all-frame frame time from about 24.42 ms
+to 6.71 ms (roughly 3.6x faster).
 
 The lab should validate this with measured overlap, not assume it.
 
