@@ -1633,6 +1633,7 @@ accel_refit_ms
 accel_rebuild_ms
 render_execute_ms
 render_overhead_ms
+pack_rgb8_ms
 readback_submit_ms
 readback_wait_ms
 readback_host_ms
@@ -1712,6 +1713,13 @@ render_overhead_ms
 These are profiling columns, not always-on throughput metrics, because enabling
 them inserts extra synchronization.
 
+As of E1 timing cleanup, `render_execute_ms` means executor render only:
+`execute_camera()`/`execute()` plus `wp.synchronize_event(result.ready_event)`.
+RGB8 delivery packing is reported separately as `pack_rgb8_ms`. D2 measurements
+before this cleanup folded RGB8 pack into `render_execute_ms`, so old
+`render+pack_mean` values should not be compared directly against new
+`render_execute_ms` rows without adding `pack_rgb8_ms`.
+
 `render_overhead_ms` is useful when profiling is enabled:
 
 ```text
@@ -1721,6 +1729,10 @@ render_overhead_ms =
 
 It tracks allocation/init/synchronization overhead that is not explained by the
 main raygen, first-hit, and shade kernels.
+
+E1 implements this only when `--render-profile` is enabled. The value is not
+clamped, so tiny negative values can appear when synchronized profile subphases
+slightly exceed the host-side render wall-time envelope.
 
 #### Scene Preset Registry
 
@@ -1997,6 +2009,39 @@ SENSOR_ORDERED / SENSOR_LOSSLESS
 
 Do not freeze public enum names until runtime architecture stabilizes.
 
+E0/E1 decision:
+
+```text
+internal API first
+public API later
+```
+
+After the Optical Pipeline Lab introduced `Go2RenderSession`, the next API work
+should formalize an internal render/delivery boundary before exposing stable
+simulator-facing names. The near-term internal vocabulary is:
+
+```text
+RenderSession:
+  owns device, streams, workspace, scene cache, snapshot, BVH, executor
+
+RenderRequest:
+  camera/rays, output_profile, render_backend, diagnostics/profile flags
+
+RenderResult:
+  device-side result, ready_event, output_profile, resources
+
+DeliveryRequest:
+  readback_payload, delivery_policy, write_policy, ring depth
+
+DeliveryResult:
+  host/device delivered payload, timing, lag/drop/backpressure metadata
+```
+
+The production/public user API remains consumer-first and should map onto these
+internal fields later. Do not force path tracing, video export, realtime preview,
+and ordered sensors to share a premature public enum before the internal
+RenderSession and delivery contracts stabilize.
+
 ### 14.6 Path Tracing Is Future Work
 
 Direct-light output channels should not be treated as path-tracing contracts.
@@ -2016,6 +2061,43 @@ different delivery cadence
 Delivery primitives may be reusable, but output profiles will change.
 
 Path tracing may require a many-to-one mapping from render calls to output
+
+E0/E1 decision:
+
+```text
+path tracing is a later Q54-PT branch
+not part of the current direct-light/render-session optimization loop
+```
+
+Current work stays focused on the direct-light + hard-shadow pipeline:
+
+```text
+RenderSession/workspace boundary
+render profile and timing semantics
+buffer allocation/reuse
+shade and first-hit optimization
+ordered RGB8 delivery
+```
+
+Path tracing should start only after the RenderSession/workspace boundary is
+stable enough to carry multiple render backends. Its expected staging is:
+
+```text
+PT0 CPU reference path tracer for semantics and tests
+PT1 GPU stochastic single-bounce / AO-style preview
+PT2 progressive accumulation buffers and reset semantics
+PT3 small multi-bounce diffuse path tracing
+PT4 materials, denoise, and temporal/progressive delivery
+```
+
+Path tracing should appear as a render backend/output-profile family, not as a
+change to the delivery API:
+
+```text
+render_backend = direct_light | path_tracing
+compute payload = linear rgb / radiance / accumulation
+delivery payload = rgb8 / rgb / future hdr/encoded video
+```
 frames:
 
 ```text
@@ -2490,6 +2572,33 @@ yes
 This section is a draft, not a frozen public API. It exists so implementation
 work can aim toward a coherent user-facing surface while the next concrete
 tasks still focus on the Optical Pipeline Lab and internal delivery mechanics.
+
+E0/E1 update:
+
+```text
+the next concrete API artifact is an internal RenderSession/Delivery design note
+not a frozen public simulator camera API
+```
+
+The internal API should be shaped by the objects that have now appeared in the
+lab:
+
+```python
+session = OpticalRenderSession.create(scene_config, device="cuda:0")
+rendered = session.render(request)
+delivered = session.deliver(rendered, delivery_request)
+```
+
+The important separation is:
+
+```text
+render precision/output profile != delivery payload precision
+```
+
+For example, direct-light and future path tracing can both compute linear or
+HDR-ish device data while delivering `rgb8` for preview/video. This keeps
+delivery choices like RGB8, async ordered rings, and future encoders orthogonal
+to render backend choices like direct light vs path tracing.
 
 The public API should be consumer-first:
 
@@ -3084,6 +3193,129 @@ torch_async rgb8 ring_depth=2:
     readback_wait    ~= 0.08 ms
     overlap_ratio    ~= 0.24
 ```
+
+Note: these D2 rows used the old `render_execute_ms` convention where RGB8 pack
+was folded into render timing. E1 splits that into `render_execute_ms` plus
+`pack_rgb8_ms`.
+
+The first E1 timing split smoke used the same 1080p shadow RGB8 async ring2
+case on an idle GPU3 because GPU1 was occupied by another workload:
+
+```text
+torch_async rgb8 ring_depth=2, E1 split timing:
+  all10:
+    frame_mean       ~= 6.42 ms
+    render_mean      ~= 5.66 ms
+    pack_rgb8_mean   ~= 0.08 ms
+    readback_copy    ~= 2.32 ms
+    overlap_ratio    ~= 0.20
+
+  steady frames 1-8:
+    frame_mean       ~= 6.14 ms
+    render_mean      ~= 5.75 ms
+    pack_rgb8_mean   ~= 0.07 ms
+    readback_copy    ~= 2.33 ms
+    overlap_ratio    ~= 0.25
+```
+
+This confirms RGB8 pack is not a visible bottleneck on this setup; the remaining
+render-side budget is dominated by executor render, not delivery packing.
+
+The first E1 `--render-profile` diagnostic split for the same case showed:
+
+```text
+torch_async rgb8 ring_depth=2, E1 render profile:
+  all10:
+    frame_mean          ~= 6.22 ms
+    render_mean         ~= 5.70 ms
+    render_overhead     ~= -0.15 ms
+    pack_rgb8_mean      ~= 0.12 ms
+    raygen_kernel       ~= 0.18 ms
+    first_hit_kernel    ~= 1.97 ms
+    shade_kernel        ~= 3.16 ms
+    readback_copy       ~= 0.15 ms
+
+  steady frames 1-8:
+    frame_mean          ~= 6.23 ms
+    render_mean         ~= 5.73 ms
+    render_overhead     ~= -0.15 ms
+    pack_rgb8_mean      ~= 0.11 ms
+    raygen_kernel       ~= 0.17 ms
+    first_hit_kernel    ~= 1.96 ms
+    shade_kernel        ~= 3.20 ms
+    readback_copy       ~= 0.15 ms
+```
+
+Because render profiling inserts extra synchronization, these profile-on rows
+are diagnostic proportions rather than the primary throughput baseline. They
+indicate the next render-side work should start with shade cost and first-hit
+traversal before worrying about RGB8 packing.
+
+E2 shadow optimization starts from same-device E1 profile comparisons, not from
+a kernel rewrite. The first comparison set should be:
+
+```text
+1080p shadow    vs no-shadow, readback=rgb8, torch_async ring_depth=2
+1080p shadow    vs no-shadow, readback=none
+render-profile on for both pairs
+```
+
+The immediate question is whether the shadow delta lives almost entirely inside
+`shade_kernel_ms`, or whether first-hit/profile/allocation effects are also
+moving. Candidate follow-ups are deliberately ordered from low-risk to larger
+kernel changes: reuse point-light distance in the shade kernel, skip unneeded
+`intensity` allocation/write for RGB preview, make shadow diagnostics optional
+for non-debug output profiles if atomics show up, then benchmark a stack-only
+shadow any-hit traversal before considering a separate shadow-ray queue or
+specialized shadow shade kernel.
+
+The E2.0 same-device run on GPU1 answered the first question:
+
+```text
+1920x1080, frames=20, warmup_renders=5, steady frames 1-18
+
+rgb8 async preview:
+  shadow:
+    frame_total_ms      ~= 7.69
+    render_execute_ms   ~= 7.13
+    first_hit_kernel_ms ~= 2.09
+    shade_kernel_ms     ~= 3.38
+    readback_host_ms    ~= 2.31
+
+  no-shadow:
+    frame_total_ms      ~= 4.53
+    render_execute_ms   ~= 3.95
+    first_hit_kernel_ms ~= 2.09
+    shade_kernel_ms     ~= 0.26
+    readback_host_ms    ~= 2.35
+
+  shadow delta:
+    frame_total_ms      ~= +3.17
+    render_execute_ms   ~= +3.18
+    shade_kernel_ms     ~= +3.12
+```
+
+The repeated `readback=none` pair gave the same conclusion: shadow adds about
+3.1 ms, almost entirely inside `shade_kernel_ms`; first-hit and delivery do not
+move materially. The first `shadow_none` run had allocation/raygen spikes and is
+treated as an outlier; `shadow_none_repeat` is the stable row.
+
+The first E2.1 stack-only shadow any-hit experiment removed the per-shadow-ray
+`stack_t` local float array while keeping the integer node stack. Compared with
+the E2.0 `shadow_rgb8_async` baseline:
+
+```text
+stack-only shadow any-hit, steady frames 1-18:
+  frame_total_ms      ~= 7.03  (baseline 7.69)
+  render_execute_ms   ~= 6.46  (baseline 7.13)
+  shade_kernel_ms     ~= 2.78  (baseline 3.38)
+  first_hit_kernel_ms ~= 2.09  (baseline 2.09)
+  readback_host_ms    ~= 2.31  (baseline 2.31)
+```
+
+So `stack_t` is not the whole shadow bottleneck, but it is a real part of it:
+about 0.6 ms recovered from `shade_kernel_ms` on this scene. The remaining
+shadow cost is still the any-hit traversal itself.
 
 Against the float32 RGB async ring baseline, RGB8 cuts measured copy time from
 about 10.21 ms to 2.33 ms (roughly 4.4x lower) and reduces all-frame ordered

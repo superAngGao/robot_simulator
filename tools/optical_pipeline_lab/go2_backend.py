@@ -103,9 +103,117 @@ class _AsyncVideoReadbackJob:
     frame_start: float
     camera: OpticalPinholeCameraSpec
     render_execute_ms: float
+    pack_rgb8_ms: float
     render_profile_row: dict[str, float]
     camera_rays_ms: float
     readback_job: TorchAsyncReadbackJob
+
+
+@dataclass
+class _RenderedVideoFrame:
+    frame_index: int
+    camera: OpticalPinholeCameraSpec
+    result: object
+    camera_rays_ms: float
+    render_execute_ms: float
+    pack_rgb8_ms: float
+    render_profile_row: dict[str, float]
+
+
+@dataclass
+class Go2RenderSession:
+    """Go2 render resource bundle owned by one lab/example run."""
+
+    scene: object
+    device: object
+    stream: object
+    gpu_frame: GpuPublishedFrame
+    cache: DeviceOpticalSceneCache
+    snapshot: object
+    bvh: object
+    executor: GpuDeviceBvhDirectLightOpticalExecutor
+
+    @classmethod
+    def create(cls, args: argparse.Namespace, timings: TimingRecorder) -> "Go2RenderSession":
+        with timings.measure("warp_init"):
+            if not args.verbose_warp:
+                wp.config.quiet = True
+            wp.init()
+            device = wp.get_device(args.device)
+
+        with timings.measure("import_scene"):
+            scene = import_mjcf_visual_scene(Path(args.model_dir), model_xml=args.model_xml)
+        with timings.measure("gpu_frame_stream"):
+            gpu_frame = _static_gpu_frame(
+                frame_id=scene.frame.frame_id,
+                sim_time=scene.frame.sim_time,
+                device=device,
+            )
+            stream = wp.Stream(device=device)
+
+        with timings.measure("device_scene_snapshot"):
+            cache = DeviceOpticalSceneCache(scene.registry, device=device, stream=stream)
+            snapshot = cache.snapshot_from_gpu_frame(gpu_frame, env_idx=0, stream=stream, include_aabb=True)
+        with timings.measure("bvh_build"):
+            if args.bvh_backend == "cuda_lbvh":
+                bvh = build_cuda_lbvh_from_snapshot(snapshot, device=device, stream=stream)
+            else:
+                bvh = build_device_bvh_from_snapshot(
+                    snapshot,
+                    device=device,
+                    stream=stream,
+                    split_strategy=args.bvh_split_strategy,
+                )
+        for detail_name, detail_elapsed_ms in bvh.stats.detail_ms:
+            timings.add(f"bvh_build_{detail_name}", detail_elapsed_ms)
+
+        with timings.measure("executor_init"):
+            executor = GpuDeviceBvhDirectLightOpticalExecutor(
+                device=device,
+                stream=stream,
+                shadows=not args.no_shadows,
+                ambient_rgb=(0.08, 0.085, 0.09),
+                background_rgb=(0.025, 0.03, 0.038),
+            )
+
+        return cls(
+            scene=scene,
+            device=device,
+            stream=stream,
+            gpu_frame=gpu_frame,
+            cache=cache,
+            snapshot=snapshot,
+            bvh=bvh,
+            executor=executor,
+        )
+
+    def execute_frame(
+        self,
+        *,
+        camera: OpticalPinholeCameraSpec,
+        rays,
+        use_gpu_raygen: bool,
+        output_profile: OpticalOutputProfile,
+        render_profile: list[tuple[str, float]] | None,
+    ):
+        if use_gpu_raygen:
+            return self.executor.execute_camera(
+                self.snapshot,
+                self.bvh,
+                camera,
+                output_profile=output_profile,
+                render_profile=render_profile,
+            )
+        return self.executor.execute(
+            self.snapshot,
+            self.bvh,
+            rays,
+            output_profile=output_profile,
+            render_profile=render_profile,
+        )
+
+    def pack_rgb8(self, result):
+        return _pack_video_rgb8(result)
 
 
 def main() -> None:
@@ -124,57 +232,20 @@ def render_many_views(args: argparse.Namespace) -> None:
         ) from _WARP_IMPORT_ERROR
     timings = TimingRecorder()
     total_start = time.perf_counter()
-    with timings.measure("warp_init"):
-        if not args.verbose_warp:
-            wp.config.quiet = True
-        wp.init()
-        device = wp.get_device(args.device)
+    session = Go2RenderSession.create(args, timings)
+    scene = session.scene
 
     out_dir = Path(args.out)
     with timings.measure("output_dir"):
         out_dir.mkdir(parents=True, exist_ok=True)
 
-    with timings.measure("import_scene"):
-        scene = import_mjcf_visual_scene(Path(args.model_dir), model_xml=args.model_xml)
-    with timings.measure("gpu_frame_stream"):
-        gpu_frame = _static_gpu_frame(
-            frame_id=scene.frame.frame_id,
-            sim_time=scene.frame.sim_time,
-            device=device,
-        )
-        stream = wp.Stream(device=device)
-
-    with timings.measure("device_scene_snapshot"):
-        cache = DeviceOpticalSceneCache(scene.registry, device=device, stream=stream)
-        snapshot = cache.snapshot_from_gpu_frame(gpu_frame, env_idx=0, stream=stream, include_aabb=True)
-    with timings.measure("bvh_build"):
-        if args.bvh_backend == "cuda_lbvh":
-            bvh = build_cuda_lbvh_from_snapshot(snapshot, device=device, stream=stream)
-        else:
-            bvh = build_device_bvh_from_snapshot(
-                snapshot,
-                device=device,
-                stream=stream,
-                split_strategy=args.bvh_split_strategy,
-            )
-    for detail_name, detail_elapsed_ms in bvh.stats.detail_ms:
-        timings.add(f"bvh_build_{detail_name}", detail_elapsed_ms)
-    with timings.measure("executor_init"):
-        executor = GpuDeviceBvhDirectLightOpticalExecutor(
-            device=device,
-            stream=stream,
-            shadows=not args.no_shadows,
-            ambient_rgb=(0.08, 0.085, 0.09),
-            background_rgb=(0.025, 0.03, 0.038),
-        )
-
     setup_benchmark_ms = []
-    if bvh.stats.supports_refit:
+    if session.bvh.stats.supports_refit:
         setup_benchmark_ms = _run_snapshot_refit_benchmark(
-            cache,
-            gpu_frame,
-            bvh,
-            stream=stream,
+            session.cache,
+            session.gpu_frame,
+            session.bvh,
+            stream=session.stream,
             warmup=args.setup_warmup,
             repeat=args.setup_repeat,
         )
@@ -195,18 +266,18 @@ def render_many_views(args: argparse.Namespace) -> None:
                     view=args.views[0],
                 )
             _execute_warmup_render(
-                executor,
-                snapshot,
-                bvh,
+                session.executor,
+                session.snapshot,
+                session.bvh,
                 (warmup_camera, None),
                 timings,
                 use_gpu_raygen=True,
             )
             continue
         _execute_warmup_render(
-            executor,
-            snapshot,
-            bvh,
+            session.executor,
+            session.snapshot,
+            session.bvh,
             _build_camera_rays_for_view(scene, args, args.views[0], timings, phase="warmup"),
             timings,
             use_gpu_raygen=False,
@@ -214,11 +285,8 @@ def render_many_views(args: argparse.Namespace) -> None:
 
     if args.video_frames > 0:
         video_rows = _run_video_benchmark(
-            scene,
+            session,
             args,
-            executor,
-            snapshot,
-            bvh,
             out_dir,
         )
         for row in video_rows.summary_rows():
@@ -227,18 +295,18 @@ def render_many_views(args: argparse.Namespace) -> None:
         timings.add("total", total_elapsed_ms)
         if args.timing_csv:
             timings.write_csv(Path(args.timing_csv))
-        _print_setup_summary(scene, args, timings, bvh, total_elapsed_ms)
+        _print_setup_summary(scene, args, timings, session.bvh, total_elapsed_ms)
         _print_video_summary(args, video_rows)
-        _print_timing_summary(timings, bvh)
+        _print_timing_summary(timings, session.bvh)
         return
 
     rendered_views = {}
     for view in args.views:
         camera, rays = _build_camera_rays_for_view(scene, args, view, timings, phase=f"view_{view}")
         for elapsed_ms in _run_render_benchmark(
-            executor,
-            snapshot,
-            bvh,
+            session.executor,
+            session.snapshot,
+            session.bvh,
             rays,
             warmup=args.render_warmup,
             repeat=args.render_repeat,
@@ -246,7 +314,7 @@ def render_many_views(args: argparse.Namespace) -> None:
             timings.add(f"view_{view}_render_benchmark_execute_wait", elapsed_ms)
 
         with timings.measure(f"view_{view}_render_execute_wait"):
-            result = executor.execute(snapshot, bvh, rays)
+            result = session.executor.execute(session.snapshot, session.bvh, rays)
             wp.synchronize_event(result.ready_event)
         with timings.measure(f"view_{view}_readback_host"):
             host_result = stage_optical_compute_result_to_host(result)
@@ -271,9 +339,9 @@ def render_many_views(args: argparse.Namespace) -> None:
     if args.timing_csv:
         timings.write_csv(Path(args.timing_csv))
 
-    _print_setup_summary(scene, args, timings, bvh, total_elapsed_ms)
+    _print_setup_summary(scene, args, timings, session.bvh, total_elapsed_ms)
     _print_rendered_views(args, rendered_views)
-    _print_timing_summary(timings, bvh)
+    _print_timing_summary(timings, session.bvh)
 
 
 def _print_setup_summary(
@@ -523,21 +591,65 @@ def _run_snapshot_refit_benchmark(
     return elapsed_ms
 
 
-def _run_video_benchmark(
-    scene,
+def _render_video_frame(
+    session: Go2RenderSession,
     args: argparse.Namespace,
-    executor,
-    snapshot,
-    bvh,
+    frame_index: int,
+    ray_cache: list[tuple[OpticalPinholeCameraSpec, object]] | None,
+) -> _RenderedVideoFrame:
+    if args.video_raygen == "gpu":
+        camera = _build_video_camera(session.scene, args, frame_index)
+        rays = None
+        camera_rays_ms = _NAN
+    elif ray_cache is None:
+        camera_start = time.perf_counter()
+        camera = _build_video_camera(session.scene, args, frame_index)
+        rays = build_pinhole_camera_rays(camera)
+        camera_rays_ms = (time.perf_counter() - camera_start) * 1000.0
+    else:
+        camera, rays = ray_cache[frame_index]
+        camera_rays_ms = _NAN
+
+    render_start = time.perf_counter()
+    render_profile = [] if args.render_profile else None
+    result = session.execute_frame(
+        camera=camera,
+        rays=rays,
+        use_gpu_raygen=args.video_raygen == "gpu",
+        output_profile=_video_output_profile(args.video_readback),
+        render_profile=render_profile,
+    )
+    wp.synchronize_event(result.ready_event)
+    render_execute_ms = (time.perf_counter() - render_start) * 1000.0
+    render_profile_row = _render_profile_row(render_profile, render_execute_ms=render_execute_ms)
+
+    pack_rgb8_ms = _NAN
+    if args.video_readback == "rgb8":
+        pack_start = time.perf_counter()
+        result = session.pack_rgb8(result)
+        wp.synchronize_event(result.ready_event)
+        pack_rgb8_ms = (time.perf_counter() - pack_start) * 1000.0
+
+    return _RenderedVideoFrame(
+        frame_index=int(frame_index),
+        camera=camera,
+        result=result,
+        camera_rays_ms=camera_rays_ms,
+        render_execute_ms=render_execute_ms,
+        pack_rgb8_ms=pack_rgb8_ms,
+        render_profile_row=render_profile_row,
+    )
+
+
+def _run_video_benchmark(
+    session: Go2RenderSession,
+    args: argparse.Namespace,
     out_dir: Path,
 ) -> FrameTimingRecorder:
     if args.video_readback_delivery == "torch_async":
         return _run_video_benchmark_torch_async(
-            scene,
+            session,
             args,
-            executor,
-            snapshot,
-            bvh,
             out_dir,
         )
 
@@ -556,59 +668,22 @@ def _run_video_benchmark(
     )
     rolling_window_ms: list[float] = []
     ray_cache = (
-        _precompute_video_camera_rays(scene, args)
+        _precompute_video_camera_rays(session.scene, args)
         if args.video_raygen == "host" and args.video_ray_cache == "precompute"
         else None
     )
 
     for frame_index in range(int(args.video_frames)):
         frame_start = time.perf_counter()
-
-        if args.video_raygen == "gpu":
-            camera = _build_video_camera(scene, args, frame_index)
-            rays = None
-            camera_rays_ms = _NAN
-        elif ray_cache is None:
-            camera_start = time.perf_counter()
-            camera = _build_video_camera(scene, args, frame_index)
-            rays = build_pinhole_camera_rays(camera)
-            camera_rays_ms = (time.perf_counter() - camera_start) * 1000.0
-        else:
-            camera, rays = ray_cache[frame_index]
-            camera_rays_ms = _NAN
-
-        render_start = time.perf_counter()
-        output_profile = _video_output_profile(args.video_readback)
-        render_profile = [] if args.render_profile else None
-        result = (
-            executor.execute_camera(
-                snapshot,
-                bvh,
-                camera,
-                output_profile=output_profile,
-                render_profile=render_profile,
-            )
-            if args.video_raygen == "gpu"
-            else executor.execute(
-                snapshot,
-                bvh,
-                rays,
-                output_profile=output_profile,
-                render_profile=render_profile,
-            )
+        rendered = _render_video_frame(
+            session,
+            args,
+            frame_index,
+            ray_cache,
         )
-        wp.synchronize_event(result.ready_event)
-        render_execute_ms = (time.perf_counter() - render_start) * 1000.0
-        render_profile_row = _render_profile_row(render_profile)
-
-        if args.video_readback == "rgb8":
-            pack_start = time.perf_counter()
-            result = _pack_video_rgb8(result)
-            wp.synchronize_event(result.ready_event)
-            render_execute_ms += (time.perf_counter() - pack_start) * 1000.0
 
         readback_start = time.perf_counter()
-        host_channels = _readback_video_result(result, args.video_readback)
+        host_channels = _readback_video_result(rendered.result, args.video_readback)
         readback_host_ms = (
             (time.perf_counter() - readback_start) * 1000.0 if args.video_readback != "none" else _NAN
         )
@@ -650,19 +725,20 @@ def _run_video_benchmark(
         rows.add(
             {
                 "frame_index": frame_index,
-                "sim_time": camera.sim_time,
+                "sim_time": rendered.camera.sim_time,
                 "video_time": float(frame_index) / float(args.video_fps),
                 "geometry_mode": "static",
                 "raygen_mode": args.video_raygen,
                 "ray_cache_mode": args.video_ray_cache,
                 "readback_mode": args.video_readback,
                 "write_mode": "rgb_png" if args.write_frames else "none",
-                "camera_rays_ms": camera_rays_ms,
+                "camera_rays_ms": rendered.camera_rays_ms,
                 "snapshot_ms": _NAN,
                 "accel_refit_ms": _NAN,
                 "accel_rebuild_ms": _NAN,
-                "render_execute_ms": render_execute_ms,
-                **render_profile_row,
+                "render_execute_ms": rendered.render_execute_ms,
+                "pack_rgb8_ms": rendered.pack_rgb8_ms,
+                **rendered.render_profile_row,
                 "readback_submit_ms": _NAN,
                 "readback_wait_ms": _NAN,
                 "readback_host_ms": readback_host_ms,
@@ -687,8 +763,9 @@ def _run_video_benchmark(
                 "  video_frame "
                 f"{frame_index + 1}/{args.video_frames}: "
                 f"total={frame_total_ms:.3f}ms, "
-                f"render={render_execute_ms:.3f}ms, "
-                f"{_format_render_profile(render_profile_row)}"
+                f"render={rendered.render_execute_ms:.3f}ms, "
+                f"{_format_pack_rgb8(rendered.pack_rgb8_ms)}"
+                f"{_format_render_profile(rendered.render_profile_row)}"
                 f"readback={_format_ms(readback_host_ms)}, "
                 f"fps={instant_fps:.2f}, rolling_fps={rolling_fps:.2f}, "
                 f"overflow=({_format_scalar(primary_overflow)},{_format_scalar(shadow_overflow)})"
@@ -699,11 +776,8 @@ def _run_video_benchmark(
 
 
 def _run_video_benchmark_torch_async(
-    scene,
+    session: Go2RenderSession,
     args: argparse.Namespace,
-    executor,
-    snapshot,
-    bvh,
     out_dir: Path,
 ) -> FrameTimingRecorder:
     if not torch_async_readback_available():
@@ -731,16 +805,13 @@ def _run_video_benchmark_torch_async(
     )
     rolling_window_ms: list[float] = []
     ray_cache = (
-        _precompute_video_camera_rays(scene, args)
+        _precompute_video_camera_rays(session.scene, args)
         if args.video_raygen == "host" and args.video_ray_cache == "precompute"
         else None
     )
     readback_ring = _prepare_torch_async_readback_ring(
-        scene,
+        session,
         args,
-        executor,
-        snapshot,
-        bvh,
     )
     pending: _AsyncVideoReadbackJob | None = None
     first_frame_start: float | None = None
@@ -750,48 +821,12 @@ def _run_video_benchmark_torch_async(
         frame_start = time.perf_counter()
         if first_frame_start is None:
             first_frame_start = frame_start
-
-        if args.video_raygen == "gpu":
-            camera = _build_video_camera(scene, args, frame_index)
-            rays = None
-            camera_rays_ms = _NAN
-        elif ray_cache is None:
-            camera_start = time.perf_counter()
-            camera = _build_video_camera(scene, args, frame_index)
-            rays = build_pinhole_camera_rays(camera)
-            camera_rays_ms = (time.perf_counter() - camera_start) * 1000.0
-        else:
-            camera, rays = ray_cache[frame_index]
-            camera_rays_ms = _NAN
-
-        render_start = time.perf_counter()
-        render_profile = [] if args.render_profile else None
-        result = (
-            executor.execute_camera(
-                snapshot,
-                bvh,
-                camera,
-                output_profile=OpticalOutputProfile.RGB_PREVIEW,
-                render_profile=render_profile,
-            )
-            if args.video_raygen == "gpu"
-            else executor.execute(
-                snapshot,
-                bvh,
-                rays,
-                output_profile=OpticalOutputProfile.RGB_PREVIEW,
-                render_profile=render_profile,
-            )
+        rendered = _render_video_frame(
+            session,
+            args,
+            frame_index,
+            ray_cache,
         )
-        wp.synchronize_event(result.ready_event)
-        render_execute_ms = (time.perf_counter() - render_start) * 1000.0
-        render_profile_row = _render_profile_row(render_profile)
-
-        if args.video_readback == "rgb8":
-            pack_start = time.perf_counter()
-            result = _pack_video_rgb8(result)
-            wp.synchronize_event(result.ready_event)
-            render_execute_ms += (time.perf_counter() - pack_start) * 1000.0
 
         if pending is not None and readback_ring.ring_depth <= 1:
             last_completion_time = _complete_torch_async_video_readback(
@@ -809,13 +844,14 @@ def _run_video_benchmark_torch_async(
 
         job = _submit_torch_async_video_readback(
             readback_ring,
-            result,
+            rendered.result,
             frame_index=frame_index,
             frame_start=frame_start,
-            camera=camera,
-            render_execute_ms=render_execute_ms,
-            render_profile_row=render_profile_row,
-            camera_rays_ms=camera_rays_ms,
+            camera=rendered.camera,
+            render_execute_ms=rendered.render_execute_ms,
+            pack_rgb8_ms=rendered.pack_rgb8_ms,
+            render_profile_row=rendered.render_profile_row,
+            camera_rays_ms=rendered.camera_rays_ms,
         )
         if pending is not None:
             last_completion_time = _complete_torch_async_video_readback(
@@ -849,23 +885,20 @@ def _run_video_benchmark_torch_async(
 
 
 def _prepare_torch_async_readback_ring(
-    scene,
+    session: Go2RenderSession,
     args: argparse.Namespace,
-    executor,
-    snapshot,
-    bvh,
 ) -> TorchAsyncReadbackRing:
-    warmup_camera = _build_video_camera(scene, args, 0)
-    warmup_result = executor.execute_camera(
-        snapshot,
-        bvh,
+    warmup_camera = _build_video_camera(session.scene, args, 0)
+    warmup_result = session.executor.execute_camera(
+        session.snapshot,
+        session.bvh,
         warmup_camera,
         output_profile=OpticalOutputProfile.RGB_PREVIEW,
         render_profile=None,
     )
     wp.synchronize_event(warmup_result.ready_event)
     if args.video_readback == "rgb8":
-        warmup_result = _pack_video_rgb8(warmup_result)
+        warmup_result = session.pack_rgb8(warmup_result)
         wp.synchronize_event(warmup_result.ready_event)
     return TorchAsyncReadbackRing.from_warmup_result(
         warmup_result,
@@ -882,6 +915,7 @@ def _submit_torch_async_video_readback(
     frame_start: float,
     camera: OpticalPinholeCameraSpec,
     render_execute_ms: float,
+    pack_rgb8_ms: float,
     render_profile_row: dict[str, float],
     camera_rays_ms: float,
 ) -> _AsyncVideoReadbackJob:
@@ -891,6 +925,7 @@ def _submit_torch_async_video_readback(
         frame_start=frame_start,
         camera=camera,
         render_execute_ms=render_execute_ms,
+        pack_rgb8_ms=pack_rgb8_ms,
         render_profile_row=render_profile_row,
         camera_rays_ms=camera_rays_ms,
         readback_job=readback_job,
@@ -950,9 +985,13 @@ def _complete_torch_async_video_readback(
             f"primary={primary_overflow}, shadow={shadow_overflow}"
         )
 
+    render_delivery_ms = _render_delivery_ms(
+        render_execute_ms=job.render_execute_ms,
+        pack_rgb8_ms=job.pack_rgb8_ms,
+    )
     overlap_ratio = _overlap_ratio(
         observed_ms=frame_total_ms,
-        render_ms=job.render_execute_ms,
+        render_ms=render_delivery_ms,
         readback_ms=readback_copy_ms,
     )
     rows.add(
@@ -971,6 +1010,7 @@ def _complete_torch_async_video_readback(
             "accel_refit_ms": _NAN,
             "accel_rebuild_ms": _NAN,
             "render_execute_ms": job.render_execute_ms,
+            "pack_rgb8_ms": job.pack_rgb8_ms,
             **job.render_profile_row,
             "readback_submit_ms": job.readback_job.submit_ms,
             "readback_wait_ms": readback_wait_ms,
@@ -1002,6 +1042,7 @@ def _complete_torch_async_video_readback(
             f"{job.frame_index + 1}/{args.video_frames}: "
             f"total={frame_total_ms:.3f}ms, "
             f"render={job.render_execute_ms:.3f}ms, "
+            f"{_format_pack_rgb8(job.pack_rgb8_ms)}"
             f"{_format_render_profile(job.render_profile_row)}"
             f"readback={readback_copy_ms:.3f}ms, "
             f"submit={job.readback_job.submit_ms:.3f}ms, wait={readback_wait_ms:.3f}ms, "
@@ -1061,16 +1102,27 @@ def _pack_video_rgb8(result):
     return pack_linear_rgb_to_preview_uint8(result)
 
 
-def _render_profile_row(render_profile: list[tuple[str, float]] | None) -> dict[str, float]:
+def _render_profile_row(
+    render_profile: list[tuple[str, float]] | None,
+    *,
+    render_execute_ms: float | None = None,
+) -> dict[str, float]:
     row = {f"render_{phase}_ms": _NAN for phase in _RENDER_PROFILE_PHASES}
     if render_profile is None:
         return row
+    profile_total_ms = 0.0
+    matched_phase_count = 0
     for name, elapsed_ms in render_profile:
         phase = name.removesuffix("_ms")
         key = f"render_{phase}_ms"
         if key in row:
+            elapsed = float(elapsed_ms)
             previous = row[key]
-            row[key] = float(elapsed_ms) if math.isnan(previous) else previous + float(elapsed_ms)
+            row[key] = elapsed if math.isnan(previous) else previous + elapsed
+            profile_total_ms += elapsed
+            matched_phase_count += 1
+    if render_execute_ms is not None and matched_phase_count > 0:
+        row["render_overhead_ms"] = float(render_execute_ms) - profile_total_ms
     return row
 
 
@@ -1110,6 +1162,16 @@ def _staged_scalar(channels: dict[str, object], name: str) -> float | int:
 
 def _format_ms(value: float) -> str:
     return "NaN" if math.isnan(float(value)) else f"{float(value):.3f}ms"
+
+
+def _format_pack_rgb8(value: float) -> str:
+    return "" if math.isnan(float(value)) else f"pack_rgb8={float(value):.3f}ms, "
+
+
+def _render_delivery_ms(*, render_execute_ms: float, pack_rgb8_ms: float) -> float:
+    if math.isnan(float(pack_rgb8_ms)):
+        return float(render_execute_ms)
+    return float(render_execute_ms) + float(pack_rgb8_ms)
 
 
 def _overlap_ratio(*, observed_ms: float, render_ms: float, readback_ms: float) -> float:

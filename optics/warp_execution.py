@@ -1912,11 +1912,10 @@ if _HAS_WARP:
             return occluded
 
         stack = wp.zeros(shape=_MAX_BVH_STACK, dtype=wp.int32)
-        stack_t = wp.zeros(shape=_MAX_BVH_STACK, dtype=wp.float32)
         stack_size = wp.int32(0)
         local_max_stack = wp.int32(0)
         if num_bvh_nodes > 0:
-            root_hit, root_t, _root_exit_t = _intersect_aabb_for_ray_with_interval(
+            root_hit, _root_t, _root_exit_t = _intersect_aabb_for_ray_with_interval(
                 ox,
                 oy,
                 oz,
@@ -1933,88 +1932,83 @@ if _HAS_WARP:
             )
             if root_hit:
                 stack[0] = wp.int32(0)
-                stack_t[0] = root_t
                 stack_size = wp.int32(1)
                 local_max_stack = wp.int32(1)
 
         while stack_size > 0 and not occluded:
             stack_size = stack_size - wp.int32(1)
             node_index = stack[stack_size]
-            node_t = stack_t[stack_size]
-            if node_t <= max_distance:
-                leaf_count = bvh_count[node_index]
-                if leaf_count > 0:
-                    leaf_start = bvh_start[node_index]
-                    for offset in range(leaf_count):
-                        tri_idx = bvh_prim_ids[leaf_start + offset]
-                        if (triangle_role_masks[tri_idx] & sensor_role_mask) != wp.int64(0):
-                            tri_hit, _t, _fnx, _fny, _fnz = _intersect_device_triangle_for_ray(
-                                ox,
-                                oy,
-                                oz,
-                                dx,
-                                dy,
-                                dz,
-                                tri_idx,
-                                triangle_v0,
-                                triangle_e1,
-                                triangle_e2,
-                                triangle_normal,
-                                max_distance,
-                            )
-                            if tri_hit:
-                                occluded = True
-                else:
-                    left = bvh_left[node_index]
-                    right = bvh_right[node_index]
-                    if right >= 0:
-                        right_hit, right_t, _right_exit_t = _intersect_aabb_for_ray_with_interval(
+            leaf_count = bvh_count[node_index]
+            if leaf_count > 0:
+                leaf_start = bvh_start[node_index]
+                for offset in range(leaf_count):
+                    tri_idx = bvh_prim_ids[leaf_start + offset]
+                    if (triangle_role_masks[tri_idx] & sensor_role_mask) != wp.int64(0):
+                        tri_hit, _t, _fnx, _fny, _fnz = _intersect_device_triangle_for_ray(
                             ox,
                             oy,
                             oz,
                             dx,
                             dy,
                             dz,
-                            bvh_bounds_min[right, 0],
-                            bvh_bounds_min[right, 1],
-                            bvh_bounds_min[right, 2],
-                            bvh_bounds_max[right, 0],
-                            bvh_bounds_max[right, 1],
-                            bvh_bounds_max[right, 2],
+                            tri_idx,
+                            triangle_v0,
+                            triangle_e1,
+                            triangle_e2,
+                            triangle_normal,
                             max_distance,
                         )
-                        if right_hit:
-                            if stack_size < _MAX_BVH_STACK:
-                                stack[stack_size] = right
-                                stack_t[stack_size] = right_t
-                                stack_size = stack_size + wp.int32(1)
-                            else:
-                                wp.atomic_add(shadow_stack_overflow_count, 0, wp.int32(1))
-                    if left >= 0:
-                        left_hit, left_t, _left_exit_t = _intersect_aabb_for_ray_with_interval(
-                            ox,
-                            oy,
-                            oz,
-                            dx,
-                            dy,
-                            dz,
-                            bvh_bounds_min[left, 0],
-                            bvh_bounds_min[left, 1],
-                            bvh_bounds_min[left, 2],
-                            bvh_bounds_max[left, 0],
-                            bvh_bounds_max[left, 1],
-                            bvh_bounds_max[left, 2],
-                            max_distance,
-                        )
-                        if left_hit:
-                            if stack_size < _MAX_BVH_STACK:
-                                stack[stack_size] = left
-                                stack_t[stack_size] = left_t
-                                stack_size = stack_size + wp.int32(1)
-                            else:
-                                wp.atomic_add(shadow_stack_overflow_count, 0, wp.int32(1))
-                    if stack_size > local_max_stack:
-                        local_max_stack = stack_size
+                        if tri_hit:
+                            occluded = True
+            else:
+                left = bvh_left[node_index]
+                right = bvh_right[node_index]
+                if right >= 0:
+                    right_hit, _right_t, _right_exit_t = _intersect_aabb_for_ray_with_interval(
+                        ox,
+                        oy,
+                        oz,
+                        dx,
+                        dy,
+                        dz,
+                        bvh_bounds_min[right, 0],
+                        bvh_bounds_min[right, 1],
+                        bvh_bounds_min[right, 2],
+                        bvh_bounds_max[right, 0],
+                        bvh_bounds_max[right, 1],
+                        bvh_bounds_max[right, 2],
+                        max_distance,
+                    )
+                    if right_hit:
+                        if stack_size < _MAX_BVH_STACK:
+                            stack[stack_size] = right
+                            stack_size = stack_size + wp.int32(1)
+                        else:
+                            wp.atomic_add(shadow_stack_overflow_count, 0, wp.int32(1))
+                if left >= 0:
+                    left_hit, _left_t, _left_exit_t = _intersect_aabb_for_ray_with_interval(
+                        ox,
+                        oy,
+                        oz,
+                        dx,
+                        dy,
+                        dz,
+                        bvh_bounds_min[left, 0],
+                        bvh_bounds_min[left, 1],
+                        bvh_bounds_min[left, 2],
+                        bvh_bounds_max[left, 0],
+                        bvh_bounds_max[left, 1],
+                        bvh_bounds_max[left, 2],
+                        max_distance,
+                    )
+                    if left_hit:
+                        if stack_size < _MAX_BVH_STACK:
+                            stack[stack_size] = left
+                            stack_size = stack_size + wp.int32(1)
+                        else:
+                            wp.atomic_add(shadow_stack_overflow_count, 0, wp.int32(1))
+                if stack_size > local_max_stack:
+                    local_max_stack = stack_size
 
         wp.atomic_max(shadow_max_stack_depth, 0, local_max_stack)
 

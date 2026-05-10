@@ -84,6 +84,7 @@ def test_frame_timing_recorder_normalizes_lab_schema(tmp_path: Path):
             "frame_index": 0,
             "scenario_name": "smoke",
             "render_execute_ms": 2.0,
+            "pack_rgb8_ms": 0.25,
             "readback_host_ms": float("nan"),
             "frame_total_ms": 4.0,
         }
@@ -99,6 +100,7 @@ def test_frame_timing_recorder_normalizes_lab_schema(tmp_path: Path):
 
     summary = {row["phase"]: row for row in recorder.summary_rows()}
     assert summary["render_execute"]["mean_ms"] == 3.0
+    assert summary["pack_rgb8"]["mean_ms"] == 0.25
     assert summary["frame_total"]["p90_ms"] == pytest.approx(7.6)
     assert "readback_host" not in summary
 
@@ -111,6 +113,7 @@ def test_frame_timing_recorder_normalizes_lab_schema(tmp_path: Path):
         written = list(reader)
     assert "delivery_policy" in reader.fieldnames
     assert "overlap_ratio" in reader.fieldnames
+    assert "pack_rgb8_ms" in reader.fieldnames
     assert "accel_refit_ms" in reader.fieldnames
     assert "refit_ms" not in reader.fieldnames
     assert written[0]["scenario_name"] == "smoke"
@@ -137,6 +140,24 @@ def test_frame_timing_recorder_applies_default_lab_fields(tmp_path: Path):
     assert written[0]["device"] == "cuda:1"
     assert written[0]["width"] == "160"
     assert written[0]["height"] == "120"
+
+
+def test_render_profile_row_computes_unclamped_overhead():
+    row = go2_backend._render_profile_row(
+        [
+            ("raygen_kernel", 1.0),
+            ("first_hit_kernel_ms", 2.0),
+            ("shade_kernel", 3.0),
+            ("unknown_phase", 100.0),
+        ],
+        render_execute_ms=5.5,
+    )
+
+    assert row["render_raygen_kernel_ms"] == 1.0
+    assert row["render_first_hit_kernel_ms"] == 2.0
+    assert row["render_shade_kernel_ms"] == 3.0
+    assert row["render_overhead_ms"] == -0.5
+    assert "render_unknown_phase_ms" not in row
 
 
 def test_go2_video_ordered_static_preset_is_currently_implemented():
