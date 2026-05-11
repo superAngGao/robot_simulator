@@ -5,9 +5,11 @@ from optics.execution import OpticalOutputProfile
 from optics.render_api import (
     DeliveryPolicy,
     DeliveryRequest,
+    OpticalRenderPipeline,
     ReadbackPayload,
     RenderBackend,
     RenderDiagnosticsRequest,
+    RenderFrameContext,
     RenderRequest,
     WritePolicy,
 )
@@ -120,3 +122,12 @@ def test_delivery_request_validates_payload_policy_combinations():
 
     with pytest.raises(ValueError, match="RGB or RGB8"):
         DeliveryRequest(payload=ReadbackPayload.FULL, policy=DeliveryPolicy.TORCH_ASYNC_ORDERED)
+
+
+def test_pipeline_protocols_are_internal_and_import_safe():
+    import optics
+
+    assert RenderFrameContext.__name__ == "RenderFrameContext"
+    assert OpticalRenderPipeline.__name__ == "OpticalRenderPipeline"
+    assert not hasattr(optics, "RenderFrameContext")
+    assert not hasattr(optics, "OpticalRenderPipeline")

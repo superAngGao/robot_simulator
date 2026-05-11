@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Protocol, runtime_checkable
 
 from sensing.optical import OpticalPinholeCameraSpec, OpticalRaySensorSpec
 
@@ -163,3 +164,37 @@ class DeliveryResult:
     timing: Mapping[str, float] = field(default_factory=dict)
     lag_frames: int = 0
     dropped: bool = False
+
+
+@runtime_checkable
+class RenderFrameContext(Protocol):
+    """Frame-scoped internal render context contract."""
+
+    @property
+    def frame_id(self) -> int: ...
+
+    @property
+    def sim_time(self) -> float: ...
+
+    @property
+    def env_idx(self) -> int: ...
+
+    def render(self, request: RenderRequest) -> RenderResult: ...
+
+
+@runtime_checkable
+class OpticalRenderPipeline(Protocol):
+    """Long-lived internal optical render pipeline contract."""
+
+    def begin_frame(
+        self,
+        frame_inputs: object | None = None,
+        *,
+        env_idx: int = 0,
+    ) -> RenderFrameContext: ...
+
+    def deliver(
+        self,
+        rendered: RenderResult,
+        request: DeliveryRequest | None = None,
+    ) -> DeliveryResult: ...

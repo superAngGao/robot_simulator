@@ -50,9 +50,11 @@ from optics.render_api import (
 )
 from optics.render_api import (
     DeliveryRequest,
+    DeliveryResult,
     RenderBackend,
     RenderDiagnosticsRequest,
     RenderRequest,
+    RenderResult,
 )
 from optics.render_api import (
     ReadbackPayload as RuntimeReadbackPayload,
@@ -258,6 +260,60 @@ class Go2RenderSession:
         return _pack_video_rgb8(result)
 
 
+@dataclass
+class Go2RenderFrameContext:
+    """Frame-scoped Go2 render context backed by one lab session snapshot."""
+
+    session: Go2RenderSession
+    env_idx: int = 0
+
+    @property
+    def frame_id(self) -> int:
+        return int(self.session.scene.frame.frame_id)
+
+    @property
+    def sim_time(self) -> float:
+        return float(self.session.scene.frame.sim_time)
+
+    def render(
+        self,
+        request: RenderRequest,
+        *,
+        render_profile: list[tuple[str, float]] | None = None,
+    ) -> RenderResult:
+        compute_result = self.session.execute_request(request, render_profile=render_profile)
+        return RenderResult(compute=compute_result)
+
+
+@dataclass
+class Go2RenderPipeline:
+    """Go2-specific internal pipeline facade for lab experiments."""
+
+    session: Go2RenderSession
+    default_delivery: DeliveryRequest | None = None
+
+    @classmethod
+    def create(cls, args: argparse.Namespace, timings: TimingRecorder) -> "Go2RenderPipeline":
+        return cls(session=Go2RenderSession.create(args, timings))
+
+    def begin_frame(
+        self,
+        frame_inputs: GpuPublishedFrame | None = None,
+        *,
+        env_idx: int = 0,
+    ) -> Go2RenderFrameContext:
+        if frame_inputs is not None and frame_inputs is not self.session.gpu_frame:
+            raise NotImplementedError("Go2RenderPipeline A5 supports only the session's static GPU frame")
+        return Go2RenderFrameContext(self.session, env_idx=env_idx)
+
+    def deliver(
+        self,
+        rendered: RenderResult,
+        request: DeliveryRequest | None = None,
+    ) -> DeliveryResult:
+        raise NotImplementedError("Go2RenderPipeline delivery remains owned by the lab benchmark loops")
+
+
 def main() -> None:
     args = _parse_args()
     if wp is None:
@@ -274,7 +330,8 @@ def render_many_views(args: argparse.Namespace) -> None:
         ) from _WARP_IMPORT_ERROR
     timings = TimingRecorder()
     total_start = time.perf_counter()
-    session = Go2RenderSession.create(args, timings)
+    pipeline = Go2RenderPipeline.create(args, timings)
+    session = pipeline.session
     scene = session.scene
 
     out_dir = Path(args.out)
@@ -327,7 +384,7 @@ def render_many_views(args: argparse.Namespace) -> None:
 
     if args.video_frames > 0:
         video_rows = _run_video_benchmark(
-            session,
+            pipeline,
             args,
             out_dir,
         )
@@ -634,11 +691,12 @@ def _run_snapshot_refit_benchmark(
 
 
 def _render_video_frame(
-    session: Go2RenderSession,
+    pipeline: Go2RenderPipeline,
     args: argparse.Namespace,
     frame_index: int,
     ray_cache: list[tuple[OpticalPinholeCameraSpec, object]] | None,
 ) -> _RenderedVideoFrame:
+    session = pipeline.session
     if args.video_raygen == "gpu":
         camera = _build_video_camera(session.scene, args, frame_index)
         rays = None
@@ -662,10 +720,9 @@ def _render_video_frame(
         fail_on_overflow=bool(args.fail_on_overflow),
     )
     render_profile = _render_profile_buffer_for_request(render_request)
-    result = session.execute_request(
-        render_request,
-        render_profile=render_profile,
-    )
+    frame_context = pipeline.begin_frame(env_idx=camera.env_idx)
+    render_result = frame_context.render(render_request, render_profile=render_profile)
+    result = render_result.compute
     wp.synchronize_event(result.ready_event)
     render_execute_ms = (time.perf_counter() - render_start) * 1000.0
     render_profile_row = _render_profile_row(
@@ -753,16 +810,17 @@ def _video_delivery_request(
 
 
 def _run_video_benchmark(
-    session: Go2RenderSession,
+    pipeline: Go2RenderPipeline,
     args: argparse.Namespace,
     out_dir: Path,
 ) -> FrameTimingRecorder:
     if args.video_readback_delivery == "torch_async":
         return _run_video_benchmark_torch_async(
-            session,
+            pipeline,
             args,
             out_dir,
         )
+    session = pipeline.session
 
     if args.write_frames and Image is None:
         raise SystemExit("Writing video benchmark frames requires Pillow") from _PIL_IMPORT_ERROR
@@ -793,7 +851,7 @@ def _run_video_benchmark(
     for frame_index in range(int(args.video_frames)):
         frame_start = time.perf_counter()
         rendered = _render_video_frame(
-            session,
+            pipeline,
             args,
             frame_index,
             ray_cache,
@@ -903,7 +961,7 @@ def _run_video_benchmark(
 
 
 def _run_video_benchmark_torch_async(
-    session: Go2RenderSession,
+    pipeline: Go2RenderPipeline,
     args: argparse.Namespace,
     out_dir: Path,
 ) -> FrameTimingRecorder:
@@ -921,6 +979,7 @@ def _run_video_benchmark_torch_async(
         raise SystemExit("--video-raygen gpu computes camera rays on device; use --video-ray-cache off")
     if args.video_readback_ring_depth <= 0:
         raise SystemExit("--video-readback-ring-depth must be > 0")
+    session = pipeline.session
     delivery_request = _video_delivery_request(
         readback_mode=args.video_readback,
         delivery_mode=args.video_readback_delivery,
@@ -956,7 +1015,7 @@ def _run_video_benchmark_torch_async(
         if first_frame_start is None:
             first_frame_start = frame_start
         rendered = _render_video_frame(
-            session,
+            pipeline,
             args,
             frame_index,
             ray_cache,

@@ -12,8 +12,11 @@ import tools.optical_pipeline_lab.async_readback as async_readback
 import tools.optical_pipeline_lab.go2_backend as go2_backend
 import tools.optical_pipeline_lab.rgb_pack as rgb_pack
 from optics.render_api import DeliveryPolicy as RuntimeDeliveryPolicy
+from optics.render_api import OpticalRenderPipeline as RuntimeOpticalRenderPipeline
 from optics.render_api import ReadbackPayload as RuntimeReadbackPayload
 from optics.render_api import RenderBackend as RuntimeRenderBackend
+from optics.render_api import RenderFrameContext as RuntimeRenderFrameContext
+from optics.render_api import RenderResult as RuntimeRenderResult
 from optics.render_api import WritePolicy as RuntimeWritePolicy
 from tools.optical_pipeline_lab import (
     DEFAULT_RENDER_HEIGHT,
@@ -219,6 +222,58 @@ def test_render_request_diagnostics_drive_profile_buffer_and_traversal_readback(
     assert go2_backend._include_shadow_traversal_stats(request) is False
 
 
+def test_go2_pipeline_frame_context_wraps_render_result():
+    compute = object()
+    profile: list[tuple[str, float]] = []
+
+    class FakeSession:
+        scene = SimpleNamespace(frame=SimpleNamespace(frame_id=4, sim_time=0.2))
+        gpu_frame = object()
+
+        def __init__(self):
+            self.calls = []
+
+        def execute_request(self, request, *, render_profile):
+            self.calls.append((request, render_profile))
+            return compute
+
+    session = FakeSession()
+    pipeline = go2_backend.Go2RenderPipeline(session=session)
+    frame = pipeline.begin_frame(env_idx=0)
+    request = go2_backend._video_render_request(
+        camera=SimpleNamespace(frame_id=4, sim_time=0.2, env_idx=0),
+        rays=None,
+        use_gpu_raygen=True,
+        readback_mode="rgb",
+        profile_timing=True,
+        fail_on_overflow=True,
+    )
+
+    assert isinstance(pipeline, RuntimeOpticalRenderPipeline)
+    assert isinstance(frame, RuntimeRenderFrameContext)
+    assert frame.frame_id == 4
+    assert frame.sim_time == 0.2
+    assert frame.env_idx == 0
+
+    rendered = frame.render(request, render_profile=profile)
+
+    assert isinstance(rendered, RuntimeRenderResult)
+    assert rendered.compute is compute
+    assert rendered.timing == {}
+    assert session.calls == [(request, profile)]
+
+
+def test_go2_pipeline_rejects_non_session_frame_inputs():
+    session = SimpleNamespace(
+        scene=SimpleNamespace(frame=SimpleNamespace(frame_id=1, sim_time=0.0)),
+        gpu_frame=object(),
+    )
+    pipeline = go2_backend.Go2RenderPipeline(session=session)
+
+    with pytest.raises(NotImplementedError, match="static GPU frame"):
+        pipeline.begin_frame(frame_inputs=object())
+
+
 def test_video_delivery_request_maps_lab_options_to_runtime_api():
     request = go2_backend._video_delivery_request(
         readback_mode="none",
@@ -263,7 +318,7 @@ def test_video_delivery_request_maps_lab_options_to_runtime_api():
 
 
 def test_sync_video_readback_none_row_does_not_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    def fake_render_video_frame(session, args, frame_index, ray_cache):
+    def fake_render_video_frame(pipeline, args, frame_index, ray_cache):
         return go2_backend._RenderedVideoFrame(
             frame_index=frame_index,
             camera=SimpleNamespace(sim_time=0.0),
@@ -284,7 +339,7 @@ def test_sync_video_readback_none_row_does_not_stage(tmp_path: Path, monkeypatch
 
     frame_timing_csv = tmp_path / "frame_timing.csv"
     rows = go2_backend._run_video_benchmark(
-        session=SimpleNamespace(scene=object()),
+        pipeline=SimpleNamespace(session=SimpleNamespace(scene=object())),
         args=SimpleNamespace(
             video_readback_delivery="sync",
             write_frames=False,
