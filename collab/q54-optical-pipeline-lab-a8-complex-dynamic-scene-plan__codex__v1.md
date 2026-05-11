@@ -168,6 +168,15 @@ session's configured BVH backend otherwise. The returned `Go2RenderFrameContext`
 owns the frame-specific snapshot/BVH references and non-NaN `prepare_timing`
 fields. Static `begin_frame()` behavior remains unchanged.
 
+A8.3 update: the video loop can now consume an internal `args.video_frame_inputs`
+sequence. Each rendered frame passes its corresponding `GpuPublishedFrame` into
+`pipeline.begin_frame(...)`, propagates the frame-specific `geometry_mode`, and
+keeps camera/ray metadata aligned with the dynamic frame's `frame_id` and
+`sim_time`. This remains a lab/test hook rather than a public CLI preset. The
+synthetic body-bound GPU smoke verifies that the sync `readback=none` video loop
+writes `frame_timing.csv` rows with `geometry_mode=dynamic_rigid`,
+non-NaN `snapshot_ms`, non-NaN `accel_refit_ms`, and NaN `accel_rebuild_ms`.
+
 Before implementing the dynamic smoke, run a CPU-only or import-safe probe for
 the published-frame cloning path. The probe should answer:
 

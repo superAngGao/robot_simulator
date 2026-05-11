@@ -753,6 +753,7 @@ def test_optical_lab_synthetic_body_bound_frame_moves_snapshot_geometry():
 
 def test_optical_lab_dynamic_begin_frame_populates_prepare_timing_with_synthetic_frame():
     registry = dynamic_frames.make_body_bound_triangle_registry(geometry_z_offset=0.25)
+    wp.init()
     stream = wp.Stream(device="cuda:0")
     base_frame = dynamic_frames.make_gpu_pose_frame(
         wp_module=wp,
@@ -803,6 +804,89 @@ def test_optical_lab_dynamic_begin_frame_populates_prepare_timing_with_synthetic
         [[0.0, 0.0, 0.65]],
         atol=1e-6,
     )
+
+
+def test_optical_lab_dynamic_video_loop_writes_prepare_timing_csv(tmp_path):
+    registry = dynamic_frames.make_body_bound_triangle_registry(geometry_z_offset=0.25)
+    wp.init()
+    stream = wp.Stream(device="cuda:0")
+    base_frame = dynamic_frames.make_gpu_pose_frame(
+        wp_module=wp,
+        translations=np.zeros((1, 1, 3), dtype=np.float32),
+        frame_id=41,
+        sim_time=0.41,
+        device="cuda:0",
+    )
+    frame0 = dynamic_frames.clone_gpu_published_pose_frame(
+        base_frame,
+        wp_module=wp,
+        frame_id=42,
+        sim_time=0.42,
+    )
+    frame1 = dynamic_frames.clone_and_perturb_gpu_published_pose_frame(
+        base_frame,
+        wp_module=wp,
+        translation_offsets={(0, 0): [0.0, 0.0, 0.4]},
+        frame_id=43,
+        sim_time=0.43,
+    )
+    cache = DeviceOpticalSceneCache(registry, device="cuda:0", stream=stream)
+    base_snapshot = cache.snapshot_from_gpu_frame(base_frame, env_idx=0, stream=stream, include_aabb=True)
+    base_bvh = build_device_bvh_from_snapshot(base_snapshot, device="cuda:0", stream=stream)
+    wp.synchronize_event(base_bvh.ready_event)
+    scene = SimpleNamespace(
+        frame=SimpleNamespace(frame_id=base_frame.frame_id, sim_time=base_frame.sim_time),
+        bounds_min=np.array([-0.2, -0.2, 0.0], dtype=np.float64),
+        bounds_max=np.array([0.4, 0.4, 0.9], dtype=np.float64),
+    )
+    session = go2_backend.Go2RenderSession(
+        scene=scene,
+        device=wp.get_device("cuda:0"),
+        stream=stream,
+        gpu_frame=base_frame,
+        cache=cache,
+        snapshot=base_snapshot,
+        bvh=base_bvh,
+        executor=GpuDeviceBvhDirectLightOpticalExecutor(device="cuda:0", stream=stream, shadows=False),
+        bvh_backend="cpu",
+        bvh_split_strategy="sort",
+    )
+    frame_timing_csv = tmp_path / "frame_timing.csv"
+
+    rows = go2_backend._run_video_benchmark(
+        go2_backend.Go2RenderPipeline(session=session),
+        SimpleNamespace(
+            width=64,
+            height=48,
+            view="front",
+            video_mode="fixed_view",
+            video_frames=2,
+            video_fps=30.0,
+            video_raygen="gpu",
+            video_ray_cache="off",
+            video_readback="none",
+            video_readback_delivery="sync",
+            video_readback_ring_depth=2,
+            video_frame_inputs=[frame0, frame1],
+            video_geometry_mode="dynamic_rigid",
+            write_frames=False,
+            render_profile=False,
+            fail_on_overflow=False,
+            progress_every=0,
+            frame_timing_csv=str(frame_timing_csv),
+            lab_frame_defaults={"geometry_mode": "dynamic_rigid"},
+        ),
+        tmp_path,
+    )
+
+    assert len(rows._rows) == 2
+    for row in rows._rows:
+        assert row["geometry_mode"] == "dynamic_rigid"
+        assert float(row["snapshot_ms"]) >= 0.0
+        assert float(row["accel_refit_ms"]) >= 0.0
+        assert np.isnan(float(row["accel_rebuild_ms"]))
+        assert np.isnan(float(row["readback_host_ms"]))
+    assert frame_timing_csv.exists()
 
 
 def test_device_scene_packs_materials_and_lights_for_gpu_shading():

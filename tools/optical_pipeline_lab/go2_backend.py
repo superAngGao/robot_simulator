@@ -124,6 +124,7 @@ class _AsyncVideoReadbackJob:
     frame_index: int
     frame_start: float
     camera: OpticalPinholeCameraSpec
+    geometry_mode: str
     render_execute_ms: float
     pack_rgb8_ms: float
     render_profile_row: dict[str, float]
@@ -142,6 +143,7 @@ class _RenderedVideoFrame:
     pack_rgb8_ms: float
     render_profile_row: dict[str, float]
     include_shadow_traversal_stats: bool
+    geometry_mode: str = "static"
     prepare_timing: Mapping[str, float] = field(default_factory=dict)
 
 
@@ -609,10 +611,12 @@ def _print_timing_summary(timings: TimingRecorder, bvh) -> None:
 
 def _print_video_summary(args: argparse.Namespace, video_rows: FrameTimingRecorder) -> None:
     summary = video_rows.video_summary()
+    frame_inputs = getattr(args, "video_frame_inputs", None)
+    summary_frame_inputs = frame_inputs[0] if frame_inputs else None
     print(
         "  video_benchmark: "
         f"frames={args.video_frames}, mode={args.video_mode}, "
-        "geometry=static, "
+        f"geometry={_video_geometry_mode(args, frame_inputs=summary_frame_inputs)}, "
         f"raygen={args.video_raygen}, "
         f"ray_cache={args.video_ray_cache}, "
         f"readback={args.video_readback}, "
@@ -801,17 +805,22 @@ def _render_video_frame(
     ray_cache: list[tuple[OpticalPinholeCameraSpec, object]] | None,
 ) -> _RenderedVideoFrame:
     session = pipeline.session
+    frame_inputs = _video_frame_inputs(args, frame_index)
     if args.video_raygen == "gpu":
         camera = _build_video_camera(session.scene, args, frame_index)
+        camera = _video_camera_for_frame_inputs(camera, frame_inputs=frame_inputs)
         rays = None
         camera_rays_ms = _NAN
     elif ray_cache is None:
         camera_start = time.perf_counter()
         camera = _build_video_camera(session.scene, args, frame_index)
+        camera = _video_camera_for_frame_inputs(camera, frame_inputs=frame_inputs)
         rays = build_pinhole_camera_rays(camera)
         camera_rays_ms = (time.perf_counter() - camera_start) * 1000.0
     else:
         camera, rays = ray_cache[frame_index]
+        camera = _video_camera_for_frame_inputs(camera, frame_inputs=frame_inputs)
+        rays = _video_rays_for_camera(rays, camera)
         camera_rays_ms = _NAN
 
     render_request = _video_render_request(
@@ -822,7 +831,7 @@ def _render_video_frame(
         profile_timing=bool(args.render_profile),
         fail_on_overflow=bool(args.fail_on_overflow),
     )
-    frame_context = pipeline.begin_frame(env_idx=camera.env_idx)
+    frame_context = pipeline.begin_frame(frame_inputs=frame_inputs, env_idx=camera.env_idx)
     render_result = frame_context.render(render_request)
     result = render_result.compute
     render_execute_ms = float(render_result.timing["render_execute_ms"])
@@ -845,6 +854,7 @@ def _render_video_frame(
         pack_rgb8_ms=pack_rgb8_ms,
         render_profile_row=render_profile_row,
         include_shadow_traversal_stats=_include_shadow_traversal_stats(render_request),
+        geometry_mode=_video_geometry_mode(args, frame_inputs=frame_inputs),
         prepare_timing=prepare_timing,
     )
 
@@ -885,6 +895,38 @@ def _render_profile_buffer_for_request(request: RenderRequest) -> list[tuple[str
 
 def _include_shadow_traversal_stats(request: RenderRequest) -> bool:
     return bool(request.diagnostics.traversal_counters)
+
+
+def _video_frame_inputs(args: argparse.Namespace, frame_index: int):
+    frame_inputs = getattr(args, "video_frame_inputs", None)
+    if frame_inputs is None:
+        return None
+    if frame_index >= len(frame_inputs):
+        raise IndexError("video_frame_inputs must contain at least video_frames entries")
+    return frame_inputs[frame_index]
+
+
+def _video_camera_for_frame_inputs(
+    camera: OpticalPinholeCameraSpec,
+    *,
+    frame_inputs,
+) -> OpticalPinholeCameraSpec:
+    if frame_inputs is None:
+        return camera
+    frame_id = getattr(frame_inputs, "frame_id", camera.frame_id)
+    sim_time = getattr(frame_inputs, "sim_time", camera.sim_time)
+    return replace(camera, frame_id=int(frame_id), sim_time=float(sim_time))
+
+
+def _video_rays_for_camera(rays, camera: OpticalPinholeCameraSpec):
+    return replace(rays, frame_id=camera.frame_id, sim_time=camera.sim_time, env_idx=camera.env_idx)
+
+
+def _video_geometry_mode(args: argparse.Namespace, *, frame_inputs) -> str:
+    mode = getattr(args, "video_geometry_mode", None)
+    if mode is not None:
+        return str(mode)
+    return "dynamic_rigid" if frame_inputs is not None else "static"
 
 
 def _prepare_timing_value(timing: Mapping[str, float], key: str) -> float:
@@ -1022,7 +1064,7 @@ def _run_video_benchmark(
                 "frame_index": frame_index,
                 "sim_time": rendered.camera.sim_time,
                 "video_time": float(frame_index) / float(args.video_fps),
-                "geometry_mode": "static",
+                "geometry_mode": rendered.geometry_mode,
                 "raygen_mode": args.video_raygen,
                 "ray_cache_mode": args.video_ray_cache,
                 "readback_mode": delivery_request.payload.value,
@@ -1155,6 +1197,7 @@ def _run_video_benchmark_torch_async(
             frame_index=frame_index,
             frame_start=frame_start,
             camera=rendered.camera,
+            geometry_mode=rendered.geometry_mode,
             render_execute_ms=rendered.render_execute_ms,
             pack_rgb8_ms=rendered.pack_rgb8_ms,
             render_profile_row=rendered.render_profile_row,
@@ -1231,6 +1274,7 @@ def _submit_torch_async_video_readback(
     frame_index: int,
     frame_start: float,
     camera: OpticalPinholeCameraSpec,
+    geometry_mode: str,
     render_execute_ms: float,
     pack_rgb8_ms: float,
     render_profile_row: dict[str, float],
@@ -1242,6 +1286,7 @@ def _submit_torch_async_video_readback(
         frame_index=frame_index,
         frame_start=frame_start,
         camera=camera,
+        geometry_mode=geometry_mode,
         render_execute_ms=render_execute_ms,
         pack_rgb8_ms=pack_rgb8_ms,
         render_profile_row=render_profile_row,
@@ -1320,7 +1365,7 @@ def _complete_torch_async_video_readback(
             "frame_index": job.frame_index,
             "sim_time": job.camera.sim_time,
             "video_time": float(job.frame_index) / float(args.video_fps),
-            "geometry_mode": "static",
+            "geometry_mode": job.geometry_mode,
             "delivery_policy": "torch_async",
             "raygen_mode": args.video_raygen,
             "ray_cache_mode": args.video_ray_cache,

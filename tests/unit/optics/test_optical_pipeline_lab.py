@@ -292,6 +292,75 @@ def test_go2_pipeline_frame_context_wraps_render_result(monkeypatch: pytest.Monk
     assert session.calls[0][3] is None
 
 
+def test_render_video_frame_passes_dynamic_frame_inputs(monkeypatch: pytest.MonkeyPatch):
+    frame_inputs = SimpleNamespace(frame_id=9, sim_time=0.9)
+    compute = SimpleNamespace(ready_event=object())
+    camera = go2_backend.OpticalPinholeCameraSpec(
+        frame_id=8,
+        sim_time=0.8,
+        env_idx=1,
+        sensor_id="camera",
+        width=16,
+        height=8,
+        fx=10.0,
+        fy=10.0,
+        cx=7.5,
+        cy=3.5,
+    )
+    captured: dict[str, object] = {}
+
+    class FakeFrameContext:
+        prepare_timing = {
+            "snapshot_ms": 1.0,
+            "accel_refit_ms": 2.0,
+            "accel_rebuild_ms": float("nan"),
+        }
+
+        def render(self, request):
+            captured["request"] = request
+            return RuntimeRenderResult(
+                compute=compute,
+                timing={
+                    "render_execute_ms": 3.0,
+                    **go2_backend._render_profile_row(None),
+                },
+            )
+
+    class FakePipeline:
+        session = SimpleNamespace(scene=object())
+
+        def begin_frame(self, frame_inputs=None, *, env_idx=0):
+            captured["frame_inputs"] = frame_inputs
+            captured["env_idx"] = env_idx
+            return FakeFrameContext()
+
+    monkeypatch.setattr(go2_backend, "_build_video_camera", lambda scene, args, frame_index: camera)
+
+    rendered = go2_backend._render_video_frame(
+        FakePipeline(),
+        SimpleNamespace(
+            video_raygen="gpu",
+            video_readback="none",
+            render_profile=False,
+            fail_on_overflow=False,
+            video_frame_inputs=[frame_inputs],
+            video_geometry_mode="dynamic_rigid",
+        ),
+        0,
+        None,
+    )
+
+    assert captured["frame_inputs"] is frame_inputs
+    assert captured["env_idx"] == 1
+    request = captured["request"]
+    assert request.frame_id == 9
+    assert request.sim_time == 0.9
+    assert request.camera.frame_id == 9
+    assert rendered.geometry_mode == "dynamic_rigid"
+    assert rendered.prepare_timing["snapshot_ms"] == 1.0
+    assert rendered.render_execute_ms == 3.0
+
+
 def test_go2_pipeline_static_begin_frame_accepts_session_frame_inputs():
     session = SimpleNamespace(
         scene=SimpleNamespace(frame=SimpleNamespace(frame_id=1, sim_time=0.0)),
@@ -556,6 +625,12 @@ def test_sync_video_readback_none_row_does_not_stage(tmp_path: Path, monkeypatch
             pack_rgb8_ms=float("nan"),
             render_profile_row=go2_backend._render_profile_row(None),
             include_shadow_traversal_stats=False,
+            geometry_mode="dynamic_rigid",
+            prepare_timing={
+                "snapshot_ms": 0.5,
+                "accel_refit_ms": 0.25,
+                "accel_rebuild_ms": float("nan"),
+            },
         )
 
     def fail_if_staged(*args, **kwargs):
@@ -593,6 +668,10 @@ def test_sync_video_readback_none_row_does_not_stage(tmp_path: Path, monkeypatch
     assert row["readback_mode"] == "none"
     assert row["write_mode"] == "none"
     assert row["delivery_policy"] == "sync"
+    assert row["geometry_mode"] == "dynamic_rigid"
+    assert row["snapshot_ms"] == 0.5
+    assert row["accel_refit_ms"] == 0.25
+    assert math.isnan(float(row["accel_rebuild_ms"]))
     assert math.isnan(float(row["readback_host_ms"]))
     assert row["frame_path"] == ""
     assert frame_timing_csv.exists()
