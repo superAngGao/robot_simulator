@@ -161,6 +161,13 @@ pose-only `GpuPublishedFrame` changes the device snapshot's world triangle and
 AABB. This validates the physics-published-frame shape without entering the
 full benchmark loop yet.
 
+A8.2 update: `Go2RenderPipeline.begin_frame(frame_inputs=other_frame)` now
+supports dynamic frame inputs. For non-static frames it builds a frame-specific
+snapshot, then refits the current BVH when supported or rebuilds with the
+session's configured BVH backend otherwise. The returned `Go2RenderFrameContext`
+owns the frame-specific snapshot/BVH references and non-NaN `prepare_timing`
+fields. Static `begin_frame()` behavior remains unchanged.
+
 Before implementing the dynamic smoke, run a CPU-only or import-safe probe for
 the published-frame cloning path. The probe should answer:
 

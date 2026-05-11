@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
+import tools.optical_pipeline_lab.go2_backend as go2_backend
 from optics import (
     CpuDirectLightOpticalExecutor,
     DeviceOpticalSceneCache,
@@ -746,6 +749,60 @@ def test_optical_lab_synthetic_body_bound_frame_moves_snapshot_geometry():
     np.testing.assert_allclose(moved_snapshot.triangle_aabb_min.numpy(), [[0.0, 0.0, 0.65]], atol=1e-6)
     np.testing.assert_allclose(moved_snapshot.triangle_aabb_max.numpy(), [[0.2, 0.2, 0.65]], atol=1e-6)
     np.testing.assert_allclose(base_frame.x_world_r_wp.numpy(), np.zeros((1, 1, 3), dtype=np.float32))
+
+
+def test_optical_lab_dynamic_begin_frame_populates_prepare_timing_with_synthetic_frame():
+    registry = dynamic_frames.make_body_bound_triangle_registry(geometry_z_offset=0.25)
+    stream = wp.Stream(device="cuda:0")
+    base_frame = dynamic_frames.make_gpu_pose_frame(
+        wp_module=wp,
+        translations=np.zeros((1, 1, 3), dtype=np.float32),
+        frame_id=31,
+        sim_time=0.31,
+        device="cuda:0",
+    )
+    moved_frame = dynamic_frames.clone_and_perturb_gpu_published_pose_frame(
+        base_frame,
+        wp_module=wp,
+        translation_offsets={(0, 0): [0.0, 0.0, 0.4]},
+        frame_id=32,
+        sim_time=0.32,
+    )
+    cache = DeviceOpticalSceneCache(registry, device="cuda:0", stream=stream)
+    base_snapshot = cache.snapshot_from_gpu_frame(base_frame, env_idx=0, stream=stream, include_aabb=True)
+    base_bvh = build_device_bvh_from_snapshot(base_snapshot, device="cuda:0", stream=stream)
+    wp.synchronize_event(base_bvh.ready_event)
+    scene = SimpleNamespace(frame=SimpleNamespace(frame_id=base_frame.frame_id, sim_time=base_frame.sim_time))
+    session = go2_backend.Go2RenderSession(
+        scene=scene,
+        device=wp.get_device("cuda:0"),
+        stream=stream,
+        gpu_frame=base_frame,
+        cache=cache,
+        snapshot=base_snapshot,
+        bvh=base_bvh,
+        executor=None,
+        bvh_backend="cpu",
+        bvh_split_strategy="sort",
+    )
+
+    frame_context = go2_backend.Go2RenderPipeline(session=session).begin_frame(
+        frame_inputs=moved_frame,
+        env_idx=0,
+    )
+    wp.synchronize_event(frame_context.snapshot.ready_event)
+    wp.synchronize_event(frame_context.bvh.ready_event)
+
+    assert frame_context.snapshot is not base_snapshot
+    assert frame_context.bvh.frame_id == moved_frame.frame_id
+    assert frame_context.prepare_timing["snapshot_ms"] >= 0.0
+    assert frame_context.prepare_timing["accel_refit_ms"] >= 0.0
+    assert np.isnan(float(frame_context.prepare_timing["accel_rebuild_ms"]))
+    np.testing.assert_allclose(
+        frame_context.snapshot.triangle_aabb_min.numpy(),
+        [[0.0, 0.0, 0.65]],
+        atol=1e-6,
+    )
 
 
 def test_device_scene_packs_materials_and_lights_for_gpu_shading():

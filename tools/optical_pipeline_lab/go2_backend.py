@@ -157,6 +157,8 @@ class Go2RenderSession:
     snapshot: object
     bvh: object
     executor: GpuDeviceBvhDirectLightOpticalExecutor
+    bvh_backend: str = "cuda_lbvh"
+    bvh_split_strategy: str = "sort"
 
     @classmethod
     def create(cls, args: argparse.Namespace, timings: TimingRecorder) -> "Go2RenderSession":
@@ -210,6 +212,8 @@ class Go2RenderSession:
             snapshot=snapshot,
             bvh=bvh,
             executor=executor,
+            bvh_backend=str(args.bvh_backend),
+            bvh_split_strategy=str(args.bvh_split_strategy),
         )
 
     def execute_frame(
@@ -340,11 +344,70 @@ class Go2RenderPipeline:
         env_idx: int = 0,
     ) -> Go2RenderFrameContext:
         if frame_inputs is not None and frame_inputs is not self.session.gpu_frame:
-            raise NotImplementedError("Go2RenderPipeline A5 supports only the session's static GPU frame")
+            return self._begin_dynamic_frame(frame_inputs, env_idx=env_idx)
         return Go2RenderFrameContext(
             self.session,
             env_idx=env_idx,
             prepare_timing=FramePrepareTiming().to_flat_mapping(),
+        )
+
+    def _begin_dynamic_frame(
+        self,
+        frame_inputs: GpuPublishedFrame,
+        *,
+        env_idx: int,
+    ) -> Go2RenderFrameContext:
+        snapshot_start = time.perf_counter()
+        snapshot = self.session.cache.snapshot_from_gpu_frame(
+            frame_inputs,
+            env_idx=env_idx,
+            stream=self.session.stream,
+            include_aabb=True,
+        )
+        wp.synchronize_event(snapshot.ready_event)
+        snapshot_ms = (time.perf_counter() - snapshot_start) * 1000.0
+
+        accel_refit_ms = _NAN
+        accel_rebuild_ms = _NAN
+        if bool(getattr(self.session.bvh.stats, "supports_refit", False)):
+            refit_start = time.perf_counter()
+            bvh = refit_device_bvh_from_snapshot(
+                snapshot,
+                self.session.bvh,
+                stream=self.session.stream,
+            )
+            wp.synchronize_event(bvh.ready_event)
+            accel_refit_ms = (time.perf_counter() - refit_start) * 1000.0
+        else:
+            rebuild_start = time.perf_counter()
+            bvh = self._rebuild_dynamic_bvh(snapshot)
+            wp.synchronize_event(bvh.ready_event)
+            accel_rebuild_ms = (time.perf_counter() - rebuild_start) * 1000.0
+
+        return Go2RenderFrameContext(
+            self.session,
+            env_idx=env_idx,
+            snapshot=snapshot,
+            bvh=bvh,
+            prepare_timing=FramePrepareTiming(
+                snapshot_ms=snapshot_ms,
+                accel_refit_ms=accel_refit_ms,
+                accel_rebuild_ms=accel_rebuild_ms,
+            ).to_flat_mapping(),
+        )
+
+    def _rebuild_dynamic_bvh(self, snapshot):
+        if self.session.bvh_backend == "cuda_lbvh":
+            return build_cuda_lbvh_from_snapshot(
+                snapshot,
+                device=self.session.device,
+                stream=self.session.stream,
+            )
+        return build_device_bvh_from_snapshot(
+            snapshot,
+            device=self.session.device,
+            stream=self.session.stream,
+            split_strategy=self.session.bvh_split_strategy,
         )
 
     def deliver(
