@@ -295,6 +295,69 @@ def test_go2_pipeline_rejects_non_session_frame_inputs():
         pipeline.begin_frame(frame_inputs=object())
 
 
+def test_torch_async_readback_warmup_uses_pipeline_frame_context(monkeypatch: pytest.MonkeyPatch):
+    compute = SimpleNamespace(ready_event=object())
+    camera = SimpleNamespace(frame_id=5, sim_time=0.3, env_idx=2)
+    captured: dict[str, object] = {}
+
+    class FakeFrame:
+        def __init__(self):
+            self.requests = []
+
+        def render(self, request):
+            self.requests.append(request)
+            return RuntimeRenderResult(compute=compute)
+
+    class FakePipeline:
+        def __init__(self):
+            self.session = SimpleNamespace(scene=object())
+            self.frame = FakeFrame()
+            self.begin_calls = []
+
+        def begin_frame(self, *, env_idx=0):
+            self.begin_calls.append(env_idx)
+            return self.frame
+
+    def fake_from_warmup_result(warmup_result, *, channels, ring_depth):
+        captured["warmup_result"] = warmup_result
+        captured["channels"] = channels
+        captured["ring_depth"] = ring_depth
+        return "ring"
+
+    monkeypatch.setattr(go2_backend, "_build_video_camera", lambda scene, args, frame_index: camera)
+    monkeypatch.setattr(
+        go2_backend.TorchAsyncReadbackRing,
+        "from_warmup_result",
+        staticmethod(fake_from_warmup_result),
+    )
+
+    pipeline = FakePipeline()
+    delivery_request = go2_backend._video_delivery_request(
+        readback_mode="rgb",
+        delivery_mode="torch_async",
+        ring_depth=4,
+        write_frames=False,
+    )
+
+    ring = go2_backend._prepare_torch_async_readback_ring(
+        pipeline=pipeline,
+        args=SimpleNamespace(render_profile=True, fail_on_overflow=False),
+        delivery_request=delivery_request,
+    )
+
+    assert ring == "ring"
+    assert pipeline.begin_calls == [2]
+    assert len(pipeline.frame.requests) == 1
+    request = pipeline.frame.requests[0]
+    assert request.camera is camera
+    assert request.diagnostics.profile_timing is True
+    assert request.diagnostics.traversal_counters is True
+    assert captured["warmup_result"] is compute
+    assert captured["ring_depth"] == 4
+    assert "rgb" in captured["channels"]
+    assert "shadow_traversal_ray_count" in captured["channels"]
+
+
 def test_video_delivery_request_maps_lab_options_to_runtime_api():
     request = go2_backend._video_delivery_request(
         readback_mode="none",

@@ -1020,7 +1020,7 @@ def _run_video_benchmark_torch_async(
         else None
     )
     readback_ring = _prepare_torch_async_readback_ring(
-        session,
+        pipeline,
         args,
         delivery_request,
     )
@@ -1099,10 +1099,11 @@ def _run_video_benchmark_torch_async(
 
 
 def _prepare_torch_async_readback_ring(
-    session: Go2RenderSession,
+    pipeline: Go2RenderPipeline,
     args: argparse.Namespace,
     delivery_request: DeliveryRequest,
 ) -> TorchAsyncReadbackRing:
+    session = pipeline.session
     warmup_camera = _build_video_camera(session.scene, args, 0)
     warmup_request = _video_render_request(
         camera=warmup_camera,
@@ -1112,11 +1113,8 @@ def _prepare_torch_async_readback_ring(
         profile_timing=bool(args.render_profile),
         fail_on_overflow=bool(args.fail_on_overflow),
     )
-    warmup_result = session.execute_request(
-        warmup_request,
-        render_profile=_render_profile_buffer_for_request(warmup_request),
-    )
-    wp.synchronize_event(warmup_result.ready_event)
+    warmup_frame = pipeline.begin_frame(env_idx=warmup_camera.env_idx)
+    warmup_result = warmup_frame.render(warmup_request).compute
     if delivery_request.payload is RuntimeReadbackPayload.RGB8:
         warmup_result = session.pack_rgb8(warmup_result)
         wp.synchronize_event(warmup_result.ready_event)
