@@ -187,6 +187,38 @@ def test_video_render_request_maps_lab_options_to_runtime_api():
     assert request.diagnostics.fail_on_overflow is False
 
 
+def test_render_request_diagnostics_drive_profile_buffer_and_traversal_readback():
+    camera = SimpleNamespace(frame_id=4, sim_time=0.2, env_idx=0)
+
+    request = go2_backend._video_render_request(
+        camera=camera,
+        rays=None,
+        use_gpu_raygen=True,
+        readback_mode="rgb",
+        profile_timing=False,
+        fail_on_overflow=True,
+        traversal_counters=True,
+    )
+
+    assert request.diagnostics.profile_timing is False
+    assert request.diagnostics.traversal_counters is True
+    assert go2_backend._render_profile_buffer_for_request(request) == []
+    assert go2_backend._include_shadow_traversal_stats(request) is True
+
+    request = go2_backend._video_render_request(
+        camera=camera,
+        rays=None,
+        use_gpu_raygen=True,
+        readback_mode="rgb",
+        profile_timing=False,
+        fail_on_overflow=True,
+        traversal_counters=False,
+    )
+
+    assert go2_backend._render_profile_buffer_for_request(request) is None
+    assert go2_backend._include_shadow_traversal_stats(request) is False
+
+
 def test_video_delivery_request_maps_lab_options_to_runtime_api():
     request = go2_backend._video_delivery_request(
         readback_mode="none",
@@ -240,6 +272,7 @@ def test_sync_video_readback_none_row_does_not_stage(tmp_path: Path, monkeypatch
             render_execute_ms=1.25,
             pack_rgb8_ms=float("nan"),
             render_profile_row=go2_backend._render_profile_row(None),
+            include_shadow_traversal_stats=False,
         )
 
     def fail_if_staged(*args, **kwargs):

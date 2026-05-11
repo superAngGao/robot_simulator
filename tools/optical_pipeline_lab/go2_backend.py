@@ -135,6 +135,7 @@ class _RenderedVideoFrame:
     render_execute_ms: float
     pack_rgb8_ms: float
     render_profile_row: dict[str, float]
+    include_shadow_traversal_stats: bool
 
 
 @dataclass
@@ -660,14 +661,17 @@ def _render_video_frame(
         profile_timing=bool(args.render_profile),
         fail_on_overflow=bool(args.fail_on_overflow),
     )
-    render_profile = [] if render_request.diagnostics.profile_timing else None
+    render_profile = _render_profile_buffer_for_request(render_request)
     result = session.execute_request(
         render_request,
         render_profile=render_profile,
     )
     wp.synchronize_event(result.ready_event)
     render_execute_ms = (time.perf_counter() - render_start) * 1000.0
-    render_profile_row = _render_profile_row(render_profile, render_execute_ms=render_execute_ms)
+    render_profile_row = _render_profile_row(
+        render_profile if render_request.diagnostics.profile_timing else None,
+        render_execute_ms=render_execute_ms,
+    )
 
     pack_rgb8_ms = _NAN
     if args.video_readback == "rgb8":
@@ -684,6 +688,7 @@ def _render_video_frame(
         render_execute_ms=render_execute_ms,
         pack_rgb8_ms=pack_rgb8_ms,
         render_profile_row=render_profile_row,
+        include_shadow_traversal_stats=_include_shadow_traversal_stats(render_request),
     )
 
 
@@ -695,7 +700,9 @@ def _video_render_request(
     readback_mode: str,
     profile_timing: bool,
     fail_on_overflow: bool,
+    traversal_counters: bool | None = None,
 ) -> RenderRequest:
+    traversal_counters = profile_timing if traversal_counters is None else traversal_counters
     return RenderRequest(
         frame_id=camera.frame_id,
         sim_time=camera.sim_time,
@@ -707,10 +714,20 @@ def _video_render_request(
         output_profile=_video_output_profile(readback_mode),
         diagnostics=RenderDiagnosticsRequest(
             profile_timing=profile_timing,
-            traversal_counters=profile_timing,
+            traversal_counters=traversal_counters,
             fail_on_overflow=fail_on_overflow,
         ),
     )
+
+
+def _render_profile_buffer_for_request(request: RenderRequest) -> list[tuple[str, float]] | None:
+    if request.diagnostics.profile_timing or request.diagnostics.traversal_counters:
+        return []
+    return None
+
+
+def _include_shadow_traversal_stats(request: RenderRequest) -> bool:
+    return bool(request.diagnostics.traversal_counters)
 
 
 def _video_delivery_request(
@@ -786,7 +803,7 @@ def _run_video_benchmark(
         host_channels = _readback_video_result(
             rendered.result,
             delivery_request.payload.value,
-            include_shadow_traversal_stats=args.render_profile,
+            include_shadow_traversal_stats=rendered.include_shadow_traversal_stats,
         )
         readback_host_ms = (
             (time.perf_counter() - readback_start) * 1000.0
@@ -1020,7 +1037,7 @@ def _prepare_torch_async_readback_ring(
     )
     warmup_result = session.execute_request(
         warmup_request,
-        render_profile=[] if warmup_request.diagnostics.profile_timing else None,
+        render_profile=_render_profile_buffer_for_request(warmup_request),
     )
     wp.synchronize_event(warmup_result.ready_event)
     if delivery_request.payload is RuntimeReadbackPayload.RGB8:
@@ -1030,7 +1047,7 @@ def _prepare_torch_async_readback_ring(
         warmup_result,
         channels=_video_readback_channels(
             delivery_request.payload.value,
-            include_shadow_traversal_stats=args.render_profile,
+            include_shadow_traversal_stats=_include_shadow_traversal_stats(warmup_request),
         ),
         ring_depth=delivery_request.ring_depth,
     )
