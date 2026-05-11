@@ -169,6 +169,23 @@ def test_render_profile_row_computes_unclamped_overhead():
     assert "render_unknown_phase_ms" not in row
 
 
+def test_render_profile_row_from_timing_preserves_overhead():
+    row = go2_backend._render_profile_row_from_timing(
+        {
+            "render_execute_ms": 5.5,
+            "render_raygen_kernel_ms": 1.0,
+            "render_first_hit_kernel_ms": 2.0,
+            "render_shade_kernel_ms": 3.0,
+            "render_overhead_ms": -0.5,
+        }
+    )
+
+    assert row["render_raygen_kernel_ms"] == 1.0
+    assert row["render_first_hit_kernel_ms"] == 2.0
+    assert row["render_shade_kernel_ms"] == 3.0
+    assert row["render_overhead_ms"] == -0.5
+
+
 def test_video_render_request_maps_lab_options_to_runtime_api():
     camera = SimpleNamespace(frame_id=3, sim_time=0.1, env_idx=0)
 
@@ -222,9 +239,9 @@ def test_render_request_diagnostics_drive_profile_buffer_and_traversal_readback(
     assert go2_backend._include_shadow_traversal_stats(request) is False
 
 
-def test_go2_pipeline_frame_context_wraps_render_result():
-    compute = object()
-    profile: list[tuple[str, float]] = []
+def test_go2_pipeline_frame_context_wraps_render_result(monkeypatch: pytest.MonkeyPatch):
+    compute = SimpleNamespace(ready_event=object())
+    monkeypatch.setattr(go2_backend.wp, "synchronize_event", lambda event: None)
 
     class FakeSession:
         scene = SimpleNamespace(frame=SimpleNamespace(frame_id=4, sim_time=0.2))
@@ -235,6 +252,7 @@ def test_go2_pipeline_frame_context_wraps_render_result():
 
         def execute_request(self, request, *, render_profile):
             self.calls.append((request, render_profile))
+            render_profile.append(("shade_kernel_ms", 2.0))
             return compute
 
     session = FakeSession()
@@ -255,12 +273,15 @@ def test_go2_pipeline_frame_context_wraps_render_result():
     assert frame.sim_time == 0.2
     assert frame.env_idx == 0
 
-    rendered = frame.render(request, render_profile=profile)
+    rendered = frame.render(request)
 
     assert isinstance(rendered, RuntimeRenderResult)
     assert rendered.compute is compute
-    assert rendered.timing == {}
-    assert session.calls == [(request, profile)]
+    assert rendered.timing["render_shade_kernel_ms"] == 2.0
+    assert rendered.timing["render_execute_ms"] >= 0.0
+    assert len(session.calls) == 1
+    assert session.calls[0][0] is request
+    assert session.calls[0][1] == [("shade_kernel_ms", 2.0)]
 
 
 def test_go2_pipeline_rejects_non_session_frame_inputs():

@@ -20,6 +20,7 @@ import argparse
 import math
 import sys
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -278,11 +279,25 @@ class Go2RenderFrameContext:
     def render(
         self,
         request: RenderRequest,
-        *,
-        render_profile: list[tuple[str, float]] | None = None,
     ) -> RenderResult:
+        """Render a request and return after the compute result is ready."""
+
+        render_profile = _render_profile_buffer_for_request(request)
+        render_start = time.perf_counter()
         compute_result = self.session.execute_request(request, render_profile=render_profile)
-        return RenderResult(compute=compute_result)
+        wp.synchronize_event(compute_result.ready_event)
+        render_execute_ms = (time.perf_counter() - render_start) * 1000.0
+        profile_row = _render_profile_row(
+            render_profile if request.diagnostics.profile_timing else None,
+            render_execute_ms=render_execute_ms,
+        )
+        return RenderResult(
+            compute=compute_result,
+            timing={
+                "render_execute_ms": render_execute_ms,
+                **profile_row,
+            },
+        )
 
 
 @dataclass
@@ -710,7 +725,6 @@ def _render_video_frame(
         camera, rays = ray_cache[frame_index]
         camera_rays_ms = _NAN
 
-    render_start = time.perf_counter()
     render_request = _video_render_request(
         camera=camera,
         rays=rays,
@@ -719,16 +733,11 @@ def _render_video_frame(
         profile_timing=bool(args.render_profile),
         fail_on_overflow=bool(args.fail_on_overflow),
     )
-    render_profile = _render_profile_buffer_for_request(render_request)
     frame_context = pipeline.begin_frame(env_idx=camera.env_idx)
-    render_result = frame_context.render(render_request, render_profile=render_profile)
+    render_result = frame_context.render(render_request)
     result = render_result.compute
-    wp.synchronize_event(result.ready_event)
-    render_execute_ms = (time.perf_counter() - render_start) * 1000.0
-    render_profile_row = _render_profile_row(
-        render_profile if render_request.diagnostics.profile_timing else None,
-        render_execute_ms=render_execute_ms,
-    )
+    render_execute_ms = float(render_result.timing["render_execute_ms"])
+    render_profile_row = _render_profile_row_from_timing(render_result.timing)
 
     pack_rgb8_ms = _NAN
     if args.video_readback == "rgb8":
@@ -785,6 +794,15 @@ def _render_profile_buffer_for_request(request: RenderRequest) -> list[tuple[str
 
 def _include_shadow_traversal_stats(request: RenderRequest) -> bool:
     return bool(request.diagnostics.traversal_counters)
+
+
+def _render_profile_row_from_timing(timing: Mapping[str, float]) -> dict[str, float]:
+    row = {
+        f"render_{phase}_ms": float(timing.get(f"render_{phase}_ms", _NAN))
+        for phase in _RENDER_PROFILE_PHASES
+    }
+    row["render_overhead_ms"] = float(timing.get("render_overhead_ms", _NAN))
+    return row
 
 
 def _video_delivery_request(
