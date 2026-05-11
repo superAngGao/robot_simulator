@@ -154,6 +154,13 @@ importer change that preserves body indices and frame transforms. Until that
 exists, the first dynamic/refit smoke should prefer Option B: a tiny synthetic
 body-bound scene.
 
+A8.1 update: the tiny synthetic body-bound scene probe is now in place. It uses
+`make_body_bound_triangle_registry(...)`, `make_gpu_pose_frame(...)`, and
+`clone_and_perturb_gpu_published_pose_frame(...)` to verify that a perturbed
+pose-only `GpuPublishedFrame` changes the device snapshot's world triangle and
+AABB. This validates the physics-published-frame shape without entering the
+full benchmark loop yet.
+
 Before implementing the dynamic smoke, run a CPU-only or import-safe probe for
 the published-frame cloning path. The probe should answer:
 

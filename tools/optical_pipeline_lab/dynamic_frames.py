@@ -7,7 +7,76 @@ from typing import Any
 
 import numpy as np
 
+from optics import OpticalInstanceSpec, OpticalMaterialSpec, OpticalWorldRegistry
 from physics.publish import GpuPublishedFrame
+from physics.spatial import SpatialTransform
+
+
+def make_body_bound_triangle_registry(
+    *,
+    body_index: int = 0,
+    geometry_z_offset: float = 0.25,
+) -> OpticalWorldRegistry:
+    """Build a tiny body-bound optical scene for dynamic smoke tests."""
+
+    registry = OpticalWorldRegistry()
+    registry.add_material(OpticalMaterialSpec("mat_body"))
+    registry.add_triangle_mesh_geometry(
+        "body_tri",
+        vertices_local=[
+            [0.0, 0.0, 0.0],
+            [0.2, 0.0, 0.0],
+            [0.0, 0.2, 0.0],
+        ],
+        triangles=[[0, 1, 2]],
+    )
+    registry.add_instance(
+        OpticalInstanceSpec(
+            "body_tri",
+            "body_tri",
+            "mat_body",
+            body_index=int(body_index),
+            X_body_geometry=SpatialTransform.from_translation(
+                np.array([0.0, 0.0, float(geometry_z_offset)], dtype=np.float64)
+            ),
+        )
+    )
+    return registry
+
+
+def make_gpu_pose_frame(
+    *,
+    wp_module: Any,
+    translations: object,
+    rotations: object | None = None,
+    frame_id: int = 0,
+    sim_time: float = 0.0,
+    step_index: int | None = None,
+    slot_id: int = 0,
+    device=None,
+) -> GpuPublishedFrame:
+    """Create a pose-only `GpuPublishedFrame` from host pose arrays."""
+
+    translations_np = np.asarray(translations, dtype=np.float32)
+    if translations_np.ndim != 3 or translations_np.shape[2] != 3:
+        raise ValueError("translations must have shape (num_envs, num_bodies, 3)")
+    if rotations is None:
+        identity = np.eye(3, dtype=np.float32)
+        rotations_np = np.broadcast_to(identity, translations_np.shape[:2] + (3, 3)).copy()
+    else:
+        rotations_np = np.asarray(rotations, dtype=np.float32)
+    if rotations_np.shape != translations_np.shape[:2] + (3, 3):
+        raise ValueError("rotations must have shape (num_envs, num_bodies, 3, 3)")
+
+    dtype = getattr(wp_module, "float32", np.float32)
+    return _pose_only_frame(
+        x_world_R_wp=wp_module.array(rotations_np, dtype=dtype, device=device),
+        x_world_r_wp=wp_module.array(translations_np, dtype=dtype, device=device),
+        frame_id=int(frame_id),
+        sim_time=float(sim_time),
+        step_index=int(frame_id if step_index is None else step_index),
+        slot_id=int(slot_id),
+    )
 
 
 def gpu_pose_shape(frame: GpuPublishedFrame) -> tuple[int, int]:

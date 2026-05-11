@@ -594,25 +594,23 @@ class _FakeWpModule:
 
 
 def _fake_gpu_pose_frame() -> GpuPublishedFrame:
-    rotations = np.broadcast_to(np.eye(3, dtype=np.float32), (1, 2, 3, 3)).copy()
     translations = np.array([[[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]]], dtype=np.float32)
-    return GpuPublishedFrame(
+    frame = dynamic_frames.make_gpu_pose_frame(
+        wp_module=_FakeWpModule,
+        translations=translations,
         slot_id=7,
         frame_id=11,
         sim_time=0.11,
         step_index=11,
-        env_mask_wp=object(),
-        q_wp=object(),
-        qdot_wp=object(),
-        x_world_R_wp=_FakeWpArray(rotations),
-        x_world_r_wp=_FakeWpArray(translations),
-        v_bodies_wp=object(),
-        contact_count_wp=object(),
-        contact_cache_ref=object(),
-        telemetry_ref=object(),
-        ready_event=object(),
-        slot_meta=None,
     )
+    frame.q_wp = object()
+    frame.qdot_wp = object()
+    frame.v_bodies_wp = object()
+    frame.contact_count_wp = object()
+    frame.contact_cache_ref = object()
+    frame.telemetry_ref = object()
+    frame.ready_event = object()
+    return frame
 
 
 def test_dynamic_frame_clone_is_pose_only_and_independent():
@@ -657,6 +655,20 @@ def test_dynamic_frame_perturb_applies_translation_offsets_without_mutating_sour
             wp_module=_FakeWpModule,
             translation_offsets={(0, 2): [0.0, 0.0, 0.0]},
         )
+    with pytest.raises(IndexError, match="env_idx"):
+        dynamic_frames.clone_and_perturb_gpu_published_pose_frame(
+            frame,
+            wp_module=_FakeWpModule,
+            translation_offsets={(1, 0): [0.0, 0.0, 0.0]},
+        )
+
+
+def test_dynamic_frame_tiny_body_bound_scene_builder_is_import_safe():
+    registry = dynamic_frames.make_body_bound_triangle_registry()
+
+    assert len(registry.instances) == 1
+    assert registry.instances[0].body_index == 0
+    assert dynamic_frames.gpu_pose_shape(_fake_gpu_pose_frame()) == (1, 2)
 
 
 def test_reserved_lab_modes_fail_loudly():

@@ -31,6 +31,7 @@ from physics.robot_tree import Body, RobotTreeNumpy
 from physics.spatial import SpatialInertia, SpatialTransform
 from robot.model import RobotModel
 from sensing import OpticalPinholeCameraSpec, OpticalRaySensorSpec, build_pinhole_camera_rays
+from tools.optical_pipeline_lab import dynamic_frames
 
 try:
     import warp as wp
@@ -698,6 +699,53 @@ def test_device_scene_cache_updates_body_bound_triangle_from_gpu_frame():
     np.testing.assert_allclose(normals, [[0.0, 0.0, 1.0]], atol=1e-6)
     np.testing.assert_allclose(aabb_min, [[0.0, 0.0, expected_z]], atol=1e-6)
     np.testing.assert_allclose(aabb_max, [[0.2, 0.2, expected_z]], atol=1e-6)
+
+
+def test_optical_lab_synthetic_body_bound_frame_moves_snapshot_geometry():
+    registry = dynamic_frames.make_body_bound_triangle_registry(geometry_z_offset=0.25)
+    base_frame = dynamic_frames.make_gpu_pose_frame(
+        wp_module=wp,
+        translations=np.zeros((1, 1, 3), dtype=np.float32),
+        frame_id=21,
+        sim_time=0.21,
+        device="cuda:0",
+    )
+    moved_frame = dynamic_frames.clone_and_perturb_gpu_published_pose_frame(
+        base_frame,
+        wp_module=wp,
+        translation_offsets={(0, 0): [0.0, 0.0, 0.4]},
+        frame_id=22,
+        sim_time=0.22,
+    )
+    cache = DeviceOpticalSceneCache(registry, device="cuda:0")
+
+    base_snapshot = cache.snapshot_from_gpu_frame(base_frame, env_idx=0, include_aabb=True)
+    moved_snapshot = cache.snapshot_from_gpu_frame(moved_frame, env_idx=0, include_aabb=True)
+    wp.synchronize_event(base_snapshot.ready_event)
+    wp.synchronize_event(moved_snapshot.ready_event)
+
+    base_triangles = np.stack(
+        [
+            base_snapshot.triangle_v0_world.numpy(),
+            base_snapshot.triangle_v0_world.numpy() + base_snapshot.triangle_e1_world.numpy(),
+            base_snapshot.triangle_v0_world.numpy() + base_snapshot.triangle_e2_world.numpy(),
+        ],
+        axis=1,
+    )
+    moved_triangles = np.stack(
+        [
+            moved_snapshot.triangle_v0_world.numpy(),
+            moved_snapshot.triangle_v0_world.numpy() + moved_snapshot.triangle_e1_world.numpy(),
+            moved_snapshot.triangle_v0_world.numpy() + moved_snapshot.triangle_e2_world.numpy(),
+        ],
+        axis=1,
+    )
+
+    np.testing.assert_allclose(base_triangles[0, :, 2], [0.25, 0.25, 0.25], atol=1e-6)
+    np.testing.assert_allclose(moved_triangles - base_triangles, [[[0.0, 0.0, 0.4]] * 3], atol=1e-6)
+    np.testing.assert_allclose(moved_snapshot.triangle_aabb_min.numpy(), [[0.0, 0.0, 0.65]], atol=1e-6)
+    np.testing.assert_allclose(moved_snapshot.triangle_aabb_max.numpy(), [[0.2, 0.2, 0.65]], atol=1e-6)
+    np.testing.assert_allclose(base_frame.x_world_r_wp.numpy(), np.zeros((1, 1, 3), dtype=np.float32))
 
 
 def test_device_scene_packs_materials_and_lights_for_gpu_shading():
