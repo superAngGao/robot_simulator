@@ -28,6 +28,17 @@ _DIR_EPS = 1.0e-8
 _T_EPS = 1.0e-5
 _ATTENUATION_EPS = 1.0e-12
 _MAX_BVH_STACK = 32
+_SHADOW_TRAVERSAL_COUNTER_CHANNELS = (
+    "shadow_traversal_ray_count",
+    "shadow_traversal_directional_ray_count",
+    "shadow_traversal_point_ray_count",
+    "shadow_traversal_occluded_count",
+    "shadow_traversal_unoccluded_count",
+    "shadow_traversal_node_visit_count",
+    "shadow_traversal_leaf_visit_count",
+    "shadow_traversal_triangle_test_count",
+    "shadow_traversal_plane_test_count",
+)
 
 
 class GpuBruteForceOpticalExecutor:
@@ -845,6 +856,15 @@ class GpuDeviceBvhDirectLightOpticalExecutor:
             start = time.perf_counter()
             shadow_stack_overflow_count = wp.zeros(1, dtype=wp.int32, device=self.device)
             shadow_max_stack_depth = wp.zeros(1, dtype=wp.int32, device=self.device)
+            shadow_traversal_stats_enabled = int(render_profile is not None)
+            shadow_traversal_counters = (
+                {
+                    name: wp.zeros(1, dtype=wp.int32, device=self.device)
+                    for name in _SHADOW_TRAVERSAL_COUNTER_CHANNELS
+                }
+                if render_profile is not None
+                else {name: shadow_stack_overflow_count for name in _SHADOW_TRAVERSAL_COUNTER_CHANNELS}
+            )
             _add_profile_ms(render_profile, "shade_alloc_diagnostics_ms", start)
             _add_profile_ms(render_profile, "shade_output_alloc_ms", output_alloc_start)
             start = time.perf_counter()
@@ -892,6 +912,16 @@ class GpuDeviceBvhDirectLightOpticalExecutor:
                     intensity,
                     shadow_stack_overflow_count,
                     shadow_max_stack_depth,
+                    shadow_traversal_stats_enabled,
+                    shadow_traversal_counters["shadow_traversal_ray_count"],
+                    shadow_traversal_counters["shadow_traversal_directional_ray_count"],
+                    shadow_traversal_counters["shadow_traversal_point_ray_count"],
+                    shadow_traversal_counters["shadow_traversal_occluded_count"],
+                    shadow_traversal_counters["shadow_traversal_unoccluded_count"],
+                    shadow_traversal_counters["shadow_traversal_node_visit_count"],
+                    shadow_traversal_counters["shadow_traversal_leaf_visit_count"],
+                    shadow_traversal_counters["shadow_traversal_triangle_test_count"],
+                    shadow_traversal_counters["shadow_traversal_plane_test_count"],
                 ],
                 device=self.device,
                 stream=self.stream,
@@ -905,6 +935,8 @@ class GpuDeviceBvhDirectLightOpticalExecutor:
         channels["shadow_stack_overflow_count"] = shadow_stack_overflow_count
         channels["shadow_max_stack_depth"] = shadow_max_stack_depth
         channels = _filter_device_channels_for_profile(channels, output_profile)
+        if render_profile is not None:
+            channels.update(shadow_traversal_counters)
         return OpticalComputeResult(
             frame_id=geometry.frame_id,
             sim_time=geometry.sim_time,
@@ -925,6 +957,7 @@ class GpuDeviceBvhDirectLightOpticalExecutor:
                 intensity,
                 shadow_stack_overflow_count,
                 shadow_max_stack_depth,
+                *(tuple(shadow_traversal_counters.values()) if render_profile is not None else ()),
             ),
         )
 
@@ -1906,6 +1939,13 @@ if _HAS_WARP:
         sensor_role_mask: wp.int64,
         shadow_stack_overflow_count: wp.array(dtype=wp.int32),
         shadow_max_stack_depth: wp.array(dtype=wp.int32),
+        shadow_traversal_stats_enabled: int,
+        shadow_traversal_occluded_count: wp.array(dtype=wp.int32),
+        shadow_traversal_unoccluded_count: wp.array(dtype=wp.int32),
+        shadow_traversal_node_visit_count: wp.array(dtype=wp.int32),
+        shadow_traversal_leaf_visit_count: wp.array(dtype=wp.int32),
+        shadow_traversal_triangle_test_count: wp.array(dtype=wp.int32),
+        shadow_traversal_plane_test_count: wp.array(dtype=wp.int32),
     ):
         occluded = bool(False)
         if max_distance <= 0.0:
@@ -1914,6 +1954,10 @@ if _HAS_WARP:
         stack = wp.zeros(shape=_MAX_BVH_STACK, dtype=wp.int32)
         stack_size = wp.int32(0)
         local_max_stack = wp.int32(0)
+        local_node_visit_count = wp.int32(0)
+        local_leaf_visit_count = wp.int32(0)
+        local_triangle_test_count = wp.int32(0)
+        local_plane_test_count = wp.int32(0)
         if num_bvh_nodes > 0:
             root_hit, _root_t, _root_exit_t = _intersect_aabb_for_ray_with_interval(
                 ox,
@@ -1938,12 +1982,15 @@ if _HAS_WARP:
         while stack_size > 0 and not occluded:
             stack_size = stack_size - wp.int32(1)
             node_index = stack[stack_size]
+            local_node_visit_count = local_node_visit_count + wp.int32(1)
             leaf_count = bvh_count[node_index]
             if leaf_count > 0:
+                local_leaf_visit_count = local_leaf_visit_count + wp.int32(1)
                 leaf_start = bvh_start[node_index]
                 for offset in range(leaf_count):
                     tri_idx = bvh_prim_ids[leaf_start + offset]
                     if (triangle_role_masks[tri_idx] & sensor_role_mask) != wp.int64(0):
+                        local_triangle_test_count = local_triangle_test_count + wp.int32(1)
                         tri_hit, _t, _fnx, _fny, _fnz = _intersect_device_triangle_for_ray(
                             ox,
                             oy,
@@ -2014,6 +2061,7 @@ if _HAS_WARP:
 
         for plane_idx in range(num_planes):
             if not occluded and (plane_role_masks[plane_idx] & sensor_role_mask) != wp.int64(0):
+                local_plane_test_count = local_plane_test_count + wp.int32(1)
                 nx = plane_normals[plane_idx, 0]
                 ny = plane_normals[plane_idx, 1]
                 nz = plane_normals[plane_idx, 2]
@@ -2026,6 +2074,16 @@ if _HAS_WARP:
                     t = numer / denom
                     if t >= 0.0 and t <= max_distance:
                         occluded = True
+
+        if shadow_traversal_stats_enabled != 0:
+            if occluded:
+                wp.atomic_add(shadow_traversal_occluded_count, 0, wp.int32(1))
+            else:
+                wp.atomic_add(shadow_traversal_unoccluded_count, 0, wp.int32(1))
+            wp.atomic_add(shadow_traversal_node_visit_count, 0, local_node_visit_count)
+            wp.atomic_add(shadow_traversal_leaf_visit_count, 0, local_leaf_visit_count)
+            wp.atomic_add(shadow_traversal_triangle_test_count, 0, local_triangle_test_count)
+            wp.atomic_add(shadow_traversal_plane_test_count, 0, local_plane_test_count)
 
         return occluded
 
@@ -2071,6 +2129,16 @@ if _HAS_WARP:
         intensity: wp.array(dtype=wp.float32),
         shadow_stack_overflow_count: wp.array(dtype=wp.int32),
         shadow_max_stack_depth: wp.array(dtype=wp.int32),
+        shadow_traversal_stats_enabled: int,
+        shadow_traversal_ray_count: wp.array(dtype=wp.int32),
+        shadow_traversal_directional_ray_count: wp.array(dtype=wp.int32),
+        shadow_traversal_point_ray_count: wp.array(dtype=wp.int32),
+        shadow_traversal_occluded_count: wp.array(dtype=wp.int32),
+        shadow_traversal_unoccluded_count: wp.array(dtype=wp.int32),
+        shadow_traversal_node_visit_count: wp.array(dtype=wp.int32),
+        shadow_traversal_leaf_visit_count: wp.array(dtype=wp.int32),
+        shadow_traversal_triangle_test_count: wp.array(dtype=wp.int32),
+        shadow_traversal_plane_test_count: wp.array(dtype=wp.int32),
     ):
         ray = wp.tid()
         out_r = wp.float32(background_r)
@@ -2141,6 +2209,20 @@ if _HAS_WARP:
                             shadow_ox = px + nx * wp.float32(shadow_bias)
                             shadow_oy = py + ny * wp.float32(shadow_bias)
                             shadow_oz = pz + nz * wp.float32(shadow_bias)
+                            if shadow_traversal_stats_enabled != 0:
+                                wp.atomic_add(shadow_traversal_ray_count, 0, wp.int32(1))
+                                if light_kind[light_idx] == wp.int32(1):
+                                    wp.atomic_add(
+                                        shadow_traversal_point_ray_count,
+                                        0,
+                                        wp.int32(1),
+                                    )
+                                else:
+                                    wp.atomic_add(
+                                        shadow_traversal_directional_ray_count,
+                                        0,
+                                        wp.int32(1),
+                                    )
                             visible_to_light = not _is_occluded_for_ray(
                                 shadow_ox,
                                 shadow_oy,
@@ -2169,6 +2251,13 @@ if _HAS_WARP:
                                 sensor_role_mask,
                                 shadow_stack_overflow_count,
                                 shadow_max_stack_depth,
+                                shadow_traversal_stats_enabled,
+                                shadow_traversal_occluded_count,
+                                shadow_traversal_unoccluded_count,
+                                shadow_traversal_node_visit_count,
+                                shadow_traversal_leaf_visit_count,
+                                shadow_traversal_triangle_test_count,
+                                shadow_traversal_plane_test_count,
                             )
                     if visible_to_light:
                         scale = light_intensity[light_idx] * attenuation * n_dot_l

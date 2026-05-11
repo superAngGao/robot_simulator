@@ -45,6 +45,7 @@ from optics import (
     stage_optical_channels,
     stage_optical_compute_result_to_host,
 )
+from optics.render_api import RenderBackend, RenderDiagnosticsRequest, RenderRequest
 from physics.publish import GpuPublishedFrame
 from physics.spatial import SpatialTransform
 from sensing import OpticalPinholeCameraSpec, build_pinhole_camera_image_result, build_pinhole_camera_rays
@@ -67,6 +68,7 @@ from tools.optical_pipeline_lab.timing import (
     RENDER_PROFILE_PHASES as _RENDER_PROFILE_PHASES,
 )
 from tools.optical_pipeline_lab.timing import (
+    SHADOW_TRAVERSAL_COUNTER_FIELDS,
     FrameTimingRecorder,
     TimingRecorder,
 )
@@ -93,6 +95,7 @@ _VIDEO_DIAGNOSTIC_CHANNELS = (
     "bvh_max_stack_depth",
     "shadow_max_stack_depth",
 )
+_VIDEO_SHADOW_TRAVERSAL_CHANNELS = SHADOW_TRAVERSAL_COUNTER_FIELDS
 _VIDEO_RGB_CHANNELS = ("rgb",) + _VIDEO_DIAGNOSTIC_CHANNELS
 _VIDEO_RGB8_CHANNELS = ("rgb8",) + _VIDEO_DIAGNOSTIC_CHANNELS
 
@@ -209,6 +212,30 @@ class Go2RenderSession:
             self.bvh,
             rays,
             output_profile=output_profile,
+            render_profile=render_profile,
+        )
+
+    def execute_request(
+        self,
+        request: RenderRequest,
+        *,
+        render_profile: list[tuple[str, float]] | None,
+    ):
+        if request.backend is not RenderBackend.DIRECT_LIGHT:
+            raise NotImplementedError("Go2RenderSession currently supports only direct-light rendering")
+        if request.camera is not None:
+            return self.executor.execute_camera(
+                self.snapshot,
+                self.bvh,
+                request.camera,
+                output_profile=request.output_profile,
+                render_profile=render_profile,
+            )
+        return self.executor.execute(
+            self.snapshot,
+            self.bvh,
+            request.rays,
+            output_profile=request.output_profile,
             render_profile=render_profile,
         )
 
@@ -611,12 +638,17 @@ def _render_video_frame(
         camera_rays_ms = _NAN
 
     render_start = time.perf_counter()
-    render_profile = [] if args.render_profile else None
-    result = session.execute_frame(
+    render_request = _video_render_request(
         camera=camera,
         rays=rays,
         use_gpu_raygen=args.video_raygen == "gpu",
-        output_profile=_video_output_profile(args.video_readback),
+        readback_mode=args.video_readback,
+        profile_timing=bool(args.render_profile),
+        fail_on_overflow=bool(args.fail_on_overflow),
+    )
+    render_profile = [] if render_request.diagnostics.profile_timing else None
+    result = session.execute_request(
+        render_request,
         render_profile=render_profile,
     )
     wp.synchronize_event(result.ready_event)
@@ -638,6 +670,32 @@ def _render_video_frame(
         render_execute_ms=render_execute_ms,
         pack_rgb8_ms=pack_rgb8_ms,
         render_profile_row=render_profile_row,
+    )
+
+
+def _video_render_request(
+    *,
+    camera: OpticalPinholeCameraSpec,
+    rays,
+    use_gpu_raygen: bool,
+    readback_mode: str,
+    profile_timing: bool,
+    fail_on_overflow: bool,
+) -> RenderRequest:
+    return RenderRequest(
+        frame_id=camera.frame_id,
+        sim_time=camera.sim_time,
+        env_idx=camera.env_idx,
+        camera=camera if use_gpu_raygen else None,
+        rays=None if use_gpu_raygen else rays,
+        use_gpu_raygen=use_gpu_raygen,
+        backend=RenderBackend.DIRECT_LIGHT,
+        output_profile=_video_output_profile(readback_mode),
+        diagnostics=RenderDiagnosticsRequest(
+            profile_timing=profile_timing,
+            traversal_counters=profile_timing,
+            fail_on_overflow=fail_on_overflow,
+        ),
     )
 
 
@@ -683,7 +741,11 @@ def _run_video_benchmark(
         )
 
         readback_start = time.perf_counter()
-        host_channels = _readback_video_result(rendered.result, args.video_readback)
+        host_channels = _readback_video_result(
+            rendered.result,
+            args.video_readback,
+            include_shadow_traversal_stats=args.render_profile,
+        )
         readback_host_ms = (
             (time.perf_counter() - readback_start) * 1000.0 if args.video_readback != "none" else _NAN
         )
@@ -716,6 +778,7 @@ def _run_video_benchmark(
         shadow_overflow = _staged_scalar(host_channels, "shadow_stack_overflow_count")
         primary_max_stack = _staged_scalar(host_channels, "bvh_max_stack_depth")
         shadow_max_stack = _staged_scalar(host_channels, "shadow_max_stack_depth")
+        shadow_traversal_fields = _staged_shadow_traversal_fields(host_channels)
         if args.fail_on_overflow and (primary_overflow or shadow_overflow):
             raise SystemExit(
                 f"BVH stack overflow detected at frame {frame_index}: "
@@ -751,6 +814,7 @@ def _run_video_benchmark(
                 "shadow_overflow": shadow_overflow,
                 "primary_max_stack": primary_max_stack,
                 "shadow_max_stack": shadow_max_stack,
+                **shadow_traversal_fields,
                 "frame_path": frame_path,
             }
         )
@@ -889,12 +953,17 @@ def _prepare_torch_async_readback_ring(
     args: argparse.Namespace,
 ) -> TorchAsyncReadbackRing:
     warmup_camera = _build_video_camera(session.scene, args, 0)
-    warmup_result = session.executor.execute_camera(
-        session.snapshot,
-        session.bvh,
-        warmup_camera,
-        output_profile=OpticalOutputProfile.RGB_PREVIEW,
-        render_profile=None,
+    warmup_request = _video_render_request(
+        camera=warmup_camera,
+        rays=None,
+        use_gpu_raygen=True,
+        readback_mode=args.video_readback,
+        profile_timing=bool(args.render_profile),
+        fail_on_overflow=bool(args.fail_on_overflow),
+    )
+    warmup_result = session.execute_request(
+        warmup_request,
+        render_profile=[] if warmup_request.diagnostics.profile_timing else None,
     )
     wp.synchronize_event(warmup_result.ready_event)
     if args.video_readback == "rgb8":
@@ -902,7 +971,10 @@ def _prepare_torch_async_readback_ring(
         wp.synchronize_event(warmup_result.ready_event)
     return TorchAsyncReadbackRing.from_warmup_result(
         warmup_result,
-        channels=_video_readback_channels(args.video_readback),
+        channels=_video_readback_channels(
+            args.video_readback,
+            include_shadow_traversal_stats=args.render_profile,
+        ),
         ring_depth=int(args.video_readback_ring_depth),
     )
 
@@ -979,6 +1051,7 @@ def _complete_torch_async_video_readback(
     shadow_overflow = _staged_scalar(host_channels, "shadow_stack_overflow_count")
     primary_max_stack = _staged_scalar(host_channels, "bvh_max_stack_depth")
     shadow_max_stack = _staged_scalar(host_channels, "shadow_max_stack_depth")
+    shadow_traversal_fields = _staged_shadow_traversal_fields(host_channels)
     if args.fail_on_overflow and (primary_overflow or shadow_overflow):
         raise SystemExit(
             f"BVH stack overflow detected at frame {job.frame_index}: "
@@ -1024,6 +1097,7 @@ def _complete_torch_async_video_readback(
             "shadow_overflow": shadow_overflow,
             "primary_max_stack": primary_max_stack,
             "shadow_max_stack": shadow_max_stack,
+            **shadow_traversal_fields,
             "readback_lag_frames": max(int(latest_rendered_frame_index) - int(job.frame_index), 0),
             "readback_ring_depth": int(args.video_readback_ring_depth),
             "readback_ring_block_count": int(ring_block_count),
@@ -1072,13 +1146,22 @@ def _precompute_video_camera_rays(
     return ray_cache
 
 
-def _readback_video_result(result, readback_mode: str) -> dict[str, np.ndarray]:
+def _readback_video_result(
+    result,
+    readback_mode: str,
+    *,
+    include_shadow_traversal_stats: bool = False,
+) -> dict[str, np.ndarray]:
     if readback_mode == "none":
         return {}
+    channels = _video_readback_channels(
+        readback_mode,
+        include_shadow_traversal_stats=include_shadow_traversal_stats,
+    )
     if readback_mode == "rgb":
-        return stage_optical_channels(result, _VIDEO_RGB_CHANNELS, canonical_dtypes=False)
+        return stage_optical_channels(result, channels, canonical_dtypes=False)
     if readback_mode == "rgb8":
-        return stage_optical_channels(result, _VIDEO_RGB8_CHANNELS, canonical_dtypes=False)
+        return stage_optical_channels(result, channels, canonical_dtypes=False)
     return stage_optical_compute_result_to_host(result).channels
 
 
@@ -1090,10 +1173,18 @@ def _video_output_profile(readback_mode: str) -> OpticalOutputProfile:
     return OpticalOutputProfile.DIRECT_LIGHT_FULL
 
 
-def _video_readback_channels(readback_mode: str) -> tuple[str, ...]:
+def _video_readback_channels(
+    readback_mode: str,
+    *,
+    include_shadow_traversal_stats: bool = False,
+) -> tuple[str, ...]:
     if readback_mode == "rgb8":
-        return _VIDEO_RGB8_CHANNELS
-    return _VIDEO_RGB_CHANNELS
+        channels = _VIDEO_RGB8_CHANNELS
+    else:
+        channels = _VIDEO_RGB_CHANNELS
+    if include_shadow_traversal_stats:
+        channels = channels + _VIDEO_SHADOW_TRAVERSAL_CHANNELS
+    return channels
 
 
 def _pack_video_rgb8(result):
@@ -1158,6 +1249,10 @@ def _staged_scalar(channels: dict[str, object], name: str) -> float | int:
     if name not in channels:
         return _NAN
     return int(np.asarray(channels[name]).reshape(-1)[0])
+
+
+def _staged_shadow_traversal_fields(channels: dict[str, object]) -> dict[str, float | int]:
+    return {name: _staged_scalar(channels, name) for name in _VIDEO_SHADOW_TRAVERSAL_CHANNELS}
 
 
 def _format_ms(value: float) -> str:

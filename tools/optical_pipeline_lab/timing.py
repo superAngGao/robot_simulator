@@ -35,6 +35,18 @@ RENDER_PROFILE_PHASES = (
     "shade_kernel",
 )
 
+SHADOW_TRAVERSAL_COUNTER_FIELDS = (
+    "shadow_traversal_ray_count",
+    "shadow_traversal_directional_ray_count",
+    "shadow_traversal_point_ray_count",
+    "shadow_traversal_occluded_count",
+    "shadow_traversal_unoccluded_count",
+    "shadow_traversal_node_visit_count",
+    "shadow_traversal_leaf_visit_count",
+    "shadow_traversal_triangle_test_count",
+    "shadow_traversal_plane_test_count",
+)
+
 FRAME_TIMING_FIELDNAMES = (
     "frame_index",
     "scenario_name",
@@ -79,6 +91,7 @@ FRAME_TIMING_FIELDNAMES = (
     "shadow_overflow",
     "primary_max_stack",
     "shadow_max_stack",
+    *SHADOW_TRAVERSAL_COUNTER_FIELDS,
     "memory_used_mb",
     "readback_lag_frames",
     "readback_ring_depth",

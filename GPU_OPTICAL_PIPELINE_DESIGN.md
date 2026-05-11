@@ -3317,6 +3317,35 @@ So `stack_t` is not the whole shadow bottleneck, but it is a real part of it:
 about 0.6 ms recovered from `shade_kernel_ms` on this scene. The remaining
 shadow cost is still the any-hit traversal itself.
 
+The E2.2 traversal-counter run then split that remaining cost:
+
+```text
+shadow traversal counters, steady frames 1-18:
+  shadow rays        ~= 3.82M/frame
+  directional rays   ~= 1.92M/frame
+  point rays         ~= 1.91M/frame
+  occluded rays      ~= 0.18M/frame
+  unoccluded rays    ~= 3.65M/frame
+  node visits        ~= 12.32M/frame
+  leaf visits        ~= 0.95M/frame
+  triangle tests     ~= 0.95M/frame
+  plane tests        ~= 3.65M/frame
+
+per shadow ray:
+  node visits        ~= 3.22
+  triangle tests     ~= 0.25
+  plane tests        ~= 0.95
+  occluded ratio     ~= 4.6%
+```
+
+This suggests the remaining cost is not deep BVH traversal. It is mostly shadow
+ray volume: the Go2 setup launches almost two shadow rays per hit pixel because
+both the directional key light and point fill light cast shadows, and most rays
+are unoccluded. The single floor plane fallback is also tested for almost every
+unoccluded ray and did not appear to occlude in this run. The next likely levers
+are per-light shadow-casting policy and plane-shadow policy before deeper BVH
+traversal micro-optimization.
+
 Against the float32 RGB async ring baseline, RGB8 cuts measured copy time from
 about 10.21 ms to 2.33 ms (roughly 4.4x lower) and reduces all-frame ordered
 frame time from about 10.78 ms to 6.71 ms (roughly 1.6x faster). Against the

@@ -3,6 +3,7 @@ import json
 import math
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +11,7 @@ import tools.optical_pipeline_lab.__main__ as lab_main
 import tools.optical_pipeline_lab.async_readback as async_readback
 import tools.optical_pipeline_lab.go2_backend as go2_backend
 import tools.optical_pipeline_lab.rgb_pack as rgb_pack
+from optics.render_api import RenderBackend as RuntimeRenderBackend
 from tools.optical_pipeline_lab import (
     DEFAULT_RENDER_HEIGHT,
     DEFAULT_RENDER_WIDTH,
@@ -114,6 +116,7 @@ def test_frame_timing_recorder_normalizes_lab_schema(tmp_path: Path):
     assert "delivery_policy" in reader.fieldnames
     assert "overlap_ratio" in reader.fieldnames
     assert "pack_rgb8_ms" in reader.fieldnames
+    assert "shadow_traversal_ray_count" in reader.fieldnames
     assert "accel_refit_ms" in reader.fieldnames
     assert "refit_ms" not in reader.fieldnames
     assert written[0]["scenario_name"] == "smoke"
@@ -158,6 +161,38 @@ def test_render_profile_row_computes_unclamped_overhead():
     assert row["render_shade_kernel_ms"] == 3.0
     assert row["render_overhead_ms"] == -0.5
     assert "render_unknown_phase_ms" not in row
+
+
+def test_video_render_request_maps_lab_options_to_runtime_api():
+    camera = SimpleNamespace(frame_id=3, sim_time=0.1, env_idx=0)
+
+    request = go2_backend._video_render_request(
+        camera=camera,
+        rays=None,
+        use_gpu_raygen=True,
+        readback_mode="rgb8",
+        profile_timing=True,
+        fail_on_overflow=False,
+    )
+
+    assert request.backend is RuntimeRenderBackend.DIRECT_LIGHT
+    assert request.camera is camera
+    assert request.rays is None
+    assert request.output_profile.value == "rgb_preview"
+    assert request.diagnostics.profile_timing is True
+    assert request.diagnostics.traversal_counters is True
+    assert request.diagnostics.fail_on_overflow is False
+
+
+def test_video_readback_channels_include_shadow_traversal_stats_only_when_requested():
+    assert "shadow_traversal_ray_count" not in go2_backend._video_readback_channels("rgb8")
+
+    channels = go2_backend._video_readback_channels("rgb8", include_shadow_traversal_stats=True)
+
+    assert "rgb8" in channels
+    assert "shadow_stack_overflow_count" in channels
+    assert "shadow_traversal_ray_count" in channels
+    assert "shadow_traversal_triangle_test_count" in channels
 
 
 def test_go2_video_ordered_static_preset_is_currently_implemented():

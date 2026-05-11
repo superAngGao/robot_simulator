@@ -225,6 +225,87 @@ Interpretation: `stack_t` was not the whole 3.1 ms shadow cost, but it was a rea
 chunk of it. Removing it recovers about 0.6 ms from `shade_kernel_ms`; the
 remaining ~2.5-2.8 ms is still the shadow traversal itself.
 
+## E2.2 Experiment: Shadow Traversal Counters
+
+Add render-profile-only counters to split the remaining shadow traversal cost:
+
+```text
+shadow_traversal_ray_count
+shadow_traversal_directional_ray_count
+shadow_traversal_point_ray_count
+shadow_traversal_occluded_count
+shadow_traversal_unoccluded_count
+shadow_traversal_node_visit_count
+shadow_traversal_leaf_visit_count
+shadow_traversal_triangle_test_count
+shadow_traversal_plane_test_count
+```
+
+These counters use atomics and perturb `shade_kernel_ms`, so they are diagnostic
+only. Do not use the counter run as a throughput baseline.
+
+Result:
+
+```text
+run:
+  out/optical_pipeline_lab/e2_shadow_profile_gpu1/shadow_rgb8_async_traversal_stats
+  device: cuda:1 / NVIDIA H200
+  resolution: 1920x1080
+  frames: 20
+  steady window: frames 1-18
+
+per frame:
+  shadow rays        ~= 3,823,354
+  directional rays   ~= 1,915,631
+  point rays         ~= 1,907,723
+  occluded rays      ~=   177,379
+  unoccluded rays    ~= 3,645,976
+  node visits        ~= 12,324,364
+  leaf visits        ~=   950,666
+  triangle tests     ~=   950,666
+  plane tests        ~= 3,645,976
+
+per shadow ray:
+  node visits        ~= 3.22
+  leaf visits        ~= 0.25
+  triangle tests     ~= 0.25
+  plane tests        ~= 0.95
+
+ratios:
+  directional share  ~= 50.1%
+  point share        ~= 49.9%
+  occluded share     ~=  4.6%
+  unoccluded share   ~= 95.4%
+```
+
+Interpretation:
+
+```text
+The remaining cost is not deep BVH traversal.
+```
+
+The average shadow ray visits very few nodes and performs few triangle tests.
+The dominant structure is volume: about two shadow rays are launched for nearly
+every hit pixel, and most rays are unoccluded. Because unoccluded rays fall
+through to the plane fallback, the single floor plane is tested about 3.65M
+times per frame and never appears to occlude in this run (`plane_test_count`
+matches final `unoccluded_count`).
+
+Likely next experiments:
+
+1. Shadow-casting policy per light: make fill/point lights non-shadow-casting
+   for preview and measure the visual/performance tradeoff. This could remove
+   roughly half of the shadow rays in the current Go2 setup.
+2. Plane fallback policy: skip plane shadow tests when scene/light setup proves
+   planes cannot occlude the shadow ray, or make plane shadowing optional for
+   preview. The current run pays one plane test for nearly every unoccluded ray.
+3. Near-first child ordering: still worth testing for occluded rays, but only
+   4.6% of rays are occluded here, so it is unlikely to move the full-frame
+   number as much as reducing ray count or plane fallback.
+4. Traversal micro-optimization: useful after ray-count and plane policy are
+   settled, but the counter data suggests node/triangle traversal depth is not
+   the first lever for this scenario.
+
 ## Non-Goals For This Slice
 
 - Do not start path tracing.
