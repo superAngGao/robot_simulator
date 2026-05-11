@@ -45,7 +45,21 @@ from optics import (
     stage_optical_channels,
     stage_optical_compute_result_to_host,
 )
-from optics.render_api import RenderBackend, RenderDiagnosticsRequest, RenderRequest
+from optics.render_api import (
+    DeliveryPolicy as RuntimeDeliveryPolicy,
+)
+from optics.render_api import (
+    DeliveryRequest,
+    RenderBackend,
+    RenderDiagnosticsRequest,
+    RenderRequest,
+)
+from optics.render_api import (
+    ReadbackPayload as RuntimeReadbackPayload,
+)
+from optics.render_api import (
+    WritePolicy as RuntimeWritePolicy,
+)
 from physics.publish import GpuPublishedFrame
 from physics.spatial import SpatialTransform
 from sensing import OpticalPinholeCameraSpec, build_pinhole_camera_image_result, build_pinhole_camera_rays
@@ -699,6 +713,28 @@ def _video_render_request(
     )
 
 
+def _video_delivery_request(
+    *,
+    readback_mode: str,
+    delivery_mode: str,
+    ring_depth: int,
+    write_frames: bool,
+) -> DeliveryRequest:
+    payload = RuntimeReadbackPayload(readback_mode)
+    if payload is RuntimeReadbackPayload.NONE:
+        policy = RuntimeDeliveryPolicy.DEVICE_ONLY
+    elif delivery_mode == "torch_async":
+        policy = RuntimeDeliveryPolicy.TORCH_ASYNC_ORDERED
+    else:
+        policy = RuntimeDeliveryPolicy.SYNC_HOST
+    return DeliveryRequest(
+        payload=payload,
+        policy=policy,
+        ring_depth=ring_depth,
+        write_policy=(RuntimeWritePolicy.PNG_SEQUENCE if write_frames else RuntimeWritePolicy.NONE),
+    )
+
+
 def _run_video_benchmark(
     session: Go2RenderSession,
     args: argparse.Namespace,
@@ -713,9 +749,15 @@ def _run_video_benchmark(
 
     if args.write_frames and Image is None:
         raise SystemExit("Writing video benchmark frames requires Pillow") from _PIL_IMPORT_ERROR
+    delivery_request = _video_delivery_request(
+        readback_mode=args.video_readback,
+        delivery_mode=args.video_readback_delivery,
+        ring_depth=int(args.video_readback_ring_depth),
+        write_frames=bool(args.write_frames),
+    )
 
     frame_dir = out_dir / "frames"
-    if args.write_frames:
+    if delivery_request.write_policy is RuntimeWritePolicy.PNG_SEQUENCE:
         frame_dir.mkdir(parents=True, exist_ok=True)
     if args.video_raygen == "gpu" and args.video_ray_cache != "off":
         raise SystemExit("--video-raygen gpu computes camera rays on device; use --video-ray-cache off")
@@ -743,19 +785,21 @@ def _run_video_benchmark(
         readback_start = time.perf_counter()
         host_channels = _readback_video_result(
             rendered.result,
-            args.video_readback,
+            delivery_request.payload.value,
             include_shadow_traversal_stats=args.render_profile,
         )
         readback_host_ms = (
-            (time.perf_counter() - readback_start) * 1000.0 if args.video_readback != "none" else _NAN
+            (time.perf_counter() - readback_start) * 1000.0
+            if delivery_request.payload is not RuntimeReadbackPayload.NONE
+            else _NAN
         )
 
         image_build_ms = _NAN
         encode_or_write_ms = _NAN
         frame_path = ""
-        if args.write_frames:
+        if delivery_request.write_policy is RuntimeWritePolicy.PNG_SEQUENCE:
             image_start = time.perf_counter()
-            rgb_preview = _host_rgb_preview_for_readback(host_channels, args.video_readback)
+            rgb_preview = _host_rgb_preview_for_readback(host_channels, delivery_request.payload.value)
             image_build_ms = (time.perf_counter() - image_start) * 1000.0
 
             write_start = time.perf_counter()
@@ -793,8 +837,10 @@ def _run_video_benchmark(
                 "geometry_mode": "static",
                 "raygen_mode": args.video_raygen,
                 "ray_cache_mode": args.video_ray_cache,
-                "readback_mode": args.video_readback,
-                "write_mode": "rgb_png" if args.write_frames else "none",
+                "readback_mode": delivery_request.payload.value,
+                "write_mode": (
+                    "rgb_png" if delivery_request.write_policy is RuntimeWritePolicy.PNG_SEQUENCE else "none"
+                ),
                 "camera_rays_ms": rendered.camera_rays_ms,
                 "snapshot_ms": _NAN,
                 "accel_refit_ms": _NAN,
@@ -858,9 +904,15 @@ def _run_video_benchmark_torch_async(
         raise SystemExit("--video-raygen gpu computes camera rays on device; use --video-ray-cache off")
     if args.video_readback_ring_depth <= 0:
         raise SystemExit("--video-readback-ring-depth must be > 0")
+    delivery_request = _video_delivery_request(
+        readback_mode=args.video_readback,
+        delivery_mode=args.video_readback_delivery,
+        ring_depth=int(args.video_readback_ring_depth),
+        write_frames=bool(args.write_frames),
+    )
 
     frame_dir = out_dir / "frames"
-    if args.write_frames:
+    if delivery_request.write_policy is RuntimeWritePolicy.PNG_SEQUENCE:
         frame_dir.mkdir(parents=True, exist_ok=True)
     csv_path = Path(args.frame_timing_csv) if args.frame_timing_csv else out_dir / "frame_timing.csv"
     rows = FrameTimingRecorder(
@@ -876,6 +928,7 @@ def _run_video_benchmark_torch_async(
     readback_ring = _prepare_torch_async_readback_ring(
         session,
         args,
+        delivery_request,
     )
     pending: _AsyncVideoReadbackJob | None = None
     first_frame_start: float | None = None
@@ -899,6 +952,7 @@ def _run_video_benchmark_torch_async(
                 rows,
                 rolling_window_ms,
                 frame_dir,
+                delivery_request=delivery_request,
                 first_frame_start=first_frame_start,
                 last_completion_time=last_completion_time,
                 latest_rendered_frame_index=frame_index,
@@ -924,6 +978,7 @@ def _run_video_benchmark_torch_async(
                 rows,
                 rolling_window_ms,
                 frame_dir,
+                delivery_request=delivery_request,
                 first_frame_start=first_frame_start,
                 last_completion_time=last_completion_time,
                 latest_rendered_frame_index=frame_index,
@@ -938,6 +993,7 @@ def _run_video_benchmark_torch_async(
             rows,
             rolling_window_ms,
             frame_dir,
+            delivery_request=delivery_request,
             first_frame_start=first_frame_start if first_frame_start is not None else time.perf_counter(),
             last_completion_time=last_completion_time,
             latest_rendered_frame_index=max(int(args.video_frames) - 1, 0),
@@ -951,13 +1007,14 @@ def _run_video_benchmark_torch_async(
 def _prepare_torch_async_readback_ring(
     session: Go2RenderSession,
     args: argparse.Namespace,
+    delivery_request: DeliveryRequest,
 ) -> TorchAsyncReadbackRing:
     warmup_camera = _build_video_camera(session.scene, args, 0)
     warmup_request = _video_render_request(
         camera=warmup_camera,
         rays=None,
         use_gpu_raygen=True,
-        readback_mode=args.video_readback,
+        readback_mode=delivery_request.payload.value,
         profile_timing=bool(args.render_profile),
         fail_on_overflow=bool(args.fail_on_overflow),
     )
@@ -966,16 +1023,16 @@ def _prepare_torch_async_readback_ring(
         render_profile=[] if warmup_request.diagnostics.profile_timing else None,
     )
     wp.synchronize_event(warmup_result.ready_event)
-    if args.video_readback == "rgb8":
+    if delivery_request.payload is RuntimeReadbackPayload.RGB8:
         warmup_result = session.pack_rgb8(warmup_result)
         wp.synchronize_event(warmup_result.ready_event)
     return TorchAsyncReadbackRing.from_warmup_result(
         warmup_result,
         channels=_video_readback_channels(
-            args.video_readback,
+            delivery_request.payload.value,
             include_shadow_traversal_stats=args.render_profile,
         ),
-        ring_depth=int(args.video_readback_ring_depth),
+        ring_depth=delivery_request.ring_depth,
     )
 
 
@@ -1011,6 +1068,7 @@ def _complete_torch_async_video_readback(
     rolling_window_ms: list[float],
     frame_dir: Path,
     *,
+    delivery_request: DeliveryRequest,
     first_frame_start: float,
     last_completion_time: float | None,
     latest_rendered_frame_index: int,
@@ -1024,9 +1082,9 @@ def _complete_torch_async_video_readback(
     image_build_ms = _NAN
     encode_or_write_ms = _NAN
     frame_path = ""
-    if args.write_frames:
+    if delivery_request.write_policy is RuntimeWritePolicy.PNG_SEQUENCE:
         image_start = time.perf_counter()
-        rgb_preview = _host_rgb_preview_for_readback(host_channels, args.video_readback)
+        rgb_preview = _host_rgb_preview_for_readback(host_channels, delivery_request.payload.value)
         image_build_ms = (time.perf_counter() - image_start) * 1000.0
 
         write_start = time.perf_counter()
@@ -1076,8 +1134,10 @@ def _complete_torch_async_video_readback(
             "delivery_policy": "torch_async",
             "raygen_mode": args.video_raygen,
             "ray_cache_mode": args.video_ray_cache,
-            "readback_mode": f"torch_async_{args.video_readback}",
-            "write_mode": "rgb_png" if args.write_frames else "none",
+            "readback_mode": f"torch_async_{delivery_request.payload.value}",
+            "write_mode": (
+                "rgb_png" if delivery_request.write_policy is RuntimeWritePolicy.PNG_SEQUENCE else "none"
+            ),
             "camera_rays_ms": job.camera_rays_ms,
             "snapshot_ms": _NAN,
             "accel_refit_ms": _NAN,
@@ -1099,7 +1159,7 @@ def _complete_torch_async_video_readback(
             "shadow_max_stack": shadow_max_stack,
             **shadow_traversal_fields,
             "readback_lag_frames": max(int(latest_rendered_frame_index) - int(job.frame_index), 0),
-            "readback_ring_depth": int(args.video_readback_ring_depth),
+            "readback_ring_depth": delivery_request.ring_depth,
             "readback_ring_block_count": int(ring_block_count),
             "completed_frame_index": job.frame_index,
             "overlap_ratio": overlap_ratio,

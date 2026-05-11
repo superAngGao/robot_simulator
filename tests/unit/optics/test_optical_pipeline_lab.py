@@ -11,7 +11,10 @@ import tools.optical_pipeline_lab.__main__ as lab_main
 import tools.optical_pipeline_lab.async_readback as async_readback
 import tools.optical_pipeline_lab.go2_backend as go2_backend
 import tools.optical_pipeline_lab.rgb_pack as rgb_pack
+from optics.render_api import DeliveryPolicy as RuntimeDeliveryPolicy
+from optics.render_api import ReadbackPayload as RuntimeReadbackPayload
 from optics.render_api import RenderBackend as RuntimeRenderBackend
+from optics.render_api import WritePolicy as RuntimeWritePolicy
 from tools.optical_pipeline_lab import (
     DEFAULT_RENDER_HEIGHT,
     DEFAULT_RENDER_WIDTH,
@@ -182,6 +185,101 @@ def test_video_render_request_maps_lab_options_to_runtime_api():
     assert request.diagnostics.profile_timing is True
     assert request.diagnostics.traversal_counters is True
     assert request.diagnostics.fail_on_overflow is False
+
+
+def test_video_delivery_request_maps_lab_options_to_runtime_api():
+    request = go2_backend._video_delivery_request(
+        readback_mode="none",
+        delivery_mode="sync",
+        ring_depth=2,
+        write_frames=False,
+    )
+
+    assert request.payload is RuntimeReadbackPayload.NONE
+    assert request.policy is RuntimeDeliveryPolicy.DEVICE_ONLY
+    assert request.write_policy is RuntimeWritePolicy.NONE
+
+    request = go2_backend._video_delivery_request(
+        readback_mode="rgb8",
+        delivery_mode="torch_async",
+        ring_depth=3,
+        write_frames=True,
+    )
+
+    assert request.payload is RuntimeReadbackPayload.RGB8
+    assert request.policy is RuntimeDeliveryPolicy.TORCH_ASYNC_ORDERED
+    assert request.ring_depth == 3
+    assert request.write_policy is RuntimeWritePolicy.PNG_SEQUENCE
+
+    request = go2_backend._video_delivery_request(
+        readback_mode="full",
+        delivery_mode="sync",
+        ring_depth=2,
+        write_frames=False,
+    )
+
+    assert request.payload is RuntimeReadbackPayload.FULL
+    assert request.policy is RuntimeDeliveryPolicy.SYNC_HOST
+
+    with pytest.raises(ValueError, match="RGB or RGB8"):
+        go2_backend._video_delivery_request(
+            readback_mode="full",
+            delivery_mode="torch_async",
+            ring_depth=2,
+            write_frames=False,
+        )
+
+
+def test_sync_video_readback_none_row_does_not_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def fake_render_video_frame(session, args, frame_index, ray_cache):
+        return go2_backend._RenderedVideoFrame(
+            frame_index=frame_index,
+            camera=SimpleNamespace(sim_time=0.0),
+            result=object(),
+            camera_rays_ms=float("nan"),
+            render_execute_ms=1.25,
+            pack_rgb8_ms=float("nan"),
+            render_profile_row=go2_backend._render_profile_row(None),
+        )
+
+    def fail_if_staged(*args, **kwargs):
+        raise AssertionError("readback=none should not stage host channels")
+
+    monkeypatch.setattr(go2_backend, "_render_video_frame", fake_render_video_frame)
+    monkeypatch.setattr(go2_backend, "stage_optical_channels", fail_if_staged)
+    monkeypatch.setattr(go2_backend, "stage_optical_compute_result_to_host", fail_if_staged)
+
+    frame_timing_csv = tmp_path / "frame_timing.csv"
+    rows = go2_backend._run_video_benchmark(
+        session=SimpleNamespace(scene=object()),
+        args=SimpleNamespace(
+            video_readback_delivery="sync",
+            write_frames=False,
+            video_readback="none",
+            video_readback_ring_depth=2,
+            video_raygen="gpu",
+            video_ray_cache="off",
+            video_frames=1,
+            video_fps=30.0,
+            render_profile=False,
+            fail_on_overflow=False,
+            progress_every=0,
+            frame_timing_csv=str(frame_timing_csv),
+            lab_frame_defaults={
+                "readback_payload": "none",
+                "delivery_policy": "sync",
+            },
+        ),
+        out_dir=tmp_path,
+    )
+
+    row = rows._rows[0]
+    assert row["readback_mode"] == "none"
+    assert row["write_mode"] == "none"
+    assert row["delivery_policy"] == "sync"
+    assert math.isnan(float(row["readback_host_ms"]))
+    assert row["frame_path"] == ""
+    assert frame_timing_csv.exists()
 
 
 def test_video_readback_channels_include_shadow_traversal_stats_only_when_requested():
