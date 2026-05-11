@@ -241,7 +241,7 @@ def test_render_request_diagnostics_drive_profile_buffer_and_traversal_readback(
 
 def test_go2_pipeline_frame_context_wraps_render_result(monkeypatch: pytest.MonkeyPatch):
     compute = SimpleNamespace(ready_event=object())
-    monkeypatch.setattr(go2_backend.wp, "synchronize_event", lambda event: None)
+    monkeypatch.setattr(go2_backend, "wp", SimpleNamespace(synchronize_event=lambda event: None))
 
     class FakeSession:
         scene = SimpleNamespace(frame=SimpleNamespace(frame_id=4, sim_time=0.2))
@@ -250,8 +250,8 @@ def test_go2_pipeline_frame_context_wraps_render_result(monkeypatch: pytest.Monk
         def __init__(self):
             self.calls = []
 
-        def execute_request(self, request, *, render_profile):
-            self.calls.append((request, render_profile))
+        def execute_request(self, request, *, render_profile, snapshot=None, bvh=None):
+            self.calls.append((request, render_profile, snapshot, bvh))
             render_profile.append(("shade_kernel_ms", 2.0))
             return compute
 
@@ -277,11 +277,16 @@ def test_go2_pipeline_frame_context_wraps_render_result(monkeypatch: pytest.Monk
 
     assert isinstance(rendered, RuntimeRenderResult)
     assert rendered.compute is compute
+    assert rendered.render_timing is not None
+    assert rendered.render_timing.execute_ms >= 0.0
     assert rendered.timing["render_shade_kernel_ms"] == 2.0
     assert rendered.timing["render_execute_ms"] >= 0.0
+    assert math.isnan(float(frame.prepare_timing["snapshot_ms"]))
     assert len(session.calls) == 1
     assert session.calls[0][0] is request
     assert session.calls[0][1] == [("shade_kernel_ms", 2.0)]
+    assert session.calls[0][2] is None
+    assert session.calls[0][3] is None
 
 
 def test_go2_pipeline_rejects_non_session_frame_inputs():

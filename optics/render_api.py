@@ -16,6 +16,8 @@ from sensing.optical import OpticalPinholeCameraSpec, OpticalRaySensorSpec
 
 from .execution import OpticalComputeResult, OpticalOutputProfile, normalize_output_profile
 
+_NAN = float("nan")
+
 
 class RenderBackend(Enum):
     """Compute backend requested from the render runtime."""
@@ -109,12 +111,72 @@ class RenderRequest:
 
 
 @dataclass(frozen=True)
+class FramePrepareTiming:
+    """Frame preparation timing owned by begin_frame/frame-context setup."""
+
+    snapshot_ms: float = _NAN
+    accel_refit_ms: float = _NAN
+    accel_rebuild_ms: float = _NAN
+
+    def to_flat_mapping(self) -> dict[str, float]:
+        """Return the current flat CSV-compatible timing keys."""
+
+        return {
+            "snapshot_ms": float(self.snapshot_ms),
+            "accel_refit_ms": float(self.accel_refit_ms),
+            "accel_rebuild_ms": float(self.accel_rebuild_ms),
+        }
+
+
+@dataclass(frozen=True)
+class RenderTimingSummary:
+    """Render-owned timing summary."""
+
+    execute_ms: float = _NAN
+    profile_sum_ms: float = _NAN
+    overhead_ms: float = _NAN
+    phases: Mapping[str, float] = field(default_factory=dict)
+
+    @classmethod
+    def from_flat_mapping(cls, timing: Mapping[str, float]) -> "RenderTimingSummary":
+        phases = {
+            key: float(value)
+            for key, value in timing.items()
+            if key.startswith("render_")
+            and key.endswith("_ms")
+            and key
+            not in {
+                "render_execute_ms",
+                "render_overhead_ms",
+            }
+        }
+        profile_values = [value for value in phases.values() if value == value]
+        profile_sum_ms = sum(profile_values) if profile_values else _NAN
+        return cls(
+            execute_ms=float(timing.get("render_execute_ms", _NAN)),
+            profile_sum_ms=profile_sum_ms,
+            overhead_ms=float(timing.get("render_overhead_ms", _NAN)),
+            phases=phases,
+        )
+
+    def to_flat_mapping(self) -> dict[str, float]:
+        """Return the current flat CSV-compatible render timing keys."""
+
+        return {
+            "render_execute_ms": float(self.execute_ms),
+            "render_overhead_ms": float(self.overhead_ms),
+            **{key: float(value) for key, value in self.phases.items()},
+        }
+
+
+@dataclass(frozen=True)
 class RenderResult:
-    """Rendered compute result plus timing and implementation diagnostics."""
+    """Rendered compute result plus render-owned timing and diagnostics."""
 
     compute: OpticalComputeResult
     timing: Mapping[str, float] = field(default_factory=dict)
     diagnostics: Mapping[str, int | float] = field(default_factory=dict)
+    render_timing: RenderTimingSummary | None = None
 
 
 @dataclass(frozen=True)
@@ -164,6 +226,88 @@ class DeliveryResult:
     timing: Mapping[str, float] = field(default_factory=dict)
     lag_frames: int = 0
     dropped: bool = False
+
+
+@dataclass(frozen=True)
+class DeliveryTimingSummary:
+    """Delivery-owned timing summary."""
+
+    pack_rgb8_ms: float = _NAN
+    readback_submit_ms: float = _NAN
+    readback_wait_ms: float = _NAN
+    readback_host_ms: float = _NAN
+    image_build_ms: float = _NAN
+    encode_write_ms: float = _NAN
+
+    def to_flat_mapping(self) -> dict[str, float]:
+        """Return the current flat CSV-compatible delivery timing keys."""
+
+        return {
+            "pack_rgb8_ms": float(self.pack_rgb8_ms),
+            "readback_submit_ms": float(self.readback_submit_ms),
+            "readback_wait_ms": float(self.readback_wait_ms),
+            "readback_host_ms": float(self.readback_host_ms),
+            "image_build_ms": float(self.image_build_ms),
+            "encode_write_ms": float(self.encode_write_ms),
+        }
+
+
+@dataclass(frozen=True)
+class FrameTimingSummary:
+    """Frame-level timing summary."""
+
+    work_sum_ms: float = _NAN
+    observed_frame_ms: float = _NAN
+    critical_path_ms: float = _NAN
+    instant_fps: float = _NAN
+
+    def to_flat_mapping(self) -> dict[str, float]:
+        """Return the current flat CSV-compatible frame summary keys."""
+
+        return {
+            "frame_total_ms": float(self.observed_frame_ms),
+            "instant_fps": float(self.instant_fps),
+        }
+
+
+@dataclass(frozen=True)
+class FrameResult:
+    """Lightweight completed-frame observation summary.
+
+    This object is frame-bound, but it does not own heavy GPU resources such as
+    published physics frames, device snapshots, or acceleration structures.
+    """
+
+    frame_id: int
+    sim_time: float
+    env_idx: int
+    prepare: FramePrepareTiming = field(default_factory=FramePrepareTiming)
+    render: RenderTimingSummary = field(default_factory=RenderTimingSummary)
+    delivery: DeliveryTimingSummary = field(default_factory=DeliveryTimingSummary)
+    summary: FrameTimingSummary = field(default_factory=FrameTimingSummary)
+    diagnostics: Mapping[str, int | float] = field(default_factory=dict)
+    completed_frame_index: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "frame_id", int(self.frame_id))
+        object.__setattr__(self, "sim_time", float(self.sim_time))
+        object.__setattr__(self, "env_idx", int(self.env_idx))
+        if self.completed_frame_index is not None:
+            object.__setattr__(self, "completed_frame_index", int(self.completed_frame_index))
+
+    def to_csv_row(self) -> dict[str, float | int]:
+        """Flatten owned timing blocks to the current lab CSV vocabulary."""
+
+        row: dict[str, float | int] = {"sim_time": self.sim_time}
+        if self.completed_frame_index is not None:
+            row["frame_index"] = self.completed_frame_index
+            row["completed_frame_index"] = self.completed_frame_index
+        row.update(self.prepare.to_flat_mapping())
+        row.update(self.render.to_flat_mapping())
+        row.update(self.delivery.to_flat_mapping())
+        row.update(self.summary.to_flat_mapping())
+        row.update({key: value for key, value in self.diagnostics.items()})
+        return row
 
 
 @runtime_checkable

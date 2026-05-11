@@ -5,12 +5,17 @@ from optics.execution import OpticalOutputProfile
 from optics.render_api import (
     DeliveryPolicy,
     DeliveryRequest,
+    DeliveryTimingSummary,
+    FramePrepareTiming,
+    FrameResult,
+    FrameTimingSummary,
     OpticalRenderPipeline,
     ReadbackPayload,
     RenderBackend,
     RenderDiagnosticsRequest,
     RenderFrameContext,
     RenderRequest,
+    RenderTimingSummary,
     WritePolicy,
 )
 from sensing.optical import OpticalPinholeCameraSpec, OpticalRaySensorSpec
@@ -122,6 +127,48 @@ def test_delivery_request_validates_payload_policy_combinations():
 
     with pytest.raises(ValueError, match="RGB or RGB8"):
         DeliveryRequest(payload=ReadbackPayload.FULL, policy=DeliveryPolicy.TORCH_ASYNC_ORDERED)
+
+
+def test_timing_summary_blocks_flatten_to_current_csv_vocabulary():
+    prepare = FramePrepareTiming(snapshot_ms=1.0, accel_refit_ms=2.0)
+    render = RenderTimingSummary.from_flat_mapping(
+        {
+            "render_execute_ms": 5.0,
+            "render_shade_kernel_ms": 3.0,
+            "render_raygen_kernel_ms": 1.0,
+            "render_overhead_ms": 1.0,
+        }
+    )
+    delivery = DeliveryTimingSummary(pack_rgb8_ms=0.25, readback_host_ms=2.5)
+    summary = FrameTimingSummary(
+        work_sum_ms=9.75,
+        observed_frame_ms=6.0,
+        critical_path_ms=5.25,
+        instant_fps=166.0,
+    )
+    frame = FrameResult(
+        frame_id=7,
+        sim_time=0.25,
+        env_idx=2,
+        prepare=prepare,
+        render=render,
+        delivery=delivery,
+        summary=summary,
+        completed_frame_index=4,
+    )
+
+    row = frame.to_csv_row()
+
+    assert render.profile_sum_ms == 4.0
+    assert row["snapshot_ms"] == 1.0
+    assert row["accel_refit_ms"] == 2.0
+    assert row["render_execute_ms"] == 5.0
+    assert row["render_shade_kernel_ms"] == 3.0
+    assert row["pack_rgb8_ms"] == 0.25
+    assert row["readback_host_ms"] == 2.5
+    assert row["frame_total_ms"] == 6.0
+    assert row["frame_index"] == 4
+    assert row["completed_frame_index"] == 4
 
 
 def test_pipeline_protocols_are_internal_and_import_safe():

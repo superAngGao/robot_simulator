@@ -199,6 +199,7 @@ class Go2RenderFrameContext:
     env_idx: int = 0
     snapshot: object | None = None
     bvh: object | None = None
+    prepare_timing: dict[str, float] = field(default_factory=dict)
 
     def render(self, request: RenderRequest) -> RenderResult:
         snapshot = self.snapshot if self.snapshot is not None else self.session.snapshot
@@ -208,6 +209,16 @@ class Go2RenderFrameContext:
 
 The static path can keep returning a context with `snapshot=None` and `bvh=None`.
 The dynamic path should populate both fields with frame-specific resources.
+`prepare_timing` should carry `snapshot_ms`, `accel_refit_ms`, and/or
+`accel_rebuild_ms`, matching the A6 pattern where render timing is owned by
+`RenderResult.timing`.
+
+Frame-specific snapshot/BVH resources are render-preparation resources, not
+`FrameResult` resources. For async delivery, the device render result may need
+to stay alive until readback completion, but the dynamic snapshot/BVH should be
+releasable or reusable after render completion unless the concrete executor or
+device event contract requires a longer lifetime. A8 should make this lifetime
+explicit in the implementation note.
 
 Acceleration policy sequencing:
 

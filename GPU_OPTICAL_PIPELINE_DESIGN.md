@@ -2037,6 +2037,90 @@ DeliveryResult:
   host/device delivered payload, timing, lag/drop/backpressure metadata
 ```
 
+Frame/result timing ownership decision:
+
+```text
+RenderFrameContext:
+  frame-scoped lifecycle/input handle
+  borrows the current frame input
+  may hold frame-specific snapshot/BVH resources while rendering
+
+RenderResult:
+  owns render-side output and render-side timing summary
+  includes OpticalComputeResult plus render execute/profile/overhead timing
+  does not own RGB8 pack, host readback, writer, or frame-level timing
+
+DeliveryResult:
+  owns delivery-side output and delivery-side timing summary
+  includes pack/readback/write timing, lag/drop/backpressure metadata
+  may retain device resources until async copy completion
+
+FrameResult:
+  frame-bound observation/result summary
+  identifies frame_id, sim_time, env_idx
+  aggregates prepare + render + delivery summaries
+  does not own or mutate GpuPublishedFrame, DeviceOpticalSceneSnapshot, or BVH
+```
+
+`FrameResult` should be bound to the simulation/render frame identity, but it
+should remain a lightweight observation object. The heavy resources stay inside
+the pipeline/session/frame context or the lower-level compute/delivery results.
+This keeps physics ownership separate from optical rendering: physics publishes
+or lends a frame, `begin_frame(frame_inputs=...)` borrows it, and the optical
+pipeline returns a summary of what happened for that frame.
+
+For async delivery, `FrameResult` is constructed when delivery completes, not
+when render is submitted or when render returns. It represents a completed
+consumer-visible frame. The frame identity should therefore match the completed
+frame (`completed_frame_index` in the current lab CSV), while the async submit
+path may still be working on a newer render frame.
+
+Timing ownership should follow the same boundary:
+
+```text
+prepare timing:
+  snapshot_ms, accel_refit_ms, accel_rebuild_ms
+  owned by the frame context / pipeline begin-frame path
+
+render timing:
+  render_execute_ms, render profile phases, render_overhead_ms
+  owned by RenderResult
+
+delivery timing:
+  pack_rgb8_ms, readback_submit_ms, readback_wait_ms, readback_host_ms,
+  image_build_ms, encode_write_ms
+  owned by DeliveryResult
+
+frame summary:
+  work_sum_ms, observed_frame_ms, critical_path_ms, instant_fps
+  owned by FrameResult
+```
+
+Summary timing definitions:
+
+```text
+work_sum_ms:
+  serial sum of the work attributed to the frame
+  e.g. prepare + render + pack + readback + write where applicable
+
+observed_frame_ms:
+  wall-clock/completion interval observed by the benchmark or consumer
+  maps to the existing frame_total_ms CSV column for compatibility
+
+critical_path_ms:
+  estimated overlapped throughput limiter
+  for current async RGB/RGB8 delivery:
+    max(render_execute_ms + pack_rgb8_ms, readback_host_ms)
+```
+
+Keep `frame_timing.csv` flat as an analysis/export format only. Internally,
+future cleanup should move toward typed timing blocks with clear ownership, then
+flatten those blocks into the existing CSV schema. This is especially important
+for async delivery: a simple sum of render + delivery work is not always the
+observed frame time when readback overlaps the next render. Preserve
+`frame_total_ms` as the CSV export name; use `observed_frame_ms` as the internal
+FrameResult summary field if/when typed frame summaries are introduced.
+
 The production/public user API remains consumer-first and should map onto these
 internal fields later. Do not force path tracing, video export, realtime preview,
 and ordered sensors to share a premature public enum before the internal

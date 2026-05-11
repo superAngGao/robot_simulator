@@ -21,7 +21,7 @@ import math
 import sys
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -52,10 +52,12 @@ from optics.render_api import (
 from optics.render_api import (
     DeliveryRequest,
     DeliveryResult,
+    FramePrepareTiming,
     RenderBackend,
     RenderDiagnosticsRequest,
     RenderRequest,
     RenderResult,
+    RenderTimingSummary,
 )
 from optics.render_api import (
     ReadbackPayload as RuntimeReadbackPayload,
@@ -127,6 +129,7 @@ class _AsyncVideoReadbackJob:
     render_profile_row: dict[str, float]
     camera_rays_ms: float
     readback_job: TorchAsyncReadbackJob
+    prepare_timing: Mapping[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -139,6 +142,7 @@ class _RenderedVideoFrame:
     pack_rgb8_ms: float
     render_profile_row: dict[str, float]
     include_shadow_traversal_stats: bool
+    prepare_timing: Mapping[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -238,20 +242,24 @@ class Go2RenderSession:
         request: RenderRequest,
         *,
         render_profile: list[tuple[str, float]] | None,
+        snapshot=None,
+        bvh=None,
     ):
         if request.backend is not RenderBackend.DIRECT_LIGHT:
             raise NotImplementedError("Go2RenderSession currently supports only direct-light rendering")
+        snapshot = self.snapshot if snapshot is None else snapshot
+        bvh = self.bvh if bvh is None else bvh
         if request.camera is not None:
             return self.executor.execute_camera(
-                self.snapshot,
-                self.bvh,
+                snapshot,
+                bvh,
                 request.camera,
                 output_profile=request.output_profile,
                 render_profile=render_profile,
             )
         return self.executor.execute(
-            self.snapshot,
-            self.bvh,
+            snapshot,
+            bvh,
             request.rays,
             output_profile=request.output_profile,
             render_profile=render_profile,
@@ -267,6 +275,9 @@ class Go2RenderFrameContext:
 
     session: Go2RenderSession
     env_idx: int = 0
+    snapshot: object | None = None
+    bvh: object | None = None
+    prepare_timing: Mapping[str, float] = field(default_factory=dict)
 
     @property
     def frame_id(self) -> int:
@@ -284,7 +295,12 @@ class Go2RenderFrameContext:
 
         render_profile = _render_profile_buffer_for_request(request)
         render_start = time.perf_counter()
-        compute_result = self.session.execute_request(request, render_profile=render_profile)
+        compute_result = self.session.execute_request(
+            request,
+            render_profile=render_profile,
+            snapshot=self.snapshot,
+            bvh=self.bvh,
+        )
         wp.synchronize_event(compute_result.ready_event)
         render_execute_ms = (time.perf_counter() - render_start) * 1000.0
         profile_row = _render_profile_row(
@@ -297,6 +313,12 @@ class Go2RenderFrameContext:
                 "render_execute_ms": render_execute_ms,
                 **profile_row,
             },
+            render_timing=RenderTimingSummary.from_flat_mapping(
+                {
+                    "render_execute_ms": render_execute_ms,
+                    **profile_row,
+                }
+            ),
         )
 
 
@@ -319,7 +341,11 @@ class Go2RenderPipeline:
     ) -> Go2RenderFrameContext:
         if frame_inputs is not None and frame_inputs is not self.session.gpu_frame:
             raise NotImplementedError("Go2RenderPipeline A5 supports only the session's static GPU frame")
-        return Go2RenderFrameContext(self.session, env_idx=env_idx)
+        return Go2RenderFrameContext(
+            self.session,
+            env_idx=env_idx,
+            prepare_timing=FramePrepareTiming().to_flat_mapping(),
+        )
 
     def deliver(
         self,
@@ -738,6 +764,7 @@ def _render_video_frame(
     result = render_result.compute
     render_execute_ms = float(render_result.timing["render_execute_ms"])
     render_profile_row = _render_profile_row_from_timing(render_result.timing)
+    prepare_timing = dict(frame_context.prepare_timing)
 
     pack_rgb8_ms = _NAN
     if args.video_readback == "rgb8":
@@ -755,6 +782,7 @@ def _render_video_frame(
         pack_rgb8_ms=pack_rgb8_ms,
         render_profile_row=render_profile_row,
         include_shadow_traversal_stats=_include_shadow_traversal_stats(render_request),
+        prepare_timing=prepare_timing,
     )
 
 
@@ -794,6 +822,10 @@ def _render_profile_buffer_for_request(request: RenderRequest) -> list[tuple[str
 
 def _include_shadow_traversal_stats(request: RenderRequest) -> bool:
     return bool(request.diagnostics.traversal_counters)
+
+
+def _prepare_timing_value(timing: Mapping[str, float], key: str) -> float:
+    return float(timing.get(key, _NAN))
 
 
 def _render_profile_row_from_timing(timing: Mapping[str, float]) -> dict[str, float]:
@@ -935,9 +967,9 @@ def _run_video_benchmark(
                     "rgb_png" if delivery_request.write_policy is RuntimeWritePolicy.PNG_SEQUENCE else "none"
                 ),
                 "camera_rays_ms": rendered.camera_rays_ms,
-                "snapshot_ms": _NAN,
-                "accel_refit_ms": _NAN,
-                "accel_rebuild_ms": _NAN,
+                "snapshot_ms": _prepare_timing_value(rendered.prepare_timing, "snapshot_ms"),
+                "accel_refit_ms": _prepare_timing_value(rendered.prepare_timing, "accel_refit_ms"),
+                "accel_rebuild_ms": _prepare_timing_value(rendered.prepare_timing, "accel_rebuild_ms"),
                 "render_execute_ms": rendered.render_execute_ms,
                 "pack_rgb8_ms": rendered.pack_rgb8_ms,
                 **rendered.render_profile_row,
@@ -1064,6 +1096,7 @@ def _run_video_benchmark_torch_async(
             pack_rgb8_ms=rendered.pack_rgb8_ms,
             render_profile_row=rendered.render_profile_row,
             camera_rays_ms=rendered.camera_rays_ms,
+            prepare_timing=rendered.prepare_timing,
         )
         if pending is not None:
             last_completion_time = _complete_torch_async_video_readback(
@@ -1139,6 +1172,7 @@ def _submit_torch_async_video_readback(
     pack_rgb8_ms: float,
     render_profile_row: dict[str, float],
     camera_rays_ms: float,
+    prepare_timing: Mapping[str, float] | None = None,
 ) -> _AsyncVideoReadbackJob:
     readback_job = readback_ring.submit(result, frame_index=frame_index)
     return _AsyncVideoReadbackJob(
@@ -1150,6 +1184,7 @@ def _submit_torch_async_video_readback(
         render_profile_row=render_profile_row,
         camera_rays_ms=camera_rays_ms,
         readback_job=readback_job,
+        prepare_timing={} if prepare_timing is None else dict(prepare_timing),
     )
 
 
@@ -1231,9 +1266,9 @@ def _complete_torch_async_video_readback(
                 "rgb_png" if delivery_request.write_policy is RuntimeWritePolicy.PNG_SEQUENCE else "none"
             ),
             "camera_rays_ms": job.camera_rays_ms,
-            "snapshot_ms": _NAN,
-            "accel_refit_ms": _NAN,
-            "accel_rebuild_ms": _NAN,
+            "snapshot_ms": _prepare_timing_value(job.prepare_timing, "snapshot_ms"),
+            "accel_refit_ms": _prepare_timing_value(job.prepare_timing, "accel_refit_ms"),
+            "accel_rebuild_ms": _prepare_timing_value(job.prepare_timing, "accel_rebuild_ms"),
             "render_execute_ms": job.render_execute_ms,
             "pack_rgb8_ms": job.pack_rgb8_ms,
             **job.render_profile_row,
