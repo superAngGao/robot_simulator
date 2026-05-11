@@ -139,6 +139,21 @@ Fallback to Option B if published-frame mutation is awkward.
 Do not start with full physics stepping. That should come after the pipeline can
 consume per-frame published state in a controlled lab smoke.
 
+A8.0 update: `tools.optical_pipeline_lab.dynamic_frames` now has a lab-only
+pose-frame clone/perturb helper. It can build an independent pose-only
+`GpuPublishedFrame` by copying `x_world_R_wp` / `x_world_r_wp`, and can apply
+small deterministic translation offsets through host memory for synthetic
+smokes. This is not the future real-time path; real physics integration should
+borrow publisher-owned frames.
+
+The current Go2 Menagerie importer bakes body transforms into
+`X_body_geometry` and does not assign `body_index` to visual instances.
+Consequently, the current static Go2 registry has no body-bound visual geometry
+for `GpuPublishedFrame` perturbation to move. Option A for Go2 would require an
+importer change that preserves body indices and frame transforms. Until that
+exists, the first dynamic/refit smoke should prefer Option B: a tiny synthetic
+body-bound scene.
+
 Before implementing the dynamic smoke, run a CPU-only or import-safe probe for
 the published-frame cloning path. The probe should answer:
 

@@ -173,6 +173,7 @@ metadata 和 thin runner，避免继续把实验编排塞进 example runtime。
 | `GPU_OPTICAL_PIPELINE_DESIGN.md` | Q54 GPU optical/rendering pipeline repo-level design baseline: scenarios, delivery policies, Optical Pipeline Lab, roadmap |
 | `tools/optical_pipeline_lab/` | Optical Pipeline Lab: scenario configs, presets, timing CSV schema, report helpers, thin Go2 runner |
 | `tools/optical_pipeline_lab/async_readback.py` | Optical Pipeline Lab async D2H readback ring helper for pinned Torch copies |
+| `tools/optical_pipeline_lab/dynamic_frames.py` | Lab-only synthetic GPU published-frame clone/perturb helpers for dynamic optical smokes |
 | `tools/optical_pipeline_lab/go2_backend.py` | Shared Go2 Menagerie GPU backend used by the lab runner and example CLI |
 | `tools/optical_pipeline_lab/rgb_pack.py` | Optical Pipeline Lab GPU RGB8 preview packing helper |
 | `benchmarks/bench_optical_device_scene.py` | L5C.1c AABB/BVH decision benchmark harness |

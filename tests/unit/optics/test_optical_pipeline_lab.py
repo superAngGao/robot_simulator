@@ -5,10 +5,12 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 import tools.optical_pipeline_lab.__main__ as lab_main
 import tools.optical_pipeline_lab.async_readback as async_readback
+import tools.optical_pipeline_lab.dynamic_frames as dynamic_frames
 import tools.optical_pipeline_lab.go2_backend as go2_backend
 import tools.optical_pipeline_lab.rgb_pack as rgb_pack
 from optics.render_api import DeliveryPolicy as RuntimeDeliveryPolicy
@@ -18,6 +20,7 @@ from optics.render_api import RenderBackend as RuntimeRenderBackend
 from optics.render_api import RenderFrameContext as RuntimeRenderFrameContext
 from optics.render_api import RenderResult as RuntimeRenderResult
 from optics.render_api import WritePolicy as RuntimeWritePolicy
+from physics.publish import GpuPublishedFrame
 from tools.optical_pipeline_lab import (
     DEFAULT_RENDER_HEIGHT,
     DEFAULT_RENDER_WIDTH,
@@ -558,6 +561,102 @@ def test_rgb_pack_raises_import_error_when_warp_is_unavailable(monkeypatch):
         rgb_pack.pack_linear_rgb_to_preview_uint8(object())
 
     assert exc_info.value.__cause__ is error
+
+
+class _FakeWpArray:
+    def __init__(self, values, *, dtype=np.float32, device="cuda:fake"):
+        self.values = np.asarray(values, dtype=dtype).copy()
+        self.shape = self.values.shape
+        self.dtype = self.values.dtype
+        self.device = device
+
+    def numpy(self):
+        return self.values.copy()
+
+
+class _FakeWpModule:
+    @staticmethod
+    def zeros(shape, *, dtype=None, device=None):
+        resolved_dtype = dtype or np.float32
+        return _FakeWpArray(
+            np.zeros(shape, dtype=resolved_dtype),
+            dtype=resolved_dtype,
+            device=device,
+        )
+
+    @staticmethod
+    def array(values, *, dtype=None, device=None):
+        return _FakeWpArray(values, dtype=dtype or np.float32, device=device)
+
+    @staticmethod
+    def copy(dst, src):
+        dst.values[...] = src.values
+
+
+def _fake_gpu_pose_frame() -> GpuPublishedFrame:
+    rotations = np.broadcast_to(np.eye(3, dtype=np.float32), (1, 2, 3, 3)).copy()
+    translations = np.array([[[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]]], dtype=np.float32)
+    return GpuPublishedFrame(
+        slot_id=7,
+        frame_id=11,
+        sim_time=0.11,
+        step_index=11,
+        env_mask_wp=object(),
+        q_wp=object(),
+        qdot_wp=object(),
+        x_world_R_wp=_FakeWpArray(rotations),
+        x_world_r_wp=_FakeWpArray(translations),
+        v_bodies_wp=object(),
+        contact_count_wp=object(),
+        contact_cache_ref=object(),
+        telemetry_ref=object(),
+        ready_event=object(),
+        slot_meta=None,
+    )
+
+
+def test_dynamic_frame_clone_is_pose_only_and_independent():
+    frame = _fake_gpu_pose_frame()
+
+    cloned = dynamic_frames.clone_gpu_published_pose_frame(
+        frame,
+        wp_module=_FakeWpModule,
+        frame_id=12,
+        sim_time=0.12,
+        step_index=12,
+    )
+
+    assert dynamic_frames.gpu_pose_shape(cloned) == (1, 2)
+    assert cloned.frame_id == 12
+    assert cloned.sim_time == 0.12
+    assert cloned.q_wp is None
+    assert cloned.slot_meta is None
+    assert cloned.x_world_R_wp is not frame.x_world_R_wp
+    assert cloned.x_world_r_wp is not frame.x_world_r_wp
+    cloned.x_world_r_wp.values[0, 1, 0] = 99.0
+    assert frame.x_world_r_wp.numpy()[0, 1, 0] == 1.0
+
+
+def test_dynamic_frame_perturb_applies_translation_offsets_without_mutating_source():
+    frame = _fake_gpu_pose_frame()
+
+    moved = dynamic_frames.clone_and_perturb_gpu_published_pose_frame(
+        frame,
+        wp_module=_FakeWpModule,
+        translation_offsets={(0, 1): [0.5, -1.0, 2.0]},
+        frame_id=13,
+    )
+
+    assert moved.frame_id == 13
+    assert moved.x_world_r_wp.numpy()[0, 1].tolist() == pytest.approx([1.5, 1.0, 5.0])
+    assert frame.x_world_r_wp.numpy()[0, 1].tolist() == pytest.approx([1.0, 2.0, 3.0])
+
+    with pytest.raises(IndexError, match="body_idx"):
+        dynamic_frames.clone_and_perturb_gpu_published_pose_frame(
+            frame,
+            wp_module=_FakeWpModule,
+            translation_offsets={(0, 2): [0.0, 0.0, 0.0]},
+        )
 
 
 def test_reserved_lab_modes_fail_loudly():
