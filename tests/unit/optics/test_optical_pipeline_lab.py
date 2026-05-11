@@ -400,6 +400,45 @@ def test_go2_pipeline_dynamic_begin_frame_rebuilds_when_refit_is_unavailable(
     assert frame.prepare_timing["accel_rebuild_ms"] >= 0.0
 
 
+def test_go2_pipeline_dynamic_begin_frame_rebuilds_cuda_lbvh_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    snapshot = SimpleNamespace(ready_event="snapshot_ready")
+    rebuilt_bvh = SimpleNamespace(ready_event="cuda_rebuild_ready")
+
+    class FakeCache:
+        def snapshot_from_gpu_frame(self, frame, *, env_idx, stream, include_aabb):
+            return snapshot
+
+    def fake_cuda_build(snapshot_arg, *, device, stream):
+        assert snapshot_arg is snapshot
+        assert device == "cuda:fake"
+        assert stream == "stream"
+        return rebuilt_bvh
+
+    session = SimpleNamespace(
+        scene=SimpleNamespace(frame=SimpleNamespace(frame_id=1, sim_time=0.0)),
+        gpu_frame=object(),
+        cache=FakeCache(),
+        stream="stream",
+        device="cuda:fake",
+        bvh=SimpleNamespace(stats=SimpleNamespace(supports_refit=False)),
+        bvh_backend="cuda_lbvh",
+        bvh_split_strategy="partition",
+    )
+    monkeypatch.setattr(go2_backend, "wp", SimpleNamespace(synchronize_event=lambda event: None))
+    monkeypatch.setattr(go2_backend, "build_cuda_lbvh_from_snapshot", fake_cuda_build)
+
+    frame = go2_backend.Go2RenderPipeline(session=session).begin_frame(
+        frame_inputs=object(),
+        env_idx=0,
+    )
+
+    assert frame.bvh is rebuilt_bvh
+    assert math.isnan(float(frame.prepare_timing["accel_refit_ms"]))
+    assert frame.prepare_timing["accel_rebuild_ms"] >= 0.0
+
+
 def test_torch_async_readback_warmup_uses_pipeline_frame_context(monkeypatch: pytest.MonkeyPatch):
     compute = SimpleNamespace(ready_event=object())
     camera = SimpleNamespace(frame_id=5, sim_time=0.3, env_idx=2)

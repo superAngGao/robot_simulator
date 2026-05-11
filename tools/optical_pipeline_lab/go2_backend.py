@@ -157,7 +157,7 @@ class Go2RenderSession:
     snapshot: object
     bvh: object
     executor: GpuDeviceBvhDirectLightOpticalExecutor
-    bvh_backend: str = "cuda_lbvh"
+    bvh_backend: str = "cpu"
     bvh_split_strategy: str = "sort"
 
     @classmethod
