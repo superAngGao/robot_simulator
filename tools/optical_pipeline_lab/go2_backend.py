@@ -36,7 +36,7 @@ from examples.mujoco_menagerie_robot_preview import (
     import_mjcf_visual_scene,
     make_model_camera,
 )
-from examples.optical_direct_light_preview import linear_rgb_to_preview_uint8, write_preview_images
+from examples.optical_direct_light_preview import write_preview_images
 from optics import (
     DeviceOpticalSceneCache,
     GpuDeviceBvhDirectLightOpticalExecutor,
@@ -44,11 +44,7 @@ from optics import (
     build_cuda_lbvh_from_snapshot,
     build_device_bvh_from_snapshot,
     refit_device_bvh_from_snapshot,
-    stage_optical_channels,
     stage_optical_compute_result_to_host,
-)
-from optics.render_api import (
-    DeliveryPolicy as RuntimeDeliveryPolicy,
 )
 from optics.render_api import (
     DeliveryRequest,
@@ -60,21 +56,21 @@ from optics.render_api import (
     RenderResult,
     RenderTimingSummary,
 )
-from optics.render_api import (
-    ReadbackPayload as RuntimeReadbackPayload,
-)
-from optics.render_api import (
-    WritePolicy as RuntimeWritePolicy,
-)
 from physics.publish import GpuPublishedFrame
 from physics.spatial import SpatialTransform
 from sensing import OpticalPinholeCameraSpec, build_pinhole_camera_image_result, build_pinhole_camera_rays
 from tools.optical_pipeline_lab import dynamic_frames
 from tools.optical_pipeline_lab.async_readback import (
-    TorchAsyncReadbackJob,
-    TorchAsyncReadbackRing,
     torch_async_readback_available,
     torch_async_readback_import_error,
+)
+from tools.optical_pipeline_lab.delivery import (
+    RenderedVideoFrame,
+    VideoDeliveryFacade,
+    VideoDeliveryRunConfig,
+    VideoFrameTimingRowBuilder,
+    video_delivery_request,
+    video_readback_channels,
 )
 from tools.optical_pipeline_lab.rgb_pack import (
     pack_linear_rgb_to_preview_uint8,
@@ -89,18 +85,9 @@ from tools.optical_pipeline_lab.timing import (
     RENDER_PROFILE_PHASES as _RENDER_PROFILE_PHASES,
 )
 from tools.optical_pipeline_lab.timing import (
-    SHADOW_TRAVERSAL_COUNTER_FIELDS,
     FrameTimingRecorder,
     TimingRecorder,
 )
-
-try:
-    from PIL import Image
-except Exception as exc:  # pragma: no cover - example-only guard.
-    Image = None
-    _PIL_IMPORT_ERROR = exc
-else:
-    _PIL_IMPORT_ERROR = None
 
 try:
     import warp as wp
@@ -109,44 +96,6 @@ except Exception as exc:  # pragma: no cover - example-only guard.
     _WARP_IMPORT_ERROR = exc
 else:
     _WARP_IMPORT_ERROR = None
-
-_VIDEO_DIAGNOSTIC_CHANNELS = (
-    "bvh_stack_overflow_count",
-    "shadow_stack_overflow_count",
-    "bvh_max_stack_depth",
-    "shadow_max_stack_depth",
-)
-_VIDEO_SHADOW_TRAVERSAL_CHANNELS = SHADOW_TRAVERSAL_COUNTER_FIELDS
-_VIDEO_RGB_CHANNELS = ("rgb",) + _VIDEO_DIAGNOSTIC_CHANNELS
-_VIDEO_RGB8_CHANNELS = ("rgb8",) + _VIDEO_DIAGNOSTIC_CHANNELS
-
-
-@dataclass
-class _AsyncVideoReadbackJob:
-    frame_index: int
-    frame_start: float
-    camera: OpticalPinholeCameraSpec
-    geometry_mode: str
-    render_execute_ms: float
-    pack_rgb8_ms: float
-    render_profile_row: dict[str, float]
-    camera_rays_ms: float
-    readback_job: TorchAsyncReadbackJob
-    prepare_timing: Mapping[str, float] = field(default_factory=dict)
-
-
-@dataclass
-class _RenderedVideoFrame:
-    frame_index: int
-    camera: OpticalPinholeCameraSpec
-    result: object
-    camera_rays_ms: float
-    render_execute_ms: float
-    pack_rgb8_ms: float
-    render_profile_row: dict[str, float]
-    include_shadow_traversal_stats: bool
-    geometry_mode: str = "static"
-    prepare_timing: Mapping[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -885,7 +834,7 @@ def _render_video_frame(
     args: argparse.Namespace,
     frame_index: int,
     ray_cache: list[tuple[OpticalPinholeCameraSpec, object]] | None,
-) -> _RenderedVideoFrame:
+) -> RenderedVideoFrame:
     session = pipeline.session
     frame_inputs = _video_frame_inputs(args, frame_index)
     if args.video_raygen == "gpu":
@@ -920,20 +869,12 @@ def _render_video_frame(
     render_profile_row = _render_profile_row_from_timing(render_result.timing)
     prepare_timing = dict(frame_context.prepare_timing)
 
-    pack_rgb8_ms = _NAN
-    if args.video_readback == "rgb8":
-        pack_start = time.perf_counter()
-        result = session.pack_rgb8(result)
-        wp.synchronize_event(result.ready_event)
-        pack_rgb8_ms = (time.perf_counter() - pack_start) * 1000.0
-
-    return _RenderedVideoFrame(
+    return RenderedVideoFrame(
         frame_index=int(frame_index),
         camera=camera,
         result=result,
         camera_rays_ms=camera_rays_ms,
         render_execute_ms=render_execute_ms,
-        pack_rgb8_ms=pack_rgb8_ms,
         render_profile_row=render_profile_row,
         include_shadow_traversal_stats=_include_shadow_traversal_stats(render_request),
         geometry_mode=_video_geometry_mode(args, frame_inputs=frame_inputs),
@@ -1011,10 +952,6 @@ def _video_geometry_mode(args: argparse.Namespace, *, frame_inputs) -> str:
     return "dynamic_rigid" if frame_inputs is not None else "static"
 
 
-def _prepare_timing_value(timing: Mapping[str, float], key: str) -> float:
-    return float(timing.get(key, _NAN))
-
-
 def _render_profile_row_from_timing(timing: Mapping[str, float]) -> dict[str, float]:
     row = {
         f"render_{phase}_ms": float(timing.get(f"render_{phase}_ms", _NAN))
@@ -1031,18 +968,11 @@ def _video_delivery_request(
     ring_depth: int,
     write_frames: bool,
 ) -> DeliveryRequest:
-    payload = RuntimeReadbackPayload(readback_mode)
-    if payload is RuntimeReadbackPayload.NONE:
-        policy = RuntimeDeliveryPolicy.DEVICE_ONLY
-    elif delivery_mode == "torch_async":
-        policy = RuntimeDeliveryPolicy.TORCH_ASYNC_ORDERED
-    else:
-        policy = RuntimeDeliveryPolicy.SYNC_HOST
-    return DeliveryRequest(
-        payload=payload,
-        policy=policy,
+    return video_delivery_request(
+        readback_mode=readback_mode,
+        delivery_mode=delivery_mode,
         ring_depth=ring_depth,
-        write_policy=(RuntimeWritePolicy.PNG_SEQUENCE if write_frames else RuntimeWritePolicy.NONE),
+        write_frames=write_frames,
     )
 
 
@@ -1051,16 +981,16 @@ def _run_video_benchmark(
     args: argparse.Namespace,
     out_dir: Path,
 ) -> FrameTimingRecorder:
-    if args.video_readback_delivery == "torch_async":
-        return _run_video_benchmark_torch_async(
-            pipeline,
-            args,
-            out_dir,
-        )
     session = pipeline.session
 
-    if args.write_frames and Image is None:
-        raise SystemExit("Writing video benchmark frames requires Pillow") from _PIL_IMPORT_ERROR
+    if args.video_readback_delivery == "torch_async" and not torch_async_readback_available():
+        raise SystemExit(
+            "--video-readback-delivery=torch_async requires torch with CUDA support"
+        ) from torch_async_readback_import_error()
+    if args.video_readback_delivery == "torch_async" and args.video_readback not in ("rgb", "rgb8"):
+        raise SystemExit(
+            "--video-readback-delivery=torch_async currently supports --video-readback=rgb/rgb8 only"
+        )
     delivery_request = _video_delivery_request(
         readback_mode=args.video_readback,
         delivery_mode=args.video_readback_delivery,
@@ -1068,189 +998,47 @@ def _run_video_benchmark(
         write_frames=bool(args.write_frames),
     )
 
-    frame_dir = out_dir / "frames"
-    if delivery_request.write_policy is RuntimeWritePolicy.PNG_SEQUENCE:
-        frame_dir.mkdir(parents=True, exist_ok=True)
-    if args.video_raygen == "gpu" and args.video_ray_cache != "off":
-        raise SystemExit("--video-raygen gpu computes camera rays on device; use --video-ray-cache off")
-    csv_path = Path(args.frame_timing_csv) if args.frame_timing_csv else out_dir / "frame_timing.csv"
-    rows = FrameTimingRecorder(
-        csv_path=csv_path,
-        default_fields=getattr(args, "lab_frame_defaults", None),
-    )
-    rolling_window_ms: list[float] = []
-    ray_cache = (
-        _precompute_video_camera_rays(session.scene, args)
-        if args.video_raygen == "host" and args.video_ray_cache == "precompute"
-        else None
-    )
-
-    for frame_index in range(int(args.video_frames)):
-        frame_start = time.perf_counter()
-        rendered = _render_video_frame(
-            pipeline,
-            args,
-            frame_index,
-            ray_cache,
-        )
-
-        readback_start = time.perf_counter()
-        host_channels = _readback_video_result(
-            rendered.result,
-            delivery_request.payload.value,
-            include_shadow_traversal_stats=rendered.include_shadow_traversal_stats,
-        )
-        readback_host_ms = (
-            (time.perf_counter() - readback_start) * 1000.0
-            if delivery_request.payload is not RuntimeReadbackPayload.NONE
-            else _NAN
-        )
-
-        image_build_ms = _NAN
-        encode_or_write_ms = _NAN
-        frame_path = ""
-        if delivery_request.write_policy is RuntimeWritePolicy.PNG_SEQUENCE:
-            image_start = time.perf_counter()
-            rgb_preview = _host_rgb_preview_for_readback(host_channels, delivery_request.payload.value)
-            image_build_ms = (time.perf_counter() - image_start) * 1000.0
-
-            write_start = time.perf_counter()
-            path = frame_dir / f"rgb_{frame_index:06d}.png"
-            Image.fromarray(rgb_preview).save(path)
-            encode_or_write_ms = (time.perf_counter() - write_start) * 1000.0
-            frame_path = str(path)
-
-        frame_total_ms = (time.perf_counter() - frame_start) * 1000.0
-        rolling_window_ms.append(frame_total_ms)
-        if len(rolling_window_ms) > 30:
-            rolling_window_ms.pop(0)
-        instant_fps = 1000.0 / frame_total_ms if frame_total_ms > 0.0 else float("inf")
-        rolling_fps = (
-            1000.0 * float(len(rolling_window_ms)) / sum(rolling_window_ms)
-            if sum(rolling_window_ms) > 0.0
-            else float("inf")
-        )
-        primary_overflow = _staged_scalar(host_channels, "bvh_stack_overflow_count")
-        shadow_overflow = _staged_scalar(host_channels, "shadow_stack_overflow_count")
-        primary_max_stack = _staged_scalar(host_channels, "bvh_max_stack_depth")
-        shadow_max_stack = _staged_scalar(host_channels, "shadow_max_stack_depth")
-        shadow_traversal_fields = _staged_shadow_traversal_fields(host_channels)
-        if args.fail_on_overflow and (primary_overflow or shadow_overflow):
-            raise SystemExit(
-                f"BVH stack overflow detected at frame {frame_index}: "
-                f"primary={primary_overflow}, shadow={shadow_overflow}"
-            )
-
-        rows.add(
-            {
-                "frame_index": frame_index,
-                "sim_time": rendered.camera.sim_time,
-                "video_time": float(frame_index) / float(args.video_fps),
-                "geometry_mode": rendered.geometry_mode,
-                "raygen_mode": args.video_raygen,
-                "ray_cache_mode": args.video_ray_cache,
-                "readback_mode": delivery_request.payload.value,
-                "write_mode": (
-                    "rgb_png" if delivery_request.write_policy is RuntimeWritePolicy.PNG_SEQUENCE else "none"
-                ),
-                "camera_rays_ms": rendered.camera_rays_ms,
-                "snapshot_ms": _prepare_timing_value(rendered.prepare_timing, "snapshot_ms"),
-                "accel_refit_ms": _prepare_timing_value(rendered.prepare_timing, "accel_refit_ms"),
-                "accel_rebuild_ms": _prepare_timing_value(rendered.prepare_timing, "accel_rebuild_ms"),
-                "render_execute_ms": rendered.render_execute_ms,
-                "pack_rgb8_ms": rendered.pack_rgb8_ms,
-                **rendered.render_profile_row,
-                "readback_submit_ms": _NAN,
-                "readback_wait_ms": _NAN,
-                "readback_host_ms": readback_host_ms,
-                "image_build_ms": image_build_ms,
-                "encode_or_write_ms": encode_or_write_ms,
-                "frame_total_ms": frame_total_ms,
-                "instant_fps": instant_fps,
-                "rolling_fps": rolling_fps,
-                "primary_overflow": primary_overflow,
-                "shadow_overflow": shadow_overflow,
-                "primary_max_stack": primary_max_stack,
-                "shadow_max_stack": shadow_max_stack,
-                **shadow_traversal_fields,
-                "frame_path": frame_path,
-            }
-        )
-        if args.progress_every > 0 and (
-            frame_index == 0
-            or (frame_index + 1) % int(args.progress_every) == 0
-            or frame_index + 1 == int(args.video_frames)
-        ):
-            print(
-                "  video_frame "
-                f"{frame_index + 1}/{args.video_frames}: "
-                f"total={frame_total_ms:.3f}ms, "
-                f"render={rendered.render_execute_ms:.3f}ms, "
-                f"{_format_pack_rgb8(rendered.pack_rgb8_ms)}"
-                f"{_format_render_profile(rendered.render_profile_row)}"
-                f"readback={_format_ms(readback_host_ms)}, "
-                f"fps={instant_fps:.2f}, rolling_fps={rolling_fps:.2f}, "
-                f"overflow=({_format_scalar(primary_overflow)},{_format_scalar(shadow_overflow)})"
-            )
-
-    rows.write_csv()
-    return rows
-
-
-def _run_video_benchmark_torch_async(
-    pipeline: Go2RenderPipeline,
-    args: argparse.Namespace,
-    out_dir: Path,
-) -> FrameTimingRecorder:
-    if not torch_async_readback_available():
-        raise SystemExit(
-            "--video-readback-delivery=torch_async requires torch with CUDA support"
-        ) from torch_async_readback_import_error()
-    if args.video_readback not in ("rgb", "rgb8"):
-        raise SystemExit(
-            "--video-readback-delivery=torch_async currently supports --video-readback=rgb/rgb8 only"
-        )
-    if args.write_frames and Image is None:
-        raise SystemExit("Writing video benchmark frames requires Pillow") from _PIL_IMPORT_ERROR
     if args.video_raygen == "gpu" and args.video_ray_cache != "off":
         raise SystemExit("--video-raygen gpu computes camera rays on device; use --video-ray-cache off")
     if args.video_readback_ring_depth <= 0:
         raise SystemExit("--video-readback-ring-depth must be > 0")
-    session = pipeline.session
-    delivery_request = _video_delivery_request(
-        readback_mode=args.video_readback,
-        delivery_mode=args.video_readback_delivery,
-        ring_depth=int(args.video_readback_ring_depth),
-        write_frames=bool(args.write_frames),
-    )
-
-    frame_dir = out_dir / "frames"
-    if delivery_request.write_policy is RuntimeWritePolicy.PNG_SEQUENCE:
-        frame_dir.mkdir(parents=True, exist_ok=True)
     csv_path = Path(args.frame_timing_csv) if args.frame_timing_csv else out_dir / "frame_timing.csv"
     rows = FrameTimingRecorder(
         csv_path=csv_path,
         default_fields=getattr(args, "lab_frame_defaults", None),
     )
-    rolling_window_ms: list[float] = []
     ray_cache = (
         _precompute_video_camera_rays(session.scene, args)
         if args.video_raygen == "host" and args.video_ray_cache == "precompute"
         else None
     )
-    readback_ring = _prepare_torch_async_readback_ring(
-        pipeline,
-        args,
-        delivery_request,
+    delivery = VideoDeliveryFacade.create(
+        request=delivery_request,
+        delivery_policy_label=args.video_readback_delivery,
+        frame_dir=out_dir / "frames",
+        pack_rgb8=getattr(session, "pack_rgb8", _pack_video_rgb8),
+        synchronize_event=getattr(wp, "synchronize_event", lambda event: None),
+        warmup_result_factory=(
+            lambda: _build_torch_async_warmup_result(
+                pipeline,
+                args,
+                delivery_request,
+            )
+        ),
     )
-    pending: _AsyncVideoReadbackJob | None = None
-    first_frame_start: float | None = None
-    last_completion_time: float | None = None
+    row_builder = VideoFrameTimingRowBuilder(
+        VideoDeliveryRunConfig(
+            video_fps=float(args.video_fps),
+            video_frames=int(args.video_frames),
+            video_raygen=args.video_raygen,
+            video_ray_cache=args.video_ray_cache,
+            delivery_policy_label=args.video_readback_delivery,
+            fail_on_overflow=bool(args.fail_on_overflow),
+        )
+    ).bind_request(delivery_request)
 
     for frame_index in range(int(args.video_frames)):
         frame_start = time.perf_counter()
-        if first_frame_start is None:
-            first_frame_start = frame_start
         rendered = _render_video_frame(
             pipeline,
             args,
@@ -1258,72 +1046,26 @@ def _run_video_benchmark_torch_async(
             ray_cache,
         )
 
-        if pending is not None and readback_ring.ring_depth <= 1:
-            last_completion_time = _complete_torch_async_video_readback(
-                pending,
-                args,
-                rows,
-                rolling_window_ms,
-                frame_dir,
-                delivery_request=delivery_request,
-                first_frame_start=first_frame_start,
-                last_completion_time=last_completion_time,
-                latest_rendered_frame_index=frame_index,
-                ring_block_count=1,
-            )
-            pending = None
+        for completed in delivery.complete_available(latest_rendered_frame_index=rendered.frame_index):
+            _record_delivered_video_frame(rows, row_builder, completed, args)
+        completed = delivery.submit(rendered, frame_start=frame_start)
+        if completed is not None:
+            _record_delivered_video_frame(rows, row_builder, completed, args)
+        for completed in delivery.complete_available(latest_rendered_frame_index=rendered.frame_index):
+            _record_delivered_video_frame(rows, row_builder, completed, args)
 
-        job = _submit_torch_async_video_readback(
-            readback_ring,
-            rendered.result,
-            frame_index=frame_index,
-            frame_start=frame_start,
-            camera=rendered.camera,
-            geometry_mode=rendered.geometry_mode,
-            render_execute_ms=rendered.render_execute_ms,
-            pack_rgb8_ms=rendered.pack_rgb8_ms,
-            render_profile_row=rendered.render_profile_row,
-            camera_rays_ms=rendered.camera_rays_ms,
-            prepare_timing=rendered.prepare_timing,
-        )
-        if pending is not None:
-            last_completion_time = _complete_torch_async_video_readback(
-                pending,
-                args,
-                rows,
-                rolling_window_ms,
-                frame_dir,
-                delivery_request=delivery_request,
-                first_frame_start=first_frame_start,
-                last_completion_time=last_completion_time,
-                latest_rendered_frame_index=frame_index,
-                ring_block_count=0,
-            )
-        pending = job
-
-    if pending is not None:
-        last_completion_time = _complete_torch_async_video_readback(
-            pending,
-            args,
-            rows,
-            rolling_window_ms,
-            frame_dir,
-            delivery_request=delivery_request,
-            first_frame_start=first_frame_start if first_frame_start is not None else time.perf_counter(),
-            last_completion_time=last_completion_time,
-            latest_rendered_frame_index=max(int(args.video_frames) - 1, 0),
-            ring_block_count=0,
-        )
+    for completed in delivery.flush():
+        _record_delivered_video_frame(rows, row_builder, completed, args)
 
     rows.write_csv()
     return rows
 
 
-def _prepare_torch_async_readback_ring(
+def _build_torch_async_warmup_result(
     pipeline: Go2RenderPipeline,
     args: argparse.Namespace,
     delivery_request: DeliveryRequest,
-) -> TorchAsyncReadbackRing:
+) -> tuple[object, bool]:
     session = pipeline.session
     warmup_camera = _build_video_camera(session.scene, args, 0)
     warmup_request = _video_render_request(
@@ -1336,173 +1078,22 @@ def _prepare_torch_async_readback_ring(
     )
     warmup_frame = pipeline.begin_frame(env_idx=warmup_camera.env_idx)
     warmup_result = warmup_frame.render(warmup_request).compute
-    if delivery_request.payload is RuntimeReadbackPayload.RGB8:
-        warmup_result = session.pack_rgb8(warmup_result)
-        wp.synchronize_event(warmup_result.ready_event)
-    return TorchAsyncReadbackRing.from_warmup_result(
-        warmup_result,
-        channels=_video_readback_channels(
-            delivery_request.payload.value,
-            include_shadow_traversal_stats=_include_shadow_traversal_stats(warmup_request),
-        ),
-        ring_depth=delivery_request.ring_depth,
-    )
+    return warmup_result, _include_shadow_traversal_stats(warmup_request)
 
 
-def _submit_torch_async_video_readback(
-    readback_ring: TorchAsyncReadbackRing,
-    result,
-    *,
-    frame_index: int,
-    frame_start: float,
-    camera: OpticalPinholeCameraSpec,
-    geometry_mode: str,
-    render_execute_ms: float,
-    pack_rgb8_ms: float,
-    render_profile_row: dict[str, float],
-    camera_rays_ms: float,
-    prepare_timing: Mapping[str, float] | None = None,
-) -> _AsyncVideoReadbackJob:
-    readback_job = readback_ring.submit(result, frame_index=frame_index)
-    return _AsyncVideoReadbackJob(
-        frame_index=frame_index,
-        frame_start=frame_start,
-        camera=camera,
-        geometry_mode=geometry_mode,
-        render_execute_ms=render_execute_ms,
-        pack_rgb8_ms=pack_rgb8_ms,
-        render_profile_row=render_profile_row,
-        camera_rays_ms=camera_rays_ms,
-        readback_job=readback_job,
-        prepare_timing={} if prepare_timing is None else dict(prepare_timing),
-    )
-
-
-def _complete_torch_async_video_readback(
-    job: _AsyncVideoReadbackJob,
-    args: argparse.Namespace,
+def _record_delivered_video_frame(
     rows: FrameTimingRecorder,
-    rolling_window_ms: list[float],
-    frame_dir: Path,
-    *,
-    delivery_request: DeliveryRequest,
-    first_frame_start: float,
-    last_completion_time: float | None,
-    latest_rendered_frame_index: int,
-    ring_block_count: int,
-) -> float:
-    readback_wait_ms = job.readback_job.synchronize()
-    completion_time = time.perf_counter()
-    readback_copy_ms = job.readback_job.copy_elapsed_ms()
-    host_channels = job.readback_job.host_channels()
-
-    image_build_ms = _NAN
-    encode_or_write_ms = _NAN
-    frame_path = ""
-    if delivery_request.write_policy is RuntimeWritePolicy.PNG_SEQUENCE:
-        image_start = time.perf_counter()
-        rgb_preview = _host_rgb_preview_for_readback(host_channels, delivery_request.payload.value)
-        image_build_ms = (time.perf_counter() - image_start) * 1000.0
-
-        write_start = time.perf_counter()
-        path = frame_dir / f"rgb_{job.frame_index:06d}.png"
-        Image.fromarray(rgb_preview).save(path)
-        encode_or_write_ms = (time.perf_counter() - write_start) * 1000.0
-        frame_path = str(path)
-
-    previous_completion = last_completion_time if last_completion_time is not None else first_frame_start
-    frame_total_ms = (completion_time - previous_completion) * 1000.0
-    rolling_window_ms.append(frame_total_ms)
-    if len(rolling_window_ms) > 30:
-        rolling_window_ms.pop(0)
-    instant_fps = 1000.0 / frame_total_ms if frame_total_ms > 0.0 else float("inf")
-    rolling_fps = (
-        1000.0 * float(len(rolling_window_ms)) / sum(rolling_window_ms)
-        if sum(rolling_window_ms) > 0.0
-        else float("inf")
-    )
-
-    primary_overflow = _staged_scalar(host_channels, "bvh_stack_overflow_count")
-    shadow_overflow = _staged_scalar(host_channels, "shadow_stack_overflow_count")
-    primary_max_stack = _staged_scalar(host_channels, "bvh_max_stack_depth")
-    shadow_max_stack = _staged_scalar(host_channels, "shadow_max_stack_depth")
-    shadow_traversal_fields = _staged_shadow_traversal_fields(host_channels)
-    if args.fail_on_overflow and (primary_overflow or shadow_overflow):
-        raise SystemExit(
-            f"BVH stack overflow detected at frame {job.frame_index}: "
-            f"primary={primary_overflow}, shadow={shadow_overflow}"
-        )
-
-    render_delivery_ms = _render_delivery_ms(
-        render_execute_ms=job.render_execute_ms,
-        pack_rgb8_ms=job.pack_rgb8_ms,
-    )
-    overlap_ratio = _overlap_ratio(
-        observed_ms=frame_total_ms,
-        render_ms=render_delivery_ms,
-        readback_ms=readback_copy_ms,
-    )
-    rows.add(
-        {
-            "frame_index": job.frame_index,
-            "sim_time": job.camera.sim_time,
-            "video_time": float(job.frame_index) / float(args.video_fps),
-            "geometry_mode": job.geometry_mode,
-            "delivery_policy": "torch_async",
-            "raygen_mode": args.video_raygen,
-            "ray_cache_mode": args.video_ray_cache,
-            "readback_mode": f"torch_async_{delivery_request.payload.value}",
-            "write_mode": (
-                "rgb_png" if delivery_request.write_policy is RuntimeWritePolicy.PNG_SEQUENCE else "none"
-            ),
-            "camera_rays_ms": job.camera_rays_ms,
-            "snapshot_ms": _prepare_timing_value(job.prepare_timing, "snapshot_ms"),
-            "accel_refit_ms": _prepare_timing_value(job.prepare_timing, "accel_refit_ms"),
-            "accel_rebuild_ms": _prepare_timing_value(job.prepare_timing, "accel_rebuild_ms"),
-            "render_execute_ms": job.render_execute_ms,
-            "pack_rgb8_ms": job.pack_rgb8_ms,
-            **job.render_profile_row,
-            "readback_submit_ms": job.readback_job.submit_ms,
-            "readback_wait_ms": readback_wait_ms,
-            "readback_host_ms": readback_copy_ms,
-            "image_build_ms": image_build_ms,
-            "encode_or_write_ms": encode_or_write_ms,
-            "frame_total_ms": frame_total_ms,
-            "instant_fps": instant_fps,
-            "rolling_fps": rolling_fps,
-            "primary_overflow": primary_overflow,
-            "shadow_overflow": shadow_overflow,
-            "primary_max_stack": primary_max_stack,
-            "shadow_max_stack": shadow_max_stack,
-            **shadow_traversal_fields,
-            "readback_lag_frames": max(int(latest_rendered_frame_index) - int(job.frame_index), 0),
-            "readback_ring_depth": delivery_request.ring_depth,
-            "readback_ring_block_count": int(ring_block_count),
-            "completed_frame_index": job.frame_index,
-            "overlap_ratio": overlap_ratio,
-            "frame_path": frame_path,
-        }
-    )
+    row_builder: VideoFrameTimingRowBuilder,
+    delivered,
+    args: argparse.Namespace,
+) -> None:
+    rows.add(row_builder.build_row(delivered))
     if args.progress_every > 0 and (
-        job.frame_index == 0
-        or (job.frame_index + 1) % int(args.progress_every) == 0
-        or job.frame_index + 1 == int(args.video_frames)
+        delivered.completed_frame_index == 0
+        or (delivered.completed_frame_index + 1) % int(args.progress_every) == 0
+        or delivered.completed_frame_index + 1 == int(args.video_frames)
     ):
-        print(
-            "  video_frame "
-            f"{job.frame_index + 1}/{args.video_frames}: "
-            f"total={frame_total_ms:.3f}ms, "
-            f"render={job.render_execute_ms:.3f}ms, "
-            f"{_format_pack_rgb8(job.pack_rgb8_ms)}"
-            f"{_format_render_profile(job.render_profile_row)}"
-            f"readback={readback_copy_ms:.3f}ms, "
-            f"submit={job.readback_job.submit_ms:.3f}ms, wait={readback_wait_ms:.3f}ms, "
-            f"lag={max(int(latest_rendered_frame_index) - int(job.frame_index), 0)}, "
-            f"overlap={_format_ratio(overlap_ratio)}, "
-            f"fps={instant_fps:.2f}, rolling_fps={rolling_fps:.2f}, "
-            f"overflow=({_format_scalar(primary_overflow)},{_format_scalar(shadow_overflow)})"
-        )
-    return completion_time
+        print(row_builder.progress_line(delivered))
 
 
 def _precompute_video_camera_rays(
@@ -1523,25 +1114,6 @@ def _precompute_video_camera_rays(
     return ray_cache
 
 
-def _readback_video_result(
-    result,
-    readback_mode: str,
-    *,
-    include_shadow_traversal_stats: bool = False,
-) -> dict[str, np.ndarray]:
-    if readback_mode == "none":
-        return {}
-    channels = _video_readback_channels(
-        readback_mode,
-        include_shadow_traversal_stats=include_shadow_traversal_stats,
-    )
-    if readback_mode == "rgb":
-        return stage_optical_channels(result, channels, canonical_dtypes=False)
-    if readback_mode == "rgb8":
-        return stage_optical_channels(result, channels, canonical_dtypes=False)
-    return stage_optical_compute_result_to_host(result).channels
-
-
 def _video_output_profile(readback_mode: str) -> OpticalOutputProfile:
     if readback_mode in ("rgb", "rgb8"):
         return OpticalOutputProfile.RGB_PREVIEW
@@ -1555,13 +1127,10 @@ def _video_readback_channels(
     *,
     include_shadow_traversal_stats: bool = False,
 ) -> tuple[str, ...]:
-    if readback_mode == "rgb8":
-        channels = _VIDEO_RGB8_CHANNELS
-    else:
-        channels = _VIDEO_RGB_CHANNELS
-    if include_shadow_traversal_stats:
-        channels = channels + _VIDEO_SHADOW_TRAVERSAL_CHANNELS
-    return channels
+    return video_readback_channels(
+        readback_mode,
+        include_shadow_traversal_stats=include_shadow_traversal_stats,
+    )
 
 
 def _pack_video_rgb8(result):
@@ -1592,73 +1161,6 @@ def _render_profile_row(
     if render_execute_ms is not None and matched_phase_count > 0:
         row["render_overhead_ms"] = float(render_execute_ms) - profile_total_ms
     return row
-
-
-def _format_render_profile(row: dict[str, float]) -> str:
-    first_hit = float(row["render_first_hit_kernel_ms"])
-    shade = float(row["render_shade_kernel_ms"])
-    raygen = float(row["render_raygen_kernel_ms"])
-    if math.isnan(first_hit) and math.isnan(shade) and math.isnan(raygen):
-        return ""
-    parts = []
-    if not math.isnan(raygen):
-        parts.append(f"raygen={raygen:.3f}ms")
-    if not math.isnan(first_hit):
-        parts.append(f"first_hit={first_hit:.3f}ms")
-    if not math.isnan(shade):
-        parts.append(f"shade={shade:.3f}ms")
-    return f"profile=({', '.join(parts)}), "
-
-
-def _rgb_array_to_preview_uint8(rgb: np.ndarray) -> np.ndarray:
-    # Benchmark-only RGB writer: keep display conversion identical to preview PNGs
-    # without constructing the full camera image result.
-    return linear_rgb_to_preview_uint8(np.asarray(rgb, dtype=np.float64))
-
-
-def _host_rgb_preview_for_readback(host_channels: dict[str, object], readback_mode: str) -> np.ndarray:
-    if readback_mode == "rgb8":
-        return np.asarray(host_channels["rgb8"], dtype=np.uint8)
-    return _rgb_array_to_preview_uint8(host_channels["rgb"])
-
-
-def _staged_scalar(channels: dict[str, object], name: str) -> float | int:
-    if name not in channels:
-        return _NAN
-    return int(np.asarray(channels[name]).reshape(-1)[0])
-
-
-def _staged_shadow_traversal_fields(channels: dict[str, object]) -> dict[str, float | int]:
-    return {name: _staged_scalar(channels, name) for name in _VIDEO_SHADOW_TRAVERSAL_CHANNELS}
-
-
-def _format_ms(value: float) -> str:
-    return "NaN" if math.isnan(float(value)) else f"{float(value):.3f}ms"
-
-
-def _format_pack_rgb8(value: float) -> str:
-    return "" if math.isnan(float(value)) else f"pack_rgb8={float(value):.3f}ms, "
-
-
-def _render_delivery_ms(*, render_execute_ms: float, pack_rgb8_ms: float) -> float:
-    if math.isnan(float(pack_rgb8_ms)):
-        return float(render_execute_ms)
-    return float(render_execute_ms) + float(pack_rgb8_ms)
-
-
-def _overlap_ratio(*, observed_ms: float, render_ms: float, readback_ms: float) -> float:
-    denominator = float(render_ms) + float(readback_ms)
-    if denominator <= 0.0 or math.isnan(denominator):
-        return _NAN
-    return 1.0 - float(observed_ms) / denominator
-
-
-def _format_ratio(value: float) -> str:
-    return "NaN" if math.isnan(float(value)) else f"{float(value):.3f}"
-
-
-def _format_scalar(value: float | int) -> str:
-    return "NaN" if isinstance(value, float) and math.isnan(value) else str(int(value))
 
 
 def _parse_args() -> argparse.Namespace:
