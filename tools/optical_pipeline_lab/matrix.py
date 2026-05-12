@@ -30,6 +30,8 @@ MATRIX_SUMMARY_FIELDNAMES = (
     "height",
     "shadows",
     "readback_payload",
+    "video_readback_delivery",
+    "video_readback_ring_depth",
     "write_policy",
     "frames",
     "fps_mean",
@@ -43,6 +45,7 @@ MATRIX_SUMMARY_FIELDNAMES = (
 
 AVAILABLE_MATRIX_SUITES = (
     "go2_video_ordered_baseline",
+    "go2_video_delivery_smoke",
     "go2_video_ordered_legacy_960",
 )
 
@@ -56,6 +59,8 @@ class MatrixCase:
     height: int
     readback_payload: ReadbackPayload
     shadows: bool = True
+    video_readback_delivery: str = "sync"
+    video_readback_ring_depth: int = 2
     write_policy: WritePolicy = WritePolicy.NONE
     fail_on_overflow: bool | None = None
 
@@ -179,9 +184,55 @@ def go2_video_ordered_legacy_960_suite(*, include_full_debug: bool = False) -> M
     )
 
 
+def go2_video_delivery_smoke_suite(*, include_full_debug: bool = False) -> MatrixSuite:
+    """Return a small suite that exercises the lab delivery facade modes."""
+    cases = [
+        MatrixCase(
+            name="smoke_160x120_shadow_readback_none_sync",
+            width=160,
+            height=120,
+            readback_payload=ReadbackPayload.NONE,
+            shadows=True,
+        ),
+        MatrixCase(
+            name="smoke_160x120_shadow_readback_rgb_sync",
+            width=160,
+            height=120,
+            readback_payload=ReadbackPayload.RGB,
+            shadows=True,
+        ),
+        MatrixCase(
+            name="smoke_160x120_shadow_readback_rgb8_torch_async_ring2",
+            width=160,
+            height=120,
+            readback_payload=ReadbackPayload.RGB8,
+            shadows=True,
+            video_readback_delivery="torch_async",
+            video_readback_ring_depth=2,
+        ),
+    ]
+    if include_full_debug:
+        cases.append(
+            MatrixCase(
+                name="smoke_160x120_shadow_readback_full_sync",
+                width=160,
+                height=120,
+                readback_payload=ReadbackPayload.FULL,
+                shadows=True,
+            )
+        )
+    return MatrixSuite(
+        name="go2_video_delivery_smoke",
+        preset="go2_video_ordered_static",
+        cases=tuple(cases),
+    )
+
+
 def get_suite(name: str, *, include_full_debug: bool = False) -> MatrixSuite:
     if name == "go2_video_ordered_baseline":
         return go2_video_ordered_baseline_suite(include_full_debug=include_full_debug)
+    if name == "go2_video_delivery_smoke":
+        return go2_video_delivery_smoke_suite(include_full_debug=include_full_debug)
     if name == "go2_video_ordered_legacy_960":
         return go2_video_ordered_legacy_960_suite(include_full_debug=include_full_debug)
     expected = ", ".join(AVAILABLE_MATRIX_SUITES)
@@ -250,6 +301,8 @@ def run_options_for_case(case: MatrixCase, options: MatrixRunOptions) -> LabRunO
         progress_every=options.progress_every,
         video_raygen=options.video_raygen,
         video_ray_cache=options.video_ray_cache,
+        video_readback_delivery=case.video_readback_delivery,
+        video_readback_ring_depth=case.video_readback_ring_depth,
         render_profile=options.render_profile,
         fail_on_overflow=bool(fail_on_overflow),
         verbose_warp=options.verbose_warp,
@@ -311,6 +364,8 @@ def _summary_row_for_case(
         "height": int(config.height),
         "shadows": bool(config.shadows),
         "readback_payload": config.readback_payload.value,
+        "video_readback_delivery": options.video_readback_delivery,
+        "video_readback_ring_depth": int(options.video_readback_ring_depth),
         "write_policy": config.write_policy.value,
         "frames": len(frame_rows) if frame_rows else int(options.frames),
         "fps_mean": _fps_mean(frame_total),

@@ -42,6 +42,7 @@ from tools.optical_pipeline_lab.matrix import (
     MatrixSuite,
     get_suite,
     run_matrix_suite,
+    run_options_for_case,
 )
 from tools.optical_pipeline_lab.presets import get_preset
 from tools.optical_pipeline_lab.reports import format_summary_rows
@@ -1601,6 +1602,50 @@ def test_go2_legacy_960_suite_matches_plan_comparison_cases():
     assert debug_suite.cases[-1].readback_payload is ReadbackPayload.FULL
 
 
+def test_go2_delivery_smoke_suite_covers_sync_and_async_facade_modes():
+    suite = get_suite("go2_video_delivery_smoke")
+
+    assert suite.name == "go2_video_delivery_smoke"
+    assert suite.preset == "go2_video_ordered_static"
+    assert [case.name for case in suite.cases] == [
+        "smoke_160x120_shadow_readback_none_sync",
+        "smoke_160x120_shadow_readback_rgb_sync",
+        "smoke_160x120_shadow_readback_rgb8_torch_async_ring2",
+    ]
+    assert [case.readback_payload for case in suite.cases] == [
+        ReadbackPayload.NONE,
+        ReadbackPayload.RGB,
+        ReadbackPayload.RGB8,
+    ]
+    assert [case.video_readback_delivery for case in suite.cases] == [
+        "sync",
+        "sync",
+        "torch_async",
+    ]
+    assert suite.cases[-1].video_readback_ring_depth == 2
+
+    debug_suite = get_suite("go2_video_delivery_smoke", include_full_debug=True)
+    assert debug_suite.cases[-1].name == "smoke_160x120_shadow_readback_full_sync"
+    assert debug_suite.cases[-1].readback_payload is ReadbackPayload.FULL
+
+
+def test_matrix_case_delivery_options_flow_to_run_options(tmp_path: Path):
+    case = MatrixCase(
+        name="rgb8_async",
+        width=160,
+        height=120,
+        readback_payload=ReadbackPayload.RGB8,
+        video_readback_delivery="torch_async",
+        video_readback_ring_depth=3,
+    )
+
+    options = run_options_for_case(case, MatrixRunOptions(out=tmp_path / "matrix"))
+
+    assert options.video_readback_delivery == "torch_async"
+    assert options.video_readback_ring_depth == 3
+    assert options.fail_on_overflow is True
+
+
 def test_matrix_suite_runs_cases_and_writes_summary(tmp_path: Path):
     suite = MatrixSuite(
         name="tiny_suite",
@@ -1644,6 +1689,7 @@ def test_matrix_suite_runs_cases_and_writes_summary(tmp_path: Path):
     with (tmp_path / "matrix" / "matrix_summary.csv").open(newline="") as f:
         written = list(csv.DictReader(f))
     assert written[0]["case_name"] == "render_only"
+    assert written[0]["video_readback_delivery"] == "sync"
     assert written[1]["case_name"] == "rgb"
 
     suite_config = json.loads((tmp_path / "matrix" / "suite_config.json").read_text())
