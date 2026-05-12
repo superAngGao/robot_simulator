@@ -23,6 +23,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -68,6 +69,7 @@ from optics.render_api import (
 from physics.publish import GpuPublishedFrame
 from physics.spatial import SpatialTransform
 from sensing import OpticalPinholeCameraSpec, build_pinhole_camera_image_result, build_pinhole_camera_rays
+from tools.optical_pipeline_lab import dynamic_frames
 from tools.optical_pipeline_lab.async_readback import (
     TorchAsyncReadbackJob,
     TorchAsyncReadbackRing,
@@ -170,15 +172,17 @@ class Go2RenderSession:
             wp.init()
             device = wp.get_device(args.device)
 
+        scene_preset = getattr(args, "scene_preset", "go2_menagerie_static")
         with timings.measure("import_scene"):
-            scene = import_mjcf_visual_scene(Path(args.model_dir), model_xml=args.model_xml)
+            scene = _build_scene_for_preset(scene_preset, args)
         with timings.measure("gpu_frame_stream"):
-            gpu_frame = _static_gpu_frame(
+            stream = wp.Stream(device=device)
+            gpu_frame = _base_gpu_frame_for_scene(
+                scene_preset,
                 frame_id=scene.frame.frame_id,
                 sim_time=scene.frame.sim_time,
                 device=device,
             )
-            stream = wp.Stream(device=device)
 
         with timings.measure("device_scene_snapshot"):
             cache = DeviceOpticalSceneCache(scene.registry, device=device, stream=stream)
@@ -438,6 +442,7 @@ def render_many_views(args: argparse.Namespace) -> None:
     total_start = time.perf_counter()
     pipeline = Go2RenderPipeline.create(args, timings)
     session = pipeline.session
+    _configure_dynamic_video_frame_inputs(args, session)
     scene = session.scene
 
     out_dir = Path(args.out)
@@ -628,6 +633,83 @@ def _print_video_summary(args: argparse.Namespace, video_rows: FrameTimingRecord
     )
     if video_rows.csv_path is not None:
         print(f"    frame_timing_csv: {video_rows.csv_path}")
+
+
+def _build_scene_for_preset(scene_preset: str, args: argparse.Namespace):
+    if scene_preset == "go2_menagerie_static":
+        return import_mjcf_visual_scene(Path(args.model_dir), model_xml=args.model_xml)
+    if scene_preset == "synthetic_body_triangle":
+        return _synthetic_body_triangle_scene()
+    raise NotImplementedError(
+        f"scene_preset={scene_preset!r} is reserved; use go2_menagerie_static/synthetic_body_triangle for now"
+    )
+
+
+def _synthetic_body_triangle_scene():
+    registry = dynamic_frames.make_body_bound_triangle_registry()
+    return SimpleNamespace(
+        registry=registry,
+        frame=SimpleNamespace(frame_id=0, sim_time=0.0),
+        bounds_min=np.array([-0.35, -0.35, -0.05], dtype=np.float64),
+        bounds_max=np.array([0.45, 0.45, 0.85], dtype=np.float64),
+        num_visual_geoms=1,
+        num_triangles=1,
+    )
+
+
+def _base_gpu_frame_for_scene(
+    scene_preset: str,
+    *,
+    frame_id: int,
+    sim_time: float,
+    device,
+) -> GpuPublishedFrame:
+    if scene_preset == "synthetic_body_triangle":
+        return dynamic_frames.make_gpu_pose_frame(
+            wp_module=wp,
+            translations=np.zeros((1, 1, 3), dtype=np.float32),
+            frame_id=frame_id,
+            sim_time=sim_time,
+            device=device,
+        )
+    return _static_gpu_frame(frame_id=frame_id, sim_time=sim_time, device=device)
+
+
+def _configure_dynamic_video_frame_inputs(args: argparse.Namespace, session: Go2RenderSession) -> None:
+    if getattr(args, "video_frame_inputs", None) is not None:
+        return
+    if getattr(args, "scene_preset", "go2_menagerie_static") != "synthetic_body_triangle":
+        return
+    args.video_frame_inputs = _synthetic_body_triangle_video_frame_inputs(
+        session.gpu_frame,
+        frames=int(args.video_frames),
+        fps=float(args.video_fps),
+    )
+    args.video_geometry_mode = "dynamic_rigid"
+
+
+def _synthetic_body_triangle_video_frame_inputs(
+    base_frame: GpuPublishedFrame,
+    *,
+    frames: int,
+    fps: float,
+) -> list[GpuPublishedFrame]:
+    frame_inputs: list[GpuPublishedFrame] = []
+    sim_dt = 1.0 / fps if fps > 0.0 else 0.0
+    for frame_index in range(max(frames, 0)):
+        z_offset = 0.04 * float(frame_index % 4)
+        frame_inputs.append(
+            dynamic_frames.clone_and_perturb_gpu_published_pose_frame(
+                base_frame,
+                wp_module=wp,
+                translation_offsets={(0, 0): [0.0, 0.0, z_offset]},
+                frame_id=base_frame.frame_id + frame_index,
+                sim_time=base_frame.sim_time + sim_dt * float(frame_index),
+                step_index=base_frame.step_index + frame_index,
+                slot_id=frame_index,
+            )
+        )
+    return frame_inputs
 
 
 def _static_gpu_frame(*, frame_id: int, sim_time: float, device) -> GpuPublishedFrame:

@@ -699,6 +699,17 @@ def test_go2_video_ordered_static_preset_is_currently_implemented():
     config.validate_implemented()
 
 
+def test_synthetic_dynamic_smoke_preset_is_currently_implemented():
+    config = get_preset("synthetic_body_triangle_dynamic_smoke")
+
+    assert config.scenario_family is OpticalLabScenarioFamily.VIDEO_ORDERED_EXPORT
+    assert config.scene_preset == "synthetic_body_triangle"
+    assert config.geometry_mode is GeometryMode.DYNAMIC_RIGID
+    assert config.accel_policy is AccelPolicy.REFIT_EACH_FRAME
+    assert config.readback_payload is ReadbackPayload.RGB
+    config.validate_implemented()
+
+
 def test_default_render_resolution_is_1080p():
     config = OpticalLabScenarioConfig(
         scenario_name="default_resolution",
@@ -981,6 +992,50 @@ def test_lab_runner_translates_go2_preset_to_menagerie_example_args(tmp_path: Pa
     assert args.lab_frame_defaults["scenario_name"] == "go2_video_ordered_static"
     assert args.lab_frame_defaults["device"] == "cuda:1"
     assert args.lab_frame_defaults["readback_payload"] == "rgb"
+
+
+def test_lab_runner_translates_dynamic_smoke_preset_to_video_args(tmp_path: Path):
+    config = get_preset("synthetic_body_triangle_dynamic_smoke")
+    options = LabRunOptions(out=tmp_path / "dynamic", frames=2, progress_every=0)
+
+    args = build_menagerie_example_args(config, options)
+
+    assert args.scene_preset == "synthetic_body_triangle"
+    assert args.bvh_backend == "cpu"
+    assert args.video_mode == "fixed_view"
+    assert args.video_geometry_mode == "dynamic_rigid"
+    assert args.video_readback == "rgb"
+    assert args.no_shadows is True
+    assert args.lab_frame_defaults["scenario_name"] == "synthetic_body_triangle_dynamic_smoke"
+    assert args.lab_frame_defaults["geometry_mode"] == "dynamic_rigid"
+    assert args.lab_frame_defaults["accel_policy"] == "refit_each_frame"
+
+
+def test_go2_backend_configures_synthetic_dynamic_video_frames(monkeypatch: pytest.MonkeyPatch):
+    base_frame = dynamic_frames.make_gpu_pose_frame(
+        wp_module=_FakeWpModule,
+        translations=np.zeros((1, 1, 3), dtype=np.float32),
+        frame_id=20,
+        sim_time=2.0,
+        step_index=20,
+    )
+    args = SimpleNamespace(
+        scene_preset="synthetic_body_triangle",
+        video_frames=3,
+        video_fps=10.0,
+    )
+    monkeypatch.setattr(go2_backend, "wp", _FakeWpModule)
+
+    go2_backend._configure_dynamic_video_frame_inputs(
+        args,
+        SimpleNamespace(gpu_frame=base_frame),
+    )
+
+    assert args.video_geometry_mode == "dynamic_rigid"
+    assert [frame.frame_id for frame in args.video_frame_inputs] == [20, 21, 22]
+    assert [frame.sim_time for frame in args.video_frame_inputs] == pytest.approx([2.0, 2.1, 2.2])
+    assert args.video_frame_inputs[2].x_world_r_wp.numpy()[0, 0].tolist() == pytest.approx([0.0, 0.0, 0.08])
+    assert base_frame.x_world_r_wp.numpy()[0, 0].tolist() == pytest.approx([0.0, 0.0, 0.0])
 
 
 def test_lab_runner_writes_serialized_scenario_config(tmp_path: Path):

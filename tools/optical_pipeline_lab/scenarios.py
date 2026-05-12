@@ -95,6 +95,8 @@ class OpticalLabScenarioConfig:
 
     def validate_implemented(self) -> None:
         """Fail loudly for reserved modes that the lab does not execute yet."""
+        if self._is_implemented_dynamic_smoke():
+            return
         if self.geometry_mode is not GeometryMode.STATIC:
             raise NotImplementedError(
                 f"geometry_mode={self.geometry_mode.value!r} is reserved; use 'static' for now"
@@ -124,3 +126,19 @@ class OpticalLabScenarioConfig:
             raise NotImplementedError(
                 f"write_policy={self.write_policy.value!r} is reserved; use none/png_sequence for now"
             )
+
+    def _is_implemented_dynamic_smoke(self) -> bool:
+        return (
+            self.scene_preset == "synthetic_body_triangle"
+            and self.geometry_mode is GeometryMode.DYNAMIC_RIGID
+            and self.accel_backend is AccelBackend.CPU_BVH
+            and self.accel_policy is AccelPolicy.REFIT_EACH_FRAME
+            and self.render_backend is RenderBackend.WARP_BVH_DIRECT_LIGHT
+            and self.delivery_policy in (DeliveryPolicy.SYNC, DeliveryPolicy.DEVICE_ONLY)
+            and self.readback_payload
+            not in (
+                ReadbackPayload.DIAGNOSTICS,
+                ReadbackPayload.CUSTOM,
+            )
+            and self.write_policy in (WritePolicy.NONE, WritePolicy.PNG_SEQUENCE)
+        )

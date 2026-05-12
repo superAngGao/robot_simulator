@@ -84,9 +84,10 @@ def run_scenario(config: OpticalLabScenarioConfig, options: LabRunOptions) -> No
     render/session boundary is still future work.
     """
     validate_run(config, options)
-    if config.scene_preset != "go2_menagerie_static":
+    if config.scene_preset not in ("go2_menagerie_static", "synthetic_body_triangle"):
         raise NotImplementedError(
-            f"scene_preset={config.scene_preset!r} is reserved; use 'go2_menagerie_static' for now"
+            f"scene_preset={config.scene_preset!r} is reserved; "
+            "use go2_menagerie_static/synthetic_body_triangle for now"
         )
     if config.camera_mode not in ("camera_orbit", "fixed_view"):
         raise NotImplementedError(
@@ -110,6 +111,7 @@ def build_menagerie_example_args(
     return argparse.Namespace(
         model_dir=options.model_dir,
         model_xml=options.model_xml,
+        scene_preset=config.scene_preset,
         device=config.device,
         width=int(config.width),
         height=int(config.height),
@@ -134,6 +136,7 @@ def build_menagerie_example_args(
         video_readback=config.readback_payload.value,
         video_readback_delivery=options.video_readback_delivery,
         video_readback_ring_depth=int(options.video_readback_ring_depth),
+        video_geometry_mode=config.geometry_mode.value,
         frame_timing_csv=str(options.out / "frame_timing.csv"),
         progress_every=int(options.progress_every),
         render_profile=bool(options.render_profile),

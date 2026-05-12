@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from types import SimpleNamespace
 
 import numpy as np
@@ -35,6 +36,8 @@ from physics.spatial import SpatialInertia, SpatialTransform
 from robot.model import RobotModel
 from sensing import OpticalPinholeCameraSpec, OpticalRaySensorSpec, build_pinhole_camera_rays
 from tools.optical_pipeline_lab import dynamic_frames
+from tools.optical_pipeline_lab.presets import get_preset
+from tools.optical_pipeline_lab.runner import LabRunOptions, apply_run_overrides, run_scenario
 
 try:
     import warp as wp
@@ -887,6 +890,38 @@ def test_optical_lab_dynamic_video_loop_writes_prepare_timing_csv(tmp_path):
         assert np.isnan(float(row["accel_rebuild_ms"]))
         assert np.isnan(float(row["readback_host_ms"]))
     assert frame_timing_csv.exists()
+
+
+def test_optical_lab_dynamic_smoke_preset_writes_prepare_timing_csv(tmp_path):
+    config = apply_run_overrides(
+        get_preset("synthetic_body_triangle_dynamic_smoke"),
+        width=64,
+        height=48,
+        readback="none",
+    )
+    run_scenario(
+        config,
+        LabRunOptions(
+            out=tmp_path / "dynamic_preset",
+            frames=2,
+            warmup_renders=0,
+            progress_every=0,
+            fail_on_overflow=False,
+        ),
+    )
+
+    frame_timing_csv = tmp_path / "dynamic_preset" / "frame_timing.csv"
+    with frame_timing_csv.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+
+    assert len(rows) == 2
+    for row in rows:
+        assert row["scenario_name"] == "synthetic_body_triangle_dynamic_smoke"
+        assert row["scene_preset"] == "synthetic_body_triangle"
+        assert row["geometry_mode"] == "dynamic_rigid"
+        assert float(row["snapshot_ms"]) >= 0.0
+        assert float(row["accel_refit_ms"]) >= 0.0
+        assert np.isnan(float(row["accel_rebuild_ms"]))
 
 
 def test_device_scene_packs_materials_and_lights_for_gpu_shading():

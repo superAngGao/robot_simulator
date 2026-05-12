@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from optics import OpticalInstanceSpec, OpticalMaterialSpec, OpticalWorldRegistry
+from optics import OpticalInstanceSpec, OpticalLightSpec, OpticalMaterialSpec, OpticalWorldRegistry
 from physics.publish import GpuPublishedFrame
 from physics.spatial import SpatialTransform
 
@@ -20,7 +20,15 @@ def make_body_bound_triangle_registry(
     """Build a tiny body-bound optical scene for dynamic smoke tests."""
 
     registry = OpticalWorldRegistry()
-    registry.add_material(OpticalMaterialSpec("mat_body"))
+    registry.add_material(OpticalMaterialSpec("mat_body", albedo_rgb=(0.9, 0.35, 0.2)))
+    registry.add_light(
+        OpticalLightSpec(
+            "dynamic_smoke_sun",
+            "directional",
+            position_or_direction_world=[0.1, -0.2, 1.0],
+            intensity=1.5,
+        )
+    )
     registry.add_triangle_mesh_geometry(
         "body_tri",
         vertices_local=[
