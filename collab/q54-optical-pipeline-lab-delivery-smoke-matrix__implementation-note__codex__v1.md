@@ -59,3 +59,10 @@ python -m tools.optical_pipeline_lab matrix --help
 ```
 
 The help output lists `go2_video_delivery_smoke` in the accepted matrix suites.
+
+## Follow-up
+
+The unit CLI dispatch test now routes `--suite go2_video_delivery_smoke
+--include-full-debug` through `tools.optical_pipeline_lab.__main__` and asserts
+that the suite passed to `run_matrix_suite(...)` includes both the torch async
+RGB8 case and the full debug case.

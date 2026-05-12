@@ -1746,7 +1746,7 @@ def test_cli_matrix_dispatches_to_runner(tmp_path: Path, monkeypatch: pytest.Mon
             "optical_pipeline_lab",
             "matrix",
             "--suite",
-            "go2_video_ordered_baseline",
+            "go2_video_delivery_smoke",
             "--out",
             str(tmp_path / "matrix"),
             "--device",
@@ -1761,7 +1761,8 @@ def test_cli_matrix_dispatches_to_runner(tmp_path: Path, monkeypatch: pytest.Mon
 
     assert len(calls) == 1
     suite, options = calls[0]
-    assert suite.name == "go2_video_ordered_baseline"
+    assert suite.name == "go2_video_delivery_smoke"
+    assert suite.cases[-2].video_readback_delivery == "torch_async"
     assert suite.cases[-1].readback_payload.value == "full"
     assert options.out == tmp_path / "matrix"
     assert options.device == "cuda:1"
