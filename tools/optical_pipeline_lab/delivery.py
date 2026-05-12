@@ -405,6 +405,7 @@ class VideoFrameTimingRowBuilder:
         rendered = delivered.rendered
         frame_total_ms = float(delivered.observed_frame_ms)
         self.rolling_window_ms.append(frame_total_ms)
+        # Match the existing lab rolling FPS window used before the facade split.
         if len(self.rolling_window_ms) > 30:
             self.rolling_window_ms.pop(0)
         instant_fps = 1000.0 / frame_total_ms if frame_total_ms > 0.0 else float("inf")
@@ -516,9 +517,9 @@ class VideoFrameTimingRowBuilder:
 
     @property
     def _payload_value(self) -> str:
-        # Set by `bind_request`; kept separate so row building can remain
-        # stateful without carrying the whole runtime request in each row.
-        return getattr(self, "_bound_payload_value", "none")
+        if not hasattr(self, "_bound_payload_value"):
+            raise RuntimeError("VideoFrameTimingRowBuilder.bind_request() must be called before build_row()")
+        return self._bound_payload_value
 
     def bind_request(self, request: DeliveryRequest) -> "VideoFrameTimingRowBuilder":
         self._bound_payload_value = request.payload.value

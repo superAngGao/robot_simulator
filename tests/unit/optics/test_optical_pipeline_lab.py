@@ -15,6 +15,7 @@ import tools.optical_pipeline_lab.dynamic_frames as dynamic_frames
 import tools.optical_pipeline_lab.go2_backend as go2_backend
 import tools.optical_pipeline_lab.rgb_pack as rgb_pack
 from optics.render_api import DeliveryPolicy as RuntimeDeliveryPolicy
+from optics.render_api import DeliveryTimingSummary
 from optics.render_api import OpticalRenderPipeline as RuntimeOpticalRenderPipeline
 from optics.render_api import ReadbackPayload as RuntimeReadbackPayload
 from optics.render_api import RenderBackend as RuntimeRenderBackend
@@ -832,6 +833,185 @@ def test_torch_async_delivery_facade_reports_ring_depth_blocking_modes(tmp_path:
     assert [frame.completed_frame_index for frame in completed] == [0]
     assert completed[0].readback_ring_depth == 2
     assert completed[0].readback_ring_block_count == 0
+
+
+def test_torch_async_delivery_facade_flush_completes_pending_frame(tmp_path: Path):
+    request = delivery.video_delivery_request(
+        readback_mode="rgb",
+        delivery_mode="torch_async",
+        ring_depth=2,
+        write_frames=False,
+    )
+
+    class FakeJob:
+        submit_ms = 0.1
+
+        def synchronize(self):
+            return 0.2
+
+        def copy_elapsed_ms(self):
+            return 0.3
+
+        def host_channels(self):
+            return {
+                "rgb": np.zeros((1, 3), dtype=np.float32),
+                "bvh_stack_overflow_count": np.array([0], dtype=np.int32),
+                "shadow_stack_overflow_count": np.array([0], dtype=np.int32),
+                "bvh_max_stack_depth": np.array([1], dtype=np.int32),
+                "shadow_max_stack_depth": np.array([1], dtype=np.int32),
+            }
+
+    class FakeRing:
+        ring_depth = 2
+
+        def submit(self, result, *, frame_index: int):
+            return FakeJob()
+
+    facade = delivery.VideoDeliveryFacade(
+        request=request,
+        delivery_policy_label="torch_async",
+        frame_dir=tmp_path,
+        pack_rgb8=lambda result: result,
+        synchronize_event=lambda event: None,
+        readback_ring=FakeRing(),
+    )
+    rendered = delivery.RenderedVideoFrame(
+        frame_index=0,
+        camera=SimpleNamespace(sim_time=0.0),
+        result=object(),
+        camera_rays_ms=float("nan"),
+        render_execute_ms=1.0,
+        render_profile_row=go2_backend._render_profile_row(None),
+        include_shadow_traversal_stats=False,
+    )
+
+    assert facade.submit(rendered, frame_start=1.0) is None
+    completed = facade.flush()
+
+    assert [frame.completed_frame_index for frame in completed] == [0]
+    assert completed[0].readback_ring_depth == 2
+    assert completed[0].readback_ring_block_count == 0
+    assert completed[0].delivery_timing.readback_submit_ms == 0.1
+    assert completed[0].delivery_timing.readback_wait_ms == 0.2
+    assert completed[0].delivery_timing.readback_host_ms == 0.3
+
+
+def test_video_frame_timing_row_builder_requires_bound_request():
+    builder = delivery.VideoFrameTimingRowBuilder(
+        delivery.VideoDeliveryRunConfig(
+            video_fps=30.0,
+            video_frames=1,
+            video_raygen="gpu",
+            video_ray_cache="off",
+            delivery_policy_label="sync",
+            fail_on_overflow=False,
+        )
+    )
+    rendered = delivery.RenderedVideoFrame(
+        frame_index=0,
+        camera=SimpleNamespace(sim_time=0.0),
+        result=object(),
+        camera_rays_ms=float("nan"),
+        render_execute_ms=1.0,
+        render_profile_row=go2_backend._render_profile_row(None),
+        include_shadow_traversal_stats=False,
+    )
+    delivered = delivery.DeliveredVideoFrame(
+        rendered=rendered,
+        completed_frame_index=0,
+        host_channels={},
+        delivery_timing=DeliveryTimingSummary(),
+        observed_frame_ms=1.0,
+    )
+
+    with pytest.raises(RuntimeError, match="bind_request"):
+        builder.build_row(delivered)
+
+
+def test_video_frame_timing_row_builder_torch_async_row_and_progress():
+    request = delivery.video_delivery_request(
+        readback_mode="rgb",
+        delivery_mode="torch_async",
+        ring_depth=2,
+        write_frames=False,
+    )
+    builder = delivery.VideoFrameTimingRowBuilder(
+        delivery.VideoDeliveryRunConfig(
+            video_fps=20.0,
+            video_frames=4,
+            video_raygen="gpu",
+            video_ray_cache="off",
+            delivery_policy_label="torch_async",
+            fail_on_overflow=False,
+        )
+    ).bind_request(request)
+    render_profile = go2_backend._render_profile_row(
+        [("raygen_kernel", 0.1), ("first_hit_kernel_ms", 0.2), ("shade_kernel", 0.3)],
+        render_execute_ms=1.0,
+    )
+    rendered = delivery.RenderedVideoFrame(
+        frame_index=1,
+        camera=SimpleNamespace(sim_time=0.05),
+        result=object(),
+        camera_rays_ms=float("nan"),
+        render_execute_ms=1.0,
+        render_profile_row=render_profile,
+        include_shadow_traversal_stats=True,
+        geometry_mode="dynamic_rigid",
+        prepare_timing={
+            "snapshot_ms": 0.4,
+            "accel_refit_ms": 0.5,
+            "accel_rebuild_ms": float("nan"),
+        },
+    )
+    host_channels = {
+        "rgb": np.zeros((1, 3), dtype=np.float32),
+        "bvh_stack_overflow_count": np.array([0], dtype=np.int32),
+        "shadow_stack_overflow_count": np.array([0], dtype=np.int32),
+        "bvh_max_stack_depth": np.array([2], dtype=np.int32),
+        "shadow_max_stack_depth": np.array([3], dtype=np.int32),
+        "shadow_traversal_ray_count": np.array([4], dtype=np.int32),
+        "shadow_traversal_triangle_test_count": np.array([5], dtype=np.int32),
+    }
+    delivered = delivery.DeliveredVideoFrame(
+        rendered=rendered,
+        completed_frame_index=1,
+        host_channels=host_channels,
+        delivery_timing=DeliveryTimingSummary(
+            pack_rgb8_ms=0.6,
+            readback_submit_ms=0.7,
+            readback_wait_ms=0.8,
+            readback_host_ms=0.9,
+            image_build_ms=float("nan"),
+            encode_write_ms=float("nan"),
+        ),
+        observed_frame_ms=2.0,
+        readback_lag_frames=1,
+        readback_ring_depth=2,
+        readback_ring_block_count=0,
+        overlap_ratio=0.25,
+    )
+
+    row = builder.build_row(delivered)
+    progress = builder.progress_line(delivered)
+
+    assert row["frame_index"] == 1
+    assert row["completed_frame_index"] == 1
+    assert row["delivery_policy"] == "torch_async"
+    assert row["readback_mode"] == "torch_async_rgb"
+    assert row["geometry_mode"] == "dynamic_rigid"
+    assert row["snapshot_ms"] == 0.4
+    assert row["accel_refit_ms"] == 0.5
+    assert row["pack_rgb8_ms"] == 0.6
+    assert row["readback_lag_frames"] == 1
+    assert row["readback_ring_depth"] == 2
+    assert row["readback_ring_block_count"] == 0
+    assert row["overlap_ratio"] == 0.25
+    assert row["shadow_traversal_ray_count"] == 4
+    assert row["shadow_traversal_triangle_test_count"] == 5
+    assert "pack_rgb8=0.600ms" in progress
+    assert "overlap=0.250" in progress
+    assert "lag=1" in progress
 
 
 def test_video_readback_channels_include_shadow_traversal_stats_only_when_requested():
