@@ -241,3 +241,25 @@ Q2: keep render_profile_row stored for now
 Q3: yes, property is acceptable during transition
 Q4: yes, keep overlap-ratio validation separate from smoke
 ```
+
+## Claude Review Result
+
+Claude review: PASS / proceed with the conservative R3b.1 path.
+
+Accepted follow-ups:
+
+```text
+1. Keep the current RenderedVideoFrame name.
+2. Add render: RenderResult | None = None at the end of the dataclass.
+3. Keep result as the existing required field for now so unit tests with
+   result=object() do not churn.
+4. Have the production _render_video_frame(...) path fill render=render_result.
+5. Keep render_profile_row stored; do not derive it in this slice.
+6. Do not turn result into a compatibility property until a later slice.
+7. When render_execute_ms becomes a property later, use explicit fallback:
+   render.render_timing.execute_ms, then render.timing["render_execute_ms"],
+   then the stored fallback field. Do not rely on truthiness because NaN and
+   None have different meanings.
+8. Keep overlap-ratio validation out of the smoke matrix unless a separate
+   longer-run case is added.
+```

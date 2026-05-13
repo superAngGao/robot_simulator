@@ -322,13 +322,14 @@ def test_render_video_frame_passes_dynamic_frame_inputs(monkeypatch: pytest.Monk
 
         def render(self, request):
             captured["request"] = request
-            return RuntimeRenderResult(
+            captured["render_result"] = RuntimeRenderResult(
                 compute=compute,
                 timing={
                     "render_execute_ms": 3.0,
                     **go2_backend._render_profile_row(None),
                 },
             )
+            return captured["render_result"]
 
     class FakePipeline:
         session = SimpleNamespace(scene=object())
@@ -363,6 +364,8 @@ def test_render_video_frame_passes_dynamic_frame_inputs(monkeypatch: pytest.Monk
     assert rendered.geometry_mode == "dynamic_rigid"
     assert rendered.prepare_timing["snapshot_ms"] == 1.0
     assert rendered.render_execute_ms == 3.0
+    assert rendered.render is captured["render_result"]
+    assert rendered.result is compute
 
 
 def test_go2_pipeline_static_begin_frame_accepts_session_frame_inputs():

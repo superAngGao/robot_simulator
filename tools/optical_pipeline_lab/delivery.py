@@ -25,6 +25,9 @@ from optics.render_api import (
     ReadbackPayload as RuntimeReadbackPayload,
 )
 from optics.render_api import (
+    RenderResult as RuntimeRenderResult,
+)
+from optics.render_api import (
     WritePolicy as RuntimeWritePolicy,
 )
 from tools.optical_pipeline_lab.async_readback import (
@@ -74,6 +77,7 @@ class RenderedVideoFrame:
     include_shadow_traversal_stats: bool
     geometry_mode: str = "static"
     prepare_timing: Mapping[str, float] = field(default_factory=dict)
+    render: RuntimeRenderResult | None = None
 
 
 @dataclass

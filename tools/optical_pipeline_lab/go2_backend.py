@@ -882,6 +882,7 @@ def _render_video_frame(
         include_shadow_traversal_stats=_include_shadow_traversal_stats(render_request),
         geometry_mode=_video_geometry_mode(args, frame_inputs=frame_inputs),
         prepare_timing=prepare_timing,
+        render=render_result,
     )
 
 
