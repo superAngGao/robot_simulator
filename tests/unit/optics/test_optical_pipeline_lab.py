@@ -13,6 +13,7 @@ import tools.optical_pipeline_lab.async_readback as async_readback
 import tools.optical_pipeline_lab.delivery as delivery
 import tools.optical_pipeline_lab.dynamic_frames as dynamic_frames
 import tools.optical_pipeline_lab.go2_backend as go2_backend
+import tools.optical_pipeline_lab.go2_session as go2_session
 import tools.optical_pipeline_lab.rgb_pack as rgb_pack
 from optics.render_api import DeliveryPolicy as RuntimeDeliveryPolicy
 from optics.render_api import DeliveryResult as RuntimeDeliveryResult
@@ -246,9 +247,114 @@ def test_render_request_diagnostics_drive_profile_buffer_and_traversal_readback(
     assert go2_backend._include_shadow_traversal_stats(request) is False
 
 
+def test_go2_pipeline_create_uses_backend_callback_boundary(monkeypatch: pytest.MonkeyPatch):
+    scene = SimpleNamespace(
+        registry=object(),
+        frame=SimpleNamespace(frame_id=7, sim_time=0.7),
+    )
+    gpu_frame = object()
+    snapshot = object()
+    bvh = SimpleNamespace(stats=SimpleNamespace(detail_ms=[]))
+
+    class FakeWp:
+        config = SimpleNamespace(quiet=False)
+
+        class Stream:
+            def __init__(self, *, device):
+                self.device = device
+
+        @staticmethod
+        def init():
+            return None
+
+        @staticmethod
+        def get_device(device):
+            return f"device:{device}"
+
+    class FakeCache:
+        def __init__(self, registry, *, device, stream):
+            self.registry = registry
+            self.device = device
+            self.stream = stream
+
+        def snapshot_from_gpu_frame(self, frame, *, env_idx, stream, include_aabb):
+            assert frame is gpu_frame
+            assert env_idx == 0
+            assert stream is self.stream
+            assert include_aabb is True
+            return snapshot
+
+    class FakeExecutor:
+        def __init__(self, *, device, stream, shadows, ambient_rgb, background_rgb):
+            self.device = device
+            self.stream = stream
+            self.shadows = shadows
+            self.ambient_rgb = ambient_rgb
+            self.background_rgb = background_rgb
+
+    def fake_scene_factory(scene_preset, args):
+        assert scene_preset == "synthetic"
+        assert args.scene_preset == "synthetic"
+        return scene
+
+    def fake_gpu_frame_factory(scene_preset, *, frame_id, sim_time, device):
+        assert scene_preset == "synthetic"
+        assert frame_id == 7
+        assert sim_time == 0.7
+        assert device == "device:cuda:fake"
+        return gpu_frame
+
+    def fake_build_bvh(snapshot_arg, *, device, stream, split_strategy):
+        assert snapshot_arg is snapshot
+        assert device == "device:cuda:fake"
+        assert split_strategy == "partition"
+        assert stream.device == "device:cuda:fake"
+        return bvh
+
+    monkeypatch.setattr(go2_session, "wp", FakeWp)
+    monkeypatch.setattr(go2_session, "DeviceOpticalSceneCache", FakeCache)
+    monkeypatch.setattr(go2_session, "build_device_bvh_from_snapshot", fake_build_bvh)
+    monkeypatch.setattr(go2_session, "GpuDeviceBvhDirectLightOpticalExecutor", FakeExecutor)
+
+    def profile_buffer(request):
+        return []
+
+    def profile_row(render_profile, *, render_execute_ms=None):
+        return {"render_overhead_ms": 0.0}
+
+    def pack_rgb8(result):
+        return ("packed", result)
+
+    pipeline = go2_backend.Go2RenderPipeline.create(
+        SimpleNamespace(
+            verbose_warp=False,
+            device="cuda:fake",
+            scene_preset="synthetic",
+            bvh_backend="cpu",
+            bvh_split_strategy="partition",
+            no_shadows=True,
+        ),
+        go2_backend.TimingRecorder(),
+        scene_factory=fake_scene_factory,
+        base_gpu_frame_factory=fake_gpu_frame_factory,
+        pack_rgb8=pack_rgb8,
+        render_profile_buffer_for_request=profile_buffer,
+        render_profile_row=profile_row,
+    )
+
+    assert pipeline.session.scene is scene
+    assert pipeline.session.gpu_frame is gpu_frame
+    assert pipeline.session.snapshot is snapshot
+    assert pipeline.session.bvh is bvh
+    assert pipeline.session.executor.shadows is False
+    assert pipeline.session.pack_rgb8("rgb") == ("packed", "rgb")
+    assert pipeline.session.render_profile_buffer_for_request is profile_buffer
+    assert pipeline.session.render_profile_row is profile_row
+
+
 def test_go2_pipeline_frame_context_wraps_render_result(monkeypatch: pytest.MonkeyPatch):
     compute = SimpleNamespace(ready_event=object())
-    monkeypatch.setattr(go2_backend, "wp", SimpleNamespace(synchronize_event=lambda event: None))
+    monkeypatch.setattr(go2_session, "wp", SimpleNamespace(synchronize_event=lambda event: None))
 
     class FakeSession:
         scene = SimpleNamespace(frame=SimpleNamespace(frame_id=4, sim_time=0.2))
@@ -414,11 +520,11 @@ def test_go2_pipeline_dynamic_begin_frame_refits_frame_specific_snapshot(monkeyp
         bvh_split_strategy="sort",
     )
     monkeypatch.setattr(
-        go2_backend,
+        go2_session,
         "wp",
         SimpleNamespace(synchronize_event=lambda event: sync_events.append(event)),
     )
-    monkeypatch.setattr(go2_backend, "refit_device_bvh_from_snapshot", fake_refit)
+    monkeypatch.setattr(go2_session, "refit_device_bvh_from_snapshot", fake_refit)
 
     frame = go2_backend.Go2RenderPipeline(session=session).begin_frame(
         frame_inputs=frame_inputs,
@@ -462,8 +568,8 @@ def test_go2_pipeline_dynamic_begin_frame_rebuilds_when_refit_is_unavailable(
         bvh_backend="cpu",
         bvh_split_strategy="partition",
     )
-    monkeypatch.setattr(go2_backend, "wp", SimpleNamespace(synchronize_event=lambda event: None))
-    monkeypatch.setattr(go2_backend, "build_device_bvh_from_snapshot", fake_build)
+    monkeypatch.setattr(go2_session, "wp", SimpleNamespace(synchronize_event=lambda event: None))
+    monkeypatch.setattr(go2_session, "build_device_bvh_from_snapshot", fake_build)
 
     frame = go2_backend.Go2RenderPipeline(session=session).begin_frame(
         frame_inputs=frame_inputs,
@@ -502,8 +608,8 @@ def test_go2_pipeline_dynamic_begin_frame_rebuilds_cuda_lbvh_when_configured(
         bvh_backend="cuda_lbvh",
         bvh_split_strategy="partition",
     )
-    monkeypatch.setattr(go2_backend, "wp", SimpleNamespace(synchronize_event=lambda event: None))
-    monkeypatch.setattr(go2_backend, "build_cuda_lbvh_from_snapshot", fake_cuda_build)
+    monkeypatch.setattr(go2_session, "wp", SimpleNamespace(synchronize_event=lambda event: None))
+    monkeypatch.setattr(go2_session, "build_cuda_lbvh_from_snapshot", fake_cuda_build)
 
     frame = go2_backend.Go2RenderPipeline(session=session).begin_frame(
         frame_inputs=object(),
