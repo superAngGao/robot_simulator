@@ -283,3 +283,22 @@ Q4: use the helper in _complete_job too, keeping overlap semantics aligned
 ```
 
 Do not migrate `result` or `render_profile_row` in R3b.2.
+
+## Claude Review Result
+
+Claude review: PASS / proceed with the helper implementation.
+
+Accepted follow-ups:
+
+```text
+1. Implement render_execute_ms_value() now.
+2. render_execute_ms_value() is an acceptable name.
+3. Put the helper on RenderedVideoFrame, because both delivery completion and
+   row/progress builders need it.
+4. Use the helper in _complete_job overlap-ratio input as well as CSV/progress
+   output so the numbers stay aligned.
+5. If render.render_timing exists but execute_ms is NaN, return NaN and do not
+   fall through to render.timing. render_timing being present makes it the
+   authoritative source.
+6. Do not migrate result or render_profile_row in R3b.2.
+```

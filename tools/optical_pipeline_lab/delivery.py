@@ -79,6 +79,15 @@ class RenderedVideoFrame:
     prepare_timing: Mapping[str, float] = field(default_factory=dict)
     render: RuntimeRenderResult | None = None
 
+    def render_execute_ms_value(self) -> float:
+        """Return render execution timing, preferring the runtime RenderResult."""
+
+        if self.render is not None and self.render.render_timing is not None:
+            return float(self.render.render_timing.execute_ms)
+        if self.render is not None:
+            return float(self.render.timing.get("render_execute_ms", _NAN))
+        return float(self.render_execute_ms)
+
 
 @dataclass
 class DeliveredVideoFrame:
@@ -357,7 +366,7 @@ class VideoDeliveryFacade:
         observed_frame_ms = (completion_time - previous_completion) * 1000.0
         self._last_completion_time = completion_time
         render_delivery_ms = _render_delivery_ms(
-            render_execute_ms=job.rendered.render_execute_ms,
+            render_execute_ms=job.rendered.render_execute_ms_value(),
             pack_rgb8_ms=job.delivery_timing.pack_rgb8_ms,
         )
         overlap_ratio = _overlap_ratio(
@@ -463,7 +472,7 @@ class VideoFrameTimingRowBuilder:
             "snapshot_ms": _prepare_timing_value(rendered.prepare_timing, "snapshot_ms"),
             "accel_refit_ms": _prepare_timing_value(rendered.prepare_timing, "accel_refit_ms"),
             "accel_rebuild_ms": _prepare_timing_value(rendered.prepare_timing, "accel_rebuild_ms"),
-            "render_execute_ms": rendered.render_execute_ms,
+            "render_execute_ms": rendered.render_execute_ms_value(),
             "pack_rgb8_ms": delivered.delivery_timing.pack_rgb8_ms,
             **rendered.render_profile_row,
             "readback_submit_ms": delivered.delivery_timing.readback_submit_ms,
@@ -500,7 +509,7 @@ class VideoFrameTimingRowBuilder:
             "  video_frame ",
             f"{delivered.completed_frame_index + 1}/{self.config.video_frames}: ",
             f"total={delivered.observed_frame_ms:.3f}ms, ",
-            f"render={rendered.render_execute_ms:.3f}ms, ",
+            f"render={rendered.render_execute_ms_value():.3f}ms, ",
             format_pack_rgb8(delivered.delivery_timing.pack_rgb8_ms),
             format_render_profile(rendered.render_profile_row),
         ]

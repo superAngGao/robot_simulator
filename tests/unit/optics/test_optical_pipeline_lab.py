@@ -16,7 +16,7 @@ import tools.optical_pipeline_lab.go2_backend as go2_backend
 import tools.optical_pipeline_lab.rgb_pack as rgb_pack
 from optics.render_api import DeliveryPolicy as RuntimeDeliveryPolicy
 from optics.render_api import DeliveryResult as RuntimeDeliveryResult
-from optics.render_api import DeliveryTimingSummary
+from optics.render_api import DeliveryTimingSummary, RenderTimingSummary
 from optics.render_api import OpticalRenderPipeline as RuntimeOpticalRenderPipeline
 from optics.render_api import ReadbackPayload as RuntimeReadbackPayload
 from optics.render_api import RenderBackend as RuntimeRenderBackend
@@ -980,6 +980,60 @@ def test_delivered_video_frame_bridges_to_runtime_delivery_result():
     assert not hasattr(runtime, "overlap_ratio")
 
 
+def test_rendered_video_frame_render_execute_ms_prefers_runtime_timing():
+    compute = SimpleNamespace(ready_event=object())
+    rendered = delivery.RenderedVideoFrame(
+        frame_index=1,
+        camera=SimpleNamespace(sim_time=0.0),
+        result=object(),
+        camera_rays_ms=float("nan"),
+        render_execute_ms=1.0,
+        render_profile_row=go2_backend._render_profile_row(None),
+        include_shadow_traversal_stats=False,
+        render=RuntimeRenderResult(
+            compute=compute,
+            timing={"render_execute_ms": 2.0},
+            render_timing=RenderTimingSummary(execute_ms=3.0),
+        ),
+    )
+
+    assert rendered.render_execute_ms_value() == 3.0
+
+
+def test_rendered_video_frame_render_execute_ms_falls_back_to_runtime_mapping():
+    compute = SimpleNamespace(ready_event=object())
+    rendered = delivery.RenderedVideoFrame(
+        frame_index=1,
+        camera=SimpleNamespace(sim_time=0.0),
+        result=object(),
+        camera_rays_ms=float("nan"),
+        render_execute_ms=1.0,
+        render_profile_row=go2_backend._render_profile_row(None),
+        include_shadow_traversal_stats=False,
+        render=RuntimeRenderResult(
+            compute=compute,
+            timing={"render_execute_ms": 2.0},
+            render_timing=None,
+        ),
+    )
+
+    assert rendered.render_execute_ms_value() == 2.0
+
+
+def test_rendered_video_frame_render_execute_ms_preserves_stored_fallback():
+    rendered = delivery.RenderedVideoFrame(
+        frame_index=1,
+        camera=SimpleNamespace(sim_time=0.0),
+        result=object(),
+        camera_rays_ms=float("nan"),
+        render_execute_ms=1.0,
+        render_profile_row=go2_backend._render_profile_row(None),
+        include_shadow_traversal_stats=False,
+    )
+
+    assert rendered.render_execute_ms_value() == 1.0
+
+
 def test_video_frame_timing_row_builder_torch_async_row_and_progress():
     request = delivery.video_delivery_request(
         readback_mode="rgb",
@@ -1006,7 +1060,7 @@ def test_video_frame_timing_row_builder_torch_async_row_and_progress():
         camera=SimpleNamespace(sim_time=0.05),
         result=object(),
         camera_rays_ms=float("nan"),
-        render_execute_ms=1.0,
+        render_execute_ms=99.0,
         render_profile_row=render_profile,
         include_shadow_traversal_stats=True,
         geometry_mode="dynamic_rigid",
@@ -1015,6 +1069,11 @@ def test_video_frame_timing_row_builder_torch_async_row_and_progress():
             "accel_refit_ms": 0.5,
             "accel_rebuild_ms": float("nan"),
         },
+        render=RuntimeRenderResult(
+            compute=object(),
+            timing={"render_execute_ms": 1.0},
+            render_timing=None,
+        ),
     )
     host_channels = {
         "rgb": np.zeros((1, 3), dtype=np.float32),
