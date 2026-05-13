@@ -59,7 +59,11 @@ _VIDEO_RGB8_CHANNELS = ("rgb8",) + _VIDEO_DIAGNOSTIC_CHANNELS
 
 @dataclass
 class RenderedVideoFrame:
-    """Render-side video frame result handed to delivery."""
+    """Lab video render envelope handed to delivery.
+
+    This carries RenderResult-derived compute/timing plus video-loop metadata;
+    it is not a replacement for the generic runtime RenderResult.
+    """
 
     frame_index: int
     camera: object
