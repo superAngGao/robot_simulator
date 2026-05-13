@@ -19,6 +19,9 @@ from optics.render_api import (
     DeliveryTimingSummary,
 )
 from optics.render_api import (
+    DeliveryResult as RuntimeDeliveryResult,
+)
+from optics.render_api import (
     ReadbackPayload as RuntimeReadbackPayload,
 )
 from optics.render_api import (
@@ -83,6 +86,21 @@ class DeliveredVideoFrame:
     readback_ring_depth: int = 0
     readback_ring_block_count: int = 0
     overlap_ratio: float = _NAN
+
+    def to_runtime_delivery_result(self) -> RuntimeDeliveryResult:
+        """Return the CPU-safe runtime delivery vocabulary for this frame.
+
+        Lab-only analysis and writer fields stay on DeliveredVideoFrame.
+        """
+
+        return RuntimeDeliveryResult(
+            completed_frame_index=self.completed_frame_index,
+            host_channels=self.host_channels,
+            delivery=self.delivery_timing,
+            lag_frames=self.readback_lag_frames,
+            ring_depth=self.readback_ring_depth,
+            ring_block_count=self.readback_ring_block_count,
+        )
 
 
 @dataclass
