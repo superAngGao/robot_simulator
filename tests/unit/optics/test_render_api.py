@@ -5,10 +5,12 @@ from optics.execution import OpticalOutputProfile
 from optics.render_api import (
     DeliveryPolicy,
     DeliveryRequest,
+    DeliveryResult,
     DeliveryTimingSummary,
     FramePrepareTiming,
     FrameResult,
     FrameTimingSummary,
+    OpticalDeliveryRuntime,
     OpticalRenderPipeline,
     ReadbackPayload,
     RenderBackend,
@@ -129,6 +131,59 @@ def test_delivery_request_validates_payload_policy_combinations():
         DeliveryRequest(payload=ReadbackPayload.FULL, policy=DeliveryPolicy.TORCH_ASYNC_ORDERED)
 
 
+def test_delivery_result_uses_completed_frame_identity_and_typed_timing():
+    timing = DeliveryTimingSummary(pack_rgb8_ms=0.2, readback_submit_ms=0.1, readback_host_ms=0.7)
+
+    result = DeliveryResult(
+        completed_frame_index="3",
+        delivery=timing,
+        lag_frames="1",
+        ring_depth="2",
+        ring_block_count="4",
+        backpressure_count="5",
+    )
+
+    assert result.completed_frame_index == 3
+    assert result.frame_index == 3
+    assert result.delivery is timing
+    assert result.delivery.to_flat_mapping()["readback_host_ms"] == 0.7
+    assert result.lag_frames == 1
+    assert result.ring_depth == 2
+    assert result.ring_block_count == 4
+    assert result.backpressure_count == 5
+
+
+def test_delivery_runtime_protocol_keeps_async_completion_point_explicit():
+    request = DeliveryRequest(payload=ReadbackPayload.RGB, policy=DeliveryPolicy.TORCH_ASYNC_ORDERED)
+
+    class FakeDeliveryRuntime:
+        def __init__(self):
+            self._request = request
+            self.latest_rendered_frame_index = None
+
+        @property
+        def request(self):
+            return self._request
+
+        def submit(self, rendered, *, frame_start=None):
+            del rendered, frame_start
+            return None
+
+        def complete_available(self, *, latest_rendered_frame_index=None):
+            self.latest_rendered_frame_index = latest_rendered_frame_index
+            return []
+
+        def flush(self):
+            return [DeliveryResult(completed_frame_index=2)]
+
+    runtime = FakeDeliveryRuntime()
+
+    assert isinstance(runtime, OpticalDeliveryRuntime)
+    assert runtime.complete_available(latest_rendered_frame_index=3) == []
+    assert runtime.latest_rendered_frame_index == 3
+    assert runtime.flush()[0].completed_frame_index == 2
+
+
 def test_timing_summary_blocks_flatten_to_current_csv_vocabulary():
     prepare = FramePrepareTiming(snapshot_ms=1.0, accel_refit_ms=2.0)
     render = RenderTimingSummary.from_flat_mapping(
@@ -175,6 +230,8 @@ def test_pipeline_protocols_are_internal_and_import_safe():
     import optics
 
     assert RenderFrameContext.__name__ == "RenderFrameContext"
+    assert OpticalDeliveryRuntime.__name__ == "OpticalDeliveryRuntime"
     assert OpticalRenderPipeline.__name__ == "OpticalRenderPipeline"
     assert not hasattr(optics, "RenderFrameContext")
+    assert not hasattr(optics, "OpticalDeliveryRuntime")
     assert not hasattr(optics, "OpticalRenderPipeline")

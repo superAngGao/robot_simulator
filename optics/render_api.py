@@ -7,7 +7,7 @@ API adapters without importing Warp, Torch, or lab-specific code.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol, runtime_checkable
@@ -217,18 +217,6 @@ class DeliveryRequest:
 
 
 @dataclass(frozen=True)
-class DeliveryResult:
-    """Delivered host/device result metadata."""
-
-    frame_index: int
-    host_channels: Mapping[str, object] = field(default_factory=dict)
-    device_result: OpticalComputeResult | None = None
-    timing: Mapping[str, float] = field(default_factory=dict)
-    lag_frames: int = 0
-    dropped: bool = False
-
-
-@dataclass(frozen=True)
 class DeliveryTimingSummary:
     """Delivery-owned timing summary."""
 
@@ -250,6 +238,35 @@ class DeliveryTimingSummary:
             "image_build_ms": float(self.image_build_ms),
             "encode_write_ms": float(self.encode_write_ms),
         }
+
+
+@dataclass(frozen=True)
+class DeliveryResult:
+    """Delivered host/device result metadata for a completed frame."""
+
+    completed_frame_index: int
+    host_channels: Mapping[str, object] = field(default_factory=dict)
+    device_result: OpticalComputeResult | None = None
+    delivery: DeliveryTimingSummary = field(default_factory=DeliveryTimingSummary)
+    lag_frames: int = 0
+    ring_depth: int = 0
+    ring_block_count: int = 0
+    dropped: bool = False
+    backpressure_count: int = 0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "completed_frame_index", int(self.completed_frame_index))
+        object.__setattr__(self, "lag_frames", int(self.lag_frames))
+        object.__setattr__(self, "ring_depth", int(self.ring_depth))
+        object.__setattr__(self, "ring_block_count", int(self.ring_block_count))
+        object.__setattr__(self, "backpressure_count", int(self.backpressure_count))
+        object.__setattr__(self, "dropped", bool(self.dropped))
+
+    @property
+    def frame_index(self) -> int:
+        """Transition alias for completed_frame_index."""
+
+        return self.completed_frame_index
 
 
 @dataclass(frozen=True)
@@ -327,6 +344,29 @@ class RenderFrameContext(Protocol):
 
 
 @runtime_checkable
+class OpticalDeliveryRuntime(Protocol):
+    """Explicit delivery runtime contract for sync and async delivery."""
+
+    @property
+    def request(self) -> DeliveryRequest: ...
+
+    def submit(
+        self,
+        rendered: RenderResult,
+        *,
+        frame_start: float | None = None,
+    ) -> DeliveryResult | None: ...
+
+    def complete_available(
+        self,
+        *,
+        latest_rendered_frame_index: int | None = None,
+    ) -> Sequence[DeliveryResult]: ...
+
+    def flush(self) -> Sequence[DeliveryResult]: ...
+
+
+@runtime_checkable
 class OpticalRenderPipeline(Protocol):
     """Long-lived internal optical render pipeline contract."""
 
@@ -337,8 +377,16 @@ class OpticalRenderPipeline(Protocol):
         env_idx: int = 0,
     ) -> RenderFrameContext: ...
 
+    def create_delivery_runtime(
+        self,
+        request: DeliveryRequest,
+    ) -> OpticalDeliveryRuntime: ...
+
     def deliver(
         self,
         rendered: RenderResult,
         request: DeliveryRequest | None = None,
-    ) -> DeliveryResult: ...
+    ) -> DeliveryResult:
+        """Sync-only convenience delivery; async ordered delivery uses a runtime."""
+
+        ...

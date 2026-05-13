@@ -365,6 +365,9 @@ class Go2RenderPipeline:
             split_strategy=self.session.bvh_split_strategy,
         )
 
+    def create_delivery_runtime(self, request: DeliveryRequest):
+        raise NotImplementedError("Go2RenderPipeline delivery remains owned by the lab benchmark loops")
+
     def deliver(
         self,
         rendered: RenderResult,

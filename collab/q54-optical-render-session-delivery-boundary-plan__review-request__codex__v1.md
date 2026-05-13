@@ -129,7 +129,11 @@ class OpticalDeliveryRuntime(Protocol):
         frame_start: float | None = None,
     ) -> DeliveryResult | None: ...
 
-    def complete_available(self) -> Sequence[DeliveryResult]: ...
+    def complete_available(
+        self,
+        *,
+        latest_rendered_frame_index: int | None = None,
+    ) -> Sequence[DeliveryResult]: ...
 
     def flush(self) -> Sequence[DeliveryResult]: ...
 ```
@@ -221,6 +225,9 @@ Inside `tools/optical_pipeline_lab`:
 - add conversion or direct construction of `optics.render_api.DeliveryResult`;
 - keep `DeliveredVideoFrame` if the row builder still needs lab-specific
   fields such as `observed_frame_ms`, `frame_path`, or `overlap_ratio`;
+- explicitly drop lab-only fields from runtime `DeliveryResult`:
+  `observed_frame_ms` remains frame-summary/CSV-row data, `frame_path` remains
+  consumer-adapter/writer data, and `overlap_ratio` remains lab analysis data;
 - ensure CSV output is unchanged.
 
 This slice should be mostly mechanical and testable through existing unit tests.
@@ -367,4 +374,25 @@ Q3: use completed_frame_index explicitly; keep frame_index only as transition
 Q4: use typed DeliveryTimingSummary
 Q5: yes, timing is delivery-owned even if writer code remains an adapter
 Q6: OpticalDeliveryRuntime is acceptable; DeliveryController is also reasonable
+```
+
+## Claude Review Result
+
+Claude review: PASS / green light to implement R1 first.
+
+Accepted follow-ups:
+
+```text
+1. Add OpticalDeliveryRuntime now as an implementation-free protocol.
+2. Keep OpticalRenderPipeline.deliver(...) but document it as sync-only
+   convenience, not the async ordered contract.
+3. Use DeliveryResult.completed_frame_index, with frame_index retained only as
+   a transition alias for one slice.
+4. Replace DeliveryResult.timing with typed DeliveryTimingSummary.
+5. Keep image/write timing delivery-owned.
+6. Use OpticalDeliveryRuntime as the protocol name.
+7. Include latest_rendered_frame_index on complete_available(...), because
+   ring_depth=1 implementations need it.
+8. In R2, explicitly drop DeliveredVideoFrame lab-only fields from runtime
+   DeliveryResult: observed_frame_ms, frame_path, and overlap_ratio.
 ```
