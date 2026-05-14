@@ -2246,6 +2246,11 @@ C4 complete:
   OpticalLabRenderWorkspace owns dynamic frame preparation execution:
   snapshot, refit/rebuild, synchronization, and prepare timing. The pipeline
   still owns static/dynamic frame selection and FrameContext construction.
+
+C5 complete:
+  generic video render-loop helpers now live in video_loop.py. go2_backend.py
+  keeps Go2 source/camera/CLI/reporting ownership plus thin adapters that inject
+  the Go2 camera builder into the generic video loop.
 ```
 
 The remaining `Go2Render*` names are compatibility aliases only. New generic
@@ -2254,9 +2259,9 @@ render foundation work should use `OpticalLabRender*`.
 Recommended next slices:
 
 ```text
-C5 video loop split:
-  later move generic video render/export helpers out of go2_backend.py
-  do not mix this with source/session/workspace foundation changes
+Post-C5 cleanup:
+  remove remaining Go2Render* aliases in a dedicated alias-deletion change
+  continue delivery/runtime extraction separately from Go2 source/camera code
 ```
 
 Names that should remain Go2-specific:
@@ -2694,8 +2699,8 @@ I6/C4 complete:
   move dynamic snapshot/refit/rebuild execution into workspace
   keep FrameContext construction and static/dynamic decision in pipeline
 
-I7/C5 video-loop split:
-  split generic video render/export helpers out of go2_backend.py later
+I7/C5 complete:
+  split generic video render/export helpers out of go2_backend.py
 ```
 
 Stage I is not a public API promotion. `OpticalLabRender*` remains lab-local

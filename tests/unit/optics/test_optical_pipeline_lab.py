@@ -15,6 +15,7 @@ import tools.optical_pipeline_lab.dynamic_frames as dynamic_frames
 import tools.optical_pipeline_lab.go2_backend as go2_backend
 import tools.optical_pipeline_lab.render_session as render_session
 import tools.optical_pipeline_lab.rgb_pack as rgb_pack
+import tools.optical_pipeline_lab.video_loop as video_loop
 from optics.render_api import DeliveryPolicy as RuntimeDeliveryPolicy
 from optics.render_api import DeliveryResult as RuntimeDeliveryResult
 from optics.render_api import DeliveryTimingSummary, RenderTimingSummary
@@ -245,6 +246,13 @@ def test_render_request_diagnostics_drive_profile_buffer_and_traversal_readback(
 
     assert go2_backend._render_profile_buffer_for_request(request) is None
     assert go2_backend._include_shadow_traversal_stats(request) is False
+
+
+def test_go2_video_helper_aliases_delegate_to_generic_video_loop():
+    assert go2_backend._video_render_request is video_loop.video_render_request
+    assert go2_backend._video_delivery_request is video_loop.video_delivery_request_from_options
+    assert go2_backend._render_profile_row is video_loop.render_profile_row
+    assert go2_backend._video_readback_channels is video_loop.video_readback_channels
 
 
 def test_lab_render_source_exposes_base_frame_as_scene_frame():
