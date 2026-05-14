@@ -13,6 +13,7 @@ import tools.optical_pipeline_lab.async_readback as async_readback
 import tools.optical_pipeline_lab.delivery as delivery
 import tools.optical_pipeline_lab.dynamic_frames as dynamic_frames
 import tools.optical_pipeline_lab.go2_backend as go2_backend
+import tools.optical_pipeline_lab.physics_source as physics_source
 import tools.optical_pipeline_lab.render_session as render_session
 import tools.optical_pipeline_lab.rgb_pack as rgb_pack
 import tools.optical_pipeline_lab.video_loop as video_loop
@@ -270,6 +271,29 @@ def test_lab_render_source_exposes_base_frame_as_scene_frame():
     assert source.bounds_min == (-1.0, -2.0, -3.0)
     assert source.bounds_max == (1.0, 2.0, 3.0)
     assert source.metadata["source_kind"] == "unit-test"
+
+
+def test_physics_render_source_wraps_published_frame_scene_view():
+    registry = object()
+    base_frame = SimpleNamespace(frame_id=21, sim_time=2.1)
+
+    source = physics_source.build_physics_render_source(
+        registry=registry,
+        base_frame=base_frame,
+        bounds_min=(-0.1, -0.2, -0.3),
+        bounds_max=(0.4, 0.5, 0.6),
+        metadata={"producer": "gpu_engine"},
+    )
+    scene = physics_source.scene_from_physics_render_source(source)
+
+    assert source.registry is registry
+    assert source.frame is base_frame
+    assert source.metadata["source_kind"] == "physics"
+    assert source.metadata["producer"] == "gpu_engine"
+    assert scene.registry is registry
+    assert scene.frame is base_frame
+    assert scene.bounds_min == (-0.1, -0.2, -0.3)
+    assert scene.bounds_max == (0.4, 0.5, 0.6)
 
 
 def test_lab_render_pipeline_create_from_source_builds_canonical_session(
@@ -662,7 +686,7 @@ def test_lab_render_pipeline_static_begin_frame_accepts_session_frame_inputs():
 
 
 def test_lab_render_pipeline_dynamic_begin_frame_delegates_workspace_prepare():
-    frame_inputs = object()
+    frame_inputs = SimpleNamespace(frame_id=9, sim_time=0.9)
     snapshot = object()
     bvh = object()
 
@@ -710,6 +734,9 @@ def test_lab_render_pipeline_dynamic_begin_frame_delegates_workspace_prepare():
     assert frame.snapshot is snapshot
     assert frame.bvh is bvh
     assert frame.env_idx == 4
+    assert frame.frame is frame_inputs
+    assert frame.frame_id == 9
+    assert frame.sim_time == 0.9
     assert frame.prepare_timing["snapshot_ms"] == 1.0
     assert workspace.calls == [(frame_inputs, 4, "cache", "base_bvh", "cpu", "sort")]
 

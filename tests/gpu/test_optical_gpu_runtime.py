@@ -27,6 +27,7 @@ from optics import (
     refit_device_bvh_from_snapshot,
     stage_optical_compute_result_to_host,
 )
+from optics.render_api import RenderRequest
 from physics.geometry import BodyCollisionGeometry, ShapeInstance, SphereShape
 from physics.joint import FreeJoint
 from physics.merged_model import merge_models
@@ -35,7 +36,7 @@ from physics.robot_tree import Body, RobotTreeNumpy
 from physics.spatial import SpatialInertia, SpatialTransform
 from robot.model import RobotModel
 from sensing import OpticalPinholeCameraSpec, OpticalRaySensorSpec, build_pinhole_camera_rays
-from tools.optical_pipeline_lab import dynamic_frames
+from tools.optical_pipeline_lab import dynamic_frames, physics_source
 from tools.optical_pipeline_lab.presets import get_preset
 from tools.optical_pipeline_lab.runner import LabRunOptions, apply_run_overrides, run_scenario
 
@@ -807,6 +808,95 @@ def test_optical_lab_dynamic_begin_frame_populates_prepare_timing_with_synthetic
         [[0.0, 0.0, 0.65]],
         atol=1e-6,
     )
+
+
+def test_optical_lab_physics_published_frame_drives_dynamic_render():
+    engine = _make_engine()
+    q0, _ = engine.merged.tree.default_state()
+    q0[6] = 0.5
+    engine.step(q=q0, qdot=np.zeros(engine.merged.nv), dt=1e-4)
+    base_frame = engine.latest_published_frame()
+    wp.synchronize_event(base_frame.ready_event)
+
+    registry = _body_bound_triangle_registry()
+    pipeline = go2_backend.OpticalLabRenderPipeline.create_from_source_factory(
+        lambda _workspace: physics_source.build_physics_render_source(
+            registry=registry,
+            base_frame=base_frame,
+            bounds_min=(-0.2, -0.2, 0.0),
+            bounds_max=(0.4, 0.4, 1.2),
+            metadata={"producer": "gpu_engine"},
+        ),
+        go2_backend.OpticalLabRenderOptions(
+            device="cuda:0",
+            bvh_backend="cpu",
+            bvh_split_strategy="sort",
+            shadows=False,
+        ),
+        go2_backend.TimingRecorder(),
+        scene_for_source=physics_source.scene_from_physics_render_source,
+    )
+
+    consumer = _consumer("optical_lab_physics_render")
+    engine.register_consumer(consumer)
+    q1, _ = engine.merged.tree.default_state()
+    q1[6] = 0.8
+    engine.step(q=q1, qdot=np.zeros(engine.merged.nv), dt=1e-4)
+    latest_frame = engine.latest_published_frame()
+    dynamic_frame = engine.borrow_device_frame(
+        consumer.consumer_id,
+        latest_frame.frame_id,
+        stream=pipeline.session.stream,
+    )
+    body_z = float(dynamic_frame.x_world_r_wp.numpy()[0, 0, 2])
+
+    frame_context = pipeline.begin_frame(frame_inputs=dynamic_frame, env_idx=0)
+    wp.synchronize_event(frame_context.snapshot.ready_event)
+    wp.synchronize_event(frame_context.bvh.ready_event)
+
+    assert pipeline.session.source.metadata["producer"] == "gpu_engine"
+    assert pipeline.session.scene is pipeline.session.source.metadata["scene"]
+    assert frame_context.frame is dynamic_frame
+    assert frame_context.frame_id == dynamic_frame.frame_id
+    assert frame_context.sim_time == dynamic_frame.sim_time
+    assert frame_context.bvh.frame_id == dynamic_frame.frame_id
+    np.testing.assert_allclose(
+        frame_context.snapshot.triangle_aabb_min.numpy()[0, 2],
+        body_z + 0.25,
+        atol=1e-5,
+    )
+
+    rays = OpticalRaySensorSpec(
+        frame_id=dynamic_frame.frame_id,
+        sim_time=dynamic_frame.sim_time,
+        env_idx=0,
+        sensor_id="physics_lab_smoke",
+        origins_world=[[0.05, 0.05, 2.0]],
+        directions_world=[[0.0, 0.0, -1.0]],
+        max_distance=10.0,
+        sensor_role="rgb",
+    )
+    render = frame_context.render(
+        RenderRequest(
+            frame_id=dynamic_frame.frame_id,
+            sim_time=dynamic_frame.sim_time,
+            env_idx=0,
+            rays=rays,
+            use_gpu_raygen=False,
+            output_profile=OpticalOutputProfile.DIRECT_LIGHT_FULL,
+        )
+    )
+    host = stage_optical_compute_result_to_host(render.compute)
+
+    np.testing.assert_array_equal(host.channel("hit_mask"), [True])
+    np.testing.assert_allclose(host.channel("range_m"), [2.0 - (body_z + 0.25)], atol=1e-4)
+    np.testing.assert_array_equal(host.channel("numeric_instance_id"), [1])
+    done_event = engine.complete_device_consumer(
+        consumer.consumer_id,
+        dynamic_frame.frame_id,
+        stream=pipeline.session.stream,
+    )
+    wp.synchronize_event(done_event)
 
 
 def test_optical_lab_dynamic_video_loop_writes_prepare_timing_csv(tmp_path):

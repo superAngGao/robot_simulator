@@ -482,17 +482,24 @@ class OpticalLabRenderFrameContext:
 
     session: OpticalLabRenderSession
     env_idx: int = 0
+    frame_inputs: GpuPublishedFrame | None = None
     snapshot: object | None = None
     bvh: object | None = None
     prepare_timing: Mapping[str, float] = field(default_factory=dict)
 
     @property
+    def frame(self) -> GpuPublishedFrame:
+        if self.frame_inputs is not None:
+            return self.frame_inputs
+        return self.session.scene.frame
+
+    @property
     def frame_id(self) -> int:
-        return int(self.session.scene.frame.frame_id)
+        return int(self.frame.frame_id)
 
     @property
     def sim_time(self) -> float:
-        return float(self.session.scene.frame.sim_time)
+        return float(self.frame.sim_time)
 
     def render(
         self,
@@ -624,6 +631,7 @@ class OpticalLabRenderPipeline:
         return OpticalLabRenderFrameContext(
             self.session,
             env_idx=env_idx,
+            frame_inputs=frame_inputs,
             snapshot=prepared.snapshot,
             bvh=prepared.bvh,
             prepare_timing=prepared.prepare_timing,
