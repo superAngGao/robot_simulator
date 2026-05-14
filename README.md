@@ -14,14 +14,14 @@
 | 1 | CPU physics core — ABA, penalty contact, joint limits, AABB self-collision | ✅ Complete |
 | 2 | GPU acceleration — NVIDIA Warp physics backends and parallel VecEnv | 🔄 In progress |
 | 3 | Rendering and sensing — backend-agnostic render scenes, sensor readings, optical registry/executors | ✅ Complete |
-| 4 | Optical Pipeline Lab — GPU optical BVH/direct-light/raygen, source-driven render sessions, benchmark scene adapters | 🔄 In progress |
+| 4 | Optical Pipeline Lab — GPU optical BVH/direct-light/raygen, physics-published frames, static asset builders | 🔄 In progress |
 | 5 | Domain randomization, deformable/fluid subsystems, sim-to-real tooling | ⬜ Planned |
 
 ## Optical rendering preview
 
 The optical pipeline can render RGB, metric depth, and numeric instance segmentation from the same scene query. The preview below uses the Unitree Go2 visual mesh from Google DeepMind's MuJoCo Menagerie, imported into the in-repo optical registry and rendered with the CPU BVH/direct-light reference executor.
 
-Current optical lab work extends that foundation with GPU device-scene executors, BVH traversal, direct lighting and shadow rays, CUDA LBVH rebuilds, GPU pinhole ray generation, and a source-driven render foundation. Benchmark scenes and physics-published frames enter through the same generic render session, workspace, frame preparation, and video-loop helpers under `tools/optical_pipeline_lab/`.
+Current optical lab work extends that foundation with GPU device-scene executors, BVH traversal, direct lighting and shadow rays, CUDA LBVH rebuilds, GPU pinhole ray generation, and a source-driven render foundation. The production-facing dynamic path starts from physics-published frames. Static asset builders are only for non-simulated assets: they construct optical registries, camera presets, and preview assets, then feed the same generic render session, workspace, frame preparation, and video-loop helpers under `tools/optical_pipeline_lab/`.
 
 ![Unitree Go2 optical preview, front view](docs/assets/optical/menagerie_go2_front/panel.png)
 

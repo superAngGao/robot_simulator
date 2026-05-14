@@ -138,7 +138,10 @@ LiDAR/arbitrary ray query 和 CPU/GPU parity reference。GPU optical/rendering
 继续作为 Codex/Claude review 与讨论工作区。`tools/optical_pipeline_lab/`
 现已承接 source-driven render foundation、dynamic frame prep、generic video
 loop、video/export tuning 的 scenario config、timing schema、preset metadata
-和 thin runner。Go2/Menagerie 只作为 source/backend adapter 存在；
+和 thin runner。动态渲染入口应来自 physics-published `GpuPublishedFrame`；
+Go2/Menagerie 等 static asset builder 只用于静止/benchmark 场景的 optical registry、
+camera preset 和 preview asset 构建，不是物理帧提供者、渲染 pipeline、
+也不是 renderer/backend adapter；
 `OpticalLabRenderSource` / `OpticalLabRenderOptions` / `OpticalLabRenderWorkspace`
 / `OpticalLabRenderSession` / `OpticalLabRenderFrameContext` /
 `OpticalLabRenderPipeline` 是通用 lab render 入口，旧 `Go2Render*`
@@ -183,7 +186,7 @@ GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(..
 | `tools/optical_pipeline_lab/` | Optical Pipeline Lab: scenario configs, presets, timing CSV schema, report helpers, thin Go2 runner |
 | `tools/optical_pipeline_lab/async_readback.py` | Optical Pipeline Lab async D2H readback ring helper for pinned Torch copies |
 | `tools/optical_pipeline_lab/dynamic_frames.py` | Lab-only synthetic GPU published-frame clone/perturb helpers for dynamic optical smokes |
-| `tools/optical_pipeline_lab/go2_backend.py` | Go2/Menagerie source builder plus camera/video/reporting backend used by the lab runner and example CLI |
+| `tools/optical_pipeline_lab/go2_backend.py` | Go2/Menagerie static asset builder plus camera/video/reporting glue for the lab runner and example CLI |
 | `tools/optical_pipeline_lab/physics_source.py` | Physics-published `GpuPublishedFrame` → Optical Pipeline Lab render source bridge |
 | `tools/optical_pipeline_lab/render_session.py` | OpticalLabRenderSource / Options / Workspace / PreparedFrame / Session / FrameContext / Pipeline lab render foundation |
 | `tools/optical_pipeline_lab/video_loop.py` | Generic Optical Pipeline Lab video render-loop helpers parameterized by camera builder |

@@ -39,23 +39,28 @@ Optimize explicit pipeline scenarios with explicit delivery policy.
 
 ```text
 Go2 is not the render pipeline.
-Go2 is one scene/source that feeds the render pipeline.
+Go2/Menagerie is a static asset builder for non-simulated benchmark assets.
+It builds an optical registry, camera presets, and preview metadata; it is not
+the dynamic frame provider.
 ```
 
 The active near-term plan is therefore to make the Optical Pipeline Lab render
-foundation source-driven:
+foundation explicit about its two inputs:
 
 ```text
-external world / scene source
-  -> OpticalLabRenderSource
+asset/registry builder -> OpticalWorldRegistry
+physics/synthetic frame provider -> GpuPublishedFrame
+  -> OpticalLabRenderSource (lab-local bundle of registry + base frame)
   -> OpticalLabRenderPipeline
   -> RenderFrameContext
   -> RenderResult
   -> delivery/video/reporting as separate layers
 ```
 
-Physics simulation, Menagerie Go2, and synthetic dynamic smokes should converge
-on this source vocabulary instead of each requiring a backend-shaped adapter.
+Physics simulation is the primary dynamic frame provider. Menagerie Go2 and
+other static asset builders are for non-simulated registry construction and
+benchmark camera presets; they should not look like renderer/backend adapters
+or physics-frame entrypoints.
 
 ## 2. Current State In One Sentence
 
@@ -245,7 +250,7 @@ adapters do not redefine source-order, role-mask, frame lifetime, or delivery se
 The intended extension model:
 
 ```text
-Scene export adapter:
+Scene export bridge:
   snapshot/registry/camera/material/light -> external scene format or API
 
 Reference renderer adapter:
@@ -1307,8 +1312,8 @@ Consumer mode does not enter renderer kernels.
 Delivery does not understand geometry.
 Acceleration does not understand RGB/PNG/sensor publish.
 Scene does not understand readback.
-Consumer adapters do not touch device internals.
-Presentation adapters do not redefine render semantics.
+Consumer integrations do not touch device internals.
+Presentation integrations do not redefine render semantics.
 Renderer backend adapters do not redefine delivery semantics.
 ```
 
@@ -1354,7 +1359,7 @@ defaults.
 ### 10.1 Output Profile Channel Manifest
 
 Each output profile must have a stable channel guarantee. This manifest is the
-basis for adapter compatibility, readback validation, and parity expectations.
+basis for renderer-backend compatibility, readback validation, and parity expectations.
 
 Initial manifest:
 
@@ -1442,7 +1447,7 @@ Boundary rule:
 ```text
 DeviceResult may expose backend-neutral channel views.
 Delivery decides how to stage them.
-Presentation adapters decide how to display them.
+Presentation integrations decide how to display them.
 Renderer backend adapters decide how to produce them.
 ```
 
@@ -2044,8 +2049,8 @@ stable simulator-facing names. The near-term internal vocabulary is:
 
 ```text
 OpticalLabRenderSource:
-  external-world adapter output
-  owns registry/base-frame identity and optional scene/camera hints
+  lab-local bundle of registry/base-frame identity and optional scene/camera hints
+  receives dynamic frames from physics/synthetic frame providers via begin_frame(...)
   does not own device streams, BVH, executor, delivery, or reporting
 
 OpticalLabRenderOptions:
@@ -2202,11 +2207,13 @@ pipeline because the work grew out of Menagerie Go2 video benchmarks. That is no
 longer the right architecture. The durable boundary is:
 
 ```text
-Scene/source adapter:
-  converts an external world to OpticalLabRenderSource
+Static asset builder:
+  converts non-simulated assets into OpticalWorldRegistry,
+  camera presets, and preview metadata
+  does not provide the dynamic render frame
 
 Render foundation:
-  creates workspace/session/cache/snapshot/BVH/executor from source/options
+  creates workspace/session/cache/snapshot/BVH/executor from registry/options
   exposes begin_frame(...).render(...)
 
 Video/delivery/reporting:
@@ -2250,7 +2257,7 @@ C4 complete:
 
 C5 complete:
   generic video render-loop helpers now live in video_loop.py. go2_backend.py
-  keeps Go2 source/camera/CLI/reporting ownership plus thin adapters that inject
+  keeps Go2 source/camera/CLI/reporting ownership plus thin wrappers that inject
   the Go2 camera builder into the generic video loop.
 
 Alias cleanup complete:
@@ -2292,7 +2299,9 @@ and have been removed.
 The key rule:
 
 ```text
-External systems provide a render source, not a backend adapter.
+Physics/simulator systems provide PublishedFrame.
+Static asset builders provide OpticalWorldRegistry for non-simulated assets.
+Only external renderer/backend integration should use the word adapter.
 ```
 
 ### 14.7 Path Tracing Is Future Work
@@ -2725,7 +2734,8 @@ Tasks:
 
 ```text
 physics simulation publishes GpuPublishedFrame
-OpticalLabRenderSource supplies registry/base frame and scene hints
+registry builders supply static optical assets
+OpticalLabRenderSource supplies registry/base frame and scene hints as a lab-local bundle
 begin_frame(frame_inputs=...) borrows the current frame
 refit/rebuild policy
 accel double/triple buffering
@@ -2734,8 +2744,9 @@ benchmark dynamic robot scene
 dynamic preset for refit vs rebuild comparison
 ```
 
-Stage J should not invent a separate scene adapter pattern. Physics, Go2, and
-synthetic dynamic scenes should all enter through the same source vocabulary.
+Stage J should not invent a separate scene-source pattern. Physics owns the
+dynamic frame stream. Go2/Menagerie and synthetic static helpers are static
+asset builders that feed the same render foundation.
 
 ### Stage K: Sensor Runtime Integration
 
