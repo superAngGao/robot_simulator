@@ -1,7 +1,7 @@
 # Robot Simulator — Project Manifest
 
 > 面向具身智能研究的多物理仿真平台——多物理统一耦合、GPU 原生、渲染与合成数据生成、从第一性原理出发的 API 设计。
-> Last updated: 2026-05-09 (Q54 Optical Pipeline Lab foundation/runner)
+> Last updated: 2026-05-14 (Q54 Optical Pipeline Lab source-driven render foundation/video loop split)
 
 ## 一句话
 
@@ -136,8 +136,13 @@ ambient/directional/point light 和 inline shadow any-hit；L5C.4 CUDA LBVH spik
 LiDAR/arbitrary ray query 和 CPU/GPU parity reference。GPU optical/rendering
 管线的长期设计基线已固化到 `GPU_OPTICAL_PIPELINE_DESIGN.md`；`collab/`
 继续作为 Codex/Claude review 与讨论工作区。`tools/optical_pipeline_lab/`
-已开始承接 video/export tuning 的 scenario config、timing schema、preset
-metadata 和 thin runner，避免继续把实验编排塞进 example runtime。
+现已承接 source-driven render foundation、dynamic frame prep、generic video
+loop、video/export tuning 的 scenario config、timing schema、preset metadata
+和 thin runner。Go2/Menagerie 只作为 source/backend adapter 存在；
+`OpticalLabRenderSource` / `OpticalLabRenderOptions` / `OpticalLabRenderWorkspace`
+/ `OpticalLabRenderSession` / `OpticalLabRenderFrameContext` /
+`OpticalLabRenderPipeline` 是通用 lab render 入口，旧 `Go2Render*`
+兼容 alias 与 `go2_session.py` shim 已清理完毕。
 
 ## 关键文件
 
@@ -194,10 +199,10 @@ metadata 和 thin runner，避免继续把实验编排塞进 example runtime。
 
 ## 规模
 
-- Q54 sensing/optics 子系统当前收集 **165 个测试**：
+- Q54 sensing/optics 子系统当前收集 **219 个测试**：
   `tests/unit/optics` + `tests/unit/sensing` + `tests/gpu/test_optical_warp_executor.py`
   + `tests/gpu/test_optical_gpu_runtime.py`
-  （133 CPU optics/sensing/lab + 32 GPU optical）
+  （143 unit optics/lab + 40 unit sensing + 36 GPU optical）
 - physics/ ~16,000 行，rendering/ ~960 行；新增 sensing/、optics/ 与
   tools/optical_pipeline_lab/ 作为独立感知/光学与 pipeline tuning 子系统
 - 支持多机器人场景 + 静态几何 + 碰撞过滤 + 多点接触 manifold
@@ -229,7 +234,7 @@ metadata 和 thin runner，避免继续把实验编排塞进 example runtime。
 | Q54 L5C.2 — GPU BVH traversal/refit correctness bridge | ✅ |
 | Q54 L5C.3 — GPU direct-light + shadow any-hit | ✅ |
 | Q54 L5C.4 — CUDA LBVH build + GPU raygen/readback optimization | 🟡 |
-| Q54 Stage B/C5 — Optical Pipeline Lab video loop split | 🟡 |
+| Q54 Stage B/C1-C5 + cleanup — Optical Pipeline Lab source-driven foundation + video loop split | ✅ |
 | 4 — 域随机化 | ⬜ |
 | 5 — Sim-to-Real | ⬜ |
 
