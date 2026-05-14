@@ -93,11 +93,13 @@ else:
 
 
 OpticalLabRenderFrameContext = _render_session.OpticalLabRenderFrameContext
+OpticalLabRenderOptions = _render_session.OpticalLabRenderOptions
 OpticalLabRenderPipeline = _render_session.OpticalLabRenderPipeline
 OpticalLabRenderSession = _render_session.OpticalLabRenderSession
+OpticalLabRenderSource = _render_session.OpticalLabRenderSource
 OpticalLabRenderWorkspace = _render_session.OpticalLabRenderWorkspace
 
-# transitional: remove after C3
+# transitional: remove in alias-deletion cleanup
 Go2RenderFrameContext = OpticalLabRenderFrameContext
 Go2RenderPipeline = OpticalLabRenderPipeline
 Go2RenderSession = OpticalLabRenderSession
@@ -120,11 +122,12 @@ def render_many_views(args: argparse.Namespace) -> None:
         ) from _WARP_IMPORT_ERROR
     timings = TimingRecorder()
     total_start = time.perf_counter()
-    pipeline = OpticalLabRenderPipeline.create(
-        args,
+    options = _render_options_from_args(args)
+    pipeline = OpticalLabRenderPipeline.create_from_source_factory(
+        lambda workspace: build_go2_render_source(args, workspace=workspace),
+        options,
         timings,
-        scene_factory=_build_scene_for_preset,
-        base_gpu_frame_factory=_base_gpu_frame_for_scene,
+        scene_for_source=_scene_from_render_source,
         pack_rgb8=_pack_video_rgb8,
         render_profile_buffer_for_request=_render_profile_buffer_for_request,
         render_profile_row=_render_profile_row,
@@ -331,6 +334,45 @@ def _build_scene_for_preset(scene_preset: str, args: argparse.Namespace):
     raise NotImplementedError(
         f"scene_preset={scene_preset!r} is reserved; use go2_menagerie_static/synthetic_body_triangle for now"
     )
+
+
+def _render_options_from_args(args: argparse.Namespace) -> OpticalLabRenderOptions:
+    return OpticalLabRenderOptions(
+        device=args.device,
+        bvh_backend=str(args.bvh_backend),
+        bvh_split_strategy=str(args.bvh_split_strategy),
+        shadows=not args.no_shadows,
+        verbose_warp=bool(args.verbose_warp),
+    )
+
+
+def build_go2_render_source(
+    args: argparse.Namespace,
+    *,
+    workspace: OpticalLabRenderWorkspace,
+) -> OpticalLabRenderSource:
+    scene_preset = getattr(args, "scene_preset", "go2_menagerie_static")
+    scene = _build_scene_for_preset(scene_preset, args)
+    base_frame = _base_gpu_frame_for_scene(
+        scene_preset,
+        frame_id=scene.frame.frame_id,
+        sim_time=scene.frame.sim_time,
+        device=workspace.device,
+    )
+    return OpticalLabRenderSource(
+        registry=scene.registry,
+        base_frame=base_frame,
+        bounds_min=scene.bounds_min,
+        bounds_max=scene.bounds_max,
+        metadata={
+            "scene": scene,
+            "scene_preset": scene_preset,
+        },
+    )
+
+
+def _scene_from_render_source(source: OpticalLabRenderSource):
+    return source.metadata["scene"]
 
 
 def _synthetic_body_triangle_scene():

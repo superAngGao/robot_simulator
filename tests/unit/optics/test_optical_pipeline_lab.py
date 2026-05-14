@@ -247,116 +247,6 @@ def test_render_request_diagnostics_drive_profile_buffer_and_traversal_readback(
     assert go2_backend._include_shadow_traversal_stats(request) is False
 
 
-def test_lab_render_pipeline_create_uses_backend_callback_boundary(monkeypatch: pytest.MonkeyPatch):
-    scene = SimpleNamespace(
-        registry=object(),
-        frame=SimpleNamespace(frame_id=7, sim_time=0.7),
-    )
-    gpu_frame = object()
-    snapshot = object()
-    bvh = SimpleNamespace(stats=SimpleNamespace(detail_ms=[]))
-
-    class FakeWp:
-        config = SimpleNamespace(quiet=False)
-
-        class Stream:
-            def __init__(self, *, device):
-                self.device = device
-
-        @staticmethod
-        def init():
-            return None
-
-        @staticmethod
-        def get_device(device):
-            return f"device:{device}"
-
-    class FakeCache:
-        def __init__(self, registry, *, device, stream):
-            self.registry = registry
-            self.device = device
-            self.stream = stream
-
-        def snapshot_from_gpu_frame(self, frame, *, env_idx, stream, include_aabb):
-            assert frame is gpu_frame
-            assert env_idx == 0
-            assert stream is self.stream
-            assert include_aabb is True
-            return snapshot
-
-    class FakeExecutor:
-        def __init__(self, *, device, stream, shadows, ambient_rgb, background_rgb):
-            self.device = device
-            self.stream = stream
-            self.shadows = shadows
-            self.ambient_rgb = ambient_rgb
-            self.background_rgb = background_rgb
-
-    def fake_scene_factory(scene_preset, args):
-        assert scene_preset == "synthetic"
-        assert args.scene_preset == "synthetic"
-        return scene
-
-    def fake_gpu_frame_factory(scene_preset, *, frame_id, sim_time, device):
-        assert scene_preset == "synthetic"
-        assert frame_id == 7
-        assert sim_time == 0.7
-        assert device == "device:cuda:fake"
-        return gpu_frame
-
-    def fake_build_bvh(snapshot_arg, *, device, stream, split_strategy):
-        assert snapshot_arg is snapshot
-        assert device == "device:cuda:fake"
-        assert split_strategy == "partition"
-        assert stream.device == "device:cuda:fake"
-        return bvh
-
-    monkeypatch.setattr(render_session, "wp", FakeWp)
-    monkeypatch.setattr(render_session, "DeviceOpticalSceneCache", FakeCache)
-    monkeypatch.setattr(render_session, "build_device_bvh_from_snapshot", fake_build_bvh)
-    monkeypatch.setattr(render_session, "GpuDeviceBvhDirectLightOpticalExecutor", FakeExecutor)
-
-    def profile_buffer(request):
-        return []
-
-    def profile_row(render_profile, *, render_execute_ms=None):
-        return {"render_overhead_ms": 0.0}
-
-    def pack_rgb8(result):
-        return ("packed", result)
-
-    pipeline = go2_backend.OpticalLabRenderPipeline.create(
-        SimpleNamespace(
-            verbose_warp=False,
-            device="cuda:fake",
-            scene_preset="synthetic",
-            bvh_backend="cpu",
-            bvh_split_strategy="partition",
-            no_shadows=True,
-        ),
-        go2_backend.TimingRecorder(),
-        scene_factory=fake_scene_factory,
-        base_gpu_frame_factory=fake_gpu_frame_factory,
-        pack_rgb8=pack_rgb8,
-        render_profile_buffer_for_request=profile_buffer,
-        render_profile_row=profile_row,
-    )
-
-    assert pipeline.session.scene is scene
-    assert isinstance(pipeline.session.workspace, go2_backend.OpticalLabRenderWorkspace)
-    assert pipeline.session.workspace.device == "device:cuda:fake"
-    assert pipeline.session.workspace.stream.device == "device:cuda:fake"
-    assert pipeline.session.device is pipeline.session.workspace.device
-    assert pipeline.session.stream is pipeline.session.workspace.stream
-    assert pipeline.session.gpu_frame is gpu_frame
-    assert pipeline.session.snapshot is snapshot
-    assert pipeline.session.bvh is bvh
-    assert pipeline.session.executor.shadows is False
-    assert pipeline.session.pack_rgb8("rgb") == ("packed", "rgb")
-    assert pipeline.session.render_profile_buffer_for_request is profile_buffer
-    assert pipeline.session.render_profile_row is profile_row
-
-
 def test_lab_render_source_exposes_base_frame_as_scene_frame():
     base_frame = SimpleNamespace(frame_id=11, sim_time=1.1)
     source = render_session.OpticalLabRenderSource(
@@ -453,6 +343,7 @@ def test_lab_render_pipeline_create_from_source_builds_canonical_session(
     )
 
     assert pipeline.session.scene is source
+    assert pipeline.session.source is source
     assert pipeline.session.gpu_frame is base_frame
     assert pipeline.session.snapshot is snapshot
     assert pipeline.session.bvh is bvh
@@ -465,6 +356,137 @@ def test_lab_render_pipeline_create_from_source_builds_canonical_session(
     assert frame.frame_id == 12
     assert frame.sim_time == 1.2
     assert frame.env_idx == 3
+
+
+def test_lab_render_pipeline_create_from_source_factory_preserves_scene_view(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    registry = object()
+    base_frame = SimpleNamespace(frame_id=13, sim_time=1.3)
+    scene = SimpleNamespace(frame=base_frame, registry=registry)
+    snapshot = object()
+    bvh = SimpleNamespace(stats=SimpleNamespace(detail_ms=[]))
+
+    class FakeWp:
+        config = SimpleNamespace(quiet=False)
+
+        class Stream:
+            def __init__(self, *, device):
+                self.device = device
+
+        @staticmethod
+        def init():
+            return None
+
+        @staticmethod
+        def get_device(device):
+            return f"device:{device}"
+
+    class FakeCache:
+        def __init__(self, registry_arg, *, device, stream):
+            assert registry_arg is registry
+            assert device == "device:cuda:factory"
+            self.stream = stream
+
+        def snapshot_from_gpu_frame(self, frame, *, env_idx, stream, include_aabb):
+            assert frame is base_frame
+            assert env_idx == 0
+            assert stream is self.stream
+            assert include_aabb is True
+            return snapshot
+
+    class FakeExecutor:
+        def __init__(self, *, device, stream, shadows, ambient_rgb, background_rgb):
+            self.shadows = shadows
+
+    def fake_build_bvh(snapshot_arg, *, device, stream, split_strategy):
+        assert snapshot_arg is snapshot
+        assert split_strategy == "sort"
+        return bvh
+
+    monkeypatch.setattr(render_session, "wp", FakeWp)
+    monkeypatch.setattr(render_session, "DeviceOpticalSceneCache", FakeCache)
+    monkeypatch.setattr(render_session, "build_device_bvh_from_snapshot", fake_build_bvh)
+    monkeypatch.setattr(render_session, "GpuDeviceBvhDirectLightOpticalExecutor", FakeExecutor)
+
+    def source_factory(workspace):
+        assert workspace.device == "device:cuda:factory"
+        assert workspace.stream.device == "device:cuda:factory"
+        return render_session.OpticalLabRenderSource(
+            registry=registry,
+            base_frame=base_frame,
+            metadata={"scene": scene},
+        )
+
+    pipeline = render_session.OpticalLabRenderPipeline.create_from_source_factory(
+        source_factory,
+        render_session.OpticalLabRenderOptions(device="cuda:factory"),
+        TimingRecorder(),
+        scene_for_source=lambda source: source.metadata["scene"],
+    )
+
+    assert pipeline.session.scene is scene
+    assert pipeline.session.source.metadata["scene"] is scene
+    assert pipeline.session.gpu_frame is base_frame
+    assert pipeline.begin_frame().frame_id == 13
+
+
+def test_go2_render_source_builder_wraps_scene_and_base_frame(monkeypatch: pytest.MonkeyPatch):
+    registry = object()
+    scene = SimpleNamespace(
+        registry=registry,
+        frame=SimpleNamespace(frame_id=14, sim_time=1.4),
+        bounds_min=(-0.5, -0.5, -0.1),
+        bounds_max=(0.5, 0.5, 0.9),
+    )
+    base_frame = object()
+
+    def fake_build_scene(scene_preset, args):
+        assert scene_preset == "synthetic_body_triangle"
+        assert args.scene_preset == "synthetic_body_triangle"
+        return scene
+
+    def fake_base_gpu_frame(scene_preset, *, frame_id, sim_time, device):
+        assert scene_preset == "synthetic_body_triangle"
+        assert frame_id == 14
+        assert sim_time == 1.4
+        assert device == "device"
+        return base_frame
+
+    monkeypatch.setattr(go2_backend, "_build_scene_for_preset", fake_build_scene)
+    monkeypatch.setattr(go2_backend, "_base_gpu_frame_for_scene", fake_base_gpu_frame)
+
+    source = go2_backend.build_go2_render_source(
+        SimpleNamespace(scene_preset="synthetic_body_triangle"),
+        workspace=go2_backend.OpticalLabRenderWorkspace(device="device", stream="stream"),
+    )
+
+    assert source.registry is registry
+    assert source.base_frame is base_frame
+    assert source.bounds_min == (-0.5, -0.5, -0.1)
+    assert source.bounds_max == (0.5, 0.5, 0.9)
+    assert source.metadata["scene"] is scene
+    assert source.metadata["scene_preset"] == "synthetic_body_triangle"
+    assert go2_backend._scene_from_render_source(source) is scene
+
+
+def test_go2_render_options_map_args_to_generic_options():
+    options = go2_backend._render_options_from_args(
+        SimpleNamespace(
+            device="cuda:2",
+            bvh_backend="cuda_lbvh",
+            bvh_split_strategy="median",
+            no_shadows=True,
+            verbose_warp=True,
+        )
+    )
+
+    assert isinstance(options, render_session.OpticalLabRenderOptions)
+    assert options.device == "cuda:2"
+    assert options.bvh_backend == "cuda_lbvh"
+    assert options.bvh_split_strategy == "median"
+    assert options.shadows is False
+    assert options.verbose_warp is True
 
 
 def test_lab_render_session_accepts_workspace_with_device_stream_compatibility():

@@ -2115,7 +2115,7 @@ source = OpticalLabRenderSource(
     bounds_max=bounds_max,
 )
 
-pipeline = OpticalLabRenderPipeline.create(
+pipeline = OpticalLabRenderPipeline.create_from_source(
     source=source,
     options=OpticalLabRenderOptions(
         device="cuda:0",
@@ -2227,14 +2227,20 @@ I2 complete:
 
 C1 complete:
   the generic lab render foundation now lives in render_session.py under
-  OpticalLabRender* names, with Go2Render* compatibility aliases retained until
-  C3.
+  OpticalLabRender* names, with transitional Go2Render* compatibility aliases.
 
 C2 complete:
   OpticalLabRenderSource and OpticalLabRenderOptions exist, and
   OpticalLabRenderPipeline.create_from_source(...) builds a session from the
   source/options boundary. The existing callback-based create(...) path remains
   in place for Go2 until C3.
+
+C3 complete:
+  Go2/Menagerie and synthetic lab scenes are built through
+  build_go2_render_source(...). The Go2 backend now enters the generic render
+  foundation through the source/options factory path, while keeping Go2 CLI,
+  preset, camera, video, and reporting vocabulary in go2_backend.py. The old
+  callback-based create(...) entrypoint has been removed.
 ```
 
 The remaining `Go2Render*` names are compatibility aliases only. New generic
@@ -2243,12 +2249,6 @@ render foundation work should use `OpticalLabRender*`.
 Recommended next slices:
 
 ```text
-C3 Go2 source builder:
-  move Go2/Menagerie scene construction behind build_go2_render_source(...)
-  make go2_backend.py call the generic OpticalLabRenderPipeline entrypoint
-  keep Go2 preset, matrix, CLI, model_dir/model_xml names where they are
-  genuinely Go2/Menagerie-specific
-
 C4 workspace frame preparation:
   move the GPU execution part of dynamic snapshot/refit/rebuild into workspace
   keep static/dynamic decision and FrameContext creation in the pipeline
@@ -2678,13 +2678,13 @@ I4/C2 complete:
   introduce OpticalLabRenderSource
   introduce OpticalLabRenderOptions
   add a source/options construction path
-  keep callback-based create(...) until the Go2 backend is migrated
+  keep callback-based create(...) until the Go2 backend is migrated in C3
 ```
 
 Active Stage I plan:
 
 ```text
-I5/C3 Go2 backend as source builder:
+I5/C3 complete:
   build Menagerie Go2 and synthetic smoke scenes as OpticalLabRenderSource
   call the generic OpticalLabRenderPipeline entrypoint
   leave Go2 CLI/preset/matrix vocabulary where it describes real Go2 cases

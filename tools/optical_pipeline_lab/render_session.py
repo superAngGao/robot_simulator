@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import math
 import time
 from collections.abc import Callable, Mapping
@@ -120,11 +119,16 @@ class OpticalLabRenderWorkspace:
     stream: object
 
 
+RenderSourceFactory = Callable[[OpticalLabRenderWorkspace], OpticalLabRenderSource]
+RenderSceneFactory = Callable[[OpticalLabRenderSource], object]
+
+
 @dataclass(init=False)
 class OpticalLabRenderSession:
     """Optical Lab render resource bundle owned by one lab run."""
 
     scene: object
+    source: OpticalLabRenderSource
     workspace: OpticalLabRenderWorkspace
     gpu_frame: GpuPublishedFrame
     cache: DeviceOpticalSceneCache
@@ -141,6 +145,7 @@ class OpticalLabRenderSession:
         self,
         *,
         scene: object,
+        source: OpticalLabRenderSource | None = None,
         gpu_frame: GpuPublishedFrame,
         cache: DeviceOpticalSceneCache,
         snapshot: object,
@@ -164,6 +169,16 @@ class OpticalLabRenderSession:
         elif device is not None or stream is not None:
             raise TypeError("OpticalLabRenderSession accepts either workspace or device/stream, not both")
         self.scene = scene
+        self.source = (
+            source
+            if source is not None
+            else OpticalLabRenderSource(
+                registry=getattr(scene, "registry", None),
+                base_frame=gpu_frame,
+                bounds_min=getattr(scene, "bounds_min", None),
+                bounds_max=getattr(scene, "bounds_max", None),
+            )
+        )
         self.workspace = workspace
         self.gpu_frame = gpu_frame
         self.cache = cache
@@ -183,62 +198,6 @@ class OpticalLabRenderSession:
     @property
     def stream(self):
         return self.workspace.stream
-
-    @classmethod
-    def create(
-        cls,
-        args: argparse.Namespace,
-        timings: TimingRecorder,
-        *,
-        scene_factory: Callable[[str, argparse.Namespace], object],
-        base_gpu_frame_factory: Callable[..., GpuPublishedFrame],
-        pack_rgb8: Callable[[object], object],
-        render_profile_buffer_for_request: RenderProfileBufferFactory,
-        render_profile_row: RenderProfileRowFactory,
-    ) -> "OpticalLabRenderSession":
-        with timings.measure("warp_init"):
-            if not args.verbose_warp:
-                wp.config.quiet = True
-            wp.init()
-            device = wp.get_device(args.device)
-
-        scene_preset = getattr(args, "scene_preset", "go2_menagerie_static")
-        with timings.measure("import_scene"):
-            scene = scene_factory(scene_preset, args)
-        with timings.measure("gpu_frame_stream"):
-            stream = wp.Stream(device=device)
-            workspace = OpticalLabRenderWorkspace(device=device, stream=stream)
-            gpu_frame = base_gpu_frame_factory(
-                scene_preset,
-                frame_id=scene.frame.frame_id,
-                sim_time=scene.frame.sim_time,
-                device=workspace.device,
-            )
-
-        source = OpticalLabRenderSource(
-            registry=scene.registry,
-            base_frame=gpu_frame,
-            bounds_min=getattr(scene, "bounds_min", None),
-            bounds_max=getattr(scene, "bounds_max", None),
-            metadata={"scene_preset": scene_preset},
-        )
-        options = OpticalLabRenderOptions(
-            device=args.device,
-            bvh_backend=str(args.bvh_backend),
-            bvh_split_strategy=str(args.bvh_split_strategy),
-            shadows=not args.no_shadows,
-            verbose_warp=bool(args.verbose_warp),
-        )
-        return cls._create_from_initialized_source(
-            source,
-            options,
-            timings,
-            workspace=workspace,
-            scene=scene,
-            pack_rgb8=pack_rgb8,
-            render_profile_buffer_for_request=render_profile_buffer_for_request,
-            render_profile_row=render_profile_row,
-        )
 
     @classmethod
     def create_from_source(
@@ -268,6 +227,44 @@ class OpticalLabRenderSession:
             timings,
             workspace=workspace,
             scene=source,
+            pack_rgb8=pack_rgb8,
+            render_profile_buffer_for_request=render_profile_buffer_for_request,
+            render_profile_row=render_profile_row,
+        )
+
+    @classmethod
+    def create_from_source_factory(
+        cls,
+        source_factory: RenderSourceFactory,
+        options: OpticalLabRenderOptions,
+        timings: TimingRecorder,
+        *,
+        scene_for_source: RenderSceneFactory | None = None,
+        pack_rgb8: Callable[[object], object] = _default_pack_rgb8,
+        render_profile_buffer_for_request: RenderProfileBufferFactory = (
+            _default_render_profile_buffer_for_request
+        ),
+        render_profile_row: RenderProfileRowFactory = _default_render_profile_row,
+    ) -> "OpticalLabRenderSession":
+        with timings.measure("warp_init"):
+            if not options.verbose_warp:
+                wp.config.quiet = True
+            wp.init()
+            device = wp.get_device(options.device)
+
+        with timings.measure("gpu_frame_stream"):
+            workspace = OpticalLabRenderWorkspace(device=device, stream=wp.Stream(device=device))
+
+        with timings.measure("import_scene"):
+            source = source_factory(workspace)
+        scene = source if scene_for_source is None else scene_for_source(source)
+
+        return cls._create_from_initialized_source(
+            source,
+            options,
+            timings,
+            workspace=workspace,
+            scene=scene,
             pack_rgb8=pack_rgb8,
             render_profile_buffer_for_request=render_profile_buffer_for_request,
             render_profile_row=render_profile_row,
@@ -326,6 +323,7 @@ class OpticalLabRenderSession:
 
         return cls(
             scene=scene,
+            source=source,
             workspace=workspace,
             gpu_frame=source.base_frame,
             cache=cache,
@@ -465,30 +463,6 @@ class OpticalLabRenderPipeline:
     default_delivery: DeliveryRequest | None = None
 
     @classmethod
-    def create(
-        cls,
-        args: argparse.Namespace,
-        timings: TimingRecorder,
-        *,
-        scene_factory: Callable[[str, argparse.Namespace], object],
-        base_gpu_frame_factory: Callable[..., GpuPublishedFrame],
-        pack_rgb8: Callable[[object], object],
-        render_profile_buffer_for_request: RenderProfileBufferFactory,
-        render_profile_row: RenderProfileRowFactory,
-    ) -> "OpticalLabRenderPipeline":
-        return cls(
-            session=OpticalLabRenderSession.create(
-                args,
-                timings,
-                scene_factory=scene_factory,
-                base_gpu_frame_factory=base_gpu_frame_factory,
-                pack_rgb8=pack_rgb8,
-                render_profile_buffer_for_request=render_profile_buffer_for_request,
-                render_profile_row=render_profile_row,
-            )
-        )
-
-    @classmethod
     def create_from_source(
         cls,
         source: OpticalLabRenderSource,
@@ -506,6 +480,32 @@ class OpticalLabRenderPipeline:
                 source,
                 options,
                 timings,
+                pack_rgb8=pack_rgb8,
+                render_profile_buffer_for_request=render_profile_buffer_for_request,
+                render_profile_row=render_profile_row,
+            )
+        )
+
+    @classmethod
+    def create_from_source_factory(
+        cls,
+        source_factory: RenderSourceFactory,
+        options: OpticalLabRenderOptions,
+        timings: TimingRecorder,
+        *,
+        scene_for_source: RenderSceneFactory | None = None,
+        pack_rgb8: Callable[[object], object] = _default_pack_rgb8,
+        render_profile_buffer_for_request: RenderProfileBufferFactory = (
+            _default_render_profile_buffer_for_request
+        ),
+        render_profile_row: RenderProfileRowFactory = _default_render_profile_row,
+    ) -> "OpticalLabRenderPipeline":
+        return cls(
+            session=OpticalLabRenderSession.create_from_source_factory(
+                source_factory,
+                options,
+                timings,
+                scene_for_source=scene_for_source,
                 pack_rgb8=pack_rgb8,
                 render_profile_buffer_for_request=render_profile_buffer_for_request,
                 render_profile_row=render_profile_row,

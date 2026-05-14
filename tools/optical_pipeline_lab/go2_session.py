@@ -9,7 +9,7 @@ from tools.optical_pipeline_lab.render_session import (
     OpticalLabRenderWorkspace,
 )
 
-# transitional: remove after C3
+# transitional: remove in alias-deletion cleanup
 Go2RenderWorkspace = OpticalLabRenderWorkspace
 Go2RenderSession = OpticalLabRenderSession
 Go2RenderFrameContext = OpticalLabRenderFrameContext
