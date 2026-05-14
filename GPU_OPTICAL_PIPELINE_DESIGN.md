@@ -4,10 +4,10 @@ Stage: design-baseline
 Author: codex
 Version: v1
 Date: 2026-05-08
-Last Updated: 2026-05-09
+Last Updated: 2026-05-14
 Status: active-design-baseline
-Related Files: optics/execution.py, optics/device.py, optics/device_scene.py, optics/device_bvh.py, optics/cuda_lbvh.py, optics/warp_execution.py, examples/mujoco_menagerie_gpu_preview.py, collab/q54-gpu-optical-output-profile-api__review-request__codex__v1.md, collab/q54-gpu-optical-readback-delivery-policy__review-request__codex__v2.md
-Owner Summary: This is the repo-level architecture design for the GPU optical/rendering pipeline. It reframes recent performance work around explicit use scenarios, a shared stage pipeline, per-scenario overlap policies, CPU/GPU boundary responsibilities, CUDA-first performance direction, the Optical Pipeline Lab, and a staged roadmap. Collab files remain review/discussion artifacts; this document is the durable design baseline.
+Related Files: optics/execution.py, optics/device.py, optics/device_scene.py, optics/device_bvh.py, optics/cuda_lbvh.py, optics/warp_execution.py, optics/render_api.py, tools/optical_pipeline_lab/, examples/mujoco_menagerie_gpu_preview.py, collab/q54-gpu-optical-output-profile-api__review-request__codex__v1.md, collab/q54-gpu-optical-readback-delivery-policy__review-request__codex__v2.md
+Owner Summary: This is the repo-level architecture design for the GPU optical/rendering pipeline. It reframes recent performance work around explicit use scenarios, a shared stage pipeline, per-scenario overlap policies, CPU/GPU boundary responsibilities, CUDA-first performance direction, the Optical Pipeline Lab, a canonical lab render source entrypoint, and a staged roadmap. Collab files remain review/discussion artifacts; this document is the durable design baseline.
 
 # GPU Optical Pipeline Design
 
@@ -34,6 +34,28 @@ The key shift:
 Do not optimize "rendering" as one generic task.
 Optimize explicit pipeline scenarios with explicit delivery policy.
 ```
+
+2026-05-14 update:
+
+```text
+Go2 is not the render pipeline.
+Go2 is one scene/source that feeds the render pipeline.
+```
+
+The active near-term plan is therefore to make the Optical Pipeline Lab render
+foundation source-driven:
+
+```text
+external world / scene source
+  -> OpticalLabRenderSource
+  -> OpticalLabRenderPipeline
+  -> RenderFrameContext
+  -> RenderResult
+  -> delivery/video/reporting as separate layers
+```
+
+Physics simulation, Menagerie Go2, and synthetic dynamic smokes should converge
+on this source vocabulary instead of each requiring a backend-shaped adapter.
 
 ## 2. Current State In One Sentence
 
@@ -2016,13 +2038,27 @@ internal API first
 public API later
 ```
 
-After the Optical Pipeline Lab introduced `Go2RenderSession`, the next API work
-should formalize an internal render/delivery boundary before exposing stable
-simulator-facing names. The near-term internal vocabulary is:
+After the Optical Pipeline Lab introduced an internal render pipeline shape, the
+next API work should formalize a source-driven render foundation before exposing
+stable simulator-facing names. The near-term internal vocabulary is:
 
 ```text
-RenderSession:
-  owns device, streams, workspace, scene cache, snapshot, BVH, executor
+OpticalLabRenderSource:
+  external-world adapter output
+  owns registry/base-frame identity and optional scene/camera hints
+  does not own device streams, BVH, executor, delivery, or reporting
+
+OpticalLabRenderOptions:
+  device, acceleration backend, split strategy, shadows, runtime knobs
+
+OpticalLabRenderWorkspace:
+  owns device and render stream now
+  future home for copy stream, scratch buffers, and frame-prep events
+
+OpticalLabRenderSession:
+  owns source-derived render lifecycle:
+    DeviceOpticalSceneCache, base GpuPublishedFrame, static snapshot/BVH,
+    executor, acceleration configuration
 
 RenderRequest:
   camera/rays, output_profile, render_backend, diagnostics/profile flags
@@ -2040,7 +2076,7 @@ DeliveryResult:
 Frame/result timing ownership decision:
 
 ```text
-RenderFrameContext:
+OpticalLabRenderFrameContext:
   frame-scoped lifecycle/input handle
   borrows the current frame input
   may hold frame-specific snapshot/BVH resources while rendering
@@ -2068,6 +2104,36 @@ the pipeline/session/frame context or the lower-level compute/delivery results.
 This keeps physics ownership separate from optical rendering: physics publishes
 or lends a frame, `begin_frame(frame_inputs=...)` borrows it, and the optical
 pipeline returns a summary of what happened for that frame.
+
+The canonical lab render entrypoint should look like this in shape:
+
+```python
+source = OpticalLabRenderSource(
+    registry=registry,
+    base_frame=current_gpu_frame,
+    bounds_min=bounds_min,
+    bounds_max=bounds_max,
+)
+
+pipeline = OpticalLabRenderPipeline.create(
+    source=source,
+    options=OpticalLabRenderOptions(
+        device="cuda:0",
+        bvh_backend="cuda_lbvh",
+        bvh_split_strategy="sort",
+        shadows=True,
+    ),
+    timings=timings,
+)
+
+frame = pipeline.begin_frame(frame_inputs=sim.publish_gpu_frame())
+result = frame.render(request)
+```
+
+Menagerie Go2 should be one implementation of the source-builder layer, not the
+name or shape of the render pipeline itself. Existing `Go2Render*` names are a
+transitional compatibility layer only and should not receive new generic
+responsibilities.
 
 For async delivery, `FrameResult` is constructed when delivery completes, not
 when render is submitted or when render returns. It represents a completed
@@ -2126,7 +2192,105 @@ internal fields later. Do not force path tracing, video export, realtime preview
 and ordered sensors to share a premature public enum before the internal
 RenderSession and delivery contracts stabilize.
 
-### 14.6 Path Tracing Is Future Work
+### 14.6 Active Lab Render Foundation Plan
+
+This is the current plan guiding the next implementation slices.
+
+The old framing treated the first concrete implementation as a Go2 render
+pipeline because the work grew out of Menagerie Go2 video benchmarks. That is no
+longer the right architecture. The durable boundary is:
+
+```text
+Scene/source adapter:
+  converts an external world to OpticalLabRenderSource
+
+Render foundation:
+  creates workspace/session/cache/snapshot/BVH/executor from source/options
+  exposes begin_frame(...).render(...)
+
+Video/delivery/reporting:
+  consumes RenderResult and frame metadata
+  handles readback/write/CSV/matrix policy
+```
+
+Current implementation status:
+
+```text
+I1 complete:
+  Go2RenderSession / Go2RenderFrameContext / Go2RenderPipeline were extracted
+  from go2_backend.py into a separate lab module.
+
+I2 complete:
+  Go2RenderWorkspace(device, stream) exists, and session.device/session.stream
+  are compatibility properties over session.workspace.
+```
+
+Those names are transitional. The next code slice should rename them before
+they grow more generic behavior.
+
+Recommended next slices:
+
+```text
+C1 rename-only:
+  go2_session.py -> render_session.py
+  Go2RenderWorkspace -> OpticalLabRenderWorkspace
+  Go2RenderSession -> OpticalLabRenderSession
+  Go2RenderFrameContext -> OpticalLabRenderFrameContext
+  Go2RenderPipeline -> OpticalLabRenderPipeline
+  keep Go2 aliases as compatibility shims
+
+C2 source/options:
+  add OpticalLabRenderSource
+  add OpticalLabRenderOptions
+  add create_from_source(...) or make create(...) accept source/options
+  keep callback-based construction until Go2 backend is migrated
+
+C3 Go2 source builder:
+  move Go2/Menagerie scene construction behind build_go2_render_source(...)
+  make go2_backend.py call the generic OpticalLabRenderPipeline entrypoint
+  keep Go2 preset, matrix, CLI, model_dir/model_xml names where they are
+  genuinely Go2/Menagerie-specific
+
+C4 workspace frame preparation:
+  move the GPU execution part of dynamic snapshot/refit/rebuild into workspace
+  keep static/dynamic decision and FrameContext creation in the pipeline
+
+C5 video loop split:
+  later move generic video render/export helpers out of go2_backend.py
+  do not mix this with C1/C2/C3
+```
+
+Names that should remain Go2-specific:
+
+```text
+go2_backend.py
+go2_menagerie_static
+go2_video_ordered_static
+go2_video_ordered_baseline
+go2_video_delivery_smoke
+go2_video_ordered_legacy_960
+model_dir/model_xml defaults
+Menagerie smoke output paths
+```
+
+Names that should stop being Go2-specific:
+
+```text
+Go2RenderWorkspace
+Go2RenderSession
+Go2RenderFrameContext
+Go2RenderPipeline
+go2_session.py
+generic tests named test_go2_pipeline_*
+```
+
+The key rule:
+
+```text
+External systems provide a render source, not a backend adapter.
+```
+
+### 14.7 Path Tracing Is Future Work
 
 Direct-light output channels should not be treated as path-tracing contracts.
 
@@ -2496,41 +2660,89 @@ after the async/readback path is stable.
 Goal:
 
 ```text
-stop treating examples as runtime
-centralize streams, workspaces, buffers, and rings
+make the Optical Pipeline Lab render foundation source-driven
+stop growing generic infrastructure under Go2 names
+centralize render runtime resources behind lab-local source/options/session APIs
 ```
 
-Tasks:
+Current status:
 
 ```text
-RenderSession or PipelineController
-workspace allocation
-stream ownership
-buffer reuse
-accel state ownership
-delivery scheduler ownership
+I1 complete:
+  render session classes extracted from go2_backend.py
+
+I2 complete:
+  minimal workspace owns device/render stream
+  session.device/session.stream are compatibility properties
 ```
 
-This stage expands the minimal Stage F skeleton into the production runtime
-boundary.
+Active Stage I plan:
+
+```text
+I3/C1 rename-only:
+  tools/optical_pipeline_lab/go2_session.py
+    -> tools/optical_pipeline_lab/render_session.py
+
+  Go2RenderWorkspace
+    -> OpticalLabRenderWorkspace
+  Go2RenderSession
+    -> OpticalLabRenderSession
+  Go2RenderFrameContext
+    -> OpticalLabRenderFrameContext
+  Go2RenderPipeline
+    -> OpticalLabRenderPipeline
+
+  keep Go2 aliases temporarily for compatibility
+  migrate generic tests to OpticalLabRender* names
+  keep actual Go2 preset/matrix/adapter names unchanged
+
+I4/C2 canonical source entrypoint:
+  introduce OpticalLabRenderSource
+  introduce OpticalLabRenderOptions
+  add a source/options construction path
+  keep callback-based create(...) until the Go2 backend is migrated
+
+I5/C3 Go2 backend as source builder:
+  build Menagerie Go2 and synthetic smoke scenes as OpticalLabRenderSource
+  call the generic OpticalLabRenderPipeline entrypoint
+  leave Go2 CLI/preset/matrix vocabulary where it describes real Go2 cases
+
+I6/C4 workspace frame preparation:
+  move dynamic snapshot/refit/rebuild execution into workspace
+  keep FrameContext construction and static/dynamic decision in pipeline
+
+I7/C5 video-loop split:
+  split generic video render/export helpers out of go2_backend.py later
+```
+
+Stage I is not a public API promotion. `OpticalLabRender*` remains lab-local
+until the source/options/session boundary survives Go2, synthetic dynamic, and
+physics-simulation callers.
 
 ### Stage J: Dynamic Geometry Pipeline
 
 Goal:
 
 ```text
-support moving rigid-body scenes with build/refit/render/delivery overlap
+support moving rigid-body scenes through the source-driven render foundation
+with build/refit/render/delivery overlap
 ```
 
 Tasks:
 
 ```text
+physics simulation publishes GpuPublishedFrame
+OpticalLabRenderSource supplies registry/base frame and scene hints
+begin_frame(frame_inputs=...) borrows the current frame
 refit/rebuild policy
 accel double/triple buffering
 build/render event dependencies
 benchmark dynamic robot scene
 dynamic preset for refit vs rebuild comparison
 ```
+
+Stage J should not invent a separate scene adapter pattern. Physics, Go2, and
+synthetic dynamic scenes should all enter through the same source vocabulary.
 
 ### Stage K: Sensor Runtime Integration
 
