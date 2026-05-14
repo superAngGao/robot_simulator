@@ -86,12 +86,19 @@ def _default_pack_rgb8(result):
 
 
 @dataclass
+class Go2RenderWorkspace:
+    """Lab-local render workspace for device and stream ownership."""
+
+    device: object
+    stream: object
+
+
+@dataclass(init=False)
 class Go2RenderSession:
     """Go2 render resource bundle owned by one lab/example run."""
 
     scene: object
-    device: object
-    stream: object
+    workspace: Go2RenderWorkspace
     gpu_frame: GpuPublishedFrame
     cache: DeviceOpticalSceneCache
     snapshot: object
@@ -102,6 +109,53 @@ class Go2RenderSession:
     pack_rgb8_fn: Callable[[object], object] = _default_pack_rgb8
     render_profile_buffer_for_request: RenderProfileBufferFactory = _default_render_profile_buffer_for_request
     render_profile_row: RenderProfileRowFactory = _default_render_profile_row
+
+    def __init__(
+        self,
+        *,
+        scene: object,
+        gpu_frame: GpuPublishedFrame,
+        cache: DeviceOpticalSceneCache,
+        snapshot: object,
+        bvh: object,
+        executor: GpuDeviceBvhDirectLightOpticalExecutor,
+        workspace: Go2RenderWorkspace | None = None,
+        device: object | None = None,
+        stream: object | None = None,
+        bvh_backend: str = "cpu",
+        bvh_split_strategy: str = "sort",
+        pack_rgb8_fn: Callable[[object], object] = _default_pack_rgb8,
+        render_profile_buffer_for_request: RenderProfileBufferFactory = (
+            _default_render_profile_buffer_for_request
+        ),
+        render_profile_row: RenderProfileRowFactory = _default_render_profile_row,
+    ) -> None:
+        if workspace is None:
+            if device is None or stream is None:
+                raise TypeError("Go2RenderSession requires workspace or both device and stream")
+            workspace = Go2RenderWorkspace(device=device, stream=stream)
+        elif device is not None or stream is not None:
+            raise TypeError("Go2RenderSession accepts either workspace or device/stream, not both")
+        self.scene = scene
+        self.workspace = workspace
+        self.gpu_frame = gpu_frame
+        self.cache = cache
+        self.snapshot = snapshot
+        self.bvh = bvh
+        self.executor = executor
+        self.bvh_backend = str(bvh_backend)
+        self.bvh_split_strategy = str(bvh_split_strategy)
+        self.pack_rgb8_fn = pack_rgb8_fn
+        self.render_profile_buffer_for_request = render_profile_buffer_for_request
+        self.render_profile_row = render_profile_row
+
+    @property
+    def device(self):
+        return self.workspace.device
+
+    @property
+    def stream(self):
+        return self.workspace.stream
 
     @classmethod
     def create(
@@ -126,24 +180,38 @@ class Go2RenderSession:
             scene = scene_factory(scene_preset, args)
         with timings.measure("gpu_frame_stream"):
             stream = wp.Stream(device=device)
+            workspace = Go2RenderWorkspace(device=device, stream=stream)
             gpu_frame = base_gpu_frame_factory(
                 scene_preset,
                 frame_id=scene.frame.frame_id,
                 sim_time=scene.frame.sim_time,
-                device=device,
+                device=workspace.device,
             )
 
         with timings.measure("device_scene_snapshot"):
-            cache = DeviceOpticalSceneCache(scene.registry, device=device, stream=stream)
-            snapshot = cache.snapshot_from_gpu_frame(gpu_frame, env_idx=0, stream=stream, include_aabb=True)
+            cache = DeviceOpticalSceneCache(
+                scene.registry,
+                device=workspace.device,
+                stream=workspace.stream,
+            )
+            snapshot = cache.snapshot_from_gpu_frame(
+                gpu_frame,
+                env_idx=0,
+                stream=workspace.stream,
+                include_aabb=True,
+            )
         with timings.measure("bvh_build"):
             if args.bvh_backend == "cuda_lbvh":
-                bvh = build_cuda_lbvh_from_snapshot(snapshot, device=device, stream=stream)
+                bvh = build_cuda_lbvh_from_snapshot(
+                    snapshot,
+                    device=workspace.device,
+                    stream=workspace.stream,
+                )
             else:
                 bvh = build_device_bvh_from_snapshot(
                     snapshot,
-                    device=device,
-                    stream=stream,
+                    device=workspace.device,
+                    stream=workspace.stream,
                     split_strategy=args.bvh_split_strategy,
                 )
         for detail_name, detail_elapsed_ms in bvh.stats.detail_ms:
@@ -151,8 +219,8 @@ class Go2RenderSession:
 
         with timings.measure("executor_init"):
             executor = GpuDeviceBvhDirectLightOpticalExecutor(
-                device=device,
-                stream=stream,
+                device=workspace.device,
+                stream=workspace.stream,
                 shadows=not args.no_shadows,
                 ambient_rgb=(0.08, 0.085, 0.09),
                 background_rgb=(0.025, 0.03, 0.038),
@@ -160,8 +228,7 @@ class Go2RenderSession:
 
         return cls(
             scene=scene,
-            device=device,
-            stream=stream,
+            workspace=workspace,
             gpu_frame=gpu_frame,
             cache=cache,
             snapshot=snapshot,

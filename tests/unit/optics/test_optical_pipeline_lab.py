@@ -343,6 +343,11 @@ def test_go2_pipeline_create_uses_backend_callback_boundary(monkeypatch: pytest.
     )
 
     assert pipeline.session.scene is scene
+    assert isinstance(pipeline.session.workspace, go2_backend.Go2RenderWorkspace)
+    assert pipeline.session.workspace.device == "device:cuda:fake"
+    assert pipeline.session.workspace.stream.device == "device:cuda:fake"
+    assert pipeline.session.device is pipeline.session.workspace.device
+    assert pipeline.session.stream is pipeline.session.workspace.stream
     assert pipeline.session.gpu_frame is gpu_frame
     assert pipeline.session.snapshot is snapshot
     assert pipeline.session.bvh is bvh
@@ -350,6 +355,23 @@ def test_go2_pipeline_create_uses_backend_callback_boundary(monkeypatch: pytest.
     assert pipeline.session.pack_rgb8("rgb") == ("packed", "rgb")
     assert pipeline.session.render_profile_buffer_for_request is profile_buffer
     assert pipeline.session.render_profile_row is profile_row
+
+
+def test_go2_render_session_accepts_workspace_with_device_stream_compatibility():
+    workspace = go2_backend.Go2RenderWorkspace(device="device", stream="stream")
+    session = go2_backend.Go2RenderSession(
+        scene=object(),
+        workspace=workspace,
+        gpu_frame=object(),
+        cache=object(),
+        snapshot=object(),
+        bvh=object(),
+        executor=object(),
+    )
+
+    assert session.workspace is workspace
+    assert session.device == "device"
+    assert session.stream == "stream"
 
 
 def test_go2_pipeline_frame_context_wraps_render_result(monkeypatch: pytest.MonkeyPatch):

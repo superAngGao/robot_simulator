@@ -95,6 +95,7 @@ else:
 Go2RenderFrameContext = _go2_session.Go2RenderFrameContext
 Go2RenderPipeline = _go2_session.Go2RenderPipeline
 Go2RenderSession = _go2_session.Go2RenderSession
+Go2RenderWorkspace = _go2_session.Go2RenderWorkspace
 
 
 def main() -> None:
