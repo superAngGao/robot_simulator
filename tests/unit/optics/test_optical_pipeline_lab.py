@@ -514,14 +514,14 @@ def test_lab_render_session_accepts_workspace_with_device_stream_compatibility()
     assert session.stream == "stream"
 
 
-def test_go2_render_names_remain_transitional_aliases():
-    import tools.optical_pipeline_lab.go2_session as go2_session
+def test_go2_render_aliases_are_removed_after_cleanup():
+    assert not hasattr(go2_backend, "Go2RenderWorkspace")
+    assert not hasattr(go2_backend, "Go2RenderSession")
+    assert not hasattr(go2_backend, "Go2RenderFrameContext")
+    assert not hasattr(go2_backend, "Go2RenderPipeline")
 
-    assert go2_session.Go2RenderWorkspace is render_session.OpticalLabRenderWorkspace
-    assert go2_session.Go2RenderSession is render_session.OpticalLabRenderSession
-    assert go2_session.Go2RenderFrameContext is render_session.OpticalLabRenderFrameContext
-    assert go2_session.Go2RenderPipeline is render_session.OpticalLabRenderPipeline
-    assert go2_backend.Go2RenderPipeline is go2_backend.OpticalLabRenderPipeline
+    with pytest.raises(ModuleNotFoundError):
+        __import__("tools.optical_pipeline_lab.go2_session")
 
 
 def test_lab_render_pipeline_frame_context_wraps_render_result(monkeypatch: pytest.MonkeyPatch):

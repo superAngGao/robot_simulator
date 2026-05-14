@@ -2132,9 +2132,9 @@ result = frame.render(request)
 ```
 
 Menagerie Go2 should be one implementation of the source-builder layer, not the
-name or shape of the render pipeline itself. Existing `Go2Render*` names are a
-transitional compatibility layer only and should not receive new generic
-responsibilities.
+name or shape of the render pipeline itself. The old `Go2Render*` transitional
+compatibility names have been removed; new generic responsibilities should use
+`OpticalLabRender*`.
 
 For async delivery, `FrameResult` is constructed when delivery completes, not
 when render is submitted or when render returns. It represents a completed
@@ -2227,7 +2227,8 @@ I2 complete:
 
 C1 complete:
   the generic lab render foundation now lives in render_session.py under
-  OpticalLabRender* names, with transitional Go2Render* compatibility aliases.
+  OpticalLabRender* names. The temporary Go2Render* compatibility aliases were
+  removed after C5.
 
 C2 complete:
   OpticalLabRenderSource and OpticalLabRenderOptions exist, and
@@ -2251,16 +2252,18 @@ C5 complete:
   generic video render-loop helpers now live in video_loop.py. go2_backend.py
   keeps Go2 source/camera/CLI/reporting ownership plus thin adapters that inject
   the Go2 camera builder into the generic video loop.
+
+Alias cleanup complete:
+  Go2Render* compatibility aliases and the go2_session.py shim have been
+  removed. Lab render foundation callers should use OpticalLabRender* names.
 ```
 
-The remaining `Go2Render*` names are compatibility aliases only. New generic
-render foundation work should use `OpticalLabRender*`.
+New generic render foundation work should use `OpticalLabRender*`.
 
 Recommended next slices:
 
 ```text
 Post-C5 cleanup:
-  remove remaining Go2Render* aliases in a dedicated alias-deletion change
   continue delivery/runtime extraction separately from Go2 source/camera code
 ```
 
@@ -2283,7 +2286,8 @@ Names that should stop being Go2-specific:
 generic tests named test_go2_pipeline_*
 ```
 
-After C1, `Go2Render*` and `go2_session.py` exist only as transitional aliases.
+`Go2Render*` and `go2_session.py` were transitional C1-C5 compatibility shims
+and have been removed.
 
 The key rule:
 
@@ -2678,7 +2682,8 @@ I2 complete:
 
 I3/C1 complete:
   tools/optical_pipeline_lab/render_session.py owns OpticalLabRender* classes
-  tools/optical_pipeline_lab/go2_session.py is a transitional alias shim
+  tools/optical_pipeline_lab/go2_session.py was a transitional alias shim,
+  removed after C5
 
 I4/C2 complete:
   introduce OpticalLabRenderSource

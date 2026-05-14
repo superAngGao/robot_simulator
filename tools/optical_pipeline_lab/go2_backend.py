@@ -82,12 +82,6 @@ _video_rays_for_camera = video_loop.video_rays_for_camera
 _video_readback_channels = video_loop.video_readback_channels
 _video_render_request = video_loop.video_render_request
 
-# transitional: remove in alias-deletion cleanup
-Go2RenderFrameContext = OpticalLabRenderFrameContext
-Go2RenderPipeline = OpticalLabRenderPipeline
-Go2RenderSession = OpticalLabRenderSession
-Go2RenderWorkspace = OpticalLabRenderWorkspace
-
 
 def main() -> None:
     args = _parse_args()
