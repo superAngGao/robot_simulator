@@ -53,7 +53,7 @@ from physics.publish import GpuPublishedFrame
 from physics.spatial import SpatialTransform
 from sensing import OpticalPinholeCameraSpec, build_pinhole_camera_image_result, build_pinhole_camera_rays
 from tools.optical_pipeline_lab import dynamic_frames
-from tools.optical_pipeline_lab import go2_session as _go2_session
+from tools.optical_pipeline_lab import render_session as _render_session
 from tools.optical_pipeline_lab.async_readback import (
     torch_async_readback_available,
     torch_async_readback_import_error,
@@ -92,10 +92,16 @@ else:
     _WARP_IMPORT_ERROR = None
 
 
-Go2RenderFrameContext = _go2_session.Go2RenderFrameContext
-Go2RenderPipeline = _go2_session.Go2RenderPipeline
-Go2RenderSession = _go2_session.Go2RenderSession
-Go2RenderWorkspace = _go2_session.Go2RenderWorkspace
+OpticalLabRenderFrameContext = _render_session.OpticalLabRenderFrameContext
+OpticalLabRenderPipeline = _render_session.OpticalLabRenderPipeline
+OpticalLabRenderSession = _render_session.OpticalLabRenderSession
+OpticalLabRenderWorkspace = _render_session.OpticalLabRenderWorkspace
+
+# transitional: remove after C3
+Go2RenderFrameContext = OpticalLabRenderFrameContext
+Go2RenderPipeline = OpticalLabRenderPipeline
+Go2RenderSession = OpticalLabRenderSession
+Go2RenderWorkspace = OpticalLabRenderWorkspace
 
 
 def main() -> None:
@@ -114,7 +120,7 @@ def render_many_views(args: argparse.Namespace) -> None:
         ) from _WARP_IMPORT_ERROR
     timings = TimingRecorder()
     total_start = time.perf_counter()
-    pipeline = Go2RenderPipeline.create(
+    pipeline = OpticalLabRenderPipeline.create(
         args,
         timings,
         scene_factory=_build_scene_for_preset,
@@ -357,7 +363,7 @@ def _base_gpu_frame_for_scene(
     return _static_gpu_frame(frame_id=frame_id, sim_time=sim_time, device=device)
 
 
-def _configure_dynamic_video_frame_inputs(args: argparse.Namespace, session: Go2RenderSession) -> None:
+def _configure_dynamic_video_frame_inputs(args: argparse.Namespace, session: OpticalLabRenderSession) -> None:
     if getattr(args, "video_frame_inputs", None) is not None:
         return
     if getattr(args, "scene_preset", "go2_menagerie_static") != "synthetic_body_triangle":
@@ -563,7 +569,7 @@ def _run_snapshot_refit_benchmark(
 
 
 def _render_video_frame(
-    pipeline: Go2RenderPipeline,
+    pipeline: OpticalLabRenderPipeline,
     args: argparse.Namespace,
     frame_index: int,
     ray_cache: list[tuple[OpticalPinholeCameraSpec, object]] | None,
@@ -711,7 +717,7 @@ def _video_delivery_request(
 
 
 def _run_video_benchmark(
-    pipeline: Go2RenderPipeline,
+    pipeline: OpticalLabRenderPipeline,
     args: argparse.Namespace,
     out_dir: Path,
 ) -> FrameTimingRecorder:
@@ -796,7 +802,7 @@ def _run_video_benchmark(
 
 
 def _build_torch_async_warmup_result(
-    pipeline: Go2RenderPipeline,
+    pipeline: OpticalLabRenderPipeline,
     args: argparse.Namespace,
     delivery_request: DeliveryRequest,
 ) -> tuple[object, bool]:

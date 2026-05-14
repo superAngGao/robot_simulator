@@ -2223,22 +2223,19 @@ I1 complete:
 I2 complete:
   Go2RenderWorkspace(device, stream) exists, and session.device/session.stream
   are compatibility properties over session.workspace.
+
+C1 complete:
+  the generic lab render foundation now lives in render_session.py under
+  OpticalLabRender* names, with Go2Render* compatibility aliases retained until
+  C3.
 ```
 
-Those names are transitional. The next code slice should rename them before
-they grow more generic behavior.
+The remaining `Go2Render*` names are compatibility aliases only. New generic
+render foundation work should use `OpticalLabRender*`.
 
 Recommended next slices:
 
 ```text
-C1 rename-only:
-  go2_session.py -> render_session.py
-  Go2RenderWorkspace -> OpticalLabRenderWorkspace
-  Go2RenderSession -> OpticalLabRenderSession
-  Go2RenderFrameContext -> OpticalLabRenderFrameContext
-  Go2RenderPipeline -> OpticalLabRenderPipeline
-  keep Go2 aliases as compatibility shims
-
 C2 source/options:
   add OpticalLabRenderSource
   add OpticalLabRenderOptions
@@ -2276,13 +2273,10 @@ Menagerie smoke output paths
 Names that should stop being Go2-specific:
 
 ```text
-Go2RenderWorkspace
-Go2RenderSession
-Go2RenderFrameContext
-Go2RenderPipeline
-go2_session.py
 generic tests named test_go2_pipeline_*
 ```
+
+After C1, `Go2Render*` and `go2_session.py` exist only as transitional aliases.
 
 The key rule:
 
@@ -2674,28 +2668,15 @@ I1 complete:
 I2 complete:
   minimal workspace owns device/render stream
   session.device/session.stream are compatibility properties
+
+I3/C1 complete:
+  tools/optical_pipeline_lab/render_session.py owns OpticalLabRender* classes
+  tools/optical_pipeline_lab/go2_session.py is a transitional alias shim
 ```
 
 Active Stage I plan:
 
 ```text
-I3/C1 rename-only:
-  tools/optical_pipeline_lab/go2_session.py
-    -> tools/optical_pipeline_lab/render_session.py
-
-  Go2RenderWorkspace
-    -> OpticalLabRenderWorkspace
-  Go2RenderSession
-    -> OpticalLabRenderSession
-  Go2RenderFrameContext
-    -> OpticalLabRenderFrameContext
-  Go2RenderPipeline
-    -> OpticalLabRenderPipeline
-
-  keep Go2 aliases temporarily for compatibility
-  migrate generic tests to OpticalLabRender* names
-  keep actual Go2 preset/matrix/adapter names unchanged
-
 I4/C2 canonical source entrypoint:
   introduce OpticalLabRenderSource
   introduce OpticalLabRenderOptions

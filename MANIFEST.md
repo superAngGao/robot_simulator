@@ -175,6 +175,8 @@ metadata 和 thin runner，避免继续把实验编排塞进 example runtime。
 | `tools/optical_pipeline_lab/async_readback.py` | Optical Pipeline Lab async D2H readback ring helper for pinned Torch copies |
 | `tools/optical_pipeline_lab/dynamic_frames.py` | Lab-only synthetic GPU published-frame clone/perturb helpers for dynamic optical smokes |
 | `tools/optical_pipeline_lab/go2_backend.py` | Shared Go2 Menagerie GPU backend used by the lab runner and example CLI |
+| `tools/optical_pipeline_lab/render_session.py` | OpticalLabRenderWorkspace / Session / FrameContext / Pipeline lab render foundation |
+| `tools/optical_pipeline_lab/go2_session.py` | Transitional aliases from pre-C1 Go2Render* names to OpticalLabRender* names |
 | `tools/optical_pipeline_lab/rgb_pack.py` | Optical Pipeline Lab GPU RGB8 preview packing helper |
 | `benchmarks/bench_optical_device_scene.py` | L5C.1c AABB/BVH decision benchmark harness |
 | `benchmarks/robot_optical_scene.py` | Shared robot-like optical scene generator for benchmarks/examples |
