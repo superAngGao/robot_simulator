@@ -2049,7 +2049,7 @@ OpticalLabRenderSource:
   does not own device streams, BVH, executor, delivery, or reporting
 
 OpticalLabRenderOptions:
-  device, acceleration backend, split strategy, shadows, runtime knobs
+  device, acceleration backend, split strategy, shadows, verbose_warp, runtime knobs
 
 OpticalLabRenderWorkspace:
   owns device and render stream now
@@ -2122,6 +2122,7 @@ pipeline = OpticalLabRenderPipeline.create(
         bvh_backend="cuda_lbvh",
         bvh_split_strategy="sort",
         shadows=True,
+        verbose_warp=False,
     ),
     timings=timings,
 )
@@ -2228,6 +2229,12 @@ C1 complete:
   the generic lab render foundation now lives in render_session.py under
   OpticalLabRender* names, with Go2Render* compatibility aliases retained until
   C3.
+
+C2 complete:
+  OpticalLabRenderSource and OpticalLabRenderOptions exist, and
+  OpticalLabRenderPipeline.create_from_source(...) builds a session from the
+  source/options boundary. The existing callback-based create(...) path remains
+  in place for Go2 until C3.
 ```
 
 The remaining `Go2Render*` names are compatibility aliases only. New generic
@@ -2236,12 +2243,6 @@ render foundation work should use `OpticalLabRender*`.
 Recommended next slices:
 
 ```text
-C2 source/options:
-  add OpticalLabRenderSource
-  add OpticalLabRenderOptions
-  add create_from_source(...) or make create(...) accept source/options
-  keep callback-based construction until Go2 backend is migrated
-
 C3 Go2 source builder:
   move Go2/Menagerie scene construction behind build_go2_render_source(...)
   make go2_backend.py call the generic OpticalLabRenderPipeline entrypoint
@@ -2672,17 +2673,17 @@ I2 complete:
 I3/C1 complete:
   tools/optical_pipeline_lab/render_session.py owns OpticalLabRender* classes
   tools/optical_pipeline_lab/go2_session.py is a transitional alias shim
+
+I4/C2 complete:
+  introduce OpticalLabRenderSource
+  introduce OpticalLabRenderOptions
+  add a source/options construction path
+  keep callback-based create(...) until the Go2 backend is migrated
 ```
 
 Active Stage I plan:
 
 ```text
-I4/C2 canonical source entrypoint:
-  introduce OpticalLabRenderSource
-  introduce OpticalLabRenderOptions
-  add a source/options construction path
-  keep callback-based create(...) until the Go2 backend is migrated
-
 I5/C3 Go2 backend as source builder:
   build Menagerie Go2 and synthetic smoke scenes as OpticalLabRenderSource
   call the generic OpticalLabRenderPipeline entrypoint

@@ -357,6 +357,116 @@ def test_lab_render_pipeline_create_uses_backend_callback_boundary(monkeypatch: 
     assert pipeline.session.render_profile_row is profile_row
 
 
+def test_lab_render_source_exposes_base_frame_as_scene_frame():
+    base_frame = SimpleNamespace(frame_id=11, sim_time=1.1)
+    source = render_session.OpticalLabRenderSource(
+        registry=object(),
+        base_frame=base_frame,
+        bounds_min=(-1.0, -2.0, -3.0),
+        bounds_max=(1.0, 2.0, 3.0),
+        metadata={"source_kind": "unit-test"},
+    )
+
+    assert source.frame is base_frame
+    assert source.frame.frame_id == 11
+    assert source.bounds_min == (-1.0, -2.0, -3.0)
+    assert source.bounds_max == (1.0, 2.0, 3.0)
+    assert source.metadata["source_kind"] == "unit-test"
+
+
+def test_lab_render_pipeline_create_from_source_builds_canonical_session(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    registry = object()
+    base_frame = SimpleNamespace(frame_id=12, sim_time=1.2)
+    source = render_session.OpticalLabRenderSource(
+        registry=registry,
+        base_frame=base_frame,
+        bounds_min=(-1.0, -1.0, -1.0),
+        bounds_max=(1.0, 1.0, 1.0),
+    )
+    snapshot = object()
+    bvh = SimpleNamespace(stats=SimpleNamespace(detail_ms=[("partition", 0.25)]))
+
+    class FakeWp:
+        config = SimpleNamespace(quiet=False)
+
+        class Stream:
+            def __init__(self, *, device):
+                self.device = device
+
+        @staticmethod
+        def init():
+            return None
+
+        @staticmethod
+        def get_device(device):
+            return f"device:{device}"
+
+    class FakeCache:
+        def __init__(self, registry_arg, *, device, stream):
+            assert registry_arg is registry
+            assert device == "device:cuda:source"
+            assert stream.device == "device:cuda:source"
+            self.stream = stream
+
+        def snapshot_from_gpu_frame(self, frame, *, env_idx, stream, include_aabb):
+            assert frame is base_frame
+            assert env_idx == 0
+            assert stream is self.stream
+            assert include_aabb is True
+            return snapshot
+
+    class FakeExecutor:
+        def __init__(self, *, device, stream, shadows, ambient_rgb, background_rgb):
+            self.device = device
+            self.stream = stream
+            self.shadows = shadows
+            self.ambient_rgb = ambient_rgb
+            self.background_rgb = background_rgb
+
+    def fake_build_bvh(snapshot_arg, *, device, stream, split_strategy):
+        assert snapshot_arg is snapshot
+        assert device == "device:cuda:source"
+        assert stream.device == "device:cuda:source"
+        assert split_strategy == "sah"
+        return bvh
+
+    monkeypatch.setattr(render_session, "wp", FakeWp)
+    monkeypatch.setattr(render_session, "DeviceOpticalSceneCache", FakeCache)
+    monkeypatch.setattr(render_session, "build_device_bvh_from_snapshot", fake_build_bvh)
+    monkeypatch.setattr(render_session, "GpuDeviceBvhDirectLightOpticalExecutor", FakeExecutor)
+
+    def pack_rgb8(result):
+        return ("packed", result)
+
+    pipeline = render_session.OpticalLabRenderPipeline.create_from_source(
+        source,
+        render_session.OpticalLabRenderOptions(
+            device="cuda:source",
+            bvh_backend="cpu",
+            bvh_split_strategy="sah",
+            shadows=False,
+        ),
+        TimingRecorder(),
+        pack_rgb8=pack_rgb8,
+    )
+
+    assert pipeline.session.scene is source
+    assert pipeline.session.gpu_frame is base_frame
+    assert pipeline.session.snapshot is snapshot
+    assert pipeline.session.bvh is bvh
+    assert pipeline.session.executor.shadows is False
+    assert pipeline.session.bvh_backend == "cpu"
+    assert pipeline.session.bvh_split_strategy == "sah"
+    assert pipeline.session.pack_rgb8("rgb") == ("packed", "rgb")
+    assert FakeWp.config.quiet is True
+    frame = pipeline.begin_frame(env_idx=3)
+    assert frame.frame_id == 12
+    assert frame.sim_time == 1.2
+    assert frame.env_idx == 3
+
+
 def test_lab_render_session_accepts_workspace_with_device_stream_compatibility():
     workspace = go2_backend.OpticalLabRenderWorkspace(device="device", stream="stream")
     session = go2_backend.OpticalLabRenderSession(

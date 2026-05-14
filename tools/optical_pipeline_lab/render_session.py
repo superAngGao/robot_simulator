@@ -86,6 +86,33 @@ def _default_pack_rgb8(result):
 
 
 @dataclass
+class OpticalLabRenderSource:
+    """Scene/source adapter output consumed by the lab render pipeline."""
+
+    registry: object
+    base_frame: GpuPublishedFrame
+    # Scene world-space AABB hints for setup; not camera/frustum hints.
+    bounds_min: object | None = None
+    bounds_max: object | None = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+    @property
+    def frame(self) -> GpuPublishedFrame:
+        return self.base_frame
+
+
+@dataclass(frozen=True)
+class OpticalLabRenderOptions:
+    """Configuration intent for building one lab render session."""
+
+    device: object = "cuda:0"
+    bvh_backend: str = "cpu"
+    bvh_split_strategy: str = "sort"
+    shadows: bool = True
+    verbose_warp: bool = False
+
+
+@dataclass
 class OpticalLabRenderWorkspace:
     """Lab-local render workspace for device and stream ownership."""
 
@@ -188,20 +215,91 @@ class OpticalLabRenderSession:
                 device=workspace.device,
             )
 
+        source = OpticalLabRenderSource(
+            registry=scene.registry,
+            base_frame=gpu_frame,
+            bounds_min=getattr(scene, "bounds_min", None),
+            bounds_max=getattr(scene, "bounds_max", None),
+            metadata={"scene_preset": scene_preset},
+        )
+        options = OpticalLabRenderOptions(
+            device=args.device,
+            bvh_backend=str(args.bvh_backend),
+            bvh_split_strategy=str(args.bvh_split_strategy),
+            shadows=not args.no_shadows,
+            verbose_warp=bool(args.verbose_warp),
+        )
+        return cls._create_from_initialized_source(
+            source,
+            options,
+            timings,
+            workspace=workspace,
+            scene=scene,
+            pack_rgb8=pack_rgb8,
+            render_profile_buffer_for_request=render_profile_buffer_for_request,
+            render_profile_row=render_profile_row,
+        )
+
+    @classmethod
+    def create_from_source(
+        cls,
+        source: OpticalLabRenderSource,
+        options: OpticalLabRenderOptions,
+        timings: TimingRecorder,
+        *,
+        pack_rgb8: Callable[[object], object] = _default_pack_rgb8,
+        render_profile_buffer_for_request: RenderProfileBufferFactory = (
+            _default_render_profile_buffer_for_request
+        ),
+        render_profile_row: RenderProfileRowFactory = _default_render_profile_row,
+    ) -> "OpticalLabRenderSession":
+        with timings.measure("warp_init"):
+            if not options.verbose_warp:
+                wp.config.quiet = True
+            wp.init()
+            device = wp.get_device(options.device)
+
+        with timings.measure("gpu_frame_stream"):
+            workspace = OpticalLabRenderWorkspace(device=device, stream=wp.Stream(device=device))
+
+        return cls._create_from_initialized_source(
+            source,
+            options,
+            timings,
+            workspace=workspace,
+            scene=source,
+            pack_rgb8=pack_rgb8,
+            render_profile_buffer_for_request=render_profile_buffer_for_request,
+            render_profile_row=render_profile_row,
+        )
+
+    @classmethod
+    def _create_from_initialized_source(
+        cls,
+        source: OpticalLabRenderSource,
+        options: OpticalLabRenderOptions,
+        timings: TimingRecorder,
+        *,
+        workspace: OpticalLabRenderWorkspace,
+        scene: object,
+        pack_rgb8: Callable[[object], object],
+        render_profile_buffer_for_request: RenderProfileBufferFactory,
+        render_profile_row: RenderProfileRowFactory,
+    ) -> "OpticalLabRenderSession":
         with timings.measure("device_scene_snapshot"):
             cache = DeviceOpticalSceneCache(
-                scene.registry,
+                source.registry,
                 device=workspace.device,
                 stream=workspace.stream,
             )
             snapshot = cache.snapshot_from_gpu_frame(
-                gpu_frame,
+                source.base_frame,
                 env_idx=0,
                 stream=workspace.stream,
                 include_aabb=True,
             )
         with timings.measure("bvh_build"):
-            if args.bvh_backend == "cuda_lbvh":
+            if options.bvh_backend == "cuda_lbvh":
                 bvh = build_cuda_lbvh_from_snapshot(
                     snapshot,
                     device=workspace.device,
@@ -212,7 +310,7 @@ class OpticalLabRenderSession:
                     snapshot,
                     device=workspace.device,
                     stream=workspace.stream,
-                    split_strategy=args.bvh_split_strategy,
+                    split_strategy=options.bvh_split_strategy,
                 )
         for detail_name, detail_elapsed_ms in bvh.stats.detail_ms:
             timings.add(f"bvh_build_{detail_name}", detail_elapsed_ms)
@@ -221,7 +319,7 @@ class OpticalLabRenderSession:
             executor = GpuDeviceBvhDirectLightOpticalExecutor(
                 device=workspace.device,
                 stream=workspace.stream,
-                shadows=not args.no_shadows,
+                shadows=options.shadows,
                 ambient_rgb=(0.08, 0.085, 0.09),
                 background_rgb=(0.025, 0.03, 0.038),
             )
@@ -229,13 +327,13 @@ class OpticalLabRenderSession:
         return cls(
             scene=scene,
             workspace=workspace,
-            gpu_frame=gpu_frame,
+            gpu_frame=source.base_frame,
             cache=cache,
             snapshot=snapshot,
             bvh=bvh,
             executor=executor,
-            bvh_backend=str(args.bvh_backend),
-            bvh_split_strategy=str(args.bvh_split_strategy),
+            bvh_backend=str(options.bvh_backend),
+            bvh_split_strategy=str(options.bvh_split_strategy),
             pack_rgb8_fn=pack_rgb8,
             render_profile_buffer_for_request=render_profile_buffer_for_request,
             render_profile_row=render_profile_row,
@@ -384,6 +482,30 @@ class OpticalLabRenderPipeline:
                 timings,
                 scene_factory=scene_factory,
                 base_gpu_frame_factory=base_gpu_frame_factory,
+                pack_rgb8=pack_rgb8,
+                render_profile_buffer_for_request=render_profile_buffer_for_request,
+                render_profile_row=render_profile_row,
+            )
+        )
+
+    @classmethod
+    def create_from_source(
+        cls,
+        source: OpticalLabRenderSource,
+        options: OpticalLabRenderOptions,
+        timings: TimingRecorder,
+        *,
+        pack_rgb8: Callable[[object], object] = _default_pack_rgb8,
+        render_profile_buffer_for_request: RenderProfileBufferFactory = (
+            _default_render_profile_buffer_for_request
+        ),
+        render_profile_row: RenderProfileRowFactory = _default_render_profile_row,
+    ) -> "OpticalLabRenderPipeline":
+        return cls(
+            session=OpticalLabRenderSession.create_from_source(
+                source,
+                options,
+                timings,
                 pack_rgb8=pack_rgb8,
                 render_profile_buffer_for_request=render_profile_buffer_for_request,
                 render_profile_row=render_profile_row,
