@@ -175,7 +175,7 @@ metadata 和 thin runner，避免继续把实验编排塞进 example runtime。
 | `tools/optical_pipeline_lab/async_readback.py` | Optical Pipeline Lab async D2H readback ring helper for pinned Torch copies |
 | `tools/optical_pipeline_lab/dynamic_frames.py` | Lab-only synthetic GPU published-frame clone/perturb helpers for dynamic optical smokes |
 | `tools/optical_pipeline_lab/go2_backend.py` | Go2/Menagerie source builder plus camera/video/reporting backend used by the lab runner and example CLI |
-| `tools/optical_pipeline_lab/render_session.py` | OpticalLabRenderSource / Options / Workspace / Session / FrameContext / Pipeline lab render foundation |
+| `tools/optical_pipeline_lab/render_session.py` | OpticalLabRenderSource / Options / Workspace / PreparedFrame / Session / FrameContext / Pipeline lab render foundation |
 | `tools/optical_pipeline_lab/go2_session.py` | Transitional aliases from pre-C1 Go2Render* names to OpticalLabRender* names |
 | `tools/optical_pipeline_lab/rgb_pack.py` | Optical Pipeline Lab GPU RGB8 preview packing helper |
 | `benchmarks/bench_optical_device_scene.py` | L5C.1c AABB/BVH decision benchmark harness |
@@ -229,7 +229,7 @@ metadata 和 thin runner，避免继续把实验编排塞进 example runtime。
 | Q54 L5C.2 — GPU BVH traversal/refit correctness bridge | ✅ |
 | Q54 L5C.3 — GPU direct-light + shadow any-hit | ✅ |
 | Q54 L5C.4 — CUDA LBVH build + GPU raygen/readback optimization | 🟡 |
-| Q54 Stage B/C3 — Optical Pipeline Lab source-driven Go2 backend | 🟡 |
+| Q54 Stage B/C4 — Optical Pipeline Lab workspace frame preparation | 🟡 |
 | 4 — 域随机化 | ⬜ |
 | 5 — Sim-to-Real | ⬜ |
 

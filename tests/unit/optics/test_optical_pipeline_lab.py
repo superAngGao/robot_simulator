@@ -653,6 +653,59 @@ def test_lab_render_pipeline_static_begin_frame_accepts_session_frame_inputs():
     assert math.isnan(float(frame.prepare_timing["snapshot_ms"]))
 
 
+def test_lab_render_pipeline_dynamic_begin_frame_delegates_workspace_prepare():
+    frame_inputs = object()
+    snapshot = object()
+    bvh = object()
+
+    class FakeWorkspace:
+        def __init__(self):
+            self.calls = []
+
+        def prepare_dynamic_frame(
+            self,
+            frame,
+            *,
+            env_idx,
+            cache,
+            base_bvh,
+            bvh_backend,
+            bvh_split_strategy,
+        ):
+            self.calls.append((frame, env_idx, cache, base_bvh, bvh_backend, bvh_split_strategy))
+            return render_session.OpticalLabPreparedFrame(
+                snapshot=snapshot,
+                bvh=bvh,
+                prepare_timing={
+                    "snapshot_ms": 1.0,
+                    "accel_refit_ms": 2.0,
+                    "accel_rebuild_ms": float("nan"),
+                },
+            )
+
+    workspace = FakeWorkspace()
+    session = SimpleNamespace(
+        scene=SimpleNamespace(frame=SimpleNamespace(frame_id=1, sim_time=0.0)),
+        gpu_frame=object(),
+        workspace=workspace,
+        cache="cache",
+        bvh="base_bvh",
+        bvh_backend="cpu",
+        bvh_split_strategy="sort",
+    )
+
+    frame = go2_backend.OpticalLabRenderPipeline(session=session).begin_frame(
+        frame_inputs=frame_inputs,
+        env_idx=4,
+    )
+
+    assert frame.snapshot is snapshot
+    assert frame.bvh is bvh
+    assert frame.env_idx == 4
+    assert frame.prepare_timing["snapshot_ms"] == 1.0
+    assert workspace.calls == [(frame_inputs, 4, "cache", "base_bvh", "cpu", "sort")]
+
+
 def test_lab_render_pipeline_dynamic_begin_frame_refits_frame_specific_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -678,9 +731,8 @@ def test_lab_render_pipeline_dynamic_begin_frame_refits_frame_specific_snapshot(
     session = SimpleNamespace(
         scene=SimpleNamespace(frame=SimpleNamespace(frame_id=1, sim_time=0.0)),
         gpu_frame=object(),
+        workspace=go2_backend.OpticalLabRenderWorkspace(device="cuda:fake", stream="stream"),
         cache=FakeCache(),
-        stream="stream",
-        device="cuda:fake",
         bvh=SimpleNamespace(stats=SimpleNamespace(supports_refit=True)),
         bvh_backend="cpu",
         bvh_split_strategy="sort",
@@ -727,9 +779,8 @@ def test_lab_render_pipeline_dynamic_begin_frame_rebuilds_when_refit_is_unavaila
     session = SimpleNamespace(
         scene=SimpleNamespace(frame=SimpleNamespace(frame_id=1, sim_time=0.0)),
         gpu_frame=object(),
+        workspace=go2_backend.OpticalLabRenderWorkspace(device="cuda:fake", stream="stream"),
         cache=FakeCache(),
-        stream="stream",
-        device="cuda:fake",
         bvh=SimpleNamespace(stats=SimpleNamespace(supports_refit=False)),
         bvh_backend="cpu",
         bvh_split_strategy="partition",
@@ -767,9 +818,8 @@ def test_lab_render_pipeline_dynamic_begin_frame_rebuilds_cuda_lbvh_when_configu
     session = SimpleNamespace(
         scene=SimpleNamespace(frame=SimpleNamespace(frame_id=1, sim_time=0.0)),
         gpu_frame=object(),
+        workspace=go2_backend.OpticalLabRenderWorkspace(device="cuda:fake", stream="stream"),
         cache=FakeCache(),
-        stream="stream",
-        device="cuda:fake",
         bvh=SimpleNamespace(stats=SimpleNamespace(supports_refit=False)),
         bvh_backend="cuda_lbvh",
         bvh_split_strategy="partition",

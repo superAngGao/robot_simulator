@@ -2241,6 +2241,11 @@ C3 complete:
   foundation through the source/options factory path, while keeping Go2 CLI,
   preset, camera, video, and reporting vocabulary in go2_backend.py. The old
   callback-based create(...) entrypoint has been removed.
+
+C4 complete:
+  OpticalLabRenderWorkspace owns dynamic frame preparation execution:
+  snapshot, refit/rebuild, synchronization, and prepare timing. The pipeline
+  still owns static/dynamic frame selection and FrameContext construction.
 ```
 
 The remaining `Go2Render*` names are compatibility aliases only. New generic
@@ -2249,13 +2254,9 @@ render foundation work should use `OpticalLabRender*`.
 Recommended next slices:
 
 ```text
-C4 workspace frame preparation:
-  move the GPU execution part of dynamic snapshot/refit/rebuild into workspace
-  keep static/dynamic decision and FrameContext creation in the pipeline
-
 C5 video loop split:
   later move generic video render/export helpers out of go2_backend.py
-  do not mix this with C1/C2/C3
+  do not mix this with source/session/workspace foundation changes
 ```
 
 Names that should remain Go2-specific:
@@ -2689,7 +2690,7 @@ I5/C3 complete:
   call the generic OpticalLabRenderPipeline entrypoint
   leave Go2 CLI/preset/matrix vocabulary where it describes real Go2 cases
 
-I6/C4 workspace frame preparation:
+I6/C4 complete:
   move dynamic snapshot/refit/rebuild execution into workspace
   keep FrameContext construction and static/dynamic decision in pipeline
 

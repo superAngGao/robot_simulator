@@ -112,11 +112,91 @@ class OpticalLabRenderOptions:
 
 
 @dataclass
+class OpticalLabPreparedFrame:
+    """Workspace-prepared dynamic frame resources."""
+
+    snapshot: object
+    bvh: object
+    prepare_timing: Mapping[str, float]
+
+
+@dataclass
 class OpticalLabRenderWorkspace:
     """Lab-local render workspace for device and stream ownership."""
 
     device: object
     stream: object
+
+    def prepare_dynamic_frame(
+        self,
+        frame_inputs: GpuPublishedFrame,
+        *,
+        env_idx: int,
+        cache: DeviceOpticalSceneCache,
+        base_bvh: object,
+        bvh_backend: str,
+        bvh_split_strategy: str,
+    ) -> OpticalLabPreparedFrame:
+        snapshot_start = time.perf_counter()
+        snapshot = cache.snapshot_from_gpu_frame(
+            frame_inputs,
+            env_idx=env_idx,
+            stream=self.stream,
+            include_aabb=True,
+        )
+        wp.synchronize_event(snapshot.ready_event)
+        snapshot_ms = (time.perf_counter() - snapshot_start) * 1000.0
+
+        accel_refit_ms = _NAN
+        accel_rebuild_ms = _NAN
+        if bool(getattr(base_bvh.stats, "supports_refit", False)):
+            refit_start = time.perf_counter()
+            bvh = refit_device_bvh_from_snapshot(
+                snapshot,
+                base_bvh,
+                stream=self.stream,
+            )
+            wp.synchronize_event(bvh.ready_event)
+            accel_refit_ms = (time.perf_counter() - refit_start) * 1000.0
+        else:
+            rebuild_start = time.perf_counter()
+            bvh = self.rebuild_dynamic_bvh(
+                snapshot,
+                bvh_backend=bvh_backend,
+                bvh_split_strategy=bvh_split_strategy,
+            )
+            wp.synchronize_event(bvh.ready_event)
+            accel_rebuild_ms = (time.perf_counter() - rebuild_start) * 1000.0
+
+        return OpticalLabPreparedFrame(
+            snapshot=snapshot,
+            bvh=bvh,
+            prepare_timing=FramePrepareTiming(
+                snapshot_ms=snapshot_ms,
+                accel_refit_ms=accel_refit_ms,
+                accel_rebuild_ms=accel_rebuild_ms,
+            ).to_flat_mapping(),
+        )
+
+    def rebuild_dynamic_bvh(
+        self,
+        snapshot,
+        *,
+        bvh_backend: str,
+        bvh_split_strategy: str,
+    ):
+        if bvh_backend == "cuda_lbvh":
+            return build_cuda_lbvh_from_snapshot(
+                snapshot,
+                device=self.device,
+                stream=self.stream,
+            )
+        return build_device_bvh_from_snapshot(
+            snapshot,
+            device=self.device,
+            stream=self.stream,
+            split_strategy=bvh_split_strategy,
+        )
 
 
 RenderSourceFactory = Callable[[OpticalLabRenderWorkspace], OpticalLabRenderSource]
@@ -532,57 +612,21 @@ class OpticalLabRenderPipeline:
         *,
         env_idx: int,
     ) -> OpticalLabRenderFrameContext:
-        snapshot_start = time.perf_counter()
-        snapshot = self.session.cache.snapshot_from_gpu_frame(
+        prepared = self.session.workspace.prepare_dynamic_frame(
             frame_inputs,
             env_idx=env_idx,
-            stream=self.session.stream,
-            include_aabb=True,
+            cache=self.session.cache,
+            base_bvh=self.session.bvh,
+            bvh_backend=self.session.bvh_backend,
+            bvh_split_strategy=self.session.bvh_split_strategy,
         )
-        wp.synchronize_event(snapshot.ready_event)
-        snapshot_ms = (time.perf_counter() - snapshot_start) * 1000.0
-
-        accel_refit_ms = _NAN
-        accel_rebuild_ms = _NAN
-        if bool(getattr(self.session.bvh.stats, "supports_refit", False)):
-            refit_start = time.perf_counter()
-            bvh = refit_device_bvh_from_snapshot(
-                snapshot,
-                self.session.bvh,
-                stream=self.session.stream,
-            )
-            wp.synchronize_event(bvh.ready_event)
-            accel_refit_ms = (time.perf_counter() - refit_start) * 1000.0
-        else:
-            rebuild_start = time.perf_counter()
-            bvh = self._rebuild_dynamic_bvh(snapshot)
-            wp.synchronize_event(bvh.ready_event)
-            accel_rebuild_ms = (time.perf_counter() - rebuild_start) * 1000.0
 
         return OpticalLabRenderFrameContext(
             self.session,
             env_idx=env_idx,
-            snapshot=snapshot,
-            bvh=bvh,
-            prepare_timing=FramePrepareTiming(
-                snapshot_ms=snapshot_ms,
-                accel_refit_ms=accel_refit_ms,
-                accel_rebuild_ms=accel_rebuild_ms,
-            ).to_flat_mapping(),
-        )
-
-    def _rebuild_dynamic_bvh(self, snapshot):
-        if self.session.bvh_backend == "cuda_lbvh":
-            return build_cuda_lbvh_from_snapshot(
-                snapshot,
-                device=self.session.device,
-                stream=self.session.stream,
-            )
-        return build_device_bvh_from_snapshot(
-            snapshot,
-            device=self.session.device,
-            stream=self.session.stream,
-            split_strategy=self.session.bvh_split_strategy,
+            snapshot=prepared.snapshot,
+            bvh=prepared.bvh,
+            prepare_timing=prepared.prepare_timing,
         )
 
     def create_delivery_runtime(self, request: DeliveryRequest):
