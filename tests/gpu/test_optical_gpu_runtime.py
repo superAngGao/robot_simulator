@@ -899,6 +899,102 @@ def test_optical_lab_physics_published_frame_drives_dynamic_render():
     wp.synchronize_event(done_event)
 
 
+def test_optical_lab_physics_published_frame_renders_gpu_camera_raygen():
+    engine = _make_engine()
+    q0, _ = engine.merged.tree.default_state()
+    q0[6] = 0.5
+    engine.step(q=q0, qdot=np.zeros(engine.merged.nv), dt=1e-4)
+    base_frame = engine.latest_published_frame()
+    wp.synchronize_event(base_frame.ready_event)
+
+    registry = _body_bound_triangle_registry()
+    pipeline = go2_backend.OpticalLabRenderPipeline.create_from_source_factory(
+        lambda _workspace: physics_source.build_physics_render_source(
+            registry=registry,
+            base_frame=base_frame,
+            bounds_min=(-0.2, -0.2, 0.0),
+            bounds_max=(0.4, 0.4, 1.2),
+            metadata={"producer": "gpu_engine"},
+        ),
+        go2_backend.OpticalLabRenderOptions(
+            device="cuda:0",
+            bvh_backend="cpu",
+            bvh_split_strategy="sort",
+            shadows=False,
+        ),
+        go2_backend.TimingRecorder(),
+        scene_for_source=physics_source.scene_from_physics_render_source,
+    )
+
+    consumer = _consumer("optical_lab_physics_camera")
+    engine.register_consumer(consumer)
+    q1, _ = engine.merged.tree.default_state()
+    q1[6] = 0.8
+    engine.step(q=q1, qdot=np.zeros(engine.merged.nv), dt=1e-4)
+    latest_frame = engine.latest_published_frame()
+    dynamic_frame = engine.borrow_device_frame(
+        consumer.consumer_id,
+        latest_frame.frame_id,
+        stream=pipeline.session.stream,
+    )
+    body_z = float(dynamic_frame.x_world_r_wp.numpy()[0, 0, 2])
+
+    frame_context = pipeline.begin_frame(frame_inputs=dynamic_frame, env_idx=0)
+    wp.synchronize_event(frame_context.snapshot.ready_event)
+    wp.synchronize_event(frame_context.bvh.ready_event)
+
+    camera = OpticalPinholeCameraSpec(
+        frame_id=dynamic_frame.frame_id,
+        sim_time=dynamic_frame.sim_time,
+        env_idx=0,
+        sensor_id="physics_lab_camera",
+        width=1,
+        height=1,
+        fx=1.0,
+        fy=1.0,
+        cx=0.0,
+        cy=0.0,
+        X_world_camera=SpatialTransform(
+            np.array(
+                [
+                    [1.0, 0.0, 0.0],
+                    [0.0, -1.0, 0.0],
+                    [0.0, 0.0, -1.0],
+                ],
+                dtype=np.float64,
+            ),
+            np.array([0.05, 0.05, 2.0], dtype=np.float64),
+        ),
+        max_distance=10.0,
+        sensor_role="rgb",
+    )
+    render = frame_context.render(
+        RenderRequest(
+            frame_id=dynamic_frame.frame_id,
+            sim_time=dynamic_frame.sim_time,
+            env_idx=0,
+            camera=camera,
+            use_gpu_raygen=True,
+            output_profile=OpticalOutputProfile.DIRECT_LIGHT_FULL,
+        )
+    )
+    host = stage_optical_compute_result_to_host(render.compute)
+
+    assert render.compute.output_profile is OpticalOutputProfile.DIRECT_LIGHT_FULL
+    np.testing.assert_array_equal(host.channel("hit_mask"), [True])
+    np.testing.assert_allclose(host.channel("range_m"), [2.0 - (body_z + 0.25)], atol=1e-4)
+    np.testing.assert_array_equal(host.channel("numeric_instance_id"), [1])
+    np.testing.assert_array_equal(host.channel("bvh_stack_overflow_count"), [0])
+    np.testing.assert_array_equal(host.channel("shadow_stack_overflow_count"), [0])
+    assert host.channel("rgb").shape == (1, 3)
+    done_event = engine.complete_device_consumer(
+        consumer.consumer_id,
+        dynamic_frame.frame_id,
+        stream=pipeline.session.stream,
+    )
+    wp.synchronize_event(done_event)
+
+
 def test_optical_lab_dynamic_video_loop_writes_prepare_timing_csv(tmp_path):
     registry = dynamic_frames.make_body_bound_triangle_registry(geometry_z_offset=0.25)
     wp.init()

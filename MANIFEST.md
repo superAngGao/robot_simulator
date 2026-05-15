@@ -1,7 +1,7 @@
 # Robot Simulator — Project Manifest
 
 > 面向具身智能研究的多物理仿真平台——多物理统一耦合、GPU 原生、渲染与合成数据生成、从第一性原理出发的 API 设计。
-> Last updated: 2026-05-14 (Q54 Optical Pipeline Lab physics-driven render smoke)
+> Last updated: 2026-05-15 (Q54 Optical Pipeline Lab physics-driven camera render smoke)
 
 ## 一句话
 
@@ -149,7 +149,7 @@ camera preset 和 preview asset 构建，不是物理帧提供者、渲染 pipel
 physics-published `GpuPublishedFrame` 接入同一 source vocabulary：
 `physics_source.py` 提供 physics frame → lab render source 的最小桥接，
 GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(...)`
-→ dynamic snapshot/BVH → direct-light render。
+→ dynamic snapshot/BVH → direct-light ray render 与 GPU pinhole camera raygen render。
 
 ## 关键文件
 
@@ -207,10 +207,10 @@ GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(..
 
 ## 规模
 
-- Q54 sensing/optics 子系统当前收集 **222 个测试**：
+- Q54 sensing/optics 子系统当前收集 **223 个测试**：
   `tests/unit/optics` + `tests/unit/sensing` + `tests/gpu/test_optical_warp_executor.py`
   + `tests/gpu/test_optical_gpu_runtime.py`
-  （145 unit optics/lab + 40 unit sensing + 37 GPU optical）
+  （145 unit optics/lab + 40 unit sensing + 38 GPU optical）
 - physics/ ~16,000 行，rendering/ ~960 行；新增 sensing/、optics/ 与
   tools/optical_pipeline_lab/ 作为独立感知/光学与 pipeline tuning 子系统
 - 支持多机器人场景 + 静态几何 + 碰撞过滤 + 多点接触 manifold
@@ -243,7 +243,7 @@ GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(..
 | Q54 L5C.3 — GPU direct-light + shadow any-hit | ✅ |
 | Q54 L5C.4 — CUDA LBVH build + GPU raygen/readback optimization | 🟡 |
 | Q54 Stage B/C1-C5 + cleanup — Optical Pipeline Lab source-driven foundation + video loop split | ✅ |
-| Q54 Stage J.0 — physics-published frame → Optical Pipeline Lab render smoke | ✅ |
+| Q54 Stage J.0 — physics-published frame → Optical Pipeline Lab ray/camera render smoke | ✅ |
 | 4 — 域随机化 | ⬜ |
 | 5 — Sim-to-Real | ⬜ |
 
