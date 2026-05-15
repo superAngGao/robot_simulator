@@ -837,66 +837,64 @@ def test_optical_lab_physics_published_frame_drives_dynamic_render():
         scene_for_source=physics_source.scene_from_physics_render_source,
     )
 
-    consumer = _consumer("optical_lab_physics_render")
+    consumer = physics_source.physics_render_consumer("optical_lab_physics_render")
     engine.register_consumer(consumer)
     q1, _ = engine.merged.tree.default_state()
     q1[6] = 0.8
     engine.step(q=q1, qdot=np.zeros(engine.merged.nv), dt=1e-4)
     latest_frame = engine.latest_published_frame()
-    dynamic_frame = engine.borrow_device_frame(
-        consumer.consumer_id,
-        latest_frame.frame_id,
-        stream=pipeline.session.stream,
-    )
-    body_z = float(dynamic_frame.x_world_r_wp.numpy()[0, 0, 2])
 
-    frame_context = pipeline.begin_frame(frame_inputs=dynamic_frame, env_idx=0)
-    wp.synchronize_event(frame_context.snapshot.ready_event)
-    wp.synchronize_event(frame_context.bvh.ready_event)
-
-    assert pipeline.session.source.metadata["producer"] == "gpu_engine"
-    assert pipeline.session.scene is pipeline.session.source.metadata["scene"]
-    assert frame_context.frame is dynamic_frame
-    assert frame_context.frame_id == dynamic_frame.frame_id
-    assert frame_context.sim_time == dynamic_frame.sim_time
-    assert frame_context.bvh.frame_id == dynamic_frame.frame_id
-    np.testing.assert_allclose(
-        frame_context.snapshot.triangle_aabb_min.numpy()[0, 2],
-        body_z + 0.25,
-        atol=1e-5,
-    )
-
-    rays = OpticalRaySensorSpec(
-        frame_id=dynamic_frame.frame_id,
-        sim_time=dynamic_frame.sim_time,
+    with physics_source.begin_physics_render_frame(
+        engine,
+        pipeline,
+        consumer_id=consumer.consumer_id,
+        published_frame=latest_frame,
         env_idx=0,
-        sensor_id="physics_lab_smoke",
-        origins_world=[[0.05, 0.05, 2.0]],
-        directions_world=[[0.0, 0.0, -1.0]],
-        max_distance=10.0,
-        sensor_role="rgb",
-    )
-    render = frame_context.render(
-        RenderRequest(
+    ) as lease:
+        dynamic_frame = lease.frame
+        body_z = float(dynamic_frame.x_world_r_wp.numpy()[0, 0, 2])
+        frame_context = lease.frame_context
+        wp.synchronize_event(frame_context.snapshot.ready_event)
+        wp.synchronize_event(frame_context.bvh.ready_event)
+
+        assert pipeline.session.source.metadata["producer"] == "gpu_engine"
+        assert pipeline.session.scene is pipeline.session.source.metadata["scene"]
+        assert frame_context.frame is dynamic_frame
+        assert frame_context.frame_id == dynamic_frame.frame_id
+        assert frame_context.sim_time == dynamic_frame.sim_time
+        assert frame_context.bvh.frame_id == dynamic_frame.frame_id
+        np.testing.assert_allclose(
+            frame_context.snapshot.triangle_aabb_min.numpy()[0, 2],
+            body_z + 0.25,
+            atol=1e-5,
+        )
+
+        rays = OpticalRaySensorSpec(
             frame_id=dynamic_frame.frame_id,
             sim_time=dynamic_frame.sim_time,
             env_idx=0,
-            rays=rays,
-            use_gpu_raygen=False,
-            output_profile=OpticalOutputProfile.DIRECT_LIGHT_FULL,
+            sensor_id="physics_lab_smoke",
+            origins_world=[[0.05, 0.05, 2.0]],
+            directions_world=[[0.0, 0.0, -1.0]],
+            max_distance=10.0,
+            sensor_role="rgb",
         )
-    )
-    host = stage_optical_compute_result_to_host(render.compute)
+        render = frame_context.render(
+            RenderRequest(
+                frame_id=dynamic_frame.frame_id,
+                sim_time=dynamic_frame.sim_time,
+                env_idx=0,
+                rays=rays,
+                use_gpu_raygen=False,
+                output_profile=OpticalOutputProfile.DIRECT_LIGHT_FULL,
+            )
+        )
+        host = stage_optical_compute_result_to_host(render.compute)
 
-    np.testing.assert_array_equal(host.channel("hit_mask"), [True])
-    np.testing.assert_allclose(host.channel("range_m"), [2.0 - (body_z + 0.25)], atol=1e-4)
-    np.testing.assert_array_equal(host.channel("numeric_instance_id"), [1])
-    done_event = engine.complete_device_consumer(
-        consumer.consumer_id,
-        dynamic_frame.frame_id,
-        stream=pipeline.session.stream,
-    )
-    wp.synchronize_event(done_event)
+        np.testing.assert_array_equal(host.channel("hit_mask"), [True])
+        np.testing.assert_allclose(host.channel("range_m"), [2.0 - (body_z + 0.25)], atol=1e-4)
+        np.testing.assert_array_equal(host.channel("numeric_instance_id"), [1])
+    wp.synchronize_event(lease.done_event)
 
 
 def test_optical_lab_physics_published_frame_renders_gpu_camera_raygen():
@@ -926,73 +924,71 @@ def test_optical_lab_physics_published_frame_renders_gpu_camera_raygen():
         scene_for_source=physics_source.scene_from_physics_render_source,
     )
 
-    consumer = _consumer("optical_lab_physics_camera")
+    consumer = physics_source.physics_render_consumer("optical_lab_physics_camera")
     engine.register_consumer(consumer)
     q1, _ = engine.merged.tree.default_state()
     q1[6] = 0.8
     engine.step(q=q1, qdot=np.zeros(engine.merged.nv), dt=1e-4)
     latest_frame = engine.latest_published_frame()
-    dynamic_frame = engine.borrow_device_frame(
-        consumer.consumer_id,
-        latest_frame.frame_id,
-        stream=pipeline.session.stream,
-    )
-    body_z = float(dynamic_frame.x_world_r_wp.numpy()[0, 0, 2])
 
-    frame_context = pipeline.begin_frame(frame_inputs=dynamic_frame, env_idx=0)
-    wp.synchronize_event(frame_context.snapshot.ready_event)
-    wp.synchronize_event(frame_context.bvh.ready_event)
-
-    camera = OpticalPinholeCameraSpec(
-        frame_id=dynamic_frame.frame_id,
-        sim_time=dynamic_frame.sim_time,
+    with physics_source.begin_physics_render_frame(
+        engine,
+        pipeline,
+        consumer_id=consumer.consumer_id,
+        published_frame=latest_frame,
         env_idx=0,
-        sensor_id="physics_lab_camera",
-        width=1,
-        height=1,
-        fx=1.0,
-        fy=1.0,
-        cx=0.0,
-        cy=0.0,
-        X_world_camera=SpatialTransform(
-            np.array(
-                [
-                    [1.0, 0.0, 0.0],
-                    [0.0, -1.0, 0.0],
-                    [0.0, 0.0, -1.0],
-                ],
-                dtype=np.float64,
-            ),
-            np.array([0.05, 0.05, 2.0], dtype=np.float64),
-        ),
-        max_distance=10.0,
-        sensor_role="rgb",
-    )
-    render = frame_context.render(
-        RenderRequest(
+    ) as lease:
+        dynamic_frame = lease.frame
+        body_z = float(dynamic_frame.x_world_r_wp.numpy()[0, 0, 2])
+        frame_context = lease.frame_context
+        wp.synchronize_event(frame_context.snapshot.ready_event)
+        wp.synchronize_event(frame_context.bvh.ready_event)
+
+        camera = OpticalPinholeCameraSpec(
             frame_id=dynamic_frame.frame_id,
             sim_time=dynamic_frame.sim_time,
             env_idx=0,
-            camera=camera,
-            use_gpu_raygen=True,
-            output_profile=OpticalOutputProfile.DIRECT_LIGHT_FULL,
+            sensor_id="physics_lab_camera",
+            width=1,
+            height=1,
+            fx=1.0,
+            fy=1.0,
+            cx=0.0,
+            cy=0.0,
+            X_world_camera=SpatialTransform(
+                np.array(
+                    [
+                        [1.0, 0.0, 0.0],
+                        [0.0, -1.0, 0.0],
+                        [0.0, 0.0, -1.0],
+                    ],
+                    dtype=np.float64,
+                ),
+                np.array([0.05, 0.05, 2.0], dtype=np.float64),
+            ),
+            max_distance=10.0,
+            sensor_role="rgb",
         )
-    )
-    host = stage_optical_compute_result_to_host(render.compute)
+        render = frame_context.render(
+            RenderRequest(
+                frame_id=dynamic_frame.frame_id,
+                sim_time=dynamic_frame.sim_time,
+                env_idx=0,
+                camera=camera,
+                use_gpu_raygen=True,
+                output_profile=OpticalOutputProfile.DIRECT_LIGHT_FULL,
+            )
+        )
+        host = stage_optical_compute_result_to_host(render.compute)
 
-    assert render.compute.output_profile is OpticalOutputProfile.DIRECT_LIGHT_FULL
-    np.testing.assert_array_equal(host.channel("hit_mask"), [True])
-    np.testing.assert_allclose(host.channel("range_m"), [2.0 - (body_z + 0.25)], atol=1e-4)
-    np.testing.assert_array_equal(host.channel("numeric_instance_id"), [1])
-    np.testing.assert_array_equal(host.channel("bvh_stack_overflow_count"), [0])
-    np.testing.assert_array_equal(host.channel("shadow_stack_overflow_count"), [0])
-    assert host.channel("rgb").shape == (1, 3)
-    done_event = engine.complete_device_consumer(
-        consumer.consumer_id,
-        dynamic_frame.frame_id,
-        stream=pipeline.session.stream,
-    )
-    wp.synchronize_event(done_event)
+        assert render.compute.output_profile is OpticalOutputProfile.DIRECT_LIGHT_FULL
+        np.testing.assert_array_equal(host.channel("hit_mask"), [True])
+        np.testing.assert_allclose(host.channel("range_m"), [2.0 - (body_z + 0.25)], atol=1e-4)
+        np.testing.assert_array_equal(host.channel("numeric_instance_id"), [1])
+        np.testing.assert_array_equal(host.channel("bvh_stack_overflow_count"), [0])
+        np.testing.assert_array_equal(host.channel("shadow_stack_overflow_count"), [0])
+        assert host.channel("rgb").shape == (1, 3)
+    wp.synchronize_event(lease.done_event)
 
 
 def test_optical_lab_dynamic_video_loop_writes_prepare_timing_csv(tmp_path):

@@ -304,6 +304,149 @@ def test_physics_render_source_wraps_published_frame_scene_view():
     assert scene.bounds_max == (0.4, 0.5, 0.6)
 
 
+def test_physics_render_consumer_defaults_to_device_borrow_lifecycle():
+    consumer = physics_source.physics_render_consumer(
+        "optical_lab_camera",
+        max_lag_frames=2,
+    )
+
+    assert consumer.consumer_id == "optical_lab_camera"
+    assert consumer.consumer_kind == "render_backed_sensing"
+    assert consumer.qos_mode == "lossless"
+    assert consumer.access_mode == "borrow"
+    assert consumer.consumer_location == "device"
+    assert consumer.max_lag_frames == 2
+
+
+def test_begin_physics_render_frame_borrows_prepares_and_completes_once():
+    published_frame = SimpleNamespace(frame_id=41, sim_time=0.41)
+    borrowed_frame = SimpleNamespace(frame_id=41, sim_time=0.41)
+    frame_context = object()
+    calls: list[tuple[object, ...]] = []
+
+    class FakeEngine:
+        def latest_published_frame(self):
+            calls.append(("latest_published_frame",))
+            return published_frame
+
+        def borrow_device_frame(self, consumer_id, frame_id, *, stream):
+            calls.append(("borrow_device_frame", consumer_id, frame_id, stream))
+            return borrowed_frame
+
+        def complete_device_consumer(self, consumer_id, frame_id, *, stream):
+            calls.append(("complete_device_consumer", consumer_id, frame_id, stream))
+            return "done-event"
+
+    class FakePipeline:
+        session = SimpleNamespace(stream="render-stream")
+
+        def begin_frame(self, frame_inputs=None, *, env_idx=0):
+            calls.append(("begin_frame", frame_inputs, env_idx))
+            return frame_context
+
+    lease = physics_source.begin_physics_render_frame(
+        FakeEngine(),
+        FakePipeline(),
+        consumer_id="optical_lab_camera",
+        env_idx=3,
+    )
+
+    assert lease.frame is borrowed_frame
+    assert lease.frame_context is frame_context
+    assert lease.completed is False
+    assert calls == [
+        ("latest_published_frame",),
+        ("borrow_device_frame", "optical_lab_camera", 41, "render-stream"),
+        ("begin_frame", borrowed_frame, 3),
+    ]
+
+    assert lease.complete() == "done-event"
+    assert lease.complete() == "done-event"
+    assert lease.completed is True
+    assert calls == [
+        ("latest_published_frame",),
+        ("borrow_device_frame", "optical_lab_camera", 41, "render-stream"),
+        ("begin_frame", borrowed_frame, 3),
+        ("complete_device_consumer", "optical_lab_camera", 41, "render-stream"),
+    ]
+
+
+def test_begin_physics_render_frame_context_manager_completes_on_exit():
+    published_frame = SimpleNamespace(frame_id=42, sim_time=0.42)
+    borrowed_frame = SimpleNamespace(frame_id=42, sim_time=0.42)
+    calls: list[tuple[object, ...]] = []
+
+    class FakeEngine:
+        def borrow_device_frame(self, consumer_id, frame_id, *, stream):
+            calls.append(("borrow_device_frame", consumer_id, frame_id, stream))
+            return borrowed_frame
+
+        def complete_device_consumer(self, consumer_id, frame_id, *, stream):
+            calls.append(("complete_device_consumer", consumer_id, frame_id, stream))
+            return "done-event"
+
+    class FakePipeline:
+        session = SimpleNamespace(stream="render-stream")
+
+        def begin_frame(self, frame_inputs=None, *, env_idx=0):
+            calls.append(("begin_frame", frame_inputs, env_idx))
+            return object()
+
+    with physics_source.begin_physics_render_frame(
+        FakeEngine(),
+        FakePipeline(),
+        consumer_id="optical_lab_camera",
+        published_frame=published_frame,
+        env_idx=4,
+    ) as lease:
+        assert lease.frame is borrowed_frame
+        assert lease.completed is False
+
+    assert lease.completed is True
+    assert calls == [
+        ("borrow_device_frame", "optical_lab_camera", 42, "render-stream"),
+        ("begin_frame", borrowed_frame, 4),
+        ("complete_device_consumer", "optical_lab_camera", 42, "render-stream"),
+    ]
+
+
+def test_begin_physics_render_frame_completes_borrow_when_prepare_fails():
+    published_frame = SimpleNamespace(frame_id=43, sim_time=0.43)
+    borrowed_frame = SimpleNamespace(frame_id=43, sim_time=0.43)
+    calls: list[tuple[object, ...]] = []
+
+    class FakeEngine:
+        def borrow_device_frame(self, consumer_id, frame_id, *, stream):
+            calls.append(("borrow_device_frame", consumer_id, frame_id, stream))
+            return borrowed_frame
+
+        def complete_device_consumer(self, consumer_id, frame_id, *, stream):
+            calls.append(("complete_device_consumer", consumer_id, frame_id, stream))
+            return "done-event"
+
+    class FakePipeline:
+        session = SimpleNamespace(stream="render-stream")
+
+        def begin_frame(self, frame_inputs=None, *, env_idx=0):
+            calls.append(("begin_frame", frame_inputs, env_idx))
+            raise RuntimeError("prepare failed")
+
+    with pytest.raises(RuntimeError, match="prepare failed"):
+        physics_source.begin_physics_render_frame(
+            FakeEngine(),
+            FakePipeline(),
+            consumer_id="optical_lab_camera",
+            published_frame=published_frame,
+            env_idx=5,
+        )
+
+    assert calls == [
+        ("borrow_device_frame", "optical_lab_camera", 43, "render-stream"),
+        ("begin_frame", borrowed_frame, 5),
+        ("complete_device_consumer", "optical_lab_camera", 43, "render-stream"),
+    ]
+
+
 def test_lab_render_pipeline_create_from_source_builds_canonical_session(
     monkeypatch: pytest.MonkeyPatch,
 ):
