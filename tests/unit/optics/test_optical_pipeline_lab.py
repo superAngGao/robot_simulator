@@ -256,6 +256,14 @@ def test_go2_video_helper_aliases_delegate_to_generic_video_loop():
     assert go2_backend._video_readback_channels is video_loop.video_readback_channels
 
 
+def test_lab_render_source_naming_does_not_use_adapter_language():
+    doc = render_session.OpticalLabRenderSource.__doc__ or ""
+
+    assert "adapter" not in doc.lower()
+    assert "registry" in doc
+    assert "base frame" in doc
+
+
 def test_lab_render_source_exposes_base_frame_as_scene_frame():
     base_frame = SimpleNamespace(frame_id=11, sim_time=1.1)
     source = render_session.OpticalLabRenderSource(
@@ -463,7 +471,9 @@ def test_lab_render_pipeline_create_from_source_factory_preserves_scene_view(
     assert pipeline.begin_frame().frame_id == 13
 
 
-def test_go2_render_source_builder_wraps_scene_and_base_frame(monkeypatch: pytest.MonkeyPatch):
+def test_go2_static_asset_render_source_builder_wraps_scene_and_base_frame(
+    monkeypatch: pytest.MonkeyPatch,
+):
     registry = object()
     scene = SimpleNamespace(
         registry=registry,
@@ -488,7 +498,8 @@ def test_go2_render_source_builder_wraps_scene_and_base_frame(monkeypatch: pytes
     monkeypatch.setattr(go2_backend, "_build_scene_for_preset", fake_build_scene)
     monkeypatch.setattr(go2_backend, "_base_gpu_frame_for_scene", fake_base_gpu_frame)
 
-    source = go2_backend.build_go2_render_source(
+    assert not hasattr(go2_backend, "build_go2_render_source")
+    source = go2_backend.build_go2_static_asset_render_source(
         SimpleNamespace(scene_preset="synthetic_body_triangle"),
         workspace=go2_backend.OpticalLabRenderWorkspace(device="device", stream="stream"),
     )
@@ -499,7 +510,8 @@ def test_go2_render_source_builder_wraps_scene_and_base_frame(monkeypatch: pytes
     assert source.bounds_max == (0.5, 0.5, 0.9)
     assert source.metadata["scene"] is scene
     assert source.metadata["scene_preset"] == "synthetic_body_triangle"
-    assert go2_backend._scene_from_render_source(source) is scene
+    assert source.metadata["source_kind"] == "static_asset"
+    assert go2_backend._scene_from_static_asset_render_source(source) is scene
 
 
 def test_go2_render_options_map_args_to_generic_options():

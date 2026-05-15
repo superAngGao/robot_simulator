@@ -2245,9 +2245,10 @@ C2 complete:
 
 C3 complete:
   Go2/Menagerie and synthetic lab scenes are built through
-  build_go2_render_source(...). The Go2 backend now enters the generic render
-  foundation through the source/options factory path, while keeping Go2 CLI,
-  preset, camera, video, and reporting vocabulary in go2_backend.py. The old
+  build_go2_static_asset_render_source(...). The Go2 static asset builder now
+  enters the generic render foundation through the source/options factory path,
+  while keeping Go2 CLI, preset, camera, video, and reporting vocabulary in
+  go2_backend.py. The old
   callback-based create(...) entrypoint has been removed.
 
 C4 complete:

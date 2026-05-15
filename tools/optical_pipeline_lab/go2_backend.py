@@ -1,8 +1,9 @@
-"""Go2 MuJoCo Menagerie backend for the Optical Pipeline Lab.
+"""Go2 MuJoCo Menagerie static asset builder for the Optical Pipeline Lab.
 
-This backend imports the same visual mesh geoms as
-`mujoco_menagerie_robot_preview.py`, then renders RGB/depth/segmentation PNGs
-with `GpuDeviceBvhDirectLightOpticalExecutor` and hard shadows.
+This module imports the same visual mesh geoms as
+`mujoco_menagerie_robot_preview.py`, then uses the generic lab render session
+to render RGB/depth/segmentation PNGs with
+`GpuDeviceBvhDirectLightOpticalExecutor` and hard shadows.
 
 Example:
 
@@ -101,10 +102,10 @@ def render_many_views(args: argparse.Namespace) -> None:
     total_start = time.perf_counter()
     options = _render_options_from_args(args)
     pipeline = OpticalLabRenderPipeline.create_from_source_factory(
-        lambda workspace: build_go2_render_source(args, workspace=workspace),
+        lambda workspace: build_go2_static_asset_render_source(args, workspace=workspace),
         options,
         timings,
-        scene_for_source=_scene_from_render_source,
+        scene_for_source=_scene_from_static_asset_render_source,
         pack_rgb8=_pack_video_rgb8,
         render_profile_buffer_for_request=_render_profile_buffer_for_request,
         render_profile_row=_render_profile_row,
@@ -323,11 +324,13 @@ def _render_options_from_args(args: argparse.Namespace) -> OpticalLabRenderOptio
     )
 
 
-def build_go2_render_source(
+def build_go2_static_asset_render_source(
     args: argparse.Namespace,
     *,
     workspace: OpticalLabRenderWorkspace,
 ) -> OpticalLabRenderSource:
+    """Build a lab render source from non-simulated Go2/Menagerie assets."""
+
     scene_preset = getattr(args, "scene_preset", "go2_menagerie_static")
     scene = _build_scene_for_preset(scene_preset, args)
     base_frame = _base_gpu_frame_for_scene(
@@ -344,11 +347,12 @@ def build_go2_render_source(
         metadata={
             "scene": scene,
             "scene_preset": scene_preset,
+            "source_kind": "static_asset",
         },
     )
 
 
-def _scene_from_render_source(source: OpticalLabRenderSource):
+def _scene_from_static_asset_render_source(source: OpticalLabRenderSource):
     return source.metadata["scene"]
 
 

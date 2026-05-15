@@ -207,10 +207,10 @@ GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(..
 
 ## 规模
 
-- Q54 sensing/optics 子系统当前收集 **221 个测试**：
+- Q54 sensing/optics 子系统当前收集 **222 个测试**：
   `tests/unit/optics` + `tests/unit/sensing` + `tests/gpu/test_optical_warp_executor.py`
   + `tests/gpu/test_optical_gpu_runtime.py`
-  （144 unit optics/lab + 40 unit sensing + 37 GPU optical）
+  （145 unit optics/lab + 40 unit sensing + 37 GPU optical）
 - physics/ ~16,000 行，rendering/ ~960 行；新增 sensing/、optics/ 与
   tools/optical_pipeline_lab/ 作为独立感知/光学与 pipeline tuning 子系统
 - 支持多机器人场景 + 静态几何 + 碰撞过滤 + 多点接触 manifold
