@@ -261,7 +261,7 @@ def test_lab_render_source_naming_does_not_use_adapter_language():
 
     assert "adapter" not in doc.lower()
     assert "registry" in doc
-    assert "base frame" in doc
+    assert "base frame reference" in doc
 
 
 def test_lab_render_source_exposes_base_frame_as_scene_frame():

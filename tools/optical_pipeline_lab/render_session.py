@@ -86,7 +86,7 @@ def _default_pack_rgb8(result):
 
 @dataclass
 class OpticalLabRenderSource:
-    """Lab-local bundle of optical registry and base frame identity."""
+    """Lab-local bundle of optical registry and base frame reference."""
 
     registry: object
     base_frame: GpuPublishedFrame

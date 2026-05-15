@@ -2974,3 +2974,26 @@ Follow-up：
 `collab/q54-gpu-optical-l5c3c-benchmark-cleanup__implementation-note__codex__v1.md`，
 `collab/q54-gpu-optical-l5c3b-gpu-preview__implementation-note__codex__v1.md`，
 `collab/q54-gpu-optical-l5c4-cuda-lbvh-build__decision-note__codex__v1.md`。
+
+**Q54-OPEN — Should `OpticalLabRenderSource.source_kind` become a typed field?**
+
+After the static asset builder naming cleanup, Go2/Menagerie render sources add
+`metadata["source_kind"] = "static_asset"` while physics-published frame sources
+add `metadata["source_kind"] = "physics"`.
+
+Current status:
+- `source_kind` is metadata only; no runtime branch depends on it.
+- Tests assert it for naming/architecture clarity.
+- `adapter` should remain reserved for external renderer/backend integration.
+- Static asset builders provide `OpticalWorldRegistry` for non-simulated assets.
+- Physics/simulator systems provide `PublishedFrame` / `GpuPublishedFrame`.
+
+Open decision:
+- Keep `source_kind` as informal metadata for lab/debug/reporting only, or
+- Promote it to a typed `OpticalLabRenderSource` field, e.g.
+  `source_kind: Literal["static_asset", "physics", "synthetic"]`, once runtime
+  behavior, reporting, or scenario validation needs to branch on it.
+
+Suggested trigger:
+- Promote to a typed field only when at least two production/lab call sites need
+  to inspect `source_kind` outside tests.
