@@ -147,8 +147,8 @@ camera preset 和 preview asset 构建，不是物理帧提供者、渲染 pipel
 `OpticalLabRenderPipeline` 是通用 lab render 入口，旧 `Go2Render*`
 兼容 alias 与 `go2_session.py` shim 已清理完毕。Stage J 已开始把真实
 physics-published `GpuPublishedFrame` 接入同一 source vocabulary：
-`physics_source.py` 提供 physics frame → lab render source 的最小桥接与
-borrow/begin/complete frame lease helper，
+`physics_source.py` 提供 physics frame → lab render source 的最小桥接、
+physics pipeline factory 与 borrow/begin/complete frame lease helper，
 GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(...)`
 → dynamic snapshot/BVH → direct-light ray render 与 GPU pinhole camera raygen render。
 
@@ -208,10 +208,10 @@ GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(..
 
 ## 规模
 
-- Q54 sensing/optics 子系统当前收集 **227 个测试**：
+- Q54 sensing/optics 子系统当前收集 **228 个测试**：
   `tests/unit/optics` + `tests/unit/sensing` + `tests/gpu/test_optical_warp_executor.py`
   + `tests/gpu/test_optical_gpu_runtime.py`
-  （149 unit optics/lab + 40 unit sensing + 38 GPU optical）
+  （150 unit optics/lab + 40 unit sensing + 38 GPU optical）
 - physics/ ~16,000 行，rendering/ ~960 行；新增 sensing/、optics/ 与
   tools/optical_pipeline_lab/ 作为独立感知/光学与 pipeline tuning 子系统
 - 支持多机器人场景 + 静态几何 + 碰撞过滤 + 多点接触 manifold

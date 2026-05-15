@@ -304,6 +304,52 @@ def test_physics_render_source_wraps_published_frame_scene_view():
     assert scene.bounds_max == (0.4, 0.5, 0.6)
 
 
+def test_create_physics_render_pipeline_uses_canonical_source_factory(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    registry = object()
+    base_frame = SimpleNamespace(frame_id=31, sim_time=0.31)
+    options = render_session.OpticalLabRenderOptions(device="cuda:physics")
+    timings = TimingRecorder()
+    captured: dict[str, object] = {}
+
+    def fake_create_from_source_factory(source_factory, options_arg, timings_arg, *, scene_for_source):
+        source = source_factory(SimpleNamespace(device="fake-device", stream="fake-stream"))
+        captured["source"] = source
+        captured["options"] = options_arg
+        captured["timings"] = timings_arg
+        captured["scene"] = scene_for_source(source)
+        return "physics-pipeline"
+
+    monkeypatch.setattr(
+        physics_source.OpticalLabRenderPipeline,
+        "create_from_source_factory",
+        staticmethod(fake_create_from_source_factory),
+    )
+
+    pipeline = physics_source.create_physics_render_pipeline(
+        registry=registry,
+        base_frame=base_frame,
+        options=options,
+        timings=timings,
+        bounds_min=(-0.1, -0.2, -0.3),
+        bounds_max=(0.4, 0.5, 0.6),
+        metadata={"producer": "gpu_engine"},
+    )
+
+    source = captured["source"]
+    assert pipeline == "physics-pipeline"
+    assert source.registry is registry
+    assert source.base_frame is base_frame
+    assert source.bounds_min == (-0.1, -0.2, -0.3)
+    assert source.bounds_max == (0.4, 0.5, 0.6)
+    assert source.metadata["producer"] == "gpu_engine"
+    assert source.metadata["source_kind"] == "physics"
+    assert captured["scene"] is source.metadata["scene"]
+    assert captured["options"] is options
+    assert captured["timings"] is timings
+
+
 def test_physics_render_consumer_defaults_to_device_borrow_lifecycle():
     consumer = physics_source.physics_render_consumer(
         "optical_lab_camera",

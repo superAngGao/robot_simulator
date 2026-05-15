@@ -819,22 +819,19 @@ def test_optical_lab_physics_published_frame_drives_dynamic_render():
     wp.synchronize_event(base_frame.ready_event)
 
     registry = _body_bound_triangle_registry()
-    pipeline = go2_backend.OpticalLabRenderPipeline.create_from_source_factory(
-        lambda _workspace: physics_source.build_physics_render_source(
-            registry=registry,
-            base_frame=base_frame,
-            bounds_min=(-0.2, -0.2, 0.0),
-            bounds_max=(0.4, 0.4, 1.2),
-            metadata={"producer": "gpu_engine"},
-        ),
-        go2_backend.OpticalLabRenderOptions(
+    pipeline = physics_source.create_physics_render_pipeline(
+        registry=registry,
+        base_frame=base_frame,
+        bounds_min=(-0.2, -0.2, 0.0),
+        bounds_max=(0.4, 0.4, 1.2),
+        metadata={"producer": "gpu_engine"},
+        options=go2_backend.OpticalLabRenderOptions(
             device="cuda:0",
             bvh_backend="cpu",
             bvh_split_strategy="sort",
             shadows=False,
         ),
-        go2_backend.TimingRecorder(),
-        scene_for_source=physics_source.scene_from_physics_render_source,
+        timings=go2_backend.TimingRecorder(),
     )
 
     consumer = physics_source.physics_render_consumer("optical_lab_physics_render")
@@ -906,22 +903,19 @@ def test_optical_lab_physics_published_frame_renders_gpu_camera_raygen():
     wp.synchronize_event(base_frame.ready_event)
 
     registry = _body_bound_triangle_registry()
-    pipeline = go2_backend.OpticalLabRenderPipeline.create_from_source_factory(
-        lambda _workspace: physics_source.build_physics_render_source(
-            registry=registry,
-            base_frame=base_frame,
-            bounds_min=(-0.2, -0.2, 0.0),
-            bounds_max=(0.4, 0.4, 1.2),
-            metadata={"producer": "gpu_engine"},
-        ),
-        go2_backend.OpticalLabRenderOptions(
+    pipeline = physics_source.create_physics_render_pipeline(
+        registry=registry,
+        base_frame=base_frame,
+        bounds_min=(-0.2, -0.2, 0.0),
+        bounds_max=(0.4, 0.4, 1.2),
+        metadata={"producer": "gpu_engine"},
+        options=go2_backend.OpticalLabRenderOptions(
             device="cuda:0",
             bvh_backend="cpu",
             bvh_split_strategy="sort",
             shadows=False,
         ),
-        go2_backend.TimingRecorder(),
-        scene_for_source=physics_source.scene_from_physics_render_source,
+        timings=go2_backend.TimingRecorder(),
     )
 
     consumer = physics_source.physics_render_consumer("optical_lab_physics_camera")

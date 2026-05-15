@@ -7,7 +7,13 @@ from dataclasses import dataclass, field
 
 from physics.publish import ConsumerState, GpuPublishedFrame, QoSMode
 
-from .render_session import OpticalLabRenderFrameContext, OpticalLabRenderPipeline, OpticalLabRenderSource
+from .render_session import (
+    OpticalLabRenderFrameContext,
+    OpticalLabRenderOptions,
+    OpticalLabRenderPipeline,
+    OpticalLabRenderSource,
+)
+from .timing import TimingRecorder
 
 
 @dataclass(frozen=True)
@@ -113,6 +119,40 @@ def begin_physics_render_frame(
     )
 
 
+def create_physics_render_pipeline(
+    *,
+    registry: object,
+    base_frame: GpuPublishedFrame,
+    options: OpticalLabRenderOptions,
+    timings: TimingRecorder,
+    bounds_min: object | None = None,
+    bounds_max: object | None = None,
+    scene: object | None = None,
+    metadata: Mapping[str, object] | None = None,
+) -> OpticalLabRenderPipeline:
+    """Create a lab render pipeline from a physics-published base frame.
+
+    When `scene` is omitted, `build_physics_render_source` creates a
+    `PhysicsLabRenderScene` view so the session still has a scene object.
+    Supplying `scene` overrides that view while keeping the source bundle
+    physics-owned.
+    """
+
+    return OpticalLabRenderPipeline.create_from_source_factory(
+        lambda _workspace: build_physics_render_source(
+            registry=registry,
+            base_frame=base_frame,
+            bounds_min=bounds_min,
+            bounds_max=bounds_max,
+            scene=scene,
+            metadata=metadata,
+        ),
+        options,
+        timings,
+        scene_for_source=scene_from_physics_render_source,
+    )
+
+
 def build_physics_render_source(
     *,
     registry: object,
@@ -126,6 +166,8 @@ def build_physics_render_source(
 
     The caller owns the published-frame lifetime. Real-time/lossless callers
     should borrow the frame from the physics publish ring before passing it in.
+    When `scene` is omitted, this helper creates a `PhysicsLabRenderScene`
+    view and stores it in source metadata for session.scene reconstruction.
     """
 
     source_metadata = dict(metadata or {})
