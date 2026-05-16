@@ -364,6 +364,45 @@ def test_physics_render_consumer_defaults_to_device_borrow_lifecycle():
     assert consumer.max_lag_frames == 2
 
 
+def test_register_physics_render_consumer_builds_and_registers_default_consumer():
+    calls: list[object] = []
+
+    class FakeEngine:
+        def register_consumer(self, consumer):
+            calls.append(consumer)
+
+    consumer = physics_source.register_physics_render_consumer(
+        FakeEngine(),
+        "optical_lab_camera",
+        max_lag_frames=3,
+    )
+
+    assert calls == [consumer]
+    assert consumer.consumer_id == "optical_lab_camera"
+    assert consumer.consumer_kind == "render_backed_sensing"
+    assert consumer.access_mode == "borrow"
+    assert consumer.consumer_location == "device"
+    assert consumer.max_lag_frames == 3
+
+
+def test_register_physics_render_consumer_accepts_existing_consumer():
+    calls: list[object] = []
+    existing = physics_source.physics_render_consumer("already_built")
+
+    class FakeEngine:
+        def register_consumer(self, consumer):
+            calls.append(consumer)
+
+    consumer = physics_source.register_physics_render_consumer(
+        FakeEngine(),
+        "ignored_id",
+        consumer=existing,
+    )
+
+    assert consumer is existing
+    assert calls == [existing]
+
+
 def test_begin_physics_render_frame_borrows_prepares_and_completes_once():
     published_frame = SimpleNamespace(frame_id=41, sim_time=0.41)
     borrowed_frame = SimpleNamespace(frame_id=41, sim_time=0.41)

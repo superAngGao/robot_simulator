@@ -85,6 +85,27 @@ def physics_render_consumer(
     )
 
 
+def register_physics_render_consumer(
+    engine: object,
+    consumer_id: str = "optical_lab_physics_render",
+    *,
+    consumer: ConsumerState | None = None,
+    qos_mode: QoSMode = "lossless",
+    max_lag_frames: int | None = None,
+) -> ConsumerState:
+    """Register a device-borrow physics render consumer on an engine."""
+
+    registered = consumer
+    if registered is None:
+        registered = physics_render_consumer(
+            consumer_id,
+            qos_mode=qos_mode,
+            max_lag_frames=max_lag_frames,
+        )
+    engine.register_consumer(registered)
+    return registered
+
+
 def begin_physics_render_frame(
     engine: object,
     pipeline: OpticalLabRenderPipeline,

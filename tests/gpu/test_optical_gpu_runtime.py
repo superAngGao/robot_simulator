@@ -834,8 +834,10 @@ def test_optical_lab_physics_published_frame_drives_dynamic_render():
         timings=go2_backend.TimingRecorder(),
     )
 
-    consumer = physics_source.physics_render_consumer("optical_lab_physics_render")
-    engine.register_consumer(consumer)
+    consumer = physics_source.register_physics_render_consumer(
+        engine,
+        "optical_lab_physics_render",
+    )
     q1, _ = engine.merged.tree.default_state()
     q1[6] = 0.8
     engine.step(q=q1, qdot=np.zeros(engine.merged.nv), dt=1e-4)
@@ -918,8 +920,10 @@ def test_optical_lab_physics_published_frame_renders_gpu_camera_raygen():
         timings=go2_backend.TimingRecorder(),
     )
 
-    consumer = physics_source.physics_render_consumer("optical_lab_physics_camera")
-    engine.register_consumer(consumer)
+    consumer = physics_source.register_physics_render_consumer(
+        engine,
+        "optical_lab_physics_camera",
+    )
     q1, _ = engine.merged.tree.default_state()
     q1[6] = 0.8
     engine.step(q=q1, qdot=np.zeros(engine.merged.nv), dt=1e-4)
