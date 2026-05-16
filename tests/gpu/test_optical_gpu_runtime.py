@@ -819,7 +819,8 @@ def test_optical_lab_physics_published_frame_drives_dynamic_render():
     wp.synchronize_event(base_frame.ready_event)
 
     registry = _body_bound_triangle_registry()
-    pipeline = physics_source.create_physics_render_pipeline(
+    runtime = physics_source.create_physics_render_runtime(
+        engine=engine,
         registry=registry,
         base_frame=base_frame,
         bounds_min=(-0.2, -0.2, 0.0),
@@ -832,21 +833,15 @@ def test_optical_lab_physics_published_frame_drives_dynamic_render():
             shadows=False,
         ),
         timings=go2_backend.TimingRecorder(),
+        consumer_id="optical_lab_physics_render",
     )
-
-    consumer = physics_source.register_physics_render_consumer(
-        engine,
-        "optical_lab_physics_render",
-    )
+    pipeline = runtime.pipeline
     q1, _ = engine.merged.tree.default_state()
     q1[6] = 0.8
     engine.step(q=q1, qdot=np.zeros(engine.merged.nv), dt=1e-4)
     latest_frame = engine.latest_published_frame()
 
-    with physics_source.begin_physics_render_frame(
-        engine,
-        pipeline,
-        consumer_id=consumer.consumer_id,
+    with runtime.begin_frame(
         published_frame=latest_frame,
         env_idx=0,
     ) as lease:
@@ -905,7 +900,8 @@ def test_optical_lab_physics_published_frame_renders_gpu_camera_raygen():
     wp.synchronize_event(base_frame.ready_event)
 
     registry = _body_bound_triangle_registry()
-    pipeline = physics_source.create_physics_render_pipeline(
+    runtime = physics_source.create_physics_render_runtime(
+        engine=engine,
         registry=registry,
         base_frame=base_frame,
         bounds_min=(-0.2, -0.2, 0.0),
@@ -918,21 +914,14 @@ def test_optical_lab_physics_published_frame_renders_gpu_camera_raygen():
             shadows=False,
         ),
         timings=go2_backend.TimingRecorder(),
-    )
-
-    consumer = physics_source.register_physics_render_consumer(
-        engine,
-        "optical_lab_physics_camera",
+        consumer_id="optical_lab_physics_camera",
     )
     q1, _ = engine.merged.tree.default_state()
     q1[6] = 0.8
     engine.step(q=q1, qdot=np.zeros(engine.merged.nv), dt=1e-4)
     latest_frame = engine.latest_published_frame()
 
-    with physics_source.begin_physics_render_frame(
-        engine,
-        pipeline,
-        consumer_id=consumer.consumer_id,
+    with runtime.begin_frame(
         published_frame=latest_frame,
         env_idx=0,
     ) as lease:

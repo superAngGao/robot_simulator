@@ -67,6 +67,35 @@ class PhysicsLabFrameLease:
         return self.done_event
 
 
+@dataclass(frozen=True)
+class PhysicsLabRenderRuntime:
+    """Small runtime bundle for physics-backed lab render loops."""
+
+    engine: object
+    pipeline: OpticalLabRenderPipeline
+    consumer: ConsumerState
+
+    @property
+    def consumer_id(self) -> str:
+        return self.consumer.consumer_id
+
+    def begin_frame(
+        self,
+        *,
+        published_frame: GpuPublishedFrame | None = None,
+        env_idx: int = 0,
+    ) -> PhysicsLabFrameLease:
+        """Borrow the selected physics frame and prepare a render frame."""
+
+        return begin_physics_render_frame(
+            self.engine,
+            self.pipeline,
+            consumer_id=self.consumer.consumer_id,
+            published_frame=published_frame,
+            env_idx=env_idx,
+        )
+
+
 def physics_render_consumer(
     consumer_id: str = "optical_lab_physics_render",
     *,
@@ -171,6 +200,48 @@ def create_physics_render_pipeline(
         options,
         timings,
         scene_for_source=scene_from_physics_render_source,
+    )
+
+
+def create_physics_render_runtime(
+    *,
+    engine: object,
+    registry: object,
+    base_frame: GpuPublishedFrame,
+    options: OpticalLabRenderOptions,
+    timings: TimingRecorder,
+    consumer_id: str = "optical_lab_physics_render",
+    consumer: ConsumerState | None = None,
+    qos_mode: QoSMode = "lossless",
+    max_lag_frames: int | None = None,
+    bounds_min: object | None = None,
+    bounds_max: object | None = None,
+    scene: object | None = None,
+    metadata: Mapping[str, object] | None = None,
+) -> PhysicsLabRenderRuntime:
+    """Create and register a physics-backed lab render runtime bundle."""
+
+    pipeline = create_physics_render_pipeline(
+        registry=registry,
+        base_frame=base_frame,
+        options=options,
+        timings=timings,
+        bounds_min=bounds_min,
+        bounds_max=bounds_max,
+        scene=scene,
+        metadata=metadata,
+    )
+    registered = register_physics_render_consumer(
+        engine,
+        consumer_id,
+        consumer=consumer,
+        qos_mode=qos_mode,
+        max_lag_frames=max_lag_frames,
+    )
+    return PhysicsLabRenderRuntime(
+        engine=engine,
+        pipeline=pipeline,
+        consumer=registered,
     )
 
 

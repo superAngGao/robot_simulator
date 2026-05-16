@@ -403,6 +403,108 @@ def test_register_physics_render_consumer_accepts_existing_consumer():
     assert calls == [existing]
 
 
+def test_physics_render_runtime_begin_frame_uses_registered_consumer():
+    published_frame = SimpleNamespace(frame_id=51, sim_time=0.51)
+    borrowed_frame = SimpleNamespace(frame_id=51, sim_time=0.51)
+    frame_context = object()
+    consumer = physics_source.physics_render_consumer("runtime_consumer")
+    calls: list[tuple[object, ...]] = []
+
+    class FakeEngine:
+        def borrow_device_frame(self, consumer_id, frame_id, *, stream):
+            calls.append(("borrow_device_frame", consumer_id, frame_id, stream))
+            return borrowed_frame
+
+        def complete_device_consumer(self, consumer_id, frame_id, *, stream):
+            calls.append(("complete_device_consumer", consumer_id, frame_id, stream))
+            return "done-event"
+
+    class FakePipeline:
+        session = SimpleNamespace(stream="render-stream")
+
+        def begin_frame(self, frame_inputs=None, *, env_idx=0):
+            calls.append(("begin_frame", frame_inputs, env_idx))
+            return frame_context
+
+    runtime = physics_source.PhysicsLabRenderRuntime(
+        engine=FakeEngine(),
+        pipeline=FakePipeline(),
+        consumer=consumer,
+    )
+
+    with runtime.begin_frame(published_frame=published_frame, env_idx=6) as lease:
+        assert runtime.consumer_id == "runtime_consumer"
+        assert lease.frame is borrowed_frame
+        assert lease.frame_context is frame_context
+
+    assert lease.done_event == "done-event"
+    assert calls == [
+        ("borrow_device_frame", "runtime_consumer", 51, "render-stream"),
+        ("begin_frame", borrowed_frame, 6),
+        ("complete_device_consumer", "runtime_consumer", 51, "render-stream"),
+    ]
+
+
+def test_create_physics_render_runtime_builds_pipeline_and_registers_consumer(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    engine = object()
+    registry = object()
+    base_frame = SimpleNamespace(frame_id=52, sim_time=0.52)
+    options = render_session.OpticalLabRenderOptions(device="cuda:runtime")
+    timings = TimingRecorder()
+    captured: dict[str, object] = {}
+
+    def fake_create_physics_render_pipeline(**kwargs):
+        captured["pipeline_kwargs"] = kwargs
+        return "runtime-pipeline"
+
+    def fake_register_physics_render_consumer(engine_arg, consumer_id, **kwargs):
+        captured["register_engine"] = engine_arg
+        captured["register_consumer_id"] = consumer_id
+        captured["register_kwargs"] = kwargs
+        return physics_source.physics_render_consumer(consumer_id)
+
+    monkeypatch.setattr(
+        physics_source,
+        "create_physics_render_pipeline",
+        fake_create_physics_render_pipeline,
+    )
+    monkeypatch.setattr(
+        physics_source,
+        "register_physics_render_consumer",
+        fake_register_physics_render_consumer,
+    )
+
+    runtime = physics_source.create_physics_render_runtime(
+        engine=engine,
+        registry=registry,
+        base_frame=base_frame,
+        options=options,
+        timings=timings,
+        consumer_id="runtime_consumer",
+        max_lag_frames=4,
+        bounds_min=(-0.1, -0.2, -0.3),
+        bounds_max=(0.4, 0.5, 0.6),
+        metadata={"producer": "gpu_engine"},
+    )
+
+    pipeline_kwargs = captured["pipeline_kwargs"]
+    assert runtime.engine is engine
+    assert runtime.pipeline == "runtime-pipeline"
+    assert runtime.consumer.consumer_id == "runtime_consumer"
+    assert pipeline_kwargs["registry"] is registry
+    assert pipeline_kwargs["base_frame"] is base_frame
+    assert pipeline_kwargs["options"] is options
+    assert pipeline_kwargs["timings"] is timings
+    assert pipeline_kwargs["bounds_min"] == (-0.1, -0.2, -0.3)
+    assert pipeline_kwargs["bounds_max"] == (0.4, 0.5, 0.6)
+    assert pipeline_kwargs["metadata"] == {"producer": "gpu_engine"}
+    assert captured["register_engine"] is engine
+    assert captured["register_consumer_id"] == "runtime_consumer"
+    assert captured["register_kwargs"]["max_lag_frames"] == 4
+
+
 def test_begin_physics_render_frame_borrows_prepares_and_completes_once():
     published_frame = SimpleNamespace(frame_id=41, sim_time=0.41)
     borrowed_frame = SimpleNamespace(frame_id=41, sim_time=0.41)
