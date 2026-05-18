@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 
+from .render_session import OpticalLabRenderOptions
 from .scenarios import (
     AccelBackend,
     OpticalLabScenarioConfig,
@@ -108,19 +109,20 @@ def build_menagerie_example_args(
 ) -> argparse.Namespace:
     """Translate a lab scenario into the transitional Menagerie example args."""
     validate_run(config, options)
+    render_options = render_options_for_config(config, options)
     return argparse.Namespace(
         model_dir=options.model_dir,
         model_xml=options.model_xml,
         scene_preset=config.scene_preset,
-        device=config.device,
+        device=render_options.device,
         width=int(config.width),
         height=int(config.height),
         view="front",
         views=["front"],
         out=str(options.out),
-        no_shadows=not config.shadows,
-        bvh_backend=_example_bvh_backend(config.accel_backend),
-        bvh_split_strategy="sort",
+        no_shadows=not render_options.shadows,
+        bvh_backend=render_options.bvh_backend,
+        bvh_split_strategy=render_options.bvh_split_strategy,
         fail_on_overflow=bool(options.fail_on_overflow),
         timing_csv=str(options.out / "timing.csv"),
         render_warmup=0,
@@ -141,8 +143,27 @@ def build_menagerie_example_args(
         progress_every=int(options.progress_every),
         render_profile=bool(options.render_profile),
         write_frames=config.write_policy is WritePolicy.PNG_SEQUENCE,
-        verbose_warp=bool(options.verbose_warp),
+        verbose_warp=render_options.verbose_warp,
         lab_frame_defaults=frame_defaults_for_config(config),
+    )
+
+
+def render_options_for_config(
+    config: OpticalLabScenarioConfig,
+    options: LabRunOptions,
+) -> OpticalLabRenderOptions:
+    """Return render-session options derived from lab scenario/run config.
+
+    This helper intentionally maps render-session intent only. Scenario
+    executability stays with validate_run/run_scenario so reserved frame
+    sources can still reuse the mapping when their runner path lands.
+    """
+    return OpticalLabRenderOptions(
+        device=config.device,
+        bvh_backend=_example_bvh_backend(config.accel_backend),
+        bvh_split_strategy="sort",
+        shadows=config.shadows,
+        verbose_warp=options.verbose_warp,
     )
 
 

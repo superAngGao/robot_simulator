@@ -56,6 +56,7 @@ from tools.optical_pipeline_lab.runner import (
     LabRunOptions,
     apply_run_overrides,
     build_menagerie_example_args,
+    render_options_for_config,
     run_scenario,
     validate_run,
     write_scenario_config,
@@ -2165,6 +2166,57 @@ def test_run_overrides_support_rgb8_delivery_payload():
             video_readback_delivery="torch_async",
         ),
     )
+
+
+def test_lab_runner_builds_render_options_from_go2_config(tmp_path: Path):
+    config = apply_run_overrides(
+        get_preset("go2_video_ordered_static"),
+        device="cuda:2",
+        shadows=False,
+    )
+    options = LabRunOptions(out=tmp_path / "run", verbose_warp=True)
+
+    render_options = render_options_for_config(config, options)
+
+    assert isinstance(render_options, render_session.OpticalLabRenderOptions)
+    assert render_options.device == "cuda:2"
+    assert render_options.bvh_backend == "cuda_lbvh"
+    assert render_options.bvh_split_strategy == "sort"
+    assert render_options.shadows is False
+    assert render_options.verbose_warp is True
+
+
+def test_lab_runner_builds_render_options_from_dynamic_smoke_config(tmp_path: Path):
+    config = get_preset("synthetic_body_triangle_dynamic_smoke")
+    options = LabRunOptions(out=tmp_path / "dynamic")
+
+    render_options = render_options_for_config(config, options)
+
+    assert render_options.device == "cuda:0"
+    assert render_options.bvh_backend == "cpu"
+    assert render_options.bvh_split_strategy == "sort"
+    assert render_options.shadows is False
+    assert render_options.verbose_warp is False
+
+
+def test_lab_runner_render_options_mapping_does_not_enable_reserved_frame_source(tmp_path: Path):
+    config = OpticalLabScenarioConfig(
+        scenario_name="physics_runtime_reserved",
+        scenario_family=OpticalLabScenarioFamily.SENSOR_ORDERED,
+        frame_source=FrameSourceKind.PHYSICS_RUNTIME,
+        geometry_mode=GeometryMode.DYNAMIC_RIGID,
+        device="cuda:physics",
+        shadows=False,
+    )
+    options = LabRunOptions(out=tmp_path / "physics")
+
+    render_options = render_options_for_config(config, options)
+
+    assert render_options.device == "cuda:physics"
+    assert render_options.bvh_backend == "cuda_lbvh"
+    assert render_options.shadows is False
+    with pytest.raises(NotImplementedError, match="physics_runtime"):
+        validate_run(config, options)
 
 
 def test_lab_runner_translates_go2_preset_to_menagerie_example_args(tmp_path: Path):
