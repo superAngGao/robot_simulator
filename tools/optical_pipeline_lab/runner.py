@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -11,10 +12,12 @@ from pathlib import Path
 from .render_session import OpticalLabRenderOptions
 from .scenarios import (
     AccelBackend,
+    FrameSourceKind,
     OpticalLabScenarioConfig,
     ReadbackPayload,
     WritePolicy,
 )
+from .timing import TimingRecorder
 
 DEFAULT_LAB_WARMUP_RENDERS = 5
 
@@ -164,6 +167,51 @@ def render_options_for_config(
         bvh_split_strategy="sort",
         shadows=config.shadows,
         verbose_warp=options.verbose_warp,
+    )
+
+
+def create_physics_render_runtime_for_config(
+    config: OpticalLabScenarioConfig,
+    options: LabRunOptions,
+    *,
+    engine: object,
+    registry: object,
+    base_frame: object,
+    timings: TimingRecorder,
+    consumer_id: str = "optical_lab_physics_render",
+    consumer: object | None = None,
+    qos_mode: object = "lossless",
+    max_lag_frames: int | None = None,
+    bounds_min: object | None = None,
+    bounds_max: object | None = None,
+    scene: object | None = None,
+    metadata: Mapping[str, object] | None = None,
+) -> object:
+    """Create a physics-backed render runtime from lab config.
+
+    This is assembly-only: it derives render-session options from config and
+    delegates to physics_source without enabling run_scenario's physics loop.
+    """
+
+    if config.frame_source is not FrameSourceKind.PHYSICS_RUNTIME:
+        raise ValueError("create_physics_render_runtime_for_config requires frame_source='physics_runtime'")
+
+    from . import physics_source
+
+    return physics_source.create_physics_render_runtime(
+        engine=engine,
+        registry=registry,
+        base_frame=base_frame,
+        options=render_options_for_config(config, options),
+        timings=timings,
+        consumer_id=consumer_id,
+        consumer=consumer,
+        qos_mode=qos_mode,
+        max_lag_frames=max_lag_frames,
+        bounds_min=bounds_min,
+        bounds_max=bounds_max,
+        scene=scene,
+        metadata=metadata,
     )
 
 

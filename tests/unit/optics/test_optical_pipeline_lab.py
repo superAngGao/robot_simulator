@@ -56,6 +56,7 @@ from tools.optical_pipeline_lab.runner import (
     LabRunOptions,
     apply_run_overrides,
     build_menagerie_example_args,
+    create_physics_render_runtime_for_config,
     render_options_for_config,
     run_scenario,
     validate_run,
@@ -505,6 +506,89 @@ def test_create_physics_render_runtime_builds_pipeline_and_registers_consumer(
     assert captured["register_engine"] is engine
     assert captured["register_consumer_id"] == "runtime_consumer"
     assert captured["register_kwargs"]["max_lag_frames"] == 4
+
+
+def test_lab_runner_creates_physics_render_runtime_from_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    engine = object()
+    registry = object()
+    base_frame = SimpleNamespace(frame_id=61, sim_time=0.61)
+    timings = TimingRecorder()
+    scene = object()
+    consumer = physics_source.physics_render_consumer("existing_consumer")
+    captured: dict[str, object] = {}
+
+    def fake_create_physics_render_runtime(**kwargs):
+        captured.update(kwargs)
+        return "physics-runtime"
+
+    monkeypatch.setattr(
+        physics_source,
+        "create_physics_render_runtime",
+        fake_create_physics_render_runtime,
+    )
+    config = OpticalLabScenarioConfig(
+        scenario_name="physics_runtime_reserved",
+        scenario_family=OpticalLabScenarioFamily.SENSOR_ORDERED,
+        frame_source=FrameSourceKind.PHYSICS_RUNTIME,
+        geometry_mode=GeometryMode.DYNAMIC_RIGID,
+        device="cuda:physics",
+        shadows=False,
+    )
+    options = LabRunOptions(out=tmp_path / "physics", verbose_warp=True)
+
+    runtime = create_physics_render_runtime_for_config(
+        config,
+        options,
+        engine=engine,
+        registry=registry,
+        base_frame=base_frame,
+        timings=timings,
+        consumer_id="runtime_consumer",
+        consumer=consumer,
+        qos_mode="latest",
+        max_lag_frames=2,
+        bounds_min=(-0.1, -0.2, -0.3),
+        bounds_max=(0.4, 0.5, 0.6),
+        scene=scene,
+        metadata={"producer": "gpu_engine"},
+    )
+
+    assert runtime == "physics-runtime"
+    assert captured["engine"] is engine
+    assert captured["registry"] is registry
+    assert captured["base_frame"] is base_frame
+    assert captured["timings"] is timings
+    assert captured["consumer_id"] == "runtime_consumer"
+    assert captured["consumer"] is consumer
+    assert captured["qos_mode"] == "latest"
+    assert captured["max_lag_frames"] == 2
+    assert captured["bounds_min"] == (-0.1, -0.2, -0.3)
+    assert captured["bounds_max"] == (0.4, 0.5, 0.6)
+    assert captured["scene"] is scene
+    assert captured["metadata"] == {"producer": "gpu_engine"}
+    render_options = captured["options"]
+    assert isinstance(render_options, render_session.OpticalLabRenderOptions)
+    assert render_options.device == "cuda:physics"
+    assert render_options.bvh_backend == "cuda_lbvh"
+    assert render_options.shadows is False
+    assert render_options.verbose_warp is True
+
+
+def test_lab_runner_physics_runtime_helper_rejects_non_physics_frame_source(tmp_path: Path):
+    config = get_preset("go2_video_ordered_static")
+
+    with pytest.raises(ValueError, match="physics_runtime"):
+        create_physics_render_runtime_for_config(
+            config,
+            LabRunOptions(out=tmp_path / "go2"),
+            engine=object(),
+            registry=object(),
+            base_frame=SimpleNamespace(frame_id=62, sim_time=0.62),
+            timings=TimingRecorder(),
+        )
 
 
 def test_begin_physics_render_frame_borrows_prepares_and_completes_once():
