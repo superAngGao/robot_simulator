@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import csv
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 import tools.optical_pipeline_lab.go2_backend as go2_backend
-import tools.optical_pipeline_lab.render_session as render_session
 from optics import (
     CpuDirectLightOpticalExecutor,
     DeviceOpticalSceneCache,
@@ -37,9 +37,21 @@ from physics.robot_tree import Body, RobotTreeNumpy
 from physics.spatial import SpatialInertia, SpatialTransform
 from robot.model import RobotModel
 from sensing import OpticalPinholeCameraSpec, OpticalRaySensorSpec, build_pinhole_camera_rays
-from tools.optical_pipeline_lab import dynamic_frames, physics_source
+from tools.optical_pipeline_lab import (
+    AccelBackend,
+    FrameSourceKind,
+    GeometryMode,
+    OpticalLabScenarioConfig,
+    OpticalLabScenarioFamily,
+    dynamic_frames,
+)
 from tools.optical_pipeline_lab.presets import get_preset
-from tools.optical_pipeline_lab.runner import LabRunOptions, apply_run_overrides, run_scenario
+from tools.optical_pipeline_lab.runner import (
+    LabRunOptions,
+    apply_run_overrides,
+    create_physics_render_runtime_for_config,
+    run_scenario,
+)
 from tools.optical_pipeline_lab.timing import TimingRecorder
 
 try:
@@ -124,6 +136,18 @@ def _body_bound_triangle_registry() -> OpticalWorldRegistry:
         )
     )
     return registry
+
+
+def _physics_runtime_smoke_config() -> OpticalLabScenarioConfig:
+    return OpticalLabScenarioConfig(
+        scenario_name="physics_runtime_smoke",
+        scenario_family=OpticalLabScenarioFamily.SENSOR_ORDERED,
+        scene_preset="synthetic_body_triangle",
+        frame_source=FrameSourceKind.PHYSICS_RUNTIME,
+        geometry_mode=GeometryMode.DYNAMIC_RIGID,
+        accel_backend=AccelBackend.CPU_BVH,
+        shadows=False,
+    )
 
 
 def _world_static_triangle_registry() -> OpticalWorldRegistry:
@@ -812,7 +836,7 @@ def test_optical_lab_dynamic_begin_frame_populates_prepare_timing_with_synthetic
     )
 
 
-def test_optical_lab_physics_published_frame_drives_dynamic_render():
+def test_optical_lab_physics_published_frame_drives_dynamic_render(tmp_path: Path):
     engine = _make_engine()
     q0, _ = engine.merged.tree.default_state()
     q0[6] = 0.5
@@ -821,19 +845,15 @@ def test_optical_lab_physics_published_frame_drives_dynamic_render():
     wp.synchronize_event(base_frame.ready_event)
 
     registry = _body_bound_triangle_registry()
-    runtime = physics_source.create_physics_render_runtime(
+    runtime = create_physics_render_runtime_for_config(
+        _physics_runtime_smoke_config(),
+        LabRunOptions(out=tmp_path / "physics"),
         engine=engine,
         registry=registry,
         base_frame=base_frame,
         bounds_min=(-0.2, -0.2, 0.0),
         bounds_max=(0.4, 0.4, 1.2),
         metadata={"producer": "gpu_engine"},
-        options=render_session.OpticalLabRenderOptions(
-            device="cuda:0",
-            bvh_backend="cpu",
-            bvh_split_strategy="sort",
-            shadows=False,
-        ),
         timings=TimingRecorder(),
         consumer_id="optical_lab_physics_render",
     )
@@ -893,7 +913,7 @@ def test_optical_lab_physics_published_frame_drives_dynamic_render():
     wp.synchronize_event(lease.done_event)
 
 
-def test_optical_lab_physics_published_frame_renders_gpu_camera_raygen():
+def test_optical_lab_physics_published_frame_renders_gpu_camera_raygen(tmp_path: Path):
     engine = _make_engine()
     q0, _ = engine.merged.tree.default_state()
     q0[6] = 0.5
@@ -902,19 +922,15 @@ def test_optical_lab_physics_published_frame_renders_gpu_camera_raygen():
     wp.synchronize_event(base_frame.ready_event)
 
     registry = _body_bound_triangle_registry()
-    runtime = physics_source.create_physics_render_runtime(
+    runtime = create_physics_render_runtime_for_config(
+        _physics_runtime_smoke_config(),
+        LabRunOptions(out=tmp_path / "physics_camera"),
         engine=engine,
         registry=registry,
         base_frame=base_frame,
         bounds_min=(-0.2, -0.2, 0.0),
         bounds_max=(0.4, 0.4, 1.2),
         metadata={"producer": "gpu_engine"},
-        options=render_session.OpticalLabRenderOptions(
-            device="cuda:0",
-            bvh_backend="cpu",
-            bvh_split_strategy="sort",
-            shadows=False,
-        ),
         timings=TimingRecorder(),
         consumer_id="optical_lab_physics_camera",
     )
