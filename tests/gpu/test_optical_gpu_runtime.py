@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 import tools.optical_pipeline_lab.go2_backend as go2_backend
+import tools.optical_pipeline_lab.render_session as render_session
 from optics import (
     CpuDirectLightOpticalExecutor,
     DeviceOpticalSceneCache,
@@ -39,6 +40,7 @@ from sensing import OpticalPinholeCameraSpec, OpticalRaySensorSpec, build_pinhol
 from tools.optical_pipeline_lab import dynamic_frames, physics_source
 from tools.optical_pipeline_lab.presets import get_preset
 from tools.optical_pipeline_lab.runner import LabRunOptions, apply_run_overrides, run_scenario
+from tools.optical_pipeline_lab.timing import TimingRecorder
 
 try:
     import warp as wp
@@ -826,13 +828,13 @@ def test_optical_lab_physics_published_frame_drives_dynamic_render():
         bounds_min=(-0.2, -0.2, 0.0),
         bounds_max=(0.4, 0.4, 1.2),
         metadata={"producer": "gpu_engine"},
-        options=go2_backend.OpticalLabRenderOptions(
+        options=render_session.OpticalLabRenderOptions(
             device="cuda:0",
             bvh_backend="cpu",
             bvh_split_strategy="sort",
             shadows=False,
         ),
-        timings=go2_backend.TimingRecorder(),
+        timings=TimingRecorder(),
         consumer_id="optical_lab_physics_render",
     )
     pipeline = runtime.pipeline
@@ -907,13 +909,13 @@ def test_optical_lab_physics_published_frame_renders_gpu_camera_raygen():
         bounds_min=(-0.2, -0.2, 0.0),
         bounds_max=(0.4, 0.4, 1.2),
         metadata={"producer": "gpu_engine"},
-        options=go2_backend.OpticalLabRenderOptions(
+        options=render_session.OpticalLabRenderOptions(
             device="cuda:0",
             bvh_backend="cpu",
             bvh_split_strategy="sort",
             shadows=False,
         ),
-        timings=go2_backend.TimingRecorder(),
+        timings=TimingRecorder(),
         consumer_id="optical_lab_physics_camera",
     )
     q1, _ = engine.merged.tree.default_state()
