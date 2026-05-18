@@ -2997,3 +2997,31 @@ Open decision:
 Suggested trigger:
 - Promote to a typed field only when at least two production/lab call sites need
   to inspect `source_kind` outside tests.
+
+**Q54-OPEN — Should physics render consumer registration stay in `physics_source.py`?**
+
+Stage J introduced `physics_render_consumer(...)` and
+`register_physics_render_consumer(...)` in
+`tools/optical_pipeline_lab/physics_source.py` so physics-backed lab render
+tests and future runtime code can consistently use the Q52 device-borrow
+consumer shape.
+
+Current status:
+- `physics_render_consumer(...)` is pure construction of a
+  `render_backed_sensing` / `borrow` / `device` `ConsumerState`.
+- `register_physics_render_consumer(...)` calls `engine.register_consumer(...)`
+  and therefore has engine-side effects.
+- `PhysicsLabRenderRuntime` currently composes pipeline creation and consumer
+  registration, but it does not own the physics engine loop or publish policy.
+
+Open decision:
+- Keep registration in `physics_source.py` while Stage J remains a lab-local
+  source/runtime bridge, or
+- Move registration into a future runner/sensor-loop module once that module
+  needs to control registration timing, conditional registration, or
+  unregister/teardown policy.
+
+Suggested trigger:
+- Move the registration helper out of `physics_source.py` when a real lab
+  runner or sensor runtime owns a physics engine step loop and needs to decide
+  when consumers are registered/unregistered relative to publish policy setup.

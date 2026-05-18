@@ -635,6 +635,43 @@ def test_begin_physics_render_frame_completes_borrow_when_prepare_fails():
     ]
 
 
+def test_begin_physics_render_frame_completes_borrow_when_prepare_raises_base_exception():
+    published_frame = SimpleNamespace(frame_id=44, sim_time=0.44)
+    borrowed_frame = SimpleNamespace(frame_id=44, sim_time=0.44)
+    calls: list[tuple[object, ...]] = []
+
+    class FakeEngine:
+        def borrow_device_frame(self, consumer_id, frame_id, *, stream):
+            calls.append(("borrow_device_frame", consumer_id, frame_id, stream))
+            return borrowed_frame
+
+        def complete_device_consumer(self, consumer_id, frame_id, *, stream):
+            calls.append(("complete_device_consumer", consumer_id, frame_id, stream))
+            return "done-event"
+
+    class FakePipeline:
+        session = SimpleNamespace(stream="render-stream")
+
+        def begin_frame(self, frame_inputs=None, *, env_idx=0):
+            calls.append(("begin_frame", frame_inputs, env_idx))
+            raise KeyboardInterrupt("interrupted during prepare")
+
+    with pytest.raises(KeyboardInterrupt, match="interrupted during prepare"):
+        physics_source.begin_physics_render_frame(
+            FakeEngine(),
+            FakePipeline(),
+            consumer_id="optical_lab_camera",
+            published_frame=published_frame,
+            env_idx=6,
+        )
+
+    assert calls == [
+        ("borrow_device_frame", "optical_lab_camera", 44, "render-stream"),
+        ("begin_frame", borrowed_frame, 6),
+        ("complete_device_consumer", "optical_lab_camera", 44, "render-stream"),
+    ]
+
+
 def test_lab_render_pipeline_create_from_source_builds_canonical_session(
     monkeypatch: pytest.MonkeyPatch,
 ):
