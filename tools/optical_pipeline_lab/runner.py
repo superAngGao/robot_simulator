@@ -163,6 +163,7 @@ def frame_defaults_for_config(config: OpticalLabScenarioConfig) -> dict[str, str
         "width": int(config.width),
         "height": int(config.height),
         "scene_preset": config.scene_preset,
+        "frame_source": config.frame_source.value,
         "camera_mode": config.camera_mode,
         "geometry_mode": config.geometry_mode.value,
         "accel_backend": config.accel_backend.value,

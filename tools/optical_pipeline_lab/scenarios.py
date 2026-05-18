@@ -26,6 +26,12 @@ class GeometryMode(Enum):
     FLUID = "fluid"
 
 
+class FrameSourceKind(Enum):
+    STATIC_ASSET_BUILDER = "static_asset_builder"
+    SYNTHETIC_FRAME_SEQUENCE = "synthetic_frame_sequence"
+    PHYSICS_RUNTIME = "physics_runtime"
+
+
 class AccelBackend(Enum):
     CPU_BVH = "cpu_bvh"
     CUDA_LBVH = "cuda_lbvh"
@@ -81,6 +87,7 @@ class OpticalLabScenarioConfig:
     width: int = DEFAULT_RENDER_WIDTH
     height: int = DEFAULT_RENDER_HEIGHT
     scene_preset: str = "go2_menagerie_static"
+    frame_source: FrameSourceKind = FrameSourceKind.STATIC_ASSET_BUILDER
     geometry_mode: GeometryMode = GeometryMode.STATIC
     camera_mode: str = "camera_orbit"
     accel_backend: AccelBackend = AccelBackend.CUDA_LBVH
@@ -97,6 +104,15 @@ class OpticalLabScenarioConfig:
         """Fail loudly for reserved modes that the lab does not execute yet."""
         if self._is_implemented_dynamic_smoke():
             return
+        if self.frame_source is FrameSourceKind.PHYSICS_RUNTIME:
+            raise NotImplementedError(
+                "frame_source='physics_runtime' is reserved until the lab runner owns a physics engine loop"
+            )
+        if self.frame_source is FrameSourceKind.SYNTHETIC_FRAME_SEQUENCE:
+            raise NotImplementedError(
+                "frame_source='synthetic_frame_sequence' is currently implemented only by "
+                "the synthetic_body_triangle_dynamic_smoke preset"
+            )
         if self.geometry_mode is not GeometryMode.STATIC:
             raise NotImplementedError(
                 f"geometry_mode={self.geometry_mode.value!r} is reserved; use 'static' for now"
@@ -130,6 +146,7 @@ class OpticalLabScenarioConfig:
     def _is_implemented_dynamic_smoke(self) -> bool:
         return (
             self.scene_preset == "synthetic_body_triangle"
+            and self.frame_source is FrameSourceKind.SYNTHETIC_FRAME_SEQUENCE
             and self.geometry_mode is GeometryMode.DYNAMIC_RIGID
             and self.accel_backend is AccelBackend.CPU_BVH
             and self.accel_policy is AccelPolicy.REFIT_EACH_FRAME

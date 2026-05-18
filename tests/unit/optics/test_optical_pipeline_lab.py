@@ -32,6 +32,7 @@ from tools.optical_pipeline_lab import (
     DEFAULT_RENDER_WIDTH,
     AccelPolicy,
     DeliveryPolicy,
+    FrameSourceKind,
     FrameTimingRecorder,
     GeometryMode,
     OpticalLabScenarioConfig,
@@ -1839,6 +1840,7 @@ def test_go2_video_ordered_static_preset_is_currently_implemented():
     config = get_preset("go2_video_ordered_static")
 
     assert config.scenario_family is OpticalLabScenarioFamily.VIDEO_ORDERED_EXPORT
+    assert config.frame_source is FrameSourceKind.STATIC_ASSET_BUILDER
     assert config.geometry_mode is GeometryMode.STATIC
     assert config.delivery_policy is DeliveryPolicy.SYNC
     assert config.width == DEFAULT_RENDER_WIDTH
@@ -1851,6 +1853,7 @@ def test_synthetic_dynamic_smoke_preset_is_currently_implemented():
 
     assert config.scenario_family is OpticalLabScenarioFamily.VIDEO_ORDERED_EXPORT
     assert config.scene_preset == "synthetic_body_triangle"
+    assert config.frame_source is FrameSourceKind.SYNTHETIC_FRAME_SEQUENCE
     assert config.geometry_mode is GeometryMode.DYNAMIC_RIGID
     assert config.accel_policy is AccelPolicy.REFIT_EACH_FRAME
     assert config.readback_payload is ReadbackPayload.RGB
@@ -1867,6 +1870,30 @@ def test_default_render_resolution_is_1080p():
     assert DEFAULT_RENDER_HEIGHT == 1080
     assert config.width == 1920
     assert config.height == 1080
+
+
+def test_physics_runtime_frame_source_is_reserved_until_runner_loop_exists():
+    config = OpticalLabScenarioConfig(
+        scenario_name="physics_runtime_reserved",
+        scenario_family=OpticalLabScenarioFamily.SENSOR_ORDERED,
+        frame_source=FrameSourceKind.PHYSICS_RUNTIME,
+        geometry_mode=GeometryMode.DYNAMIC_RIGID,
+    )
+
+    with pytest.raises(NotImplementedError, match="physics_runtime"):
+        config.validate_implemented()
+
+
+def test_synthetic_frame_source_is_reserved_outside_dynamic_smoke_preset():
+    config = OpticalLabScenarioConfig(
+        scenario_name="synthetic_source_reserved",
+        scenario_family=OpticalLabScenarioFamily.VIDEO_ORDERED_EXPORT,
+        frame_source=FrameSourceKind.SYNTHETIC_FRAME_SEQUENCE,
+        geometry_mode=GeometryMode.STATIC,
+    )
+
+    with pytest.raises(NotImplementedError, match="synthetic_frame_sequence"):
+        config.validate_implemented()
 
 
 def test_lab_default_warmup_covers_readback_startup_spikes(tmp_path: Path):
@@ -2138,6 +2165,7 @@ def test_lab_runner_translates_go2_preset_to_menagerie_example_args(tmp_path: Pa
     assert args.no_shadows is False
     assert args.lab_frame_defaults["scenario_name"] == "go2_video_ordered_static"
     assert args.lab_frame_defaults["device"] == "cuda:1"
+    assert args.lab_frame_defaults["frame_source"] == "static_asset_builder"
     assert args.lab_frame_defaults["readback_payload"] == "rgb"
 
 
@@ -2154,6 +2182,7 @@ def test_lab_runner_translates_dynamic_smoke_preset_to_video_args(tmp_path: Path
     assert args.video_readback == "rgb"
     assert args.no_shadows is True
     assert args.lab_frame_defaults["scenario_name"] == "synthetic_body_triangle_dynamic_smoke"
+    assert args.lab_frame_defaults["frame_source"] == "synthetic_frame_sequence"
     assert args.lab_frame_defaults["geometry_mode"] == "dynamic_rigid"
     assert args.lab_frame_defaults["accel_policy"] == "refit_each_frame"
 
@@ -2195,6 +2224,7 @@ def test_lab_runner_writes_serialized_scenario_config(tmp_path: Path):
     payload = json.loads(path.read_text())
     assert payload["scenario"]["scenario_name"] == "go2_video_ordered_static"
     assert payload["scenario"]["accel_backend"] == "cuda_lbvh"
+    assert payload["scenario"]["frame_source"] == "static_asset_builder"
     assert payload["scenario"]["readback_payload"] == "rgb"
     assert payload["run_options"]["out"] == str(tmp_path / "run")
     assert payload["run_options"]["frames"] == 2
