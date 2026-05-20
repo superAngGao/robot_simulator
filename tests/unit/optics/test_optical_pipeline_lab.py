@@ -12,6 +12,7 @@ import tools.optical_pipeline_lab.__main__ as lab_main
 import tools.optical_pipeline_lab.async_readback as async_readback
 import tools.optical_pipeline_lab.delivery as delivery
 import tools.optical_pipeline_lab.dynamic_frames as dynamic_frames
+import tools.optical_pipeline_lab.frame_contexts as frame_contexts
 import tools.optical_pipeline_lab.go2_backend as go2_backend
 import tools.optical_pipeline_lab.physics_source as physics_source
 import tools.optical_pipeline_lab.render_session as render_session
@@ -710,6 +711,141 @@ def test_lab_runner_physics_runtime_helper_rejects_non_physics_frame_source(tmp_
             registry=object(),
             base_frame=SimpleNamespace(frame_id=62, sim_time=0.62),
             timings=TimingRecorder(),
+        )
+
+
+def test_static_frame_context_provider_wraps_pipeline_begin_frame():
+    frame_context = object()
+    calls: list[tuple[object, ...]] = []
+
+    class FakePipeline:
+        def begin_frame(self, frame_inputs=None, *, env_idx=0):
+            calls.append(("begin_frame", frame_inputs, env_idx))
+            return frame_context
+
+    provider = frame_contexts.static_frame_context_provider(FakePipeline())
+
+    with provider.begin_frame(7, env_idx=3) as context:
+        assert context is frame_context
+
+    assert calls == [("begin_frame", None, 3)]
+
+
+def test_synthetic_frame_sequence_context_provider_passes_frame_inputs():
+    frames = [
+        SimpleNamespace(frame_id=10, sim_time=1.0),
+        SimpleNamespace(frame_id=11, sim_time=1.1),
+    ]
+    frame_context = object()
+    calls: list[tuple[object, ...]] = []
+
+    class FakePipeline:
+        def begin_frame(self, frame_inputs=None, *, env_idx=0):
+            calls.append(("begin_frame", frame_inputs, env_idx))
+            return frame_context
+
+    provider = frame_contexts.synthetic_frame_sequence_context_provider(
+        FakePipeline(),
+        frames,
+    )
+
+    with provider.begin_frame(1, env_idx=4) as context:
+        assert context is frame_context
+
+    assert calls == [("begin_frame", frames[1], 4)]
+
+
+def test_physics_frame_context_provider_yields_context_and_completes_lease():
+    published_frame = SimpleNamespace(frame_id=71, sim_time=0.71)
+    borrowed_frame = SimpleNamespace(frame_id=71, sim_time=0.71)
+    frame_context = object()
+    consumer = physics_source.physics_render_consumer("provider_consumer")
+    calls: list[tuple[object, ...]] = []
+
+    class FakeEngine:
+        def borrow_device_frame(self, consumer_id, frame_id, *, stream):
+            calls.append(("borrow_device_frame", consumer_id, frame_id, stream))
+            return borrowed_frame
+
+        def complete_device_consumer(self, consumer_id, frame_id, *, stream):
+            calls.append(("complete_device_consumer", consumer_id, frame_id, stream))
+            return "done-event"
+
+    class FakePipeline:
+        session = SimpleNamespace(stream="render-stream")
+
+        def begin_frame(self, frame_inputs=None, *, env_idx=0):
+            calls.append(("begin_frame", frame_inputs, env_idx))
+            return frame_context
+
+    runtime = physics_source.PhysicsLabRenderRuntime(
+        engine=FakeEngine(),
+        pipeline=FakePipeline(),
+        consumer=consumer,
+    )
+    provider = frame_contexts.physics_frame_context_provider(runtime)
+
+    with provider.begin_frame(0, published_frame=published_frame, env_idx=5) as context:
+        assert context is frame_context
+        assert calls == [
+            ("borrow_device_frame", "provider_consumer", 71, "render-stream"),
+            ("begin_frame", borrowed_frame, 5),
+        ]
+
+    assert calls == [
+        ("borrow_device_frame", "provider_consumer", 71, "render-stream"),
+        ("begin_frame", borrowed_frame, 5),
+        ("complete_device_consumer", "provider_consumer", 71, "render-stream"),
+    ]
+
+
+def test_physics_frame_context_provider_completes_lease_when_body_raises():
+    published_frame = SimpleNamespace(frame_id=72, sim_time=0.72)
+    borrowed_frame = SimpleNamespace(frame_id=72, sim_time=0.72)
+    frame_context = object()
+    consumer = physics_source.physics_render_consumer("provider_consumer")
+    calls: list[tuple[object, ...]] = []
+
+    class FakeEngine:
+        def borrow_device_frame(self, consumer_id, frame_id, *, stream):
+            calls.append(("borrow_device_frame", consumer_id, frame_id, stream))
+            return borrowed_frame
+
+        def complete_device_consumer(self, consumer_id, frame_id, *, stream):
+            calls.append(("complete_device_consumer", consumer_id, frame_id, stream))
+            return "done-event"
+
+    class FakePipeline:
+        session = SimpleNamespace(stream="render-stream")
+
+        def begin_frame(self, frame_inputs=None, *, env_idx=0):
+            calls.append(("begin_frame", frame_inputs, env_idx))
+            return frame_context
+
+    runtime = physics_source.PhysicsLabRenderRuntime(
+        engine=FakeEngine(),
+        pipeline=FakePipeline(),
+        consumer=consumer,
+    )
+    provider = frame_contexts.physics_frame_context_provider(runtime)
+
+    with pytest.raises(RuntimeError, match="consumer failed"):
+        with provider.begin_frame(0, published_frame=published_frame, env_idx=6) as context:
+            assert context is frame_context
+            raise RuntimeError("consumer failed")
+
+    assert calls == [
+        ("borrow_device_frame", "provider_consumer", 72, "render-stream"),
+        ("begin_frame", borrowed_frame, 6),
+        ("complete_device_consumer", "provider_consumer", 72, "render-stream"),
+    ]
+
+
+def test_physics_frame_context_provider_rejects_torch_async_until_provider_warmup():
+    with pytest.raises(ValueError, match="provider-backed warmup"):
+        frame_contexts.physics_frame_context_provider(
+            object(),
+            delivery_mode="torch_async",
         )
 
 

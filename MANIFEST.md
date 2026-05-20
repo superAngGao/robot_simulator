@@ -1,7 +1,7 @@
 # Robot Simulator — Project Manifest
 
 > 面向具身智能研究的多物理仿真平台——多物理统一耦合、GPU 原生、渲染与合成数据生成、从第一性原理出发的 API 设计。
-> Last updated: 2026-05-20 (Q54 video plan/render-context split)
+> Last updated: 2026-05-20 (Q54 frame-context providers)
 
 ## 一句话
 
@@ -136,8 +136,8 @@ ambient/directional/point light 和 inline shadow any-hit；L5C.4 CUDA LBVH spik
 LiDAR/arbitrary ray query 和 CPU/GPU parity reference。GPU optical/rendering
 管线的长期设计基线已固化到 `GPU_OPTICAL_PIPELINE_DESIGN.md`；`collab/`
 继续作为 Codex/Claude review 与讨论工作区。`tools/optical_pipeline_lab/`
-现已承接 source-driven render foundation、dynamic frame prep、generic video
-loop、video/export tuning 的 scenario config、timing schema、preset metadata
+现已承接 source-driven render foundation、dynamic frame prep、frame-context
+providers、generic video loop、video/export tuning 的 scenario config、timing schema、preset metadata
 和 thin runner。动态渲染入口应来自 physics-published `GpuPublishedFrame`；
 Go2/Menagerie 等 static asset builder 只用于静止/benchmark 场景的 optical registry、
 camera preset 和 preview asset 构建，不是物理帧提供者、渲染 pipeline、
@@ -153,6 +153,8 @@ synthetic frame sequence 与 future physics runtime，
 physics pipeline factory 与 borrow/begin/complete frame lease helper，
 并封装 render-backed device consumer 注册，
 `PhysicsLabRenderRuntime` 将 engine/pipeline/consumer 组合成物理渲染循环入口，
+`frame_contexts.py` 提供 static、synthetic frame sequence 与 physics runtime
+三类 context provider，让 video 层消费已取得的 `OpticalLabRenderFrameContext`，
 GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(...)`
 → dynamic snapshot/BVH → direct-light ray render 与 GPU pinhole camera raygen render。
 
@@ -191,6 +193,7 @@ GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(..
 | `tools/optical_pipeline_lab/` | Optical Pipeline Lab: scenario configs, presets, timing CSV schema, report helpers, thin Go2 runner |
 | `tools/optical_pipeline_lab/async_readback.py` | Optical Pipeline Lab async D2H readback ring helper for pinned Torch copies |
 | `tools/optical_pipeline_lab/dynamic_frames.py` | Lab-only synthetic GPU published-frame clone/perturb helpers for dynamic optical smokes |
+| `tools/optical_pipeline_lab/frame_contexts.py` | Static/synthetic/physics OpticalLabRenderFrameContext provider helpers |
 | `tools/optical_pipeline_lab/go2_backend.py` | Go2/Menagerie static asset builder plus camera/video/reporting glue for the lab runner and example CLI |
 | `tools/optical_pipeline_lab/physics_source.py` | Physics-published `GpuPublishedFrame` → Optical Pipeline Lab render source bridge |
 | `tools/optical_pipeline_lab/render_session.py` | OpticalLabRenderSource / Options / Workspace / PreparedFrame / Session / FrameContext / Pipeline lab render foundation |
@@ -212,10 +215,10 @@ GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(..
 
 ## 规模
 
-- Q54 sensing/optics 子系统当前收集 **242 个测试**：
+- Q54 sensing/optics 子系统当前收集 **247 个测试**：
   `tests/unit/optics` + `tests/unit/sensing` + `tests/gpu/test_optical_warp_executor.py`
   + `tests/gpu/test_optical_gpu_runtime.py`
-  （164 unit optics/lab + 40 unit sensing + 38 GPU optical）
+  （169 unit optics/lab + 40 unit sensing + 38 GPU optical）
 - physics/ ~16,000 行，rendering/ ~960 行；新增 sensing/、optics/ 与
   tools/optical_pipeline_lab/ 作为独立感知/光学与 pipeline tuning 子系统
 - 支持多机器人场景 + 静态几何 + 碰撞过滤 + 多点接触 manifold

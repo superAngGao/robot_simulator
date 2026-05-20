@@ -2264,6 +2264,19 @@ C5 complete:
 Alias cleanup complete:
   Go2Render* compatibility aliases and the go2_session.py shim have been
   removed. Lab render foundation callers should use OpticalLabRender* names.
+
+P1 complete:
+  video_loop.py separates camera/request planning from frame-context rendering:
+  VideoRenderPlan, FrameIdentity, build_video_render_plan(...), and
+  render_video_frame_from_context(...). Existing render_video_frame(...) still
+  preserves static/synthetic behavior while delegating through the split path.
+
+P2 complete:
+  frame_contexts.py provides narrow lab-internal providers for static frames,
+  synthetic frame sequences, and physics runtime frames. The physics provider
+  wraps PhysicsLabFrameLease and yields OpticalLabRenderFrameContext to callers,
+  while lease completion remains owned by provider exit. Physics providers
+  reject torch_async delivery until provider-backed warmup exists.
 ```
 
 New generic render foundation work should use `OpticalLabRender*`.
