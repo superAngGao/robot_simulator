@@ -1,7 +1,7 @@
 # Robot Simulator — Project Manifest
 
 > 面向具身智能研究的多物理仿真平台——多物理统一耦合、GPU 原生、渲染与合成数据生成、从第一性原理出发的 API 设计。
-> Last updated: 2026-05-15 (Q54 Optical Pipeline Lab physics-driven camera render smoke)
+> Last updated: 2026-05-20 (Q54 video plan/render-context split)
 
 ## 一句话
 
@@ -194,7 +194,7 @@ GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(..
 | `tools/optical_pipeline_lab/go2_backend.py` | Go2/Menagerie static asset builder plus camera/video/reporting glue for the lab runner and example CLI |
 | `tools/optical_pipeline_lab/physics_source.py` | Physics-published `GpuPublishedFrame` → Optical Pipeline Lab render source bridge |
 | `tools/optical_pipeline_lab/render_session.py` | OpticalLabRenderSource / Options / Workspace / PreparedFrame / Session / FrameContext / Pipeline lab render foundation |
-| `tools/optical_pipeline_lab/video_loop.py` | Generic Optical Pipeline Lab video render-loop helpers parameterized by camera builder |
+| `tools/optical_pipeline_lab/video_loop.py` | Generic Optical Pipeline Lab video plan/render-context/delivery helpers parameterized by camera builder |
 | `tools/optical_pipeline_lab/rgb_pack.py` | Optical Pipeline Lab GPU RGB8 preview packing helper |
 | `benchmarks/bench_optical_device_scene.py` | L5C.1c AABB/BVH decision benchmark harness |
 | `benchmarks/robot_optical_scene.py` | Shared robot-like optical scene generator for benchmarks/examples |
@@ -212,10 +212,10 @@ GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(..
 
 ## 规模
 
-- Q54 sensing/optics 子系统当前收集 **240 个测试**：
+- Q54 sensing/optics 子系统当前收集 **242 个测试**：
   `tests/unit/optics` + `tests/unit/sensing` + `tests/gpu/test_optical_warp_executor.py`
   + `tests/gpu/test_optical_gpu_runtime.py`
-  （162 unit optics/lab + 40 unit sensing + 38 GPU optical）
+  （164 unit optics/lab + 40 unit sensing + 38 GPU optical）
 - physics/ ~16,000 行，rendering/ ~960 行；新增 sensing/、optics/ 与
   tools/optical_pipeline_lab/ 作为独立感知/光学与 pipeline tuning 子系统
 - 支持多机器人场景 + 静态几何 + 碰撞过滤 + 多点接触 manifold

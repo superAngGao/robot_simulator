@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from optics import OpticalOutputProfile
@@ -46,6 +46,27 @@ VideoRenderFrameFn = Callable[
 ]
 
 
+@dataclass(frozen=True)
+class FrameIdentity:
+    """Minimal per-frame identity used to align cameras with render frames."""
+
+    frame_id: int
+    sim_time: float
+    env_idx: int | None = None
+
+
+@dataclass(frozen=True)
+class VideoRenderPlan:
+    """Camera, request, and metadata needed to render one video frame."""
+
+    camera: OpticalPinholeCameraSpec
+    rays: object | None
+    request: RenderRequest
+    camera_rays_ms: float
+    geometry_mode: str
+    include_shadow_traversal_stats: bool
+
+
 def render_video_frame(
     pipeline,
     args,
@@ -56,20 +77,47 @@ def render_video_frame(
 ) -> RenderedVideoFrame:
     session = pipeline.session
     frame_inputs = video_frame_inputs(args, frame_index)
+    frame_identity = frame_identity_from_inputs(frame_inputs)
+    geometry_mode = video_geometry_mode(args, frame_inputs=frame_inputs)
+    plan = build_video_render_plan(
+        session.scene,
+        args,
+        frame_index,
+        ray_cache,
+        build_video_camera=build_video_camera,
+        frame_identity=frame_identity,
+        geometry_mode=geometry_mode,
+    )
+    frame_context = pipeline.begin_frame(frame_inputs=frame_inputs, env_idx=plan.camera.env_idx)
+    return render_video_frame_from_context(frame_context, plan, frame_index=frame_index)
+
+
+def build_video_render_plan(
+    scene,
+    args,
+    frame_index: int,
+    ray_cache: list[tuple[OpticalPinholeCameraSpec, object]] | None,
+    *,
+    build_video_camera: VideoCameraBuilder,
+    frame_identity: FrameIdentity | None = None,
+    geometry_mode: str | None = None,
+) -> VideoRenderPlan:
+    """Build camera, rays, and render request without acquiring a frame context."""
+
     if args.video_raygen == "gpu":
-        camera = build_video_camera(session.scene, args, frame_index)
-        camera = video_camera_for_frame_inputs(camera, frame_inputs=frame_inputs)
+        camera = build_video_camera(scene, args, frame_index)
+        camera = video_camera_for_frame_identity(camera, frame_identity=frame_identity)
         rays = None
         camera_rays_ms = _NAN
     elif ray_cache is None:
         camera_start = time.perf_counter()
-        camera = build_video_camera(session.scene, args, frame_index)
-        camera = video_camera_for_frame_inputs(camera, frame_inputs=frame_inputs)
+        camera = build_video_camera(scene, args, frame_index)
+        camera = video_camera_for_frame_identity(camera, frame_identity=frame_identity)
         rays = build_pinhole_camera_rays(camera)
         camera_rays_ms = (time.perf_counter() - camera_start) * 1000.0
     else:
         camera, rays = ray_cache[frame_index]
-        camera = video_camera_for_frame_inputs(camera, frame_inputs=frame_inputs)
+        camera = video_camera_for_frame_identity(camera, frame_identity=frame_identity)
         rays = video_rays_for_camera(rays, camera)
         camera_rays_ms = _NAN
 
@@ -81,8 +129,30 @@ def render_video_frame(
         profile_timing=bool(args.render_profile),
         fail_on_overflow=bool(args.fail_on_overflow),
     )
-    frame_context = pipeline.begin_frame(frame_inputs=frame_inputs, env_idx=camera.env_idx)
-    render_result = frame_context.render(render_request)
+
+    return VideoRenderPlan(
+        camera=camera,
+        rays=rays,
+        request=render_request,
+        camera_rays_ms=camera_rays_ms,
+        geometry_mode=(
+            str(geometry_mode)
+            if geometry_mode is not None
+            else video_geometry_mode(args, frame_inputs=frame_identity)
+        ),
+        include_shadow_traversal_stats=include_shadow_traversal_stats(render_request),
+    )
+
+
+def render_video_frame_from_context(
+    frame_context,
+    plan: VideoRenderPlan,
+    *,
+    frame_index: int,
+) -> RenderedVideoFrame:
+    """Render one planned video frame from an already-acquired frame context."""
+
+    render_result = frame_context.render(plan.request)
     result = render_result.compute
     render_execute_ms = float(render_result.timing["render_execute_ms"])
     render_profile = render_profile_row_from_timing(render_result.timing)
@@ -90,13 +160,13 @@ def render_video_frame(
 
     return RenderedVideoFrame(
         frame_index=int(frame_index),
-        camera=camera,
+        camera=plan.camera,
         result=result,
-        camera_rays_ms=camera_rays_ms,
+        camera_rays_ms=plan.camera_rays_ms,
         render_execute_ms=render_execute_ms,
         render_profile_row=render_profile,
-        include_shadow_traversal_stats=include_shadow_traversal_stats(render_request),
-        geometry_mode=video_geometry_mode(args, frame_inputs=frame_inputs),
+        include_shadow_traversal_stats=plan.include_shadow_traversal_stats,
+        geometry_mode=plan.geometry_mode,
         prepare_timing=prepare_timing,
         render=render_result,
     )
@@ -149,16 +219,45 @@ def video_frame_inputs(args, frame_index: int):
     return frame_inputs[frame_index]
 
 
+def frame_identity_from_inputs(frame_inputs) -> FrameIdentity | None:
+    if frame_inputs is None:
+        return None
+    return FrameIdentity(
+        frame_id=int(getattr(frame_inputs, "frame_id")),
+        sim_time=float(getattr(frame_inputs, "sim_time")),
+        env_idx=(
+            int(getattr(frame_inputs, "env_idx"))
+            if getattr(frame_inputs, "env_idx", None) is not None
+            else None
+        ),
+    )
+
+
 def video_camera_for_frame_inputs(
     camera: OpticalPinholeCameraSpec,
     *,
     frame_inputs,
 ) -> OpticalPinholeCameraSpec:
-    if frame_inputs is None:
+    return video_camera_for_frame_identity(
+        camera,
+        frame_identity=frame_identity_from_inputs(frame_inputs),
+    )
+
+
+def video_camera_for_frame_identity(
+    camera: OpticalPinholeCameraSpec,
+    *,
+    frame_identity: FrameIdentity | None,
+) -> OpticalPinholeCameraSpec:
+    if frame_identity is None:
         return camera
-    frame_id = getattr(frame_inputs, "frame_id", camera.frame_id)
-    sim_time = getattr(frame_inputs, "sim_time", camera.sim_time)
-    return replace(camera, frame_id=int(frame_id), sim_time=float(sim_time))
+    changes = {
+        "frame_id": int(frame_identity.frame_id),
+        "sim_time": float(frame_identity.sim_time),
+    }
+    if frame_identity.env_idx is not None:
+        changes["env_idx"] = int(frame_identity.env_idx)
+    return replace(camera, **changes)
 
 
 def video_rays_for_camera(rays, camera: OpticalPinholeCameraSpec):

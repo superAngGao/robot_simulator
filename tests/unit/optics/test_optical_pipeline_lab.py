@@ -252,6 +252,128 @@ def test_render_request_diagnostics_drive_profile_buffer_and_traversal_readback(
     assert go2_backend._include_shadow_traversal_stats(request) is False
 
 
+def test_video_render_plan_consumes_frame_identity_without_retaining_inputs():
+    camera = go2_backend.OpticalPinholeCameraSpec(
+        frame_id=8,
+        sim_time=0.8,
+        env_idx=4,
+        sensor_id="camera",
+        width=16,
+        height=8,
+        fx=10.0,
+        fy=10.0,
+        cx=7.5,
+        cy=3.5,
+    )
+    args = SimpleNamespace(
+        video_raygen="gpu",
+        video_readback="rgb8",
+        render_profile=True,
+        fail_on_overflow=True,
+        video_geometry_mode="dynamic_rigid",
+    )
+
+    plan = video_loop.build_video_render_plan(
+        object(),
+        args,
+        0,
+        None,
+        build_video_camera=lambda scene, args_arg, frame_index: camera,
+        frame_identity=video_loop.FrameIdentity(frame_id=9, sim_time=0.9),
+    )
+
+    assert isinstance(plan, video_loop.VideoRenderPlan)
+    assert plan.camera.frame_id == 9
+    assert plan.camera.sim_time == 0.9
+    assert plan.camera.env_idx == 4
+    assert plan.rays is None
+    assert plan.request.frame_id == 9
+    assert plan.request.sim_time == 0.9
+    assert plan.request.camera is plan.camera
+    assert plan.geometry_mode == "dynamic_rigid"
+    assert plan.include_shadow_traversal_stats is True
+    assert not hasattr(plan, "frame_inputs")
+
+    plan = video_loop.build_video_render_plan(
+        object(),
+        args,
+        0,
+        None,
+        build_video_camera=lambda scene, args_arg, frame_index: camera,
+        frame_identity=video_loop.FrameIdentity(frame_id=10, sim_time=1.0, env_idx=2),
+    )
+
+    assert plan.camera.env_idx == 2
+
+
+def test_render_video_frame_from_context_preserves_plan_and_prepare_timing():
+    compute = SimpleNamespace(ready_event=object())
+    camera = go2_backend.OpticalPinholeCameraSpec(
+        frame_id=11,
+        sim_time=1.1,
+        env_idx=3,
+        sensor_id="camera",
+        width=16,
+        height=8,
+        fx=10.0,
+        fy=10.0,
+        cx=7.5,
+        cy=3.5,
+    )
+    request = video_loop.video_render_request(
+        camera=camera,
+        rays=None,
+        use_gpu_raygen=True,
+        readback_mode="none",
+        profile_timing=False,
+        fail_on_overflow=False,
+    )
+    plan = video_loop.VideoRenderPlan(
+        camera=camera,
+        rays=None,
+        request=request,
+        camera_rays_ms=float("nan"),
+        geometry_mode="dynamic_rigid",
+        include_shadow_traversal_stats=False,
+    )
+    render_result = RuntimeRenderResult(
+        compute=compute,
+        timing={
+            "render_execute_ms": 3.5,
+            **go2_backend._render_profile_row(None),
+        },
+    )
+    captured: dict[str, object] = {}
+
+    class FakeFrameContext:
+        prepare_timing = {
+            "snapshot_ms": 1.0,
+            "accel_refit_ms": 2.0,
+            "accel_rebuild_ms": float("nan"),
+        }
+
+        def render(self, request_arg):
+            captured["request"] = request_arg
+            return render_result
+
+    rendered = video_loop.render_video_frame_from_context(
+        FakeFrameContext(),
+        plan,
+        frame_index=7,
+    )
+
+    assert captured["request"] is request
+    assert rendered.frame_index == 7
+    assert rendered.camera is camera
+    assert rendered.result is compute
+    assert rendered.render_execute_ms == 3.5
+    assert rendered.geometry_mode == "dynamic_rigid"
+    assert rendered.prepare_timing["snapshot_ms"] == 1.0
+    assert rendered.prepare_timing["accel_refit_ms"] == 2.0
+    assert math.isnan(float(rendered.prepare_timing["accel_rebuild_ms"]))
+    assert rendered.render is render_result
+
+
 def test_go2_video_helper_aliases_delegate_to_generic_video_loop():
     assert go2_backend._video_render_request is video_loop.video_render_request
     assert go2_backend._video_delivery_request is video_loop.video_delivery_request_from_options

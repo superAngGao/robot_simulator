@@ -4,7 +4,7 @@ Stage: design-baseline
 Author: codex
 Version: v1
 Date: 2026-05-08
-Last Updated: 2026-05-14
+Last Updated: 2026-05-20
 Status: active-design-baseline
 Related Files: optics/execution.py, optics/device.py, optics/device_scene.py, optics/device_bvh.py, optics/cuda_lbvh.py, optics/warp_execution.py, optics/render_api.py, tools/optical_pipeline_lab/, examples/mujoco_menagerie_gpu_preview.py, collab/q54-gpu-optical-output-profile-api__review-request__codex__v1.md, collab/q54-gpu-optical-readback-delivery-policy__review-request__codex__v2.md
 Owner Summary: This is the repo-level architecture design for the GPU optical/rendering pipeline. It reframes recent performance work around explicit use scenarios, a shared stage pipeline, per-scenario overlap policies, CPU/GPU boundary responsibilities, CUDA-first performance direction, the Optical Pipeline Lab, a canonical lab render source entrypoint, and a staged roadmap. Collab files remain review/discussion artifacts; this document is the durable design baseline.
@@ -2274,6 +2274,89 @@ Recommended next slices:
 Post-C5 cleanup:
   continue delivery/runtime extraction separately from Go2 source/camera code
 ```
+
+Physics/video boundary baseline:
+
+```text
+physics owns time and dynamic frames
+render owns frame-scoped optical preparation and RenderResult creation
+video owns camera/request planning and RenderedVideoFrame packaging
+delivery owns readback/write/backpressure/completion
+```
+
+The next slices should not put a physics loop directly into `runner.py`.
+Instead, split the video loop first so `pipeline.begin_frame(...)` is no longer
+fused to camera/request construction. The frame-scoped render boundary is
+`OpticalLabRenderFrameContext`: video should render from an already acquired
+frame context, and physics providers should only supply that context/lifetime.
+
+The required P1 shape is:
+
+```text
+VideoRenderPlan:
+  camera
+  optional materialized rays
+  RenderRequest
+  camera_rays_ms
+  explicit geometry_mode
+  include-shadow-traversal flag
+  no pipeline, frame context, or frame_inputs
+
+FrameIdentity:
+  frame_id
+  sim_time
+  env_idx
+
+build_video_render_plan(..., frame_identity=FrameIdentity | None):
+  builds camera, rays, and RenderRequest only
+  may consume FrameIdentity to align camera/request identity
+  must not call pipeline.begin_frame(...)
+
+render_video_frame_from_context(frame_context, plan):
+  calls frame_context.render(plan.request)
+  preserves frame_context.prepare_timing in RenderedVideoFrame
+```
+
+`VideoRenderPlan` must not retain `frame_inputs`. Existing static/synthetic
+wrappers may derive a minimal `FrameIdentity` from their local inputs before
+calling the plan builder. For static paths with no frame identity, `env_idx`
+falls back to an explicit args/options value when one exists, otherwise `0`.
+Physics paths must derive `FrameIdentity` from the current borrowed frame/context
+inside the provider lifetime, not from a stale base scene.
+
+Frame-preparation timing keeps a semantic distinction:
+
+```text
+NaN = not applicable or not measured
+0.0 = measured and effectively zero
+```
+
+Summary/aggregation code must not turn frame-preparation `NaN` values into
+zeroes. Existing finite-value aggregation that ignores `NaN` is acceptable.
+
+Borrow completion and delivery completion are different lifecycle events. With
+the current synchronous render contract, physics borrow can be released after
+`frame_context.render(...)` returns and before delivery submit, because render
+has synchronized the compute result. If render becomes fully async, this
+contract must be revisited around event ownership rather than hidden in video or
+delivery code.
+
+Provider-backed warmup is required before physics providers can use
+`torch_async` delivery. Provider-backed warmup means warmup acquires an
+`OpticalLabRenderFrameContext` through the same provider lifecycle as normal
+frames; it must not call `pipeline.begin_frame(...)` directly and must not rely
+on a magic `frame_index=-1`.
+
+Future frame workflow/runtime work should remain lab-internal and narrow at
+first. Prefer a concrete name such as `FrameWorkflowRunner` until the interface
+actually covers non-video consumers; reserve `SimulationFrameRuntime` for a
+later layer that can coordinate physics, render, delivery, and RL observation
+products. Initial typed workflow results should use explicit fields such as
+`video: RenderedVideoFrame | None`; avoid `Mapping[str, object]` as the first
+product contract. If consumers are registered at construction time for
+fail-fast validation, per-frame disable policies may skip work but must not
+change the result field set; for the first video-focused result, `None` is a
+sufficient absent value.
 
 Names that should remain Go2-specific:
 
