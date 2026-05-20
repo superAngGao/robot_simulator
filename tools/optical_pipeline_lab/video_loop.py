@@ -55,6 +55,10 @@ class FrameIdentity:
     env_idx: int | None = None
 
 
+FrameIdentityForIndex = Callable[[int], FrameIdentity | None]
+VideoGeometryModeForIndex = Callable[[int, FrameIdentity | None], str]
+
+
 @dataclass(frozen=True)
 class VideoRenderPlan:
     """Camera, request, and metadata needed to render one video frame."""
@@ -307,35 +311,10 @@ def run_video_benchmark(
 ) -> FrameTimingRecorder:
     session = pipeline.session
 
-    if args.video_readback_delivery == "torch_async" and not torch_async_readback_available():
-        raise SystemExit(
-            "--video-readback-delivery=torch_async requires torch with CUDA support"
-        ) from torch_async_readback_import_error()
-    if args.video_readback_delivery == "torch_async" and args.video_readback not in ("rgb", "rgb8"):
-        raise SystemExit(
-            "--video-readback-delivery=torch_async currently supports --video-readback=rgb/rgb8 only"
-        )
-    delivery_request = video_delivery_request_from_options(
-        readback_mode=args.video_readback,
-        delivery_mode=args.video_readback_delivery,
-        ring_depth=int(args.video_readback_ring_depth),
-        write_frames=bool(args.write_frames),
-    )
-
-    if args.video_raygen == "gpu" and args.video_ray_cache != "off":
-        raise SystemExit("--video-raygen gpu computes camera rays on device; use --video-ray-cache off")
-    if args.video_readback_ring_depth <= 0:
-        raise SystemExit("--video-readback-ring-depth must be > 0")
-    csv_path = Path(args.frame_timing_csv) if args.frame_timing_csv else out_dir / "frame_timing.csv"
-    rows = FrameTimingRecorder(
-        csv_path=csv_path,
-        default_fields=getattr(args, "lab_frame_defaults", None),
-    )
-    ray_cache = (
-        precompute_video_camera_rays(session.scene, args, build_video_camera=build_video_camera)
-        if args.video_raygen == "host" and args.video_ray_cache == "precompute"
-        else None
-    )
+    _validate_video_benchmark_args(args)
+    delivery_request = _video_delivery_request_for_args(args)
+    rows = _video_frame_timing_recorder(args, out_dir)
+    ray_cache = _video_ray_cache_for_scene(session.scene, args, build_video_camera=build_video_camera)
     delivery = VideoDeliveryFacade.create(
         request=delivery_request,
         delivery_policy_label=args.video_readback_delivery,
@@ -351,16 +330,7 @@ def run_video_benchmark(
             )
         ),
     )
-    row_builder = VideoFrameTimingRowBuilder(
-        VideoDeliveryRunConfig(
-            video_fps=float(args.video_fps),
-            video_frames=int(args.video_frames),
-            video_raygen=args.video_raygen,
-            video_ray_cache=args.video_ray_cache,
-            delivery_policy_label=args.video_readback_delivery,
-            fail_on_overflow=bool(args.fail_on_overflow),
-        )
-    ).bind_request(delivery_request)
+    row_builder = _video_frame_timing_row_builder(args, delivery_request)
     if render_frame is None:
 
         def render_frame(
@@ -377,9 +347,105 @@ def run_video_benchmark(
                 build_video_camera=build_video_camera,
             )
 
+    def render_frame_at_index(frame_index: int) -> RenderedVideoFrame:
+        return render_frame(pipeline, args, frame_index, ray_cache)
+
+    _run_video_delivery_loop(
+        args,
+        delivery=delivery,
+        row_builder=row_builder,
+        rows=rows,
+        render_frame_at_index=render_frame_at_index,
+    )
+    return rows
+
+
+def run_video_benchmark_with_frame_contexts(
+    scene,
+    args,
+    out_dir: Path,
+    *,
+    frame_provider,
+    build_video_camera: VideoCameraBuilder,
+    pack_rgb8: Callable[[object], object],
+    synchronize_event: Callable[[object], None],
+    frame_identity_for_index: FrameIdentityForIndex | None = None,
+    geometry_mode_for_index: VideoGeometryModeForIndex | None = None,
+) -> FrameTimingRecorder:
+    """Run video delivery from an explicit frame-context provider.
+
+    This provider-backed path intentionally does not accept the legacy
+    ``render_frame(pipeline, args, ...)`` callback because that callback owns
+    ``pipeline.begin_frame(...)``.
+    """
+
+    _validate_video_benchmark_args(args)
+    delivery_request = _video_delivery_request_for_args(args)
+    rows = _video_frame_timing_recorder(args, out_dir)
+    ray_cache = _video_ray_cache_for_scene(scene, args, build_video_camera=build_video_camera)
+    delivery = VideoDeliveryFacade.create(
+        request=delivery_request,
+        delivery_policy_label=args.video_readback_delivery,
+        frame_dir=out_dir / "frames",
+        pack_rgb8=pack_rgb8,
+        synchronize_event=synchronize_event,
+        warmup_result_factory=(
+            lambda: build_provider_backed_torch_async_warmup_result(
+                scene,
+                args,
+                frame_provider=frame_provider,
+                build_video_camera=build_video_camera,
+                frame_identity_for_index=frame_identity_for_index,
+                geometry_mode_for_index=geometry_mode_for_index,
+            )
+        ),
+    )
+    row_builder = _video_frame_timing_row_builder(args, delivery_request)
+
+    def render_frame_at_index(frame_index: int) -> RenderedVideoFrame:
+        frame_identity = _frame_identity_for_index(frame_identity_for_index, frame_index)
+        plan = build_video_render_plan(
+            scene,
+            args,
+            frame_index,
+            ray_cache,
+            build_video_camera=build_video_camera,
+            frame_identity=frame_identity,
+            geometry_mode=_geometry_mode_for_index(
+                args,
+                geometry_mode_for_index,
+                frame_index,
+                frame_identity,
+            ),
+        )
+        with frame_provider.begin_frame(frame_index, env_idx=plan.camera.env_idx) as frame_context:
+            return render_video_frame_from_context(
+                frame_context,
+                plan,
+                frame_index=frame_index,
+            )
+
+    _run_video_delivery_loop(
+        args,
+        delivery=delivery,
+        row_builder=row_builder,
+        rows=rows,
+        render_frame_at_index=render_frame_at_index,
+    )
+    return rows
+
+
+def _run_video_delivery_loop(
+    args,
+    *,
+    delivery: VideoDeliveryFacade,
+    row_builder: VideoFrameTimingRowBuilder,
+    rows: FrameTimingRecorder,
+    render_frame_at_index: Callable[[int], RenderedVideoFrame],
+) -> None:
     for frame_index in range(int(args.video_frames)):
         frame_start = time.perf_counter()
-        rendered = render_frame(pipeline, args, frame_index, ray_cache)
+        rendered = render_frame_at_index(frame_index)
 
         for completed in delivery.complete_available(latest_rendered_frame_index=rendered.frame_index):
             record_delivered_video_frame(rows, row_builder, completed, args)
@@ -393,7 +459,6 @@ def run_video_benchmark(
         record_delivered_video_frame(rows, row_builder, completed, args)
 
     rows.write_csv()
-    return rows
 
 
 def build_torch_async_warmup_result(
@@ -416,6 +481,115 @@ def build_torch_async_warmup_result(
     warmup_frame = pipeline.begin_frame(env_idx=warmup_camera.env_idx)
     warmup_result = warmup_frame.render(warmup_request).compute
     return warmup_result, include_shadow_traversal_stats(warmup_request)
+
+
+def build_provider_backed_torch_async_warmup_result(
+    scene,
+    args,
+    *,
+    frame_provider,
+    build_video_camera: VideoCameraBuilder,
+    frame_identity_for_index: FrameIdentityForIndex | None = None,
+    geometry_mode_for_index: VideoGeometryModeForIndex | None = None,
+) -> tuple[object, bool]:
+    """Build an async-readback warmup result through provider lifecycle."""
+
+    frame_index = 0
+    frame_identity = _frame_identity_for_index(frame_identity_for_index, frame_index)
+    plan = build_video_render_plan(
+        scene,
+        args,
+        frame_index,
+        None,
+        build_video_camera=build_video_camera,
+        frame_identity=frame_identity,
+        geometry_mode=_geometry_mode_for_index(
+            args,
+            geometry_mode_for_index,
+            frame_index,
+            frame_identity,
+        ),
+    )
+    with frame_provider.begin_frame(frame_index, env_idx=plan.camera.env_idx) as frame_context:
+        rendered = render_video_frame_from_context(frame_context, plan, frame_index=frame_index)
+    return rendered.result, rendered.include_shadow_traversal_stats
+
+
+def _validate_video_benchmark_args(args) -> None:
+    if args.video_readback_delivery == "torch_async" and not torch_async_readback_available():
+        raise SystemExit(
+            "--video-readback-delivery=torch_async requires torch with CUDA support"
+        ) from torch_async_readback_import_error()
+    if args.video_readback_delivery == "torch_async" and args.video_readback not in ("rgb", "rgb8"):
+        raise SystemExit(
+            "--video-readback-delivery=torch_async currently supports --video-readback=rgb/rgb8 only"
+        )
+    if args.video_raygen == "gpu" and args.video_ray_cache != "off":
+        raise SystemExit("--video-raygen gpu computes camera rays on device; use --video-ray-cache off")
+    if args.video_readback_ring_depth <= 0:
+        raise SystemExit("--video-readback-ring-depth must be > 0")
+
+
+def _video_delivery_request_for_args(args) -> DeliveryRequest:
+    return video_delivery_request_from_options(
+        readback_mode=args.video_readback,
+        delivery_mode=args.video_readback_delivery,
+        ring_depth=int(args.video_readback_ring_depth),
+        write_frames=bool(args.write_frames),
+    )
+
+
+def _video_frame_timing_recorder(args, out_dir: Path) -> FrameTimingRecorder:
+    csv_path = Path(args.frame_timing_csv) if args.frame_timing_csv else out_dir / "frame_timing.csv"
+    return FrameTimingRecorder(
+        csv_path=csv_path,
+        default_fields=getattr(args, "lab_frame_defaults", None),
+    )
+
+
+def _video_ray_cache_for_scene(
+    scene,
+    args,
+    *,
+    build_video_camera: VideoCameraBuilder,
+) -> list[tuple[OpticalPinholeCameraSpec, object]] | None:
+    if args.video_raygen == "host" and args.video_ray_cache == "precompute":
+        return precompute_video_camera_rays(scene, args, build_video_camera=build_video_camera)
+    return None
+
+
+def _video_frame_timing_row_builder(
+    args,
+    delivery_request: DeliveryRequest,
+) -> VideoFrameTimingRowBuilder:
+    return VideoFrameTimingRowBuilder(
+        VideoDeliveryRunConfig(
+            video_fps=float(args.video_fps),
+            video_frames=int(args.video_frames),
+            video_raygen=args.video_raygen,
+            video_ray_cache=args.video_ray_cache,
+            delivery_policy_label=args.video_readback_delivery,
+            fail_on_overflow=bool(args.fail_on_overflow),
+        )
+    ).bind_request(delivery_request)
+
+
+def _frame_identity_for_index(
+    frame_identity_for_index: FrameIdentityForIndex | None,
+    frame_index: int,
+) -> FrameIdentity | None:
+    return None if frame_identity_for_index is None else frame_identity_for_index(frame_index)
+
+
+def _geometry_mode_for_index(
+    args,
+    geometry_mode_for_index: VideoGeometryModeForIndex | None,
+    frame_index: int,
+    frame_identity: FrameIdentity | None,
+) -> str:
+    if geometry_mode_for_index is not None:
+        return geometry_mode_for_index(frame_index, frame_identity)
+    return video_geometry_mode(args, frame_inputs=frame_identity)
 
 
 def record_delivered_video_frame(

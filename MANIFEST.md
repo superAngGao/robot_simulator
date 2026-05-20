@@ -1,7 +1,7 @@
 # Robot Simulator — Project Manifest
 
 > 面向具身智能研究的多物理仿真平台——多物理统一耦合、GPU 原生、渲染与合成数据生成、从第一性原理出发的 API 设计。
-> Last updated: 2026-05-20 (Q54 frame-context providers)
+> Last updated: 2026-05-20 (Q54 provider-backed video benchmark)
 
 ## 一句话
 
@@ -155,6 +155,8 @@ physics pipeline factory 与 borrow/begin/complete frame lease helper，
 `PhysicsLabRenderRuntime` 将 engine/pipeline/consumer 组合成物理渲染循环入口，
 `frame_contexts.py` 提供 static、synthetic frame sequence 与 physics runtime
 三类 context provider，让 video 层消费已取得的 `OpticalLabRenderFrameContext`，
+`video_loop.py` 也提供 provider-backed benchmark 入口和 provider-backed
+torch async warmup helper，
 GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(...)`
 → dynamic snapshot/BVH → direct-light ray render 与 GPU pinhole camera raygen render。
 
@@ -215,10 +217,10 @@ GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(..
 
 ## 规模
 
-- Q54 sensing/optics 子系统当前收集 **247 个测试**：
+- Q54 sensing/optics 子系统当前收集 **249 个测试**：
   `tests/unit/optics` + `tests/unit/sensing` + `tests/gpu/test_optical_warp_executor.py`
   + `tests/gpu/test_optical_gpu_runtime.py`
-  （169 unit optics/lab + 40 unit sensing + 38 GPU optical）
+  （171 unit optics/lab + 40 unit sensing + 38 GPU optical）
 - physics/ ~16,000 行，rendering/ ~960 行；新增 sensing/、optics/ 与
   tools/optical_pipeline_lab/ 作为独立感知/光学与 pipeline tuning 子系统
 - 支持多机器人场景 + 静态几何 + 碰撞过滤 + 多点接触 manifold

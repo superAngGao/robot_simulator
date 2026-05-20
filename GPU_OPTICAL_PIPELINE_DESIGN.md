@@ -2277,6 +2277,16 @@ P2 complete:
   wraps PhysicsLabFrameLease and yields OpticalLabRenderFrameContext to callers,
   while lease completion remains owned by provider exit. Physics providers
   reject torch_async delivery until provider-backed warmup exists.
+
+P3 complete:
+  video_loop.py now has run_video_benchmark_with_frame_contexts(...), a
+  provider-backed benchmark entrypoint that reuses VideoDeliveryFacade,
+  VideoFrameTimingRowBuilder, and record_delivered_video_frame(...). It builds
+  VideoRenderPlan outside provider ownership, acquires an
+  OpticalLabRenderFrameContext from the provider, renders from context, then
+  submits delivery. Provider-backed torch async warmup now uses the same
+  provider begin-frame lifecycle instead of calling pipeline.begin_frame(...)
+  directly.
 ```
 
 New generic render foundation work should use `OpticalLabRender*`.

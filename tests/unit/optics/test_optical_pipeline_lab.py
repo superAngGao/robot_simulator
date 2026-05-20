@@ -1831,6 +1831,180 @@ def test_sync_video_readback_none_row_does_not_stage(tmp_path: Path, monkeypatch
     assert frame_timing_csv.exists()
 
 
+def test_run_video_benchmark_with_frame_contexts_uses_provider_and_delivery(tmp_path: Path):
+    provider_calls: list[tuple[object, ...]] = []
+    render_requests: list[object] = []
+
+    class FakeFrameContext:
+        prepare_timing = {
+            "snapshot_ms": 0.5,
+            "accel_refit_ms": 0.25,
+            "accel_rebuild_ms": float("nan"),
+        }
+
+        def render(self, request):
+            render_requests.append(request)
+            return RuntimeRenderResult(
+                compute=SimpleNamespace(ready_event=object()),
+                timing={
+                    "render_execute_ms": 1.5,
+                    **go2_backend._render_profile_row(None),
+                },
+            )
+
+    class FakeScope:
+        def __init__(self, frame_index: int, env_idx: int):
+            self.frame_index = frame_index
+            self.env_idx = env_idx
+
+        def __enter__(self):
+            provider_calls.append(("enter", self.frame_index, self.env_idx))
+            return FakeFrameContext()
+
+        def __exit__(self, exc_type, exc, tb):
+            provider_calls.append(("exit", self.frame_index))
+
+    class FakeProvider:
+        def begin_frame(self, frame_index: int, *, env_idx: int = 0):
+            provider_calls.append(("begin_frame", frame_index, env_idx))
+            return FakeScope(frame_index, env_idx)
+
+    def build_camera(scene, args, frame_index):
+        return go2_backend.OpticalPinholeCameraSpec(
+            frame_id=frame_index,
+            sim_time=float(frame_index) / 30.0,
+            env_idx=0,
+            sensor_id="camera",
+            width=16,
+            height=8,
+            fx=10.0,
+            fy=10.0,
+            cx=7.5,
+            cy=3.5,
+        )
+
+    rows = video_loop.run_video_benchmark_with_frame_contexts(
+        object(),
+        SimpleNamespace(
+            video_readback_delivery="sync",
+            write_frames=False,
+            video_readback="none",
+            video_readback_ring_depth=2,
+            video_raygen="gpu",
+            video_ray_cache="off",
+            video_frames=2,
+            video_fps=30.0,
+            render_profile=False,
+            fail_on_overflow=False,
+            progress_every=0,
+            frame_timing_csv=str(tmp_path / "frame_timing.csv"),
+            lab_frame_defaults={
+                "readback_payload": "none",
+                "delivery_policy": "sync",
+            },
+        ),
+        tmp_path,
+        frame_provider=FakeProvider(),
+        build_video_camera=build_camera,
+        pack_rgb8=lambda result: result,
+        synchronize_event=lambda event: None,
+        frame_identity_for_index=lambda frame_index: video_loop.FrameIdentity(
+            frame_id=100 + frame_index,
+            sim_time=10.0 + frame_index,
+            env_idx=3 + frame_index,
+        ),
+        geometry_mode_for_index=lambda frame_index, frame_identity: "dynamic_rigid",
+    )
+
+    assert provider_calls == [
+        ("begin_frame", 0, 3),
+        ("enter", 0, 3),
+        ("exit", 0),
+        ("begin_frame", 1, 4),
+        ("enter", 1, 4),
+        ("exit", 1),
+    ]
+    assert [request.frame_id for request in render_requests] == [100, 101]
+    assert [request.sim_time for request in render_requests] == [10.0, 11.0]
+    assert [request.env_idx for request in render_requests] == [3, 4]
+    assert [row["frame_index"] for row in rows._rows] == [0, 1]
+    assert [row["geometry_mode"] for row in rows._rows] == ["dynamic_rigid", "dynamic_rigid"]
+    assert rows._rows[0]["snapshot_ms"] == 0.5
+    assert rows._rows[0]["accel_refit_ms"] == 0.25
+    assert (tmp_path / "frame_timing.csv").exists()
+
+
+def test_provider_backed_torch_async_warmup_uses_provider_lifecycle():
+    compute = SimpleNamespace(ready_event=object())
+    provider_calls: list[tuple[object, ...]] = []
+    render_requests: list[object] = []
+
+    class FakeFrameContext:
+        prepare_timing = {}
+
+        def render(self, request):
+            render_requests.append(request)
+            return RuntimeRenderResult(
+                compute=compute,
+                timing={
+                    "render_execute_ms": 1.0,
+                    **go2_backend._render_profile_row(None),
+                },
+            )
+
+    class FakeProvider:
+        def begin_frame(self, frame_index: int, *, env_idx: int = 0):
+            provider_calls.append(("begin_frame", frame_index, env_idx))
+
+            class Scope:
+                def __enter__(self_inner):
+                    provider_calls.append(("enter", frame_index, env_idx))
+                    return FakeFrameContext()
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    provider_calls.append(("exit", frame_index))
+
+            return Scope()
+
+    def build_camera(scene, args, frame_index):
+        return go2_backend.OpticalPinholeCameraSpec(
+            frame_id=frame_index,
+            sim_time=float(frame_index),
+            env_idx=7,
+            sensor_id="camera",
+            width=16,
+            height=8,
+            fx=10.0,
+            fy=10.0,
+            cx=7.5,
+            cy=3.5,
+        )
+
+    result, include_shadow = video_loop.build_provider_backed_torch_async_warmup_result(
+        object(),
+        SimpleNamespace(
+            video_raygen="gpu",
+            video_ray_cache="off",
+            video_readback="rgb",
+            render_profile=True,
+            fail_on_overflow=False,
+        ),
+        frame_provider=FakeProvider(),
+        build_video_camera=build_camera,
+    )
+
+    assert result is compute
+    assert include_shadow is True
+    assert provider_calls == [
+        ("begin_frame", 0, 7),
+        ("enter", 0, 7),
+        ("exit", 0),
+    ]
+    assert len(render_requests) == 1
+    assert render_requests[0].camera.env_idx == 7
+    assert render_requests[0].diagnostics.traversal_counters is True
+
+
 def test_torch_async_delivery_facade_reports_ring_depth_blocking_modes(tmp_path: Path):
     request = delivery.video_delivery_request(
         readback_mode="rgb",
