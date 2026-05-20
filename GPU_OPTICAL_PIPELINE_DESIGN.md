@@ -2287,6 +2287,14 @@ P3 complete:
   submits delivery. Provider-backed torch async warmup now uses the same
   provider begin-frame lifecycle instead of calling pipeline.begin_frame(...)
   directly.
+
+P4 complete:
+  frame_runtime.py introduces the lab-internal FrameWorkflowRunner and typed
+  FrameWorkflowResult. The runner coordinates provider begin/exit, one
+  video-focused frame consumer, delivery submit/complete/flush, and delivered
+  video recording. It is intentionally narrower than SimulationFrameRuntime and
+  keeps video disabled frames represented as video=None rather than changing
+  result shape.
 ```
 
 New generic render foundation work should use `OpticalLabRender*`.

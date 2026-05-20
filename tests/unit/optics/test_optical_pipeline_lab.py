@@ -13,6 +13,7 @@ import tools.optical_pipeline_lab.async_readback as async_readback
 import tools.optical_pipeline_lab.delivery as delivery
 import tools.optical_pipeline_lab.dynamic_frames as dynamic_frames
 import tools.optical_pipeline_lab.frame_contexts as frame_contexts
+import tools.optical_pipeline_lab.frame_runtime as frame_runtime
 import tools.optical_pipeline_lab.go2_backend as go2_backend
 import tools.optical_pipeline_lab.physics_source as physics_source
 import tools.optical_pipeline_lab.render_session as render_session
@@ -847,6 +848,196 @@ def test_physics_frame_context_provider_rejects_torch_async_until_provider_warmu
             object(),
             delivery_mode="torch_async",
         )
+
+
+def test_frame_workflow_runner_releases_provider_before_video_delivery_submit():
+    calls: list[tuple[object, ...]] = []
+    frame_context = object()
+    rendered = delivery.RenderedVideoFrame(
+        frame_index=3,
+        camera=SimpleNamespace(sim_time=0.3),
+        result=object(),
+        camera_rays_ms=float("nan"),
+        render_execute_ms=1.0,
+        render_profile_row=go2_backend._render_profile_row(None),
+        include_shadow_traversal_stats=False,
+    )
+    delivered = SimpleNamespace(completed_frame_index=3)
+    recorded: list[object] = []
+    published_frame = object()
+
+    class FakeProvider:
+        def begin_frame(self, frame_index: int, *, env_idx: int = 0, published_frame=None):
+            calls.append(("begin_frame", frame_index, env_idx, published_frame))
+
+            class Scope:
+                def __enter__(self_inner):
+                    calls.append(("enter", frame_index))
+                    return frame_context
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    calls.append(("exit", frame_index))
+
+            return Scope()
+
+    class FakeDelivery:
+        def complete_available(self, *, latest_rendered_frame_index=None):
+            calls.append(("complete_available", latest_rendered_frame_index))
+            return []
+
+        def submit(self, rendered_arg, *, frame_start):
+            calls.append(("submit", rendered_arg.frame_index, frame_start >= 0.0))
+            return delivered
+
+    def consume(context, frame_index: int):
+        calls.append(("consume", context, frame_index))
+        return rendered
+
+    runner = frame_runtime.FrameWorkflowRunner(
+        frame_provider=FakeProvider(),
+        video_consumer=consume,
+        delivery=FakeDelivery(),
+        delivered_video_recorder=recorded.append,
+    )
+
+    result = runner.step(
+        3,
+        env_idx=8,
+        provider_kwargs={"published_frame": published_frame},
+    )
+
+    assert isinstance(result, frame_runtime.FrameWorkflowResult)
+    assert result.frame_index == 3
+    assert result.video is rendered
+    assert result.delivered_video == (delivered,)
+    assert recorded == [delivered]
+    assert calls == [
+        ("begin_frame", 3, 8, published_frame),
+        ("enter", 3),
+        ("consume", frame_context, 3),
+        ("exit", 3),
+        ("complete_available", 3),
+        ("submit", 3, True),
+        ("complete_available", 3),
+    ]
+
+
+def test_frame_workflow_runner_keeps_typed_result_when_video_consumer_is_disabled():
+    calls: list[tuple[object, ...]] = []
+
+    class FakeProvider:
+        def begin_frame(self, frame_index: int, *, env_idx: int = 0):
+            calls.append(("begin_frame", frame_index, env_idx))
+
+            class Scope:
+                def __enter__(self_inner):
+                    calls.append(("enter", frame_index))
+                    return object()
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    calls.append(("exit", frame_index))
+
+            return Scope()
+
+    class FakeDelivery:
+        def submit(self, rendered, *, frame_start):
+            raise AssertionError("disabled video consumer should not submit delivery")
+
+        def complete_available(self, *, latest_rendered_frame_index=None):
+            raise AssertionError("disabled video consumer should not complete delivery")
+
+    def consume(context, frame_index: int):
+        calls.append(("consume", frame_index))
+        return None
+
+    runner = frame_runtime.FrameWorkflowRunner(
+        frame_provider=FakeProvider(),
+        video_consumer=consume,
+        delivery=FakeDelivery(),
+    )
+
+    result = runner.step(4, env_idx=9)
+
+    assert result == frame_runtime.FrameWorkflowResult(
+        frame_index=4,
+        video=None,
+        delivered_video=(),
+    )
+    assert calls == [
+        ("begin_frame", 4, 9),
+        ("enter", 4),
+        ("consume", 4),
+        ("exit", 4),
+    ]
+
+
+def test_frame_workflow_runner_exits_provider_when_video_consumer_raises():
+    calls: list[tuple[object, ...]] = []
+    frame_context = object()
+
+    class FakeProvider:
+        def begin_frame(self, frame_index: int, *, env_idx: int = 0):
+            calls.append(("begin_frame", frame_index, env_idx))
+
+            class Scope:
+                def __enter__(self_inner):
+                    calls.append(("enter", frame_index))
+                    return frame_context
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    calls.append(("exit", frame_index, exc_type))
+
+            return Scope()
+
+    class FakeDelivery:
+        def submit(self, rendered, *, frame_start):
+            raise AssertionError("consumer failure should not submit delivery")
+
+        def complete_available(self, *, latest_rendered_frame_index=None):
+            raise AssertionError("consumer failure should not complete delivery")
+
+    def consume(context, frame_index: int):
+        calls.append(("consume", context, frame_index))
+        raise RuntimeError("consumer failed")
+
+    runner = frame_runtime.FrameWorkflowRunner(
+        frame_provider=FakeProvider(),
+        video_consumer=consume,
+        delivery=FakeDelivery(),
+    )
+
+    with pytest.raises(RuntimeError, match="consumer failed"):
+        runner.step(5, env_idx=10)
+
+    assert calls == [
+        ("begin_frame", 5, 10),
+        ("enter", 5),
+        ("consume", frame_context, 5),
+        ("exit", 5, RuntimeError),
+    ]
+
+
+def test_frame_workflow_runner_flush_records_pending_video_delivery():
+    delivered = (SimpleNamespace(completed_frame_index=1), SimpleNamespace(completed_frame_index=2))
+    recorded: list[object] = []
+
+    class FakeProvider:
+        def begin_frame(self, frame_index: int, *, env_idx: int = 0):
+            raise AssertionError("flush should not acquire a provider frame")
+
+    class FakeDelivery:
+        def flush(self):
+            return list(delivered)
+
+    runner = frame_runtime.FrameWorkflowRunner(
+        frame_provider=FakeProvider(),
+        video_consumer=lambda context, frame_index: None,
+        delivery=FakeDelivery(),
+        delivered_video_recorder=recorded.append,
+    )
+
+    assert runner.flush() == delivered
+    assert recorded == list(delivered)
 
 
 def test_begin_physics_render_frame_borrows_prepares_and_completes_once():
