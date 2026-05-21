@@ -160,7 +160,9 @@ torch async warmup helper，
 `frame_runtime.py` 提供窄版 lab-internal `FrameWorkflowRunner`，
 负责 provider lifecycle、video consumer 与 delivery 的一帧工作流编排，
 GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(...)`
-→ dynamic snapshot/BVH → direct-light ray render 与 GPU pinhole camera raygen render。
+→ dynamic snapshot/BVH → direct-light ray render、GPU pinhole camera raygen render，
+并已有 test-only physics video workflow smoke 验证 provider/runtime/delivery/timing
+串接。`FrameSourceKind.PHYSICS_RUNTIME` 的 CLI/runner 正式入口仍保持 guard。
 
 ## 关键文件
 
@@ -220,10 +222,10 @@ GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(..
 
 ## 规模
 
-- Q54 sensing/optics 子系统当前收集 **253 个测试**：
+- Q54 sensing/optics 子系统当前收集 **254 个测试**：
   `tests/unit/optics` + `tests/unit/sensing` + `tests/gpu/test_optical_warp_executor.py`
   + `tests/gpu/test_optical_gpu_runtime.py`
-  （175 unit optics/lab + 40 unit sensing + 38 GPU optical）
+  （175 unit optics/lab + 40 unit sensing + 39 GPU optical）
 - physics/ ~16,000 行，rendering/ ~960 行；新增 sensing/、optics/ 与
   tools/optical_pipeline_lab/ 作为独立感知/光学与 pipeline tuning 子系统
 - 支持多机器人场景 + 静态几何 + 碰撞过滤 + 多点接触 manifold

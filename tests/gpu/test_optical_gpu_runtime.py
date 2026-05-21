@@ -7,7 +7,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+import tools.optical_pipeline_lab.delivery as video_delivery
+import tools.optical_pipeline_lab.frame_contexts as frame_contexts
+import tools.optical_pipeline_lab.frame_runtime as frame_runtime
 import tools.optical_pipeline_lab.go2_backend as go2_backend
+import tools.optical_pipeline_lab.video_loop as video_loop
 from optics import (
     CpuDirectLightOpticalExecutor,
     DeviceOpticalSceneCache,
@@ -52,7 +56,7 @@ from tools.optical_pipeline_lab.runner import (
     create_physics_render_runtime_for_config,
     run_scenario,
 )
-from tools.optical_pipeline_lab.timing import TimingRecorder
+from tools.optical_pipeline_lab.timing import FrameTimingRecorder, TimingRecorder
 
 try:
     import warp as wp
@@ -994,6 +998,192 @@ def test_optical_lab_physics_published_frame_renders_gpu_camera_raygen(tmp_path:
         np.testing.assert_array_equal(host.channel("shadow_stack_overflow_count"), [0])
         assert host.channel("rgb").shape == (1, 3)
     wp.synchronize_event(lease.done_event)
+
+
+def test_optical_lab_physics_video_workflow_uses_provider_runtime_delivery(tmp_path: Path):
+    engine = _make_engine()
+    q0, _ = engine.merged.tree.default_state()
+    q0[6] = 0.5
+    engine.step(q=q0, qdot=np.zeros(engine.merged.nv), dt=1e-4)
+    base_frame = engine.latest_published_frame()
+    wp.synchronize_event(base_frame.ready_event)
+
+    runtime = create_physics_render_runtime_for_config(
+        _physics_runtime_smoke_config(),
+        LabRunOptions(out=tmp_path / "physics_video_workflow"),
+        engine=engine,
+        registry=_body_bound_triangle_registry(),
+        base_frame=base_frame,
+        bounds_min=(-0.2, -0.2, 0.0),
+        bounds_max=(0.4, 0.4, 1.2),
+        metadata={"producer": "gpu_engine"},
+        timings=TimingRecorder(),
+        consumer_id="optical_lab_physics_video_workflow",
+    )
+    provider = frame_contexts.physics_frame_context_provider(runtime)
+    frame_timing_csv = tmp_path / "frame_timing.csv"
+    args = SimpleNamespace(
+        video_raygen="gpu",
+        video_ray_cache="off",
+        video_readback="full",
+        video_readback_delivery="sync",
+        video_readback_ring_depth=2,
+        write_frames=False,
+        render_profile=False,
+        fail_on_overflow=False,
+        video_frames=2,
+        video_fps=30.0,
+        progress_every=0,
+        frame_timing_csv=str(frame_timing_csv),
+        lab_frame_defaults={
+            "scenario_name": "physics_video_workflow_smoke",
+            "geometry_mode": "dynamic_rigid",
+            "readback_payload": "full",
+            "delivery_policy": "sync",
+        },
+    )
+
+    delivery_request = video_loop.video_delivery_request_from_options(
+        readback_mode=args.video_readback,
+        delivery_mode=args.video_readback_delivery,
+        ring_depth=args.video_readback_ring_depth,
+        write_frames=args.write_frames,
+    )
+    delivery = video_delivery.VideoDeliveryFacade.create(
+        request=delivery_request,
+        delivery_policy_label=args.video_readback_delivery,
+        frame_dir=tmp_path / "frames",
+        pack_rgb8=lambda result: result,
+        synchronize_event=wp.synchronize_event,
+    )
+    row_builder = video_delivery.VideoFrameTimingRowBuilder(
+        video_delivery.VideoDeliveryRunConfig(
+            video_fps=args.video_fps,
+            video_frames=args.video_frames,
+            video_raygen=args.video_raygen,
+            video_ray_cache=args.video_ray_cache,
+            delivery_policy_label=args.video_readback_delivery,
+            fail_on_overflow=args.fail_on_overflow,
+        )
+    ).bind_request(delivery_request)
+    rows = FrameTimingRecorder(
+        csv_path=frame_timing_csv,
+        default_fields=args.lab_frame_defaults,
+    )
+    rendered_frames = []
+
+    def build_video_camera(scene, args, frame_index):
+        del scene, args, frame_index
+        return OpticalPinholeCameraSpec(
+            frame_id=0,
+            sim_time=0.0,
+            env_idx=0,
+            sensor_id="physics_lab_video_camera",
+            width=1,
+            height=1,
+            fx=1.0,
+            fy=1.0,
+            cx=0.0,
+            cy=0.0,
+            X_world_camera=SpatialTransform(
+                np.array(
+                    [
+                        [1.0, 0.0, 0.0],
+                        [0.0, -1.0, 0.0],
+                        [0.0, 0.0, -1.0],
+                    ],
+                    dtype=np.float64,
+                ),
+                np.array([0.05, 0.05, 2.0], dtype=np.float64),
+            ),
+            max_distance=10.0,
+            sensor_role="rgb",
+        )
+
+    def consume_video(frame_context, frame_index):
+        frame_identity = video_loop.FrameIdentity(
+            frame_id=frame_context.frame_id,
+            sim_time=frame_context.sim_time,
+            env_idx=frame_context.env_idx,
+        )
+        plan = video_loop.build_video_render_plan(
+            runtime.pipeline.session.scene,
+            args,
+            frame_index,
+            None,
+            build_video_camera=build_video_camera,
+            frame_identity=frame_identity,
+            geometry_mode="dynamic_rigid",
+        )
+        rendered = video_loop.render_video_frame_from_context(
+            frame_context,
+            plan,
+            frame_index=frame_index,
+        )
+        rendered_frames.append(rendered)
+        return rendered
+
+    def record_delivered(delivered):
+        video_loop.record_delivered_video_frame(rows, row_builder, delivered, args)
+
+    runner = frame_runtime.FrameWorkflowRunner(
+        frame_provider=provider,
+        video_consumer=consume_video,
+        delivery=delivery,
+        delivered_video_recorder=record_delivered,
+    )
+
+    published_frames = []
+    expected_ranges = []
+    for frame_index, body_height in enumerate((0.65, 0.9)):
+        q, _ = engine.merged.tree.default_state()
+        q[6] = body_height
+        engine.step(q=q, qdot=np.zeros(engine.merged.nv), dt=1e-4)
+        published_frame = engine.latest_published_frame()
+        wp.synchronize_event(published_frame.ready_event)
+        body_z = float(published_frame.x_world_r_wp.numpy()[0, 0, 2])
+
+        result = runner.step(
+            frame_index,
+            env_idx=0,
+            provider_kwargs={"published_frame": published_frame},
+        )
+
+        assert result.frame_index == frame_index
+        assert result.video is rendered_frames[-1]
+        assert result.delivered_video
+        published_frames.append(published_frame)
+        expected_ranges.append(2.0 - (body_z + 0.25))
+
+    assert runner.flush() == ()
+    assert runtime.consumer.device_completed_frame_id == published_frames[-1].frame_id
+
+    for rendered, expected_range, published_frame in zip(rendered_frames, expected_ranges, published_frames):
+        host = stage_optical_compute_result_to_host(rendered.result)
+        np.testing.assert_array_equal(host.channel("hit_mask"), [True])
+        np.testing.assert_allclose(host.channel("range_m"), [expected_range], atol=1e-4)
+        np.testing.assert_array_equal(host.channel("numeric_instance_id"), [1])
+        assert rendered.camera.frame_id == published_frame.frame_id
+        assert rendered.camera.sim_time == published_frame.sim_time
+        assert rendered.geometry_mode == "dynamic_rigid"
+        assert rendered.prepare_timing["snapshot_ms"] >= 0.0
+        assert rendered.prepare_timing["accel_refit_ms"] >= 0.0
+        assert np.isnan(float(rendered.prepare_timing["accel_rebuild_ms"]))
+
+    rows.write_csv()
+    with frame_timing_csv.open(newline="") as f:
+        csv_rows = list(csv.DictReader(f))
+
+    assert len(rows._rows) == 2
+    assert len(csv_rows) == 2
+    for row in csv_rows:
+        assert row["scenario_name"] == "physics_video_workflow_smoke"
+        assert row["geometry_mode"] == "dynamic_rigid"
+        assert row["readback_mode"] == "full"
+        assert float(row["snapshot_ms"]) >= 0.0
+        assert float(row["accel_refit_ms"]) >= 0.0
+        assert np.isnan(float(row["accel_rebuild_ms"]))
+        assert float(row["readback_host_ms"]) >= 0.0
 
 
 def test_optical_lab_dynamic_video_loop_writes_prepare_timing_csv(tmp_path):

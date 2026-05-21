@@ -2295,6 +2295,19 @@ P4 complete:
   video recording. It is intentionally narrower than SimulationFrameRuntime and
   keeps video disabled frames represented as video=None rather than changing
   result shape.
+
+P5 complete:
+  tests/gpu/test_optical_gpu_runtime.py now has a test-only physics video
+  workflow smoke. It drives real GpuEngine.step() frames through
+  create_physics_render_runtime_for_config(...), PhysicsFrameContextProvider,
+  FrameWorkflowRunner, build_video_render_plan(...),
+  render_video_frame_from_context(...), VideoDeliveryFacade, and
+  FrameTimingRecorder. The test confirms current-frame identity is taken from
+  the provider-owned OpticalLabRenderFrameContext, physics borrow completion
+  happens before delivery, full readback sees the expected body-bound triangle
+  range for two physics heights, and frame_timing.csv records dynamic
+  snapshot/refit timings. No CLI or run_scenario physics runtime path is enabled
+  by this slice.
 ```
 
 New generic render foundation work should use `OpticalLabRender*`.
@@ -2302,8 +2315,9 @@ New generic render foundation work should use `OpticalLabRender*`.
 Recommended next slices:
 
 ```text
-Post-C5 cleanup:
-  continue delivery/runtime extraction separately from Go2 source/camera code
+P6:
+  enable one tiny FrameSourceKind.PHYSICS_RUNTIME runner path only after the
+  test-only provider/runtime/delivery path remains stable
 ```
 
 Physics/video boundary baseline:
