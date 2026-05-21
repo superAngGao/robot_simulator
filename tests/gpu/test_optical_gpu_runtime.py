@@ -54,6 +54,7 @@ from tools.optical_pipeline_lab.runner import (
     LabRunOptions,
     apply_run_overrides,
     create_physics_render_runtime_for_config,
+    run_physics_video_scenario,
     run_scenario,
 )
 from tools.optical_pipeline_lab.timing import FrameTimingRecorder, TimingRecorder
@@ -1184,6 +1185,96 @@ def test_optical_lab_physics_video_workflow_uses_provider_runtime_delivery(tmp_p
         assert float(row["accel_refit_ms"]) >= 0.0
         assert np.isnan(float(row["accel_rebuild_ms"]))
         assert float(row["readback_host_ms"]) >= 0.0
+
+
+def test_optical_lab_physics_video_runner_writes_frame_source_csv(tmp_path: Path):
+    engine = _make_engine()
+    q0, _ = engine.merged.tree.default_state()
+    q0[6] = 0.5
+    engine.step(q=q0, qdot=np.zeros(engine.merged.nv), dt=1e-4)
+    base_frame = engine.latest_published_frame()
+    wp.synchronize_event(base_frame.ready_event)
+
+    def published_frame_for_index(frame_index: int):
+        q, _ = engine.merged.tree.default_state()
+        q[6] = 0.7 + 0.1 * frame_index
+        engine.step(q=q, qdot=np.zeros(engine.merged.nv), dt=1e-4)
+        frame = engine.latest_published_frame()
+        wp.synchronize_event(frame.ready_event)
+        return frame
+
+    def build_video_camera(scene, args, frame_index):
+        del scene, frame_index
+        return OpticalPinholeCameraSpec(
+            frame_id=0,
+            sim_time=0.0,
+            env_idx=0,
+            sensor_id="physics_lab_runner_camera",
+            width=int(args.width),
+            height=int(args.height),
+            fx=1.0,
+            fy=1.0,
+            cx=0.0,
+            cy=0.0,
+            X_world_camera=SpatialTransform(
+                np.array(
+                    [
+                        [1.0, 0.0, 0.0],
+                        [0.0, -1.0, 0.0],
+                        [0.0, 0.0, -1.0],
+                    ],
+                    dtype=np.float64,
+                ),
+                np.array([0.05, 0.05, 2.0], dtype=np.float64),
+            ),
+            max_distance=10.0,
+            sensor_role="rgb",
+        )
+
+    config = apply_run_overrides(
+        get_preset("physics_body_triangle_video_smoke"),
+        width=1,
+        height=1,
+        readback="full",
+    )
+    rows = run_physics_video_scenario(
+        config,
+        LabRunOptions(
+            out=tmp_path / "physics_runner",
+            frames=2,
+            progress_every=0,
+            fail_on_overflow=False,
+        ),
+        engine=engine,
+        registry=_body_bound_triangle_registry(),
+        base_frame=base_frame,
+        published_frame_for_index=published_frame_for_index,
+        build_video_camera=build_video_camera,
+        synchronize_event=wp.synchronize_event,
+        pack_rgb8=lambda result: result,
+        bounds_min=(-0.2, -0.2, 0.0),
+        bounds_max=(0.4, 0.4, 1.2),
+        metadata={"producer": "gpu_engine"},
+        consumer_id="optical_lab_physics_video_runner",
+    )
+
+    frame_timing_csv = tmp_path / "physics_runner" / "frame_timing.csv"
+    with frame_timing_csv.open(newline="") as f:
+        csv_rows = list(csv.DictReader(f))
+
+    assert len(rows._rows) == 2
+    assert len(csv_rows) == 2
+    assert (tmp_path / "physics_runner" / "scenario_config.json").exists()
+    for row in csv_rows:
+        assert row["scenario_name"] == "physics_body_triangle_video_smoke"
+        assert row["frame_source"] == "physics_runtime"
+        assert row["scene_preset"] == "synthetic_body_triangle"
+        assert row["width"] == "1"
+        assert row["height"] == "1"
+        assert row["geometry_mode"] == "dynamic_rigid"
+        assert row["readback_mode"] == "full"
+        assert float(row["snapshot_ms"]) >= 0.0
+        assert float(row["accel_refit_ms"]) >= 0.0
 
 
 def test_optical_lab_dynamic_video_loop_writes_prepare_timing_csv(tmp_path):

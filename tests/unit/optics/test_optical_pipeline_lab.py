@@ -58,9 +58,11 @@ from tools.optical_pipeline_lab.runner import (
     LabRunOptions,
     apply_run_overrides,
     build_menagerie_example_args,
+    build_physics_video_args,
     create_physics_render_runtime_for_config,
     render_options_for_config,
     run_scenario,
+    validate_physics_video_run,
     validate_run,
     write_scenario_config,
 )
@@ -2605,6 +2607,18 @@ def test_synthetic_dynamic_smoke_preset_is_currently_implemented():
     config.validate_implemented()
 
 
+def test_physics_body_triangle_video_smoke_preset_is_currently_implemented():
+    config = get_preset("physics_body_triangle_video_smoke")
+
+    assert config.scenario_family is OpticalLabScenarioFamily.VIDEO_ORDERED_EXPORT
+    assert config.scene_preset == "synthetic_body_triangle"
+    assert config.frame_source is FrameSourceKind.PHYSICS_RUNTIME
+    assert config.geometry_mode is GeometryMode.DYNAMIC_RIGID
+    assert config.accel_policy is AccelPolicy.REFIT_EACH_FRAME
+    assert config.camera_mode == "fixed_view"
+    config.validate_implemented()
+
+
 def test_default_render_resolution_is_1080p():
     config = OpticalLabScenarioConfig(
         scenario_name="default_resolution",
@@ -2617,7 +2631,7 @@ def test_default_render_resolution_is_1080p():
     assert config.height == 1080
 
 
-def test_physics_runtime_frame_source_is_reserved_until_runner_loop_exists():
+def test_physics_runtime_frame_source_is_reserved_outside_explicit_smoke_path():
     config = OpticalLabScenarioConfig(
         scenario_name="physics_runtime_reserved",
         scenario_family=OpticalLabScenarioFamily.SENSOR_ORDERED,
@@ -2625,7 +2639,7 @@ def test_physics_runtime_frame_source_is_reserved_until_runner_loop_exists():
         geometry_mode=GeometryMode.DYNAMIC_RIGID,
     )
 
-    with pytest.raises(NotImplementedError, match="physics_runtime"):
+    with pytest.raises(NotImplementedError, match="reserved outside"):
         config.validate_implemented()
 
 
@@ -2983,6 +2997,54 @@ def test_lab_runner_translates_dynamic_smoke_preset_to_video_args(tmp_path: Path
     assert args.lab_frame_defaults["accel_policy"] == "refit_each_frame"
 
 
+def test_lab_runner_translates_physics_smoke_preset_to_video_args(tmp_path: Path):
+    config = apply_run_overrides(
+        get_preset("physics_body_triangle_video_smoke"),
+        width=24,
+        height=12,
+        readback="full",
+    )
+    options = LabRunOptions(out=tmp_path / "physics", frames=2, progress_every=0)
+
+    args = build_physics_video_args(config, options)
+
+    assert args.scene_preset == "synthetic_body_triangle"
+    assert args.width == 24
+    assert args.height == 12
+    assert args.bvh_backend == "cpu"
+    assert args.video_mode == "fixed_view"
+    assert args.video_geometry_mode == "dynamic_rigid"
+    assert args.video_readback == "full"
+    assert args.frame_timing_csv == str(tmp_path / "physics" / "frame_timing.csv")
+    assert args.lab_frame_defaults["scenario_name"] == "physics_body_triangle_video_smoke"
+    assert args.lab_frame_defaults["frame_source"] == "physics_runtime"
+    assert args.lab_frame_defaults["geometry_mode"] == "dynamic_rigid"
+    assert args.lab_frame_defaults["readback_payload"] == "full"
+
+
+def test_menagerie_arg_builder_rejects_physics_runtime_config(tmp_path: Path):
+    config = get_preset("physics_body_triangle_video_smoke")
+
+    with pytest.raises(NotImplementedError, match="build_physics_video_args"):
+        build_menagerie_example_args(
+            config,
+            LabRunOptions(out=tmp_path / "physics"),
+        )
+
+
+def test_physics_video_runner_rejects_torch_async_until_warmup_source_exists(tmp_path: Path):
+    config = get_preset("physics_body_triangle_video_smoke")
+
+    with pytest.raises(NotImplementedError, match="provider-backed torch_async warmup"):
+        validate_physics_video_run(
+            config,
+            LabRunOptions(
+                out=tmp_path / "physics",
+                video_readback_delivery="torch_async",
+            ),
+        )
+
+
 def test_go2_backend_configures_synthetic_dynamic_video_frames(monkeypatch: pytest.MonkeyPatch):
     base_frame = dynamic_frames.make_gpu_pose_frame(
         wp_module=_FakeWpModule,
@@ -3106,6 +3168,17 @@ def test_run_scenario_smoke_delegates_to_go2_backend(tmp_path: Path, monkeypatch
     assert args.height == 60
     assert args.video_readback == "none"
     assert (tmp_path / "run" / "scenario_config.json").exists()
+
+
+def test_run_scenario_physics_runtime_requires_explicit_runtime_inputs(tmp_path: Path):
+    config = apply_run_overrides(
+        get_preset("physics_body_triangle_video_smoke"),
+        readback="full",
+    )
+    options = LabRunOptions(out=tmp_path / "physics", frames=1)
+
+    with pytest.raises(NotImplementedError, match="run_physics_video_scenario"):
+        run_scenario(config, options)
 
 
 def test_reports_format_summary_rows():

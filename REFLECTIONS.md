@@ -2921,3 +2921,28 @@ The following changes to Layer 1 are required first:
 - ~~Where does `Simulator` (Layer 2) live in the module tree?~~ → **Resolved: top-level `simulator.py`** (see below)
 - How does Layer 3 Gymnasium env specify observation/action spaces generically
   enough for both legged and manipulator robots?
+
+---
+
+## Session 2026-05-21 — Q54 P6 Physics Runtime Metadata Decision
+
+Resolved Q54-OPEN: P6 runner integration must preserve `frame_source` timing
+metadata.
+
+Decision:
+- `frame_source` is part of the stable `FrameTimingRecorder` CSV schema.
+- The explicit physics video runner path builds timing defaults through
+  `frame_defaults_for_config(...)`.
+- The P6 GPU smoke asserts `frame_source == "physics_runtime"` in
+  `frame_timing.csv`.
+- Plain `run_scenario(...)` still does not construct a physics engine. Physics
+  runtime video requires `run_physics_video_scenario(...)` with explicit engine,
+  registry, base frame, and `published_frame_for_index` callback.
+
+Rationale:
+- Physics owns time and dynamic published frames; runner/video should not hide
+  engine stepping inside render code.
+- The explicit helper closes the metadata gap without pretending the CLI can
+  create arbitrary physics runtime state.
+- Future CLI/RL integration can wrap the same helper once engine ownership is
+  defined.

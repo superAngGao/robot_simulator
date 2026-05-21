@@ -104,9 +104,12 @@ class OpticalLabScenarioConfig:
         """Fail loudly for reserved modes that the lab does not execute yet."""
         if self._is_implemented_dynamic_smoke():
             return
+        if self._is_implemented_physics_runtime_smoke():
+            return
         if self.frame_source is FrameSourceKind.PHYSICS_RUNTIME:
             raise NotImplementedError(
-                "frame_source='physics_runtime' is reserved until the lab runner owns a physics engine loop"
+                "frame_source='physics_runtime' is reserved outside "
+                "the physics_body_triangle_video_smoke path"
             )
         if self.frame_source is FrameSourceKind.SYNTHETIC_FRAME_SEQUENCE:
             raise NotImplementedError(
@@ -148,6 +151,24 @@ class OpticalLabScenarioConfig:
             self.scene_preset == "synthetic_body_triangle"
             and self.frame_source is FrameSourceKind.SYNTHETIC_FRAME_SEQUENCE
             and self.geometry_mode is GeometryMode.DYNAMIC_RIGID
+            and self.accel_backend is AccelBackend.CPU_BVH
+            and self.accel_policy is AccelPolicy.REFIT_EACH_FRAME
+            and self.render_backend is RenderBackend.WARP_BVH_DIRECT_LIGHT
+            and self.delivery_policy in (DeliveryPolicy.SYNC, DeliveryPolicy.DEVICE_ONLY)
+            and self.readback_payload
+            not in (
+                ReadbackPayload.DIAGNOSTICS,
+                ReadbackPayload.CUSTOM,
+            )
+            and self.write_policy in (WritePolicy.NONE, WritePolicy.PNG_SEQUENCE)
+        )
+
+    def _is_implemented_physics_runtime_smoke(self) -> bool:
+        return (
+            self.scene_preset == "synthetic_body_triangle"
+            and self.frame_source is FrameSourceKind.PHYSICS_RUNTIME
+            and self.geometry_mode is GeometryMode.DYNAMIC_RIGID
+            and self.camera_mode == "fixed_view"
             and self.accel_backend is AccelBackend.CPU_BVH
             and self.accel_policy is AccelPolicy.REFIT_EACH_FRAME
             and self.render_backend is RenderBackend.WARP_BVH_DIRECT_LIGHT

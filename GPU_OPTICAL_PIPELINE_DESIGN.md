@@ -2308,6 +2308,18 @@ P5 complete:
   range for two physics heights, and frame_timing.csv records dynamic
   snapshot/refit timings. No CLI or run_scenario physics runtime path is enabled
   by this slice.
+
+P6 complete:
+  runner.py now provides the explicit run_physics_video_scenario(...) path for
+  the tiny physics_body_triangle_video_smoke preset. This path requires callers
+  to provide engine, registry, base_frame, published_frame_for_index(...),
+  build_video_camera(...), pack_rgb8, and synchronize_event, so physics still
+  owns time and dynamic frame selection. The helper writes scenario_config.json,
+  uses frame_defaults_for_config(...) for timing metadata, creates the physics
+  render runtime, acquires frames through PhysicsFrameContextProvider, renders
+  through FrameWorkflowRunner, and writes frame_timing.csv. The GPU smoke asserts
+  frame_source == "physics_runtime" in CSV. Plain run_scenario(...) still
+  rejects physics runtime configs because it cannot construct a physics engine.
 ```
 
 New generic render foundation work should use `OpticalLabRender*`.
@@ -2315,9 +2327,9 @@ New generic render foundation work should use `OpticalLabRender*`.
 Recommended next slices:
 
 ```text
-P6:
-  enable one tiny FrameSourceKind.PHYSICS_RUNTIME runner path only after the
-  test-only provider/runtime/delivery path remains stable
+Next:
+  decide whether CLI, sensor-loop, or future RL runtime should own physics
+  engine construction before exposing a user-facing physics runtime command
 ```
 
 Physics/video boundary baseline:
