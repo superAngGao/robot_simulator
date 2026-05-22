@@ -230,6 +230,9 @@ GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(..
   `tests/unit/optics` + `tests/unit/sensing` + `tests/gpu/test_optical_warp_executor.py`
   + `tests/gpu/test_optical_gpu_runtime.py`
   （180 unit optics/lab + 40 unit sensing + 40 GPU optical）
+- 当前 push gate：2026-05-22 在 `env_tilelang_20260119` 中完成全量
+  `python -m pytest -q`，结果 **1555 passed, 1 skipped**，耗时 31:07；
+  `ruff check .` 与 `ruff format --check .` clean。
 - physics/ ~16,000 行，rendering/ ~960 行；新增 sensing/、optics/ 与
   tools/optical_pipeline_lab/ 作为独立感知/光学与 pipeline tuning 子系统
 - 支持多机器人场景 + 静态几何 + 碰撞过滤 + 多点接触 manifold

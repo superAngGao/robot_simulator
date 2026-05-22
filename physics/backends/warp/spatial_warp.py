@@ -27,9 +27,15 @@ vec6f = wp.types.vector(length=6, dtype=wp.float32)
 def skew_wp(v: wp.vec3) -> wp.mat33:
     """Skew-symmetric matrix [v]× such that [v]× @ u == cross(v, u)."""
     return wp.mat33(
-        0.0, -v[2], v[1],
-        v[2], 0.0, -v[0],
-        -v[1], v[0], 0.0,
+        0.0,
+        -v[2],
+        v[1],
+        v[2],
+        0.0,
+        -v[0],
+        -v[1],
+        v[0],
+        0.0,
     )
 
 
@@ -77,9 +83,15 @@ def quat_to_rot_wp(qw: float, qx: float, qy: float, qz: float) -> wp.mat33:
     z = qz / n
 
     return wp.mat33(
-        1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - w * z), 2.0 * (x * z + w * y),
-        2.0 * (x * y + w * z), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - w * x),
-        2.0 * (x * z - w * y), 2.0 * (y * z + w * x), 1.0 - 2.0 * (x * x + y * y),
+        1.0 - 2.0 * (y * y + z * z),
+        2.0 * (x * y - w * z),
+        2.0 * (x * z + w * y),
+        2.0 * (x * y + w * z),
+        1.0 - 2.0 * (x * x + z * z),
+        2.0 * (y * z - w * x),
+        2.0 * (x * z - w * y),
+        2.0 * (y * z + w * x),
+        1.0 - 2.0 * (x * x + y * y),
     )
 
 
@@ -125,9 +137,7 @@ def transform_force_wp(R: wp.mat33, r: wp.vec3, f: vec6f) -> vec6f:
 
 
 @wp.func
-def compose_transform_wp(
-    R1: wp.mat33, r1: wp.vec3, R2: wp.mat33, r2: wp.vec3
-) -> wp.mat33:
+def compose_transform_wp(R1: wp.mat33, r1: wp.vec3, R2: wp.mat33, r2: wp.vec3) -> wp.mat33:
     """Compose two transforms: (R1,r1) @ (R2,r2).
 
     Returns R_new. Caller must also compute r_new = r1 + R1 @ r2.
@@ -137,9 +147,7 @@ def compose_transform_wp(
 
 
 @wp.func
-def compose_transform_r_wp(
-    R1: wp.mat33, r1: wp.vec3, r2: wp.vec3
-) -> wp.vec3:
+def compose_transform_r_wp(R1: wp.mat33, r1: wp.vec3, r2: wp.vec3) -> wp.vec3:
     """Compute the translation part of composed transform: r_new = r1 + R1 @ r2."""
     return r1 + R1 * r2
 

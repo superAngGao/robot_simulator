@@ -23,6 +23,8 @@ The optical pipeline can render RGB, metric depth, and numeric instance segmenta
 
 Current optical lab work extends that foundation with GPU device-scene executors, BVH traversal, direct lighting and shadow rays, CUDA LBVH rebuilds, GPU pinhole ray generation, and a source-driven render foundation. The production-facing dynamic path starts from physics-published frames. Static asset builders are only for non-simulated assets: they construct optical registries, camera presets, and preview assets, then feed the same generic render session, workspace, frame preparation, and video-loop helpers under `tools/optical_pipeline_lab/`.
 
+Physics-driven optical video is currently exposed as an explicit lab runner helper, `run_physics_video_scenario(...)`: callers provide the physics engine, registry, base frame, and per-frame published-frame callback, while the optical lab owns render-session assembly, video delivery, and timing metadata. The regular CLI `run_scenario(...)` still does not construct a physics engine.
+
 ![Unitree Go2 optical preview, front view](docs/assets/optical/menagerie_go2_front/panel.png)
 
 ![Unitree Go2 optical preview, side view](docs/assets/optical/menagerie_go2_side/panel.png)
@@ -37,7 +39,7 @@ The Go2 assets are not vendored in this repository. They were loaded from a loca
 | Optical lab focused | `PYTHONPATH=. pytest tests/unit/optics -q` |
 | Sensing/optics collection | `PYTHONPATH=. pytest --collect-only -q tests/unit/optics tests/unit/sensing tests/gpu/test_optical_warp_executor.py tests/gpu/test_optical_gpu_runtime.py` |
 | Including GPU | `python -m pytest tests/ -m "not slow"` |
-| Full suite (~21 min) | `python -m pytest tests/ -v` |
+| Full suite (~31 min on current GPU dev host) | `python -m pytest tests/ -v` |
 
 ## Extras
 
