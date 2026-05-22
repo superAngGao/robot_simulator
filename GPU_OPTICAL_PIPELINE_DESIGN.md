@@ -2327,6 +2327,19 @@ P6 complete:
   through FrameWorkflowRunner, and writes frame_timing.csv. The GPU smoke asserts
   frame_source == "physics_runtime" in CSV. Plain run_scenario(...) still
   rejects physics runtime configs because it cannot construct a physics engine.
+
+P7 planned:
+  add a thin physics-owned stepped video workflow above the P6 bridge. P6 keeps
+  PhysicsPublishedFrameForIndex semantics: "give me the frame for index i",
+  which can be replay, selection, or live stepping. P7 introduces
+  PhysicsPublishedFrameStepper semantics: "advance or select physics time for
+  frame i, then return the published frame". The new helper should call the
+  stepper first, then reuse create_physics_render_runtime_for_config(...),
+  PhysicsFrameContextProvider, FrameWorkflowRunner, build_video_render_plan(...),
+  render_video_frame_from_context(...), and the existing delivery/timing path.
+  It should not replace run_physics_video_scenario(...), should not enable
+  plain run_scenario(...) physics configs, and should not construct a physics
+  engine from CLI settings.
 ```
 
 New generic render foundation work should use `OpticalLabRender*`.
@@ -2334,9 +2347,19 @@ New generic render foundation work should use `OpticalLabRender*`.
 Recommended next slices:
 
 ```text
-Next:
-  decide whether CLI, sensor-loop, or future RL runtime should own physics
-  engine construction before exposing a user-facing physics runtime command
+P7.1:
+  introduce PhysicsPublishedFrameStepper with the stepped video helper. Do not
+  make an alias-only slice; the naming decision should be reviewed with the
+  helper that uses it.
+
+P7.2:
+  add one focused GPU smoke where the stepper calls real physics stepping or the
+  smallest equivalent, returns the published frame, and render output changes
+  with physics state rather than a stale base frame.
+
+P7.3:
+  keep run_scenario(...) guarded unless/until a later P8 designs CLI-level
+  physics engine construction, action source, lifecycle, and cleanup policy.
 ```
 
 Physics/video boundary baseline:
@@ -2348,13 +2371,13 @@ video owns camera/request planning and RenderedVideoFrame packaging
 delivery owns readback/write/backpressure/completion
 ```
 
-The next slices should not put a physics loop directly into `runner.py`.
-Instead, split the video loop first so `pipeline.begin_frame(...)` is no longer
-fused to camera/request construction. The frame-scoped render boundary is
-`OpticalLabRenderFrameContext`: video should render from an already acquired
-frame context, and physics providers should only supply that context/lifetime.
+Future slices should not put physics stepping inside render/session/video
+objects. P1 already split video planning from `pipeline.begin_frame(...)`; the
+frame-scoped render boundary is `OpticalLabRenderFrameContext`. Video should
+render from an already acquired frame context, and physics providers should only
+supply that context/lifetime.
 
-The required P1 shape is:
+The P1 shape (implemented):
 
 ```text
 VideoRenderPlan:
@@ -2421,6 +2444,14 @@ product contract. If consumers are registered at construction time for
 fail-fast validation, per-frame disable policies may skip work but must not
 change the result field set; for the first video-focused result, `None` is a
 sufficient absent value.
+
+For P7 stepped physics workflows, `workflow.flush()` must run only after all
+per-frame provider `begin_frame(...)` contexts have exited. Physics borrows are
+always released before delivery flush runs. Unit coverage should verify both
+failure sides of the boundary: if `step_physics_frame(...)` raises, the workflow
+must stop before provider borrow; if render raises inside the provider context,
+the provider must still complete the physics borrow and re-raise without
+suppression.
 
 Names that should remain Go2-specific:
 
