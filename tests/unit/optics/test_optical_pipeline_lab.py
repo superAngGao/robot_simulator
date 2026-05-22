@@ -18,6 +18,7 @@ import tools.optical_pipeline_lab.go2_backend as go2_backend
 import tools.optical_pipeline_lab.physics_source as physics_source
 import tools.optical_pipeline_lab.render_session as render_session
 import tools.optical_pipeline_lab.rgb_pack as rgb_pack
+import tools.optical_pipeline_lab.static_asset_source as static_asset_source
 import tools.optical_pipeline_lab.video_loop as video_loop
 from optics.render_api import DeliveryPolicy as RuntimeDeliveryPolicy
 from optics.render_api import DeliveryResult as RuntimeDeliveryResult
@@ -1375,7 +1376,7 @@ def test_lab_render_pipeline_create_from_source_factory_preserves_scene_view(
     assert pipeline.begin_frame().frame_id == 13
 
 
-def test_go2_static_asset_render_source_builder_wraps_scene_and_base_frame(
+def test_static_asset_render_source_builder_wraps_scene_and_base_frame(
     monkeypatch: pytest.MonkeyPatch,
 ):
     registry = object()
@@ -1399,11 +1400,12 @@ def test_go2_static_asset_render_source_builder_wraps_scene_and_base_frame(
         assert device == "device"
         return base_frame
 
-    monkeypatch.setattr(go2_backend, "_build_scene_for_preset", fake_build_scene)
-    monkeypatch.setattr(go2_backend, "_base_gpu_frame_for_scene", fake_base_gpu_frame)
+    monkeypatch.setattr(static_asset_source, "build_static_asset_scene_for_preset", fake_build_scene)
+    monkeypatch.setattr(static_asset_source, "base_gpu_frame_for_static_asset_scene", fake_base_gpu_frame)
 
     assert not hasattr(go2_backend, "build_go2_render_source")
-    source = go2_backend.build_go2_static_asset_render_source(
+    assert not hasattr(go2_backend, "build_go2_static_asset_render_source")
+    source = static_asset_source.build_static_asset_render_source(
         SimpleNamespace(scene_preset="synthetic_body_triangle"),
         workspace=go2_backend.OpticalLabRenderWorkspace(device="device", stream="stream"),
     )
@@ -1415,7 +1417,7 @@ def test_go2_static_asset_render_source_builder_wraps_scene_and_base_frame(
     assert source.metadata["scene"] is scene
     assert source.metadata["scene_preset"] == "synthetic_body_triangle"
     assert source.metadata["source_kind"] == "static_asset"
-    assert go2_backend._scene_from_static_asset_render_source(source) is scene
+    assert static_asset_source.scene_from_static_asset_render_source(source) is scene
 
 
 def test_go2_render_options_map_args_to_generic_options():
@@ -3045,7 +3047,7 @@ def test_physics_video_runner_rejects_torch_async_until_warmup_source_exists(tmp
         )
 
 
-def test_go2_backend_configures_synthetic_dynamic_video_frames(monkeypatch: pytest.MonkeyPatch):
+def test_static_asset_source_configures_synthetic_dynamic_video_frames(monkeypatch: pytest.MonkeyPatch):
     base_frame = dynamic_frames.make_gpu_pose_frame(
         wp_module=_FakeWpModule,
         translations=np.zeros((1, 1, 3), dtype=np.float32),
@@ -3058,9 +3060,9 @@ def test_go2_backend_configures_synthetic_dynamic_video_frames(monkeypatch: pyte
         video_frames=3,
         video_fps=10.0,
     )
-    monkeypatch.setattr(go2_backend, "wp", _FakeWpModule)
+    monkeypatch.setattr(static_asset_source, "wp", _FakeWpModule)
 
-    go2_backend._configure_dynamic_video_frame_inputs(
+    static_asset_source.configure_dynamic_video_frame_inputs(
         args,
         SimpleNamespace(gpu_frame=base_frame),
     )

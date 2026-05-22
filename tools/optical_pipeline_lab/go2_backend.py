@@ -23,7 +23,6 @@ import sys
 import time
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 
@@ -33,7 +32,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from examples.mujoco_menagerie_robot_preview import (
     _look_at_camera_R,
-    import_mjcf_visual_scene,
     make_model_camera,
 )
 from examples.optical_direct_light_preview import write_preview_images
@@ -45,8 +43,8 @@ from optics import (
 from physics.publish import GpuPublishedFrame
 from physics.spatial import SpatialTransform
 from sensing import OpticalPinholeCameraSpec, build_pinhole_camera_image_result, build_pinhole_camera_rays
-from tools.optical_pipeline_lab import dynamic_frames, video_loop
 from tools.optical_pipeline_lab import render_session as _render_session
+from tools.optical_pipeline_lab import static_asset_source, video_loop
 from tools.optical_pipeline_lab.scenarios import DEFAULT_RENDER_HEIGHT, DEFAULT_RENDER_WIDTH
 from tools.optical_pipeline_lab.timing import (
     FrameTimingRecorder,
@@ -102,16 +100,16 @@ def render_many_views(args: argparse.Namespace) -> None:
     total_start = time.perf_counter()
     options = _render_options_from_args(args)
     pipeline = OpticalLabRenderPipeline.create_from_source_factory(
-        lambda workspace: build_go2_static_asset_render_source(args, workspace=workspace),
+        lambda workspace: static_asset_source.build_static_asset_render_source(args, workspace=workspace),
         options,
         timings,
-        scene_for_source=_scene_from_static_asset_render_source,
+        scene_for_source=static_asset_source.scene_from_static_asset_render_source,
         pack_rgb8=_pack_video_rgb8,
         render_profile_buffer_for_request=_render_profile_buffer_for_request,
         render_profile_row=_render_profile_row,
     )
     session = pipeline.session
-    _configure_dynamic_video_frame_inputs(args, session)
+    static_asset_source.configure_dynamic_video_frame_inputs(args, session)
     scene = session.scene
 
     out_dir = Path(args.out)
@@ -304,16 +302,6 @@ def _print_video_summary(args: argparse.Namespace, video_rows: FrameTimingRecord
         print(f"    frame_timing_csv: {video_rows.csv_path}")
 
 
-def _build_scene_for_preset(scene_preset: str, args: argparse.Namespace):
-    if scene_preset == "go2_menagerie_static":
-        return import_mjcf_visual_scene(Path(args.model_dir), model_xml=args.model_xml)
-    if scene_preset == "synthetic_body_triangle":
-        return _synthetic_body_triangle_scene()
-    raise NotImplementedError(
-        f"scene_preset={scene_preset!r} is reserved; use go2_menagerie_static/synthetic_body_triangle for now"
-    )
-
-
 def _render_options_from_args(args: argparse.Namespace) -> OpticalLabRenderOptions:
     return OpticalLabRenderOptions(
         device=args.device,
@@ -321,127 +309,6 @@ def _render_options_from_args(args: argparse.Namespace) -> OpticalLabRenderOptio
         bvh_split_strategy=str(args.bvh_split_strategy),
         shadows=not args.no_shadows,
         verbose_warp=bool(args.verbose_warp),
-    )
-
-
-def build_go2_static_asset_render_source(
-    args: argparse.Namespace,
-    *,
-    workspace: OpticalLabRenderWorkspace,
-) -> OpticalLabRenderSource:
-    """Build a lab render source from non-simulated Go2/Menagerie assets."""
-
-    scene_preset = getattr(args, "scene_preset", "go2_menagerie_static")
-    scene = _build_scene_for_preset(scene_preset, args)
-    base_frame = _base_gpu_frame_for_scene(
-        scene_preset,
-        frame_id=scene.frame.frame_id,
-        sim_time=scene.frame.sim_time,
-        device=workspace.device,
-    )
-    return OpticalLabRenderSource(
-        registry=scene.registry,
-        base_frame=base_frame,
-        bounds_min=scene.bounds_min,
-        bounds_max=scene.bounds_max,
-        metadata={
-            "scene": scene,
-            "scene_preset": scene_preset,
-            "source_kind": "static_asset",
-        },
-    )
-
-
-def _scene_from_static_asset_render_source(source: OpticalLabRenderSource):
-    return source.metadata["scene"]
-
-
-def _synthetic_body_triangle_scene():
-    registry = dynamic_frames.make_body_bound_triangle_registry()
-    return SimpleNamespace(
-        registry=registry,
-        frame=SimpleNamespace(frame_id=0, sim_time=0.0),
-        bounds_min=np.array([-0.35, -0.35, -0.05], dtype=np.float64),
-        bounds_max=np.array([0.45, 0.45, 0.85], dtype=np.float64),
-        num_visual_geoms=1,
-        num_triangles=1,
-    )
-
-
-def _base_gpu_frame_for_scene(
-    scene_preset: str,
-    *,
-    frame_id: int,
-    sim_time: float,
-    device,
-) -> GpuPublishedFrame:
-    if scene_preset == "synthetic_body_triangle":
-        return dynamic_frames.make_gpu_pose_frame(
-            wp_module=wp,
-            translations=np.zeros((1, 1, 3), dtype=np.float32),
-            frame_id=frame_id,
-            sim_time=sim_time,
-            device=device,
-        )
-    return _static_gpu_frame(frame_id=frame_id, sim_time=sim_time, device=device)
-
-
-def _configure_dynamic_video_frame_inputs(args: argparse.Namespace, session: OpticalLabRenderSession) -> None:
-    if getattr(args, "video_frame_inputs", None) is not None:
-        return
-    if getattr(args, "scene_preset", "go2_menagerie_static") != "synthetic_body_triangle":
-        return
-    args.video_frame_inputs = _synthetic_body_triangle_video_frame_inputs(
-        session.gpu_frame,
-        frames=int(args.video_frames),
-        fps=float(args.video_fps),
-    )
-    args.video_geometry_mode = "dynamic_rigid"
-
-
-def _synthetic_body_triangle_video_frame_inputs(
-    base_frame: GpuPublishedFrame,
-    *,
-    frames: int,
-    fps: float,
-) -> list[GpuPublishedFrame]:
-    frame_inputs: list[GpuPublishedFrame] = []
-    sim_dt = 1.0 / fps if fps > 0.0 else 0.0
-    for frame_index in range(max(frames, 0)):
-        z_offset = 0.04 * float(frame_index % 4)
-        frame_inputs.append(
-            dynamic_frames.clone_and_perturb_gpu_published_pose_frame(
-                base_frame,
-                wp_module=wp,
-                translation_offsets={(0, 0): [0.0, 0.0, z_offset]},
-                frame_id=base_frame.frame_id + frame_index,
-                sim_time=base_frame.sim_time + sim_dt * float(frame_index),
-                step_index=base_frame.step_index + frame_index,
-                slot_id=frame_index,
-            )
-        )
-    return frame_inputs
-
-
-def _static_gpu_frame(*, frame_id: int, sim_time: float, device) -> GpuPublishedFrame:
-    x_world_R = wp.zeros((1, 0, 3, 3), dtype=wp.float32, device=device)
-    x_world_r = wp.zeros((1, 0, 3), dtype=wp.float32, device=device)
-    return GpuPublishedFrame(
-        slot_id=0,
-        frame_id=frame_id,
-        sim_time=sim_time,
-        step_index=frame_id,
-        env_mask_wp=None,
-        q_wp=None,
-        qdot_wp=None,
-        x_world_R_wp=x_world_R,
-        x_world_r_wp=x_world_r,
-        v_bodies_wp=None,
-        contact_count_wp=None,
-        contact_cache_ref=None,
-        telemetry_ref=None,
-        ready_event=None,
-        slot_meta=None,
     )
 
 

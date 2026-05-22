@@ -39,16 +39,17 @@ Optimize explicit pipeline scenarios with explicit delivery policy.
 
 ```text
 Go2 is not the render pipeline.
-Go2/Menagerie is a static asset builder for non-simulated benchmark assets.
-It builds an optical registry, camera presets, and preview metadata; it is not
-the dynamic frame provider.
+Go2/Menagerie is a concrete static asset source for non-simulated benchmark
+assets. The generic static asset source builder lives in static_asset_source.py.
+Go2-specific code may provide Menagerie model defaults, camera presets, and
+preview/reporting metadata; it is not the dynamic frame provider.
 ```
 
 The active near-term plan is therefore to make the Optical Pipeline Lab render
 foundation explicit about its two inputs:
 
 ```text
-asset/registry builder -> OpticalWorldRegistry
+static asset source builder -> OpticalWorldRegistry
 physics/synthetic frame provider -> GpuPublishedFrame
   -> OpticalLabRenderSource (lab-local bundle of registry + base frame)
   -> OpticalLabRenderPipeline
@@ -58,9 +59,9 @@ physics/synthetic frame provider -> GpuPublishedFrame
 ```
 
 Physics simulation is the primary dynamic frame provider. Menagerie Go2 and
-other static asset builders are for non-simulated registry construction and
-benchmark camera presets; they should not look like renderer/backend adapters
-or physics-frame entrypoints.
+other concrete static asset sources are for non-simulated registry construction
+and benchmark camera presets; they should not look like renderer/backend
+adapters, generic pipeline components, or physics-frame entrypoints.
 
 ## 2. Current State In One Sentence
 
@@ -2244,11 +2245,11 @@ C2 complete:
   in place for Go2 until C3.
 
 C3 complete:
-  Go2/Menagerie and synthetic lab scenes are built through
-  build_go2_static_asset_render_source(...). The Go2 static asset builder now
-  enters the generic render foundation through the source/options factory path,
-  while keeping Go2 CLI, preset, camera, video, and reporting vocabulary in
-  go2_backend.py. The old
+  Go2/Menagerie and synthetic lab scenes are built through the generic
+  static_asset_source.build_static_asset_render_source(...). Static asset source
+  construction now enters the generic render foundation through the
+  source/options factory path, while keeping Go2 CLI, preset, camera, video,
+  and reporting vocabulary in go2_backend.py. The old
   callback-based create(...) entrypoint has been removed.
 
 C4 complete:
@@ -2258,8 +2259,14 @@ C4 complete:
 
 C5 complete:
   generic video render-loop helpers now live in video_loop.py. go2_backend.py
-  keeps Go2 source/camera/CLI/reporting ownership plus thin wrappers that inject
-  the Go2 camera builder into the generic video loop.
+  keeps Go2 camera/CLI/reporting ownership plus thin wrappers that inject the
+  Go2 camera builder into the generic video loop.
+
+Static asset source naming cleanup complete:
+  static asset source construction lives in static_asset_source.py under
+  generic build_static_asset_render_source(...) vocabulary. go2_backend.py no
+  longer exports build_go2_static_asset_render_source(...); Go2 remains only the
+  concrete Menagerie asset instance and CLI/reporting wrapper.
 
 Alias cleanup complete:
   Go2Render* compatibility aliases and the go2_session.py shim have been
@@ -2432,6 +2439,7 @@ Names that should stop being Go2-specific:
 
 ```text
 generic tests named test_go2_pipeline_*
+generic static asset source builders named build_go2_*
 ```
 
 `Go2Render*` and `go2_session.py` were transitional C1-C5 compatibility shims

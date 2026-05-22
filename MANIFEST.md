@@ -139,9 +139,11 @@ LiDAR/arbitrary ray query 和 CPU/GPU parity reference。GPU optical/rendering
 现已承接 source-driven render foundation、dynamic frame prep、frame-context
 providers、generic video loop、video/export tuning 的 scenario config、timing schema、preset metadata
 和 thin runner。动态渲染入口应来自 physics-published `GpuPublishedFrame`；
-Go2/Menagerie 等 static asset builder 只用于静止/benchmark 场景的 optical registry、
-camera preset 和 preview asset 构建，不是物理帧提供者、渲染 pipeline、
-也不是 renderer/backend adapter；
+Go2/Menagerie 等 concrete static asset source 只用于静止/benchmark 场景的
+Menagerie model defaults、camera preset 和 preview/reporting glue，不是物理帧提供者、
+渲染 pipeline，也不是 renderer/backend adapter；通用静态 asset source 构建已收敛到
+`static_asset_source.py` 的 `build_static_asset_render_source(...)`，不再使用
+Go2 命名承载通用静态组件；
 `OpticalLabRenderSource` / `OpticalLabRenderOptions` / `OpticalLabRenderWorkspace`
 / `OpticalLabRenderSession` / `OpticalLabRenderFrameContext` /
 `OpticalLabRenderPipeline` 是通用 lab render 入口，旧 `Go2Render*`
@@ -200,12 +202,13 @@ GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(..
 | `optics/warp_execution.py` | GPU optical Warp executors: brute-force, device scene, BVH, direct-light/shadow, GPU camera raygen |
 | `optics/gpu_runtime.py` | L5B.1 Q52 `GpuPublishedFrame` optical runtime helper |
 | `GPU_OPTICAL_PIPELINE_DESIGN.md` | Q54 GPU optical/rendering pipeline repo-level design baseline: scenarios, delivery policies, Optical Pipeline Lab, roadmap |
-| `tools/optical_pipeline_lab/` | Optical Pipeline Lab: scenario configs, presets, timing CSV schema, report helpers, thin Go2 runner |
+| `tools/optical_pipeline_lab/` | Optical Pipeline Lab: scenario configs, presets, timing CSV schema, report helpers, static asset source builders, thin Go2 runner |
 | `tools/optical_pipeline_lab/async_readback.py` | Optical Pipeline Lab async D2H readback ring helper for pinned Torch copies |
 | `tools/optical_pipeline_lab/dynamic_frames.py` | Lab-only synthetic GPU published-frame clone/perturb helpers for dynamic optical smokes |
 | `tools/optical_pipeline_lab/frame_contexts.py` | Static/synthetic/physics OpticalLabRenderFrameContext provider helpers |
 | `tools/optical_pipeline_lab/frame_runtime.py` | Lab-internal FrameWorkflowRunner for provider/video/delivery frame workflow |
-| `tools/optical_pipeline_lab/go2_backend.py` | Go2/Menagerie static asset builder plus camera/video/reporting glue for the lab runner and example CLI |
+| `tools/optical_pipeline_lab/static_asset_source.py` | Static asset OpticalLabRenderSource builders for Go2/Menagerie and synthetic lab scenes |
+| `tools/optical_pipeline_lab/go2_backend.py` | Go2/Menagerie camera/video/reporting glue for the lab runner and example CLI |
 | `tools/optical_pipeline_lab/physics_source.py` | Physics-published `GpuPublishedFrame` → Optical Pipeline Lab render source bridge |
 | `tools/optical_pipeline_lab/render_session.py` | OpticalLabRenderSource / Options / Workspace / PreparedFrame / Session / FrameContext / Pipeline lab render foundation |
 | `tools/optical_pipeline_lab/video_loop.py` | Generic Optical Pipeline Lab video plan/render-context/delivery helpers parameterized by camera builder |
