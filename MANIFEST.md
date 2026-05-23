@@ -162,8 +162,10 @@ torch async warmup helper，
 `frame_runtime.py` 提供窄版 lab-internal `FrameWorkflowRunner`，
 负责 provider lifecycle、video consumer 与 delivery 的一帧工作流编排，
 `runner.py` 提供显式 `run_physics_video_scenario(...)`，要求调用方提供
-engine、registry、base frame 与逐帧 `published_frame_for_index` callback，
-因此 physics 时间推进仍由物理侧所有，
+engine、registry、base frame 与逐帧 `published_frame_for_index` callback；
+并提供 `run_physics_stepped_video_scenario(...)`，用
+`PhysicsPublishedFrameStepper` 表达调用方负责推进或选择 physics 时间后返回
+published frame。因此 physics 时间推进仍由物理侧所有，
 GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(...)`
 → dynamic snapshot/BVH → direct-light ray render、GPU pinhole camera raygen render，
 并已有 physics video runner smoke 验证 provider/runtime/delivery/timing
@@ -229,10 +231,10 @@ GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(..
 
 ## 规模
 
-- Q54 sensing/optics 子系统当前收集 **260 个测试**：
+- Q54 sensing/optics 子系统当前收集 **263 个测试**：
   `tests/unit/optics` + `tests/unit/sensing` + `tests/gpu/test_optical_warp_executor.py`
   + `tests/gpu/test_optical_gpu_runtime.py`
-  （180 unit optics/lab + 40 unit sensing + 40 GPU optical）
+  （183 unit optics/lab + 40 unit sensing + 40 GPU optical）
 - 当前 push gate：2026-05-22 在 `env_tilelang_20260119` 中完成全量
   `python -m pytest -q`，结果 **1555 passed, 1 skipped**，耗时 31:07；
   `ruff check .` 与 `ruff format --check .` clean。

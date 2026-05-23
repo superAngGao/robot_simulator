@@ -32,6 +32,7 @@ from .video_loop import (
 
 DEFAULT_LAB_WARMUP_RENDERS = 5
 PhysicsPublishedFrameForIndex = Callable[[int], object]
+PhysicsPublishedFrameStepper = Callable[..., object]
 PhysicsVideoCameraBuilder = Callable[[object, object, int], OpticalPinholeCameraSpec]
 
 
@@ -104,7 +105,8 @@ def run_scenario(config: OpticalLabScenarioConfig, options: LabRunOptions) -> No
     if config.frame_source is FrameSourceKind.PHYSICS_RUNTIME:
         raise NotImplementedError(
             "run_scenario(...) cannot construct a physics engine; use "
-            "run_physics_video_scenario(...) with explicit engine/runtime inputs"
+            "run_physics_video_scenario(...) or run_physics_stepped_video_scenario(...) "
+            "with explicit engine/runtime inputs"
         )
     if config.scene_preset not in ("go2_menagerie_static", "synthetic_body_triangle"):
         raise NotImplementedError(
@@ -239,6 +241,50 @@ def run_physics_video_scenario(
     workflow.flush()
     rows.write_csv()
     return rows
+
+
+def run_physics_stepped_video_scenario(
+    config: OpticalLabScenarioConfig,
+    options: LabRunOptions,
+    *,
+    engine: object,
+    registry: object,
+    base_frame: object,
+    step_physics_frame: PhysicsPublishedFrameStepper,
+    build_video_camera: PhysicsVideoCameraBuilder,
+    synchronize_event: Callable[[object], None],
+    pack_rgb8: Callable[[object], object],
+    bounds_min: object | None = None,
+    bounds_max: object | None = None,
+    metadata: Mapping[str, object] | None = None,
+    consumer_id: str = "optical_lab_physics_video",
+) -> FrameTimingRecorder:
+    """Run a physics-owned stepped video scenario through the P6 bridge.
+
+    `step_physics_frame(frame_index)` is expected to advance or select physics
+    time for that frame and return the published frame. The lower-level
+    `run_physics_video_scenario(...)` remains the replay/selection entry that
+    only asks for a frame by index.
+    """
+
+    def published_frame_for_index(frame_index: int) -> object:
+        return step_physics_frame(frame_index)
+
+    return run_physics_video_scenario(
+        config,
+        options,
+        engine=engine,
+        registry=registry,
+        base_frame=base_frame,
+        published_frame_for_index=published_frame_for_index,
+        build_video_camera=build_video_camera,
+        synchronize_event=synchronize_event,
+        pack_rgb8=pack_rgb8,
+        bounds_min=bounds_min,
+        bounds_max=bounds_max,
+        metadata=metadata,
+        consumer_id=consumer_id,
+    )
 
 
 def build_physics_video_args(

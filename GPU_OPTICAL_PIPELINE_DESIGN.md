@@ -2340,6 +2340,16 @@ P7 planned:
   It should not replace run_physics_video_scenario(...), should not enable
   plain run_scenario(...) physics configs, and should not construct a physics
   engine from CLI settings.
+
+P7.1 complete:
+  runner.py now has PhysicsPublishedFrameStepper and
+  run_physics_stepped_video_scenario(...). The helper is intentionally a thin
+  layer above run_physics_video_scenario(...): it calls
+  step_physics_frame(frame_index) and forwards the returned published frame to
+  the existing P6 provider/render/delivery bridge. Unit tests cover normal
+  step-before-provider ordering, stepper exceptions stopping before provider
+  borrow, and render exceptions exiting the provider so physics borrow
+  completion still happens before the exception propagates.
 ```
 
 New generic render foundation work should use `OpticalLabRender*`.
@@ -2347,11 +2357,6 @@ New generic render foundation work should use `OpticalLabRender*`.
 Recommended next slices:
 
 ```text
-P7.1:
-  introduce PhysicsPublishedFrameStepper with the stepped video helper. Do not
-  make an alias-only slice; the naming decision should be reviewed with the
-  helper that uses it.
-
 P7.2:
   add one focused GPU smoke where the stepper calls real physics stepping or the
   smallest equivalent, returns the published frame, and render output changes
