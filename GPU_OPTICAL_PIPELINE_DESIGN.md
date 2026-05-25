@@ -2366,6 +2366,15 @@ P7.3 complete:
   run_physics_video_scenario(...) and run_physics_stepped_video_scenario(...),
   and unit coverage verifies the guard fires before output directory/config
   creation. CLI-level physics engine construction remains a P8 design topic.
+
+P8.1 complete:
+  physics_runtime.py introduces the lab-internal PhysicsLabScenarioRuntime
+  owner plus create_physics_body_triangle_lab_runtime(...). The owner bundles
+  engine, registry, base_frame, bounds, metadata, step_frame(...), and idempotent
+  close/context-manager cleanup. The body-triangle factory constructs the
+  existing synthetic one-body physics scene, publishes a base frame at the
+  initial height, and exposes scripted height_for_frame(...) stepping without
+  enabling run_scenario(...) or CLI engine construction.
 ```
 
 New generic render foundation work should use `OpticalLabRender*`.
@@ -2373,10 +2382,14 @@ New generic render foundation work should use `OpticalLabRender*`.
 Recommended next slices:
 
 ```text
-P8:
-  decide whether a CLI, sensor-loop, or future RL runtime should own physics
-  engine construction, action source, lifecycle, and cleanup policy before
-  exposing any user-facing physics runtime command.
+P8.2:
+  wire PhysicsLabScenarioRuntime into run_physics_stepped_video_scenario(...) in
+  one focused GPU smoke, proving the explicit runtime owner can drive the
+  existing stepped render/video/delivery path.
+
+P8.3:
+  decide whether a CLI, sensor-loop, or future RL runtime should own user-facing
+  physics engine construction, action source, lifecycle, and cleanup policy.
 ```
 
 Physics/video boundary baseline:

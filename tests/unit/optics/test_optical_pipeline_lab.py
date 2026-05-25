@@ -15,6 +15,7 @@ import tools.optical_pipeline_lab.dynamic_frames as dynamic_frames
 import tools.optical_pipeline_lab.frame_contexts as frame_contexts
 import tools.optical_pipeline_lab.frame_runtime as frame_runtime
 import tools.optical_pipeline_lab.go2_backend as go2_backend
+import tools.optical_pipeline_lab.physics_runtime as physics_runtime
 import tools.optical_pipeline_lab.physics_source as physics_source
 import tools.optical_pipeline_lab.render_session as render_session
 import tools.optical_pipeline_lab.rgb_pack as rgb_pack
@@ -635,6 +636,134 @@ def test_create_physics_render_runtime_builds_pipeline_and_registers_consumer(
     assert captured["register_engine"] is engine
     assert captured["register_consumer_id"] == "runtime_consumer"
     assert captured["register_kwargs"]["max_lag_frames"] == 4
+
+
+def test_physics_lab_scenario_runtime_steps_and_closes_once():
+    frames = {
+        0: SimpleNamespace(frame_id=80, sim_time=8.0),
+        1: SimpleNamespace(frame_id=81, sim_time=8.1),
+    }
+    calls: list[tuple[object, ...]] = []
+
+    def step_frame(frame_index: int):
+        calls.append(("step_frame", frame_index))
+        return frames[frame_index]
+
+    def close():
+        calls.append(("close",))
+
+    runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=79, sim_time=7.9),
+        step_frame_fn=step_frame,
+        bounds_min=(-0.2, -0.2, 0.0),
+        bounds_max=(0.4, 0.4, 1.2),
+        metadata={"producer": "fake"},
+        close_fn=close,
+    )
+
+    assert runtime.step_frame(0) is frames[0]
+    with pytest.raises(RuntimeError, match="body failed"):
+        with runtime as entered:
+            assert entered is runtime
+            assert entered.step_frame(1) is frames[1]
+            raise RuntimeError("body failed")
+
+    assert runtime.closed is True
+    runtime.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        runtime.step_frame(0)
+    assert calls == [
+        ("step_frame", 0),
+        ("step_frame", 1),
+        ("close",),
+    ]
+
+
+def test_create_physics_body_triangle_lab_runtime_owns_reset_and_step(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[object, ...]] = []
+    frames = [
+        SimpleNamespace(frame_id=90, sim_time=9.0, ready_event="ready-90"),
+        SimpleNamespace(frame_id=91, sim_time=9.1, ready_event="ready-91"),
+    ]
+
+    class FakeTree:
+        def default_state(self):
+            calls.append(("default_state",))
+            return np.zeros(7, dtype=np.float64), np.zeros(6, dtype=np.float64)
+
+    class FakeMerged:
+        tree = FakeTree()
+        nv = 6
+
+    class FakeEngine:
+        def __init__(self):
+            self._frames = list(frames)
+            self._latest = None
+
+        def step(self, *, q, qdot, dt):
+            calls.append(("step", float(q[6]), tuple(qdot.tolist()), float(dt)))
+            self._latest = self._frames.pop(0)
+
+        def latest_published_frame(self):
+            calls.append(("latest_published_frame",))
+            return self._latest
+
+        def close(self):
+            calls.append(("engine_close",))
+
+    fake_engine = FakeEngine()
+
+    monkeypatch.setattr(physics_runtime, "_build_ball_model", lambda: "ball-model")
+
+    def fake_merge(model):
+        calls.append(("merge", model))
+        return FakeMerged()
+
+    def fake_create_engine(merged, *, device):
+        calls.append(("create_engine", merged is not None, device))
+        return fake_engine
+
+    monkeypatch.setattr(physics_runtime, "_merge_single_ball_model", fake_merge)
+    monkeypatch.setattr(physics_runtime, "_create_gpu_engine", fake_create_engine)
+
+    runtime = physics_runtime.create_physics_body_triangle_lab_runtime(
+        device="cuda:fake",
+        initial_height=0.5,
+        height_for_frame=lambda frame_index: 0.7 + 0.2 * frame_index,
+        dt=1.0e-4,
+        synchronize_event=lambda event: calls.append(("sync", event)),
+        metadata={"test": "runtime"},
+    )
+
+    assert runtime.engine is fake_engine
+    assert runtime.base_frame is frames[0]
+    assert runtime.bounds_min == (-0.2, -0.2, 0.0)
+    assert runtime.bounds_max == (0.4, 0.4, 1.2)
+    assert runtime.metadata["producer"] == "gpu_engine"
+    assert runtime.metadata["runtime_owner"] == "physics_body_triangle_lab"
+    assert runtime.metadata["test"] == "runtime"
+
+    assert runtime.step_frame(0) is frames[1]
+    runtime.close()
+    runtime.close()
+
+    assert calls == [
+        ("merge", "ball-model"),
+        ("create_engine", True, "cuda:fake"),
+        ("default_state",),
+        ("step", 0.5, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0), 1.0e-4),
+        ("latest_published_frame",),
+        ("sync", "ready-90"),
+        ("default_state",),
+        ("step", 0.7, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0), 1.0e-4),
+        ("latest_published_frame",),
+        ("sync", "ready-91"),
+        ("engine_close",),
+    ]
 
 
 def test_lab_runner_creates_physics_render_runtime_from_config(
