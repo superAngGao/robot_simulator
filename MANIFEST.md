@@ -169,7 +169,10 @@ published frame。因此 physics 时间推进仍由物理侧所有，
 GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(...)`
 → dynamic snapshot/BVH → direct-light ray render、GPU pinhole camera raygen render，
 并已有 physics video runner smoke 验证 provider/runtime/delivery/timing
-串接与 `frame_source=physics_runtime` CSV metadata。普通 CLI `run_scenario(...)`
+串接与 `frame_source=physics_runtime` CSV metadata；stepped runner smoke 验证
+`PhysicsPublishedFrameStepper` 真实推进 `GpuEngine.step(...)` 后，rendered
+`range_m` 随当前 physics body height 改变而不是读取 stale base frame。
+普通 CLI `run_scenario(...)`
 仍不会构造 physics engine。
 
 ## 关键文件
@@ -231,10 +234,10 @@ GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(..
 
 ## 规模
 
-- Q54 sensing/optics 子系统当前收集 **263 个测试**：
+- Q54 sensing/optics 子系统当前收集 **264 个测试**：
   `tests/unit/optics` + `tests/unit/sensing` + `tests/gpu/test_optical_warp_executor.py`
   + `tests/gpu/test_optical_gpu_runtime.py`
-  （183 unit optics/lab + 40 unit sensing + 40 GPU optical）
+  （183 unit optics/lab + 40 unit sensing + 41 GPU optical）
 - 当前 push gate：2026-05-22 在 `env_tilelang_20260119` 中完成全量
   `python -m pytest -q`，结果 **1555 passed, 1 skipped**，耗时 31:07；
   `ruff check .` 与 `ruff format --check .` clean。

@@ -2350,6 +2350,15 @@ P7.1 complete:
   step-before-provider ordering, stepper exceptions stopping before provider
   borrow, and render exceptions exiting the provider so physics borrow
   completion still happens before the exception propagates.
+
+P7.2 complete:
+  tests/gpu/test_optical_gpu_runtime.py now has a physics-owned stepped runner
+  smoke for run_physics_stepped_video_scenario(...). The stepper calls real
+  GpuEngine.step(...), returns the latest published frame, and the test captures
+  delivered full-readback frames to assert range_m changes with the stepped body
+  height rather than the base frame. It also verifies delivered camera
+  frame_id/sim_time come from the stepped frame and frame_timing.csv still
+  records frame_source == "physics_runtime".
 ```
 
 New generic render foundation work should use `OpticalLabRender*`.
@@ -2357,11 +2366,6 @@ New generic render foundation work should use `OpticalLabRender*`.
 Recommended next slices:
 
 ```text
-P7.2:
-  add one focused GPU smoke where the stepper calls real physics stepping or the
-  smallest equivalent, returns the published frame, and render output changes
-  with physics state rather than a stale base frame.
-
 P7.3:
   keep run_scenario(...) guarded unless/until a later P8 designs CLI-level
   physics engine construction, action source, lifecycle, and cleanup policy.

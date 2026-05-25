@@ -11,6 +11,7 @@ import tools.optical_pipeline_lab.delivery as video_delivery
 import tools.optical_pipeline_lab.frame_contexts as frame_contexts
 import tools.optical_pipeline_lab.frame_runtime as frame_runtime
 import tools.optical_pipeline_lab.go2_backend as go2_backend
+import tools.optical_pipeline_lab.runner as lab_runner
 import tools.optical_pipeline_lab.video_loop as video_loop
 from optics import (
     CpuDirectLightOpticalExecutor,
@@ -54,6 +55,7 @@ from tools.optical_pipeline_lab.runner import (
     LabRunOptions,
     apply_run_overrides,
     create_physics_render_runtime_for_config,
+    run_physics_stepped_video_scenario,
     run_physics_video_scenario,
     run_scenario,
 )
@@ -1271,6 +1273,134 @@ def test_optical_lab_physics_video_runner_writes_frame_source_csv(tmp_path: Path
         assert row["scene_preset"] == "synthetic_body_triangle"
         assert row["width"] == "1"
         assert row["height"] == "1"
+        assert row["geometry_mode"] == "dynamic_rigid"
+        assert row["readback_mode"] == "full"
+        assert float(row["snapshot_ms"]) >= 0.0
+        assert float(row["accel_refit_ms"]) >= 0.0
+
+
+def test_optical_lab_physics_stepped_video_runner_advances_before_render(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    engine = _make_engine()
+    q0, _ = engine.merged.tree.default_state()
+    q0[6] = 0.5
+    engine.step(q=q0, qdot=np.zeros(engine.merged.nv), dt=1e-4)
+    base_frame = engine.latest_published_frame()
+    wp.synchronize_event(base_frame.ready_event)
+    base_body_z = float(base_frame.x_world_r_wp.numpy()[0, 0, 2])
+
+    delivered_frames = []
+    stepped_frames = []
+    body_zs = []
+    original_record_delivered = lab_runner.record_delivered_video_frame
+
+    def capture_delivered(rows, row_builder, delivered, args):
+        delivered_frames.append(delivered)
+        original_record_delivered(rows, row_builder, delivered, args)
+
+    monkeypatch.setattr(lab_runner, "record_delivered_video_frame", capture_delivered)
+
+    def step_physics_frame(frame_index: int):
+        q, _ = engine.merged.tree.default_state()
+        q[6] = 0.7 + 0.2 * frame_index
+        engine.step(q=q, qdot=np.zeros(engine.merged.nv), dt=1e-4)
+        frame = engine.latest_published_frame()
+        wp.synchronize_event(frame.ready_event)
+        stepped_frames.append(frame)
+        body_zs.append(float(frame.x_world_r_wp.numpy()[0, 0, 2]))
+        return frame
+
+    def build_video_camera(scene, args, frame_index):
+        del scene, frame_index
+        return OpticalPinholeCameraSpec(
+            frame_id=0,
+            sim_time=0.0,
+            env_idx=0,
+            sensor_id="physics_lab_stepped_runner_camera",
+            width=int(args.width),
+            height=int(args.height),
+            fx=1.0,
+            fy=1.0,
+            cx=0.0,
+            cy=0.0,
+            X_world_camera=SpatialTransform(
+                np.array(
+                    [
+                        [1.0, 0.0, 0.0],
+                        [0.0, -1.0, 0.0],
+                        [0.0, 0.0, -1.0],
+                    ],
+                    dtype=np.float64,
+                ),
+                np.array([0.05, 0.05, 2.0], dtype=np.float64),
+            ),
+            max_distance=10.0,
+            sensor_role="rgb",
+        )
+
+    config = apply_run_overrides(
+        get_preset("physics_body_triangle_video_smoke"),
+        width=1,
+        height=1,
+        readback="full",
+    )
+    rows = run_physics_stepped_video_scenario(
+        config,
+        LabRunOptions(
+            out=tmp_path / "physics_stepped_runner",
+            frames=2,
+            progress_every=0,
+            fail_on_overflow=False,
+        ),
+        engine=engine,
+        registry=_body_bound_triangle_registry(),
+        base_frame=base_frame,
+        step_physics_frame=step_physics_frame,
+        build_video_camera=build_video_camera,
+        synchronize_event=wp.synchronize_event,
+        pack_rgb8=lambda result: result,
+        bounds_min=(-0.2, -0.2, 0.0),
+        bounds_max=(0.4, 0.4, 1.2),
+        metadata={"producer": "gpu_engine"},
+        consumer_id="optical_lab_physics_stepped_video_runner",
+    )
+
+    assert len(rows._rows) == 2
+    assert len(delivered_frames) == 2
+    assert len(stepped_frames) == 2
+    assert body_zs[0] != pytest.approx(base_body_z)
+    assert body_zs[1] != pytest.approx(body_zs[0])
+
+    for delivered, stepped_frame, body_z in zip(delivered_frames, stepped_frames, body_zs):
+        np.testing.assert_array_equal(delivered.host_channels["hit_mask"], [True])
+        np.testing.assert_allclose(
+            np.asarray(delivered.host_channels["range_m"]),
+            [2.0 - (body_z + 0.25)],
+            atol=1e-4,
+        )
+        np.testing.assert_array_equal(delivered.host_channels["numeric_instance_id"], [1])
+        assert delivered.rendered.camera.frame_id == stepped_frame.frame_id
+        assert delivered.rendered.camera.sim_time == stepped_frame.sim_time
+        assert delivered.rendered.geometry_mode == "dynamic_rigid"
+        assert delivered.rendered.prepare_timing["snapshot_ms"] >= 0.0
+        assert delivered.rendered.prepare_timing["accel_refit_ms"] >= 0.0
+        assert np.isnan(float(delivered.rendered.prepare_timing["accel_rebuild_ms"]))
+
+    runtime_frame_ids = [frame.frame_id for frame in stepped_frames]
+    assert runtime_frame_ids
+    assert runtime_frame_ids == [delivered.rendered.camera.frame_id for delivered in delivered_frames]
+
+    frame_timing_csv = tmp_path / "physics_stepped_runner" / "frame_timing.csv"
+    with frame_timing_csv.open(newline="") as f:
+        csv_rows = list(csv.DictReader(f))
+
+    assert len(csv_rows) == 2
+    for row in csv_rows:
+        assert row["scenario_name"] == "physics_body_triangle_video_smoke"
+        assert row["frame_source"] == "physics_runtime"
+        assert row["scene_preset"] == "synthetic_body_triangle"
         assert row["geometry_mode"] == "dynamic_rigid"
         assert row["readback_mode"] == "full"
         assert float(row["snapshot_ms"]) >= 0.0

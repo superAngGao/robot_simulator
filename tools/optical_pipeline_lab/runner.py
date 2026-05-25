@@ -32,6 +32,7 @@ from .video_loop import (
 
 DEFAULT_LAB_WARMUP_RENDERS = 5
 PhysicsPublishedFrameForIndex = Callable[[int], object]
+# Called today as step_physics_frame(frame_index); kept wide for future action/control inputs.
 PhysicsPublishedFrameStepper = Callable[..., object]
 PhysicsVideoCameraBuilder = Callable[[object, object, int], OpticalPinholeCameraSpec]
 
