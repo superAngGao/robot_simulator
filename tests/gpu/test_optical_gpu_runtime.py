@@ -11,6 +11,7 @@ import tools.optical_pipeline_lab.delivery as video_delivery
 import tools.optical_pipeline_lab.frame_contexts as frame_contexts
 import tools.optical_pipeline_lab.frame_runtime as frame_runtime
 import tools.optical_pipeline_lab.go2_backend as go2_backend
+import tools.optical_pipeline_lab.physics_runtime as physics_runtime
 import tools.optical_pipeline_lab.runner as lab_runner
 import tools.optical_pipeline_lab.video_loop as video_loop
 from optics import (
@@ -1405,6 +1406,115 @@ def test_optical_lab_physics_stepped_video_runner_advances_before_render(
         assert row["readback_mode"] == "full"
         assert float(row["snapshot_ms"]) >= 0.0
         assert float(row["accel_refit_ms"]) >= 0.0
+
+
+def test_optical_lab_physics_runtime_owner_drives_stepped_video_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    delivered_frames = []
+    original_record_delivered = lab_runner.record_delivered_video_frame
+
+    def capture_delivered(rows, row_builder, delivered, args):
+        delivered_frames.append(delivered)
+        original_record_delivered(rows, row_builder, delivered, args)
+
+    monkeypatch.setattr(lab_runner, "record_delivered_video_frame", capture_delivered)
+
+    def build_video_camera(scene, args, frame_index):
+        del scene, frame_index
+        return OpticalPinholeCameraSpec(
+            frame_id=0,
+            sim_time=0.0,
+            env_idx=0,
+            sensor_id="physics_lab_runtime_owner_camera",
+            width=int(args.width),
+            height=int(args.height),
+            fx=1.0,
+            fy=1.0,
+            cx=0.0,
+            cy=0.0,
+            X_world_camera=SpatialTransform(
+                np.array(
+                    [
+                        [1.0, 0.0, 0.0],
+                        [0.0, -1.0, 0.0],
+                        [0.0, 0.0, -1.0],
+                    ],
+                    dtype=np.float64,
+                ),
+                np.array([0.05, 0.05, 2.0], dtype=np.float64),
+            ),
+            max_distance=10.0,
+            sensor_role="rgb",
+        )
+
+    config = apply_run_overrides(
+        get_preset("physics_body_triangle_video_smoke"),
+        width=1,
+        height=1,
+        readback="full",
+    )
+    body_heights = (0.72, 0.96)
+    with physics_runtime.create_physics_body_triangle_lab_runtime(
+        device="cuda:0",
+        initial_height=0.5,
+        height_for_frame=lambda frame_index: body_heights[frame_index],
+        dt=1.0e-4,
+        synchronize_event=wp.synchronize_event,
+        metadata={"test": "runtime_owner_gpu_smoke"},
+    ) as runtime:
+        base_body_z = float(runtime.base_frame.x_world_r_wp.numpy()[0, 0, 2])
+        rows = run_physics_stepped_video_scenario(
+            config,
+            LabRunOptions(
+                out=tmp_path / "physics_runtime_owner",
+                frames=2,
+                progress_every=0,
+                fail_on_overflow=False,
+            ),
+            engine=runtime.engine,
+            registry=runtime.registry,
+            base_frame=runtime.base_frame,
+            step_physics_frame=runtime.step_frame,
+            build_video_camera=build_video_camera,
+            synchronize_event=wp.synchronize_event,
+            pack_rgb8=lambda result: result,
+            bounds_min=runtime.bounds_min,
+            bounds_max=runtime.bounds_max,
+            metadata=runtime.metadata,
+            consumer_id="optical_lab_physics_runtime_owner",
+        )
+        assert runtime.closed is False
+
+    assert runtime.closed is True
+    assert len(rows._rows) == 2
+    assert len(delivered_frames) == 2
+    assert body_heights[0] != pytest.approx(base_body_z)
+    assert body_heights[1] != pytest.approx(body_heights[0])
+
+    for delivered, body_height in zip(delivered_frames, body_heights):
+        np.testing.assert_array_equal(delivered.host_channels["hit_mask"], [True])
+        np.testing.assert_allclose(
+            np.asarray(delivered.host_channels["range_m"]),
+            [2.0 - (body_height + 0.25)],
+            atol=1e-4,
+        )
+        np.testing.assert_array_equal(delivered.host_channels["numeric_instance_id"], [1])
+        assert delivered.rendered.geometry_mode == "dynamic_rigid"
+        assert delivered.rendered.prepare_timing["snapshot_ms"] >= 0.0
+        assert delivered.rendered.prepare_timing["accel_refit_ms"] >= 0.0
+
+    frame_timing_csv = tmp_path / "physics_runtime_owner" / "frame_timing.csv"
+    with frame_timing_csv.open(newline="") as f:
+        csv_rows = list(csv.DictReader(f))
+
+    assert len(csv_rows) == 2
+    for row in csv_rows:
+        assert row["scenario_name"] == "physics_body_triangle_video_smoke"
+        assert row["frame_source"] == "physics_runtime"
+        assert row["geometry_mode"] == "dynamic_rigid"
+        assert row["readback_mode"] == "full"
 
 
 def test_optical_lab_dynamic_video_loop_writes_prepare_timing_csv(tmp_path):

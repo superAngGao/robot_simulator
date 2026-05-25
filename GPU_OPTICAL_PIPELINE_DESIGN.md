@@ -2375,6 +2375,15 @@ P8.1 complete:
   existing synthetic one-body physics scene, publishes a base frame at the
   initial height, and exposes scripted height_for_frame(...) stepping without
   enabling run_scenario(...) or CLI engine construction.
+
+P8.2 complete:
+  tests/gpu/test_optical_gpu_runtime.py now wires
+  create_physics_body_triangle_lab_runtime(...) into
+  run_physics_stepped_video_scenario(...). The GPU smoke uses the runtime owner
+  as a context manager, passes runtime.engine/registry/base_frame/bounds/metadata
+  plus runtime.step_frame into the stepped runner, verifies delivered range_m
+  follows the scripted runtime heights, and confirms the runtime closes after
+  the workflow.
 ```
 
 New generic render foundation work should use `OpticalLabRender*`.
@@ -2382,11 +2391,6 @@ New generic render foundation work should use `OpticalLabRender*`.
 Recommended next slices:
 
 ```text
-P8.2:
-  wire PhysicsLabScenarioRuntime into run_physics_stepped_video_scenario(...) in
-  one focused GPU smoke, proving the explicit runtime owner can drive the
-  existing stepped render/video/delivery path.
-
 P8.3:
   decide whether a CLI, sensor-loop, or future RL runtime should own user-facing
   physics engine construction, action source, lifecycle, and cleanup policy.
