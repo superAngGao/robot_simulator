@@ -2359,6 +2359,13 @@ P7.2 complete:
   height rather than the base frame. It also verifies delivered camera
   frame_id/sim_time come from the stepped frame and frame_timing.csv still
   records frame_source == "physics_runtime".
+
+P7.3 complete:
+  plain run_scenario(...) remains guarded for FrameSourceKind.PHYSICS_RUNTIME.
+  The guard now explicitly points callers to the two explicit physics entries,
+  run_physics_video_scenario(...) and run_physics_stepped_video_scenario(...),
+  and unit coverage verifies the guard fires before output directory/config
+  creation. CLI-level physics engine construction remains a P8 design topic.
 ```
 
 New generic render foundation work should use `OpticalLabRender*`.
@@ -2366,9 +2373,10 @@ New generic render foundation work should use `OpticalLabRender*`.
 Recommended next slices:
 
 ```text
-P7.3:
-  keep run_scenario(...) guarded unless/until a later P8 designs CLI-level
-  physics engine construction, action source, lifecycle, and cleanup policy.
+P8:
+  decide whether a CLI, sensor-loop, or future RL runtime should own physics
+  engine construction, action source, lifecycle, and cleanup policy before
+  exposing any user-facing physics runtime command.
 ```
 
 Physics/video boundary baseline:

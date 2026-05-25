@@ -3434,8 +3434,14 @@ def test_run_scenario_physics_runtime_requires_explicit_runtime_inputs(tmp_path:
     )
     options = LabRunOptions(out=tmp_path / "physics", frames=1)
 
-    with pytest.raises(NotImplementedError, match="run_physics_video_scenario"):
+    with pytest.raises(NotImplementedError) as exc_info:
         run_scenario(config, options)
+
+    message = str(exc_info.value)
+    assert "cannot construct a physics engine" in message
+    assert "run_physics_video_scenario" in message
+    assert "run_physics_stepped_video_scenario" in message
+    assert not options.out.exists()
 
 
 def test_reports_format_summary_rows():
