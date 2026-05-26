@@ -37,6 +37,10 @@ PhysicsPublishedFrameStepper = Callable[..., object]
 PhysicsVideoCameraBuilder = Callable[[object, object, int], OpticalPinholeCameraSpec]
 
 
+class RunScenarioUnsupportedError(NotImplementedError):
+    """Raised when a valid lab config cannot be owned by ``run_scenario(...)``."""
+
+
 @dataclass(frozen=True)
 class LabRunOptions:
     """Execution options that are intentionally outside scenario semantics."""
@@ -60,6 +64,26 @@ class LabRunOptions:
 def validate_scenario(config: OpticalLabScenarioConfig) -> None:
     """Validate that a config uses only currently implemented lab modes."""
     config.validate_implemented()
+
+
+def can_run_scenario(config: OpticalLabScenarioConfig) -> bool:
+    """Return whether the value-object lab runner can execute this config."""
+    try:
+        validate_run_scenario_supported(config)
+    except RunScenarioUnsupportedError:
+        return False
+    return True
+
+
+def validate_run_scenario_supported(config: OpticalLabScenarioConfig) -> None:
+    """Validate that ``run_scenario(...)`` owns enough runtime state."""
+    validate_scenario(config)
+    if config.frame_source is FrameSourceKind.PHYSICS_RUNTIME:
+        raise RunScenarioUnsupportedError(
+            "run_scenario(...) cannot construct a physics engine; use "
+            "run_physics_video_scenario(...) or run_physics_stepped_video_scenario(...) "
+            "with explicit engine/runtime inputs"
+        )
 
 
 def apply_run_overrides(
@@ -102,13 +126,8 @@ def run_scenario(config: OpticalLabScenarioConfig, options: LabRunOptions) -> No
     example. The lab owns config validation and output metadata; the production
     render/session boundary is still future work.
     """
-    validate_run(config, options)
-    if config.frame_source is FrameSourceKind.PHYSICS_RUNTIME:
-        raise NotImplementedError(
-            "run_scenario(...) cannot construct a physics engine; use "
-            "run_physics_video_scenario(...) or run_physics_stepped_video_scenario(...) "
-            "with explicit engine/runtime inputs"
-        )
+    validate_run_scenario_supported(config)
+    _validate_run_options(config, options)
     if config.scene_preset not in ("go2_menagerie_static", "synthetic_body_triangle"):
         raise NotImplementedError(
             f"scene_preset={config.scene_preset!r} is reserved; "
@@ -470,6 +489,11 @@ def frame_defaults_for_config(config: OpticalLabScenarioConfig) -> dict[str, str
 def validate_run(config: OpticalLabScenarioConfig, options: LabRunOptions) -> None:
     """Validate a concrete lab run before any GPU work starts."""
     validate_scenario(config)
+    _validate_run_options(config, options)
+
+
+def _validate_run_options(config: OpticalLabScenarioConfig, options: LabRunOptions) -> None:
+    """Validate run options after the scenario config has been accepted."""
     if options.frames < 0:
         raise ValueError("frames must be >= 0")
     if options.fps <= 0.0:

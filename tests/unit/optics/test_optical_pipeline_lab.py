@@ -43,6 +43,7 @@ from tools.optical_pipeline_lab import (
     OpticalLabScenarioConfig,
     OpticalLabScenarioFamily,
     ReadbackPayload,
+    RenderBackend,
     TimingRecorder,
     percentile,
 )
@@ -59,15 +60,18 @@ from tools.optical_pipeline_lab.reports import format_summary_rows
 from tools.optical_pipeline_lab.runner import (
     DEFAULT_LAB_WARMUP_RENDERS,
     LabRunOptions,
+    RunScenarioUnsupportedError,
     apply_run_overrides,
     build_menagerie_example_args,
     build_physics_video_args,
+    can_run_scenario,
     create_physics_render_runtime_for_config,
     render_options_for_config,
     run_physics_stepped_video_scenario,
     run_scenario,
     validate_physics_video_run,
     validate_run,
+    validate_run_scenario_supported,
     write_scenario_config,
 )
 
@@ -2750,6 +2754,29 @@ def test_physics_body_triangle_video_smoke_preset_is_currently_implemented():
     assert config.accel_policy is AccelPolicy.REFIT_EACH_FRAME
     assert config.camera_mode == "fixed_view"
     config.validate_implemented()
+
+
+def test_run_scenario_support_predicate_separates_physics_runtime_ownership(tmp_path: Path):
+    static_config = get_preset("go2_video_ordered_static")
+    dynamic_config = get_preset("synthetic_body_triangle_dynamic_smoke")
+    physics_config = get_preset("physics_body_triangle_video_smoke")
+
+    physics_config.validate_implemented()
+    validate_run(physics_config, LabRunOptions(out=tmp_path / "physics"))
+
+    assert can_run_scenario(static_config) is True
+    assert can_run_scenario(dynamic_config) is True
+    assert can_run_scenario(physics_config) is False
+    with pytest.raises(RunScenarioUnsupportedError, match="cannot construct a physics engine"):
+        validate_run_scenario_supported(physics_config)
+
+    invalid_config = OpticalLabScenarioConfig(
+        scenario_name="invalid_render_backend",
+        scenario_family=OpticalLabScenarioFamily.RENDER_BENCH,
+        render_backend=RenderBackend.OPTIX_FIRST_HIT,
+    )
+    with pytest.raises(NotImplementedError, match="render_backend"):
+        can_run_scenario(invalid_config)
 
 
 def test_default_render_resolution_is_1080p():
