@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import dynamic_frames
+from .frame_tick import SimulationFrameTick, simulation_frame_tick_from_published_frame
 
 PhysicsFrameStepFn = Callable[[int], object]
 HeightForFrame = Callable[[int], float]
@@ -39,6 +40,26 @@ class PhysicsLabScenarioRuntime:
         if self._closed:
             raise RuntimeError("PhysicsLabScenarioRuntime is closed")
         return self.step_frame_fn(frame_index)
+
+    def step_tick(
+        self,
+        frame_index: int,
+        *,
+        env_idx: int = 0,
+        metadata: Mapping[str, object] | None = None,
+    ) -> SimulationFrameTick:
+        """Advance/select physics time and return the shared product tick."""
+
+        published_frame = self.step_frame(frame_index)
+        return simulation_frame_tick_from_published_frame(
+            frame_index=frame_index,
+            env_idx=env_idx,
+            published_frame=published_frame,
+            metadata={
+                **dict(self.metadata),
+                **dict(metadata or {}),
+            },
+        )
 
     def close(self) -> None:
         """Release runtime-owner resources if the underlying engine exposes cleanup."""

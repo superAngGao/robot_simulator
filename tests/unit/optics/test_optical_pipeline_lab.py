@@ -14,6 +14,7 @@ import tools.optical_pipeline_lab.delivery as delivery
 import tools.optical_pipeline_lab.dynamic_frames as dynamic_frames
 import tools.optical_pipeline_lab.frame_contexts as frame_contexts
 import tools.optical_pipeline_lab.frame_runtime as frame_runtime
+import tools.optical_pipeline_lab.frame_tick as frame_tick
 import tools.optical_pipeline_lab.go2_backend as go2_backend
 import tools.optical_pipeline_lab.physics_runtime as physics_runtime
 import tools.optical_pipeline_lab.physics_source as physics_source
@@ -683,6 +684,38 @@ def test_physics_lab_scenario_runtime_steps_and_closes_once():
         ("step_frame", 1),
         ("close",),
     ]
+
+
+def test_physics_lab_scenario_runtime_step_tick_wraps_published_frame_metadata():
+    published_frame = SimpleNamespace(frame_id=82, sim_time=8.2)
+    calls: list[tuple[object, ...]] = []
+
+    def step_frame(frame_index: int):
+        calls.append(("step_frame", frame_index))
+        return published_frame
+
+    runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=81, sim_time=8.1),
+        step_frame_fn=step_frame,
+        metadata={"producer": "fake", "runtime_owner": "physics_lab"},
+    )
+
+    tick = runtime.step_tick(2, env_idx=3, metadata={"product_set": "debug"})
+
+    assert isinstance(tick, frame_tick.SimulationFrameTick)
+    assert tick.frame_index == 2
+    assert tick.env_idx == 3
+    assert tick.frame_id == 82
+    assert tick.sim_time == 8.2
+    assert tick.published_frame is published_frame
+    assert tick.metadata == {
+        "producer": "fake",
+        "runtime_owner": "physics_lab",
+        "product_set": "debug",
+    }
+    assert calls == [("step_frame", 2)]
 
 
 def test_create_physics_body_triangle_lab_runtime_owns_reset_and_step(
