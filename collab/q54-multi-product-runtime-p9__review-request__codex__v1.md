@@ -2,7 +2,7 @@
 
 Author: Codex
 Date: 2026-05-27
-Status: P9.1 tick contract implemented; P9.2+ pending review
+Status: P9.1 tick contract implemented; P9.2 plan ready for review
 
 ## Summary
 
@@ -299,6 +299,176 @@ tick
 
 This should be a behavior-preserving refactor with focused tests.
 
+Recommended split: do not migrate video in the first P9.2 commit. First prove
+the product contract with a tiny sibling runner and a debug/identity product,
+then migrate video behind that contract.
+
+Reason:
+
+```text
+FrameWorkflowRunner is intentionally video-focused.
+P9 needs a tick/product runner, not a renamed video runner.
+```
+
+Trying to generalize `FrameWorkflowRunner` in place would mix two jobs:
+
+- current video delivery lifecycle and ordering;
+- future multi-product tick orchestration.
+
+The cleaner path is:
+
+```text
+FrameWorkflowRunner
+  -> keep as the current video-focused workflow while P9 is introduced
+
+MultiProductFrameRunner
+  -> new sibling runner for tick -> products
+```
+
+This keeps P9.2 small and gives the video migration a stable target.
+
+#### P9.2a: Product Contract And Sibling Runner
+
+Add a new local module, tentatively:
+
+```text
+tools.optical_pipeline_lab.frame_products
+```
+
+with:
+
+```python
+@dataclass(frozen=True)
+class FrameProductResult:
+    product_name: str
+    frame_index: int
+    frame_id: int
+    sim_time: float
+    env_idx: int
+    payload: object | None = None
+    timing: Mapping[str, float] = field(default_factory=dict)
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+
+class FrameProduct(Protocol):
+    product_name: str
+
+    def begin_run(self) -> object | None: ...
+    def consume(self, tick: SimulationFrameTick) -> FrameProductResult | None: ...
+    def end_run(self) -> object | None: ...
+```
+
+and a tiny sibling runner:
+
+```python
+@dataclass
+class MultiProductFrameRunner:
+    products: tuple[FrameProduct, ...]
+
+    def begin_run(self) -> tuple[object | None, ...]: ...
+    def step(self, tick: SimulationFrameTick) -> tuple[FrameProductResult, ...]: ...
+    def end_run(self) -> tuple[object | None, ...]: ...
+```
+
+Initial product:
+
+```text
+DebugFrameProduct
+  -> records tick identity and selected metadata
+  -> no render pipeline
+  -> no delivery
+  -> no GPU dependency
+```
+
+P9.2a tests:
+
+- result envelope copies `frame_index`, `frame_id`, `sim_time`, and `env_idx`
+  from the tick;
+- product ordering is stable;
+- `None` consume results are filtered or represented deliberately;
+- product exceptions stop the step and preserve the original exception;
+- begin/end lifecycle is called in product order.
+
+Non-goals for P9.2a:
+
+- no video migration;
+- no provider borrow lifecycle;
+- no RL observation product;
+- no CLI or preset schema changes;
+- no `FrameSourceKind` split.
+
+#### P9.2b: Video Product Adapter
+
+After P9.2a is reviewed, wrap the existing physics video behavior behind a
+product-shaped adapter.
+
+Tentative shape:
+
+```text
+PhysicsVideoFrameProduct
+  owns:
+    PhysicsFrameContextProvider
+    video render consumer
+    VideoDeliveryFacade
+    delivered video recorder
+
+  consume(tick):
+    provider.begin_frame(... published_frame=tick.published_frame ...)
+    render video
+    submit/complete delivery
+    return FrameProductResult(payload=rendered/delivered summary)
+```
+
+The important behavior contract is unchanged:
+
+```text
+physics step
+  -> published frame tick
+  -> provider borrow
+  -> render
+  -> provider release
+  -> delivery submit/complete
+```
+
+P9.2b should preserve the existing ordering guarantee from P7/P8:
+
+```text
+physics borrow is released before video delivery submit/flush
+```
+
+P9.2b tests:
+
+- existing `run_physics_stepped_video_scenario(...)` behavior remains
+  equivalent;
+- provider borrow receives `tick.published_frame`;
+- provider context exits before delivery submit;
+- render failure exits provider and propagates;
+- stepper failure stops before provider borrow;
+- timing rows and `scenario_config.json` stay unchanged;
+- `torch_async` remains rejected until provider-backed warmup exists.
+
+Non-goals for P9.2b:
+
+- no multi-product video+debug production in the same run yet unless P9.2a's
+  contract makes it trivial;
+- no observation tensors;
+- no action/reset/episode lifecycle;
+- no user-facing runtime command.
+
+#### Why Debug Product Before Video Migration?
+
+The debug product is intentionally boring. That is the point: it proves the
+product runner without importing render/video complexity. Once that is stable,
+video migration becomes a behavior-preserving adapter exercise rather than a
+contract-design exercise.
+
+This answers the current open question with:
+
+```text
+First add a tiny debug/identity product to prove orchestration,
+then convert video into a product.
+```
+
 ### P9.3: Add A Minimal Debug Product
 
 Before RL, add a simple debug product that records frame identity and selected
@@ -327,12 +497,25 @@ internals.
 2. Should product orchestration live near `FrameWorkflowRunner`, or should P9
    introduce a sibling runner to avoid overloading the video-focused class?
 
+   Proposed answer: introduce a sibling runner. Keep `FrameWorkflowRunner` as
+   the current video-focused workflow while P9 proves the tick/product contract.
+
 3. Should video be converted into a `FrameProduct` before any debug/observation
    product exists, or should we first add a tiny no-op/debug product to prove
    the orchestration shape?
 
+   Proposed answer: add the debug/identity product first as P9.2a, then migrate
+   video as P9.2b.
+
 4. What is the minimum typed product result needed for timing/reporting without
    leaking video-specific fields into every product?
 
+   Proposed answer: `FrameProductResult` should carry only tick identity,
+   `product_name`, optional payload, timing map, and metadata map. Video-specific
+   delivered-frame details stay inside the video payload or video recorder.
+
 5. Should `frame_source`/`clock_owner` schema migration wait until after P9
    product contracts are tested?
+
+   Proposed answer: yes. The enum/schema split should wait until P9.2a/P9.2b
+   prove which metadata needs to be serialized.
