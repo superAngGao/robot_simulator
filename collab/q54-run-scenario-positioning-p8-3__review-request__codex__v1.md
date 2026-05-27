@@ -2,7 +2,7 @@
 
 Author: Codex
 Date: 2026-05-26
-Status: decision accepted; runner validation follow-up implemented; remaining follow-ups identified
+Status: decision accepted; runner validation/naming follow-ups implemented; remaining follow-ups identified
 
 ## Summary
 
@@ -340,12 +340,28 @@ rather than pushing more responsibility into `run_scenario(...)`.
    `tools.optical_pipeline_lab.__init__` yet. This keeps them as explicit runner
    APIs until a CLI or workflow layer needs a stable package-root import.
 
-3. Naming cleanup: should `validate_implemented()` or
-   `_is_implemented_physics_runtime_smoke()` be renamed so "implemented" does
-   not imply `run_scenario(...)` executability?
+3. Naming cleanup: implemented as contract documentation, not API rename.
 
-4. Should `FrameSourceKind` eventually be split into separate source-kind and
-   clock/loop-ownership concepts?
+   `validate_implemented()` now documents that it means lab-wide support by at
+   least one path, not `run_scenario(...)` executability. The runner-level
+   predicates carry the ordinary runner-executability meaning. This avoids a
+   broad method rename while making the split explicit at the API boundary.
+
+4. `FrameSourceKind` split: defer to P9 design before code changes.
+
+   Current `frame_source` values are part of presets, validation gates, timing
+   CSV defaults, GPU tests, and serialized `scenario_config.json` output. A
+   direct enum split would therefore be a metadata/schema migration, not a
+   local cleanup. The next design step should introduce a separate
+   clock/loop-ownership concept, for example:
+
+   ```text
+   frame_source: static_asset | synthetic_sequence | physics_published_frame
+   clock_owner: runner | external_physics_runtime
+   ```
+
+   Only after that contract is clear should the code migrate CSV/report fields
+   and preset serialization.
 
 5. If a CLI demo is needed, should it be a separate explicit lab subcommand
    rather than generic `run` accepting physics presets?

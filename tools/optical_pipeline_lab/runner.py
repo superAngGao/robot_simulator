@@ -62,12 +62,16 @@ class LabRunOptions:
 
 
 def validate_scenario(config: OpticalLabScenarioConfig) -> None:
-    """Validate that a config uses only currently implemented lab modes."""
+    """Validate lab-wide config support, independent of runner ownership."""
     config.validate_implemented()
 
 
 def can_run_scenario(config: OpticalLabScenarioConfig) -> bool:
-    """Return whether the value-object lab runner can execute this config."""
+    """Return whether ``run_scenario(...)`` can execute a valid lab config.
+
+    Invalid configs raise their validation error; valid configs that require a
+    different runtime owner return ``False``.
+    """
     try:
         validate_run_scenario_supported(config)
     except RunScenarioUnsupportedError:

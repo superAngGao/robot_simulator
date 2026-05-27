@@ -2744,7 +2744,7 @@ def test_synthetic_dynamic_smoke_preset_is_currently_implemented():
     config.validate_implemented()
 
 
-def test_physics_body_triangle_video_smoke_preset_is_currently_implemented():
+def test_physics_body_triangle_video_smoke_preset_is_implemented_by_explicit_lab_path():
     config = get_preset("physics_body_triangle_video_smoke")
 
     assert config.scenario_family is OpticalLabScenarioFamily.VIDEO_ORDERED_EXPORT
@@ -2756,7 +2756,7 @@ def test_physics_body_triangle_video_smoke_preset_is_currently_implemented():
     config.validate_implemented()
 
 
-def test_run_scenario_support_predicate_separates_physics_runtime_ownership(tmp_path: Path):
+def test_run_scenario_support_predicate_separates_lab_support_from_runner_ownership(tmp_path: Path):
     static_config = get_preset("go2_video_ordered_static")
     dynamic_config = get_preset("synthetic_body_triangle_dynamic_smoke")
     physics_config = get_preset("physics_body_triangle_video_smoke")

@@ -101,7 +101,12 @@ class OpticalLabScenarioConfig:
     shadows: bool = True
 
     def validate_implemented(self) -> None:
-        """Fail loudly for reserved modes that the lab does not execute yet."""
+        """Validate that this config is supported by at least one lab path.
+
+        This is lab-wide support, not `run_scenario(...)` executability. Some
+        implemented configs, such as physics runtime smoke, require explicit
+        runtime-owner helpers instead of the value-object scenario runner.
+        """
         if self._is_implemented_dynamic_smoke():
             return
         if self._is_implemented_physics_runtime_smoke():
