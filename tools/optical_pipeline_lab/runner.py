@@ -88,6 +88,15 @@ def validate_run_scenario_supported(config: OpticalLabScenarioConfig) -> None:
             "run_physics_video_scenario(...) or run_physics_stepped_video_scenario(...) "
             "with explicit engine/runtime inputs"
         )
+    if config.scene_preset not in ("go2_menagerie_static", "synthetic_body_triangle"):
+        raise RunScenarioUnsupportedError(
+            f"scene_preset={config.scene_preset!r} is reserved; "
+            "use go2_menagerie_static/synthetic_body_triangle for now"
+        )
+    if config.camera_mode not in ("camera_orbit", "fixed_view"):
+        raise RunScenarioUnsupportedError(
+            f"camera_mode={config.camera_mode!r} is reserved; use camera_orbit/fixed_view for now"
+        )
 
 
 def apply_run_overrides(
@@ -132,15 +141,6 @@ def run_scenario(config: OpticalLabScenarioConfig, options: LabRunOptions) -> No
     """
     validate_run_scenario_supported(config)
     _validate_run_options(config, options)
-    if config.scene_preset not in ("go2_menagerie_static", "synthetic_body_triangle"):
-        raise NotImplementedError(
-            f"scene_preset={config.scene_preset!r} is reserved; "
-            "use go2_menagerie_static/synthetic_body_triangle for now"
-        )
-    if config.camera_mode not in ("camera_orbit", "fixed_view"):
-        raise NotImplementedError(
-            f"camera_mode={config.camera_mode!r} is reserved; use camera_orbit/fixed_view for now"
-        )
 
     options.out.mkdir(parents=True, exist_ok=True)
     write_scenario_config(options.out / "scenario_config.json", config, options)

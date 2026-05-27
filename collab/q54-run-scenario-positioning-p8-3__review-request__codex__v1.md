@@ -327,11 +327,12 @@ rather than pushing more responsibility into `run_scenario(...)`.
    `run_scenario(...)` explicitly rejects it because this value-object runner
    cannot own live physics runtime dependencies.
 
-   The implementation also distinguishes invalid config from valid-but-not-owned
-   config: `can_run_scenario(config)` only returns `False` for the
-   runner-ownership boundary and allows config validity errors to propagate. The
-   runner now avoids double-running `validate_implemented()` by sharing a private
-   run-options validator after scenario validation has been performed.
+   The implementation also distinguishes invalid config from valid-but-not-runner
+   supported config: `can_run_scenario(config)` returns `False` for the
+   runner-ownership boundary and for runner-specific reserved scene/camera paths,
+   while allowing config validity errors to propagate. The runner now avoids
+   double-running `validate_implemented()` by sharing a private run-options
+   validator after scenario validation has been performed.
 
 2. Package-root export: deferred.
 

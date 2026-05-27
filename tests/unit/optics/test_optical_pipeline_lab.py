@@ -2778,6 +2778,15 @@ def test_run_scenario_support_predicate_separates_lab_support_from_runner_owners
     with pytest.raises(NotImplementedError, match="render_backend"):
         can_run_scenario(invalid_config)
 
+    reserved_scene_config = OpticalLabScenarioConfig(
+        scenario_name="reserved_static_scene",
+        scenario_family=OpticalLabScenarioFamily.RENDER_BENCH,
+        scene_preset="reserved_scene",
+    )
+    assert can_run_scenario(reserved_scene_config) is False
+    with pytest.raises(RunScenarioUnsupportedError, match="scene_preset"):
+        validate_run_scenario_supported(reserved_scene_config)
+
 
 def test_default_render_resolution_is_1080p():
     config = OpticalLabScenarioConfig(
