@@ -2,7 +2,7 @@
 
 Author: Codex
 Date: 2026-05-27
-Status: P9.1 tick contract implemented; P9.2 plan ready for review
+Status: P9.1 tick contract implemented; P9.2 review feedback incorporated
 
 ## Summary
 
@@ -365,10 +365,25 @@ and a tiny sibling runner:
 class MultiProductFrameRunner:
     products: tuple[FrameProduct, ...]
 
-    def begin_run(self) -> tuple[object | None, ...]: ...
-    def step(self, tick: SimulationFrameTick) -> tuple[FrameProductResult, ...]: ...
-    def end_run(self) -> tuple[object | None, ...]: ...
+    def begin_run(self) -> Mapping[str, object | None]: ...
+    def step(self, tick: SimulationFrameTick) -> tuple[FrameProductResult | None, ...]: ...
+    def end_run(self) -> Mapping[str, object | None]: ...
 ```
+
+`begin_run()` and `end_run()` intentionally return mappings keyed by
+`product_name`, not positional tuples of untyped objects. This keeps lifecycle
+outputs routable without requiring every product to force run-level state into a
+per-frame `FrameProductResult`.
+
+`step(...)` intentionally preserves product order and keeps `None` entries. A
+`None` result means "this product consumed or observed the tick but produced no
+per-frame result". The returned tuple length must equal `len(products)`.
+
+P9.2a does not introduce provider borrowing. `MultiProductFrameRunner.step()`
+only receives a `SimulationFrameTick` and calls products. Any product that needs
+a render/physics frame context, such as the later video product, owns its own
+borrow context inside `consume(tick)`. This keeps provider lifecycle decisions
+out of the generic product runner.
 
 Initial product:
 
@@ -385,14 +400,18 @@ P9.2a tests:
 - result envelope copies `frame_index`, `frame_id`, `sim_time`, and `env_idx`
   from the tick;
 - product ordering is stable;
-- `None` consume results are filtered or represented deliberately;
+- `None` consume results are represented positionally, not filtered;
+- `step(...)` returns one slot per product even when some products return
+  `None`;
 - product exceptions stop the step and preserve the original exception;
-- begin/end lifecycle is called in product order.
+- begin/end lifecycle is called in product order;
+- begin/end return mappings keyed by `product_name`.
 
 Non-goals for P9.2a:
 
 - no video migration;
-- no provider borrow lifecycle;
+- no provider borrow lifecycle in `MultiProductFrameRunner`;
+- no tick-carried frame context;
 - no RL observation product;
 - no CLI or preset schema changes;
 - no `FrameSourceKind` split.
@@ -401,6 +420,20 @@ Non-goals for P9.2a:
 
 After P9.2a is reviewed, wrap the existing physics video behavior behind a
 product-shaped adapter.
+
+P9.2b should introduce a parallel product-runner entry path instead of reusing
+`run_physics_stepped_video_scenario(...)` internally. The old helper remains
+available for the existing video-only lab path; the new path proves:
+
+```text
+PhysicsLabScenarioRuntime.step_tick(...)
+  -> MultiProductFrameRunner
+  -> PhysicsVideoFrameProduct
+```
+
+The two entries should have separate validation functions so callers cannot
+accidentally route a product-runner scenario through the older video-only
+helper just because both use `FrameSourceKind.PHYSICS_RUNTIME`.
 
 Tentative shape:
 
@@ -438,6 +471,10 @@ physics borrow is released before video delivery submit/flush
 
 P9.2b tests:
 
+- new product-runner entry does not call or depend on
+  `run_physics_stepped_video_scenario(...)`;
+- product-runner validation is distinct from
+  `validate_physics_video_run(...)`;
 - existing `run_physics_stepped_video_scenario(...)` behavior remains
   equivalent;
 - provider borrow receives `tick.published_frame`;
@@ -469,11 +506,11 @@ First add a tiny debug/identity product to prove orchestration,
 then convert video into a product.
 ```
 
-### P9.3: Add A Minimal Debug Product
+### P9.3: Prove Video And Debug Products Together
 
-Before RL, add a simple debug product that records frame identity and selected
-metadata from the tick. This tests multi-product orchestration without pulling
-in observation tensor requirements too early.
+After P9.2a/P9.2b, run video and debug products from the same tick stream. This
+tests actual multi-product orchestration without pulling in observation tensor
+requirements too early.
 
 Goal:
 
@@ -482,6 +519,9 @@ tick
   -> video product
   -> debug product
 ```
+
+The debug product already exists from P9.2a; P9.3 proves it can run next to the
+video product while preserving the video borrow-before-delivery guarantee.
 
 ### P9.4: Design Observation Product Separately
 
@@ -513,9 +553,37 @@ internals.
    Proposed answer: `FrameProductResult` should carry only tick identity,
    `product_name`, optional payload, timing map, and metadata map. Video-specific
    delivered-frame details stay inside the video payload or video recorder.
+   `MultiProductFrameRunner.step(...)` should preserve product positions and
+   return `None` in a product's slot when that product has no per-frame result.
+   Run lifecycle outputs should be keyed by `product_name`.
 
 5. Should `frame_source`/`clock_owner` schema migration wait until after P9
    product contracts are tested?
 
    Proposed answer: yes. The enum/schema split should wait until P9.2a/P9.2b
-   prove which metadata needs to be serialized.
+   prove which metadata needs to be serialized. P9.2b should still introduce a
+   distinct product-runner validation path so the old video-only physics helper
+   and new product-runner entry cannot be confused while both still use
+   `FrameSourceKind.PHYSICS_RUNTIME`.
+
+## Claude Review Follow-up
+
+Claude reviewed the P9.2 plan on 2026-05-28 and accepted the overall direction:
+
+- debug/identity product before video migration;
+- sibling `MultiProductFrameRunner` instead of generalizing
+  `FrameWorkflowRunner`;
+- minimal `FrameProductResult` with video details kept in payload/recorders.
+
+The plan now incorporates the requested clarifications:
+
+1. `MultiProductFrameRunner.step(...)` does not own provider borrow/release.
+   Products that need frame contexts, including the future video product, own
+   their borrow scope inside `consume(tick)`.
+2. `None` consume results are represented positionally. The result tuple keeps
+   one slot per product, preserving product order.
+3. P9.2b introduces a new product-runner entry path parallel to
+   `run_physics_stepped_video_scenario(...)`, with distinct validation, rather
+   than routing the new product workflow through the existing video-only helper.
+4. `begin_run()` / `end_run()` aggregate lifecycle outputs by `product_name`
+   instead of returning unlabelled positional objects.
