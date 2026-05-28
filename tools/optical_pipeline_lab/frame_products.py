@@ -84,7 +84,11 @@ class MultiProductFrameRunner:
         return {product.product_name: product.begin_run() for product in self.products}
 
     def step(self, tick: SimulationFrameTick) -> tuple[FrameProductResult | None, ...]:
-        """Consume one tick with every product, preserving product positions."""
+        """Consume one tick with every product, preserving product positions.
+
+        Product execution is fail-fast: if one product raises, later products do
+        not consume the tick and the original exception propagates.
+        """
 
         return tuple(product.consume(tick) for product in self.products)
 

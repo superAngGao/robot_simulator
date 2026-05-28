@@ -758,6 +758,34 @@ def test_debug_frame_product_records_tick_identity_and_selected_metadata():
     assert product.end_run() == (result,)
 
 
+def test_debug_frame_product_records_all_metadata_and_zero_frame_run():
+    tick = frame_tick.SimulationFrameTick(
+        frame_index=7,
+        env_idx=1,
+        frame_id=87,
+        sim_time=8.7,
+        published_frame=object(),
+        metadata={
+            "producer": "fake",
+            "runtime_owner": "physics_lab",
+        },
+    )
+    product = frame_products.DebugFrameProduct()
+
+    assert product.begin_run() is None
+    assert product.end_run() == ()
+
+    result = product.consume(tick)
+    assert result.metadata == {
+        "producer": "fake",
+        "runtime_owner": "physics_lab",
+    }
+    assert result.payload["metadata"] == {
+        "producer": "fake",
+        "runtime_owner": "physics_lab",
+    }
+
+
 def test_multi_product_frame_runner_preserves_order_and_none_results():
     tick = frame_tick.SimulationFrameTick(
         frame_index=5,
@@ -879,6 +907,82 @@ def test_multi_product_frame_runner_stops_on_product_exception():
     with pytest.raises(RuntimeError, match="product failed"):
         runner.step(tick)
     assert calls == [("consume", "failing", 6)]
+
+
+def test_multi_product_frame_runner_begin_run_is_fail_fast():
+    calls: list[tuple[object, ...]] = []
+
+    class FailingBeginProduct:
+        product_name = "failing_begin"
+
+        def begin_run(self):
+            calls.append(("begin", self.product_name))
+            raise RuntimeError("begin failed")
+
+        def consume(self, tick_arg):
+            return None
+
+        def end_run(self):
+            return None
+
+    class UnreachedProduct:
+        product_name = "unreached"
+
+        def begin_run(self):
+            calls.append(("begin", self.product_name))
+            return None
+
+        def consume(self, tick_arg):
+            return None
+
+        def end_run(self):
+            return None
+
+    runner = frame_products.MultiProductFrameRunner(
+        products=(FailingBeginProduct(), UnreachedProduct()),
+    )
+
+    with pytest.raises(RuntimeError, match="begin failed"):
+        runner.begin_run()
+    assert calls == [("begin", "failing_begin")]
+
+
+def test_multi_product_frame_runner_end_run_is_fail_fast():
+    calls: list[tuple[object, ...]] = []
+
+    class FailingEndProduct:
+        product_name = "failing_end"
+
+        def begin_run(self):
+            return None
+
+        def consume(self, tick_arg):
+            return None
+
+        def end_run(self):
+            calls.append(("end", self.product_name))
+            raise RuntimeError("end failed")
+
+    class UnreachedProduct:
+        product_name = "unreached"
+
+        def begin_run(self):
+            return None
+
+        def consume(self, tick_arg):
+            return None
+
+        def end_run(self):
+            calls.append(("end", self.product_name))
+            return None
+
+    runner = frame_products.MultiProductFrameRunner(
+        products=(FailingEndProduct(), UnreachedProduct()),
+    )
+
+    with pytest.raises(RuntimeError, match="end failed"):
+        runner.end_run()
+    assert calls == [("end", "failing_end")]
 
 
 def test_multi_product_frame_runner_rejects_duplicate_product_names():
