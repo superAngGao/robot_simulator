@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -12,7 +13,9 @@ from pathlib import Path
 from sensing import OpticalPinholeCameraSpec
 
 from .delivery import VideoDeliveryFacade, VideoDeliveryRunConfig, VideoFrameTimingRowBuilder
+from .frame_products import FrameProductResult, MultiProductFrameRunner
 from .frame_runtime import FrameWorkflowRunner
+from .frame_tick import SimulationFrameTick
 from .render_session import OpticalLabRenderOptions
 from .scenarios import (
     AccelBackend,
@@ -311,6 +314,175 @@ def run_physics_stepped_video_scenario(
     )
 
 
+@dataclass
+class PhysicsVideoFrameProduct:
+    """Render and deliver video for physics-owned simulation ticks."""
+
+    runtime: object
+    config: OpticalLabScenarioConfig
+    args: argparse.Namespace
+    frame_provider: object
+    delivery: VideoDeliveryFacade
+    rows: FrameTimingRecorder
+    row_builder: VideoFrameTimingRowBuilder
+    build_video_camera: PhysicsVideoCameraBuilder
+    product_name: str = "video"
+
+    def begin_run(self) -> object | None:
+        return None
+
+    def consume(self, tick: SimulationFrameTick) -> FrameProductResult:
+        frame_start = time.perf_counter()
+        with self.frame_provider.begin_frame(
+            tick.frame_index,
+            env_idx=tick.env_idx,
+            published_frame=tick.published_frame,
+        ) as frame_context:
+            rendered = self._render_video_frame(frame_context, tick.frame_index)
+
+        delivered_video = self._submit_video(rendered, frame_start=frame_start)
+        return FrameProductResult.from_tick(
+            product_name=self.product_name,
+            tick=tick,
+            payload={
+                "rendered": rendered,
+                "delivered_video": delivered_video,
+            },
+        )
+
+    def end_run(self) -> object | None:
+        delivered_video = tuple(self.delivery.flush())
+        self._record_delivered_video(delivered_video)
+        self.rows.write_csv()
+        return {
+            "delivered_video": delivered_video,
+            "rows": self.rows,
+        }
+
+    def _render_video_frame(self, frame_context, frame_index: int):
+        frame_identity = FrameIdentity(
+            frame_id=frame_context.frame_id,
+            sim_time=frame_context.sim_time,
+            env_idx=frame_context.env_idx,
+        )
+        plan = build_video_render_plan(
+            self.runtime.pipeline.session.scene,
+            self.args,
+            frame_index,
+            None,
+            build_video_camera=self.build_video_camera,
+            frame_identity=frame_identity,
+            geometry_mode=self.config.geometry_mode.value,
+        )
+        return render_video_frame_from_context(
+            frame_context,
+            plan,
+            frame_index=frame_index,
+        )
+
+    def _submit_video(self, rendered, *, frame_start: float) -> tuple[object, ...]:
+        delivered: list[object] = []
+        delivered.extend(self.delivery.complete_available(latest_rendered_frame_index=rendered.frame_index))
+        completed = self.delivery.submit(rendered, frame_start=frame_start)
+        if completed is not None:
+            delivered.append(completed)
+        delivered.extend(self.delivery.complete_available(latest_rendered_frame_index=rendered.frame_index))
+        delivered_tuple = tuple(delivered)
+        self._record_delivered_video(delivered_tuple)
+        return delivered_tuple
+
+    def _record_delivered_video(self, delivered: tuple[object, ...]) -> None:
+        for frame in delivered:
+            record_delivered_video_frame(self.rows, self.row_builder, frame, self.args)
+
+
+def run_physics_stepped_video_product_scenario(
+    config: OpticalLabScenarioConfig,
+    options: LabRunOptions,
+    *,
+    scenario_runtime: object,
+    build_video_camera: PhysicsVideoCameraBuilder,
+    synchronize_event: Callable[[object], None],
+    pack_rgb8: Callable[[object], object],
+    consumer_id: str = "optical_lab_physics_video_product",
+) -> FrameTimingRecorder:
+    """Run physics-owned video through the P9 tick/product runner path."""
+
+    validate_physics_video_product_run(config, options)
+    options.out.mkdir(parents=True, exist_ok=True)
+    write_scenario_config(options.out / "scenario_config.json", config, options)
+
+    args = _build_physics_video_args_unvalidated(config, options)
+    timings = TimingRecorder()
+    runtime = create_physics_render_runtime_for_config(
+        config,
+        options,
+        engine=scenario_runtime.engine,
+        registry=scenario_runtime.registry,
+        base_frame=scenario_runtime.base_frame,
+        timings=timings,
+        consumer_id=consumer_id,
+        bounds_min=scenario_runtime.bounds_min,
+        bounds_max=scenario_runtime.bounds_max,
+        metadata=scenario_runtime.metadata,
+    )
+
+    from . import frame_contexts
+
+    frame_provider = frame_contexts.physics_frame_context_provider(
+        runtime,
+        delivery_mode=options.video_readback_delivery,
+    )
+    delivery_request = video_delivery_request_from_options(
+        readback_mode=args.video_readback,
+        delivery_mode=args.video_readback_delivery,
+        ring_depth=int(args.video_readback_ring_depth),
+        write_frames=bool(args.write_frames),
+    )
+    rows = FrameTimingRecorder(
+        csv_path=Path(args.frame_timing_csv),
+        default_fields=args.lab_frame_defaults,
+    )
+    row_builder = VideoFrameTimingRowBuilder(
+        VideoDeliveryRunConfig(
+            video_fps=float(args.video_fps),
+            video_frames=int(args.video_frames),
+            video_raygen=args.video_raygen,
+            video_ray_cache=args.video_ray_cache,
+            delivery_policy_label=args.video_readback_delivery,
+            fail_on_overflow=bool(args.fail_on_overflow),
+        )
+    ).bind_request(delivery_request)
+    delivery = VideoDeliveryFacade.create(
+        request=delivery_request,
+        delivery_policy_label=args.video_readback_delivery,
+        frame_dir=options.out / "frames",
+        pack_rgb8=pack_rgb8,
+        synchronize_event=synchronize_event,
+    )
+    product_runner = MultiProductFrameRunner(
+        products=(
+            PhysicsVideoFrameProduct(
+                runtime=runtime,
+                config=config,
+                args=args,
+                frame_provider=frame_provider,
+                delivery=delivery,
+                rows=rows,
+                row_builder=row_builder,
+                build_video_camera=build_video_camera,
+            ),
+        )
+    )
+
+    product_runner.begin_run()
+    for frame_index in range(int(options.frames)):
+        tick = scenario_runtime.step_tick(frame_index)
+        product_runner.step(tick)
+    product_runner.end_run()
+    return rows
+
+
 def build_physics_video_args(
     config: OpticalLabScenarioConfig,
     options: LabRunOptions,
@@ -318,6 +490,13 @@ def build_physics_video_args(
     """Translate a physics-runtime lab scenario into video runner args."""
 
     validate_physics_video_run(config, options)
+    return _build_physics_video_args_unvalidated(config, options)
+
+
+def _build_physics_video_args_unvalidated(
+    config: OpticalLabScenarioConfig,
+    options: LabRunOptions,
+) -> argparse.Namespace:
     render_options = render_options_for_config(config, options)
     return argparse.Namespace(
         scene_preset=config.scene_preset,
@@ -541,6 +720,29 @@ def validate_physics_video_run(config: OpticalLabScenarioConfig, options: LabRun
     if options.video_readback_delivery == "torch_async":
         raise NotImplementedError(
             "physics runtime video requires provider-backed torch_async warmup before torch_async delivery"
+        )
+
+
+def validate_physics_video_product_run(config: OpticalLabScenarioConfig, options: LabRunOptions) -> None:
+    """Validate the P9 tick/product physics-runtime video path."""
+
+    validate_run(config, options)
+    if config.frame_source is not FrameSourceKind.PHYSICS_RUNTIME:
+        raise ValueError("run_physics_stepped_video_product_scenario requires frame_source='physics_runtime'")
+    if config.scene_preset != "synthetic_body_triangle":
+        raise NotImplementedError(
+            f"scene_preset={config.scene_preset!r} is reserved for physics runtime product path; "
+            "use synthetic_body_triangle for now"
+        )
+    if config.camera_mode != "fixed_view":
+        raise NotImplementedError(
+            f"camera_mode={config.camera_mode!r} is reserved for physics runtime product path; "
+            "use fixed_view for now"
+        )
+    if options.video_readback_delivery == "torch_async":
+        raise NotImplementedError(
+            "physics runtime product video requires provider-backed torch_async warmup "
+            "before torch_async delivery"
         )
 
 

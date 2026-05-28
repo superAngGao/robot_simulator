@@ -2,7 +2,7 @@
 
 Author: Codex
 Date: 2026-05-27
-Status: P9.1/P9.2a implemented; P9.2b pending
+Status: P9.1/P9.2a/P9.2b implemented; P9.3 pending
 
 ## Summary
 
@@ -490,6 +490,16 @@ P9.2b tests:
 - stepper failure stops before provider borrow;
 - timing rows and `scenario_config.json` stay unchanged;
 - `torch_async` remains rejected until provider-backed warmup exists.
+
+Implementation note: P9.2b is now represented by
+`PhysicsVideoFrameProduct` and
+`run_physics_stepped_video_product_scenario(...)`. The product-runner entry
+uses `PhysicsLabScenarioRuntime.step_tick(...)` and
+`MultiProductFrameRunner`; it does not route through
+`run_physics_stepped_video_scenario(...)`. Provider borrow/release is owned
+inside `PhysicsVideoFrameProduct.consume(tick)`, and tests verify that borrow
+release happens before delivery submit and that render failures still release
+the provider context.
 
 Non-goals for P9.2b:
 

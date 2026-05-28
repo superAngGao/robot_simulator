@@ -69,8 +69,10 @@ from tools.optical_pipeline_lab.runner import (
     can_run_scenario,
     create_physics_render_runtime_for_config,
     render_options_for_config,
+    run_physics_stepped_video_product_scenario,
     run_physics_stepped_video_scenario,
     run_scenario,
+    validate_physics_video_product_run,
     validate_physics_video_run,
     validate_run,
     validate_run_scenario_supported,
@@ -3519,6 +3521,14 @@ def test_physics_video_runner_rejects_torch_async_until_warmup_source_exists(tmp
                 video_readback_delivery="torch_async",
             ),
         )
+    with pytest.raises(NotImplementedError, match="provider-backed torch_async warmup"):
+        validate_physics_video_product_run(
+            config,
+            LabRunOptions(
+                out=tmp_path / "physics_product",
+                video_readback_delivery="torch_async",
+            ),
+        )
 
 
 def test_physics_stepped_video_runner_steps_before_provider_borrow(
@@ -3770,6 +3780,292 @@ def test_physics_stepped_video_runner_render_exception_completes_provider_borrow
         ("begin_frame", 0, 73, 0),
         ("enter", 0),
         ("render", 73, 0),
+        ("complete_borrow", 0, RuntimeError),
+    ]
+
+
+def test_physics_video_product_validation_is_distinct_from_video_only_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        lab_runner,
+        "validate_physics_video_run",
+        lambda config, options: (_ for _ in ()).throw(RuntimeError("old validation called")),
+    )
+
+    validate_physics_video_product_run(
+        get_preset("physics_body_triangle_video_smoke"),
+        LabRunOptions(out=tmp_path / "physics"),
+    )
+
+
+def test_physics_video_product_runner_steps_tick_before_provider_borrow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[object, ...]] = []
+    render_runtime = SimpleNamespace(pipeline=SimpleNamespace(session=SimpleNamespace(scene=object())))
+
+    def fake_old_helper(*args, **kwargs):
+        raise AssertionError("product path must not call run_physics_stepped_video_scenario")
+
+    def fake_create_runtime(*args, **kwargs):
+        calls.append(("create_runtime", kwargs["consumer_id"], kwargs["metadata"]["runtime_owner"]))
+        return render_runtime
+
+    class FakeProvider:
+        def begin_frame(self, frame_index: int, *, published_frame=None, env_idx: int = 0):
+            calls.append(("begin_frame", frame_index, published_frame.frame_id, env_idx))
+
+            class Scope:
+                def __enter__(self_inner):
+                    calls.append(("enter", frame_index))
+                    return SimpleNamespace(
+                        frame_id=published_frame.frame_id,
+                        sim_time=published_frame.sim_time,
+                        env_idx=env_idx,
+                    )
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    calls.append(("exit", frame_index, exc_type))
+
+            return Scope()
+
+    class FakeDelivery:
+        def complete_available(self, *, latest_rendered_frame_index=None):
+            calls.append(("complete_available", latest_rendered_frame_index))
+            return []
+
+        def submit(self, rendered, *, frame_start):
+            calls.append(("submit", rendered.frame_index, frame_start >= 0.0))
+            return None
+
+        def flush(self):
+            calls.append(("flush",))
+            return []
+
+    def fake_provider(runtime_arg, *, delivery_mode):
+        calls.append(("provider_factory", runtime_arg is render_runtime, delivery_mode))
+        return FakeProvider()
+
+    def fake_delivery_create(**kwargs):
+        calls.append(("delivery_create", kwargs["delivery_policy_label"]))
+        return FakeDelivery()
+
+    def fake_build_plan(
+        scene, args, frame_index, ray_cache, *, build_video_camera, frame_identity, geometry_mode
+    ):
+        calls.append(("plan", frame_index, frame_identity.frame_id, frame_identity.sim_time, geometry_mode))
+        return SimpleNamespace(request=object(), camera=object())
+
+    def fake_render_from_context(frame_context, plan, *, frame_index):
+        calls.append(("render", frame_context.frame_id, frame_index))
+        return SimpleNamespace(frame_index=frame_index)
+
+    def step_physics_frame(frame_index: int):
+        calls.append(("step", frame_index))
+        return SimpleNamespace(frame_id=100 + frame_index, sim_time=10.0 + frame_index)
+
+    scenario_runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=99, sim_time=9.9),
+        step_frame_fn=step_physics_frame,
+        metadata={"runtime_owner": "physics_lab_test"},
+    )
+
+    monkeypatch.setattr(lab_runner, "run_physics_stepped_video_scenario", fake_old_helper)
+    monkeypatch.setattr(lab_runner, "create_physics_render_runtime_for_config", fake_create_runtime)
+    monkeypatch.setattr(frame_contexts, "physics_frame_context_provider", fake_provider)
+    monkeypatch.setattr(lab_runner.VideoDeliveryFacade, "create", staticmethod(fake_delivery_create))
+    monkeypatch.setattr(lab_runner, "build_video_render_plan", fake_build_plan)
+    monkeypatch.setattr(lab_runner, "render_video_frame_from_context", fake_render_from_context)
+
+    rows = run_physics_stepped_video_product_scenario(
+        get_preset("physics_body_triangle_video_smoke"),
+        LabRunOptions(out=tmp_path / "physics", frames=2, progress_every=0),
+        scenario_runtime=scenario_runtime,
+        build_video_camera=lambda scene, args, frame_index: object(),
+        synchronize_event=lambda event: None,
+        pack_rgb8=lambda result: result,
+        consumer_id="product_consumer",
+    )
+
+    assert isinstance(rows, FrameTimingRecorder)
+    assert calls == [
+        ("create_runtime", "product_consumer", "physics_lab_test"),
+        ("provider_factory", True, "sync"),
+        ("delivery_create", "sync"),
+        ("step", 0),
+        ("begin_frame", 0, 100, 0),
+        ("enter", 0),
+        ("plan", 0, 100, 10.0, "dynamic_rigid"),
+        ("render", 100, 0),
+        ("exit", 0, None),
+        ("complete_available", 0),
+        ("submit", 0, True),
+        ("complete_available", 0),
+        ("step", 1),
+        ("begin_frame", 1, 101, 0),
+        ("enter", 1),
+        ("plan", 1, 101, 11.0, "dynamic_rigid"),
+        ("render", 101, 1),
+        ("exit", 1, None),
+        ("complete_available", 1),
+        ("submit", 1, True),
+        ("complete_available", 1),
+        ("flush",),
+    ]
+
+
+def test_physics_video_product_runner_stepper_exception_stops_before_provider_borrow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[object, ...]] = []
+    render_runtime = SimpleNamespace(pipeline=SimpleNamespace(session=SimpleNamespace(scene=object())))
+
+    monkeypatch.setattr(
+        lab_runner,
+        "create_physics_render_runtime_for_config",
+        lambda *args, **kwargs: calls.append(("create_runtime",)) or render_runtime,
+    )
+
+    class FakeProvider:
+        def begin_frame(self, frame_index: int, *, published_frame=None, env_idx: int = 0):
+            raise AssertionError("step failure should stop before provider borrow")
+
+    class FakeDelivery:
+        def complete_available(self, *, latest_rendered_frame_index=None):
+            raise AssertionError("step failure should not reach delivery")
+
+        def submit(self, rendered, *, frame_start):
+            raise AssertionError("step failure should not submit delivery")
+
+        def flush(self):
+            raise AssertionError("step failure should not flush delivery")
+
+    monkeypatch.setattr(
+        frame_contexts,
+        "physics_frame_context_provider",
+        lambda runtime_arg, *, delivery_mode: FakeProvider(),
+    )
+    monkeypatch.setattr(
+        lab_runner.VideoDeliveryFacade,
+        "create",
+        staticmethod(lambda **kwargs: FakeDelivery()),
+    )
+
+    def step_physics_frame(frame_index: int):
+        calls.append(("step", frame_index))
+        raise RuntimeError("product physics step failed")
+
+    scenario_runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=109, sim_time=10.9),
+        step_frame_fn=step_physics_frame,
+    )
+
+    with pytest.raises(RuntimeError, match="product physics step failed"):
+        run_physics_stepped_video_product_scenario(
+            get_preset("physics_body_triangle_video_smoke"),
+            LabRunOptions(out=tmp_path / "physics", frames=1, progress_every=0),
+            scenario_runtime=scenario_runtime,
+            build_video_camera=lambda scene, args, frame_index: object(),
+            synchronize_event=lambda event: None,
+            pack_rgb8=lambda result: result,
+        )
+
+    assert calls == [("create_runtime",), ("step", 0)]
+
+
+def test_physics_video_product_runner_render_exception_completes_provider_borrow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[object, ...]] = []
+    render_runtime = SimpleNamespace(pipeline=SimpleNamespace(session=SimpleNamespace(scene=object())))
+    published_frame = SimpleNamespace(frame_id=110, sim_time=11.0)
+
+    monkeypatch.setattr(
+        lab_runner,
+        "create_physics_render_runtime_for_config",
+        lambda *args, **kwargs: render_runtime,
+    )
+
+    class FakeProvider:
+        def begin_frame(self, frame_index: int, *, published_frame=None, env_idx: int = 0):
+            calls.append(("begin_frame", frame_index, published_frame.frame_id, env_idx))
+
+            class Scope:
+                def __enter__(self_inner):
+                    calls.append(("enter", frame_index))
+                    return SimpleNamespace(
+                        frame_id=published_frame.frame_id,
+                        sim_time=published_frame.sim_time,
+                        env_idx=env_idx,
+                    )
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    calls.append(("complete_borrow", frame_index, exc_type))
+
+            return Scope()
+
+    class FakeDelivery:
+        def complete_available(self, *, latest_rendered_frame_index=None):
+            raise AssertionError("render failure should not reach delivery")
+
+        def submit(self, rendered, *, frame_start):
+            raise AssertionError("render failure should not submit delivery")
+
+        def flush(self):
+            raise AssertionError("render failure should not flush delivery")
+
+    monkeypatch.setattr(
+        frame_contexts,
+        "physics_frame_context_provider",
+        lambda runtime_arg, *, delivery_mode: FakeProvider(),
+    )
+    monkeypatch.setattr(
+        lab_runner.VideoDeliveryFacade,
+        "create",
+        staticmethod(lambda **kwargs: FakeDelivery()),
+    )
+    monkeypatch.setattr(
+        lab_runner,
+        "build_video_render_plan",
+        lambda *args, **kwargs: SimpleNamespace(request=object(), camera=object()),
+    )
+
+    def fake_render_from_context(frame_context, plan, *, frame_index):
+        calls.append(("render", frame_context.frame_id, frame_index))
+        raise RuntimeError("product render failed")
+
+    monkeypatch.setattr(lab_runner, "render_video_frame_from_context", fake_render_from_context)
+
+    scenario_runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=109, sim_time=10.9),
+        step_frame_fn=lambda frame_index: published_frame,
+    )
+
+    with pytest.raises(RuntimeError, match="product render failed"):
+        run_physics_stepped_video_product_scenario(
+            get_preset("physics_body_triangle_video_smoke"),
+            LabRunOptions(out=tmp_path / "physics", frames=1, progress_every=0),
+            scenario_runtime=scenario_runtime,
+            build_video_camera=lambda scene, args, frame_index: object(),
+            synchronize_event=lambda event: None,
+            pack_rgb8=lambda result: result,
+        )
+
+    assert calls == [
+        ("begin_frame", 0, 110, 0),
+        ("enter", 0),
+        ("render", 110, 0),
         ("complete_borrow", 0, RuntimeError),
     ]
 
