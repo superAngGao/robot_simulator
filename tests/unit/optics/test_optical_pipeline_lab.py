@@ -13,6 +13,7 @@ import tools.optical_pipeline_lab.async_readback as async_readback
 import tools.optical_pipeline_lab.delivery as delivery
 import tools.optical_pipeline_lab.dynamic_frames as dynamic_frames
 import tools.optical_pipeline_lab.frame_contexts as frame_contexts
+import tools.optical_pipeline_lab.frame_products as frame_products
 import tools.optical_pipeline_lab.frame_runtime as frame_runtime
 import tools.optical_pipeline_lab.frame_tick as frame_tick
 import tools.optical_pipeline_lab.go2_backend as go2_backend
@@ -716,6 +717,175 @@ def test_physics_lab_scenario_runtime_step_tick_wraps_published_frame_metadata()
         "product_set": "debug",
     }
     assert calls == [("step_frame", 2)]
+
+
+def test_debug_frame_product_records_tick_identity_and_selected_metadata():
+    tick = frame_tick.SimulationFrameTick(
+        frame_index=4,
+        env_idx=2,
+        frame_id=84,
+        sim_time=8.4,
+        published_frame=object(),
+        metadata={
+            "producer": "fake",
+            "runtime_owner": "physics_lab",
+            "ignore": "not-selected",
+        },
+    )
+    product = frame_products.DebugFrameProduct(
+        product_name="debug_identity",
+        metadata_keys=("producer", "missing"),
+    )
+
+    assert product.begin_run() is None
+    result = product.consume(tick)
+
+    assert result == frame_products.FrameProductResult(
+        product_name="debug_identity",
+        frame_index=4,
+        frame_id=84,
+        sim_time=8.4,
+        env_idx=2,
+        payload={
+            "frame_index": 4,
+            "frame_id": 84,
+            "sim_time": 8.4,
+            "env_idx": 2,
+            "metadata": {"producer": "fake"},
+        },
+        metadata={"producer": "fake"},
+    )
+    assert product.end_run() == (result,)
+
+
+def test_multi_product_frame_runner_preserves_order_and_none_results():
+    tick = frame_tick.SimulationFrameTick(
+        frame_index=5,
+        env_idx=3,
+        frame_id=85,
+        sim_time=8.5,
+        published_frame=object(),
+        metadata={"producer": "fake"},
+    )
+    calls: list[tuple[object, ...]] = []
+
+    class RecordingProduct:
+        product_name = "recording"
+
+        def begin_run(self):
+            calls.append(("begin", self.product_name))
+            return "recording-ready"
+
+        def consume(self, tick_arg):
+            calls.append(("consume", self.product_name, tick_arg.frame_index))
+            return frame_products.FrameProductResult.from_tick(
+                product_name=self.product_name,
+                tick=tick_arg,
+                payload={"kind": "recording"},
+            )
+
+        def end_run(self):
+            calls.append(("end", self.product_name))
+            return "recording-done"
+
+    class ObservingProduct:
+        product_name = "observer"
+
+        def begin_run(self):
+            calls.append(("begin", self.product_name))
+            return None
+
+        def consume(self, tick_arg):
+            calls.append(("consume", self.product_name, tick_arg.frame_index))
+            return None
+
+        def end_run(self):
+            calls.append(("end", self.product_name))
+            return {"observed": True}
+
+    runner = frame_products.MultiProductFrameRunner(
+        products=(RecordingProduct(), ObservingProduct()),
+    )
+
+    assert runner.begin_run() == {
+        "recording": "recording-ready",
+        "observer": None,
+    }
+    results = runner.step(tick)
+    assert len(results) == 2
+    assert results[0] == frame_products.FrameProductResult(
+        product_name="recording",
+        frame_index=5,
+        frame_id=85,
+        sim_time=8.5,
+        env_idx=3,
+        payload={"kind": "recording"},
+    )
+    assert results[1] is None
+    assert runner.end_run() == {
+        "recording": "recording-done",
+        "observer": {"observed": True},
+    }
+    assert calls == [
+        ("begin", "recording"),
+        ("begin", "observer"),
+        ("consume", "recording", 5),
+        ("consume", "observer", 5),
+        ("end", "recording"),
+        ("end", "observer"),
+    ]
+
+
+def test_multi_product_frame_runner_stops_on_product_exception():
+    tick = frame_tick.SimulationFrameTick(
+        frame_index=6,
+        env_idx=0,
+        frame_id=86,
+        sim_time=8.6,
+        published_frame=object(),
+    )
+    calls: list[tuple[object, ...]] = []
+
+    class FailingProduct:
+        product_name = "failing"
+
+        def begin_run(self):
+            return None
+
+        def consume(self, tick_arg):
+            calls.append(("consume", self.product_name, tick_arg.frame_index))
+            raise RuntimeError("product failed")
+
+        def end_run(self):
+            return None
+
+    class UnreachedProduct:
+        product_name = "unreached"
+
+        def begin_run(self):
+            return None
+
+        def consume(self, tick_arg):
+            calls.append(("consume", self.product_name, tick_arg.frame_index))
+            return None
+
+        def end_run(self):
+            return None
+
+    runner = frame_products.MultiProductFrameRunner(
+        products=(FailingProduct(), UnreachedProduct()),
+    )
+
+    with pytest.raises(RuntimeError, match="product failed"):
+        runner.step(tick)
+    assert calls == [("consume", "failing", 6)]
+
+
+def test_multi_product_frame_runner_rejects_duplicate_product_names():
+    product = frame_products.DebugFrameProduct(product_name="duplicate")
+
+    with pytest.raises(ValueError, match="product_name values must be unique"):
+        frame_products.MultiProductFrameRunner(products=(product, product))
 
 
 def test_create_physics_body_triangle_lab_runtime_owns_reset_and_step(

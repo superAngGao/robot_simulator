@@ -2,7 +2,7 @@
 
 Author: Codex
 Date: 2026-05-27
-Status: P9.1 tick contract implemented; P9.2 review feedback incorporated
+Status: P9.1/P9.2a implemented; P9.2b pending
 
 ## Summary
 
@@ -415,6 +415,13 @@ Non-goals for P9.2a:
 - no RL observation product;
 - no CLI or preset schema changes;
 - no `FrameSourceKind` split.
+
+Implementation note: P9.2a is now represented by
+`tools.optical_pipeline_lab.frame_products`. It adds
+`FrameProductResult`, `FrameProduct`, `MultiProductFrameRunner`, and
+`DebugFrameProduct`. The implementation preserves product result positions,
+keeps provider borrowing out of the generic runner, and aggregates begin/end
+outputs by `product_name`.
 
 #### P9.2b: Video Product Adapter
 
