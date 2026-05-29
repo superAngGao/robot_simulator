@@ -13,10 +13,18 @@
     前提：GpuEngine 补齐 contact forces 接口 + runtime 参数修改能力。
 """
 
-from .base_env import Env
 from .cfg import EnvCfg, NoiseCfg, ObsTermCfg
 from .controllers import Controller, PDController, TorqueController
 from .obs import ObsFieldSpec, ObsSchema, locomotion_obs_schema, obs_cfg_from_schema
+
+
+def __getattr__(name: str):
+    if name == "Env":
+        from .base_env import Env
+
+        return Env
+    raise AttributeError(name)
+
 
 __all__ = [
     "Env",

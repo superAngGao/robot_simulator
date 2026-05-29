@@ -2,7 +2,7 @@
 
 Author: Codex
 Date: 2026-05-27
-Status: P9.1/P9.2a/P9.2b/P9.3 implemented; P9.4 pending
+Status: P9.1/P9.2a/P9.2b/P9.3/P9.4 implemented
 
 ## Summary
 
@@ -556,6 +556,15 @@ provider borrow -> render -> provider release -> delivery -> debug consume
 Only after P9.1-P9.3 should we wire an RL observation product. It should use the
 existing `ObsSchema` contract and published/sensing data, not optical-render
 internals.
+
+Implementation note: P9.4 is now represented by
+`tools.optical_pipeline_lab.observation_products.PublishedStateObservationProduct`.
+It consumes `SimulationFrameTick.published_frame`, builds a
+`sensing.StateSampleView`, and adapts that host-side published view into the
+existing `ObsSchema`/`ObsManager` path. The product requires explicit actuated
+joint indices for joint fields and requires a published `contact_mask` when the
+schema includes `contact_mask`; it does not infer contact state from private
+physics scratch or optical-render internals.
 
 ## Open Questions For Review
 

@@ -17,6 +17,7 @@ import tools.optical_pipeline_lab.frame_products as frame_products
 import tools.optical_pipeline_lab.frame_runtime as frame_runtime
 import tools.optical_pipeline_lab.frame_tick as frame_tick
 import tools.optical_pipeline_lab.go2_backend as go2_backend
+import tools.optical_pipeline_lab.observation_products as observation_products
 import tools.optical_pipeline_lab.physics_runtime as physics_runtime
 import tools.optical_pipeline_lab.physics_source as physics_source
 import tools.optical_pipeline_lab.render_session as render_session
@@ -33,7 +34,9 @@ from optics.render_api import RenderBackend as RuntimeRenderBackend
 from optics.render_api import RenderFrameContext as RuntimeRenderFrameContext
 from optics.render_api import RenderResult as RuntimeRenderResult
 from optics.render_api import WritePolicy as RuntimeWritePolicy
-from physics.publish import GpuPublishedFrame
+from physics.publish import CpuPublishedFrame, GpuPublishedFrame
+from physics.spatial import SpatialTransform
+from rl_env.obs import locomotion_obs_schema
 from tools.optical_pipeline_lab import (
     DEFAULT_RENDER_HEIGHT,
     DEFAULT_RENDER_WIDTH,
@@ -992,6 +995,116 @@ def test_multi_product_frame_runner_rejects_duplicate_product_names():
 
     with pytest.raises(ValueError, match="product_name values must be unique"):
         frame_products.MultiProductFrameRunner(products=(product, product))
+
+
+def test_published_state_observation_product_builds_obs_schema_vector_from_tick():
+    schema = locomotion_obs_schema(
+        num_actuated_joints=2,
+        num_contact_bodies=2,
+        include_contact_mask=True,
+    )
+    product = observation_products.PublishedStateObservationProduct(
+        engine=object(),
+        schema=schema,
+        root_body_idx=0,
+        actuated_q_indices=np.array([7, 8], dtype=np.intp),
+        actuated_v_indices=np.array([6, 7], dtype=np.intp),
+        contact_body_names=("left_foot", "right_foot"),
+    )
+    published_frame = CpuPublishedFrame(
+        frame_id=130,
+        sim_time=13.0,
+        step_index=130,
+        env_mask=None,
+        q=np.array([1.0, 0.0, 0.0, 0.0, 0.1, 0.2, 0.3, 0.5, -0.5]),
+        qdot=np.array([0.0, 0.0, 0.0, 0.1, 0.2, 0.3, 1.5, -1.5]),
+        X_world=[SpatialTransform.identity()],
+        v_bodies=np.array([[1.0, 2.0, 3.0, 0.4, 0.5, 0.6]]),
+        contact_count=1,
+        contacts=object(),
+        telemetry=None,
+        contact_mask=np.array([1, 0], dtype=np.int32),
+    )
+    tick = frame_tick.SimulationFrameTick(
+        frame_index=3,
+        env_idx=0,
+        frame_id=130,
+        sim_time=13.0,
+        published_frame=published_frame,
+        metadata={"runtime_owner": "physics_lab"},
+    )
+
+    assert product.begin_run() is None
+    result = product.consume(tick)
+    observation = result.payload["observation"]
+
+    assert result.product_name == "observation"
+    assert result.metadata == {
+        "schema_names": schema.names,
+        "schema_dim": schema.dim,
+    }
+    assert observation.shape == (schema.dim,)
+    np.testing.assert_allclose(
+        observation.numpy(),
+        [
+            1.0,
+            2.0,
+            3.0,
+            0.4,
+            0.5,
+            0.6,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.5,
+            -0.5,
+            1.5,
+            -1.5,
+            1.0,
+            0.0,
+        ],
+    )
+    assert product.end_run() == (result,)
+
+
+def test_published_state_observation_product_requires_published_contact_mask():
+    schema = locomotion_obs_schema(
+        num_actuated_joints=0,
+        num_contact_bodies=1,
+        include_contact_mask=True,
+    )
+    product = observation_products.PublishedStateObservationProduct(
+        engine=object(),
+        schema=schema,
+        actuated_q_indices=np.array([], dtype=np.intp),
+        actuated_v_indices=np.array([], dtype=np.intp),
+        contact_body_names=("foot",),
+    )
+    published_frame = CpuPublishedFrame(
+        frame_id=131,
+        sim_time=13.1,
+        step_index=131,
+        env_mask=None,
+        q=np.array([1.0, 0.0, 0.0, 0.0]),
+        qdot=np.array([], dtype=np.float64),
+        X_world=[SpatialTransform.identity()],
+        v_bodies=np.array([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]),
+        contact_count=1,
+        contacts=[("foot", object())],
+        telemetry=None,
+        contact_mask=None,
+    )
+    tick = frame_tick.SimulationFrameTick(
+        frame_index=4,
+        env_idx=0,
+        frame_id=131,
+        sim_time=13.1,
+        published_frame=published_frame,
+    )
+
+    with pytest.raises(ValueError, match="missing contact_mask"):
+        product.consume(tick)
 
 
 def test_create_physics_body_triangle_lab_runtime_owns_reset_and_step(
