@@ -2,7 +2,7 @@
 
 Author: Codex
 Date: 2026-05-27
-Status: P9.1/P9.2a/P9.2b implemented; P9.3 pending
+Status: P9.1/P9.2a/P9.2b/P9.3 implemented; P9.4 pending
 
 ## Summary
 
@@ -539,6 +539,17 @@ tick
 
 The debug product already exists from P9.2a; P9.3 proves it can run next to the
 video product while preserving the video borrow-before-delivery guarantee.
+
+Implementation note: P9.3 is now represented by the optional
+`extra_products` hook on `run_physics_stepped_video_product_scenario(...)`.
+The default video path remains unchanged, while tests pass a
+`DebugFrameProduct` alongside `PhysicsVideoFrameProduct` and verify both
+products consume the same `PhysicsLabScenarioRuntime.step_tick(...)` stream.
+The test also preserves the video ordering guarantee:
+
+```text
+provider borrow -> render -> provider release -> delivery -> debug consume
+```
 
 ### P9.4: Design Observation Product Separately
 

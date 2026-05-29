@@ -3919,6 +3919,149 @@ def test_physics_video_product_runner_steps_tick_before_provider_borrow(
     ]
 
 
+def test_physics_video_product_runner_can_share_tick_stream_with_debug_product(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[object, ...]] = []
+    render_runtime = SimpleNamespace(pipeline=SimpleNamespace(session=SimpleNamespace(scene=object())))
+
+    def fake_create_runtime(*args, **kwargs):
+        calls.append(("create_runtime", kwargs["consumer_id"], kwargs["metadata"]["runtime_owner"]))
+        return render_runtime
+
+    class FakeProvider:
+        def begin_frame(self, frame_index: int, *, published_frame=None, env_idx: int = 0):
+            calls.append(("begin_frame", frame_index, published_frame.frame_id, env_idx))
+
+            class Scope:
+                def __enter__(self_inner):
+                    calls.append(("enter", frame_index))
+                    return SimpleNamespace(
+                        frame_id=published_frame.frame_id,
+                        sim_time=published_frame.sim_time,
+                        env_idx=env_idx,
+                    )
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    calls.append(("exit", frame_index, exc_type))
+
+            return Scope()
+
+    class FakeDelivery:
+        def complete_available(self, *, latest_rendered_frame_index=None):
+            calls.append(("complete_available", latest_rendered_frame_index))
+            return []
+
+        def submit(self, rendered, *, frame_start):
+            calls.append(("submit", rendered.frame_index, frame_start >= 0.0))
+            return None
+
+        def flush(self):
+            calls.append(("flush",))
+            return []
+
+    class RecordingDebugProduct(frame_products.DebugFrameProduct):
+        def consume(self, tick):
+            calls.append(("debug", tick.frame_index, tick.frame_id, tick.sim_time, dict(tick.metadata)))
+            return super().consume(tick)
+
+    def fake_provider(runtime_arg, *, delivery_mode):
+        calls.append(("provider_factory", runtime_arg is render_runtime, delivery_mode))
+        return FakeProvider()
+
+    def fake_delivery_create(**kwargs):
+        calls.append(("delivery_create", kwargs["delivery_policy_label"]))
+        return FakeDelivery()
+
+    def fake_build_plan(
+        scene, args, frame_index, ray_cache, *, build_video_camera, frame_identity, geometry_mode
+    ):
+        calls.append(("plan", frame_index, frame_identity.frame_id, frame_identity.sim_time, geometry_mode))
+        return SimpleNamespace(request=object(), camera=object())
+
+    def fake_render_from_context(frame_context, plan, *, frame_index):
+        calls.append(("render", frame_context.frame_id, frame_index))
+        return SimpleNamespace(frame_index=frame_index)
+
+    def step_physics_frame(frame_index: int):
+        calls.append(("step", frame_index))
+        return SimpleNamespace(frame_id=120 + frame_index, sim_time=12.0 + frame_index)
+
+    scenario_runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=119, sim_time=11.9),
+        step_frame_fn=step_physics_frame,
+        metadata={"runtime_owner": "physics_lab_test", "product_set": "video_debug"},
+    )
+    debug_product = RecordingDebugProduct(product_name="debug", metadata_keys=None)
+
+    monkeypatch.setattr(lab_runner, "create_physics_render_runtime_for_config", fake_create_runtime)
+    monkeypatch.setattr(frame_contexts, "physics_frame_context_provider", fake_provider)
+    monkeypatch.setattr(lab_runner.VideoDeliveryFacade, "create", staticmethod(fake_delivery_create))
+    monkeypatch.setattr(lab_runner, "build_video_render_plan", fake_build_plan)
+    monkeypatch.setattr(lab_runner, "render_video_frame_from_context", fake_render_from_context)
+
+    rows = run_physics_stepped_video_product_scenario(
+        get_preset("physics_body_triangle_video_smoke"),
+        LabRunOptions(out=tmp_path / "physics", frames=2, progress_every=0),
+        scenario_runtime=scenario_runtime,
+        build_video_camera=lambda scene, args, frame_index: object(),
+        synchronize_event=lambda event: None,
+        pack_rgb8=lambda result: result,
+        consumer_id="product_consumer",
+        extra_products=(debug_product,),
+    )
+
+    assert isinstance(rows, FrameTimingRecorder)
+    assert [record.frame_index for record in debug_product.records] == [0, 1]
+    assert [record.frame_id for record in debug_product.records] == [120, 121]
+    assert [record.sim_time for record in debug_product.records] == [12.0, 13.0]
+    assert debug_product.records[0].metadata == {
+        "runtime_owner": "physics_lab_test",
+        "product_set": "video_debug",
+    }
+    assert calls == [
+        ("create_runtime", "product_consumer", "physics_lab_test"),
+        ("provider_factory", True, "sync"),
+        ("delivery_create", "sync"),
+        ("step", 0),
+        ("begin_frame", 0, 120, 0),
+        ("enter", 0),
+        ("plan", 0, 120, 12.0, "dynamic_rigid"),
+        ("render", 120, 0),
+        ("exit", 0, None),
+        ("complete_available", 0),
+        ("submit", 0, True),
+        ("complete_available", 0),
+        (
+            "debug",
+            0,
+            120,
+            12.0,
+            {"runtime_owner": "physics_lab_test", "product_set": "video_debug"},
+        ),
+        ("step", 1),
+        ("begin_frame", 1, 121, 0),
+        ("enter", 1),
+        ("plan", 1, 121, 13.0, "dynamic_rigid"),
+        ("render", 121, 1),
+        ("exit", 1, None),
+        ("complete_available", 1),
+        ("submit", 1, True),
+        ("complete_available", 1),
+        (
+            "debug",
+            1,
+            121,
+            13.0,
+            {"runtime_owner": "physics_lab_test", "product_set": "video_debug"},
+        ),
+        ("flush",),
+    ]
+
+
 def test_physics_video_product_runner_stepper_exception_stops_before_provider_borrow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

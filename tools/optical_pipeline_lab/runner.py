@@ -13,7 +13,7 @@ from pathlib import Path
 from sensing import OpticalPinholeCameraSpec
 
 from .delivery import VideoDeliveryFacade, VideoDeliveryRunConfig, VideoFrameTimingRowBuilder
-from .frame_products import FrameProductResult, MultiProductFrameRunner
+from .frame_products import FrameProduct, FrameProductResult, MultiProductFrameRunner
 from .frame_runtime import FrameWorkflowRunner
 from .frame_tick import SimulationFrameTick
 from .render_session import OpticalLabRenderOptions
@@ -405,8 +405,14 @@ def run_physics_stepped_video_product_scenario(
     synchronize_event: Callable[[object], None],
     pack_rgb8: Callable[[object], object],
     consumer_id: str = "optical_lab_physics_video_product",
+    extra_products: tuple[FrameProduct, ...] = (),
 ) -> FrameTimingRecorder:
-    """Run physics-owned video through the P9 tick/product runner path."""
+    """Run physics-owned video through the P9 tick/product runner path.
+
+    ``extra_products`` consume the same ticks after the video product. This
+    keeps the default video path narrow while letting P9 prove real
+    multi-product orchestration.
+    """
 
     validate_physics_video_product_run(config, options)
     options.out.mkdir(parents=True, exist_ok=True)
@@ -472,6 +478,7 @@ def run_physics_stepped_video_product_scenario(
                 row_builder=row_builder,
                 build_video_camera=build_video_camera,
             ),
+            *extra_products,
         )
     )
 
