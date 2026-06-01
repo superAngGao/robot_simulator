@@ -223,16 +223,19 @@ clock_owner: runner | external_physics_runtime
 But that should be introduced as a schema/metadata migration after the product
 contract is clearer.
 
-Implementation note: after P9.4, the first compatibility migration adds
-`ClockOwnerKind` and `OpticalLabScenarioConfig.clock_owner`. Existing
-`FrameSourceKind` values are intentionally preserved, including
-`physics_runtime`, so older validation gates and serialized scenario consumers
-continue to work. Physics-runtime presets and timing CSV defaults now also
-write:
+Implementation note: after P9.4, the compatibility migration adds
+`ClockOwnerKind`, `OpticalLabScenarioConfig.clock_owner`, and
+`FrameSourceKind.PHYSICS_PUBLISHED_FRAME`. New physics-runtime presets and
+timing CSV defaults now write:
 
 ```text
+frame_source: physics_published_frame
 clock_owner: external_physics_runtime
 ```
+
+The older `FrameSourceKind.PHYSICS_RUNTIME` spelling is intentionally preserved
+as a legacy accepted value for explicit physics helper paths while serialized
+new-run metadata moves to the split source/clock vocabulary.
 
 Runner-clocked static and synthetic scenarios write:
 
@@ -240,8 +243,8 @@ Runner-clocked static and synthetic scenarios write:
 clock_owner: runner
 ```
 
-This separates clock ownership in config/metadata before any later
-`frame_source` value migration to `physics_published_frame`.
+This completes the first source/clock metadata split without introducing a
+user-facing runtime command.
 
 ## Relationship To RL Observations
 
@@ -462,6 +465,11 @@ The two entries should have separate validation functions so callers cannot
 accidentally route a product-runner scenario through the older video-only
 helper just because both use `FrameSourceKind.PHYSICS_RUNTIME`.
 
+Later compatibility update: new-run metadata now uses
+`FrameSourceKind.PHYSICS_PUBLISHED_FRAME` plus
+`ClockOwnerKind.EXTERNAL_PHYSICS_RUNTIME`; the older `PHYSICS_RUNTIME` spelling
+remains a legacy accepted source for explicit physics helper paths.
+
 Tentative shape:
 
 ```text
@@ -620,8 +628,8 @@ physics scratch or optical-render internals.
    Proposed answer: yes. The enum/schema split should wait until P9.2a/P9.2b
    prove which metadata needs to be serialized. P9.2b should still introduce a
    distinct product-runner validation path so the old video-only physics helper
-   and new product-runner entry cannot be confused while both still use
-   `FrameSourceKind.PHYSICS_RUNTIME`.
+   and new product-runner entry cannot be confused while both use the same
+   physics-published-frame source vocabulary.
 
 ## Claude Review Follow-up
 

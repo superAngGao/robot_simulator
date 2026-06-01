@@ -20,6 +20,7 @@ from .scenarios import (
     ReadbackPayload,
     RenderBackend,
     WritePolicy,
+    is_physics_published_frame_source,
 )
 from .timing import FrameTimingRecorder, TimingRecorder, percentile
 
@@ -42,5 +43,6 @@ __all__ = [
     "RenderBackend",
     "TimingRecorder",
     "WritePolicy",
+    "is_physics_published_frame_source",
     "percentile",
 ]

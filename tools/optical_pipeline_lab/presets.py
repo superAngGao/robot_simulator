@@ -65,7 +65,7 @@ def physics_body_triangle_video_smoke_preset() -> OpticalLabScenarioConfig:
         scenario_name="physics_body_triangle_video_smoke",
         scenario_family=OpticalLabScenarioFamily.VIDEO_ORDERED_EXPORT,
         scene_preset="synthetic_body_triangle",
-        frame_source=FrameSourceKind.PHYSICS_RUNTIME,
+        frame_source=FrameSourceKind.PHYSICS_PUBLISHED_FRAME,
         clock_owner=ClockOwnerKind.EXTERNAL_PHYSICS_RUNTIME,
         geometry_mode=GeometryMode.DYNAMIC_RIGID,
         camera_mode="fixed_view",

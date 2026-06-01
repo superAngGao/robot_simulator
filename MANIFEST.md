@@ -172,7 +172,8 @@ published frame。因此 physics 时间推进仍由物理侧所有，
 GPU smoke 覆盖 `GpuEngine.step()` → `OpticalLabRenderPipeline.begin_frame(...)`
 → dynamic snapshot/BVH → direct-light ray render、GPU pinhole camera raygen render，
 并已有 physics video runner smoke 验证 provider/runtime/delivery/timing
-串接与 `frame_source=physics_runtime` CSV metadata；stepped runner smoke 验证
+串接与 `frame_source=physics_published_frame`,
+`clock_owner=external_physics_runtime` CSV metadata；stepped runner smoke 验证
 `PhysicsPublishedFrameStepper` 真实推进 `GpuEngine.step(...)` 后，rendered
 `range_m` 随当前 physics body height 改变而不是读取 stale base frame；
 runtime-owner GPU smoke 验证 `PhysicsLabScenarioRuntime` context manager 可驱动

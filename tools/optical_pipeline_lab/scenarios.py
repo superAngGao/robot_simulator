@@ -29,6 +29,8 @@ class GeometryMode(Enum):
 class FrameSourceKind(Enum):
     STATIC_ASSET_BUILDER = "static_asset_builder"
     SYNTHETIC_FRAME_SEQUENCE = "synthetic_frame_sequence"
+    PHYSICS_PUBLISHED_FRAME = "physics_published_frame"
+    # Legacy spelling kept while scenario metadata migrates source/clock fields.
     PHYSICS_RUNTIME = "physics_runtime"
 
 
@@ -82,6 +84,13 @@ class WritePolicy(Enum):
     SENSOR_PUBLISH = "sensor_publish"
 
 
+def is_physics_published_frame_source(frame_source: FrameSourceKind) -> bool:
+    return frame_source in (
+        FrameSourceKind.PHYSICS_PUBLISHED_FRAME,
+        FrameSourceKind.PHYSICS_RUNTIME,
+    )
+
+
 @dataclass(frozen=True)
 class OpticalLabScenarioConfig:
     """Structured lab config for one optical pipeline experiment."""
@@ -122,9 +131,9 @@ class OpticalLabScenarioConfig:
                 f"clock_owner={self.clock_owner.value!r} is reserved outside "
                 "the physics_body_triangle_video_smoke path"
             )
-        if self.frame_source is FrameSourceKind.PHYSICS_RUNTIME:
+        if is_physics_published_frame_source(self.frame_source):
             raise NotImplementedError(
-                "frame_source='physics_runtime' is reserved outside "
+                f"frame_source={self.frame_source.value!r} is reserved outside "
                 "the physics_body_triangle_video_smoke path"
             )
         if self.frame_source is FrameSourceKind.SYNTHETIC_FRAME_SEQUENCE:
@@ -183,7 +192,7 @@ class OpticalLabScenarioConfig:
     def _is_implemented_physics_runtime_smoke(self) -> bool:
         return (
             self.scene_preset == "synthetic_body_triangle"
-            and self.frame_source is FrameSourceKind.PHYSICS_RUNTIME
+            and is_physics_published_frame_source(self.frame_source)
             and self.clock_owner is ClockOwnerKind.EXTERNAL_PHYSICS_RUNTIME
             and self.geometry_mode is GeometryMode.DYNAMIC_RIGID
             and self.camera_mode == "fixed_view"

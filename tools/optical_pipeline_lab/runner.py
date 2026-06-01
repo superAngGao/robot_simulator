@@ -20,10 +20,10 @@ from .render_session import OpticalLabRenderOptions
 from .scenarios import (
     AccelBackend,
     ClockOwnerKind,
-    FrameSourceKind,
     OpticalLabScenarioConfig,
     ReadbackPayload,
     WritePolicy,
+    is_physics_published_frame_source,
 )
 from .timing import FrameTimingRecorder, TimingRecorder
 from .video_loop import (
@@ -86,7 +86,7 @@ def can_run_scenario(config: OpticalLabScenarioConfig) -> bool:
 def validate_run_scenario_supported(config: OpticalLabScenarioConfig) -> None:
     """Validate that ``run_scenario(...)`` owns enough runtime state."""
     validate_scenario(config)
-    if config.frame_source is FrameSourceKind.PHYSICS_RUNTIME:
+    if is_physics_published_frame_source(config.frame_source):
         raise RunScenarioUnsupportedError(
             "run_scenario(...) cannot construct a physics engine; use "
             "run_physics_video_scenario(...) or run_physics_stepped_video_scenario(...) "
@@ -544,10 +544,10 @@ def build_menagerie_example_args(
 ) -> argparse.Namespace:
     """Translate a lab scenario into the transitional Menagerie example args."""
     validate_run(config, options)
-    if config.frame_source is FrameSourceKind.PHYSICS_RUNTIME:
+    if is_physics_published_frame_source(config.frame_source):
         raise NotImplementedError(
             "build_menagerie_example_args(...) is for static/synthetic transitional paths; "
-            "use build_physics_video_args(...) for frame_source='physics_runtime'"
+            "use build_physics_video_args(...) for frame_source='physics_published_frame'"
         )
     render_options = render_options_for_config(config, options)
     return argparse.Namespace(
@@ -630,8 +630,10 @@ def create_physics_render_runtime_for_config(
     delegates to physics_source without enabling run_scenario's physics loop.
     """
 
-    if config.frame_source is not FrameSourceKind.PHYSICS_RUNTIME:
-        raise ValueError("create_physics_render_runtime_for_config requires frame_source='physics_runtime'")
+    if not is_physics_published_frame_source(config.frame_source):
+        raise ValueError(
+            "create_physics_render_runtime_for_config requires frame_source='physics_published_frame'"
+        )
     if config.clock_owner is not ClockOwnerKind.EXTERNAL_PHYSICS_RUNTIME:
         raise ValueError(
             "create_physics_render_runtime_for_config requires clock_owner='external_physics_runtime'"
@@ -724,8 +726,8 @@ def validate_physics_video_run(config: OpticalLabScenarioConfig, options: LabRun
     """Validate the explicit physics-runtime video runner path."""
 
     validate_run(config, options)
-    if config.frame_source is not FrameSourceKind.PHYSICS_RUNTIME:
-        raise ValueError("run_physics_video_scenario requires frame_source='physics_runtime'")
+    if not is_physics_published_frame_source(config.frame_source):
+        raise ValueError("run_physics_video_scenario requires frame_source='physics_published_frame'")
     if config.clock_owner is not ClockOwnerKind.EXTERNAL_PHYSICS_RUNTIME:
         raise ValueError("run_physics_video_scenario requires clock_owner='external_physics_runtime'")
     if config.scene_preset != "synthetic_body_triangle":
@@ -747,8 +749,10 @@ def validate_physics_video_product_run(config: OpticalLabScenarioConfig, options
     """Validate the P9 tick/product physics-runtime video path."""
 
     validate_run(config, options)
-    if config.frame_source is not FrameSourceKind.PHYSICS_RUNTIME:
-        raise ValueError("run_physics_stepped_video_product_scenario requires frame_source='physics_runtime'")
+    if not is_physics_published_frame_source(config.frame_source):
+        raise ValueError(
+            "run_physics_stepped_video_product_scenario requires frame_source='physics_published_frame'"
+        )
     if config.clock_owner is not ClockOwnerKind.EXTERNAL_PHYSICS_RUNTIME:
         raise ValueError(
             "run_physics_stepped_video_product_scenario requires clock_owner='external_physics_runtime'"

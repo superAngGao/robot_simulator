@@ -2,6 +2,7 @@ import csv
 import json
 import math
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1216,9 +1217,9 @@ def test_lab_runner_creates_physics_render_runtime_from_config(
         fake_create_physics_render_runtime,
     )
     config = OpticalLabScenarioConfig(
-        scenario_name="physics_runtime_reserved",
+        scenario_name="physics_published_frame_smoke",
         scenario_family=OpticalLabScenarioFamily.SENSOR_ORDERED,
-        frame_source=FrameSourceKind.PHYSICS_RUNTIME,
+        frame_source=FrameSourceKind.PHYSICS_PUBLISHED_FRAME,
         clock_owner=ClockOwnerKind.EXTERNAL_PHYSICS_RUNTIME,
         geometry_mode=GeometryMode.DYNAMIC_RIGID,
         device="cuda:physics",
@@ -1267,7 +1268,7 @@ def test_lab_runner_creates_physics_render_runtime_from_config(
 def test_lab_runner_physics_runtime_helper_rejects_non_physics_frame_source(tmp_path: Path):
     config = get_preset("go2_video_ordered_static")
 
-    with pytest.raises(ValueError, match="physics_runtime"):
+    with pytest.raises(ValueError, match="physics_published_frame"):
         create_physics_render_runtime_for_config(
             config,
             LabRunOptions(out=tmp_path / "go2"),
@@ -3176,12 +3177,21 @@ def test_physics_body_triangle_video_smoke_preset_is_implemented_by_explicit_lab
 
     assert config.scenario_family is OpticalLabScenarioFamily.VIDEO_ORDERED_EXPORT
     assert config.scene_preset == "synthetic_body_triangle"
-    assert config.frame_source is FrameSourceKind.PHYSICS_RUNTIME
+    assert config.frame_source is FrameSourceKind.PHYSICS_PUBLISHED_FRAME
     assert config.clock_owner is ClockOwnerKind.EXTERNAL_PHYSICS_RUNTIME
     assert config.geometry_mode is GeometryMode.DYNAMIC_RIGID
     assert config.accel_policy is AccelPolicy.REFIT_EACH_FRAME
     assert config.camera_mode == "fixed_view"
     config.validate_implemented()
+
+
+def test_legacy_physics_runtime_frame_source_still_validates_for_explicit_lab_path(tmp_path: Path):
+    config = replace(
+        get_preset("physics_body_triangle_video_smoke"),
+        frame_source=FrameSourceKind.PHYSICS_RUNTIME,
+    )
+
+    validate_physics_video_run(config, LabRunOptions(out=tmp_path / "physics"))
 
 
 def test_run_scenario_support_predicate_separates_lab_support_from_runner_ownership(tmp_path: Path):
@@ -3230,9 +3240,9 @@ def test_default_render_resolution_is_1080p():
 
 def test_physics_runtime_frame_source_is_reserved_outside_explicit_smoke_path():
     config = OpticalLabScenarioConfig(
-        scenario_name="physics_runtime_reserved",
+        scenario_name="physics_published_frame_reserved",
         scenario_family=OpticalLabScenarioFamily.SENSOR_ORDERED,
-        frame_source=FrameSourceKind.PHYSICS_RUNTIME,
+        frame_source=FrameSourceKind.PHYSICS_PUBLISHED_FRAME,
         clock_owner=ClockOwnerKind.EXTERNAL_PHYSICS_RUNTIME,
         geometry_mode=GeometryMode.DYNAMIC_RIGID,
     )
@@ -3531,9 +3541,9 @@ def test_lab_runner_builds_render_options_from_dynamic_smoke_config(tmp_path: Pa
 
 def test_lab_runner_render_options_mapping_does_not_enable_reserved_frame_source(tmp_path: Path):
     config = OpticalLabScenarioConfig(
-        scenario_name="physics_runtime_reserved",
+        scenario_name="physics_published_frame_reserved",
         scenario_family=OpticalLabScenarioFamily.SENSOR_ORDERED,
-        frame_source=FrameSourceKind.PHYSICS_RUNTIME,
+        frame_source=FrameSourceKind.PHYSICS_PUBLISHED_FRAME,
         geometry_mode=GeometryMode.DYNAMIC_RIGID,
         device="cuda:physics",
         shadows=False,
@@ -3545,7 +3555,7 @@ def test_lab_runner_render_options_mapping_does_not_enable_reserved_frame_source
     assert render_options.device == "cuda:physics"
     assert render_options.bvh_backend == "cuda_lbvh"
     assert render_options.shadows is False
-    with pytest.raises(NotImplementedError, match="physics_runtime"):
+    with pytest.raises(NotImplementedError, match="physics_published_frame"):
         validate_run(config, options)
 
 
@@ -3628,7 +3638,7 @@ def test_lab_runner_translates_physics_smoke_preset_to_video_args(tmp_path: Path
     assert args.video_readback == "full"
     assert args.frame_timing_csv == str(tmp_path / "physics" / "frame_timing.csv")
     assert args.lab_frame_defaults["scenario_name"] == "physics_body_triangle_video_smoke"
-    assert args.lab_frame_defaults["frame_source"] == "physics_runtime"
+    assert args.lab_frame_defaults["frame_source"] == "physics_published_frame"
     assert args.lab_frame_defaults["clock_owner"] == "external_physics_runtime"
     assert args.lab_frame_defaults["geometry_mode"] == "dynamic_rigid"
     assert args.lab_frame_defaults["readback_payload"] == "full"
