@@ -1,7 +1,7 @@
 # Robot Simulator — Project Manifest
 
 > 面向具身智能研究的多物理仿真平台——多物理统一耦合、GPU 原生、渲染与合成数据生成、从第一性原理出发的 API 设计。
-> Last updated: 2026-05-20 (Q54 frame workflow runner)
+> Last updated: 2026-06-01 (Q54 P9 multi-product runtime)
 
 ## 一句话
 
@@ -223,6 +223,17 @@ runtime-owner GPU smoke 验证 `PhysicsLabScenarioRuntime` context manager 可�
 | `tools/optical_pipeline_lab/render_session.py` | OpticalLabRenderSource / Options / Workspace / PreparedFrame / Session / FrameContext / Pipeline lab render foundation |
 | `tools/optical_pipeline_lab/video_loop.py` | Generic Optical Pipeline Lab video plan/render-context/delivery helpers parameterized by camera builder |
 | `tools/optical_pipeline_lab/rgb_pack.py` | Optical Pipeline Lab GPU RGB8 preview packing helper |
+| `tools/optical_pipeline_lab/frame_tick.py` | Shared `SimulationFrameTick` contract for multi-product lab workflows |
+| `tools/optical_pipeline_lab/frame_products.py` | `FrameProductResult` + product protocol contracts for tick-based workflows |
+| `tools/optical_pipeline_lab/observation_products.py` | `PublishedStateObservationProduct` — published frame → RL observation vector (P9.4) |
+| `tools/optical_pipeline_lab/physics_runtime.py` | Explicit physics runtime owners for Optical Pipeline Lab scenarios |
+| `tools/optical_pipeline_lab/delivery.py` | Video delivery helpers for Optical Pipeline Lab experiments |
+| `tools/optical_pipeline_lab/matrix.py` | Matrix suite runner for Optical Pipeline Lab baselines |
+| `tools/optical_pipeline_lab/presets.py` | Preset registry for Optical Pipeline Lab scenarios |
+| `tools/optical_pipeline_lab/reports.py` | Report formatting helpers for Optical Pipeline Lab output |
+| `tools/optical_pipeline_lab/runner.py` | Runner entry points for the Optical Pipeline Lab |
+| `tools/optical_pipeline_lab/scenarios.py` | Scenario configuration vocabulary for the Optical Pipeline Lab |
+| `tools/optical_pipeline_lab/timing.py` | Timing and CSV helpers for optical pipeline lab runs |
 | `benchmarks/bench_optical_device_scene.py` | L5C.1c AABB/BVH decision benchmark harness |
 | `benchmarks/robot_optical_scene.py` | Shared robot-like optical scene generator for benchmarks/examples |
 | `rendering/render_scene.py` | Backend-agnostic 场景描述 |
