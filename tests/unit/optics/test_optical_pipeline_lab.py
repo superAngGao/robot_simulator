@@ -41,6 +41,7 @@ from tools.optical_pipeline_lab import (
     DEFAULT_RENDER_HEIGHT,
     DEFAULT_RENDER_WIDTH,
     AccelPolicy,
+    ClockOwnerKind,
     DeliveryPolicy,
     FrameSourceKind,
     FrameTimingRecorder,
@@ -152,6 +153,7 @@ def test_frame_timing_recorder_normalizes_lab_schema(tmp_path: Path):
         reader = csv.DictReader(f)
         written = list(reader)
     assert "delivery_policy" in reader.fieldnames
+    assert "clock_owner" in reader.fieldnames
     assert "overlap_ratio" in reader.fieldnames
     assert "pack_rgb8_ms" in reader.fieldnames
     assert "shadow_traversal_ray_count" in reader.fieldnames
@@ -1217,6 +1219,7 @@ def test_lab_runner_creates_physics_render_runtime_from_config(
         scenario_name="physics_runtime_reserved",
         scenario_family=OpticalLabScenarioFamily.SENSOR_ORDERED,
         frame_source=FrameSourceKind.PHYSICS_RUNTIME,
+        clock_owner=ClockOwnerKind.EXTERNAL_PHYSICS_RUNTIME,
         geometry_mode=GeometryMode.DYNAMIC_RIGID,
         device="cuda:physics",
         shadows=False,
@@ -3147,6 +3150,7 @@ def test_go2_video_ordered_static_preset_is_currently_implemented():
 
     assert config.scenario_family is OpticalLabScenarioFamily.VIDEO_ORDERED_EXPORT
     assert config.frame_source is FrameSourceKind.STATIC_ASSET_BUILDER
+    assert config.clock_owner is ClockOwnerKind.RUNNER
     assert config.geometry_mode is GeometryMode.STATIC
     assert config.delivery_policy is DeliveryPolicy.SYNC
     assert config.width == DEFAULT_RENDER_WIDTH
@@ -3160,6 +3164,7 @@ def test_synthetic_dynamic_smoke_preset_is_currently_implemented():
     assert config.scenario_family is OpticalLabScenarioFamily.VIDEO_ORDERED_EXPORT
     assert config.scene_preset == "synthetic_body_triangle"
     assert config.frame_source is FrameSourceKind.SYNTHETIC_FRAME_SEQUENCE
+    assert config.clock_owner is ClockOwnerKind.RUNNER
     assert config.geometry_mode is GeometryMode.DYNAMIC_RIGID
     assert config.accel_policy is AccelPolicy.REFIT_EACH_FRAME
     assert config.readback_payload is ReadbackPayload.RGB
@@ -3172,6 +3177,7 @@ def test_physics_body_triangle_video_smoke_preset_is_implemented_by_explicit_lab
     assert config.scenario_family is OpticalLabScenarioFamily.VIDEO_ORDERED_EXPORT
     assert config.scene_preset == "synthetic_body_triangle"
     assert config.frame_source is FrameSourceKind.PHYSICS_RUNTIME
+    assert config.clock_owner is ClockOwnerKind.EXTERNAL_PHYSICS_RUNTIME
     assert config.geometry_mode is GeometryMode.DYNAMIC_RIGID
     assert config.accel_policy is AccelPolicy.REFIT_EACH_FRAME
     assert config.camera_mode == "fixed_view"
@@ -3227,10 +3233,22 @@ def test_physics_runtime_frame_source_is_reserved_outside_explicit_smoke_path():
         scenario_name="physics_runtime_reserved",
         scenario_family=OpticalLabScenarioFamily.SENSOR_ORDERED,
         frame_source=FrameSourceKind.PHYSICS_RUNTIME,
+        clock_owner=ClockOwnerKind.EXTERNAL_PHYSICS_RUNTIME,
         geometry_mode=GeometryMode.DYNAMIC_RIGID,
     )
 
     with pytest.raises(NotImplementedError, match="reserved outside"):
+        config.validate_implemented()
+
+
+def test_external_physics_clock_owner_is_reserved_outside_physics_smoke_path():
+    config = OpticalLabScenarioConfig(
+        scenario_name="external_clock_reserved",
+        scenario_family=OpticalLabScenarioFamily.SENSOR_ORDERED,
+        clock_owner=ClockOwnerKind.EXTERNAL_PHYSICS_RUNTIME,
+    )
+
+    with pytest.raises(NotImplementedError, match="clock_owner"):
         config.validate_implemented()
 
 
@@ -3567,6 +3585,7 @@ def test_lab_runner_translates_go2_preset_to_menagerie_example_args(tmp_path: Pa
     assert args.lab_frame_defaults["scenario_name"] == "go2_video_ordered_static"
     assert args.lab_frame_defaults["device"] == "cuda:1"
     assert args.lab_frame_defaults["frame_source"] == "static_asset_builder"
+    assert args.lab_frame_defaults["clock_owner"] == "runner"
     assert args.lab_frame_defaults["readback_payload"] == "rgb"
 
 
@@ -3584,6 +3603,7 @@ def test_lab_runner_translates_dynamic_smoke_preset_to_video_args(tmp_path: Path
     assert args.no_shadows is True
     assert args.lab_frame_defaults["scenario_name"] == "synthetic_body_triangle_dynamic_smoke"
     assert args.lab_frame_defaults["frame_source"] == "synthetic_frame_sequence"
+    assert args.lab_frame_defaults["clock_owner"] == "runner"
     assert args.lab_frame_defaults["geometry_mode"] == "dynamic_rigid"
     assert args.lab_frame_defaults["accel_policy"] == "refit_each_frame"
 
@@ -3609,6 +3629,7 @@ def test_lab_runner_translates_physics_smoke_preset_to_video_args(tmp_path: Path
     assert args.frame_timing_csv == str(tmp_path / "physics" / "frame_timing.csv")
     assert args.lab_frame_defaults["scenario_name"] == "physics_body_triangle_video_smoke"
     assert args.lab_frame_defaults["frame_source"] == "physics_runtime"
+    assert args.lab_frame_defaults["clock_owner"] == "external_physics_runtime"
     assert args.lab_frame_defaults["geometry_mode"] == "dynamic_rigid"
     assert args.lab_frame_defaults["readback_payload"] == "full"
 
@@ -4364,6 +4385,7 @@ def test_lab_runner_writes_serialized_scenario_config(tmp_path: Path):
     assert payload["scenario"]["scenario_name"] == "go2_video_ordered_static"
     assert payload["scenario"]["accel_backend"] == "cuda_lbvh"
     assert payload["scenario"]["frame_source"] == "static_asset_builder"
+    assert payload["scenario"]["clock_owner"] == "runner"
     assert payload["scenario"]["readback_payload"] == "rgb"
     assert payload["run_options"]["out"] == str(tmp_path / "run")
     assert payload["run_options"]["frames"] == 2

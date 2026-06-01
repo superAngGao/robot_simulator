@@ -11,6 +11,7 @@ from .scenarios import (
     DEFAULT_RENDER_WIDTH,
     AccelBackend,
     AccelPolicy,
+    ClockOwnerKind,
     DeliveryPolicy,
     FrameSourceKind,
     GeometryMode,
@@ -25,6 +26,7 @@ from .timing import FrameTimingRecorder, TimingRecorder, percentile
 __all__ = [
     "AccelBackend",
     "AccelPolicy",
+    "ClockOwnerKind",
     "DEFAULT_RENDER_HEIGHT",
     "DEFAULT_RENDER_WIDTH",
     "DeliveryPolicy",

@@ -32,6 +32,11 @@ class FrameSourceKind(Enum):
     PHYSICS_RUNTIME = "physics_runtime"
 
 
+class ClockOwnerKind(Enum):
+    RUNNER = "runner"
+    EXTERNAL_PHYSICS_RUNTIME = "external_physics_runtime"
+
+
 class AccelBackend(Enum):
     CPU_BVH = "cpu_bvh"
     CUDA_LBVH = "cuda_lbvh"
@@ -88,6 +93,7 @@ class OpticalLabScenarioConfig:
     height: int = DEFAULT_RENDER_HEIGHT
     scene_preset: str = "go2_menagerie_static"
     frame_source: FrameSourceKind = FrameSourceKind.STATIC_ASSET_BUILDER
+    clock_owner: ClockOwnerKind = ClockOwnerKind.RUNNER
     geometry_mode: GeometryMode = GeometryMode.STATIC
     camera_mode: str = "camera_orbit"
     accel_backend: AccelBackend = AccelBackend.CUDA_LBVH
@@ -111,6 +117,11 @@ class OpticalLabScenarioConfig:
             return
         if self._is_implemented_physics_runtime_smoke():
             return
+        if self.clock_owner is not ClockOwnerKind.RUNNER:
+            raise NotImplementedError(
+                f"clock_owner={self.clock_owner.value!r} is reserved outside "
+                "the physics_body_triangle_video_smoke path"
+            )
         if self.frame_source is FrameSourceKind.PHYSICS_RUNTIME:
             raise NotImplementedError(
                 "frame_source='physics_runtime' is reserved outside "
@@ -155,6 +166,7 @@ class OpticalLabScenarioConfig:
         return (
             self.scene_preset == "synthetic_body_triangle"
             and self.frame_source is FrameSourceKind.SYNTHETIC_FRAME_SEQUENCE
+            and self.clock_owner is ClockOwnerKind.RUNNER
             and self.geometry_mode is GeometryMode.DYNAMIC_RIGID
             and self.accel_backend is AccelBackend.CPU_BVH
             and self.accel_policy is AccelPolicy.REFIT_EACH_FRAME
@@ -172,6 +184,7 @@ class OpticalLabScenarioConfig:
         return (
             self.scene_preset == "synthetic_body_triangle"
             and self.frame_source is FrameSourceKind.PHYSICS_RUNTIME
+            and self.clock_owner is ClockOwnerKind.EXTERNAL_PHYSICS_RUNTIME
             and self.geometry_mode is GeometryMode.DYNAMIC_RIGID
             and self.camera_mode == "fixed_view"
             and self.accel_backend is AccelBackend.CPU_BVH

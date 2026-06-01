@@ -51,6 +51,7 @@ FRAME_TIMING_FIELDNAMES = (
     "frame_index",
     "scenario_name",
     "frame_source",
+    "clock_owner",
     "device",
     "width",
     "height",

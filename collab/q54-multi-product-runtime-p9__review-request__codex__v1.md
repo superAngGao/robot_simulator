@@ -223,6 +223,26 @@ clock_owner: runner | external_physics_runtime
 But that should be introduced as a schema/metadata migration after the product
 contract is clearer.
 
+Implementation note: after P9.4, the first compatibility migration adds
+`ClockOwnerKind` and `OpticalLabScenarioConfig.clock_owner`. Existing
+`FrameSourceKind` values are intentionally preserved, including
+`physics_runtime`, so older validation gates and serialized scenario consumers
+continue to work. Physics-runtime presets and timing CSV defaults now also
+write:
+
+```text
+clock_owner: external_physics_runtime
+```
+
+Runner-clocked static and synthetic scenarios write:
+
+```text
+clock_owner: runner
+```
+
+This separates clock ownership in config/metadata before any later
+`frame_source` value migration to `physics_published_frame`.
+
 ## Relationship To RL Observations
 
 The existing RL observation schema work already defines stable observation field

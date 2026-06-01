@@ -45,6 +45,7 @@ from robot.model import RobotModel
 from sensing import OpticalPinholeCameraSpec, OpticalRaySensorSpec, build_pinhole_camera_rays
 from tools.optical_pipeline_lab import (
     AccelBackend,
+    ClockOwnerKind,
     FrameSourceKind,
     GeometryMode,
     OpticalLabScenarioConfig,
@@ -152,6 +153,7 @@ def _physics_runtime_smoke_config() -> OpticalLabScenarioConfig:
         scenario_family=OpticalLabScenarioFamily.SENSOR_ORDERED,
         scene_preset="synthetic_body_triangle",
         frame_source=FrameSourceKind.PHYSICS_RUNTIME,
+        clock_owner=ClockOwnerKind.EXTERNAL_PHYSICS_RUNTIME,
         geometry_mode=GeometryMode.DYNAMIC_RIGID,
         accel_backend=AccelBackend.CPU_BVH,
         shadows=False,
@@ -1271,6 +1273,7 @@ def test_optical_lab_physics_video_runner_writes_frame_source_csv(tmp_path: Path
     for row in csv_rows:
         assert row["scenario_name"] == "physics_body_triangle_video_smoke"
         assert row["frame_source"] == "physics_runtime"
+        assert row["clock_owner"] == "external_physics_runtime"
         assert row["scene_preset"] == "synthetic_body_triangle"
         assert row["width"] == "1"
         assert row["height"] == "1"
@@ -1401,6 +1404,7 @@ def test_optical_lab_physics_stepped_video_runner_advances_before_render(
     for row in csv_rows:
         assert row["scenario_name"] == "physics_body_triangle_video_smoke"
         assert row["frame_source"] == "physics_runtime"
+        assert row["clock_owner"] == "external_physics_runtime"
         assert row["scene_preset"] == "synthetic_body_triangle"
         assert row["geometry_mode"] == "dynamic_rigid"
         assert row["readback_mode"] == "full"
@@ -1513,6 +1517,7 @@ def test_optical_lab_physics_runtime_owner_drives_stepped_video_runner(
     for row in csv_rows:
         assert row["scenario_name"] == "physics_body_triangle_video_smoke"
         assert row["frame_source"] == "physics_runtime"
+        assert row["clock_owner"] == "external_physics_runtime"
         assert row["geometry_mode"] == "dynamic_rigid"
         assert row["readback_mode"] == "full"
 

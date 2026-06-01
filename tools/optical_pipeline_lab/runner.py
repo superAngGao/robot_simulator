@@ -19,6 +19,7 @@ from .frame_tick import SimulationFrameTick
 from .render_session import OpticalLabRenderOptions
 from .scenarios import (
     AccelBackend,
+    ClockOwnerKind,
     FrameSourceKind,
     OpticalLabScenarioConfig,
     ReadbackPayload,
@@ -90,6 +91,11 @@ def validate_run_scenario_supported(config: OpticalLabScenarioConfig) -> None:
             "run_scenario(...) cannot construct a physics engine; use "
             "run_physics_video_scenario(...) or run_physics_stepped_video_scenario(...) "
             "with explicit engine/runtime inputs"
+        )
+    if config.clock_owner is not ClockOwnerKind.RUNNER:
+        raise RunScenarioUnsupportedError(
+            "run_scenario(...) owns only runner-clocked scenarios; use explicit "
+            "runtime-owner helpers for clock_owner='external_physics_runtime'"
         )
     if config.scene_preset not in ("go2_menagerie_static", "synthetic_body_triangle"):
         raise RunScenarioUnsupportedError(
@@ -626,6 +632,10 @@ def create_physics_render_runtime_for_config(
 
     if config.frame_source is not FrameSourceKind.PHYSICS_RUNTIME:
         raise ValueError("create_physics_render_runtime_for_config requires frame_source='physics_runtime'")
+    if config.clock_owner is not ClockOwnerKind.EXTERNAL_PHYSICS_RUNTIME:
+        raise ValueError(
+            "create_physics_render_runtime_for_config requires clock_owner='external_physics_runtime'"
+        )
 
     from . import physics_source
 
@@ -664,6 +674,7 @@ def frame_defaults_for_config(config: OpticalLabScenarioConfig) -> dict[str, str
         "height": int(config.height),
         "scene_preset": config.scene_preset,
         "frame_source": config.frame_source.value,
+        "clock_owner": config.clock_owner.value,
         "camera_mode": config.camera_mode,
         "geometry_mode": config.geometry_mode.value,
         "accel_backend": config.accel_backend.value,
@@ -715,6 +726,8 @@ def validate_physics_video_run(config: OpticalLabScenarioConfig, options: LabRun
     validate_run(config, options)
     if config.frame_source is not FrameSourceKind.PHYSICS_RUNTIME:
         raise ValueError("run_physics_video_scenario requires frame_source='physics_runtime'")
+    if config.clock_owner is not ClockOwnerKind.EXTERNAL_PHYSICS_RUNTIME:
+        raise ValueError("run_physics_video_scenario requires clock_owner='external_physics_runtime'")
     if config.scene_preset != "synthetic_body_triangle":
         raise NotImplementedError(
             f"scene_preset={config.scene_preset!r} is reserved for physics runtime; "
@@ -736,6 +749,10 @@ def validate_physics_video_product_run(config: OpticalLabScenarioConfig, options
     validate_run(config, options)
     if config.frame_source is not FrameSourceKind.PHYSICS_RUNTIME:
         raise ValueError("run_physics_stepped_video_product_scenario requires frame_source='physics_runtime'")
+    if config.clock_owner is not ClockOwnerKind.EXTERNAL_PHYSICS_RUNTIME:
+        raise ValueError(
+            "run_physics_stepped_video_product_scenario requires clock_owner='external_physics_runtime'"
+        )
     if config.scene_preset != "synthetic_body_triangle":
         raise NotImplementedError(
             f"scene_preset={config.scene_preset!r} is reserved for physics runtime product path; "
