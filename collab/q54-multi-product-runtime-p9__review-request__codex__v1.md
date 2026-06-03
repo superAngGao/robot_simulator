@@ -594,30 +594,35 @@ joint indices for joint fields and requires a published `contact_mask` when the
 schema includes `contact_mask`; it does not infer contact state from private
 physics scratch or optical-render internals.
 
-## Open Questions For Review
+## Review Questions Answered By Implementation
 
 1. Is `SimulationFrameTick` the right small concept, or should it be named more
    narrowly, such as `PhysicsFrameTick` or `PublishedFrameTick`?
 
+   Answer: keep `SimulationFrameTick`. It is narrow enough for the P9
+   physics-owned tick stream while leaving room for non-physics lab products that
+   consume the same per-frame identity/metadata shape.
+
 2. Should product orchestration live near `FrameWorkflowRunner`, or should P9
    introduce a sibling runner to avoid overloading the video-focused class?
 
-   Proposed answer: introduce a sibling runner. Keep `FrameWorkflowRunner` as
-   the current video-focused workflow while P9 proves the tick/product contract.
+   Answer: introduce a sibling runner. `FrameWorkflowRunner` remains the current
+   video-focused workflow, while `MultiProductFrameRunner` owns the tick/product
+   contract.
 
 3. Should video be converted into a `FrameProduct` before any debug/observation
    product exists, or should we first add a tiny no-op/debug product to prove
    the orchestration shape?
 
-   Proposed answer: add the debug/identity product first as P9.2a, then migrate
-   video as P9.2b.
+   Answer: add the debug/identity product first as P9.2a, then migrate video as
+   P9.2b.
 
 4. What is the minimum typed product result needed for timing/reporting without
    leaking video-specific fields into every product?
 
-   Proposed answer: `FrameProductResult` should carry only tick identity,
-   `product_name`, optional payload, timing map, and metadata map. Video-specific
-   delivered-frame details stay inside the video payload or video recorder.
+   Answer: `FrameProductResult` carries only tick identity, `product_name`,
+   optional payload, timing map, and metadata map. Video-specific delivered-frame
+   details stay inside the video payload or video recorder.
    `MultiProductFrameRunner.step(...)` should preserve product positions and
    return `None` in a product's slot when that product has no per-frame result.
    Run lifecycle outputs should be keyed by `product_name`.
@@ -625,11 +630,11 @@ physics scratch or optical-render internals.
 5. Should `frame_source`/`clock_owner` schema migration wait until after P9
    product contracts are tested?
 
-   Proposed answer: yes. The enum/schema split should wait until P9.2a/P9.2b
-   prove which metadata needs to be serialized. P9.2b should still introduce a
-   distinct product-runner validation path so the old video-only physics helper
-   and new product-runner entry cannot be confused while both use the same
-   physics-published-frame source vocabulary.
+   Answer: yes. The enum/schema split landed after P9.2a/P9.2b proved the
+   serialized metadata shape. P9.2b introduced a distinct product-runner
+   validation path so the old video-only physics helper and new product-runner
+   entry cannot be confused while both use the same physics-published-frame
+   source vocabulary.
 
 ## Claude Review Follow-up
 
@@ -643,7 +648,7 @@ Claude reviewed the P9.2 plan on 2026-05-28 and accepted the overall direction:
 The plan now incorporates the requested clarifications:
 
 1. `MultiProductFrameRunner.step(...)` does not own provider borrow/release.
-   Products that need frame contexts, including the future video product, own
+   Products that need frame contexts, including `PhysicsVideoFrameProduct`, own
    their borrow scope inside `consume(tick)`.
 2. `None` consume results are represented positionally. The result tuple keeps
    one slot per product, preserving product order.
