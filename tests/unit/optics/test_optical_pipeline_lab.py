@@ -4728,6 +4728,8 @@ def test_matrix_suite_runs_cases_and_writes_summary(tmp_path: Path):
     with (tmp_path / "matrix" / "matrix_summary.csv").open(newline="") as f:
         written = list(csv.DictReader(f))
     assert written[0]["case_name"] == "render_only"
+    assert written[0]["frame_source"] == "static_asset_builder"
+    assert written[0]["clock_owner"] == "runner"
     assert written[0]["video_readback_delivery"] == "sync"
     assert written[1]["case_name"] == "rgb"
 
