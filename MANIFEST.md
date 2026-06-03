@@ -149,13 +149,13 @@ Go2 命名承载通用静态组件；
 `OpticalLabRenderPipeline` 是通用 lab render 入口，旧 `Go2Render*`
 兼容 alias 与 `go2_session.py` shim 已清理完毕。Stage J 已开始把真实
 physics-published `GpuPublishedFrame` 接入同一 source vocabulary：
-scenario config 现在用 `frame_source` 区分 static asset builder、
-synthetic frame sequence 与 future physics runtime，
+scenario config 现在用 `frame_source` / `clock_owner` 区分 static asset
+builder、synthetic frame sequence 与 physics-published frame source，
 `physics_source.py` 提供 physics frame → lab render source 的最小桥接、
 physics pipeline factory 与 borrow/begin/complete frame lease helper，
 并封装 render-backed device consumer 注册，
 `PhysicsLabRenderRuntime` 将 engine/pipeline/consumer 组合成物理渲染循环入口，
-`frame_contexts.py` 提供 static、synthetic frame sequence 与 physics runtime
+`frame_contexts.py` 提供 static、synthetic frame sequence 与 physics-published
 三类 context provider，让 video 层消费已取得的 `OpticalLabRenderFrameContext`，
 `video_loop.py` 也提供 provider-backed benchmark 入口和 provider-backed
 torch async warmup helper，
