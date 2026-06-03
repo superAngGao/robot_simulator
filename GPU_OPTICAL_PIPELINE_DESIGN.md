@@ -2325,8 +2325,10 @@ P6 complete:
   uses frame_defaults_for_config(...) for timing metadata, creates the physics
   render runtime, acquires frames through PhysicsFrameContextProvider, renders
   through FrameWorkflowRunner, and writes frame_timing.csv. The GPU smoke asserts
-  frame_source == "physics_runtime" in CSV. Plain run_scenario(...) still
-  rejects physics runtime configs because it cannot construct a physics engine.
+  frame_source == "physics_published_frame" and
+  clock_owner == "external_physics_runtime" in CSV. Plain run_scenario(...)
+  still rejects physics-published-frame configs because it cannot construct a
+  physics engine.
 
 P7 planned:
   add a thin physics-owned stepped video workflow above the P6 bridge. P6 keeps
@@ -2357,11 +2359,12 @@ P7.2 complete:
   GpuEngine.step(...), returns the latest published frame, and the test captures
   delivered full-readback frames to assert range_m changes with the stepped body
   height rather than the base frame. It also verifies delivered camera
-  frame_id/sim_time come from the stepped frame and frame_timing.csv still
-  records frame_source == "physics_runtime".
+  frame_id/sim_time come from the stepped frame and frame_timing.csv records
+  frame_source == "physics_published_frame" plus
+  clock_owner == "external_physics_runtime".
 
 P7.3 complete:
-  plain run_scenario(...) remains guarded for FrameSourceKind.PHYSICS_RUNTIME.
+  plain run_scenario(...) remains guarded for physics-published-frame sources.
   The guard now explicitly points callers to the two explicit physics entries,
   run_physics_video_scenario(...) and run_physics_stepped_video_scenario(...),
   and unit coverage verifies the guard fires before output directory/config

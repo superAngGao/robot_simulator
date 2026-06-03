@@ -463,7 +463,7 @@ PhysicsLabScenarioRuntime.step_tick(...)
 
 The two entries should have separate validation functions so callers cannot
 accidentally route a product-runner scenario through the older video-only
-helper just because both use `FrameSourceKind.PHYSICS_RUNTIME`.
+helper just because both use the physics-published-frame source vocabulary.
 
 Later compatibility update: new-run metadata now uses
 `FrameSourceKind.PHYSICS_PUBLISHED_FRAME` plus
