@@ -1110,6 +1110,28 @@ def test_published_state_observation_product_requires_published_contact_mask():
         product.consume(tick)
 
 
+def test_published_state_observation_product_requires_actuated_q_indices():
+    schema = locomotion_obs_schema(num_actuated_joints=1)
+
+    with pytest.raises(ValueError, match="actuated_q_indices"):
+        observation_products.PublishedStateObservationProduct(
+            engine=object(),
+            schema=schema,
+            actuated_v_indices=np.array([6], dtype=np.intp),
+        )
+
+
+def test_published_state_observation_product_requires_actuated_v_indices():
+    schema = locomotion_obs_schema(num_actuated_joints=1)
+
+    with pytest.raises(ValueError, match="actuated_v_indices"):
+        observation_products.PublishedStateObservationProduct(
+            engine=object(),
+            schema=schema,
+            actuated_q_indices=np.array([7], dtype=np.intp),
+        )
+
+
 def test_create_physics_body_triangle_lab_runtime_owns_reset_and_step(
     monkeypatch: pytest.MonkeyPatch,
 ):
