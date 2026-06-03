@@ -4401,6 +4401,18 @@ def test_lab_runner_writes_serialized_scenario_config(tmp_path: Path):
     assert payload["run_options"]["frames"] == 2
 
 
+def test_lab_runner_serializes_physics_source_and_clock_metadata(tmp_path: Path):
+    config = get_preset("physics_body_triangle_video_smoke")
+    options = LabRunOptions(out=tmp_path / "physics", frames=1)
+    path = tmp_path / "physics" / "scenario_config.json"
+
+    write_scenario_config(path, config, options)
+
+    payload = json.loads(path.read_text())
+    assert payload["scenario"]["frame_source"] == "physics_published_frame"
+    assert payload["scenario"]["clock_owner"] == "external_physics_runtime"
+
+
 def test_lab_runner_rejects_unsatisfiable_readback_combinations(tmp_path: Path):
     config = apply_run_overrides(
         get_preset("go2_video_ordered_static"),
