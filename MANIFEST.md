@@ -1,7 +1,7 @@
 # Robot Simulator — Project Manifest
 
 > 面向具身智能研究的多物理仿真平台——多物理统一耦合、GPU 原生、渲染与合成数据生成、从第一性原理出发的 API 设计。
-> Last updated: 2026-06-01 (Q54 P9 multi-product runtime)
+> Last updated: 2026-06-03 (Q54 P9 source/clock metadata)
 
 ## 一句话
 
