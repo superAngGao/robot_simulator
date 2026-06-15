@@ -121,6 +121,11 @@ assert "rl_env.managers" not in sys.modules
     subprocess.run([sys.executable, "-c", script], check=True)
 
 
+def test_optical_pipeline_lab_getattr_unknown_raises_attribute_error():
+    with pytest.raises(AttributeError, match="not_a_lab_export"):
+        optical_pipeline_lab.__getattr__("not_a_lab_export")
+
+
 def test_timing_recorder_writes_summary_csv(tmp_path: Path):
     recorder = TimingRecorder()
     recorder.add("render", 1.0)
