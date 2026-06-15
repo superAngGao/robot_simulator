@@ -1,6 +1,7 @@
 import csv
 import json
 import math
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+import tools.optical_pipeline_lab as optical_pipeline_lab
 import tools.optical_pipeline_lab.__main__ as lab_main
 import tools.optical_pipeline_lab.async_readback as async_readback
 import tools.optical_pipeline_lab.delivery as delivery
@@ -90,6 +92,33 @@ def test_percentile_interpolates_sorted_samples():
     assert percentile([10.0, 20.0], 0.9) == pytest.approx(19.0)
     assert percentile([3.0, 1.0, 2.0], 0.5) == 2.0
     assert math.isnan(percentile([], 0.9))
+
+
+def test_optical_pipeline_lab_exports_p9_product_contracts():
+    assert optical_pipeline_lab.SimulationFrameTick is frame_tick.SimulationFrameTick
+    assert (
+        optical_pipeline_lab.simulation_frame_tick_from_published_frame
+        is frame_tick.simulation_frame_tick_from_published_frame
+    )
+    assert optical_pipeline_lab.FrameProductResult is frame_products.FrameProductResult
+    assert optical_pipeline_lab.FrameProduct is frame_products.FrameProduct
+    assert optical_pipeline_lab.MultiProductFrameRunner is frame_products.MultiProductFrameRunner
+    assert optical_pipeline_lab.DebugFrameProduct is frame_products.DebugFrameProduct
+    assert (
+        optical_pipeline_lab.PublishedStateObservationProduct
+        is observation_products.PublishedStateObservationProduct
+    )
+
+
+def test_optical_pipeline_lab_observation_product_export_is_lazy():
+    script = """
+import sys
+import tools.optical_pipeline_lab
+
+assert "tools.optical_pipeline_lab.observation_products" not in sys.modules
+assert "rl_env.managers" not in sys.modules
+"""
+    subprocess.run([sys.executable, "-c", script], check=True)
 
 
 def test_timing_recorder_writes_summary_csv(tmp_path: Path):
