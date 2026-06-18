@@ -3,7 +3,7 @@ Stage: review-request
 Author: Codex
 Version: v2
 Date: 2026-06-18
-Status: in_review
+Status: superseded-by-v3
 Related Files: collab/q54-physics-owned-multi-product-runtime-p10__review-request__codex__v1.md, collab/q54-multi-product-runtime-p9__review-request__codex__v1.md, tools/optical_pipeline_lab/frame_tick.py, tools/optical_pipeline_lab/frame_products.py, tools/optical_pipeline_lab/observation_products.py, tools/optical_pipeline_lab/physics_runtime.py, tools/optical_pipeline_lab/runner.py
 Owner Summary: P10 should start from the user-facing workflow shape, not from the internal runner. The API should make scenario intent, live runtime ownership, product configuration, schedule, and artifacts explicit. Internal boundaries such as MultiProductFrameRunner should serve that workflow instead of becoming the public interface.
 
@@ -513,4 +513,3 @@ Approve the v2 direction, then implement P10.1 conservatively:
 - keep `run_scenario(...)` unchanged;
 - do not touch render backend code;
 - use the P10.1 test to drive the exact result/workflow API for P10.2/P10.3.
-
