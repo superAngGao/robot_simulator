@@ -3,7 +3,7 @@ Stage: review-request
 Author: Codex
 Version: v1
 Date: 2026-06-16
-Status: in_review
+Status: superseded-by-v2
 Related Files: collab/q54-multi-product-runtime-p9__review-request__codex__v1.md, tools/optical_pipeline_lab/frame_tick.py, tools/optical_pipeline_lab/frame_products.py, tools/optical_pipeline_lab/observation_products.py, tools/optical_pipeline_lab/physics_runtime.py, tools/optical_pipeline_lab/runner.py
 Owner Summary: P10 should turn P9's tick/product pieces into a lab-internal physics-owned multi-product runtime proof. The first slice should prove video + debug + observation on the same tick stream without adding a public SimulationRuntime or touching render backends.
 
