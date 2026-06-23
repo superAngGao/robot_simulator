@@ -3,7 +3,7 @@ Stage: review-request
 Author: Codex
 Version: v3
 Date: 2026-06-18
-Status: in_review
+Status: superseded-by-v4
 Related Files: collab/q54-physics-owned-multi-product-runtime-p10__review-request__codex__v2.md, collab/q54-multi-product-runtime-p9__review-request__codex__v1.md, tools/optical_pipeline_lab/frame_tick.py, tools/optical_pipeline_lab/frame_products.py, tools/optical_pipeline_lab/observation_products.py, tools/optical_pipeline_lab/physics_runtime.py, tools/optical_pipeline_lab/runner.py
 Owner Summary: P10 should introduce a physics-owned batch workflow centered on clear user-facing intent, explicit runtime ownership, and multi-product orchestration. V3 accepts Claude's review: use `PhysicsOwnedProductWorkflow`, avoid early schedule/spec over-abstraction, rename `LabRunOptions` toward `ArtifactOutput`, and keep loop-level RL outside the workflow abstraction.
 
@@ -488,4 +488,3 @@ Adopt v3 and implement P10.1 conservatively:
 If the `LabRunOptions -> ArtifactOutput` rename is small after inspection, do it
 in P10.1. If it fans out too much, defer to P10.2 but do not introduce a second
 parallel output config type.
-
