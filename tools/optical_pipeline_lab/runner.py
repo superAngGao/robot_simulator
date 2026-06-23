@@ -6,7 +6,7 @@ import argparse
 import json
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 
@@ -35,6 +35,7 @@ from .video_loop import (
 )
 
 DEFAULT_LAB_WARMUP_RENDERS = 5
+_FRAMES_UNSET = object()
 PhysicsPublishedFrameForIndex = Callable[[int], object]
 # Called today as step_physics_frame(frame_index); kept wide for future action/control inputs.
 PhysicsPublishedFrameStepper = Callable[..., object]
@@ -45,11 +46,11 @@ class RunScenarioUnsupportedError(NotImplementedError):
     """Raised when a valid lab config cannot be owned by ``run_scenario(...)``."""
 
 
-@dataclass(frozen=True)
-class LabRunOptions:
-    """Execution options that are intentionally outside scenario semantics."""
+@dataclass(frozen=True, init=False)
+class ArtifactOutput:
+    """Artifact/output options that are intentionally outside scenario semantics."""
 
-    out: Path
+    root: Path
     model_dir: str = "out/external/mujoco_menagerie/unitree_go2"
     model_xml: str = "go2.xml"
     frames: int = 10
@@ -63,6 +64,58 @@ class LabRunOptions:
     render_profile: bool = False
     fail_on_overflow: bool = True
     verbose_warp: bool = False
+    _frames_explicit: bool = field(default=False, init=False, repr=False, compare=False)
+
+    def __init__(
+        self,
+        root: Path | None = None,
+        *,
+        out: Path | None = None,
+        model_dir: str = "out/external/mujoco_menagerie/unitree_go2",
+        model_xml: str = "go2.xml",
+        frames: int | object = _FRAMES_UNSET,
+        fps: float = 30.0,
+        warmup_renders: int = DEFAULT_LAB_WARMUP_RENDERS,
+        progress_every: int = 5,
+        video_raygen: str = "gpu",
+        video_ray_cache: str = "off",
+        video_readback_delivery: str = "sync",
+        video_readback_ring_depth: int = 2,
+        render_profile: bool = False,
+        fail_on_overflow: bool = True,
+        verbose_warp: bool = False,
+    ) -> None:
+        if root is None and out is None:
+            raise TypeError("ArtifactOutput requires root")
+        if root is not None and out is not None and Path(root) != Path(out):
+            raise ValueError("ArtifactOutput received conflicting root and out paths")
+        resolved_root = root if root is not None else out
+        frames_explicit = frames is not _FRAMES_UNSET
+        resolved_frames = 10 if frames is _FRAMES_UNSET else frames
+        object.__setattr__(self, "root", Path(resolved_root))
+        object.__setattr__(self, "model_dir", model_dir)
+        object.__setattr__(self, "model_xml", model_xml)
+        object.__setattr__(self, "frames", int(resolved_frames))
+        object.__setattr__(self, "fps", float(fps))
+        object.__setattr__(self, "warmup_renders", int(warmup_renders))
+        object.__setattr__(self, "progress_every", int(progress_every))
+        object.__setattr__(self, "video_raygen", video_raygen)
+        object.__setattr__(self, "video_ray_cache", video_ray_cache)
+        object.__setattr__(self, "video_readback_delivery", video_readback_delivery)
+        object.__setattr__(self, "video_readback_ring_depth", int(video_readback_ring_depth))
+        object.__setattr__(self, "render_profile", bool(render_profile))
+        object.__setattr__(self, "fail_on_overflow", bool(fail_on_overflow))
+        object.__setattr__(self, "verbose_warp", bool(verbose_warp))
+        object.__setattr__(self, "_frames_explicit", frames_explicit)
+
+    @property
+    def out(self) -> Path:
+        """Compatibility alias for pre-P10 lab runner call sites."""
+
+        return self.root
+
+
+LabRunOptions = ArtifactOutput
 
 
 def validate_scenario(config: OpticalLabScenarioConfig) -> None:
@@ -779,7 +832,11 @@ def scenario_config_dict(config: OpticalLabScenarioConfig) -> dict[str, object]:
 
 
 def run_options_dict(options: LabRunOptions) -> dict[str, object]:
-    return {field: _serialize_value(value) for field, value in options.__dict__.items()}
+    return {
+        field: _serialize_value(value)
+        for field, value in options.__dict__.items()
+        if not field.startswith("_")
+    }
 
 
 def _serialize_value(value: object) -> object:

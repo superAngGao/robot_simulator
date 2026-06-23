@@ -26,9 +26,12 @@ from .timing import FrameTimingRecorder, TimingRecorder, percentile
 
 _LAZY_EXPORTS = {
     "DebugFrameProduct": (".frame_products", "DebugFrameProduct"),
+    "ArtifactOutput": (".runner", "ArtifactOutput"),
     "FrameProduct": (".frame_products", "FrameProduct"),
     "FrameProductResult": (".frame_products", "FrameProductResult"),
     "MultiProductFrameRunner": (".frame_products", "MultiProductFrameRunner"),
+    "PhysicsOwnedProductWorkflow": (".product_workflow", "PhysicsOwnedProductWorkflow"),
+    "PhysicsProductRunResult": (".product_workflow", "PhysicsProductRunResult"),
     "PublishedStateObservationProduct": (".observation_products", "PublishedStateObservationProduct"),
     "SimulationFrameTick": (".frame_tick", "SimulationFrameTick"),
     "simulation_frame_tick_from_published_frame": (
@@ -55,6 +58,7 @@ def __getattr__(name: str):
 __all__ = [
     "AccelBackend",
     "AccelPolicy",
+    "ArtifactOutput",
     "ClockOwnerKind",
     "DEFAULT_RENDER_HEIGHT",
     "DEFAULT_RENDER_WIDTH",
@@ -71,6 +75,8 @@ __all__ = [
     "MultiProductFrameRunner",
     "OpticalLabScenarioConfig",
     "OpticalLabScenarioFamily",
+    "PhysicsOwnedProductWorkflow",
+    "PhysicsProductRunResult",
     "PublishedStateObservationProduct",
     "ReadbackPayload",
     "RenderBackend",

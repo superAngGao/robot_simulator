@@ -23,6 +23,7 @@ import tools.optical_pipeline_lab.go2_backend as go2_backend
 import tools.optical_pipeline_lab.observation_products as observation_products
 import tools.optical_pipeline_lab.physics_runtime as physics_runtime
 import tools.optical_pipeline_lab.physics_source as physics_source
+import tools.optical_pipeline_lab.product_workflow as product_workflow
 import tools.optical_pipeline_lab.render_session as render_session
 import tools.optical_pipeline_lab.rgb_pack as rgb_pack
 import tools.optical_pipeline_lab.runner as lab_runner
@@ -68,6 +69,7 @@ from tools.optical_pipeline_lab.presets import get_preset
 from tools.optical_pipeline_lab.reports import format_summary_rows
 from tools.optical_pipeline_lab.runner import (
     DEFAULT_LAB_WARMUP_RENDERS,
+    ArtifactOutput,
     LabRunOptions,
     RunScenarioUnsupportedError,
     apply_run_overrides,
@@ -95,6 +97,7 @@ def test_percentile_interpolates_sorted_samples():
 
 
 def test_optical_pipeline_lab_exports_p9_product_contracts():
+    assert optical_pipeline_lab.ArtifactOutput is lab_runner.ArtifactOutput
     assert optical_pipeline_lab.SimulationFrameTick is frame_tick.SimulationFrameTick
     assert (
         optical_pipeline_lab.simulation_frame_tick_from_published_frame
@@ -108,6 +111,8 @@ def test_optical_pipeline_lab_exports_p9_product_contracts():
         optical_pipeline_lab.PublishedStateObservationProduct
         is observation_products.PublishedStateObservationProduct
     )
+    assert optical_pipeline_lab.PhysicsOwnedProductWorkflow is product_workflow.PhysicsOwnedProductWorkflow
+    assert optical_pipeline_lab.PhysicsProductRunResult is product_workflow.PhysicsProductRunResult
 
 
 def test_optical_pipeline_lab_observation_product_export_is_lazy():
@@ -124,6 +129,19 @@ assert "rl_env.managers" not in sys.modules
 def test_optical_pipeline_lab_getattr_unknown_raises_attribute_error():
     with pytest.raises(AttributeError, match="not_a_lab_export"):
         optical_pipeline_lab.__getattr__("not_a_lab_export")
+
+
+def test_artifact_output_uses_root_and_keeps_lab_run_options_compatibility(tmp_path: Path):
+    output = ArtifactOutput(root=tmp_path / "root", frames=3)
+    legacy = LabRunOptions(out=tmp_path / "legacy", frames=4)
+
+    assert output.root == tmp_path / "root"
+    assert output.out == output.root
+    assert legacy.root == tmp_path / "legacy"
+    assert legacy.out == legacy.root
+
+    with pytest.raises(ValueError, match="conflicting root and out"):
+        ArtifactOutput(root=tmp_path / "a", out=tmp_path / "b")
 
 
 def test_timing_recorder_writes_summary_csv(tmp_path: Path):
@@ -1032,6 +1050,186 @@ def test_multi_product_frame_runner_rejects_duplicate_product_names():
 
     with pytest.raises(ValueError, match="product_name values must be unique"):
         frame_products.MultiProductFrameRunner(products=(product, product))
+
+
+def test_physics_owned_product_workflow_runs_video_debug_observation_on_one_tick_stream(tmp_path: Path):
+    schema = locomotion_obs_schema(
+        num_actuated_joints=2,
+        num_contact_bodies=2,
+        include_contact_mask=True,
+    )
+    published_frames = [
+        CpuPublishedFrame(
+            frame_id=140 + frame_index,
+            sim_time=14.0 + frame_index,
+            step_index=140 + frame_index,
+            env_mask=None,
+            q=np.array([1.0, 0.0, 0.0, 0.0, 0.1, 0.2, 0.3, 0.5, -0.5]),
+            qdot=np.array([0.0, 0.0, 0.0, 0.1, 0.2, 0.3, 1.5, -1.5]),
+            X_world=[SpatialTransform.identity()],
+            v_bodies=np.array([[1.0, 2.0, 3.0, 0.4, 0.5, 0.6]]),
+            contact_count=1,
+            contacts=object(),
+            telemetry=None,
+            contact_mask=np.array([1, 0], dtype=np.int32),
+        )
+        for frame_index in range(2)
+    ]
+    calls: list[tuple[object, ...]] = []
+
+    def step_frame(frame_index: int):
+        calls.append(("step", frame_index))
+        return published_frames[frame_index]
+
+    class FakeVideoProduct:
+        product_name = "video"
+
+        def begin_run(self):
+            calls.append(("begin", self.product_name))
+            return None
+
+        def consume(self, tick):
+            calls.append(("video", tick.frame_index, tick.frame_id, tick.sim_time))
+            return frame_products.FrameProductResult.from_tick(
+                product_name=self.product_name,
+                tick=tick,
+                payload={"published_frame": tick.published_frame},
+            )
+
+        def end_run(self):
+            calls.append(("end", self.product_name))
+            return {"video_timing_csv": tmp_path / "workflow" / "frame_timing.csv"}
+
+    class RecordingObservationProduct(observation_products.PublishedStateObservationProduct):
+        def consume(self, tick):
+            calls.append(
+                ("observation", tick.frame_index, tick.frame_id, tick.sim_time, tick.published_frame)
+            )
+            return super().consume(tick)
+
+    runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=published_frames[0],
+        step_frame_fn=step_frame,
+        metadata={"runtime_owner": "p10_test"},
+    )
+    debug_product = frame_products.DebugFrameProduct(product_name="debug", metadata_keys=None)
+    observation_product = RecordingObservationProduct(
+        engine=object(),
+        schema=schema,
+        actuated_q_indices=np.array([7, 8], dtype=np.intp),
+        actuated_v_indices=np.array([6, 7], dtype=np.intp),
+        contact_body_names=("left_foot", "right_foot"),
+    )
+    workflow = product_workflow.PhysicsOwnedProductWorkflow(
+        runtime=runtime,
+        products=(FakeVideoProduct(), debug_product, observation_product),
+        output=ArtifactOutput(root=tmp_path / "workflow"),
+    )
+
+    result = workflow.run(frames=2)
+
+    assert result.begin_outputs == {
+        "video": None,
+        "debug": None,
+        "observation": None,
+    }
+    assert result.end_outputs["video"] == {"video_timing_csv": tmp_path / "workflow" / "frame_timing.csv"}
+    assert result.end_outputs["debug"] == tuple(debug_product.records)
+    assert result.end_outputs["observation"] == tuple(observation_product.records)
+    assert result.artifacts == {"root": tmp_path / "workflow"}
+    assert [len(frame) for frame in result.frame_results] == [3, 3]
+    assert [record.frame_id for record in result.product_results["video"]] == [140, 141]
+    assert [record.frame_id for record in result.product_results["debug"]] == [140, 141]
+    assert [record.frame_id for record in result.product_results["observation"]] == [140, 141]
+    np.testing.assert_allclose(
+        result.product_results["observation"][0].payload["observation"].numpy(),
+        [
+            1.0,
+            2.0,
+            3.0,
+            0.4,
+            0.5,
+            0.6,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.5,
+            -0.5,
+            1.5,
+            -1.5,
+            1.0,
+            0.0,
+        ],
+    )
+    assert calls == [
+        ("begin", "video"),
+        ("step", 0),
+        ("video", 0, 140, 14.0),
+        ("observation", 0, 140, 14.0, published_frames[0]),
+        ("step", 1),
+        ("video", 1, 141, 15.0),
+        ("observation", 1, 141, 15.0, published_frames[1]),
+        ("end", "video"),
+    ]
+
+    with pytest.raises(RuntimeError, match="already run"):
+        workflow.run(frames=1)
+
+
+def test_physics_owned_product_workflow_runtime_ownership():
+    calls: list[tuple[str]] = []
+
+    def close_runtime():
+        calls.append(("close",))
+
+    runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=149, sim_time=14.9),
+        step_frame_fn=lambda frame_index: SimpleNamespace(
+            frame_id=150 + frame_index,
+            sim_time=15.0 + frame_index,
+        ),
+        close_fn=close_runtime,
+    )
+
+    product_workflow.PhysicsOwnedProductWorkflow(
+        runtime=runtime,
+        products=(frame_products.DebugFrameProduct(),),
+        owns_runtime=False,
+    ).close()
+    assert runtime.closed is False
+
+    product_workflow.PhysicsOwnedProductWorkflow(
+        runtime=runtime,
+        products=(frame_products.DebugFrameProduct(),),
+        owns_runtime=True,
+    ).close()
+    assert runtime.closed is True
+    assert calls == [("close",)]
+
+
+def test_physics_owned_product_workflow_rejects_explicit_output_frame_conflict(tmp_path: Path):
+    runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=19, sim_time=1.9),
+        step_frame_fn=lambda frame_index: SimpleNamespace(
+            frame_id=20 + frame_index,
+            sim_time=2.0 + frame_index,
+        ),
+    )
+    workflow = product_workflow.PhysicsOwnedProductWorkflow(
+        runtime=runtime,
+        products=(frame_products.DebugFrameProduct(),),
+        output=ArtifactOutput(root=tmp_path / "workflow", frames=2),
+    )
+
+    with pytest.raises(ValueError, match="ArtifactOutput.frames conflicts"):
+        workflow.run(frames=1)
 
 
 def test_published_state_observation_product_builds_obs_schema_vector_from_tick():
@@ -4470,8 +4668,9 @@ def test_lab_runner_writes_serialized_scenario_config(tmp_path: Path):
     assert payload["scenario"]["frame_source"] == "static_asset_builder"
     assert payload["scenario"]["clock_owner"] == "runner"
     assert payload["scenario"]["readback_payload"] == "rgb"
-    assert payload["run_options"]["out"] == str(tmp_path / "run")
+    assert payload["run_options"]["root"] == str(tmp_path / "run")
     assert payload["run_options"]["frames"] == 2
+    assert "_frames_explicit" not in payload["run_options"]
 
 
 def test_lab_runner_serializes_physics_source_and_clock_metadata(tmp_path: Path):
