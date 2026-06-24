@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from functools import cached_property
 
 from .frame_products import FrameProduct, FrameProductResult, MultiProductFrameRunner
-from .runner import ArtifactOutput
+from .runner import ArtifactOutput, validate_run, write_scenario_config
+from .scenarios import (
+    ClockOwnerKind,
+    OpticalLabScenarioConfig,
+    is_physics_published_frame_source,
+)
 
 
 @dataclass(frozen=True)
@@ -88,3 +93,94 @@ class PhysicsOwnedProductWorkflow:
         if self.output is None:
             return {}
         return {"root": self.output.root}
+
+
+def run_physics_products(
+    *,
+    runtime: object,
+    products: Iterable[FrameProduct],
+    frames: int,
+    output: ArtifactOutput | None = None,
+    owns_runtime: bool = False,
+) -> PhysicsProductRunResult:
+    """Run product instances on an existing physics-owned runtime."""
+
+    workflow = PhysicsOwnedProductWorkflow(
+        runtime=runtime,
+        products=tuple(products),
+        output=output,
+        owns_runtime=owns_runtime,
+    )
+    try:
+        return workflow.run(frames=frames)
+    finally:
+        workflow.close()
+
+
+def run_physics_product_scenario(
+    config: OpticalLabScenarioConfig,
+    output: ArtifactOutput,
+    *,
+    runtime: object,
+    products: Iterable[FrameProduct],
+    frames: int | None = None,
+    owns_runtime: bool = False,
+) -> PhysicsProductRunResult:
+    """Run product instances for one physics-backed lab scenario."""
+
+    validate_physics_product_scenario(config, output)
+    frame_count = _resolve_workflow_frame_count(output, frames)
+    output.root.mkdir(parents=True, exist_ok=True)
+    write_scenario_config(output.root / "scenario_config.json", config, output)
+    return run_physics_products(
+        runtime=runtime,
+        products=products,
+        frames=frame_count,
+        output=output,
+        owns_runtime=owns_runtime,
+    )
+
+
+def run_physics_product_preset(
+    preset: str,
+    output: ArtifactOutput,
+    *,
+    runtime: object,
+    products: Iterable[FrameProduct],
+    frames: int | None = None,
+    owns_runtime: bool = False,
+) -> PhysicsProductRunResult:
+    """Run product instances for one named physics-backed lab preset."""
+
+    from .presets import get_preset
+
+    return run_physics_product_scenario(
+        get_preset(preset),
+        output,
+        runtime=runtime,
+        products=products,
+        frames=frames,
+        owns_runtime=owns_runtime,
+    )
+
+
+def validate_physics_product_scenario(
+    config: OpticalLabScenarioConfig,
+    output: ArtifactOutput,
+) -> None:
+    """Validate a generic physics-owned product workflow scenario."""
+
+    if not is_physics_published_frame_source(config.frame_source):
+        raise ValueError("run_physics_product_scenario requires frame_source='physics_published_frame'")
+    if config.clock_owner is not ClockOwnerKind.EXTERNAL_PHYSICS_RUNTIME:
+        raise ValueError("run_physics_product_scenario requires clock_owner='external_physics_runtime'")
+    validate_run(config, output)
+
+
+def _resolve_workflow_frame_count(output: ArtifactOutput, frames: int | None) -> int:
+    frame_count = output.frames if frames is None else int(frames)
+    if frame_count < 0:
+        raise ValueError("frames must be >= 0")
+    if frames is not None and output._frames_explicit and output.frames != frame_count:
+        raise ValueError("ArtifactOutput.frames conflicts with workflow run frames")
+    return frame_count

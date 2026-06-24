@@ -34,6 +34,12 @@ _LAZY_EXPORTS = {
     "PhysicsProductRunResult": (".product_workflow", "PhysicsProductRunResult"),
     "PublishedStateObservationProduct": (".observation_products", "PublishedStateObservationProduct"),
     "SimulationFrameTick": (".frame_tick", "SimulationFrameTick"),
+    "run_physics_product_preset": (".product_workflow", "run_physics_product_preset"),
+    "run_physics_product_scenario": (
+        ".product_workflow",
+        "run_physics_product_scenario",
+    ),
+    "run_physics_products": (".product_workflow", "run_physics_products"),
     "simulation_frame_tick_from_published_frame": (
         ".frame_tick",
         "simulation_frame_tick_from_published_frame",
@@ -85,5 +91,8 @@ __all__ = [
     "WritePolicy",
     "is_physics_published_frame_source",
     "percentile",
+    "run_physics_product_preset",
+    "run_physics_product_scenario",
+    "run_physics_products",
     "simulation_frame_tick_from_published_frame",
 ]

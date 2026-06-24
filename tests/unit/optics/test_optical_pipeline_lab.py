@@ -113,6 +113,9 @@ def test_optical_pipeline_lab_exports_p9_product_contracts():
     )
     assert optical_pipeline_lab.PhysicsOwnedProductWorkflow is product_workflow.PhysicsOwnedProductWorkflow
     assert optical_pipeline_lab.PhysicsProductRunResult is product_workflow.PhysicsProductRunResult
+    assert optical_pipeline_lab.run_physics_products is product_workflow.run_physics_products
+    assert optical_pipeline_lab.run_physics_product_scenario is product_workflow.run_physics_product_scenario
+    assert optical_pipeline_lab.run_physics_product_preset is product_workflow.run_physics_product_preset
 
 
 def test_optical_pipeline_lab_observation_product_export_is_lazy():
@@ -1230,6 +1233,118 @@ def test_physics_owned_product_workflow_rejects_explicit_output_frame_conflict(t
 
     with pytest.raises(ValueError, match="ArtifactOutput.frames conflicts"):
         workflow.run(frames=1)
+
+
+def test_run_physics_products_wraps_existing_runtime_and_closes_when_owned(tmp_path: Path):
+    calls: list[tuple[object, ...]] = []
+
+    def close_runtime():
+        calls.append(("close",))
+
+    runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=29, sim_time=2.9),
+        step_frame_fn=lambda frame_index: calls.append(("step", frame_index))
+        or SimpleNamespace(frame_id=30 + frame_index, sim_time=3.0 + frame_index),
+        close_fn=close_runtime,
+    )
+    debug_product = frame_products.DebugFrameProduct(product_name="debug", metadata_keys=None)
+
+    result = product_workflow.run_physics_products(
+        runtime=runtime,
+        products=(debug_product,),
+        frames=2,
+        output=ArtifactOutput(root=tmp_path / "workflow"),
+        owns_runtime=True,
+    )
+
+    assert runtime.closed is True
+    assert calls == [("step", 0), ("step", 1), ("close",)]
+    assert result.artifacts == {"root": tmp_path / "workflow"}
+    assert [record.frame_id for record in result.product_results["debug"]] == [30, 31]
+
+
+def test_run_physics_product_scenario_writes_config_and_runs_products(tmp_path: Path):
+    calls: list[tuple[object, ...]] = []
+    runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=39, sim_time=3.9),
+        step_frame_fn=lambda frame_index: calls.append(("step", frame_index))
+        or SimpleNamespace(frame_id=40 + frame_index, sim_time=4.0 + frame_index),
+        metadata={"runtime_owner": "p10_helper_test"},
+    )
+    output = ArtifactOutput(root=tmp_path / "scenario", frames=2)
+
+    result = product_workflow.run_physics_product_scenario(
+        get_preset("physics_body_triangle_video_smoke"),
+        output,
+        runtime=runtime,
+        products=(frame_products.DebugFrameProduct(metadata_keys=None),),
+    )
+
+    payload = json.loads((tmp_path / "scenario" / "scenario_config.json").read_text())
+    assert payload["scenario"]["frame_source"] == "physics_published_frame"
+    assert payload["scenario"]["clock_owner"] == "external_physics_runtime"
+    assert payload["run_options"]["root"] == str(tmp_path / "scenario")
+    assert calls == [("step", 0), ("step", 1)]
+    assert [record.frame_id for record in result.product_results["debug"]] == [40, 41]
+
+
+def test_run_physics_product_preset_delegates_to_named_preset(tmp_path: Path):
+    runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=49, sim_time=4.9),
+        step_frame_fn=lambda frame_index: SimpleNamespace(
+            frame_id=50 + frame_index,
+            sim_time=5.0 + frame_index,
+        ),
+    )
+
+    result = product_workflow.run_physics_product_preset(
+        "physics_body_triangle_video_smoke",
+        ArtifactOutput(root=tmp_path / "preset"),
+        runtime=runtime,
+        products=(frame_products.DebugFrameProduct(),),
+        frames=1,
+    )
+
+    payload = json.loads((tmp_path / "preset" / "scenario_config.json").read_text())
+    assert payload["scenario"]["scenario_name"] == "physics_body_triangle_video_smoke"
+    assert [record.frame_id for record in result.product_results["debug"]] == [50]
+
+
+def test_run_physics_product_scenario_requires_physics_owned_clock(tmp_path: Path):
+    config = replace(
+        get_preset("physics_body_triangle_video_smoke"),
+        frame_source=FrameSourceKind.STATIC_ASSET_BUILDER,
+    )
+
+    with pytest.raises(ValueError, match="frame_source='physics_published_frame'"):
+        product_workflow.run_physics_product_scenario(
+            config,
+            ArtifactOutput(root=tmp_path / "invalid"),
+            runtime=object(),
+            products=(),
+            frames=1,
+        )
+
+    assert not (tmp_path / "invalid").exists()
+
+
+def test_run_physics_product_scenario_rejects_frame_conflict_before_writing(tmp_path: Path):
+    with pytest.raises(ValueError, match="ArtifactOutput.frames conflicts"):
+        product_workflow.run_physics_product_scenario(
+            get_preset("physics_body_triangle_video_smoke"),
+            ArtifactOutput(root=tmp_path / "conflict", frames=2),
+            runtime=object(),
+            products=(),
+            frames=1,
+        )
+
+    assert not (tmp_path / "conflict").exists()
 
 
 def test_published_state_observation_product_builds_obs_schema_vector_from_tick():
