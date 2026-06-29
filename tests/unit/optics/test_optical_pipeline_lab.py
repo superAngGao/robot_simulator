@@ -118,6 +118,7 @@ def test_optical_pipeline_lab_exports_p9_product_contracts():
     assert optical_pipeline_lab.ProductSpec is product_specs.ProductSpec
     assert optical_pipeline_lab.DebugProductSpec is product_specs.DebugProductSpec
     assert optical_pipeline_lab.ObservationProductSpec is product_specs.ObservationProductSpec
+    assert optical_pipeline_lab.VideoProductSpec is product_specs.VideoProductSpec
     assert optical_pipeline_lab.run_physics_products is product_workflow.run_physics_products
     assert optical_pipeline_lab.run_physics_product_scenario is product_workflow.run_physics_product_scenario
     assert optical_pipeline_lab.run_physics_product_preset is product_workflow.run_physics_product_preset
@@ -140,6 +141,7 @@ import sys
 import tools.optical_pipeline_lab as lab
 
 _ = lab.DebugProductSpec
+_ = lab.VideoProductSpec
 assert "tools.optical_pipeline_lab.observation_products" not in sys.modules
 assert "rl_env.managers" not in sys.modules
 """
@@ -1459,6 +1461,129 @@ def test_run_physics_product_scenario_builds_observation_product_spec(tmp_path: 
             1.0,
         ],
     )
+
+
+def test_run_physics_product_scenario_builds_video_product_spec(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[object, ...]] = []
+    render_runtime = SimpleNamespace(pipeline=SimpleNamespace(session=SimpleNamespace(scene=object())))
+
+    def fake_create_runtime(*args, **kwargs):
+        calls.append(("create_runtime", kwargs["consumer_id"], kwargs["metadata"]["runtime_owner"]))
+        return render_runtime
+
+    class FakeProvider:
+        def begin_frame(self, frame_index: int, *, published_frame=None, env_idx: int = 0):
+            calls.append(("begin_frame", frame_index, published_frame.frame_id, env_idx))
+
+            class Scope:
+                def __enter__(self_inner):
+                    calls.append(("enter", frame_index))
+                    return SimpleNamespace(
+                        frame_id=published_frame.frame_id,
+                        sim_time=published_frame.sim_time,
+                        env_idx=env_idx,
+                    )
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    calls.append(("exit", frame_index, exc_type))
+
+            return Scope()
+
+    class FakeDelivery:
+        def complete_available(self, *, latest_rendered_frame_index=None):
+            calls.append(("complete_available", latest_rendered_frame_index))
+            return []
+
+        def submit(self, rendered, *, frame_start):
+            calls.append(("submit", rendered.frame_index, frame_start >= 0.0))
+            return None
+
+        def flush(self):
+            calls.append(("flush",))
+            return []
+
+    def fake_provider(runtime_arg, *, delivery_mode):
+        calls.append(("provider_factory", runtime_arg is render_runtime, delivery_mode))
+        return FakeProvider()
+
+    def fake_delivery_create(**kwargs):
+        calls.append(("delivery_create", kwargs["delivery_policy_label"]))
+        return FakeDelivery()
+
+    def fake_build_plan(
+        scene, args, frame_index, ray_cache, *, build_video_camera, frame_identity, geometry_mode
+    ):
+        calls.append(("plan", frame_index, frame_identity.frame_id, frame_identity.sim_time, geometry_mode))
+        return SimpleNamespace(request=object(), camera=object())
+
+    def fake_render_from_context(frame_context, plan, *, frame_index):
+        calls.append(("render", frame_context.frame_id, frame_index))
+        return SimpleNamespace(frame_index=frame_index)
+
+    def step_physics_frame(frame_index: int):
+        calls.append(("step", frame_index))
+        return SimpleNamespace(frame_id=90 + frame_index, sim_time=9.0 + frame_index)
+
+    scenario_runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=89, sim_time=8.9),
+        step_frame_fn=step_physics_frame,
+        metadata={"runtime_owner": "video_spec_test"},
+    )
+
+    monkeypatch.setattr(lab_runner, "create_physics_render_runtime_for_config", fake_create_runtime)
+    monkeypatch.setattr(frame_contexts, "physics_frame_context_provider", fake_provider)
+    monkeypatch.setattr(lab_runner.VideoDeliveryFacade, "create", staticmethod(fake_delivery_create))
+    monkeypatch.setattr(lab_runner, "build_video_render_plan", fake_build_plan)
+    monkeypatch.setattr(lab_runner, "render_video_frame_from_context", fake_render_from_context)
+
+    result = product_workflow.run_physics_product_scenario(
+        get_preset("physics_body_triangle_video_smoke"),
+        ArtifactOutput(root=tmp_path / "video_spec", frames=2, progress_every=0),
+        runtime=scenario_runtime,
+        products=(
+            product_specs.VideoProductSpec(
+                build_video_camera=lambda scene, args, frame_index: object(),
+                synchronize_event=lambda event: None,
+                pack_rgb8=lambda result: result,
+                consumer_id="video_spec_consumer",
+                product_name="video_spec",
+            ),
+            product_specs.DebugProductSpec(metadata_keys=None),
+        ),
+    )
+
+    assert [record.frame_id for record in result.product_results["video_spec"]] == [90, 91]
+    assert [record.frame_id for record in result.product_results["debug"]] == [90, 91]
+    assert isinstance(result.end_outputs["video_spec"]["rows"], FrameTimingRecorder)
+    assert calls == [
+        ("create_runtime", "video_spec_consumer", "video_spec_test"),
+        ("provider_factory", True, "sync"),
+        ("delivery_create", "sync"),
+        ("step", 0),
+        ("begin_frame", 0, 90, 0),
+        ("enter", 0),
+        ("plan", 0, 90, 9.0, "dynamic_rigid"),
+        ("render", 90, 0),
+        ("exit", 0, None),
+        ("complete_available", 0),
+        ("submit", 0, True),
+        ("complete_available", 0),
+        ("step", 1),
+        ("begin_frame", 1, 91, 0),
+        ("enter", 1),
+        ("plan", 1, 91, 10.0, "dynamic_rigid"),
+        ("render", 91, 1),
+        ("exit", 1, None),
+        ("complete_available", 1),
+        ("submit", 1, True),
+        ("complete_available", 1),
+        ("flush",),
+    ]
 
 
 def test_observation_product_spec_from_scenario_requires_physics_source():
@@ -4481,6 +4606,67 @@ def test_physics_video_product_validation_is_distinct_from_video_only_validation
         get_preset("physics_body_triangle_video_smoke"),
         LabRunOptions(out=tmp_path / "physics"),
     )
+
+
+def test_physics_video_product_runner_uses_shared_product_builder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[object, ...]] = []
+
+    class FakeVideoProduct:
+        product_name = "video"
+
+        def __init__(self):
+            self.rows = FrameTimingRecorder(csv_path=None)
+
+        def begin_run(self):
+            calls.append(("begin",))
+            return None
+
+        def consume(self, tick):
+            calls.append(("consume", tick.frame_index, tick.frame_id))
+            return frame_products.FrameProductResult.from_tick(
+                product_name=self.product_name,
+                tick=tick,
+            )
+
+        def end_run(self):
+            calls.append(("end",))
+            return {"rows": self.rows}
+
+    def fake_build_product(*args, **kwargs):
+        calls.append(("build_product", kwargs["consumer_id"]))
+        return FakeVideoProduct()
+
+    scenario_runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=99, sim_time=9.9),
+        step_frame_fn=lambda frame_index: SimpleNamespace(
+            frame_id=100 + frame_index,
+            sim_time=10.0 + frame_index,
+        ),
+    )
+    monkeypatch.setattr(lab_runner, "build_physics_video_frame_product", fake_build_product)
+
+    rows = run_physics_stepped_video_product_scenario(
+        get_preset("physics_body_triangle_video_smoke"),
+        LabRunOptions(out=tmp_path / "physics", frames=1, progress_every=0),
+        scenario_runtime=scenario_runtime,
+        build_video_camera=lambda scene, args, frame_index: object(),
+        synchronize_event=lambda event: None,
+        pack_rgb8=lambda result: result,
+        consumer_id="shared_builder",
+    )
+
+    assert isinstance(rows, FrameTimingRecorder)
+    assert calls == [
+        ("build_product", "shared_builder"),
+        ("begin",),
+        ("consume", 0, 100),
+        ("end",),
+    ]
 
 
 def test_physics_video_product_runner_steps_tick_before_provider_borrow(

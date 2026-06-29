@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
@@ -47,6 +47,31 @@ class DebugProductSpec:
         return DebugFrameProduct(
             product_name=self.product_name,
             metadata_keys=self.metadata_keys,
+        )
+
+
+@dataclass(frozen=True)
+class VideoProductSpec:
+    """Declare a physics-owned video product for a lab workflow."""
+
+    build_video_camera: Callable[[object, object, int], object]
+    synchronize_event: Callable[[object], None]
+    pack_rgb8: Callable[[object], object]
+    consumer_id: str = "optical_lab_physics_video_product"
+    product_name: str = "video"
+
+    def build(self, context: ProductBuildContext) -> FrameProduct:
+        from .runner import build_physics_video_frame_product
+
+        return build_physics_video_frame_product(
+            context.config,
+            context.output,
+            scenario_runtime=context.runtime,
+            build_video_camera=self.build_video_camera,
+            synchronize_event=self.synchronize_event,
+            pack_rgb8=self.pack_rgb8,
+            consumer_id=self.consumer_id,
+            product_name=self.product_name,
         )
 
 
@@ -118,7 +143,20 @@ def build_products(
 ) -> tuple[FrameProduct, ...]:
     """Materialize product instances from products or declarative specs."""
 
-    return tuple(_build_product(product, context) for product in products)
+    return tuple(_build_product(product, context) for product in validate_product_inputs(products))
+
+
+def validate_product_inputs(products: Iterable[ProductInput]) -> tuple[ProductInput, ...]:
+    """Validate product/spec shape without constructing product state."""
+
+    normalized = tuple(products)
+    for product in normalized:
+        if _looks_like_frame_product(product):
+            continue
+        if callable(getattr(product, "build", None)):
+            continue
+        raise TypeError("products must be FrameProduct instances or ProductSpec values")
+    return normalized
 
 
 def _build_product(product: ProductInput, context: ProductBuildContext) -> FrameProduct:

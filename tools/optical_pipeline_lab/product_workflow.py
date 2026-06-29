@@ -131,14 +131,15 @@ def run_physics_product_scenario(
     try:
         validate_physics_product_scenario(config, output)
         frame_count = _resolve_workflow_frame_count(output, frames)
+        product_inputs = _validate_product_inputs(products)
+        output.root.mkdir(parents=True, exist_ok=True)
+        write_scenario_config(output.root / "scenario_config.json", config, output)
         concrete_products = _build_products_for_scenario(
             config=config,
             output=output,
             runtime=runtime,
-            products=products,
+            products=product_inputs,
         )
-        output.root.mkdir(parents=True, exist_ok=True)
-        write_scenario_config(output.root / "scenario_config.json", config, output)
         return run_physics_products(
             runtime=runtime,
             products=concrete_products,
@@ -214,3 +215,9 @@ def _build_products_for_scenario(
             output=output,
         ),
     )
+
+
+def _validate_product_inputs(products: Iterable[object]) -> tuple[object, ...]:
+    from .product_specs import validate_product_inputs
+
+    return validate_product_inputs(products)

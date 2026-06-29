@@ -477,6 +477,44 @@ def run_physics_stepped_video_product_scenario(
     options.out.mkdir(parents=True, exist_ok=True)
     write_scenario_config(options.out / "scenario_config.json", config, options)
 
+    video_product = build_physics_video_frame_product(
+        config,
+        options,
+        scenario_runtime=scenario_runtime,
+        build_video_camera=build_video_camera,
+        synchronize_event=synchronize_event,
+        pack_rgb8=pack_rgb8,
+        consumer_id=consumer_id,
+    )
+    product_runner = MultiProductFrameRunner(
+        products=(
+            video_product,
+            *extra_products,
+        )
+    )
+
+    product_runner.begin_run()
+    for frame_index in range(int(options.frames)):
+        tick = scenario_runtime.step_tick(frame_index)
+        product_runner.step(tick)
+    product_runner.end_run()
+    return video_product.rows
+
+
+def build_physics_video_frame_product(
+    config: OpticalLabScenarioConfig,
+    options: LabRunOptions,
+    *,
+    scenario_runtime: object,
+    build_video_camera: PhysicsVideoCameraBuilder,
+    synchronize_event: Callable[[object], None],
+    pack_rgb8: Callable[[object], object],
+    consumer_id: str = "optical_lab_physics_video_product",
+    product_name: str = "video",
+) -> PhysicsVideoFrameProduct:
+    """Build the physics-owned video frame product for one lab workflow."""
+
+    validate_physics_video_product_run(config, options)
     args = _build_physics_video_args_unvalidated(config, options)
     timings = TimingRecorder()
     runtime = create_physics_render_runtime_for_config(
@@ -525,28 +563,17 @@ def run_physics_stepped_video_product_scenario(
         pack_rgb8=pack_rgb8,
         synchronize_event=synchronize_event,
     )
-    product_runner = MultiProductFrameRunner(
-        products=(
-            PhysicsVideoFrameProduct(
-                runtime=runtime,
-                config=config,
-                args=args,
-                frame_provider=frame_provider,
-                delivery=delivery,
-                rows=rows,
-                row_builder=row_builder,
-                build_video_camera=build_video_camera,
-            ),
-            *extra_products,
-        )
+    return PhysicsVideoFrameProduct(
+        runtime=runtime,
+        config=config,
+        args=args,
+        frame_provider=frame_provider,
+        delivery=delivery,
+        rows=rows,
+        row_builder=row_builder,
+        build_video_camera=build_video_camera,
+        product_name=product_name,
     )
-
-    product_runner.begin_run()
-    for frame_index in range(int(options.frames)):
-        tick = scenario_runtime.step_tick(frame_index)
-        product_runner.step(tick)
-    product_runner.end_run()
-    return rows
 
 
 def build_physics_video_args(
