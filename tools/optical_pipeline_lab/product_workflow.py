@@ -122,23 +122,34 @@ def run_physics_product_scenario(
     output: ArtifactOutput,
     *,
     runtime: object,
-    products: Iterable[FrameProduct],
+    products: Iterable[object],
     frames: int | None = None,
     owns_runtime: bool = False,
 ) -> PhysicsProductRunResult:
-    """Run product instances for one physics-backed lab scenario."""
+    """Run products or product specs for one physics-backed lab scenario."""
 
-    validate_physics_product_scenario(config, output)
-    frame_count = _resolve_workflow_frame_count(output, frames)
-    output.root.mkdir(parents=True, exist_ok=True)
-    write_scenario_config(output.root / "scenario_config.json", config, output)
-    return run_physics_products(
-        runtime=runtime,
-        products=products,
-        frames=frame_count,
-        output=output,
-        owns_runtime=owns_runtime,
-    )
+    try:
+        validate_physics_product_scenario(config, output)
+        frame_count = _resolve_workflow_frame_count(output, frames)
+        concrete_products = _build_products_for_scenario(
+            config=config,
+            output=output,
+            runtime=runtime,
+            products=products,
+        )
+        output.root.mkdir(parents=True, exist_ok=True)
+        write_scenario_config(output.root / "scenario_config.json", config, output)
+        return run_physics_products(
+            runtime=runtime,
+            products=concrete_products,
+            frames=frame_count,
+            output=output,
+            owns_runtime=owns_runtime,
+        )
+    except Exception:
+        if owns_runtime:
+            runtime.close()
+        raise
 
 
 def run_physics_product_preset(
@@ -146,11 +157,11 @@ def run_physics_product_preset(
     output: ArtifactOutput,
     *,
     runtime: object,
-    products: Iterable[FrameProduct],
+    products: Iterable[object],
     frames: int | None = None,
     owns_runtime: bool = False,
 ) -> PhysicsProductRunResult:
-    """Run product instances for one named physics-backed lab preset."""
+    """Run products or product specs for one named physics-backed lab preset."""
 
     from .presets import get_preset
 
@@ -184,3 +195,22 @@ def _resolve_workflow_frame_count(output: ArtifactOutput, frames: int | None) ->
     if frames is not None and output._frames_explicit and output.frames != frame_count:
         raise ValueError("ArtifactOutput.frames conflicts with workflow run frames")
     return frame_count
+
+
+def _build_products_for_scenario(
+    *,
+    config: OpticalLabScenarioConfig,
+    output: ArtifactOutput,
+    runtime: object,
+    products: Iterable[object],
+) -> tuple[FrameProduct, ...]:
+    from .product_specs import ProductBuildContext, build_products
+
+    return build_products(
+        products,
+        ProductBuildContext(
+            runtime=runtime,
+            config=config,
+            output=output,
+        ),
+    )

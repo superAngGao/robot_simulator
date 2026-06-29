@@ -23,6 +23,7 @@ import tools.optical_pipeline_lab.go2_backend as go2_backend
 import tools.optical_pipeline_lab.observation_products as observation_products
 import tools.optical_pipeline_lab.physics_runtime as physics_runtime
 import tools.optical_pipeline_lab.physics_source as physics_source
+import tools.optical_pipeline_lab.product_specs as product_specs
 import tools.optical_pipeline_lab.product_workflow as product_workflow
 import tools.optical_pipeline_lab.render_session as render_session
 import tools.optical_pipeline_lab.rgb_pack as rgb_pack
@@ -113,6 +114,10 @@ def test_optical_pipeline_lab_exports_p9_product_contracts():
     )
     assert optical_pipeline_lab.PhysicsOwnedProductWorkflow is product_workflow.PhysicsOwnedProductWorkflow
     assert optical_pipeline_lab.PhysicsProductRunResult is product_workflow.PhysicsProductRunResult
+    assert optical_pipeline_lab.ProductBuildContext is product_specs.ProductBuildContext
+    assert optical_pipeline_lab.ProductSpec is product_specs.ProductSpec
+    assert optical_pipeline_lab.DebugProductSpec is product_specs.DebugProductSpec
+    assert optical_pipeline_lab.ObservationProductSpec is product_specs.ObservationProductSpec
     assert optical_pipeline_lab.run_physics_products is product_workflow.run_physics_products
     assert optical_pipeline_lab.run_physics_product_scenario is product_workflow.run_physics_product_scenario
     assert optical_pipeline_lab.run_physics_product_preset is product_workflow.run_physics_product_preset
@@ -123,6 +128,18 @@ def test_optical_pipeline_lab_observation_product_export_is_lazy():
 import sys
 import tools.optical_pipeline_lab
 
+assert "tools.optical_pipeline_lab.observation_products" not in sys.modules
+assert "rl_env.managers" not in sys.modules
+"""
+    subprocess.run([sys.executable, "-c", script], check=True)
+
+
+def test_optical_pipeline_lab_debug_product_spec_export_stays_lightweight():
+    script = """
+import sys
+import tools.optical_pipeline_lab as lab
+
+_ = lab.DebugProductSpec
 assert "tools.optical_pipeline_lab.observation_products" not in sys.modules
 assert "rl_env.managers" not in sys.modules
 """
@@ -1345,6 +1362,142 @@ def test_run_physics_product_scenario_rejects_frame_conflict_before_writing(tmp_
         )
 
     assert not (tmp_path / "conflict").exists()
+
+
+def test_run_physics_product_scenario_builds_debug_product_spec(tmp_path: Path):
+    runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=59, sim_time=5.9),
+        step_frame_fn=lambda frame_index: SimpleNamespace(
+            frame_id=60 + frame_index,
+            sim_time=6.0 + frame_index,
+        ),
+        metadata={"runtime_owner": "p10_spec_test", "ignored": "value"},
+    )
+
+    result = product_workflow.run_physics_product_scenario(
+        get_preset("physics_body_triangle_video_smoke"),
+        ArtifactOutput(root=tmp_path / "debug_spec"),
+        runtime=runtime,
+        products=(
+            product_specs.DebugProductSpec(
+                product_name="debug_spec",
+                metadata_keys=("runtime_owner",),
+            ),
+        ),
+        frames=1,
+    )
+
+    debug_result = result.product_results["debug_spec"][0]
+    assert debug_result.frame_id == 60
+    assert debug_result.metadata == {"runtime_owner": "p10_spec_test"}
+    assert result.end_outputs["debug_spec"][0].frame_id == 60
+
+
+def test_run_physics_product_scenario_builds_observation_product_spec(tmp_path: Path):
+    schema = locomotion_obs_schema(
+        num_actuated_joints=2,
+        num_contact_bodies=2,
+        include_contact_mask=True,
+    )
+    published_frame = CpuPublishedFrame(
+        frame_id=70,
+        sim_time=7.0,
+        step_index=70,
+        env_mask=None,
+        q=np.array([1.0, 0.0, 0.0, 0.0, 0.1, 0.2, 0.3, 0.5, -0.5]),
+        qdot=np.array([0.0, 0.0, 0.0, 0.1, 0.2, 0.3, 1.5, -1.5]),
+        X_world=[SpatialTransform.identity()],
+        v_bodies=np.array([[1.0, 2.0, 3.0, 0.4, 0.5, 0.6]]),
+        contact_count=1,
+        contacts=object(),
+        telemetry=None,
+        contact_mask=np.array([0, 1], dtype=np.int32),
+    )
+    runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=published_frame,
+        step_frame_fn=lambda frame_index: published_frame,
+    )
+    spec = product_specs.ObservationProductSpec.from_scenario(
+        get_preset("physics_body_triangle_video_smoke"),
+        schema=schema,
+        actuated_q_indices=np.array([7, 8], dtype=np.intp),
+        actuated_v_indices=np.array([6, 7], dtype=np.intp),
+        contact_body_names=("left_foot", "right_foot"),
+    )
+
+    result = product_workflow.run_physics_product_scenario(
+        get_preset("physics_body_triangle_video_smoke"),
+        ArtifactOutput(root=tmp_path / "obs_spec"),
+        runtime=runtime,
+        products=(spec,),
+        frames=1,
+    )
+
+    observation_result = result.product_results["observation"][0]
+    np.testing.assert_allclose(
+        observation_result.payload["observation"].numpy(),
+        [
+            1.0,
+            2.0,
+            3.0,
+            0.4,
+            0.5,
+            0.6,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.5,
+            -0.5,
+            1.5,
+            -1.5,
+            0.0,
+            1.0,
+        ],
+    )
+
+
+def test_observation_product_spec_from_scenario_requires_physics_source():
+    with pytest.raises(ValueError, match="frame_source='physics_published_frame'"):
+        product_specs.ObservationProductSpec.from_scenario(
+            replace(
+                get_preset("physics_body_triangle_video_smoke"),
+                frame_source=FrameSourceKind.STATIC_ASSET_BUILDER,
+            ),
+            schema=locomotion_obs_schema(num_actuated_joints=0),
+        )
+
+
+def test_run_physics_product_scenario_rejects_invalid_product_before_writing(tmp_path: Path):
+    calls: list[tuple[str]] = []
+    runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=79, sim_time=7.9),
+        step_frame_fn=lambda frame_index: SimpleNamespace(
+            frame_id=80 + frame_index,
+            sim_time=8.0 + frame_index,
+        ),
+        close_fn=lambda: calls.append(("close",)),
+    )
+
+    with pytest.raises(TypeError, match="FrameProduct instances or ProductSpec"):
+        product_workflow.run_physics_product_scenario(
+            get_preset("physics_body_triangle_video_smoke"),
+            ArtifactOutput(root=tmp_path / "invalid_product"),
+            runtime=runtime,
+            products=(object(),),
+            frames=1,
+            owns_runtime=True,
+        )
+
+    assert runtime.closed is True
+    assert calls == [("close",)]
+    assert not (tmp_path / "invalid_product").exists()
 
 
 def test_published_state_observation_product_builds_obs_schema_vector_from_tick():
