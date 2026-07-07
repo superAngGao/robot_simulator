@@ -119,6 +119,8 @@ def test_optical_pipeline_lab_exports_p9_product_contracts():
     assert optical_pipeline_lab.DebugProductSpec is product_specs.DebugProductSpec
     assert optical_pipeline_lab.ObservationProductSpec is product_specs.ObservationProductSpec
     assert optical_pipeline_lab.VideoProductSpec is product_specs.VideoProductSpec
+    assert optical_pipeline_lab.run_optical_lab_workflow is product_workflow.run_optical_lab_workflow
+    assert optical_pipeline_lab.run_optical_lab_products is product_workflow.run_optical_lab_products
     assert optical_pipeline_lab.run_physics_products is product_workflow.run_physics_products
     assert optical_pipeline_lab.run_physics_product_scenario is product_workflow.run_physics_product_scenario
     assert optical_pipeline_lab.run_physics_product_preset is product_workflow.run_physics_product_preset
@@ -1333,6 +1335,149 @@ def test_run_physics_product_preset_delegates_to_named_preset(tmp_path: Path):
     payload = json.loads((tmp_path / "preset" / "scenario_config.json").read_text())
     assert payload["scenario"]["scenario_name"] == "physics_body_triangle_video_smoke"
     assert [record.frame_id for record in result.product_results["debug"]] == [50]
+
+
+def test_run_optical_lab_workflow_runs_preset_products_with_out_path(tmp_path: Path):
+    runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=52, sim_time=5.2),
+        step_frame_fn=lambda frame_index: SimpleNamespace(
+            frame_id=53 + frame_index,
+            sim_time=5.3 + frame_index,
+        ),
+        metadata={"runtime_owner": "workflow_api_test"},
+    )
+
+    result = product_workflow.run_optical_lab_workflow(
+        preset="physics_body_triangle_video_smoke",
+        out=tmp_path / "workflow",
+        runtime=runtime,
+        products=(product_specs.DebugProductSpec(metadata_keys=("runtime_owner",)),),
+        frames=2,
+    )
+
+    payload = json.loads((tmp_path / "workflow" / "scenario_config.json").read_text())
+    assert payload["scenario"]["scenario_name"] == "physics_body_triangle_video_smoke"
+    assert payload["run_options"]["root"] == str(tmp_path / "workflow")
+    assert payload["run_options"]["frames"] == 2
+    assert result.artifacts == {"root": tmp_path / "workflow"}
+    assert [record.frame_id for record in result.product_results["debug"]] == [53, 54]
+    assert result.product_results["debug"][0].metadata == {"runtime_owner": "workflow_api_test"}
+
+
+def test_run_optical_lab_products_accepts_explicit_config_alias(tmp_path: Path):
+    runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=54, sim_time=5.4),
+        step_frame_fn=lambda frame_index: SimpleNamespace(
+            frame_id=55 + frame_index,
+            sim_time=5.5 + frame_index,
+        ),
+    )
+
+    result = product_workflow.run_optical_lab_products(
+        config=get_preset("physics_body_triangle_video_smoke"),
+        output=ArtifactOutput(root=tmp_path / "products", frames=1),
+        runtime=runtime,
+        products=(product_specs.DebugProductSpec(),),
+    )
+
+    assert [record.frame_id for record in result.product_results["debug"]] == [55]
+
+
+def test_run_optical_lab_workflow_merges_frames_into_output_artifact(tmp_path: Path):
+    runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=56, sim_time=5.6),
+        step_frame_fn=lambda frame_index: SimpleNamespace(
+            frame_id=57 + frame_index,
+            sim_time=5.7 + frame_index,
+        ),
+    )
+
+    product_workflow.run_optical_lab_workflow(
+        preset="physics_body_triangle_video_smoke",
+        output=ArtifactOutput(root=tmp_path / "merged"),
+        runtime=runtime,
+        products=(product_specs.DebugProductSpec(),),
+        frames=2,
+    )
+
+    payload = json.loads((tmp_path / "merged" / "scenario_config.json").read_text())
+    assert payload["run_options"]["frames"] == 2
+
+
+def test_run_optical_lab_workflow_requires_exactly_one_config_source(tmp_path: Path):
+    with pytest.raises(ValueError, match="exactly one of preset or config"):
+        product_workflow.run_optical_lab_workflow(
+            runtime=object(),
+            products=(),
+            out=tmp_path / "missing",
+            frames=1,
+        )
+
+    with pytest.raises(ValueError, match="exactly one of preset or config"):
+        product_workflow.run_optical_lab_workflow(
+            preset="physics_body_triangle_video_smoke",
+            config=get_preset("physics_body_triangle_video_smoke"),
+            runtime=object(),
+            products=(),
+            out=tmp_path / "both",
+            frames=1,
+        )
+
+
+def test_run_optical_lab_workflow_closes_owned_runtime_on_setup_error(tmp_path: Path):
+    calls: list[tuple[str]] = []
+    runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=58, sim_time=5.8),
+        step_frame_fn=lambda frame_index: SimpleNamespace(
+            frame_id=59 + frame_index,
+            sim_time=5.9 + frame_index,
+        ),
+        close_fn=lambda: calls.append(("close",)),
+    )
+
+    with pytest.raises(ValueError, match="conflicting output root and out"):
+        product_workflow.run_optical_lab_workflow(
+            preset="physics_body_triangle_video_smoke",
+            output=ArtifactOutput(root=tmp_path / "a"),
+            out=tmp_path / "b",
+            runtime=runtime,
+            products=(),
+            frames=1,
+            owns_runtime=True,
+        )
+
+    assert runtime.closed is True
+    assert calls == [("close",)]
+
+
+def test_run_optical_lab_workflow_requires_output_or_out():
+    with pytest.raises(TypeError, match="requires output or out"):
+        product_workflow.run_optical_lab_workflow(
+            preset="physics_body_triangle_video_smoke",
+            runtime=object(),
+            products=(),
+            frames=1,
+        )
+
+
+def test_run_optical_lab_workflow_rejects_conflicting_output_paths(tmp_path: Path):
+    with pytest.raises(ValueError, match="conflicting output root and out"):
+        product_workflow.run_optical_lab_workflow(
+            preset="physics_body_triangle_video_smoke",
+            output=ArtifactOutput(root=tmp_path / "a"),
+            out=tmp_path / "b",
+            runtime=object(),
+            products=(),
+            frames=1,
+        )
 
 
 def test_run_physics_product_scenario_requires_physics_owned_clock(tmp_path: Path):

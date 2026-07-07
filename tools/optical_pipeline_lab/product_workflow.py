@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from functools import cached_property
+from pathlib import Path
 
 from .frame_products import FrameProduct, FrameProductResult, MultiProductFrameRunner
 from .runner import ArtifactOutput, validate_run, write_scenario_config
@@ -176,6 +177,61 @@ def run_physics_product_preset(
     )
 
 
+def run_optical_lab_workflow(
+    *,
+    runtime: object,
+    products: Iterable[object],
+    preset: str | None = None,
+    config: OpticalLabScenarioConfig | None = None,
+    output: ArtifactOutput | None = None,
+    out: Path | None = None,
+    frames: int | None = None,
+    owns_runtime: bool = False,
+) -> PhysicsProductRunResult:
+    """Run a named or explicit Optical Pipeline Lab product workflow."""
+
+    try:
+        scenario_config = _resolve_workflow_config(preset=preset, config=config)
+        artifact_output = _resolve_workflow_output(output=output, out=out, frames=frames)
+    except Exception:
+        if owns_runtime:
+            runtime.close()
+        raise
+    return run_physics_product_scenario(
+        scenario_config,
+        artifact_output,
+        runtime=runtime,
+        products=products,
+        frames=frames,
+        owns_runtime=owns_runtime,
+    )
+
+
+def run_optical_lab_products(
+    *,
+    runtime: object,
+    products: Iterable[object],
+    preset: str | None = None,
+    config: OpticalLabScenarioConfig | None = None,
+    output: ArtifactOutput | None = None,
+    out: Path | None = None,
+    frames: int | None = None,
+    owns_runtime: bool = False,
+) -> PhysicsProductRunResult:
+    """Run Optical Pipeline Lab products with the workflow convenience API."""
+
+    return run_optical_lab_workflow(
+        runtime=runtime,
+        products=products,
+        preset=preset,
+        config=config,
+        output=output,
+        out=out,
+        frames=frames,
+        owns_runtime=owns_runtime,
+    )
+
+
 def validate_physics_product_scenario(
     config: OpticalLabScenarioConfig,
     output: ArtifactOutput,
@@ -196,6 +252,59 @@ def _resolve_workflow_frame_count(output: ArtifactOutput, frames: int | None) ->
     if frames is not None and output._frames_explicit and output.frames != frame_count:
         raise ValueError("ArtifactOutput.frames conflicts with workflow run frames")
     return frame_count
+
+
+def _resolve_workflow_config(
+    *,
+    preset: str | None,
+    config: OpticalLabScenarioConfig | None,
+) -> OpticalLabScenarioConfig:
+    if (preset is None) == (config is None):
+        raise ValueError("provide exactly one of preset or config")
+    if config is not None:
+        return config
+
+    from .presets import get_preset
+
+    return get_preset(str(preset))
+
+
+def _resolve_workflow_output(
+    *,
+    output: ArtifactOutput | None,
+    out: Path | None,
+    frames: int | None,
+) -> ArtifactOutput:
+    if output is None:
+        if out is None:
+            raise TypeError("run_optical_lab_workflow requires output or out")
+        if frames is None:
+            return ArtifactOutput(root=out)
+        return ArtifactOutput(root=out, frames=frames)
+    if out is not None and Path(out) != output.root:
+        raise ValueError("run_optical_lab_workflow received conflicting output root and out paths")
+    if frames is not None and not output._frames_explicit:
+        return _copy_output_with_frames(output, int(frames))
+    return output
+
+
+def _copy_output_with_frames(output: ArtifactOutput, frames: int) -> ArtifactOutput:
+    return ArtifactOutput(
+        root=output.root,
+        model_dir=output.model_dir,
+        model_xml=output.model_xml,
+        frames=frames,
+        fps=output.fps,
+        warmup_renders=output.warmup_renders,
+        progress_every=output.progress_every,
+        video_raygen=output.video_raygen,
+        video_ray_cache=output.video_ray_cache,
+        video_readback_delivery=output.video_readback_delivery,
+        video_readback_ring_depth=output.video_readback_ring_depth,
+        render_profile=output.render_profile,
+        fail_on_overflow=output.fail_on_overflow,
+        verbose_warp=output.verbose_warp,
+    )
 
 
 def _build_products_for_scenario(

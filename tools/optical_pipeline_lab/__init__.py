@@ -45,6 +45,8 @@ _LAZY_EXPORTS = {
         "run_physics_product_scenario",
     ),
     "run_physics_products": (".product_workflow", "run_physics_products"),
+    "run_optical_lab_products": (".product_workflow", "run_optical_lab_products"),
+    "run_optical_lab_workflow": (".product_workflow", "run_optical_lab_workflow"),
     "simulation_frame_tick_from_published_frame": (
         ".frame_tick",
         "simulation_frame_tick_from_published_frame",
@@ -101,6 +103,8 @@ __all__ = [
     "WritePolicy",
     "is_physics_published_frame_source",
     "percentile",
+    "run_optical_lab_products",
+    "run_optical_lab_workflow",
     "run_physics_product_preset",
     "run_physics_product_scenario",
     "run_physics_products",
