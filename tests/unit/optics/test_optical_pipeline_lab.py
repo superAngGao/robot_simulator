@@ -158,11 +158,15 @@ def test_optical_pipeline_lab_getattr_unknown_raises_attribute_error():
 def test_artifact_output_uses_root_and_keeps_lab_run_options_compatibility(tmp_path: Path):
     output = ArtifactOutput(root=tmp_path / "root", frames=3)
     legacy = LabRunOptions(out=tmp_path / "legacy", frames=4)
+    replaced = legacy.replace_frames(5)
 
     assert output.root == tmp_path / "root"
     assert output.out == output.root
     assert legacy.root == tmp_path / "legacy"
     assert legacy.out == legacy.root
+    assert replaced.root == legacy.root
+    assert replaced.frames == 5
+    assert replaced._frames_explicit is True
 
     with pytest.raises(ValueError, match="conflicting root and out"):
         ArtifactOutput(root=tmp_path / "a", out=tmp_path / "b")
@@ -1408,6 +1412,19 @@ def test_run_optical_lab_workflow_merges_frames_into_output_artifact(tmp_path: P
 
     payload = json.loads((tmp_path / "merged" / "scenario_config.json").read_text())
     assert payload["run_options"]["frames"] == 2
+
+
+def test_run_optical_lab_workflow_rejects_explicit_output_frame_conflict(tmp_path: Path):
+    with pytest.raises(ValueError, match="ArtifactOutput.frames conflicts"):
+        product_workflow.run_optical_lab_workflow(
+            preset="physics_body_triangle_video_smoke",
+            output=ArtifactOutput(root=tmp_path / "frame_conflict", frames=2),
+            runtime=object(),
+            products=(),
+            frames=1,
+        )
+
+    assert not (tmp_path / "frame_conflict").exists()
 
 
 def test_run_optical_lab_workflow_requires_exactly_one_config_source(tmp_path: Path):

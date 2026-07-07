@@ -202,7 +202,7 @@ def run_optical_lab_workflow(
         artifact_output,
         runtime=runtime,
         products=products,
-        frames=frames,
+        frames=None,
         owns_runtime=owns_runtime,
     )
 
@@ -283,28 +283,13 @@ def _resolve_workflow_output(
         return ArtifactOutput(root=out, frames=frames)
     if out is not None and Path(out) != output.root:
         raise ValueError("run_optical_lab_workflow received conflicting output root and out paths")
-    if frames is not None and not output._frames_explicit:
-        return _copy_output_with_frames(output, int(frames))
+    if frames is not None:
+        frame_count = int(frames)
+        if output._frames_explicit and output.frames != frame_count:
+            raise ValueError("ArtifactOutput.frames conflicts with workflow run frames")
+        if not output._frames_explicit:
+            return output.replace_frames(frame_count)
     return output
-
-
-def _copy_output_with_frames(output: ArtifactOutput, frames: int) -> ArtifactOutput:
-    return ArtifactOutput(
-        root=output.root,
-        model_dir=output.model_dir,
-        model_xml=output.model_xml,
-        frames=frames,
-        fps=output.fps,
-        warmup_renders=output.warmup_renders,
-        progress_every=output.progress_every,
-        video_raygen=output.video_raygen,
-        video_ray_cache=output.video_ray_cache,
-        video_readback_delivery=output.video_readback_delivery,
-        video_readback_ring_depth=output.video_readback_ring_depth,
-        render_profile=output.render_profile,
-        fail_on_overflow=output.fail_on_overflow,
-        verbose_warp=output.verbose_warp,
-    )
 
 
 def _build_products_for_scenario(

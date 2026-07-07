@@ -114,6 +114,26 @@ class ArtifactOutput:
 
         return self.root
 
+    def replace_frames(self, frames: int) -> "ArtifactOutput":
+        """Return a copy with an explicit frame count."""
+
+        return ArtifactOutput(
+            root=self.root,
+            model_dir=self.model_dir,
+            model_xml=self.model_xml,
+            frames=frames,
+            fps=self.fps,
+            warmup_renders=self.warmup_renders,
+            progress_every=self.progress_every,
+            video_raygen=self.video_raygen,
+            video_ray_cache=self.video_ray_cache,
+            video_readback_delivery=self.video_readback_delivery,
+            video_readback_ring_depth=self.video_readback_ring_depth,
+            render_profile=self.render_profile,
+            fail_on_overflow=self.fail_on_overflow,
+            verbose_warp=self.verbose_warp,
+        )
+
 
 LabRunOptions = ArtifactOutput
 
