@@ -35,6 +35,23 @@ P11 is not a new runner, not a new physics runtime abstraction, and not a render
 backend project. It is the official preset-level user workflow for lab and
 benchmark callers.
 
+## Review Decisions
+
+Claude review accepted the direction and made the following binding decisions:
+
+1. Keep both entry points:
+   - `run_optical_lab_preset(...)` for P11 preset-level users.
+   - `run_optical_lab_products(...)` for P10 advanced composition.
+2. Support string products immediately for `"video"` and `"debug"`.
+3. Initially support only reviewed presets, starting with
+   `physics_body_triangle_video_smoke`.
+4. Examples should be executable, but include `--dry-run` so tests can validate
+   imports and argument parsing without GPU work.
+5. Keep `device` as a flat common argument and group advanced runtime options in
+   `runtime_kwargs`.
+
+These decisions are reflected in the API and slice plan below.
+
 The primary user should be able to write:
 
 ```python
@@ -94,6 +111,26 @@ Responsibilities:
 Do not keep growing `product_workflow.py` with all future user-facing entry
 points. P10 modules should remain reusable building blocks; P11 modules should
 be the public lab orchestration layer.
+
+## Design References
+
+P11 follows established patterns from the project reference matrix:
+
+- **Gymnasium env registry**: `gym.make("HalfCheetah-v4")` proves that string
+  identifiers are a good public entry point when they resolve through an
+  explicit registry. P11 uses the same idea, but keeps product/runtime choices
+  stricter: unsupported presets and products fail fast instead of being guessed.
+- **Isaac Lab config workflow**: Isaac Lab's manager/config style separates
+  user-facing experiment configuration from lower-level simulation execution.
+  P11 mirrors that separation: preset/product selection lives above P10's
+  product workflow and above the physics runtime owner.
+- **MuJoCo benchmark/preset style**: MuJoCo examples and benchmarks are
+  commonly driven from named models/scenes plus output configuration. P11 uses a
+  similar preset-level workflow, while keeping product outputs more flexible via
+  P10 product specs.
+
+The key design choice is explicit registration over inference: P11 should feel
+easy to call, but every default it supplies must be reviewed and named.
 
 ## Public API
 
@@ -273,6 +310,18 @@ products=("observation",)
 Reason: observation requires explicit schema and robot metadata. Automatically
 guessing those values would create a misleading API.
 
+Required error message shape:
+
+```python
+raise ValueError(
+    'Product string "observation" is not supported. '
+    "Observation requires explicit robot metadata "
+    "(schema, actuated indices, contact bodies). "
+    "Use ObservationProductSpec.from_scenario(...) instead. "
+    "See examples/optical_lab/physics_body_triangle_observation.py."
+)
+```
+
 ## Runtime Factory Policy
 
 P11 can create and close runtimes, but only at the preset workflow level.
@@ -327,17 +376,31 @@ Purpose: minimal official artifact workflow.
 Sketch:
 
 ```python
+import argparse
 from pathlib import Path
 
 from tools.optical_pipeline_lab.preset_workflows import run_optical_lab_preset
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+
+    preset = "physics_body_triangle_video_smoke"
+    frames = 120
+    products = ("video", "debug")
+    out = Path("runs/examples/physics_body_triangle_video_debug")
+
+    if args.dry_run:
+        print(f"Would run: preset={preset} frames={frames} products={products} out={out}")
+        return
+
     result = run_optical_lab_preset(
-        preset="physics_body_triangle_video_smoke",
-        frames=120,
-        products=("video", "debug"),
-        out=Path("runs/examples/physics_body_triangle_video_debug"),
+        preset=preset,
+        frames=frames,
+        products=products,
+        out=out,
     )
     print(result.artifacts)
     print(sorted(result.product_results))
@@ -354,6 +417,7 @@ Purpose: show why observation is explicit.
 Sketch:
 
 ```python
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -365,6 +429,10 @@ from tools.optical_pipeline_lab.product_specs import ObservationProductSpec
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+
     config = get_preset("physics_body_triangle_video_smoke")
     schema = locomotion_obs_schema(
         num_actuated_joints=2,
@@ -378,11 +446,20 @@ def main() -> None:
         actuated_v_indices=np.array([6, 7]),
         contact_body_names=("left_foot", "right_foot"),
     )
+    out = Path("runs/examples/physics_body_triangle_observation")
+
+    if args.dry_run:
+        print(
+            "Would run: "
+            f"preset={config.scenario_name} frames=120 products=('debug', observation) out={out}"
+        )
+        return
+
     result = run_optical_lab_preset(
         preset=config.scenario_name,
         frames=120,
         products=("debug", observation),
-        out=Path("runs/examples/physics_body_triangle_observation"),
+        out=out,
     )
     print(result.product_results["observation"][-1].payload["observation"])
 
@@ -403,6 +480,8 @@ P11 should not:
 - make `PhysicsOwnedProductWorkflow` reusable;
 - add schedule abstractions;
 - add render backends;
+- implement render backend selection;
+- add multi-preset batching or comparison workflows;
 - infer physics runtimes from arbitrary scenario config fields;
 - infer observation schema, joint indices, velocity indices, or contact body
   names;
@@ -481,7 +560,8 @@ Implement:
 - string `"video"` for the reviewed smoke preset;
 - explicit observation spec pass-through;
 - unknown string fail-fast;
-- `"observation"` string fail-fast with message requiring explicit spec.
+- `"observation"` string fail-fast with message requiring explicit spec and the
+  observation example path.
 
 ### P11.4: Preset Runner
 
@@ -497,7 +577,8 @@ Implement:
 - runtime ownership and cleanup;
 - output/out handling by reusing `ArtifactOutput`;
 - calls into P10 `run_optical_lab_products(...)`;
-- tests for video/debug minimal path with fakes, not real GPU work.
+- basic tests for video/debug minimal path with fakes, not real GPU work;
+- setup/teardown failure tests proving runtime cleanup.
 
 ### P11.5: Examples and Documentation
 
@@ -512,23 +593,54 @@ examples/optical_lab/physics_body_triangle_observation.py
 Tests should at least import examples or run their `--help` / dry path if they
 support one. Full GPU execution can stay out of unit tests.
 
+Example tests should live with the current optical lab tests unless a dedicated
+examples test module becomes cleaner:
+
+```python
+def test_optical_lab_examples_dry_run():
+    subprocess.run(
+        [
+            sys.executable,
+            "examples/optical_lab/physics_body_triangle_video_debug.py",
+            "--dry-run",
+        ],
+        check=True,
+    )
+```
+
 ## Review Questions
 
 1. Should the main entry be named `run_optical_lab_preset(...)`, or should it
    be `run_optical_lab_products(...)` with runtime creation optional?
 
+   Decision: use `run_optical_lab_preset(...)` for P11 and keep
+   `run_optical_lab_products(...)` as the existing P10 advanced composition
+   entry.
+
 2. Should `products=("video", "debug")` be accepted immediately, or should P11
    require explicit specs until examples settle?
+
+   Decision: accept `"video"` and `"debug"` immediately. This is the central
+   user-facing value of P11, and both mappings are reviewed and narrow.
 
 3. Should P11.1 support only `physics_body_triangle_video_smoke`, or should the
    runtime factory accept other physics-published presets if they appear in
    `presets.py`?
 
+   Decision: support only reviewed presets, initially
+   `physics_body_triangle_video_smoke`.
+
 4. Should examples be executable by default, or should they include a dry-run
    mode so unit tests can exercise the user API without GPU work?
 
+   Decision: examples should be executable by default and include `--dry-run`.
+   Unit tests should exercise dry-run/import paths, not full GPU execution.
+
 5. Should `run_optical_lab_preset(...)` expose runtime kwargs flatly, or group
    them under `runtime_options` / `runtime_kwargs`?
+
+   Decision: expose common `device` flatly and group advanced runtime options
+   under `runtime_kwargs`.
 
 ## Codex Recommendation
 
