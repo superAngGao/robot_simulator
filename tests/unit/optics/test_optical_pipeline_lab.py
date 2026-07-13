@@ -23,6 +23,7 @@ import tools.optical_pipeline_lab.go2_backend as go2_backend
 import tools.optical_pipeline_lab.observation_products as observation_products
 import tools.optical_pipeline_lab.physics_runtime as physics_runtime
 import tools.optical_pipeline_lab.physics_source as physics_source
+import tools.optical_pipeline_lab.preset_runtime as preset_runtime
 import tools.optical_pipeline_lab.product_specs as product_specs
 import tools.optical_pipeline_lab.product_workflow as product_workflow
 import tools.optical_pipeline_lab.render_session as render_session
@@ -119,6 +120,7 @@ def test_optical_pipeline_lab_exports_p9_product_contracts():
     assert optical_pipeline_lab.DebugProductSpec is product_specs.DebugProductSpec
     assert optical_pipeline_lab.ObservationProductSpec is product_specs.ObservationProductSpec
     assert optical_pipeline_lab.VideoProductSpec is product_specs.VideoProductSpec
+    assert optical_pipeline_lab.create_runtime_for_lab_preset is preset_runtime.create_runtime_for_lab_preset
     assert optical_pipeline_lab.run_optical_lab_workflow is product_workflow.run_optical_lab_workflow
     assert optical_pipeline_lab.run_optical_lab_products is product_workflow.run_optical_lab_products
     assert optical_pipeline_lab.run_physics_products is product_workflow.run_physics_products
@@ -1495,6 +1497,83 @@ def test_run_optical_lab_workflow_rejects_conflicting_output_paths(tmp_path: Pat
             products=(),
             frames=1,
         )
+
+
+def test_create_runtime_for_lab_preset_builds_reviewed_physics_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[dict[str, object]] = []
+    runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=61, sim_time=6.1),
+        step_frame_fn=lambda frame_index: SimpleNamespace(
+            frame_id=62 + frame_index,
+            sim_time=6.2 + frame_index,
+        ),
+    )
+
+    def fake_create_runtime(**kwargs):
+        calls.append(kwargs)
+        return runtime
+
+    monkeypatch.setattr(
+        preset_runtime,
+        "create_physics_body_triangle_lab_runtime",
+        fake_create_runtime,
+    )
+
+    created = preset_runtime.create_runtime_for_lab_preset(
+        "physics_body_triangle_video_smoke",
+        device="cuda:test",
+        initial_height=1.25,
+        metadata={"owner": "p11_test"},
+    )
+
+    assert created is runtime
+    assert calls == [
+        {
+            "device": "cuda:test",
+            "initial_height": 1.25,
+            "metadata": {"owner": "p11_test"},
+        }
+    ]
+
+
+def test_create_runtime_for_lab_preset_uses_factory_default_device(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[dict[str, object]] = []
+    runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=63, sim_time=6.3),
+        step_frame_fn=lambda frame_index: SimpleNamespace(
+            frame_id=64 + frame_index,
+            sim_time=6.4 + frame_index,
+        ),
+    )
+
+    monkeypatch.setattr(
+        preset_runtime,
+        "create_physics_body_triangle_lab_runtime",
+        lambda **kwargs: calls.append(kwargs) or runtime,
+    )
+
+    created = preset_runtime.create_runtime_for_lab_preset(
+        "physics_body_triangle_video_smoke",
+        dt=2.0e-4,
+    )
+
+    assert created is runtime
+    assert calls == [{"dt": 2.0e-4}]
+
+
+def test_create_runtime_for_lab_preset_rejects_unregistered_preset():
+    assert preset_runtime.supported_runtime_presets() == ("physics_body_triangle_video_smoke",)
+
+    with pytest.raises(NotImplementedError, match="not registered.*go2_video_ordered_static"):
+        preset_runtime.create_runtime_for_lab_preset("go2_video_ordered_static")
 
 
 def test_run_physics_product_scenario_requires_physics_owned_clock(tmp_path: Path):
