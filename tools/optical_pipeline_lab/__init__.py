@@ -40,6 +40,7 @@ _LAZY_EXPORTS = {
     "PublishedStateObservationProduct": (".observation_products", "PublishedStateObservationProduct"),
     "SimulationFrameTick": (".frame_tick", "SimulationFrameTick"),
     "create_runtime_for_lab_preset": (".preset_runtime", "create_runtime_for_lab_preset"),
+    "supported_runtime_presets": (".preset_runtime", "supported_runtime_presets"),
     "run_physics_product_preset": (".product_workflow", "run_physics_product_preset"),
     "run_physics_product_scenario": (
         ".product_workflow",
@@ -111,4 +112,5 @@ __all__ = [
     "run_physics_product_scenario",
     "run_physics_products",
     "simulation_frame_tick_from_published_frame",
+    "supported_runtime_presets",
 ]

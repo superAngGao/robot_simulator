@@ -121,6 +121,7 @@ def test_optical_pipeline_lab_exports_p9_product_contracts():
     assert optical_pipeline_lab.ObservationProductSpec is product_specs.ObservationProductSpec
     assert optical_pipeline_lab.VideoProductSpec is product_specs.VideoProductSpec
     assert optical_pipeline_lab.create_runtime_for_lab_preset is preset_runtime.create_runtime_for_lab_preset
+    assert optical_pipeline_lab.supported_runtime_presets is preset_runtime.supported_runtime_presets
     assert optical_pipeline_lab.run_optical_lab_workflow is product_workflow.run_optical_lab_workflow
     assert optical_pipeline_lab.run_optical_lab_products is product_workflow.run_optical_lab_products
     assert optical_pipeline_lab.run_physics_products is product_workflow.run_physics_products
