@@ -23,6 +23,7 @@ import tools.optical_pipeline_lab.go2_backend as go2_backend
 import tools.optical_pipeline_lab.observation_products as observation_products
 import tools.optical_pipeline_lab.physics_runtime as physics_runtime
 import tools.optical_pipeline_lab.physics_source as physics_source
+import tools.optical_pipeline_lab.preset_products as preset_products
 import tools.optical_pipeline_lab.preset_runtime as preset_runtime
 import tools.optical_pipeline_lab.product_specs as product_specs
 import tools.optical_pipeline_lab.product_workflow as product_workflow
@@ -121,6 +122,8 @@ def test_optical_pipeline_lab_exports_p9_product_contracts():
     assert optical_pipeline_lab.ObservationProductSpec is product_specs.ObservationProductSpec
     assert optical_pipeline_lab.VideoProductSpec is product_specs.VideoProductSpec
     assert optical_pipeline_lab.create_runtime_for_lab_preset is preset_runtime.create_runtime_for_lab_preset
+    assert optical_pipeline_lab.resolve_lab_product_specs is preset_products.resolve_lab_product_specs
+    assert optical_pipeline_lab.supported_lab_product_strings is preset_products.supported_lab_product_strings
     assert optical_pipeline_lab.supported_runtime_presets is preset_runtime.supported_runtime_presets
     assert optical_pipeline_lab.run_optical_lab_workflow is product_workflow.run_optical_lab_workflow
     assert optical_pipeline_lab.run_optical_lab_products is product_workflow.run_optical_lab_products
@@ -1575,6 +1578,90 @@ def test_create_runtime_for_lab_preset_rejects_unregistered_preset():
 
     with pytest.raises(NotImplementedError, match="not registered.*go2_video_ordered_static"):
         preset_runtime.create_runtime_for_lab_preset("go2_video_ordered_static")
+
+
+def test_resolve_lab_product_specs_builds_reviewed_video_and_debug_specs(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    sync_calls: list[object] = []
+
+    def sync(event):
+        sync_calls.append(event)
+
+    monkeypatch.setattr(go2_backend, "wp", SimpleNamespace(synchronize_event=sync))
+
+    resolved = preset_products.resolve_lab_product_specs(
+        preset="physics_body_triangle_video_smoke",
+        products=("video", "debug"),
+    )
+
+    video, debug = resolved
+    assert isinstance(video, product_specs.VideoProductSpec)
+    assert video.product_name == "video"
+    assert video.build_video_camera is go2_backend._build_video_camera
+    assert video.pack_rgb8 is go2_backend._pack_video_rgb8
+    assert video.synchronize_event is sync
+    assert isinstance(debug, product_specs.DebugProductSpec)
+    assert debug.product_name == "debug"
+    assert preset_products.supported_lab_product_strings(preset="physics_body_triangle_video_smoke") == (
+        "debug",
+        "video",
+    )
+    video.synchronize_event("ready")
+    assert sync_calls == ["ready"]
+
+
+def test_resolve_lab_product_specs_passes_through_explicit_products():
+    class FakeFrameProduct:
+        product_name = "fake"
+
+        def begin_run(self):
+            return None
+
+        def consume(self, tick):
+            return None
+
+        def end_run(self):
+            return None
+
+    debug = product_specs.DebugProductSpec(product_name="explicit_debug")
+    frame_product = FakeFrameProduct()
+
+    resolved = preset_products.resolve_lab_product_specs(
+        preset="physics_body_triangle_video_smoke",
+        products=(debug, frame_product),
+    )
+
+    assert resolved == (debug, frame_product)
+
+
+def test_resolve_lab_product_specs_requires_explicit_observation_spec():
+    with pytest.raises(ValueError, match="ObservationProductSpec.from_scenario"):
+        preset_products.resolve_lab_product_specs(
+            preset="physics_body_triangle_video_smoke",
+            products=("observation",),
+        )
+
+
+def test_resolve_lab_product_specs_rejects_unknown_product_string():
+    with pytest.raises(ValueError, match="Unsupported Optical Lab product string 'depth'"):
+        preset_products.resolve_lab_product_specs(
+            preset="physics_body_triangle_video_smoke",
+            products=("depth",),
+        )
+
+
+def test_resolve_lab_product_specs_rejects_unregistered_video_preset():
+    assert preset_products.supported_lab_product_strings(preset="go2_video_ordered_static") == ("debug",)
+
+    with pytest.raises(
+        NotImplementedError,
+        match="video product is not registered.*go2_video_ordered_static",
+    ):
+        preset_products.resolve_lab_product_specs(
+            preset="go2_video_ordered_static",
+            products=("video",),
+        )
 
 
 def test_run_physics_product_scenario_requires_physics_owned_clock(tmp_path: Path):

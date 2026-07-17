@@ -38,8 +38,10 @@ _LAZY_EXPORTS = {
     "ProductSpec": (".product_specs", "ProductSpec"),
     "PhysicsProductRunResult": (".product_workflow", "PhysicsProductRunResult"),
     "PublishedStateObservationProduct": (".observation_products", "PublishedStateObservationProduct"),
+    "resolve_lab_product_specs": (".preset_products", "resolve_lab_product_specs"),
     "SimulationFrameTick": (".frame_tick", "SimulationFrameTick"),
     "create_runtime_for_lab_preset": (".preset_runtime", "create_runtime_for_lab_preset"),
+    "supported_lab_product_strings": (".preset_products", "supported_lab_product_strings"),
     "supported_runtime_presets": (".preset_runtime", "supported_runtime_presets"),
     "run_physics_product_preset": (".product_workflow", "run_physics_product_preset"),
     "run_physics_product_scenario": (
@@ -99,6 +101,7 @@ __all__ = [
     "PublishedStateObservationProduct",
     "ReadbackPayload",
     "RenderBackend",
+    "resolve_lab_product_specs",
     "SimulationFrameTick",
     "TimingRecorder",
     "VideoProductSpec",
@@ -112,5 +115,6 @@ __all__ = [
     "run_physics_product_scenario",
     "run_physics_products",
     "simulation_frame_tick_from_published_frame",
+    "supported_lab_product_strings",
     "supported_runtime_presets",
 ]
