@@ -29,6 +29,8 @@ reuses the P10 workflow boundary instead of reimplementing it.
 - Added `run_optical_lab_preset(...)`.
   - Accepts a reviewed preset name, frame count, product selections, output
     root/output options, optional device, and runtime kwargs.
+  - Lets extra runtime keyword arguments override duplicate keys from
+    `runtime_kwargs`.
   - Resolves string products through `resolve_lab_product_specs(...)` before
     creating the runtime.
   - Creates the live runtime through `create_runtime_for_lab_preset(...)`.

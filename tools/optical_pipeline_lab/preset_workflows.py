@@ -22,7 +22,11 @@ def run_optical_lab_preset(
     runtime_kwargs: Mapping[str, object] | None = None,
     **extra_runtime_kwargs: object,
 ) -> PhysicsProductRunResult:
-    """Run a reviewed Optical Pipeline Lab preset with selected products."""
+    """Run a reviewed Optical Pipeline Lab preset with selected products.
+
+    Extra runtime keyword arguments override duplicate keys from
+    ``runtime_kwargs``.
+    """
 
     preset_name = str(preset)
     frame_count = int(frames)
