@@ -1,8 +1,8 @@
 """Render a MuJoCo Menagerie robot model with the GPU optical pipeline.
 
-This example is now a thin CLI wrapper around the Optical Pipeline Lab Go2
-backend. The implementation lives in ``tools.optical_pipeline_lab.go2_backend``
-so lab runners and examples do not share a private example API.
+This example is a legacy static-preview CLI wrapper. The implementation lives
+in ``tools.optical_pipeline_lab.menagerie_static_runner`` while P11 preset
+workflows provide the primary user-facing Optical Pipeline Lab API.
 
 Example:
 
@@ -23,7 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.optical_pipeline_lab.go2_backend import main  # noqa: E402
+from tools.optical_pipeline_lab.menagerie_static_runner import main  # noqa: E402
 
 
 if __name__ == "__main__":

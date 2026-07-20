@@ -21,6 +21,7 @@ import tools.optical_pipeline_lab.frame_products as frame_products
 import tools.optical_pipeline_lab.frame_runtime as frame_runtime
 import tools.optical_pipeline_lab.frame_tick as frame_tick
 import tools.optical_pipeline_lab.go2_backend as go2_backend
+import tools.optical_pipeline_lab.menagerie_static_runner as menagerie_static_runner
 import tools.optical_pipeline_lab.observation_products as observation_products
 import tools.optical_pipeline_lab.physics_runtime as physics_runtime
 import tools.optical_pipeline_lab.physics_source as physics_source
@@ -5742,13 +5743,15 @@ def test_lab_runner_rejects_invalid_async_ring_depth(tmp_path: Path):
         )
 
 
-def test_run_scenario_smoke_delegates_to_go2_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_run_scenario_smoke_delegates_to_menagerie_static_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     calls: list[object] = []
 
     def fake_render_many_views(args):
         calls.append(args)
 
-    monkeypatch.setattr(go2_backend, "render_many_views", fake_render_many_views)
+    monkeypatch.setattr(menagerie_static_runner, "render_many_views", fake_render_many_views)
 
     config = apply_run_overrides(
         get_preset("go2_video_ordered_static"),

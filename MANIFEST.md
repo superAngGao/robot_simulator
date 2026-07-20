@@ -219,7 +219,8 @@ runtime-owner GPU smoke 验证 `PhysicsLabScenarioRuntime` context manager 可�
 | `tools/optical_pipeline_lab/frame_contexts.py` | Static/synthetic/physics OpticalLabRenderFrameContext provider helpers |
 | `tools/optical_pipeline_lab/frame_runtime.py` | Lab-internal FrameWorkflowRunner for provider/video/delivery frame workflow |
 | `tools/optical_pipeline_lab/static_asset_source.py` | Static asset OpticalLabRenderSource builders for Go2/Menagerie and synthetic lab scenes |
-| `tools/optical_pipeline_lab/go2_backend.py` | Go2/Menagerie camera/video/reporting glue for the lab runner and example CLI |
+| `tools/optical_pipeline_lab/menagerie_static_runner.py` | Legacy Go2/Menagerie static preview and benchmark runner for lab runner and example CLI |
+| `tools/optical_pipeline_lab/go2_backend.py` | Deprecated compatibility shim for legacy Go2 backend imports |
 | `tools/optical_pipeline_lab/physics_source.py` | Physics-published `GpuPublishedFrame` → Optical Pipeline Lab render source bridge |
 | `tools/optical_pipeline_lab/render_session.py` | OpticalLabRenderSource / Options / Workspace / PreparedFrame / Session / FrameContext / Pipeline lab render foundation |
 | `tools/optical_pipeline_lab/video_loop.py` | Generic Optical Pipeline Lab video plan/render-context/delivery helpers parameterized by camera builder |
@@ -250,7 +251,7 @@ runtime-owner GPU smoke 验证 `PhysicsLabScenarioRuntime` context manager 可�
 | `examples/optical_direct_light_preview.py` | In-repo CPU optical RGB/depth/segmentation preview |
 | `examples/optical_robot_scene_preview.py` | Robot-like optical preview writer using benchmark scene generator |
 | `examples/mujoco_menagerie_robot_preview.py` | Open-source MuJoCo Menagerie visual mesh preview importer/writer |
-| `examples/mujoco_menagerie_gpu_preview.py` | Thin CLI wrapper for the shared Go2 Menagerie GPU backend |
+| `examples/mujoco_menagerie_gpu_preview.py` | Legacy CLI wrapper for the shared Menagerie static GPU runner |
 | `examples/optical_readback_microbench.py` | Device→host readback/materialization microbenchmark |
 | `examples/optical_lab/README.md` | P11 Optical Lab preset workflow examples overview |
 | `examples/optical_lab/physics_body_triangle_video_debug.py` | P11 example: physics body-triangle preset with video/debug products |

@@ -227,7 +227,7 @@ def run_scenario(config: OpticalLabScenarioConfig, options: LabRunOptions) -> No
     options.out.mkdir(parents=True, exist_ok=True)
     write_scenario_config(options.out / "scenario_config.json", config, options)
 
-    from .go2_backend import render_many_views
+    from .menagerie_static_runner import render_many_views
 
     render_many_views(build_menagerie_example_args(config, options))
 
