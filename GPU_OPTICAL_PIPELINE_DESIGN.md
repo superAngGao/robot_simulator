@@ -2227,7 +2227,7 @@ Current implementation status:
 ```text
 I1 complete:
   Go2RenderSession / Go2RenderFrameContext / Go2RenderPipeline were extracted
-  from go2_backend.py into a separate lab module.
+  from the original Menagerie benchmark runner into a separate lab module.
 
 I2 complete:
   Go2RenderWorkspace(device, stream) exists, and session.device/session.stream
@@ -2248,8 +2248,7 @@ C3 complete:
   Go2/Menagerie and synthetic lab scenes are built through the generic
   static_asset_source.build_static_asset_render_source(...). Static asset source
   construction now enters the generic render foundation through the
-  source/options factory path, while keeping Go2 CLI, preset, camera, video,
-  and reporting vocabulary in go2_backend.py. The old
+  source/options factory path. The old
   callback-based create(...) entrypoint has been removed.
 
 C4 complete:
@@ -2258,15 +2257,21 @@ C4 complete:
   still owns static/dynamic frame selection and FrameContext construction.
 
 C5 complete:
-  generic video render-loop helpers now live in video_loop.py. go2_backend.py
-  keeps Go2 camera/CLI/reporting ownership plus thin wrappers that inject the
-  Go2 camera builder into the generic video loop.
+  generic video render-loop helpers now live in video_loop.py.
+  menagerie_static_runner.py keeps legacy Menagerie camera/CLI/reporting
+  ownership plus thin wrappers that inject the Menagerie camera builder into the
+  generic video loop.
 
 Static asset source naming cleanup complete:
   static asset source construction lives in static_asset_source.py under
-  generic build_static_asset_render_source(...) vocabulary. go2_backend.py no
-  longer exports build_go2_static_asset_render_source(...); Go2 remains only the
+  generic build_static_asset_render_source(...) vocabulary. Go2 remains only the
   concrete Menagerie asset instance and CLI/reporting wrapper.
+
+P11.6a Menagerie runner rename complete:
+  the legacy static CLI/benchmark implementation now lives in
+  menagerie_static_runner.py. go2_backend.py is only a deprecated compatibility
+  shim for legacy imports and is no longer a core Optical Pipeline Lab
+  dependency.
 
 Alias cleanup complete:
   Go2Render* compatibility aliases and the go2_session.py shim have been
@@ -2493,7 +2498,6 @@ suppression.
 Names that should remain Go2-specific:
 
 ```text
-go2_backend.py
 go2_menagerie_static
 go2_video_ordered_static
 go2_video_ordered_baseline
@@ -2874,7 +2878,7 @@ tools/optical_pipeline_lab/rgb_pack.py
   clip + NaN sanitize + gamma 1/2.2 + uint8 round
   returns a new OpticalComputeResult with rgb8 channel and ready_event
 
-go2_backend.py
+menagerie_static_runner.py
   --video-readback=rgb8
   sync readback supports rgb8 host staging
   torch_async readback supports rgb8 ring delivery
@@ -2900,7 +2904,7 @@ Current status:
 
 ```text
 I1 complete:
-  render session classes extracted from go2_backend.py
+  render session classes extracted from the legacy Menagerie runner
 
 I2 complete:
   minimal workspace owns device/render stream
@@ -2915,7 +2919,7 @@ I4/C2 complete:
   introduce OpticalLabRenderSource
   introduce OpticalLabRenderOptions
   add a source/options construction path
-  keep callback-based create(...) until the Go2 backend is migrated in C3
+  remove the callback-based create(...) path after C3
 ```
 
 Active Stage I plan:
@@ -2931,7 +2935,7 @@ I6/C4 complete:
   keep FrameContext construction and static/dynamic decision in pipeline
 
 I7/C5 complete:
-  split generic video render/export helpers out of go2_backend.py
+  split generic video render/export helpers out of the legacy Menagerie runner
 ```
 
 Stage I is not a public API promotion. `OpticalLabRender*` remains lab-local
