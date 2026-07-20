@@ -26,6 +26,7 @@ import tools.optical_pipeline_lab.physics_runtime as physics_runtime
 import tools.optical_pipeline_lab.physics_source as physics_source
 import tools.optical_pipeline_lab.preset_products as preset_products
 import tools.optical_pipeline_lab.preset_runtime as preset_runtime
+import tools.optical_pipeline_lab.preset_workflows as preset_workflows
 import tools.optical_pipeline_lab.product_specs as product_specs
 import tools.optical_pipeline_lab.product_workflow as product_workflow
 import tools.optical_pipeline_lab.render_session as render_session
@@ -127,6 +128,7 @@ def test_optical_pipeline_lab_exports_p9_product_contracts():
     assert optical_pipeline_lab.resolve_lab_product_specs is preset_products.resolve_lab_product_specs
     assert optical_pipeline_lab.supported_lab_product_strings is preset_products.supported_lab_product_strings
     assert optical_pipeline_lab.supported_runtime_presets is preset_runtime.supported_runtime_presets
+    assert optical_pipeline_lab.run_optical_lab_preset is preset_workflows.run_optical_lab_preset
     assert optical_pipeline_lab.run_optical_lab_workflow is product_workflow.run_optical_lab_workflow
     assert optical_pipeline_lab.run_optical_lab_products is product_workflow.run_optical_lab_products
     assert optical_pipeline_lab.run_physics_products is product_workflow.run_physics_products
@@ -1731,6 +1733,162 @@ def test_run_physics_product_scenario_builds_debug_product_spec(tmp_path: Path):
     assert debug_result.frame_id == 60
     assert debug_result.metadata == {"runtime_owner": "p10_spec_test"}
     assert result.end_outputs["debug_spec"][0].frame_id == 60
+
+
+def test_run_optical_lab_preset_creates_and_owns_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """P11.4: run_optical_lab_preset creates runtime, runs products, and cleans up."""
+    closed = []
+    runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=100, sim_time=10.0),
+        step_frame_fn=lambda frame_index: SimpleNamespace(
+            frame_id=101 + frame_index,
+            sim_time=10.1 + frame_index * 0.1,
+        ),
+        close_fn=lambda: closed.append(True),
+    )
+
+    factory_calls = []
+
+    def fake_factory(preset, *, device=None, **kwargs):
+        factory_calls.append({"preset": preset, "device": device, "kwargs": kwargs})
+        return runtime
+
+    monkeypatch.setattr(preset_workflows, "create_runtime_for_lab_preset", fake_factory)
+
+    result = preset_workflows.run_optical_lab_preset(
+        preset="physics_body_triangle_video_smoke",
+        frames=3,
+        products=("debug",),
+        out=tmp_path / "preset_run",
+        device="cpu",
+        initial_height=1.5,
+    )
+
+    assert factory_calls == [
+        {
+            "preset": "physics_body_triangle_video_smoke",
+            "device": "cpu",
+            "kwargs": {"initial_height": 1.5},
+        }
+    ]
+    assert [r.frame_id for r in result.product_results["debug"]] == [101, 102, 103]
+    assert result.artifacts == {"root": tmp_path / "preset_run"}
+    assert closed == [True]
+    payload = json.loads((tmp_path / "preset_run" / "scenario_config.json").read_text())
+    assert payload["scenario"]["scenario_name"] == "physics_body_triangle_video_smoke"
+    assert payload["run_options"]["frames"] == 3
+
+
+def test_run_optical_lab_preset_resolves_product_strings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """P11.4: run_optical_lab_preset resolves string products through preset resolver."""
+    runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=110, sim_time=11.0),
+        step_frame_fn=lambda frame_index: SimpleNamespace(
+            frame_id=111 + frame_index,
+            sim_time=11.1 + frame_index * 0.1,
+        ),
+    )
+
+    monkeypatch.setattr(
+        preset_workflows,
+        "create_runtime_for_lab_preset",
+        lambda preset, **kwargs: runtime,
+    )
+
+    result = preset_workflows.run_optical_lab_preset(
+        preset="physics_body_triangle_video_smoke",
+        frames=2,
+        products=("debug",),
+        out=tmp_path / "multi_product",
+    )
+
+    assert "debug" in result.product_results
+    assert len(result.product_results["debug"]) == 2
+
+
+def test_run_optical_lab_preset_accepts_explicit_product_specs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """P11.4: run_optical_lab_preset accepts ProductSpec instances."""
+    runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=120, sim_time=12.0),
+        step_frame_fn=lambda frame_index: SimpleNamespace(
+            frame_id=121 + frame_index,
+            sim_time=12.1 + frame_index * 0.1,
+        ),
+        metadata={"preset_owner": "p11_spec_test"},
+    )
+
+    monkeypatch.setattr(
+        preset_workflows,
+        "create_runtime_for_lab_preset",
+        lambda preset, **kwargs: runtime,
+    )
+
+    result = preset_workflows.run_optical_lab_preset(
+        preset="physics_body_triangle_video_smoke",
+        frames=1,
+        products=(
+            product_specs.DebugProductSpec(
+                product_name="custom_debug",
+                metadata_keys=("preset_owner",),
+            ),
+        ),
+        out=tmp_path / "explicit_spec",
+    )
+
+    assert "custom_debug" in result.product_results
+    assert result.product_results["custom_debug"][0].metadata == {"preset_owner": "p11_spec_test"}
+
+
+def test_run_optical_lab_preset_closes_runtime_on_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """P11.4: run_optical_lab_preset cleans up runtime even if workflow raises."""
+    closed = []
+    runtime = physics_runtime.PhysicsLabScenarioRuntime(
+        engine=object(),
+        registry=object(),
+        base_frame=SimpleNamespace(frame_id=130, sim_time=13.0),
+        step_frame_fn=lambda frame_index: (_ for _ in ()).throw(RuntimeError("step_error")),
+        close_fn=lambda: closed.append(True),
+    )
+
+    monkeypatch.setattr(
+        preset_workflows,
+        "create_runtime_for_lab_preset",
+        lambda preset, **kwargs: runtime,
+    )
+
+    with pytest.raises(RuntimeError, match="step_error"):
+        preset_workflows.run_optical_lab_preset(
+            preset="physics_body_triangle_video_smoke",
+            frames=1,
+            products=("debug",),
+            out=tmp_path / "error_cleanup",
+        )
+
+    assert closed == [True]
+
+
+def test_run_optical_lab_preset_does_not_import_go2_backend(monkeypatch: pytest.MonkeyPatch):
+    """P11.4: run_optical_lab_preset must not import go2_backend (design requirement)."""
+    import sys
+
+    go2_module_name = "tools.optical_pipeline_lab.go2_backend"
+    if go2_module_name in sys.modules:
+        monkeypatch.delitem(sys.modules, go2_module_name)
+
+    # Import preset_workflows and verify go2_backend not loaded
+    import importlib
+
+    importlib.reload(preset_workflows)
+
+    assert go2_module_name not in sys.modules
 
 
 def test_run_physics_product_scenario_builds_observation_product_spec(tmp_path: Path):
