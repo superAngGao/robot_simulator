@@ -1863,6 +1863,25 @@ def test_optical_lab_examples_dry_run():
         )
 
 
+def test_optical_lab_observation_example_dry_run_stays_lightweight():
+    script = """
+import runpy
+import sys
+
+sys.argv = [
+    "examples/optical_lab/physics_body_triangle_observation.py",
+    "--dry-run",
+]
+runpy.run_path(
+    "examples/optical_lab/physics_body_triangle_observation.py",
+    run_name="__main__",
+)
+assert "rl_env.obs" not in sys.modules
+assert "tools.optical_pipeline_lab.observation_products" not in sys.modules
+"""
+    subprocess.run([sys.executable, "-c", script], check=True)
+
+
 def test_run_physics_product_scenario_requires_physics_owned_clock(tmp_path: Path):
     config = replace(
         get_preset("physics_body_triangle_video_smoke"),

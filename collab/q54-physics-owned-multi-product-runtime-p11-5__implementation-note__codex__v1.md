@@ -20,6 +20,10 @@ The examples are intentionally written as user code that calls
   - Supports `--dry-run`, `--frames`, `--out`, and `--device`.
 - Added `examples/optical_lab/physics_body_triangle_observation.py`.
   - Shows explicit `ObservationProductSpec.from_scenario(...)` usage.
+  - Uses the reviewed single free-joint ball schema: root observation fields
+    only, with empty actuated joint index arrays.
+  - Defers observation-specific imports and spec construction until after
+    `--dry-run`.
   - Supports `--dry-run`, `--frames`, `--out`, and `--device`.
 - Updated `MANIFEST.md` with the new example entries.
 
@@ -62,7 +66,7 @@ conda run -n robot_sim env PYTHONPATH=. python -m pytest -q \
 Result:
 
 ```text
-6 passed, 170 deselected
+7 passed, 170 deselected
 ```
 
 Full optical lab unit coverage:
@@ -75,7 +79,7 @@ conda run -n robot_sim env PYTHONPATH=. python -m pytest -q \
 Result:
 
 ```text
-176 passed
+177 passed
 ```
 
 ## Boundaries
