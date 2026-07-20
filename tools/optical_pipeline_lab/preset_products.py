@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterable
 
 from .preset_runtime import PHYSICS_BODY_TRIANGLE_VIDEO_SMOKE_PRESET
 from .product_specs import DebugProductSpec, ProductInput, VideoProductSpec, validate_product_inputs
+from .video_products import create_physics_body_triangle_video_product_spec
 
 ProductSelection = str | ProductInput
 
@@ -63,16 +64,6 @@ def _video_product_spec_for_preset(preset: str) -> VideoProductSpec:
     return factory()
 
 
-def _physics_body_triangle_video_spec() -> VideoProductSpec:
-    from . import go2_backend
-
-    return VideoProductSpec(
-        build_video_camera=go2_backend._build_video_camera,
-        synchronize_event=getattr(go2_backend.wp, "synchronize_event", lambda event: None),
-        pack_rgb8=go2_backend._pack_video_rgb8,
-    )
-
-
 _VIDEO_PRODUCT_FACTORIES: dict[str, Callable[[], VideoProductSpec]] = {
-    PHYSICS_BODY_TRIANGLE_VIDEO_SMOKE_PRESET: _physics_body_triangle_video_spec,
+    PHYSICS_BODY_TRIANGLE_VIDEO_SMOKE_PRESET: create_physics_body_triangle_video_product_spec,
 }

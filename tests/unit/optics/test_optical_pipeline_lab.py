@@ -13,6 +13,7 @@ import pytest
 import tools.optical_pipeline_lab as optical_pipeline_lab
 import tools.optical_pipeline_lab.__main__ as lab_main
 import tools.optical_pipeline_lab.async_readback as async_readback
+import tools.optical_pipeline_lab.camera_presets as camera_presets
 import tools.optical_pipeline_lab.delivery as delivery
 import tools.optical_pipeline_lab.dynamic_frames as dynamic_frames
 import tools.optical_pipeline_lab.frame_contexts as frame_contexts
@@ -32,6 +33,7 @@ import tools.optical_pipeline_lab.rgb_pack as rgb_pack
 import tools.optical_pipeline_lab.runner as lab_runner
 import tools.optical_pipeline_lab.static_asset_source as static_asset_source
 import tools.optical_pipeline_lab.video_loop as video_loop
+import tools.optical_pipeline_lab.video_products as video_products
 from optics.render_api import DeliveryPolicy as RuntimeDeliveryPolicy
 from optics.render_api import DeliveryResult as RuntimeDeliveryResult
 from optics.render_api import DeliveryTimingSummary, RenderTimingSummary
@@ -1580,16 +1582,7 @@ def test_create_runtime_for_lab_preset_rejects_unregistered_preset():
         preset_runtime.create_runtime_for_lab_preset("go2_video_ordered_static")
 
 
-def test_resolve_lab_product_specs_builds_reviewed_video_and_debug_specs(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    sync_calls: list[object] = []
-
-    def sync(event):
-        sync_calls.append(event)
-
-    monkeypatch.setattr(go2_backend, "wp", SimpleNamespace(synchronize_event=sync))
-
+def test_resolve_lab_product_specs_builds_reviewed_video_and_debug_specs():
     resolved = preset_products.resolve_lab_product_specs(
         preset="physics_body_triangle_video_smoke",
         products=("video", "debug"),
@@ -1598,17 +1591,31 @@ def test_resolve_lab_product_specs_builds_reviewed_video_and_debug_specs(
     video, debug = resolved
     assert isinstance(video, product_specs.VideoProductSpec)
     assert video.product_name == "video"
-    assert video.build_video_camera is go2_backend._build_video_camera
-    assert video.pack_rgb8 is go2_backend._pack_video_rgb8
-    assert video.synchronize_event is sync
+    assert video.build_video_camera is camera_presets.build_lab_video_camera
+    assert video.pack_rgb8 is video_loop.pack_video_rgb8
+    assert video.synchronize_event is video_products.synchronize_ready_event
     assert isinstance(debug, product_specs.DebugProductSpec)
     assert debug.product_name == "debug"
     assert preset_products.supported_lab_product_strings(preset="physics_body_triangle_video_smoke") == (
         "debug",
         "video",
     )
-    video.synchronize_event("ready")
-    assert sync_calls == ["ready"]
+
+
+def test_resolve_lab_product_specs_does_not_import_go2_backend():
+    script = """
+import sys
+
+from tools.optical_pipeline_lab.preset_products import resolve_lab_product_specs
+
+resolve_lab_product_specs(
+    preset="physics_body_triangle_video_smoke",
+    products=("video",),
+)
+assert "tools.optical_pipeline_lab.go2_backend" not in sys.modules
+assert "examples.mujoco_menagerie_robot_preview" not in sys.modules
+"""
+    subprocess.run([sys.executable, "-c", script], check=True)
 
 
 def test_resolve_lab_product_specs_passes_through_explicit_products():
