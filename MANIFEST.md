@@ -231,6 +231,7 @@ runtime-owner GPU smoke 验证 `PhysicsLabScenarioRuntime` context manager 可�
 | `tools/optical_pipeline_lab/product_specs.py` | `DebugProductSpec`, `ObservationProductSpec`, and `VideoProductSpec` declarative product builders for P10 workflows |
 | `tools/optical_pipeline_lab/preset_runtime.py` | P11 reviewed preset -> physics runtime factory registry for Optical Lab workflows |
 | `tools/optical_pipeline_lab/preset_products.py` | P11 user-facing preset product string resolver for Optical Lab workflows |
+| `tools/optical_pipeline_lab/preset_workflows.py` | P11 public preset workflow entry point for reviewed Optical Lab product runs |
 | `tools/optical_pipeline_lab/video_products.py` | P11 reviewed video product spec factories for Optical Lab presets |
 | `tools/optical_pipeline_lab/observation_products.py` | `PublishedStateObservationProduct` — published frame → RL observation vector (P9.4) |
 | `tools/optical_pipeline_lab/physics_runtime.py` | Explicit physics runtime owners for Optical Pipeline Lab scenarios |
