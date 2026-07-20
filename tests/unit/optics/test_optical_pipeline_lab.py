@@ -1848,6 +1848,21 @@ assert "tools.optical_pipeline_lab.go2_backend" not in sys.modules
     subprocess.run([sys.executable, "-c", script], check=True)
 
 
+def test_optical_lab_examples_dry_run():
+    for script in (
+        "examples/optical_lab/physics_body_triangle_video_debug.py",
+        "examples/optical_lab/physics_body_triangle_observation.py",
+    ):
+        subprocess.run(
+            [
+                sys.executable,
+                script,
+                "--dry-run",
+            ],
+            check=True,
+        )
+
+
 def test_run_physics_product_scenario_requires_physics_owned_clock(tmp_path: Path):
     config = replace(
         get_preset("physics_body_triangle_video_smoke"),

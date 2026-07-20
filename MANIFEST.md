@@ -252,6 +252,9 @@ runtime-owner GPU smoke 验证 `PhysicsLabScenarioRuntime` context manager 可�
 | `examples/mujoco_menagerie_robot_preview.py` | Open-source MuJoCo Menagerie visual mesh preview importer/writer |
 | `examples/mujoco_menagerie_gpu_preview.py` | Thin CLI wrapper for the shared Go2 Menagerie GPU backend |
 | `examples/optical_readback_microbench.py` | Device→host readback/materialization microbenchmark |
+| `examples/optical_lab/README.md` | P11 Optical Lab preset workflow examples overview |
+| `examples/optical_lab/physics_body_triangle_video_debug.py` | P11 example: physics body-triangle preset with video/debug products |
+| `examples/optical_lab/physics_body_triangle_observation.py` | P11 example: physics body-triangle preset with explicit observation product |
 | `simulator.py` | 多机器人编排 |
 | `robot/urdf_loader.py` | URDF → RobotModel |
 | `robot/mesh_loader.py` | trimesh 网格加载 → ConvexHullShape |
