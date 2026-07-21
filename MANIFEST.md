@@ -256,6 +256,7 @@ runtime-owner GPU smoke 验证 `PhysicsLabScenarioRuntime` context manager 可�
 | `examples/optical_lab/README.md` | P11 Optical Lab preset workflow examples overview |
 | `examples/optical_lab/physics_body_triangle_video_debug.py` | P11 example: physics body-triangle preset with video/debug products |
 | `examples/optical_lab/physics_body_triangle_observation.py` | P11 example: physics body-triangle preset with explicit observation product |
+| `examples/optical_lab/go2_video_ordered_static.py` | P11 example: Go2 static preset with video/debug products |
 | `simulator.py` | 多机器人编排 |
 | `robot/urdf_loader.py` | URDF → RobotModel |
 | `robot/mesh_loader.py` | trimesh 网格加载 → ConvexHullShape |

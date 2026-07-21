@@ -31,8 +31,15 @@ instead of using a product string like `"observation"`.
 
 ## Go2 Static Preset
 
+```bash
+python examples/optical_lab/go2_video_ordered_static.py --dry-run
+```
+
 The reviewed Go2 static preset now runs through the same public workflow:
 
 ```python
 run_optical_lab_preset("go2_video_ordered_static", products=("video", "debug"), ...)
 ```
+
+Without `--dry-run`, this loads the Menagerie Go2 static asset scene and may
+require the configured Warp/GPU environment plus mesh import dependencies.

@@ -2246,6 +2246,7 @@ def test_optical_lab_examples_dry_run():
     for script in (
         "examples/optical_lab/physics_body_triangle_video_debug.py",
         "examples/optical_lab/physics_body_triangle_observation.py",
+        "examples/optical_lab/go2_video_ordered_static.py",
     ):
         subprocess.run(
             [
