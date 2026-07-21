@@ -10,7 +10,7 @@ import pytest
 import tools.optical_pipeline_lab.delivery as video_delivery
 import tools.optical_pipeline_lab.frame_contexts as frame_contexts
 import tools.optical_pipeline_lab.frame_runtime as frame_runtime
-import tools.optical_pipeline_lab.go2_backend as go2_backend
+import tools.optical_pipeline_lab.menagerie_static_runner as menagerie_static_runner
 import tools.optical_pipeline_lab.physics_runtime as physics_runtime
 import tools.optical_pipeline_lab.runner as lab_runner
 import tools.optical_pipeline_lab.video_loop as video_loop
@@ -814,7 +814,7 @@ def test_optical_lab_dynamic_begin_frame_populates_prepare_timing_with_synthetic
     base_bvh = build_device_bvh_from_snapshot(base_snapshot, device="cuda:0", stream=stream)
     wp.synchronize_event(base_bvh.ready_event)
     scene = SimpleNamespace(frame=SimpleNamespace(frame_id=base_frame.frame_id, sim_time=base_frame.sim_time))
-    session = go2_backend.OpticalLabRenderSession(
+    session = menagerie_static_runner.OpticalLabRenderSession(
         scene=scene,
         device=wp.get_device("cuda:0"),
         stream=stream,
@@ -827,7 +827,7 @@ def test_optical_lab_dynamic_begin_frame_populates_prepare_timing_with_synthetic
         bvh_split_strategy="sort",
     )
 
-    frame_context = go2_backend.OpticalLabRenderPipeline(session=session).begin_frame(
+    frame_context = menagerie_static_runner.OpticalLabRenderPipeline(session=session).begin_frame(
         frame_inputs=moved_frame,
         env_idx=0,
     )
@@ -1555,7 +1555,7 @@ def test_optical_lab_dynamic_video_loop_writes_prepare_timing_csv(tmp_path):
         bounds_min=np.array([-0.2, -0.2, 0.0], dtype=np.float64),
         bounds_max=np.array([0.4, 0.4, 0.9], dtype=np.float64),
     )
-    session = go2_backend.OpticalLabRenderSession(
+    session = menagerie_static_runner.OpticalLabRenderSession(
         scene=scene,
         device=wp.get_device("cuda:0"),
         stream=stream,
@@ -1569,8 +1569,8 @@ def test_optical_lab_dynamic_video_loop_writes_prepare_timing_csv(tmp_path):
     )
     frame_timing_csv = tmp_path / "frame_timing.csv"
 
-    rows = go2_backend._run_video_benchmark(
-        go2_backend.OpticalLabRenderPipeline(session=session),
+    rows = menagerie_static_runner._run_video_benchmark(
+        menagerie_static_runner.OpticalLabRenderPipeline(session=session),
         SimpleNamespace(
             width=64,
             height=48,

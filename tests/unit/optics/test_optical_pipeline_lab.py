@@ -1,4 +1,5 @@
 import csv
+import importlib.util
 import json
 import math
 import subprocess
@@ -22,7 +23,6 @@ import tools.optical_pipeline_lab.frame_products as frame_products
 import tools.optical_pipeline_lab.frame_providers as frame_providers
 import tools.optical_pipeline_lab.frame_runtime as frame_runtime
 import tools.optical_pipeline_lab.frame_tick as frame_tick
-import tools.optical_pipeline_lab.go2_backend as go2_backend
 import tools.optical_pipeline_lab.menagerie_static_runner as menagerie_static_runner
 import tools.optical_pipeline_lab.observation_products as observation_products
 import tools.optical_pipeline_lab.physics_runtime as physics_runtime
@@ -303,7 +303,7 @@ def test_frame_timing_recorder_applies_default_lab_fields(tmp_path: Path):
 
 
 def test_render_profile_row_computes_unclamped_overhead():
-    row = go2_backend._render_profile_row(
+    row = menagerie_static_runner._render_profile_row(
         [
             ("raygen_kernel", 1.0),
             ("first_hit_kernel_ms", 2.0),
@@ -321,7 +321,7 @@ def test_render_profile_row_computes_unclamped_overhead():
 
 
 def test_render_profile_row_from_timing_preserves_overhead():
-    row = go2_backend._render_profile_row_from_timing(
+    row = menagerie_static_runner._render_profile_row_from_timing(
         {
             "render_execute_ms": 5.5,
             "render_raygen_kernel_ms": 1.0,
@@ -340,7 +340,7 @@ def test_render_profile_row_from_timing_preserves_overhead():
 def test_video_render_request_maps_lab_options_to_runtime_api():
     camera = SimpleNamespace(frame_id=3, sim_time=0.1, env_idx=0)
 
-    request = go2_backend._video_render_request(
+    request = menagerie_static_runner._video_render_request(
         camera=camera,
         rays=None,
         use_gpu_raygen=True,
@@ -361,7 +361,7 @@ def test_video_render_request_maps_lab_options_to_runtime_api():
 def test_render_request_diagnostics_drive_profile_buffer_and_traversal_readback():
     camera = SimpleNamespace(frame_id=4, sim_time=0.2, env_idx=0)
 
-    request = go2_backend._video_render_request(
+    request = menagerie_static_runner._video_render_request(
         camera=camera,
         rays=None,
         use_gpu_raygen=True,
@@ -373,10 +373,10 @@ def test_render_request_diagnostics_drive_profile_buffer_and_traversal_readback(
 
     assert request.diagnostics.profile_timing is False
     assert request.diagnostics.traversal_counters is True
-    assert go2_backend._render_profile_buffer_for_request(request) == []
-    assert go2_backend._include_shadow_traversal_stats(request) is True
+    assert menagerie_static_runner._render_profile_buffer_for_request(request) == []
+    assert menagerie_static_runner._include_shadow_traversal_stats(request) is True
 
-    request = go2_backend._video_render_request(
+    request = menagerie_static_runner._video_render_request(
         camera=camera,
         rays=None,
         use_gpu_raygen=True,
@@ -386,12 +386,12 @@ def test_render_request_diagnostics_drive_profile_buffer_and_traversal_readback(
         traversal_counters=False,
     )
 
-    assert go2_backend._render_profile_buffer_for_request(request) is None
-    assert go2_backend._include_shadow_traversal_stats(request) is False
+    assert menagerie_static_runner._render_profile_buffer_for_request(request) is None
+    assert menagerie_static_runner._include_shadow_traversal_stats(request) is False
 
 
 def test_video_render_plan_consumes_frame_identity_without_retaining_inputs():
-    camera = go2_backend.OpticalPinholeCameraSpec(
+    camera = menagerie_static_runner.OpticalPinholeCameraSpec(
         frame_id=8,
         sim_time=0.8,
         env_idx=4,
@@ -446,7 +446,7 @@ def test_video_render_plan_consumes_frame_identity_without_retaining_inputs():
 
 def test_render_video_frame_from_context_preserves_plan_and_prepare_timing():
     compute = SimpleNamespace(ready_event=object())
-    camera = go2_backend.OpticalPinholeCameraSpec(
+    camera = menagerie_static_runner.OpticalPinholeCameraSpec(
         frame_id=11,
         sim_time=1.1,
         env_idx=3,
@@ -478,7 +478,7 @@ def test_render_video_frame_from_context_preserves_plan_and_prepare_timing():
         compute=compute,
         timing={
             "render_execute_ms": 3.5,
-            **go2_backend._render_profile_row(None),
+            **menagerie_static_runner._render_profile_row(None),
         },
     )
     captured: dict[str, object] = {}
@@ -513,10 +513,10 @@ def test_render_video_frame_from_context_preserves_plan_and_prepare_timing():
 
 
 def test_go2_video_helper_aliases_delegate_to_generic_video_loop():
-    assert go2_backend._video_render_request is video_loop.video_render_request
-    assert go2_backend._video_delivery_request is video_loop.video_delivery_request_from_options
-    assert go2_backend._render_profile_row is video_loop.render_profile_row
-    assert go2_backend._video_readback_channels is video_loop.video_readback_channels
+    assert menagerie_static_runner._video_render_request is video_loop.video_render_request
+    assert menagerie_static_runner._video_delivery_request is video_loop.video_delivery_request_from_options
+    assert menagerie_static_runner._render_profile_row is video_loop.render_profile_row
+    assert menagerie_static_runner._video_readback_channels is video_loop.video_readback_channels
 
 
 def test_lab_render_source_naming_does_not_use_adapter_language():
@@ -1882,7 +1882,7 @@ def test_resolve_lab_product_specs_builds_go2_static_video_spec():
     )
 
 
-def test_resolve_lab_product_specs_does_not_import_go2_backend():
+def test_resolve_lab_product_specs_does_not_import_menagerie_static_runner():
     script = """
 import sys
 
@@ -1892,7 +1892,7 @@ resolve_lab_product_specs(
     preset="physics_body_triangle_video_smoke",
     products=("video",),
 )
-assert "tools.optical_pipeline_lab.go2_backend" not in sys.modules
+assert "tools.optical_pipeline_lab.menagerie_static_runner" not in sys.modules
 assert "examples.mujoco_menagerie_robot_preview" not in sys.modules
 """
     subprocess.run([sys.executable, "-c", script], check=True)
@@ -2210,7 +2210,7 @@ def test_run_optical_lab_preset_closes_runtime_on_workflow_setup_error(
     assert closed == [True]
 
 
-def test_run_optical_lab_preset_does_not_import_go2_backend():
+def test_run_optical_lab_preset_does_not_import_menagerie_static_runner():
     script = """
 import sys
 import tempfile
@@ -2237,7 +2237,7 @@ with tempfile.TemporaryDirectory() as tmp:
         products=("debug",),
         out=Path(tmp) / "preset",
     )
-assert "tools.optical_pipeline_lab.go2_backend" not in sys.modules
+assert "tools.optical_pipeline_lab.menagerie_static_runner" not in sys.modules
 """
     subprocess.run([sys.executable, "-c", script], check=True)
 
@@ -3181,7 +3181,7 @@ def test_frame_workflow_runner_releases_provider_before_video_delivery_submit():
         result=object(),
         camera_rays_ms=float("nan"),
         render_execute_ms=1.0,
-        render_profile_row=go2_backend._render_profile_row(None),
+        render_profile_row=menagerie_static_runner._render_profile_row(None),
         include_shadow_traversal_stats=False,
     )
     delivered = SimpleNamespace(completed_frame_index=3)
@@ -3722,11 +3722,11 @@ def test_static_asset_render_source_builder_wraps_scene_and_base_frame(
     monkeypatch.setattr(static_asset_source, "build_static_asset_scene_for_preset", fake_build_scene)
     monkeypatch.setattr(static_asset_source, "base_gpu_frame_for_static_asset_scene", fake_base_gpu_frame)
 
-    assert not hasattr(go2_backend, "build_go2_render_source")
-    assert not hasattr(go2_backend, "build_go2_static_asset_render_source")
+    assert not hasattr(menagerie_static_runner, "build_go2_render_source")
+    assert not hasattr(menagerie_static_runner, "build_go2_static_asset_render_source")
     source = static_asset_source.build_static_asset_render_source(
         SimpleNamespace(scene_preset="synthetic_body_triangle"),
-        workspace=go2_backend.OpticalLabRenderWorkspace(device="device", stream="stream"),
+        workspace=menagerie_static_runner.OpticalLabRenderWorkspace(device="device", stream="stream"),
     )
 
     assert source.registry is registry
@@ -3740,7 +3740,7 @@ def test_static_asset_render_source_builder_wraps_scene_and_base_frame(
 
 
 def test_go2_render_options_map_args_to_generic_options():
-    options = go2_backend._render_options_from_args(
+    options = menagerie_static_runner._render_options_from_args(
         SimpleNamespace(
             device="cuda:2",
             bvh_backend="cuda_lbvh",
@@ -3759,8 +3759,8 @@ def test_go2_render_options_map_args_to_generic_options():
 
 
 def test_lab_render_session_accepts_workspace_with_device_stream_compatibility():
-    workspace = go2_backend.OpticalLabRenderWorkspace(device="device", stream="stream")
-    session = go2_backend.OpticalLabRenderSession(
+    workspace = menagerie_static_runner.OpticalLabRenderWorkspace(device="device", stream="stream")
+    session = menagerie_static_runner.OpticalLabRenderSession(
         scene=object(),
         workspace=workspace,
         gpu_frame=object(),
@@ -3775,11 +3775,20 @@ def test_lab_render_session_accepts_workspace_with_device_stream_compatibility()
     assert session.stream == "stream"
 
 
-def test_go2_render_aliases_are_removed_after_cleanup():
-    assert not hasattr(go2_backend, "Go2RenderWorkspace")
-    assert not hasattr(go2_backend, "Go2RenderSession")
-    assert not hasattr(go2_backend, "Go2RenderFrameContext")
-    assert not hasattr(go2_backend, "Go2RenderPipeline")
+def test_go2_backend_module_is_deleted():
+    path = Path(__file__).resolve().parents[3] / "tools/optical_pipeline_lab/go2_backend.py"
+
+    assert not path.exists()
+    assert importlib.util.find_spec("tools.optical_pipeline_lab.go2_backend") is None
+    with pytest.raises(ModuleNotFoundError):
+        __import__("tools.optical_pipeline_lab.go2_backend")
+
+
+def test_menagerie_static_runner_go2_render_aliases_are_removed_after_cleanup():
+    assert not hasattr(menagerie_static_runner, "Go2RenderWorkspace")
+    assert not hasattr(menagerie_static_runner, "Go2RenderSession")
+    assert not hasattr(menagerie_static_runner, "Go2RenderFrameContext")
+    assert not hasattr(menagerie_static_runner, "Go2RenderPipeline")
 
     with pytest.raises(ModuleNotFoundError):
         __import__("tools.optical_pipeline_lab.go2_session")
@@ -3802,9 +3811,9 @@ def test_lab_render_pipeline_frame_context_wraps_render_result(monkeypatch: pyte
             return compute
 
     session = FakeSession()
-    pipeline = go2_backend.OpticalLabRenderPipeline(session=session)
+    pipeline = menagerie_static_runner.OpticalLabRenderPipeline(session=session)
     frame = pipeline.begin_frame(env_idx=0)
-    request = go2_backend._video_render_request(
+    request = menagerie_static_runner._video_render_request(
         camera=SimpleNamespace(frame_id=4, sim_time=0.2, env_idx=0),
         rays=None,
         use_gpu_raygen=True,
@@ -3838,7 +3847,7 @@ def test_lab_render_pipeline_frame_context_wraps_render_result(monkeypatch: pyte
 def test_render_video_frame_passes_dynamic_frame_inputs(monkeypatch: pytest.MonkeyPatch):
     frame_inputs = SimpleNamespace(frame_id=9, sim_time=0.9)
     compute = SimpleNamespace(ready_event=object())
-    camera = go2_backend.OpticalPinholeCameraSpec(
+    camera = menagerie_static_runner.OpticalPinholeCameraSpec(
         frame_id=8,
         sim_time=0.8,
         env_idx=1,
@@ -3865,7 +3874,7 @@ def test_render_video_frame_passes_dynamic_frame_inputs(monkeypatch: pytest.Monk
                 compute=compute,
                 timing={
                     "render_execute_ms": 3.0,
-                    **go2_backend._render_profile_row(None),
+                    **menagerie_static_runner._render_profile_row(None),
                 },
             )
             return captured["render_result"]
@@ -3878,9 +3887,11 @@ def test_render_video_frame_passes_dynamic_frame_inputs(monkeypatch: pytest.Monk
             captured["env_idx"] = env_idx
             return FakeFrameContext()
 
-    monkeypatch.setattr(go2_backend, "_build_video_camera", lambda scene, args, frame_index: camera)
+    monkeypatch.setattr(
+        menagerie_static_runner, "_build_video_camera", lambda scene, args, frame_index: camera
+    )
 
-    rendered = go2_backend._render_video_frame(
+    rendered = menagerie_static_runner._render_video_frame(
         FakePipeline(),
         SimpleNamespace(
             video_raygen="gpu",
@@ -3912,7 +3923,7 @@ def test_lab_render_pipeline_static_begin_frame_accepts_session_frame_inputs():
         scene=SimpleNamespace(frame=SimpleNamespace(frame_id=1, sim_time=0.0)),
         gpu_frame=object(),
     )
-    pipeline = go2_backend.OpticalLabRenderPipeline(session=session)
+    pipeline = menagerie_static_runner.OpticalLabRenderPipeline(session=session)
 
     frame = pipeline.begin_frame(frame_inputs=session.gpu_frame, env_idx=3)
 
@@ -3963,7 +3974,7 @@ def test_lab_render_pipeline_dynamic_begin_frame_delegates_workspace_prepare():
         bvh_split_strategy="sort",
     )
 
-    frame = go2_backend.OpticalLabRenderPipeline(session=session).begin_frame(
+    frame = menagerie_static_runner.OpticalLabRenderPipeline(session=session).begin_frame(
         frame_inputs=frame_inputs,
         env_idx=4,
     )
@@ -4003,7 +4014,7 @@ def test_lab_render_pipeline_dynamic_begin_frame_refits_frame_specific_snapshot(
     session = SimpleNamespace(
         scene=SimpleNamespace(frame=SimpleNamespace(frame_id=1, sim_time=0.0)),
         gpu_frame=object(),
-        workspace=go2_backend.OpticalLabRenderWorkspace(device="cuda:fake", stream="stream"),
+        workspace=menagerie_static_runner.OpticalLabRenderWorkspace(device="cuda:fake", stream="stream"),
         cache=FakeCache(),
         bvh=SimpleNamespace(stats=SimpleNamespace(supports_refit=True)),
         bvh_backend="cpu",
@@ -4016,7 +4027,7 @@ def test_lab_render_pipeline_dynamic_begin_frame_refits_frame_specific_snapshot(
     )
     monkeypatch.setattr(render_session, "refit_device_bvh_from_snapshot", fake_refit)
 
-    frame = go2_backend.OpticalLabRenderPipeline(session=session).begin_frame(
+    frame = menagerie_static_runner.OpticalLabRenderPipeline(session=session).begin_frame(
         frame_inputs=frame_inputs,
         env_idx=2,
     )
@@ -4051,7 +4062,7 @@ def test_lab_render_pipeline_dynamic_begin_frame_rebuilds_when_refit_is_unavaila
     session = SimpleNamespace(
         scene=SimpleNamespace(frame=SimpleNamespace(frame_id=1, sim_time=0.0)),
         gpu_frame=object(),
-        workspace=go2_backend.OpticalLabRenderWorkspace(device="cuda:fake", stream="stream"),
+        workspace=menagerie_static_runner.OpticalLabRenderWorkspace(device="cuda:fake", stream="stream"),
         cache=FakeCache(),
         bvh=SimpleNamespace(stats=SimpleNamespace(supports_refit=False)),
         bvh_backend="cpu",
@@ -4060,7 +4071,7 @@ def test_lab_render_pipeline_dynamic_begin_frame_rebuilds_when_refit_is_unavaila
     monkeypatch.setattr(render_session, "wp", SimpleNamespace(synchronize_event=lambda event: None))
     monkeypatch.setattr(render_session, "build_device_bvh_from_snapshot", fake_build)
 
-    frame = go2_backend.OpticalLabRenderPipeline(session=session).begin_frame(
+    frame = menagerie_static_runner.OpticalLabRenderPipeline(session=session).begin_frame(
         frame_inputs=frame_inputs,
         env_idx=0,
     )
@@ -4090,7 +4101,7 @@ def test_lab_render_pipeline_dynamic_begin_frame_rebuilds_cuda_lbvh_when_configu
     session = SimpleNamespace(
         scene=SimpleNamespace(frame=SimpleNamespace(frame_id=1, sim_time=0.0)),
         gpu_frame=object(),
-        workspace=go2_backend.OpticalLabRenderWorkspace(device="cuda:fake", stream="stream"),
+        workspace=menagerie_static_runner.OpticalLabRenderWorkspace(device="cuda:fake", stream="stream"),
         cache=FakeCache(),
         bvh=SimpleNamespace(stats=SimpleNamespace(supports_refit=False)),
         bvh_backend="cuda_lbvh",
@@ -4099,7 +4110,7 @@ def test_lab_render_pipeline_dynamic_begin_frame_rebuilds_cuda_lbvh_when_configu
     monkeypatch.setattr(render_session, "wp", SimpleNamespace(synchronize_event=lambda event: None))
     monkeypatch.setattr(render_session, "build_cuda_lbvh_from_snapshot", fake_cuda_build)
 
-    frame = go2_backend.OpticalLabRenderPipeline(session=session).begin_frame(
+    frame = menagerie_static_runner.OpticalLabRenderPipeline(session=session).begin_frame(
         frame_inputs=object(),
         env_idx=0,
     )
@@ -4141,7 +4152,9 @@ def test_torch_async_readback_warmup_uses_pipeline_frame_context(
         captured["ring_depth"] = ring_depth
         return "ring"
 
-    monkeypatch.setattr(go2_backend, "_build_video_camera", lambda scene, args, frame_index: camera)
+    monkeypatch.setattr(
+        menagerie_static_runner, "_build_video_camera", lambda scene, args, frame_index: camera
+    )
     monkeypatch.setattr(
         delivery.TorchAsyncReadbackRing,
         "from_warmup_result",
@@ -4149,7 +4162,7 @@ def test_torch_async_readback_warmup_uses_pipeline_frame_context(
     )
 
     pipeline = FakePipeline()
-    delivery_request = go2_backend._video_delivery_request(
+    delivery_request = menagerie_static_runner._video_delivery_request(
         readback_mode="rgb",
         delivery_mode="torch_async",
         ring_depth=4,
@@ -4162,7 +4175,7 @@ def test_torch_async_readback_warmup_uses_pipeline_frame_context(
         frame_dir=tmp_path,
         pack_rgb8=lambda result: result,
         synchronize_event=lambda event: None,
-        warmup_result_factory=lambda: go2_backend._build_torch_async_warmup_result(
+        warmup_result_factory=lambda: menagerie_static_runner._build_torch_async_warmup_result(
             pipeline=pipeline,
             args=SimpleNamespace(render_profile=True, fail_on_overflow=False),
             delivery_request=delivery_request,
@@ -4183,7 +4196,7 @@ def test_torch_async_readback_warmup_uses_pipeline_frame_context(
 
 
 def test_video_delivery_request_maps_lab_options_to_runtime_api():
-    request = go2_backend._video_delivery_request(
+    request = menagerie_static_runner._video_delivery_request(
         readback_mode="none",
         delivery_mode="sync",
         ring_depth=2,
@@ -4194,7 +4207,7 @@ def test_video_delivery_request_maps_lab_options_to_runtime_api():
     assert request.policy is RuntimeDeliveryPolicy.DEVICE_ONLY
     assert request.write_policy is RuntimeWritePolicy.NONE
 
-    request = go2_backend._video_delivery_request(
+    request = menagerie_static_runner._video_delivery_request(
         readback_mode="rgb8",
         delivery_mode="torch_async",
         ring_depth=3,
@@ -4206,7 +4219,7 @@ def test_video_delivery_request_maps_lab_options_to_runtime_api():
     assert request.ring_depth == 3
     assert request.write_policy is RuntimeWritePolicy.PNG_SEQUENCE
 
-    request = go2_backend._video_delivery_request(
+    request = menagerie_static_runner._video_delivery_request(
         readback_mode="full",
         delivery_mode="sync",
         ring_depth=2,
@@ -4217,7 +4230,7 @@ def test_video_delivery_request_maps_lab_options_to_runtime_api():
     assert request.policy is RuntimeDeliveryPolicy.SYNC_HOST
 
     with pytest.raises(ValueError, match="RGB or RGB8"):
-        go2_backend._video_delivery_request(
+        menagerie_static_runner._video_delivery_request(
             readback_mode="full",
             delivery_mode="torch_async",
             ring_depth=2,
@@ -4267,7 +4280,7 @@ def test_sync_rgb8_delivery_packs_after_render(tmp_path: Path, monkeypatch: pyte
         result=raw_result,
         camera_rays_ms=float("nan"),
         render_execute_ms=1.0,
-        render_profile_row=go2_backend._render_profile_row(None),
+        render_profile_row=menagerie_static_runner._render_profile_row(None),
         include_shadow_traversal_stats=False,
     )
 
@@ -4288,7 +4301,7 @@ def test_sync_video_readback_none_row_does_not_stage(tmp_path: Path, monkeypatch
             result=object(),
             camera_rays_ms=float("nan"),
             render_execute_ms=1.25,
-            render_profile_row=go2_backend._render_profile_row(None),
+            render_profile_row=menagerie_static_runner._render_profile_row(None),
             include_shadow_traversal_stats=False,
             geometry_mode="dynamic_rigid",
             prepare_timing={
@@ -4301,12 +4314,12 @@ def test_sync_video_readback_none_row_does_not_stage(tmp_path: Path, monkeypatch
     def fail_if_staged(*args, **kwargs):
         raise AssertionError("readback=none should not stage host channels")
 
-    monkeypatch.setattr(go2_backend, "_render_video_frame", fake_render_video_frame)
+    monkeypatch.setattr(menagerie_static_runner, "_render_video_frame", fake_render_video_frame)
     monkeypatch.setattr(delivery, "stage_optical_channels", fail_if_staged)
     monkeypatch.setattr(delivery, "stage_optical_compute_result_to_host", fail_if_staged)
 
     frame_timing_csv = tmp_path / "frame_timing.csv"
-    rows = go2_backend._run_video_benchmark(
+    rows = menagerie_static_runner._run_video_benchmark(
         pipeline=SimpleNamespace(session=SimpleNamespace(scene=object())),
         args=SimpleNamespace(
             video_readback_delivery="sync",
@@ -4362,7 +4375,7 @@ def test_run_video_benchmark_with_frame_contexts_uses_provider_and_delivery(tmp_
                 compute=SimpleNamespace(ready_event=object()),
                 timing={
                     "render_execute_ms": 1.5,
-                    **go2_backend._render_profile_row(None),
+                    **menagerie_static_runner._render_profile_row(None),
                 },
             )
 
@@ -4384,7 +4397,7 @@ def test_run_video_benchmark_with_frame_contexts_uses_provider_and_delivery(tmp_
             return FakeScope(frame_index, env_idx)
 
     def build_camera(scene, args, frame_index):
-        return go2_backend.OpticalPinholeCameraSpec(
+        return menagerie_static_runner.OpticalPinholeCameraSpec(
             frame_id=frame_index,
             sim_time=float(frame_index) / 30.0,
             env_idx=0,
@@ -4462,7 +4475,7 @@ def test_provider_backed_torch_async_warmup_uses_provider_lifecycle():
                 compute=compute,
                 timing={
                     "render_execute_ms": 1.0,
-                    **go2_backend._render_profile_row(None),
+                    **menagerie_static_runner._render_profile_row(None),
                 },
             )
 
@@ -4481,7 +4494,7 @@ def test_provider_backed_torch_async_warmup_uses_provider_lifecycle():
             return Scope()
 
     def build_camera(scene, args, frame_index):
-        return go2_backend.OpticalPinholeCameraSpec(
+        return menagerie_static_runner.OpticalPinholeCameraSpec(
             frame_id=frame_index,
             sim_time=float(frame_index),
             env_idx=7,
@@ -4564,7 +4577,7 @@ def test_torch_async_delivery_facade_reports_ring_depth_blocking_modes(tmp_path:
             result=object(),
             camera_rays_ms=float("nan"),
             render_execute_ms=1.0,
-            render_profile_row=go2_backend._render_profile_row(None),
+            render_profile_row=menagerie_static_runner._render_profile_row(None),
             include_shadow_traversal_stats=False,
         )
 
@@ -4654,7 +4667,7 @@ def test_torch_async_delivery_facade_flush_completes_pending_frame(tmp_path: Pat
         result=object(),
         camera_rays_ms=float("nan"),
         render_execute_ms=1.0,
-        render_profile_row=go2_backend._render_profile_row(None),
+        render_profile_row=menagerie_static_runner._render_profile_row(None),
         include_shadow_traversal_stats=False,
     )
 
@@ -4686,7 +4699,7 @@ def test_video_frame_timing_row_builder_requires_bound_request():
         result=object(),
         camera_rays_ms=float("nan"),
         render_execute_ms=1.0,
-        render_profile_row=go2_backend._render_profile_row(None),
+        render_profile_row=menagerie_static_runner._render_profile_row(None),
         include_shadow_traversal_stats=False,
     )
     delivered = delivery.DeliveredVideoFrame(
@@ -4708,7 +4721,7 @@ def test_delivered_video_frame_bridges_to_runtime_delivery_result():
         result=object(),
         camera_rays_ms=float("nan"),
         render_execute_ms=1.0,
-        render_profile_row=go2_backend._render_profile_row(None),
+        render_profile_row=menagerie_static_runner._render_profile_row(None),
         include_shadow_traversal_stats=False,
     )
     host_channels = {"rgb": np.zeros((1, 3), dtype=np.float32)}
@@ -4756,7 +4769,7 @@ def test_rendered_video_frame_render_execute_ms_prefers_runtime_timing():
         result=object(),
         camera_rays_ms=float("nan"),
         render_execute_ms=1.0,
-        render_profile_row=go2_backend._render_profile_row(None),
+        render_profile_row=menagerie_static_runner._render_profile_row(None),
         include_shadow_traversal_stats=False,
         render=RuntimeRenderResult(
             compute=compute,
@@ -4776,7 +4789,7 @@ def test_rendered_video_frame_render_execute_ms_falls_back_to_runtime_mapping():
         result=object(),
         camera_rays_ms=float("nan"),
         render_execute_ms=1.0,
-        render_profile_row=go2_backend._render_profile_row(None),
+        render_profile_row=menagerie_static_runner._render_profile_row(None),
         include_shadow_traversal_stats=False,
         render=RuntimeRenderResult(
             compute=compute,
@@ -4795,7 +4808,7 @@ def test_rendered_video_frame_render_execute_ms_preserves_stored_fallback():
         result=object(),
         camera_rays_ms=float("nan"),
         render_execute_ms=1.0,
-        render_profile_row=go2_backend._render_profile_row(None),
+        render_profile_row=menagerie_static_runner._render_profile_row(None),
         include_shadow_traversal_stats=False,
     )
 
@@ -4819,7 +4832,7 @@ def test_video_frame_timing_row_builder_torch_async_row_and_progress():
             fail_on_overflow=False,
         )
     ).bind_request(request)
-    render_profile = go2_backend._render_profile_row(
+    render_profile = menagerie_static_runner._render_profile_row(
         [("raygen_kernel", 0.1), ("first_hit_kernel_ms", 0.2), ("shade_kernel", 0.3)],
         render_execute_ms=1.0,
     )
@@ -4894,9 +4907,9 @@ def test_video_frame_timing_row_builder_torch_async_row_and_progress():
 
 
 def test_video_readback_channels_include_shadow_traversal_stats_only_when_requested():
-    assert "shadow_traversal_ray_count" not in go2_backend._video_readback_channels("rgb8")
+    assert "shadow_traversal_ray_count" not in menagerie_static_runner._video_readback_channels("rgb8")
 
-    channels = go2_backend._video_readback_channels("rgb8", include_shadow_traversal_stats=True)
+    channels = menagerie_static_runner._video_readback_channels("rgb8", include_shadow_traversal_stats=True)
 
     assert "rgb8" in channels
     assert "shadow_stack_overflow_count" in channels

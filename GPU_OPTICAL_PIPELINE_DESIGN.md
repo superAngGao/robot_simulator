@@ -2269,9 +2269,9 @@ Static asset source naming cleanup complete:
 
 P11.6a Menagerie runner rename complete:
   the legacy static CLI/benchmark implementation now lives in
-  menagerie_static_runner.py. go2_backend.py is only a deprecated compatibility
-  shim for legacy imports and is no longer a core Optical Pipeline Lab
-  dependency.
+  menagerie_static_runner.py. The deprecated go2_backend.py compatibility shim
+  has been removed; Go2 static product runs now enter through the P11 public
+  preset workflow.
 
 Alias cleanup complete:
   Go2Render* compatibility aliases and the go2_session.py shim have been
