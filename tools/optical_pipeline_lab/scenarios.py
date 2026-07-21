@@ -53,6 +53,7 @@ class AccelPolicy(Enum):
 
 
 class RenderBackend(Enum):
+    CPU_DIRECT_LIGHT = "cpu_direct_light"
     WARP_BVH_DIRECT_LIGHT = "warp_bvh_direct_light"
     CUDA_DIRECT_LIGHT = "cuda_direct_light"
     CUDA_FUSED_RGB = "cuda_fused_rgb"
@@ -149,10 +150,15 @@ class OpticalLabScenarioConfig:
             raise NotImplementedError(
                 f"accel_policy={self.accel_policy.value!r} is reserved; use 'build_once' for now"
             )
-        if self.render_backend is not RenderBackend.WARP_BVH_DIRECT_LIGHT:
+        if self.render_backend is RenderBackend.CPU_DIRECT_LIGHT:
+            if self.accel_backend is not AccelBackend.CPU_BVH:
+                raise NotImplementedError(
+                    "render_backend='cpu_direct_light' requires accel_backend='cpu_bvh'"
+                )
+        elif self.render_backend is not RenderBackend.WARP_BVH_DIRECT_LIGHT:
             raise NotImplementedError(
                 f"render_backend={self.render_backend.value!r} is reserved; "
-                "use 'warp_bvh_direct_light' for now"
+                "use 'cpu_direct_light' or 'warp_bvh_direct_light' for now"
             )
         if self.delivery_policy not in (DeliveryPolicy.SYNC, DeliveryPolicy.DEVICE_ONLY):
             raise NotImplementedError(

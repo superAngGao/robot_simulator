@@ -34,6 +34,8 @@ def create_go2_video_ordered_static_product_spec() -> VideoProductSpec:
 def synchronize_ready_event(event: Any) -> None:
     """Synchronize a ready event without making module import depend on Warp."""
 
+    if event is None:
+        return
     try:
         import warp as wp
     except Exception:

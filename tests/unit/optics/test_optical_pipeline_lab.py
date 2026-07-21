@@ -53,6 +53,7 @@ from rl_env.obs import locomotion_obs_schema
 from tools.optical_pipeline_lab import (
     DEFAULT_RENDER_HEIGHT,
     DEFAULT_RENDER_WIDTH,
+    AccelBackend,
     AccelPolicy,
     ClockOwnerKind,
     DeliveryPolicy,
@@ -1473,6 +1474,69 @@ def test_run_optical_lab_workflow_accepts_static_asset_runtime(tmp_path: Path):
         "frame_source": "static_asset_builder",
         "runtime_owner": "static_runtime_test",
     }
+
+
+def test_run_optical_lab_products_runs_cpu_direct_light_static_video(tmp_path: Path):
+    config = replace(
+        get_preset("go2_video_ordered_static"),
+        scenario_name="synthetic_body_triangle_cpu_direct_light",
+        scene_preset="synthetic_body_triangle",
+        width=24,
+        height=16,
+        accel_backend=AccelBackend.CPU_BVH,
+        render_backend=RenderBackend.CPU_DIRECT_LIGHT,
+        shadows=False,
+    )
+    output = ArtifactOutput(
+        root=tmp_path / "cpu_direct",
+        frames=1,
+        progress_every=0,
+        video_raygen="host",
+    )
+    args = SimpleNamespace(
+        scene_preset=config.scene_preset,
+        model_dir=output.model_dir,
+        model_xml=output.model_xml,
+    )
+    pipeline = render_session.OpticalLabRenderPipeline.create_from_source_factory(
+        lambda workspace: static_asset_source.build_static_asset_render_source(
+            args,
+            workspace=workspace,
+        ),
+        render_options_for_config(config, output),
+        TimingRecorder(),
+        scene_for_source=static_asset_source.scene_from_static_asset_render_source,
+    )
+    runtime = preset_runtime.StaticAssetLabRuntime(
+        pipeline=pipeline,
+        scene=pipeline.session.scene,
+        base_frame=pipeline.session.gpu_frame,
+        metadata={
+            "runtime_owner": "cpu_direct_static_test",
+            "preset": config.scenario_name,
+        },
+        fps=output.fps,
+    )
+
+    result = product_workflow.run_optical_lab_products(
+        config=config,
+        output=output,
+        runtime=runtime,
+        products=(
+            product_specs.DebugProductSpec(metadata_keys=("runtime_owner",)),
+            video_products.create_go2_video_ordered_static_product_spec(),
+        ),
+    )
+
+    delivered = result.product_results["video"][0].payload["delivered_video"]
+    assert len(delivered) == 1
+    assert delivered[0].host_channels["rgb"].shape == (config.width * config.height, 3)
+    assert result.product_results["debug"][0].metadata == {"runtime_owner": "cpu_direct_static_test"}
+    payload = json.loads((output.root / "scenario_config.json").read_text())
+    assert payload["scenario"]["render_backend"] == "cpu_direct_light"
+    rows = list(csv.DictReader((output.root / "frame_timing.csv").open()))
+    assert rows[0]["render_backend"] == "cpu_direct_light"
+    assert rows[0]["accel_backend"] == "cpu_bvh"
 
 
 def test_run_optical_lab_workflow_merges_frames_into_output_artifact(tmp_path: Path):
@@ -3623,6 +3687,66 @@ def test_lab_render_pipeline_create_from_source_builds_canonical_session(
     assert frame.env_idx == 3
 
 
+def test_lab_render_pipeline_create_from_source_builds_cpu_direct_light_session():
+    registry = dynamic_frames.make_body_bound_triangle_registry()
+    base_frame = CpuPublishedFrame(
+        frame_id=12,
+        sim_time=1.2,
+        step_index=12,
+        env_mask=None,
+        q=None,
+        qdot=None,
+        X_world=(SpatialTransform.identity(),),
+        v_bodies=None,
+        contact_count=None,
+        contacts=None,
+        telemetry=None,
+    )
+    source = render_session.OpticalLabRenderSource(
+        registry=registry,
+        base_frame=base_frame,
+    )
+    pipeline = render_session.OpticalLabRenderPipeline.create_from_source(
+        source,
+        render_session.OpticalLabRenderOptions(
+            render_backend="cpu_direct_light",
+            bvh_backend="cpu",
+            shadows=False,
+        ),
+        TimingRecorder(),
+    )
+    camera = menagerie_static_runner.OpticalPinholeCameraSpec(
+        sensor_id="cpu_camera",
+        frame_id=12,
+        sim_time=1.2,
+        env_idx=0,
+        width=8,
+        height=6,
+        fx=6.0,
+        fy=6.0,
+        cx=3.5,
+        cy=2.5,
+        X_world_camera=SpatialTransform.identity(),
+        max_distance=10.0,
+    )
+    rays = video_loop.build_pinhole_camera_rays(camera)
+    request = video_loop.video_render_request(
+        camera=camera,
+        rays=rays,
+        use_gpu_raygen=False,
+        readback_mode="rgb",
+        profile_timing=False,
+        fail_on_overflow=True,
+    )
+
+    frame = pipeline.begin_frame(env_idx=0)
+    rendered = frame.render(request)
+
+    assert pipeline.session.render_backend == "cpu_direct_light"
+    assert rendered.compute.location == "host"
+    assert rendered.compute.channel("rgb").shape == (48, 3)
+
+
 def test_lab_render_pipeline_create_from_source_factory_preserves_scene_view(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -4931,6 +5055,38 @@ def test_go2_video_ordered_static_preset_is_currently_implemented():
     config.validate_implemented()
 
 
+def test_cpu_direct_light_static_config_is_currently_implemented(tmp_path: Path):
+    config = replace(
+        get_preset("go2_video_ordered_static"),
+        scenario_name="go2_cpu_direct_light",
+        accel_backend=AccelBackend.CPU_BVH,
+        render_backend=RenderBackend.CPU_DIRECT_LIGHT,
+    )
+
+    config.validate_implemented()
+    validate_run(
+        config,
+        LabRunOptions(
+            out=tmp_path / "cpu_direct",
+            video_raygen="host",
+        ),
+    )
+
+
+def test_cpu_direct_light_requires_cpu_bvh_and_host_video_raygen(tmp_path: Path):
+    config = replace(
+        get_preset("go2_video_ordered_static"),
+        render_backend=RenderBackend.CPU_DIRECT_LIGHT,
+    )
+
+    with pytest.raises(NotImplementedError, match="requires accel_backend='cpu_bvh'"):
+        config.validate_implemented()
+
+    config = replace(config, accel_backend=AccelBackend.CPU_BVH)
+    with pytest.raises(ValueError, match="requires video_raygen='host'"):
+        validate_run(config, LabRunOptions(out=tmp_path / "cpu_direct"))
+
+
 def test_synthetic_dynamic_smoke_preset_is_currently_implemented():
     config = get_preset("synthetic_body_triangle_dynamic_smoke")
 
@@ -5292,6 +5448,7 @@ def test_lab_runner_builds_render_options_from_go2_config(tmp_path: Path):
 
     assert isinstance(render_options, render_session.OpticalLabRenderOptions)
     assert render_options.device == "cuda:2"
+    assert render_options.render_backend == "warp_bvh_direct_light"
     assert render_options.bvh_backend == "cuda_lbvh"
     assert render_options.bvh_split_strategy == "sort"
     assert render_options.shadows is False
@@ -5305,6 +5462,7 @@ def test_lab_runner_builds_render_options_from_dynamic_smoke_config(tmp_path: Pa
     render_options = render_options_for_config(config, options)
 
     assert render_options.device == "cuda:0"
+    assert render_options.render_backend == "warp_bvh_direct_light"
     assert render_options.bvh_backend == "cpu"
     assert render_options.bvh_split_strategy == "sort"
     assert render_options.shadows is False

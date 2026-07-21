@@ -22,6 +22,7 @@ from .scenarios import (
     ClockOwnerKind,
     OpticalLabScenarioConfig,
     ReadbackPayload,
+    RenderBackend,
     WritePolicy,
     is_physics_published_frame_source,
 )
@@ -735,6 +736,7 @@ def render_options_for_config(
     """
     return OpticalLabRenderOptions(
         device=config.device,
+        render_backend=config.render_backend.value,
         bvh_backend=_example_bvh_backend(config.accel_backend),
         bvh_split_strategy="sort",
         shadows=config.shadows,
@@ -840,6 +842,13 @@ def _validate_run_options(config: OpticalLabScenarioConfig, options: LabRunOptio
         raise ValueError("progress_every must be >= 0")
     if options.video_raygen == "gpu" and options.video_ray_cache != "off":
         raise ValueError("video_raygen='gpu' computes camera rays on device; use video_ray_cache='off'")
+    if config.render_backend is RenderBackend.CPU_DIRECT_LIGHT:
+        if options.video_raygen != "host":
+            raise ValueError("render_backend='cpu_direct_light' requires video_raygen='host'")
+        if options.video_readback_delivery != "sync":
+            raise ValueError("render_backend='cpu_direct_light' requires video_readback_delivery='sync'")
+        if config.readback_payload is ReadbackPayload.RGB8:
+            raise ValueError("render_backend='cpu_direct_light' does not support readback_payload='rgb8'")
     if options.video_readback_delivery not in ("sync", "torch_async"):
         raise ValueError("video_readback_delivery must be 'sync' or 'torch_async'")
     if options.video_readback_ring_depth <= 0:

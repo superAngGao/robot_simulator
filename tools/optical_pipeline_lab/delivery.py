@@ -569,6 +569,12 @@ def readback_video_result(
 ) -> dict[str, np.ndarray]:
     if readback_mode == "none":
         return {}
+    if getattr(result, "location", None) == "host":
+        return _readback_host_video_result(
+            result,
+            readback_mode,
+            include_shadow_traversal_stats=include_shadow_traversal_stats,
+        )
     channels = video_readback_channels(
         readback_mode,
         include_shadow_traversal_stats=include_shadow_traversal_stats,
@@ -576,6 +582,21 @@ def readback_video_result(
     if readback_mode in ("rgb", "rgb8"):
         return stage_optical_channels(result, channels, canonical_dtypes=False)
     return stage_optical_compute_result_to_host(result).channels
+
+
+def _readback_host_video_result(
+    result,
+    readback_mode: str,
+    *,
+    include_shadow_traversal_stats: bool,
+) -> dict[str, np.ndarray]:
+    if readback_mode == "full":
+        return {name: np.asarray(value) for name, value in result.channels.items()}
+    channels = video_readback_channels(
+        readback_mode,
+        include_shadow_traversal_stats=include_shadow_traversal_stats,
+    )
+    return {name: np.asarray(result.channel(name)) for name in channels}
 
 
 def video_readback_channels(

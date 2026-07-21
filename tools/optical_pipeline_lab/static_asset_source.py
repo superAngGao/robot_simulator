@@ -9,7 +9,8 @@ from types import SimpleNamespace
 import numpy as np
 
 from examples.mujoco_menagerie_robot_preview import import_mjcf_visual_scene
-from physics.publish import GpuPublishedFrame
+from physics.publish import CpuPublishedFrame, GpuPublishedFrame
+from physics.spatial import SpatialTransform
 from tools.optical_pipeline_lab import dynamic_frames
 from tools.optical_pipeline_lab.render_session import (
     OpticalLabRenderSource,
@@ -32,14 +33,21 @@ def build_static_asset_render_source(
 ) -> OpticalLabRenderSource:
     """Build a lab render source from non-simulated static assets."""
 
-    _require_warp()
     scene_preset = getattr(args, "scene_preset", "go2_menagerie_static")
     scene = build_static_asset_scene_for_preset(scene_preset, args)
-    base_frame = base_gpu_frame_for_static_asset_scene(
-        scene_preset,
-        frame_id=scene.frame.frame_id,
-        sim_time=scene.frame.sim_time,
-        device=workspace.device,
+    base_frame = (
+        base_cpu_frame_for_static_asset_scene(
+            scene_preset,
+            frame_id=scene.frame.frame_id,
+            sim_time=scene.frame.sim_time,
+        )
+        if workspace.device == "cpu"
+        else base_gpu_frame_for_static_asset_scene(
+            scene_preset,
+            frame_id=scene.frame.frame_id,
+            sim_time=scene.frame.sim_time,
+            device=workspace.device,
+        )
     )
     return OpticalLabRenderSource(
         registry=scene.registry,
@@ -50,6 +58,11 @@ def build_static_asset_render_source(
             "scene": scene,
             "scene_preset": scene_preset,
             "source_kind": "static_asset",
+            "cpu_base_frame": base_cpu_frame_for_static_asset_scene(
+                scene_preset,
+                frame_id=scene.frame.frame_id,
+                sim_time=scene.frame.sim_time,
+            ),
         },
     )
 
@@ -105,6 +118,30 @@ def base_gpu_frame_for_static_asset_scene(
             device=device,
         )
     return static_gpu_frame(frame_id=frame_id, sim_time=sim_time, device=device)
+
+
+def base_cpu_frame_for_static_asset_scene(
+    scene_preset: str,
+    *,
+    frame_id: int,
+    sim_time: float,
+) -> CpuPublishedFrame:
+    """Build the base CPU frame for CPU direct-light static asset rendering."""
+
+    body_count = 1 if scene_preset == "synthetic_body_triangle" else 0
+    return CpuPublishedFrame(
+        frame_id=frame_id,
+        sim_time=sim_time,
+        step_index=frame_id,
+        env_mask=None,
+        q=None,
+        qdot=None,
+        X_world=tuple(SpatialTransform.identity() for _ in range(body_count)),
+        v_bodies=None,
+        contact_count=None,
+        contacts=None,
+        telemetry=None,
+    )
 
 
 def configure_dynamic_video_frame_inputs(args: argparse.Namespace, session) -> None:

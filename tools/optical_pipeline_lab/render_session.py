@@ -8,9 +8,11 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 from optics import (
+    CpuDirectLightOpticalExecutor,
     DeviceOpticalSceneCache,
     GpuDeviceBvhDirectLightOpticalExecutor,
     OpticalOutputProfile,
+    OpticalSceneCache,
     build_cuda_lbvh_from_snapshot,
     build_device_bvh_from_snapshot,
     refit_device_bvh_from_snapshot,
@@ -84,6 +86,16 @@ def _default_pack_rgb8(result):
     return pack_linear_rgb_to_preview_uint8(result)
 
 
+def _is_cpu_direct_light_backend(options: OpticalLabRenderOptions) -> bool:
+    return str(options.render_backend) == "cpu_direct_light"
+
+
+def _synchronize_ready_event(event: object | None) -> None:
+    if event is None or wp is None:
+        return
+    wp.synchronize_event(event)
+
+
 @dataclass
 class OpticalLabRenderSource:
     """Lab-local bundle of optical registry and base frame reference."""
@@ -105,6 +117,7 @@ class OpticalLabRenderOptions:
     """Configuration intent for building one lab render session."""
 
     device: object = "cuda:0"
+    render_backend: str = "warp_bvh_direct_light"
     bvh_backend: str = "cpu"
     bvh_split_strategy: str = "sort"
     shadows: bool = True
@@ -215,6 +228,7 @@ class OpticalLabRenderSession:
     snapshot: object
     bvh: object
     executor: GpuDeviceBvhDirectLightOpticalExecutor
+    render_backend: str = "warp_bvh_direct_light"
     bvh_backend: str = "cpu"
     bvh_split_strategy: str = "sort"
     pack_rgb8_fn: Callable[[object], object] = _default_pack_rgb8
@@ -230,10 +244,11 @@ class OpticalLabRenderSession:
         cache: DeviceOpticalSceneCache,
         snapshot: object,
         bvh: object,
-        executor: GpuDeviceBvhDirectLightOpticalExecutor,
+        executor: object,
         workspace: OpticalLabRenderWorkspace | None = None,
         device: object | None = None,
         stream: object | None = None,
+        render_backend: str = "warp_bvh_direct_light",
         bvh_backend: str = "cpu",
         bvh_split_strategy: str = "sort",
         pack_rgb8_fn: Callable[[object], object] = _default_pack_rgb8,
@@ -265,6 +280,7 @@ class OpticalLabRenderSession:
         self.snapshot = snapshot
         self.bvh = bvh
         self.executor = executor
+        self.render_backend = str(render_backend)
         self.bvh_backend = str(bvh_backend)
         self.bvh_split_strategy = str(bvh_split_strategy)
         self.pack_rgb8_fn = pack_rgb8_fn
@@ -292,6 +308,18 @@ class OpticalLabRenderSession:
         ),
         render_profile_row: RenderProfileRowFactory = _default_render_profile_row,
     ) -> "OpticalLabRenderSession":
+        if _is_cpu_direct_light_backend(options):
+            workspace = OpticalLabRenderWorkspace(device="cpu", stream=None)
+            return cls._create_cpu_from_initialized_source(
+                source,
+                options,
+                timings,
+                workspace=workspace,
+                scene=source,
+                pack_rgb8=pack_rgb8,
+                render_profile_buffer_for_request=render_profile_buffer_for_request,
+                render_profile_row=render_profile_row,
+            )
         with timings.measure("warp_init"):
             if not options.verbose_warp:
                 wp.config.quiet = True
@@ -326,6 +354,21 @@ class OpticalLabRenderSession:
         ),
         render_profile_row: RenderProfileRowFactory = _default_render_profile_row,
     ) -> "OpticalLabRenderSession":
+        if _is_cpu_direct_light_backend(options):
+            workspace = OpticalLabRenderWorkspace(device="cpu", stream=None)
+            with timings.measure("import_scene"):
+                source = source_factory(workspace)
+            scene = source if scene_for_source is None else scene_for_source(source)
+            return cls._create_cpu_from_initialized_source(
+                source,
+                options,
+                timings,
+                workspace=workspace,
+                scene=scene,
+                pack_rgb8=pack_rgb8,
+                render_profile_buffer_for_request=render_profile_buffer_for_request,
+                render_profile_row=render_profile_row,
+            )
         with timings.measure("warp_init"):
             if not options.verbose_warp:
                 wp.config.quiet = True
@@ -410,6 +453,55 @@ class OpticalLabRenderSession:
             snapshot=snapshot,
             bvh=bvh,
             executor=executor,
+            render_backend=str(options.render_backend),
+            bvh_backend=str(options.bvh_backend),
+            bvh_split_strategy=str(options.bvh_split_strategy),
+            pack_rgb8_fn=pack_rgb8,
+            render_profile_buffer_for_request=render_profile_buffer_for_request,
+            render_profile_row=render_profile_row,
+        )
+
+    @classmethod
+    def _create_cpu_from_initialized_source(
+        cls,
+        source: OpticalLabRenderSource,
+        options: OpticalLabRenderOptions,
+        timings: TimingRecorder,
+        *,
+        workspace: OpticalLabRenderWorkspace,
+        scene: object,
+        pack_rgb8: Callable[[object], object],
+        render_profile_buffer_for_request: RenderProfileBufferFactory,
+        render_profile_row: RenderProfileRowFactory,
+    ) -> "OpticalLabRenderSession":
+        if options.bvh_backend != "cpu":
+            raise ValueError("render_backend='cpu_direct_light' requires bvh_backend='cpu'")
+        cpu_frame = source.metadata.get("cpu_base_frame", source.base_frame)
+        with timings.measure("host_scene_snapshot"):
+            cache = OpticalSceneCache(source.registry)
+            snapshot = cache.snapshot_from_published_frame(
+                cpu_frame,
+                env_idx=0,
+                acceleration="cpu_bvh",
+            )
+
+        with timings.measure("executor_init"):
+            executor = CpuDirectLightOpticalExecutor(
+                shadows=options.shadows,
+                ambient_rgb=(0.08, 0.085, 0.09),
+                background_rgb=(0.025, 0.03, 0.038),
+            )
+
+        return cls(
+            scene=scene,
+            source=source,
+            workspace=workspace,
+            gpu_frame=cpu_frame,
+            cache=cache,
+            snapshot=snapshot,
+            bvh=snapshot.acceleration,
+            executor=executor,
+            render_backend=str(options.render_backend),
             bvh_backend=str(options.bvh_backend),
             bvh_split_strategy=str(options.bvh_split_strategy),
             pack_rgb8_fn=pack_rgb8,
@@ -426,6 +518,14 @@ class OpticalLabRenderSession:
         output_profile: OpticalOutputProfile,
         render_profile: list[tuple[str, float]] | None,
     ):
+        if self.render_backend == "cpu_direct_light":
+            if use_gpu_raygen:
+                raise NotImplementedError("cpu_direct_light requires host ray generation")
+            return self.executor.execute(
+                self.snapshot,
+                rays,
+                output_profile=output_profile,
+            )
         if use_gpu_raygen:
             return self.executor.execute_camera(
                 self.snapshot,
@@ -456,6 +556,14 @@ class OpticalLabRenderSession:
             )
         snapshot = self.snapshot if snapshot is None else snapshot
         bvh = self.bvh if bvh is None else bvh
+        if self.render_backend == "cpu_direct_light":
+            if request.camera is not None:
+                raise NotImplementedError("cpu_direct_light requires host ray generation")
+            return self.executor.execute(
+                snapshot,
+                request.rays,
+                output_profile=request.output_profile,
+            )
         if request.camera is not None:
             return self.executor.execute_camera(
                 snapshot,
@@ -521,7 +629,7 @@ class OpticalLabRenderFrameContext:
             snapshot=self.snapshot,
             bvh=self.bvh,
         )
-        wp.synchronize_event(compute_result.ready_event)
+        _synchronize_ready_event(compute_result.ready_event)
         render_execute_ms = (time.perf_counter() - render_start) * 1000.0
         profile_row = render_profile_row(
             render_profile if request.diagnostics.profile_timing else None,
@@ -619,6 +727,8 @@ class OpticalLabRenderPipeline:
         *,
         env_idx: int,
     ) -> OpticalLabRenderFrameContext:
+        if getattr(self.session, "render_backend", "warp_bvh_direct_light") == "cpu_direct_light":
+            raise NotImplementedError("cpu_direct_light currently supports static lab frames only")
         prepared = self.session.workspace.prepare_dynamic_frame(
             frame_inputs,
             env_idx=env_idx,
