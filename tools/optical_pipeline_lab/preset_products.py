@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 
-from .preset_runtime import PHYSICS_BODY_TRIANGLE_VIDEO_SMOKE_PRESET
+from .preset_runtime import GO2_VIDEO_ORDERED_STATIC_PRESET, PHYSICS_BODY_TRIANGLE_VIDEO_SMOKE_PRESET
 from .product_specs import DebugProductSpec, ProductInput, VideoProductSpec, validate_product_inputs
-from .video_products import create_physics_body_triangle_video_product_spec
+from .video_products import (
+    create_go2_video_ordered_static_product_spec,
+    create_physics_body_triangle_video_product_spec,
+)
 
 ProductSelection = str | ProductInput
 
@@ -66,4 +69,5 @@ def _video_product_spec_for_preset(preset: str) -> VideoProductSpec:
 
 _VIDEO_PRODUCT_FACTORIES: dict[str, Callable[[], VideoProductSpec]] = {
     PHYSICS_BODY_TRIANGLE_VIDEO_SMOKE_PRESET: create_physics_body_triangle_video_product_spec,
+    GO2_VIDEO_ORDERED_STATIC_PRESET: create_go2_video_ordered_static_product_spec,
 }

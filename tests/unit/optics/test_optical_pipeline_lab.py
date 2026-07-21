@@ -3,6 +3,7 @@ import json
 import math
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -138,6 +139,9 @@ def test_optical_pipeline_lab_exports_p9_product_contracts():
     assert optical_pipeline_lab.ObservationProductSpec is product_specs.ObservationProductSpec
     assert optical_pipeline_lab.VideoProductSpec is product_specs.VideoProductSpec
     assert optical_pipeline_lab.create_runtime_for_lab_preset is preset_runtime.create_runtime_for_lab_preset
+    assert (
+        optical_pipeline_lab.create_runtime_for_lab_workflow is preset_runtime.create_runtime_for_lab_workflow
+    )
     assert optical_pipeline_lab.resolve_lab_product_specs is preset_products.resolve_lab_product_specs
     assert optical_pipeline_lab.supported_lab_product_strings is preset_products.supported_lab_product_strings
     assert optical_pipeline_lab.supported_runtime_presets is preset_runtime.supported_runtime_presets
@@ -1654,6 +1658,188 @@ def test_create_runtime_for_lab_preset_rejects_unregistered_preset():
         preset_runtime.create_runtime_for_lab_preset("go2_video_ordered_static")
 
 
+def test_create_runtime_for_lab_workflow_delegates_to_physics_runtime_factory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime = object()
+    calls: list[dict[str, object]] = []
+
+    def fake_create_runtime(preset: str, *, device: str | None = None, **kwargs: object):
+        calls.append({"preset": preset, "device": device, "kwargs": kwargs})
+        return runtime
+
+    monkeypatch.setattr(preset_runtime, "create_runtime_for_lab_preset", fake_create_runtime)
+
+    output = ArtifactOutput(root=tmp_path / "physics", frames=1)
+    created = preset_runtime.create_runtime_for_lab_workflow(
+        "physics_body_triangle_video_smoke",
+        output=output,
+        device="cuda:physics",
+        runtime_kwargs={"dt": 2.0e-4},
+    )
+
+    assert created is runtime
+    assert calls == [
+        {
+            "preset": "physics_body_triangle_video_smoke",
+            "device": "cuda:physics",
+            "kwargs": {"dt": 2.0e-4},
+        }
+    ]
+
+
+def test_create_static_asset_lab_runtime_builds_go2_workflow_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    scene = SimpleNamespace(name="scene")
+    base_frame = SimpleNamespace(frame_id=400, sim_time=40.0)
+    build_calls: list[dict[str, object]] = []
+    pipeline_calls: list[dict[str, object]] = []
+
+    def fake_build_static_asset_render_source(args, *, workspace):
+        build_calls.append(
+            {
+                "scene_preset": args.scene_preset,
+                "model_dir": args.model_dir,
+                "model_xml": args.model_xml,
+                "device": workspace.device,
+            }
+        )
+        return render_session.OpticalLabRenderSource(
+            registry=object(),
+            base_frame=base_frame,
+            metadata={"scene": scene},
+        )
+
+    class FakePipelineFactory:
+        @staticmethod
+        def create_from_source_factory(
+            source_factory,
+            options,
+            timings,
+            *,
+            scene_for_source=None,
+            **kwargs,
+        ):
+            del timings, kwargs
+            source = source_factory(SimpleNamespace(device=options.device))
+            pipeline_calls.append(
+                {
+                    "device": options.device,
+                    "scene": scene_for_source(source) if scene_for_source is not None else None,
+                }
+            )
+            return SimpleNamespace(
+                session=SimpleNamespace(
+                    scene=scene,
+                    gpu_frame=source.base_frame,
+                )
+            )
+
+    monkeypatch.setattr(
+        static_asset_source,
+        "build_static_asset_render_source",
+        fake_build_static_asset_render_source,
+    )
+    monkeypatch.setattr(preset_runtime, "OpticalLabRenderPipeline", FakePipelineFactory)
+
+    output = ArtifactOutput(
+        root=tmp_path / "static",
+        frames=3,
+        fps=24.0,
+        model_dir="ignored/output/model_dir",
+        model_xml="ignored.xml",
+    )
+    runtime = preset_runtime.create_static_asset_lab_runtime(
+        "go2_video_ordered_static",
+        output=output,
+        device="cuda:static",
+        runtime_kwargs={
+            "scene_preset": "synthetic_body_triangle",
+            "model_dir": "custom/model_dir",
+            "model_xml": "custom.xml",
+        },
+    )
+
+    assert isinstance(runtime, preset_runtime.StaticAssetLabRuntime)
+    assert runtime.scene is scene
+    assert runtime.base_frame is base_frame
+    assert build_calls == [
+        {
+            "scene_preset": "synthetic_body_triangle",
+            "model_dir": "custom/model_dir",
+            "model_xml": "custom.xml",
+            "device": "cuda:static",
+        }
+    ]
+    assert pipeline_calls == [{"device": "cuda:static", "scene": scene}]
+    assert runtime.metadata == {
+        "runtime_owner": "static_asset_lab_runtime",
+        "preset": "go2_video_ordered_static",
+        "scene_preset": "synthetic_body_triangle",
+        "model_dir": "custom/model_dir",
+        "model_xml": "custom.xml",
+    }
+
+    tick = runtime.step_tick(2)
+    assert tick.frame_index == 2
+    assert tick.frame_id == 402
+    assert tick.sim_time == pytest.approx(40.0 + 2.0 / 24.0)
+    assert tick.published_frame is base_frame
+    assert tick.metadata["frame_source"] == "static_asset_builder"
+    assert tick.metadata["runtime_owner"] == "static_asset_lab_runtime"
+
+    runtime.close()
+    assert runtime.closed is True
+
+
+def test_create_runtime_for_lab_workflow_dispatches_to_static_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime = object()
+    calls: list[dict[str, object]] = []
+
+    def fake_create_static_runtime(
+        preset: str,
+        *,
+        output: ArtifactOutput,
+        device: str | None = None,
+        runtime_kwargs: Mapping[str, object] | None = None,
+    ):
+        calls.append(
+            {
+                "preset": preset,
+                "output": output,
+                "device": device,
+                "runtime_kwargs": dict(runtime_kwargs or {}),
+            }
+        )
+        return runtime
+
+    monkeypatch.setattr(preset_runtime, "create_static_asset_lab_runtime", fake_create_static_runtime)
+
+    output = ArtifactOutput(root=tmp_path / "go2_static", frames=1)
+    created = preset_runtime.create_runtime_for_lab_workflow(
+        "go2_video_ordered_static",
+        output=output,
+        device="cuda:go2",
+        runtime_kwargs={"model_xml": "scene.xml"},
+    )
+
+    assert created is runtime
+    assert calls == [
+        {
+            "preset": "go2_video_ordered_static",
+            "output": output,
+            "device": "cuda:go2",
+            "runtime_kwargs": {"model_xml": "scene.xml"},
+        }
+    ]
+
+
 def test_resolve_lab_product_specs_builds_reviewed_video_and_debug_specs():
     resolved = preset_products.resolve_lab_product_specs(
         preset="physics_body_triangle_video_smoke",
@@ -1663,12 +1849,34 @@ def test_resolve_lab_product_specs_builds_reviewed_video_and_debug_specs():
     video, debug = resolved
     assert isinstance(video, product_specs.VideoProductSpec)
     assert video.product_name == "video"
+    assert video.product_builder is product_specs.build_physics_video_product_from_spec
     assert video.build_video_camera is camera_presets.build_lab_video_camera
     assert video.pack_rgb8 is video_loop.pack_video_rgb8
     assert video.synchronize_event is video_products.synchronize_ready_event
     assert isinstance(debug, product_specs.DebugProductSpec)
     assert debug.product_name == "debug"
     assert preset_products.supported_lab_product_strings(preset="physics_body_triangle_video_smoke") == (
+        "debug",
+        "video",
+    )
+
+
+def test_resolve_lab_product_specs_builds_go2_static_video_spec():
+    resolved = preset_products.resolve_lab_product_specs(
+        preset="go2_video_ordered_static",
+        products=("video", "debug"),
+    )
+
+    video, debug = resolved
+    assert isinstance(video, product_specs.VideoProductSpec)
+    assert video.product_name == "video"
+    assert video.product_builder is product_specs.build_static_video_product_from_spec
+    assert video.consumer_id == "optical_lab_static_video_product"
+    assert video.build_video_camera is camera_presets.build_lab_video_camera
+    assert video.pack_rgb8 is video_loop.pack_video_rgb8
+    assert video.synchronize_event is video_products.synchronize_ready_event
+    assert isinstance(debug, product_specs.DebugProductSpec)
+    assert preset_products.supported_lab_product_strings(preset="go2_video_ordered_static") == (
         "debug",
         "video",
     )
@@ -1731,14 +1939,16 @@ def test_resolve_lab_product_specs_rejects_unknown_product_string():
 
 
 def test_resolve_lab_product_specs_rejects_unregistered_video_preset():
-    assert preset_products.supported_lab_product_strings(preset="go2_video_ordered_static") == ("debug",)
+    assert preset_products.supported_lab_product_strings(preset="synthetic_body_triangle_dynamic_smoke") == (
+        "debug",
+    )
 
     with pytest.raises(
         NotImplementedError,
-        match="video product is not registered.*go2_video_ordered_static",
+        match="video product is not registered.*synthetic_body_triangle_dynamic_smoke",
     ):
         preset_products.resolve_lab_product_specs(
-            preset="go2_video_ordered_static",
+            preset="synthetic_body_triangle_dynamic_smoke",
             products=("video",),
         )
 
@@ -1757,11 +1967,24 @@ def test_run_optical_lab_preset_delegates_to_p10_workflow(tmp_path: Path, monkey
     )
     calls: list[dict[str, object]] = []
 
-    def fake_factory(preset: str, *, device: str | None = None, **kwargs: object):
-        calls.append({"preset": preset, "device": device, "kwargs": kwargs})
+    def fake_factory(
+        preset: str,
+        *,
+        output: ArtifactOutput,
+        device: str | None = None,
+        runtime_kwargs: Mapping[str, object] | None = None,
+    ):
+        calls.append(
+            {
+                "preset": preset,
+                "output": output,
+                "device": device,
+                "runtime_kwargs": dict(runtime_kwargs or {}),
+            }
+        )
         return runtime
 
-    monkeypatch.setattr(preset_workflows, "create_runtime_for_lab_preset", fake_factory)
+    monkeypatch.setattr(preset_workflows, "create_runtime_for_lab_workflow", fake_factory)
 
     result = preset_workflows.run_optical_lab_preset(
         "physics_body_triangle_video_smoke",
@@ -1776,8 +1999,9 @@ def test_run_optical_lab_preset_delegates_to_p10_workflow(tmp_path: Path, monkey
     assert calls == [
         {
             "preset": "physics_body_triangle_video_smoke",
+            "output": ArtifactOutput(root=tmp_path / "preset", frames=2),
             "device": "cpu",
-            "kwargs": {"dt": 2.0e-4, "initial_height": 1.25},
+            "runtime_kwargs": {"dt": 2.0e-4, "initial_height": 1.25},
         }
     ]
     assert [record.frame_id for record in result.product_results["debug"]] == [201, 202]
@@ -1818,7 +2042,7 @@ def test_run_optical_lab_preset_accepts_frame_product_instances(
     )
     monkeypatch.setattr(
         preset_workflows,
-        "create_runtime_for_lab_preset",
+        "create_runtime_for_lab_workflow",
         lambda preset, **kwargs: runtime,
     )
 
@@ -1832,13 +2056,85 @@ def test_run_optical_lab_preset_accepts_frame_product_instances(
     assert [record.frame_id for record in result.product_results["recording"]] == [211, 212]
 
 
+def test_run_optical_lab_preset_runs_go2_static_debug_product(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class StaticRuntime:
+        def __init__(self):
+            self.closed = False
+
+        def step_tick(self, frame_index: int):
+            return frame_tick.SimulationFrameTick(
+                frame_index=frame_index,
+                env_idx=0,
+                frame_id=300 + frame_index,
+                sim_time=30.0 + frame_index,
+                published_frame=object(),
+                metadata={
+                    "frame_source": "static_asset_builder",
+                    "runtime_owner": "p11_static_test",
+                },
+            )
+
+        def close(self):
+            self.closed = True
+
+    runtime = StaticRuntime()
+    calls: list[dict[str, object]] = []
+
+    def fake_factory(
+        preset: str,
+        *,
+        output: ArtifactOutput,
+        device: str | None = None,
+        runtime_kwargs: Mapping[str, object] | None = None,
+    ):
+        calls.append(
+            {
+                "preset": preset,
+                "output": output,
+                "device": device,
+                "runtime_kwargs": dict(runtime_kwargs or {}),
+            }
+        )
+        return runtime
+
+    monkeypatch.setattr(preset_workflows, "create_runtime_for_lab_workflow", fake_factory)
+
+    result = preset_workflows.run_optical_lab_preset(
+        "go2_video_ordered_static",
+        frames=2,
+        products=("debug",),
+        out=tmp_path / "go2_static",
+        device="cuda:go2",
+        runtime_kwargs={"model_xml": "go2.xml"},
+    )
+
+    assert calls == [
+        {
+            "preset": "go2_video_ordered_static",
+            "output": ArtifactOutput(root=tmp_path / "go2_static", frames=2),
+            "device": "cuda:go2",
+            "runtime_kwargs": {"model_xml": "go2.xml"},
+        }
+    ]
+    assert runtime.closed is True
+    assert [record.frame_id for record in result.product_results["debug"]] == [300, 301]
+    assert result.product_results["debug"][0].metadata["runtime_owner"] == "p11_static_test"
+    payload = json.loads((tmp_path / "go2_static" / "scenario_config.json").read_text())
+    assert payload["scenario"]["scenario_name"] == "go2_video_ordered_static"
+    assert payload["scenario"]["frame_source"] == "static_asset_builder"
+    assert payload["scenario"]["clock_owner"] == "runner"
+
+
 def test_run_optical_lab_preset_rejects_products_before_creating_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     calls: list[object] = []
     monkeypatch.setattr(
         preset_workflows,
-        "create_runtime_for_lab_preset",
+        "create_runtime_for_lab_workflow",
         lambda *args, **kwargs: calls.append((args, kwargs)),
     )
 
@@ -1854,9 +2150,38 @@ def test_run_optical_lab_preset_rejects_products_before_creating_runtime(
     assert not (tmp_path / "invalid_product").exists()
 
 
-def test_run_optical_lab_preset_closes_runtime_on_p10_setup_error(
+def test_run_optical_lab_preset_rejects_output_conflict_before_creating_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    calls: list[object] = []
+    monkeypatch.setattr(
+        preset_workflows,
+        "create_runtime_for_lab_workflow",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(ValueError, match="conflicting output root and out"):
+        preset_workflows.run_optical_lab_preset(
+            "physics_body_triangle_video_smoke",
+            frames=1,
+            products=("debug",),
+            output=ArtifactOutput(root=tmp_path / "a"),
+            out=tmp_path / "b",
+        )
+
+    assert calls == []
+
+
+def test_run_optical_lab_preset_closes_runtime_on_workflow_setup_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    class FailingProductSpec:
+        product_name = "failing"
+
+        def build(self, context):
+            del context
+            raise RuntimeError("product build failed")
+
     closed: list[bool] = []
     runtime = physics_runtime.PhysicsLabScenarioRuntime(
         engine=object(),
@@ -1870,17 +2195,16 @@ def test_run_optical_lab_preset_closes_runtime_on_p10_setup_error(
     )
     monkeypatch.setattr(
         preset_workflows,
-        "create_runtime_for_lab_preset",
+        "create_runtime_for_lab_workflow",
         lambda preset, **kwargs: runtime,
     )
 
-    with pytest.raises(ValueError, match="conflicting output root and out"):
+    with pytest.raises(RuntimeError, match="product build failed"):
         preset_workflows.run_optical_lab_preset(
             "physics_body_triangle_video_smoke",
             frames=1,
-            products=("debug",),
-            output=ArtifactOutput(root=tmp_path / "a"),
-            out=tmp_path / "b",
+            products=(FailingProductSpec(),),
+            out=tmp_path / "build_error",
         )
 
     assert closed == [True]
@@ -1905,7 +2229,7 @@ runtime = PhysicsLabScenarioRuntime(
         sim_time=23.1 + frame_index,
     ),
 )
-workflows.create_runtime_for_lab_preset = lambda preset, **kwargs: runtime
+workflows.create_runtime_for_lab_workflow = lambda preset, **kwargs: runtime
 with tempfile.TemporaryDirectory() as tmp:
     workflows.run_optical_lab_preset(
         "physics_body_triangle_video_smoke",

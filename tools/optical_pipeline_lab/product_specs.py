@@ -50,29 +50,61 @@ class DebugProductSpec:
         )
 
 
+VideoProductBuilder = Callable[[object, ProductBuildContext], FrameProduct]
+
+
+def build_physics_video_product_from_spec(spec: object, context: ProductBuildContext) -> FrameProduct:
+    """Build a physics video product from a declarative spec."""
+
+    from .runner import build_physics_video_frame_product
+
+    return build_physics_video_frame_product(
+        context.config,
+        context.output,
+        scenario_runtime=context.runtime,
+        build_video_camera=getattr(spec, "build_video_camera"),
+        synchronize_event=getattr(spec, "synchronize_event"),
+        pack_rgb8=getattr(spec, "pack_rgb8"),
+        consumer_id=getattr(spec, "consumer_id"),
+        product_name=getattr(spec, "product_name"),
+    )
+
+
+def build_static_video_product_from_spec(spec: object, context: ProductBuildContext) -> FrameProduct:
+    """Build a static video product from a declarative spec."""
+
+    from . import frame_contexts, frame_providers
+    from .runner import build_video_frame_product
+
+    return build_video_frame_product(
+        context.config,
+        context.output,
+        runtime=context.runtime,
+        scene=context.runtime.pipeline.session.scene,
+        frame_provider=frame_providers.static_tick_frame_context_provider(
+            frame_contexts.static_frame_context_provider(context.runtime.pipeline)
+        ),
+        build_video_camera=getattr(spec, "build_video_camera"),
+        synchronize_event=getattr(spec, "synchronize_event"),
+        pack_rgb8=getattr(spec, "pack_rgb8"),
+        consumer_id=getattr(spec, "consumer_id"),
+        product_name=getattr(spec, "product_name"),
+    )
+
+
 @dataclass(frozen=True)
 class VideoProductSpec:
-    """Declare a physics-owned video product for a lab workflow."""
+    """Declare a video product for a lab workflow."""
 
     build_video_camera: Callable[[object, object, int], object]
     synchronize_event: Callable[[object], None]
     pack_rgb8: Callable[[object], object]
+    product_builder: VideoProductBuilder = build_physics_video_product_from_spec
     consumer_id: str = "optical_lab_physics_video_product"
     product_name: str = "video"
 
     def build(self, context: ProductBuildContext) -> FrameProduct:
-        from .runner import build_physics_video_frame_product
-
-        return build_physics_video_frame_product(
-            context.config,
-            context.output,
-            scenario_runtime=context.runtime,
-            build_video_camera=self.build_video_camera,
-            synchronize_event=self.synchronize_event,
-            pack_rgb8=self.pack_rgb8,
-            consumer_id=self.consumer_id,
-            product_name=self.product_name,
-        )
+        return self.product_builder(self, context)
 
 
 @dataclass(frozen=True)
