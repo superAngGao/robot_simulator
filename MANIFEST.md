@@ -228,7 +228,7 @@ runtime-owner GPU smoke 验证 `PhysicsLabScenarioRuntime` context manager 可�
 | `tools/optical_pipeline_lab/rgb_pack.py` | Optical Pipeline Lab GPU RGB8 preview packing helper |
 | `tools/optical_pipeline_lab/frame_tick.py` | Shared `SimulationFrameTick` contract for multi-product lab workflows |
 | `tools/optical_pipeline_lab/frame_products.py` | `FrameProductResult` + product protocol contracts for tick-based workflows |
-| `tools/optical_pipeline_lab/product_workflow.py` | `PhysicsOwnedProductWorkflow`, named product run results, and P10.5 Optical Lab workflow convenience entry points |
+| `tools/optical_pipeline_lab/product_workflow.py` | Generic/physics product workflow runners, named product run results, and P10/P11 Optical Lab workflow convenience entry points |
 | `tools/optical_pipeline_lab/product_specs.py` | `DebugProductSpec`, `ObservationProductSpec`, and `VideoProductSpec` declarative product builders for P10 workflows |
 | `tools/optical_pipeline_lab/preset_runtime.py` | P11 reviewed preset -> physics runtime factory registry for Optical Lab workflows |
 | `tools/optical_pipeline_lab/preset_products.py` | P11 user-facing preset product string resolver for Optical Lab workflows |

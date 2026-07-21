@@ -38,6 +38,9 @@ class PhysicsProductRunResult:
         return {name: tuple(values) for name, values in grouped.items()}
 
 
+ProductRunResult = PhysicsProductRunResult
+
+
 @dataclass
 class PhysicsOwnedProductWorkflow:
     """Run ordered products on a physics-owned simulation tick stream.
@@ -96,6 +99,9 @@ class PhysicsOwnedProductWorkflow:
         return {"root": self.output.root}
 
 
+ProductWorkflowRunner = PhysicsOwnedProductWorkflow
+
+
 def run_physics_products(
     *,
     runtime: object,
@@ -131,27 +137,18 @@ def run_physics_product_scenario(
 
     try:
         validate_physics_product_scenario(config, output)
-        frame_count = _resolve_workflow_frame_count(output, frames)
-        product_inputs = _validate_product_inputs(products)
-        output.root.mkdir(parents=True, exist_ok=True)
-        write_scenario_config(output.root / "scenario_config.json", config, output)
-        concrete_products = _build_products_for_scenario(
-            config=config,
-            output=output,
-            runtime=runtime,
-            products=product_inputs,
-        )
-        return run_physics_products(
-            runtime=runtime,
-            products=concrete_products,
-            frames=frame_count,
-            output=output,
-            owns_runtime=owns_runtime,
-        )
     except Exception:
         if owns_runtime:
             runtime.close()
         raise
+    return run_lab_product_scenario(
+        config,
+        output,
+        runtime=runtime,
+        products=products,
+        frames=frames,
+        owns_runtime=owns_runtime,
+    )
 
 
 def run_physics_product_preset(
@@ -197,12 +194,48 @@ def run_optical_lab_workflow(
         if owns_runtime:
             runtime.close()
         raise
-    return run_physics_product_scenario(
+    return run_lab_product_scenario(
         scenario_config,
         artifact_output,
         runtime=runtime,
         products=products,
         frames=None,
+        owns_runtime=owns_runtime,
+    )
+
+
+def run_lab_product_scenario(
+    config: OpticalLabScenarioConfig,
+    output: ArtifactOutput,
+    *,
+    runtime: object,
+    products: Iterable[object],
+    frames: int | None = None,
+    owns_runtime: bool = False,
+) -> ProductRunResult:
+    """Run products or product specs for one generic lab scenario."""
+
+    try:
+        validate_lab_product_scenario(config, output)
+        frame_count = _resolve_workflow_frame_count(output, frames)
+        product_inputs = _validate_product_inputs(products)
+        output.root.mkdir(parents=True, exist_ok=True)
+        write_scenario_config(output.root / "scenario_config.json", config, output)
+        concrete_products = _build_products_for_scenario(
+            config=config,
+            output=output,
+            runtime=runtime,
+            products=product_inputs,
+        )
+    except Exception:
+        if owns_runtime:
+            runtime.close()
+        raise
+    return run_physics_products(
+        runtime=runtime,
+        products=concrete_products,
+        frames=frame_count,
+        output=output,
         owns_runtime=owns_runtime,
     )
 
@@ -230,6 +263,15 @@ def run_optical_lab_products(
         frames=frames,
         owns_runtime=owns_runtime,
     )
+
+
+def validate_lab_product_scenario(
+    config: OpticalLabScenarioConfig,
+    output: ArtifactOutput,
+) -> None:
+    """Validate a generic product workflow scenario."""
+
+    validate_run(config, output)
 
 
 def validate_physics_product_scenario(

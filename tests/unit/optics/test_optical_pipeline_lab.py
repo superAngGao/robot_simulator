@@ -120,6 +120,8 @@ def test_optical_pipeline_lab_exports_p9_product_contracts():
     )
     assert optical_pipeline_lab.PhysicsOwnedProductWorkflow is product_workflow.PhysicsOwnedProductWorkflow
     assert optical_pipeline_lab.PhysicsProductRunResult is product_workflow.PhysicsProductRunResult
+    assert optical_pipeline_lab.ProductWorkflowRunner is product_workflow.ProductWorkflowRunner
+    assert optical_pipeline_lab.ProductRunResult is product_workflow.ProductRunResult
     assert optical_pipeline_lab.ProductBuildContext is product_specs.ProductBuildContext
     assert optical_pipeline_lab.ProductSpec is product_specs.ProductSpec
     assert optical_pipeline_lab.DebugProductSpec is product_specs.DebugProductSpec
@@ -132,6 +134,7 @@ def test_optical_pipeline_lab_exports_p9_product_contracts():
     assert optical_pipeline_lab.run_optical_lab_preset is preset_workflows.run_optical_lab_preset
     assert optical_pipeline_lab.run_optical_lab_workflow is product_workflow.run_optical_lab_workflow
     assert optical_pipeline_lab.run_optical_lab_products is product_workflow.run_optical_lab_products
+    assert optical_pipeline_lab.run_lab_product_scenario is product_workflow.run_lab_product_scenario
     assert optical_pipeline_lab.run_physics_products is product_workflow.run_physics_products
     assert optical_pipeline_lab.run_physics_product_scenario is product_workflow.run_physics_product_scenario
     assert optical_pipeline_lab.run_physics_product_preset is product_workflow.run_physics_product_preset
@@ -1402,6 +1405,54 @@ def test_run_optical_lab_products_accepts_explicit_config_alias(tmp_path: Path):
     assert [record.frame_id for record in result.product_results["debug"]] == [55]
 
 
+def test_run_optical_lab_workflow_accepts_static_asset_runtime(tmp_path: Path):
+    calls: list[tuple[object, ...]] = []
+
+    class StaticRuntime:
+        closed = False
+
+        def step_tick(self, frame_index: int):
+            calls.append(("step", frame_index))
+            return frame_tick.SimulationFrameTick(
+                frame_index=frame_index,
+                env_idx=0,
+                frame_id=80 + frame_index,
+                sim_time=8.0 + frame_index,
+                published_frame=object(),
+                metadata={
+                    "frame_source": "static_asset_builder",
+                    "runtime_owner": "static_runtime_test",
+                },
+            )
+
+        def close(self):
+            calls.append(("close",))
+            self.closed = True
+
+    runtime = StaticRuntime()
+
+    result = product_workflow.run_optical_lab_workflow(
+        preset="go2_video_ordered_static",
+        out=tmp_path / "static",
+        runtime=runtime,
+        products=(product_specs.DebugProductSpec(metadata_keys=("frame_source", "runtime_owner")),),
+        frames=2,
+        owns_runtime=True,
+    )
+
+    payload = json.loads((tmp_path / "static" / "scenario_config.json").read_text())
+    assert payload["scenario"]["scenario_name"] == "go2_video_ordered_static"
+    assert payload["scenario"]["frame_source"] == "static_asset_builder"
+    assert payload["scenario"]["clock_owner"] == "runner"
+    assert calls == [("step", 0), ("step", 1), ("close",)]
+    assert runtime.closed is True
+    assert [record.frame_id for record in result.product_results["debug"]] == [80, 81]
+    assert result.product_results["debug"][0].metadata == {
+        "frame_source": "static_asset_builder",
+        "runtime_owner": "static_runtime_test",
+    }
+
+
 def test_run_optical_lab_workflow_merges_frames_into_output_artifact(tmp_path: Path):
     runtime = physics_runtime.PhysicsLabScenarioRuntime(
         engine=object(),
@@ -1888,17 +1939,25 @@ def test_run_physics_product_scenario_requires_physics_owned_clock(tmp_path: Pat
         get_preset("physics_body_triangle_video_smoke"),
         frame_source=FrameSourceKind.STATIC_ASSET_BUILDER,
     )
+    runtime = SimpleNamespace(closed=False)
+
+    def close_runtime():
+        runtime.closed = True
+
+    runtime.close = close_runtime
 
     with pytest.raises(ValueError, match="frame_source='physics_published_frame'"):
         product_workflow.run_physics_product_scenario(
             config,
             ArtifactOutput(root=tmp_path / "invalid"),
-            runtime=object(),
+            runtime=runtime,
             products=(),
             frames=1,
+            owns_runtime=True,
         )
 
     assert not (tmp_path / "invalid").exists()
+    assert runtime.closed is True
 
 
 def test_run_physics_product_scenario_rejects_frame_conflict_before_writing(tmp_path: Path):
