@@ -217,6 +217,7 @@ runtime-owner GPU smoke 验证 `PhysicsLabScenarioRuntime` context manager 可�
 | `tools/optical_pipeline_lab/async_readback.py` | Optical Pipeline Lab async D2H readback ring helper for pinned Torch copies |
 | `tools/optical_pipeline_lab/dynamic_frames.py` | Lab-only synthetic GPU published-frame clone/perturb helpers for dynamic optical smokes |
 | `tools/optical_pipeline_lab/frame_contexts.py` | Static/synthetic/physics OpticalLabRenderFrameContext provider helpers |
+| `tools/optical_pipeline_lab/frame_providers.py` | Product-facing tick frame-context provider adapters for video products |
 | `tools/optical_pipeline_lab/frame_runtime.py` | Lab-internal FrameWorkflowRunner for provider/video/delivery frame workflow |
 | `tools/optical_pipeline_lab/static_asset_source.py` | Static asset OpticalLabRenderSource builders for Go2/Menagerie and synthetic lab scenes |
 | `tools/optical_pipeline_lab/menagerie_static_runner.py` | Legacy Go2/Menagerie static preview and benchmark runner for lab runner and example CLI |
@@ -240,7 +241,7 @@ runtime-owner GPU smoke 验证 `PhysicsLabScenarioRuntime` context manager 可�
 | `tools/optical_pipeline_lab/matrix.py` | Matrix suite runner for Optical Pipeline Lab baselines |
 | `tools/optical_pipeline_lab/presets.py` | Preset registry for Optical Pipeline Lab scenarios |
 | `tools/optical_pipeline_lab/reports.py` | Report formatting helpers for Optical Pipeline Lab output |
-| `tools/optical_pipeline_lab/runner.py` | Runner entry points for the Optical Pipeline Lab |
+| `tools/optical_pipeline_lab/runner.py` | Runner entry points and generic/physics video product builders for the Optical Pipeline Lab |
 | `tools/optical_pipeline_lab/scenarios.py` | Scenario configuration vocabulary for the Optical Pipeline Lab |
 | `tools/optical_pipeline_lab/timing.py` | Timing and CSV helpers for optical pipeline lab runs |
 | `benchmarks/bench_optical_device_scene.py` | L5C.1c AABB/BVH decision benchmark harness |

@@ -394,10 +394,11 @@ def run_physics_stepped_video_scenario(
 
 
 @dataclass
-class PhysicsVideoFrameProduct:
-    """Render and deliver video for physics-owned simulation ticks."""
+class VideoFrameProduct:
+    """Render and deliver video for simulation ticks."""
 
     runtime: object
+    scene: object
     config: OpticalLabScenarioConfig
     args: argparse.Namespace
     frame_provider: object
@@ -412,11 +413,7 @@ class PhysicsVideoFrameProduct:
 
     def consume(self, tick: SimulationFrameTick) -> FrameProductResult:
         frame_start = time.perf_counter()
-        with self.frame_provider.begin_frame(
-            tick.frame_index,
-            env_idx=tick.env_idx,
-            published_frame=tick.published_frame,
-        ) as frame_context:
+        with self.frame_provider.begin_frame_for_tick(tick) as frame_context:
             rendered = self._render_video_frame(frame_context, tick.frame_index)
 
         delivered_video = self._submit_video(rendered, frame_start=frame_start)
@@ -445,7 +442,7 @@ class PhysicsVideoFrameProduct:
             env_idx=frame_context.env_idx,
         )
         plan = build_video_render_plan(
-            self.runtime.pipeline.session.scene,
+            self.scene,
             self.args,
             frame_index,
             None,
@@ -473,6 +470,9 @@ class PhysicsVideoFrameProduct:
     def _record_delivered_video(self, delivered: tuple[object, ...]) -> None:
         for frame in delivered:
             record_delivered_video_frame(self.rows, self.row_builder, frame, self.args)
+
+
+PhysicsVideoFrameProduct = VideoFrameProduct
 
 
 def run_physics_stepped_video_product_scenario(
@@ -531,7 +531,7 @@ def build_physics_video_frame_product(
     pack_rgb8: Callable[[object], object],
     consumer_id: str = "optical_lab_physics_video_product",
     product_name: str = "video",
-) -> PhysicsVideoFrameProduct:
+) -> VideoFrameProduct:
     """Build the physics-owned video frame product for one lab workflow."""
 
     validate_physics_video_product_run(config, options)
@@ -550,12 +550,46 @@ def build_physics_video_frame_product(
         metadata=scenario_runtime.metadata,
     )
 
-    from . import frame_contexts
+    from . import frame_contexts, frame_providers
 
-    frame_provider = frame_contexts.physics_frame_context_provider(
-        runtime,
-        delivery_mode=options.video_readback_delivery,
+    frame_provider = frame_providers.physics_tick_frame_context_provider(
+        frame_contexts.physics_frame_context_provider(
+            runtime,
+            delivery_mode=options.video_readback_delivery,
+        )
     )
+    return build_video_frame_product(
+        config,
+        options,
+        runtime=runtime,
+        scene=runtime.pipeline.session.scene,
+        frame_provider=frame_provider,
+        args=args,
+        build_video_camera=build_video_camera,
+        synchronize_event=synchronize_event,
+        pack_rgb8=pack_rgb8,
+        product_name=product_name,
+    )
+
+
+def build_video_frame_product(
+    config: OpticalLabScenarioConfig,
+    options: LabRunOptions,
+    *,
+    runtime: object,
+    scene: object,
+    frame_provider: object,
+    build_video_camera: PhysicsVideoCameraBuilder,
+    synchronize_event: Callable[[object], None],
+    pack_rgb8: Callable[[object], object],
+    args: argparse.Namespace | None = None,
+    consumer_id: str = "optical_lab_video_product",
+    product_name: str = "video",
+) -> VideoFrameProduct:
+    """Build a generic video frame product from a prepared frame provider."""
+
+    del consumer_id
+    args = _build_physics_video_args_unvalidated(config, options) if args is None else args
     delivery_request = video_delivery_request_from_options(
         readback_mode=args.video_readback,
         delivery_mode=args.video_readback_delivery,
@@ -583,8 +617,9 @@ def build_physics_video_frame_product(
         pack_rgb8=pack_rgb8,
         synchronize_event=synchronize_event,
     )
-    return PhysicsVideoFrameProduct(
+    return VideoFrameProduct(
         runtime=runtime,
+        scene=scene,
         config=config,
         args=args,
         frame_provider=frame_provider,

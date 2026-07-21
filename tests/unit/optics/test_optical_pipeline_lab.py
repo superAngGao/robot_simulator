@@ -18,6 +18,7 @@ import tools.optical_pipeline_lab.delivery as delivery
 import tools.optical_pipeline_lab.dynamic_frames as dynamic_frames
 import tools.optical_pipeline_lab.frame_contexts as frame_contexts
 import tools.optical_pipeline_lab.frame_products as frame_products
+import tools.optical_pipeline_lab.frame_providers as frame_providers
 import tools.optical_pipeline_lab.frame_runtime as frame_runtime
 import tools.optical_pipeline_lab.frame_tick as frame_tick
 import tools.optical_pipeline_lab.go2_backend as go2_backend
@@ -114,6 +115,15 @@ def test_optical_pipeline_lab_exports_p9_product_contracts():
     assert optical_pipeline_lab.FrameProduct is frame_products.FrameProduct
     assert optical_pipeline_lab.MultiProductFrameRunner is frame_products.MultiProductFrameRunner
     assert optical_pipeline_lab.DebugFrameProduct is frame_products.DebugFrameProduct
+    assert optical_pipeline_lab.TickFrameContextProvider is frame_providers.TickFrameContextProvider
+    assert (
+        optical_pipeline_lab.PhysicsTickFrameContextProvider
+        is frame_providers.PhysicsTickFrameContextProvider
+    )
+    assert (
+        optical_pipeline_lab.StaticTickFrameContextProvider is frame_providers.StaticTickFrameContextProvider
+    )
+    assert optical_pipeline_lab.VideoFrameProduct is lab_runner.VideoFrameProduct
     assert (
         optical_pipeline_lab.PublishedStateObservationProduct
         is observation_products.PublishedStateObservationProduct
@@ -138,6 +148,14 @@ def test_optical_pipeline_lab_exports_p9_product_contracts():
     assert optical_pipeline_lab.run_physics_products is product_workflow.run_physics_products
     assert optical_pipeline_lab.run_physics_product_scenario is product_workflow.run_physics_product_scenario
     assert optical_pipeline_lab.run_physics_product_preset is product_workflow.run_physics_product_preset
+    assert (
+        optical_pipeline_lab.physics_tick_frame_context_provider
+        is frame_providers.physics_tick_frame_context_provider
+    )
+    assert (
+        optical_pipeline_lab.static_tick_frame_context_provider
+        is frame_providers.static_tick_frame_context_provider
+    )
 
 
 def test_optical_pipeline_lab_observation_product_export_is_lazy():
@@ -2068,6 +2086,151 @@ def test_run_physics_product_scenario_builds_observation_product_spec(tmp_path: 
             1.0,
         ],
     )
+
+
+def test_tick_frame_context_providers_adapt_physics_and_static_lifecycles():
+    calls: list[tuple[object, ...]] = []
+    published_frame = object()
+    physics_context = object()
+    static_context = object()
+
+    class Scope:
+        def __init__(self, label: str, context: object):
+            self.label = label
+            self.context = context
+
+        def __enter__(self):
+            calls.append(("enter", self.label))
+            return self.context
+
+        def __exit__(self, exc_type, exc, tb):
+            calls.append(("exit", self.label, exc_type))
+
+    class PhysicsProvider:
+        def begin_frame(self, frame_index: int, *, env_idx: int = 0, published_frame=None):
+            calls.append(("physics_begin", frame_index, env_idx, published_frame))
+            return Scope("physics", physics_context)
+
+    class StaticProvider:
+        def begin_frame(self, frame_index: int, *, env_idx: int = 0):
+            calls.append(("static_begin", frame_index, env_idx))
+            return Scope("static", static_context)
+
+    tick = frame_tick.SimulationFrameTick(
+        frame_index=7,
+        env_idx=3,
+        frame_id=70,
+        sim_time=7.0,
+        published_frame=published_frame,
+    )
+
+    with frame_providers.physics_tick_frame_context_provider(PhysicsProvider()).begin_frame_for_tick(
+        tick
+    ) as context:
+        assert context is physics_context
+    with frame_providers.static_tick_frame_context_provider(StaticProvider()).begin_frame_for_tick(
+        tick
+    ) as context:
+        assert context is static_context
+
+    assert calls == [
+        ("physics_begin", 7, 3, published_frame),
+        ("enter", "physics"),
+        ("exit", "physics", None),
+        ("static_begin", 7, 3),
+        ("enter", "static"),
+        ("exit", "static", None),
+    ]
+
+
+def test_video_frame_product_uses_tick_frame_provider(monkeypatch: pytest.MonkeyPatch):
+    calls: list[tuple[object, ...]] = []
+    frame_context = SimpleNamespace(frame_id=90, sim_time=9.0, env_idx=4)
+    rendered = SimpleNamespace(frame_index=2)
+
+    class TickProvider:
+        def begin_frame_for_tick(self, tick):
+            calls.append(("begin_for_tick", tick.frame_index, tick.frame_id))
+
+            class Scope:
+                def __enter__(self_inner):
+                    calls.append(("enter", tick.frame_index))
+                    return frame_context
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    calls.append(("exit", tick.frame_index, exc_type))
+
+            return Scope()
+
+    class Delivery:
+        def complete_available(self, *, latest_rendered_frame_index=None):
+            calls.append(("complete_available", latest_rendered_frame_index))
+            return []
+
+        def submit(self, rendered_arg, *, frame_start):
+            calls.append(("submit", rendered_arg.frame_index, frame_start >= 0.0))
+            return None
+
+        def flush(self):
+            calls.append(("flush",))
+            return []
+
+    rows = SimpleNamespace(write_csv=lambda: calls.append(("write_csv",)))
+
+    def fake_build_plan(
+        scene, args, frame_index, ray_cache, *, build_video_camera, frame_identity, geometry_mode
+    ):
+        calls.append(
+            ("plan", scene, frame_index, frame_identity.frame_id, frame_identity.env_idx, geometry_mode)
+        )
+        return SimpleNamespace(request=object(), camera=object())
+
+    def fake_render_from_context(context, plan, *, frame_index):
+        calls.append(("render", context is frame_context, frame_index))
+        return rendered
+
+    monkeypatch.setattr(lab_runner, "build_video_render_plan", fake_build_plan)
+    monkeypatch.setattr(lab_runner, "render_video_frame_from_context", fake_render_from_context)
+
+    product = lab_runner.VideoFrameProduct(
+        runtime=object(),
+        scene="scene",
+        config=get_preset("physics_body_triangle_video_smoke"),
+        args=SimpleNamespace(),
+        frame_provider=TickProvider(),
+        delivery=Delivery(),
+        rows=rows,
+        row_builder=object(),
+        build_video_camera=lambda scene, args, frame_index: object(),
+        product_name="video",
+    )
+    tick = frame_tick.SimulationFrameTick(
+        frame_index=2,
+        env_idx=4,
+        frame_id=90,
+        sim_time=9.0,
+        published_frame=object(),
+    )
+
+    result = product.consume(tick)
+    end_output = product.end_run()
+
+    assert result.product_name == "video"
+    assert result.frame_id == 90
+    assert result.payload["rendered"] is rendered
+    assert end_output["delivered_video"] == ()
+    assert calls == [
+        ("begin_for_tick", 2, 90),
+        ("enter", 2),
+        ("plan", "scene", 2, 90, 4, "dynamic_rigid"),
+        ("render", True, 2),
+        ("exit", 2, None),
+        ("complete_available", 2),
+        ("submit", 2, True),
+        ("complete_available", 2),
+        ("flush",),
+        ("write_csv",),
+    ]
 
 
 def test_run_physics_product_scenario_builds_video_product_spec(
