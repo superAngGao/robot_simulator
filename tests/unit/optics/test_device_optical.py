@@ -12,7 +12,11 @@ from optics import (
     OpticalSceneCache,
     OpticalWorldRegistry,
     build_host_optical_primitive_workload,
+    channel_is_device,
+    channel_to_numpy,
+    channel_to_torch,
     pack_source_order_key,
+    stage_channels_to_host,
     stage_optical_channels,
     stage_optical_compute_result_to_host,
 )
@@ -177,6 +181,38 @@ def test_stage_optical_channels_can_preserve_device_dtypes_for_preview_readback(
     assert staged["rgb"].dtype == np.float32
     assert staged["bvh_stack_overflow_count"].dtype == np.int32
     np.testing.assert_allclose(staged["rgb"], [[0.1, 0.2, 0.3]], rtol=1e-6)
+
+
+def test_device_channel_boundary_stages_host_arrays_without_backend_knowledge():
+    result = OpticalComputeResult(
+        frame_id=7,
+        sim_time=0.07,
+        env_idx=2,
+        sensor_id="host_probe",
+        channels={
+            "rgb": np.array([[0.1, 0.2, 0.3]], dtype=np.float32),
+            "hit_mask": [1, 0],
+        },
+    )
+
+    staged = stage_channels_to_host(result, ("rgb", "hit_mask"))
+
+    assert channel_is_device(result.channel("rgb")) is False
+    assert staged["rgb"].dtype == np.float32
+    np.testing.assert_allclose(channel_to_numpy(result.channel("rgb")), [[0.1, 0.2, 0.3]])
+    np.testing.assert_array_equal(staged["hit_mask"], [1, 0])
+
+
+def test_device_channel_boundary_accepts_torch_tensors_when_available():
+    torch = pytest.importorskip("torch")
+    value = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
+
+    tensor = channel_to_torch(value)
+    array = channel_to_numpy(value)
+
+    assert tensor is value
+    assert channel_is_device(value) is False
+    np.testing.assert_allclose(array, [[1.0, 2.0]])
 
 
 def test_stage_optical_compute_result_to_host_rejects_host_result():

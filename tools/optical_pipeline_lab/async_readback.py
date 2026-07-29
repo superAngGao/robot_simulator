@@ -25,6 +25,8 @@ except Exception as exc:  # pragma: no cover - optional GPU dependency.
 else:
     _WARP_IMPORT_ERROR = None
 
+from optics.device_channel import channel_to_torch
+
 
 @dataclass
 class TorchAsyncReadbackSlot:
@@ -150,7 +152,9 @@ def _torch_device_tensors_for_channels(result, channels: Sequence[str]) -> dict[
     _require_torch_and_warp()
     device_tensors = {}
     for name in channels:
-        device_tensor = wp.to_torch(result.channel(name))
+        device_tensor = channel_to_torch(result.channel(name))
+        if not getattr(device_tensor, "is_cuda", False):
+            raise ValueError("Torch async readback requires device-backed channels")
         if not device_tensor.is_contiguous():
             device_tensor = device_tensor.contiguous()
         device_tensors[name] = device_tensor

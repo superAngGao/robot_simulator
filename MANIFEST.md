@@ -207,6 +207,7 @@ runtime-owner GPU smoke 验证 `PhysicsLabScenarioRuntime` context manager 可�
 | `optics/scene.py` | OpticalFrameInputs + OpticalSceneSnapshot + CPU BVH payload |
 | `optics/execution.py` | CPU reference/BVH/direct-light optical executors |
 | `optics/device.py` | Device workload packing + device→host result staging/readback helpers |
+| `optics/device_channel.py` | Optical result channel materialization boundary for Warp arrays, Torch tensors, and host arrays |
 | `optics/device_bvh.py` | Device BVH layout, CPU-build upload, refit, and traversal support buffers |
 | `optics/device_scene.py` | L5C.0/L5C.1b device-resident registry geometry + derived world primitive update |
 | `optics/cuda_lbvh.py` | CUDA LBVH extension spike and device BVH builder backend |

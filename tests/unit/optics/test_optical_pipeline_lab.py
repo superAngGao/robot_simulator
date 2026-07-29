@@ -5252,6 +5252,40 @@ def test_async_readback_job_uses_start_to_done_event_order():
     assert start_event.elapsed_to is done_event
 
 
+def test_async_readback_channel_materialization_uses_device_channel_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class FakeDeviceTensor:
+        is_cuda = True
+
+        def __init__(self):
+            self.contiguous_called = False
+
+        def is_contiguous(self):
+            return False
+
+        def contiguous(self):
+            self.contiguous_called = True
+            return self
+
+    tensor = FakeDeviceTensor()
+    calls: list[object] = []
+    result = SimpleNamespace(channel=lambda name: f"channel:{name}")
+
+    monkeypatch.setattr(async_readback, "_require_torch_and_warp", lambda: None)
+    monkeypatch.setattr(
+        async_readback,
+        "channel_to_torch",
+        lambda value: calls.append(value) or tensor,
+    )
+
+    materialized = async_readback._torch_device_tensors_for_channels(result, ("rgb",))
+
+    assert calls == ["channel:rgb"]
+    assert materialized == {"rgb": tensor}
+    assert tensor.contiguous_called is True
+
+
 def test_rgb_pack_dependency_probe_is_import_safe():
     assert isinstance(rgb_pack.rgb_pack_available(), bool)
     if rgb_pack.rgb_pack_available():

@@ -22,6 +22,7 @@ from .device_bvh import (
     build_device_bvh_from_snapshot,
     refit_device_bvh_from_snapshot,
 )
+from .device_channel import channel_is_device, channel_to_numpy, channel_to_torch, stage_channels_to_host
 from .device_scene import (
     DeviceOpticalRoleTable,
     DeviceOpticalScene,
@@ -100,6 +101,9 @@ __all__ = [
     "OpticalTriangleMeshGeometry",
     "OpticalWorldRegistry",
     "build_host_optical_primitive_workload",
+    "channel_is_device",
+    "channel_to_numpy",
+    "channel_to_torch",
     "build_device_bvh_from_snapshot",
     "build_cuda_lbvh_from_snapshot",
     "build_device_optical_scene",
@@ -108,6 +112,7 @@ __all__ = [
     "pack_source_order_key",
     "refit_device_bvh_from_snapshot",
     "stage_optical_channels",
+    "stage_channels_to_host",
     "stage_optical_compute_result_to_host",
     "update_device_optical_scene_from_gpu_frame",
 ]

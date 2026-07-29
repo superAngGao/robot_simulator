@@ -7,6 +7,7 @@ from typing import Sequence
 
 import numpy as np
 
+from .device_channel import channel_to_numpy
 from .execution import OpticalComputeResult
 from .registry import OpticalPlaneGeometry, OpticalTriangleMeshGeometry
 from .scene import OpticalSceneSnapshot, transform_directions, transform_points
@@ -165,11 +166,11 @@ def stage_optical_channels(
 
 
 def _stage_channel_to_host_native(value: object) -> np.ndarray:
-    return np.asarray(_channel_to_numpy(value)).copy()
+    return np.asarray(channel_to_numpy(value)).copy()
 
 
 def _stage_channel_to_host(name: str, value: object) -> np.ndarray:
-    array = _channel_to_numpy(value)
+    array = channel_to_numpy(value)
     if name == "hit_mask":
         return np.asarray(array, dtype=bool).copy()
     if name in ("range_m", "position_world", "normal_world", "rgb", "intensity"):
@@ -177,12 +178,6 @@ def _stage_channel_to_host(name: str, value: object) -> np.ndarray:
     if name == "numeric_instance_id":
         return np.asarray(array, dtype=np.int64).copy()
     return np.asarray(array).copy()
-
-
-def _channel_to_numpy(value: object) -> np.ndarray:
-    if hasattr(value, "numpy"):
-        return value.numpy()
-    return np.asarray(value)
 
 
 def _synchronize_ready_event(ready_event: object | None) -> None:
