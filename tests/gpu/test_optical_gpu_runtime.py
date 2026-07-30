@@ -16,6 +16,7 @@ import tools.optical_pipeline_lab.runner as lab_runner
 import tools.optical_pipeline_lab.video_loop as video_loop
 from optics import (
     CpuDirectLightOpticalExecutor,
+    CudaDeviceBvhOpticalExecutor,
     DeviceOpticalSceneCache,
     GpuBruteForceOpticalExecutor,
     GpuDeviceBvhDirectLightOpticalExecutor,
@@ -2037,6 +2038,98 @@ def test_cuda_lbvh_executor_matches_cpu_bvh_for_world_static_triangle_mesh():
         cuda_host.channel("numeric_instance_id"),
         cpu_host.channel("numeric_instance_id"),
     )
+    np.testing.assert_array_equal(cuda_host.channel("bvh_stack_overflow_count"), [0])
+    assert 1 <= int(cuda_host.channel("bvh_max_stack_depth")[0]) <= 32
+
+
+@pytest.mark.cuda_ext
+def test_cuda_direct_light_first_hit_matches_warp_bvh_executor():
+    pytest.importorskip("torch")
+    engine = _make_engine()
+    warp_consumer = _consumer("warp_first_hit")
+    cuda_consumer = _consumer("cuda_first_hit")
+    engine.register_consumer(warp_consumer)
+    engine.register_consumer(cuda_consumer)
+    engine.step()
+    frame = engine.latest_published_frame()
+    registry = _world_static_triangle_grid_registry()
+    spec = OpticalRaySensorSpec(
+        frame_id=frame.frame_id,
+        sim_time=frame.sim_time,
+        env_idx=0,
+        sensor_id="gpu_camera",
+        origins_world=[
+            [-0.75, -0.75, 2.0],
+            [-0.35, 0.05, 2.0],
+            [0.45, 0.45, 2.0],
+            [2.0, 2.0, 2.0],
+        ],
+        directions_world=[
+            [0.0, 0.0, -1.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 0.0, -1.0],
+        ],
+        max_distance=10.0,
+    )
+
+    stream = wp.Stream(device=engine._device)
+    warp_borrowed = engine.borrow_device_frame(warp_consumer.consumer_id, frame.frame_id, stream=stream)
+    warp_cache = DeviceOpticalSceneCache(registry, device=engine._device, stream=stream)
+    warp_snapshot = warp_cache.snapshot_from_gpu_frame(
+        warp_borrowed,
+        env_idx=spec.env_idx,
+        stream=stream,
+        include_aabb=True,
+    )
+    warp_bvh = build_cuda_lbvh_from_snapshot(warp_snapshot, device=engine._device, stream=stream)
+    warp_result = GpuDeviceBvhOpticalExecutor(device=engine._device, stream=stream).execute(
+        warp_snapshot,
+        warp_bvh,
+        spec,
+    )
+    warp_done = engine.complete_device_consumer(warp_consumer.consumer_id, frame.frame_id, stream=stream)
+
+    cuda_borrowed = engine.borrow_device_frame(cuda_consumer.consumer_id, frame.frame_id, stream=stream)
+    cuda_cache = DeviceOpticalSceneCache(registry, device=engine._device, stream=stream)
+    cuda_snapshot = cuda_cache.snapshot_from_gpu_frame(
+        cuda_borrowed,
+        env_idx=spec.env_idx,
+        stream=stream,
+        include_aabb=True,
+    )
+    cuda_bvh = build_cuda_lbvh_from_snapshot(cuda_snapshot, device=engine._device, stream=stream)
+    cuda_result = CudaDeviceBvhOpticalExecutor(device=engine._device, stream=stream).execute(
+        cuda_snapshot,
+        cuda_bvh,
+        spec,
+    )
+    cuda_done = engine.complete_device_consumer(cuda_consumer.consumer_id, frame.frame_id, stream=stream)
+
+    wp.synchronize_event(warp_done)
+    wp.synchronize_event(cuda_done)
+    assert getattr(cuda_result.channel("range_m"), "is_cuda", False) is True
+    warp_host = stage_optical_compute_result_to_host(warp_result)
+    cuda_host = stage_optical_compute_result_to_host(cuda_result)
+    np.testing.assert_array_equal(cuda_host.channel("hit_mask"), warp_host.channel("hit_mask"))
+    np.testing.assert_allclose(cuda_host.channel("range_m"), warp_host.channel("range_m"), atol=1e-6)
+    np.testing.assert_allclose(
+        cuda_host.channel("position_world"),
+        warp_host.channel("position_world"),
+        atol=1e-6,
+        equal_nan=True,
+    )
+    np.testing.assert_allclose(
+        cuda_host.channel("normal_world"),
+        warp_host.channel("normal_world"),
+        atol=1e-6,
+        equal_nan=True,
+    )
+    np.testing.assert_array_equal(
+        cuda_host.channel("numeric_instance_id"),
+        warp_host.channel("numeric_instance_id"),
+    )
+    np.testing.assert_array_equal(cuda_host.channel("material_index"), warp_host.channel("material_index"))
     np.testing.assert_array_equal(cuda_host.channel("bvh_stack_overflow_count"), [0])
     assert 1 <= int(cuda_host.channel("bvh_max_stack_depth")[0]) <= 32
 

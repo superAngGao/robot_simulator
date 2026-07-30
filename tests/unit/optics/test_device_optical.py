@@ -6,6 +6,7 @@ import pytest
 from optics import (
     MAX_PRIMITIVES_PER_INSTANCE,
     CudaDeviceBvhDirectLightOpticalExecutor,
+    CudaDeviceBvhOpticalExecutor,
     OpticalComputeResult,
     OpticalFrameInputs,
     OpticalInstanceSpec,
@@ -220,6 +221,7 @@ def test_device_channel_boundary_accepts_torch_tensors_when_available():
 
 def test_cuda_direct_light_skeleton_is_import_safe():
     assert isinstance(cuda_direct_light_available(), bool)
+    assert "range_m" in CudaDeviceBvhOpticalExecutor.capabilities
     assert "rgb" in CudaDeviceBvhDirectLightOpticalExecutor.capabilities
     assert "intensity" in CudaDeviceBvhDirectLightOpticalExecutor.capabilities
 
