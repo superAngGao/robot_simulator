@@ -47,3 +47,14 @@ under the now-stable P11 workflow/API surface.
    The likely answer is "only stable, reviewed backend choices." Examples
    should show the public workflow, not become benchmark matrices.
 
+4. **How broad should `optics.device_channel.channel_is_device(...)` become?**
+
+   P12.5a keeps device detection intentionally narrow:
+
+   - Torch tensors use `tensor.is_cuda`;
+   - non-Torch arrays use a conservative `.device` string heuristic.
+
+   This is enough for the current Torch/Warp CUDA paths. If future backends
+   return CuPy, JAX, DLPack-only wrappers, or other device arrays, revisit this
+   helper and add explicit framework-aware detection instead of spreading
+   backend-specific checks across staging, delivery, and async readback.
