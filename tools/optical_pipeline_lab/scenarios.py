@@ -155,10 +155,15 @@ class OpticalLabScenarioConfig:
                 raise NotImplementedError(
                     "render_backend='cpu_direct_light' requires accel_backend='cpu_bvh'"
                 )
+        elif self.render_backend is RenderBackend.CUDA_DIRECT_LIGHT:
+            if self.accel_backend is not AccelBackend.CUDA_LBVH:
+                raise NotImplementedError(
+                    "render_backend='cuda_direct_light' requires accel_backend='cuda_lbvh'"
+                )
         elif self.render_backend is not RenderBackend.WARP_BVH_DIRECT_LIGHT:
             raise NotImplementedError(
                 f"render_backend={self.render_backend.value!r} is reserved; "
-                "use 'cpu_direct_light' or 'warp_bvh_direct_light' for now"
+                "use 'cpu_direct_light', 'warp_bvh_direct_light', or 'cuda_direct_light' for now"
             )
         if self.delivery_policy not in (DeliveryPolicy.SYNC, DeliveryPolicy.DEVICE_ONLY):
             raise NotImplementedError(

@@ -176,6 +176,11 @@ def validate_run_scenario_supported(config: OpticalLabScenarioConfig) -> None:
             f"scene_preset={config.scene_preset!r} is reserved; "
             "use go2_menagerie_static/synthetic_body_triangle for now"
         )
+    if config.render_backend is RenderBackend.CUDA_DIRECT_LIGHT:
+        raise RunScenarioUnsupportedError(
+            "run_scenario(...) cannot execute render_backend='cuda_direct_light' until "
+            "the P12.3 CUDA first-hit kernel lands"
+        )
     if config.camera_mode not in ("camera_orbit", "fixed_view"):
         raise RunScenarioUnsupportedError(
             f"camera_mode={config.camera_mode!r} is reserved; use camera_orbit/fixed_view for now"
@@ -849,6 +854,15 @@ def _validate_run_options(config: OpticalLabScenarioConfig, options: LabRunOptio
             raise ValueError("render_backend='cpu_direct_light' requires video_readback_delivery='sync'")
         if config.readback_payload is ReadbackPayload.RGB8:
             raise ValueError("render_backend='cpu_direct_light' does not support readback_payload='rgb8'")
+    if config.render_backend is RenderBackend.CUDA_DIRECT_LIGHT:
+        if options.video_raygen != "host":
+            raise ValueError("render_backend='cuda_direct_light' requires video_raygen='host' until P12.3e")
+        if options.video_readback_delivery != "sync":
+            raise ValueError("render_backend='cuda_direct_light' requires video_readback_delivery='sync'")
+        if config.readback_payload is ReadbackPayload.RGB8:
+            raise ValueError(
+                "render_backend='cuda_direct_light' does not support readback_payload='rgb8' yet"
+            )
     if options.video_readback_delivery not in ("sync", "torch_async"):
         raise ValueError("video_readback_delivery must be 'sync' or 'torch_async'")
     if options.video_readback_ring_depth <= 0:

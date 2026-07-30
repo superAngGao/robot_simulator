@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 
 from optics import (
     CpuDirectLightOpticalExecutor,
+    CudaDeviceBvhDirectLightOpticalExecutor,
     DeviceOpticalSceneCache,
     GpuDeviceBvhDirectLightOpticalExecutor,
     OpticalOutputProfile,
@@ -88,6 +89,10 @@ def _default_pack_rgb8(result):
 
 def _is_cpu_direct_light_backend(options: OpticalLabRenderOptions) -> bool:
     return str(options.render_backend) == "cpu_direct_light"
+
+
+def _is_cuda_direct_light_backend(options: OpticalLabRenderOptions) -> bool:
+    return str(options.render_backend) == "cuda_direct_light"
 
 
 def _synchronize_ready_event(event: object | None) -> None:
@@ -436,7 +441,12 @@ class OpticalLabRenderSession:
             timings.add(f"bvh_build_{detail_name}", detail_elapsed_ms)
 
         with timings.measure("executor_init"):
-            executor = GpuDeviceBvhDirectLightOpticalExecutor(
+            executor_cls = (
+                CudaDeviceBvhDirectLightOpticalExecutor
+                if _is_cuda_direct_light_backend(options)
+                else GpuDeviceBvhDirectLightOpticalExecutor
+            )
+            executor = executor_cls(
                 device=workspace.device,
                 stream=workspace.stream,
                 shadows=options.shadows,

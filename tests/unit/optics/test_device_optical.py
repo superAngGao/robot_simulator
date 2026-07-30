@@ -5,6 +5,7 @@ import pytest
 
 from optics import (
     MAX_PRIMITIVES_PER_INSTANCE,
+    CudaDeviceBvhDirectLightOpticalExecutor,
     OpticalComputeResult,
     OpticalFrameInputs,
     OpticalInstanceSpec,
@@ -15,11 +16,13 @@ from optics import (
     channel_is_device,
     channel_to_numpy,
     channel_to_torch,
+    cuda_direct_light_available,
     pack_source_order_key,
     stage_channels_to_host,
     stage_optical_channels,
     stage_optical_compute_result_to_host,
 )
+from optics.cuda_direct_light import _require_cuda_direct_light_deps
 from physics.publish import CpuPublishedFrame
 
 
@@ -213,6 +216,20 @@ def test_device_channel_boundary_accepts_torch_tensors_when_available():
     assert tensor is value
     assert channel_is_device(value) is False
     np.testing.assert_allclose(array, [[1.0, 2.0]])
+
+
+def test_cuda_direct_light_skeleton_is_import_safe():
+    assert isinstance(cuda_direct_light_available(), bool)
+    assert "rgb" in CudaDeviceBvhDirectLightOpticalExecutor.capabilities
+    assert "intensity" in CudaDeviceBvhDirectLightOpticalExecutor.capabilities
+
+
+def test_cuda_direct_light_dependency_probe_matches_availability():
+    if cuda_direct_light_available():
+        _require_cuda_direct_light_deps()
+    else:
+        with pytest.raises(ImportError):
+            _require_cuda_direct_light_deps()
 
 
 def test_stage_optical_compute_result_to_host_rejects_host_result():

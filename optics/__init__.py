@@ -6,6 +6,7 @@ from .builder import (
     OpticalSourceKey,
     build_optical_registry_from_robot_model,
 )
+from .cuda_direct_light import CudaDeviceBvhDirectLightOpticalExecutor, cuda_direct_light_available
 from .cuda_lbvh import build_cuda_lbvh_from_snapshot
 from .device import (
     DEVICE_FLOAT32_RECOMMENDED_SCENE_SCALE_M,
@@ -69,6 +70,7 @@ __all__ = [
     "CpuBvhOpticalExecutor",
     "CpuDirectLightOpticalExecutor",
     "CpuReferenceOpticalExecutor",
+    "CudaDeviceBvhDirectLightOpticalExecutor",
     "DEVICE_FLOAT32_RECOMMENDED_SCENE_SCALE_M",
     "DeviceOpticalRoleTable",
     "DeviceBvhBuildStats",
@@ -101,6 +103,7 @@ __all__ = [
     "OpticalTriangleMeshGeometry",
     "OpticalWorldRegistry",
     "build_host_optical_primitive_workload",
+    "cuda_direct_light_available",
     "channel_is_device",
     "channel_to_numpy",
     "channel_to_torch",

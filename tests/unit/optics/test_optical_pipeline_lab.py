@@ -5073,6 +5073,75 @@ def test_cpu_direct_light_static_config_is_currently_implemented(tmp_path: Path)
     )
 
 
+def test_cuda_direct_light_static_config_is_known_for_host_raygen_sync(tmp_path: Path):
+    config = replace(
+        get_preset("go2_video_ordered_static"),
+        scenario_name="go2_cuda_direct_light",
+        accel_backend=AccelBackend.CUDA_LBVH,
+        render_backend=RenderBackend.CUDA_DIRECT_LIGHT,
+    )
+
+    config.validate_implemented()
+    validate_run(
+        config,
+        LabRunOptions(
+            out=tmp_path / "cuda_direct",
+            video_raygen="host",
+        ),
+    )
+    render_options = lab_runner.render_options_for_config(
+        config,
+        LabRunOptions(out=tmp_path / "cuda_direct", video_raygen="host"),
+    )
+    assert render_options.render_backend == "cuda_direct_light"
+    assert render_options.bvh_backend == "cuda_lbvh"
+    assert can_run_scenario(config) is False
+    with pytest.raises(RunScenarioUnsupportedError, match="CUDA first-hit kernel"):
+        validate_run_scenario_supported(config)
+
+
+def test_cuda_direct_light_rejects_incompatible_lab_options(tmp_path: Path):
+    config = replace(
+        get_preset("go2_video_ordered_static"),
+        accel_backend=AccelBackend.CUDA_LBVH,
+        render_backend=RenderBackend.CUDA_DIRECT_LIGHT,
+    )
+
+    with pytest.raises(ValueError, match="requires video_raygen='host'"):
+        validate_run(config, LabRunOptions(out=tmp_path / "cuda_direct"))
+
+    with pytest.raises(ValueError, match="requires video_readback_delivery='sync'"):
+        validate_run(
+            config,
+            LabRunOptions(
+                out=tmp_path / "cuda_direct",
+                video_raygen="host",
+                video_readback_delivery="torch_async",
+            ),
+        )
+
+    rgb8_config = replace(config, readback_payload=ReadbackPayload.RGB8)
+    with pytest.raises(ValueError, match="does not support readback_payload='rgb8'"):
+        validate_run(
+            rgb8_config,
+            LabRunOptions(
+                out=tmp_path / "cuda_direct",
+                video_raygen="host",
+            ),
+        )
+
+
+def test_cuda_direct_light_requires_cuda_lbvh():
+    config = replace(
+        get_preset("go2_video_ordered_static"),
+        accel_backend=AccelBackend.CPU_BVH,
+        render_backend=RenderBackend.CUDA_DIRECT_LIGHT,
+    )
+
+    with pytest.raises(NotImplementedError, match="requires accel_backend='cuda_lbvh'"):
+        config.validate_implemented()
+
+
 def test_cpu_direct_light_requires_cpu_bvh_and_host_video_raygen(tmp_path: Path):
     config = replace(
         get_preset("go2_video_ordered_static"),
