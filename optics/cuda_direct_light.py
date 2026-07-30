@@ -212,6 +212,8 @@ class CudaDeviceBvhOpticalExecutor:
             raise ValueError("snapshot.frame_id must match spec.frame_id")
         if snapshot.env_idx != spec.env_idx:
             raise ValueError("snapshot.env_idx must match spec.env_idx")
+        if snapshot.scene.device != bvh.device:
+            raise ValueError("DeviceOpticalSceneSnapshot and DeviceOpticalBvh devices must match")
         if snapshot.scene.device != self.device:
             raise ValueError("DeviceOpticalSceneSnapshot device must match executor device")
         if bvh.device != self.device:

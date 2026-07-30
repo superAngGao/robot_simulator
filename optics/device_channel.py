@@ -36,6 +36,9 @@ def channel_to_torch(value: object):
         except Exception:
             pass
         else:
+            # Warp owns the underlying allocation. Callers must keep the
+            # original Warp array/result resources alive for at least as long
+            # as they use this Torch view.
             return tensor if tensor.is_contiguous() else tensor.contiguous()
 
     if hasattr(value, "__array__") or isinstance(value, (list, tuple)):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -232,6 +234,21 @@ def test_cuda_direct_light_dependency_probe_matches_availability():
     else:
         with pytest.raises(ImportError):
             _require_cuda_direct_light_deps()
+
+
+def test_cuda_first_hit_validation_rejects_scene_bvh_device_mismatch():
+    executor = object.__new__(CudaDeviceBvhOpticalExecutor)
+    executor.device = "cuda:0"
+    snapshot = SimpleNamespace(
+        frame_id=3,
+        env_idx=0,
+        scene=SimpleNamespace(device="cuda:0"),
+    )
+    bvh = SimpleNamespace(frame_id=3, env_idx=0, device="cuda:1")
+    spec = SimpleNamespace(frame_id=3, env_idx=0, max_distance=10.0)
+
+    with pytest.raises(ValueError, match="DeviceOpticalSceneSnapshot and DeviceOpticalBvh devices"):
+        executor._validate(snapshot, bvh, spec)
 
 
 def test_stage_optical_compute_result_to_host_rejects_host_result():

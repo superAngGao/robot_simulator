@@ -50,9 +50,11 @@ Traversal behavior mirrors the existing Warp BVH first-hit executor:
   - when distances are within `1e-5`, smaller packed source-order key wins;
 - flips triangle normals against the ray direction.
 
-The kernel currently uses `torch.cuda.synchronize(...)` before returning. This
-is correctness-first and intentionally not the final performance model.
-P12.3/P12.5 should later replace this with ordered stream/event readiness.
+The kernel currently uses `torch.cuda.synchronize(device)` before returning.
+This is correctness-first and intentionally not the final performance model.
+It blocks all Torch CUDA work on the selected device, including unrelated
+streams owned by the caller. P12.3/P12.5 should later replace this with ordered
+stream/event readiness.
 
 ### `CudaDeviceBvhDirectLightOpticalExecutor`
 
@@ -121,7 +123,8 @@ Result:
 - No shadow any-hit yet.
 - No CUDA camera raygen yet.
 - `run_scenario(...)` still rejects `cuda_direct_light`.
-- The CUDA first-hit path uses a global Torch CUDA synchronize for correctness.
+- The CUDA first-hit path uses a Torch CUDA device-wide synchronize for
+  correctness, which blocks all streams on the selected device.
 
 ## Review Questions
 
