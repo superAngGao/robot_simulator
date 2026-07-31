@@ -16,6 +16,7 @@ import tools.optical_pipeline_lab.runner as lab_runner
 import tools.optical_pipeline_lab.video_loop as video_loop
 from optics import (
     CpuDirectLightOpticalExecutor,
+    CudaDeviceBvhDirectLightOpticalExecutor,
     CudaDeviceBvhOpticalExecutor,
     DeviceOpticalSceneCache,
     GpuBruteForceOpticalExecutor,
@@ -2369,6 +2370,84 @@ def test_device_bvh_no_shadow_direct_light_matches_cpu():
     np.testing.assert_array_equal(gpu_host.channel("hit_mask"), cpu.channel("hit_mask"))
     np.testing.assert_allclose(gpu_host.channel("range_m"), cpu.channel("range_m"), atol=1e-6)
     np.testing.assert_allclose(gpu_host.channel("rgb"), cpu.channel("rgb"), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(
+        gpu_host.channel("intensity"),
+        cpu.channel("intensity"),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+    np.testing.assert_array_equal(gpu_host.channel("shadow_stack_overflow_count"), [0])
+    np.testing.assert_array_equal(gpu_host.channel("shadow_max_stack_depth"), [0])
+
+
+@pytest.mark.cuda_ext
+def test_cuda_direct_light_no_shadow_matches_cpu():
+    pytest.importorskip("torch")
+    engine = _make_engine()
+    consumer = _consumer()
+    engine.register_consumer(consumer)
+    engine.step()
+    frame = engine.latest_published_frame()
+    registry = _lit_triangle_registry()
+    spec = OpticalRaySensorSpec(
+        frame_id=frame.frame_id,
+        sim_time=frame.sim_time,
+        env_idx=0,
+        sensor_id="gpu_camera",
+        origins_world=[[0.0, 0.0, 2.0], [2.0, 2.0, 2.0]],
+        directions_world=[[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]],
+        max_distance=10.0,
+        sensor_role="rgb",
+    )
+    host_snapshot = OpticalSceneCache(registry).snapshot_from_frame_inputs(
+        OpticalFrameInputs.from_published_frame(_cpu_frame_like(frame)),
+        acceleration="cpu_bvh",
+    )
+    cpu = CpuDirectLightOpticalExecutor(
+        shadows=False,
+        ambient_rgb=(0.1, 0.2, 0.3),
+        background_rgb=(0.01, 0.02, 0.03),
+    ).execute(host_snapshot, spec)
+
+    stream = wp.Stream(device=engine._device)
+    borrowed = engine.borrow_device_frame(consumer.consumer_id, frame.frame_id, stream=stream)
+    cache = DeviceOpticalSceneCache(registry, device=engine._device, stream=stream)
+    snapshot = cache.snapshot_from_gpu_frame(borrowed, env_idx=0, stream=stream, include_aabb=True)
+    bvh = build_cuda_lbvh_from_snapshot(snapshot, device=engine._device, stream=stream)
+    gpu = CudaDeviceBvhDirectLightOpticalExecutor(
+        device=engine._device,
+        stream=stream,
+        shadows=False,
+        ambient_rgb=(0.1, 0.2, 0.3),
+        background_rgb=(0.01, 0.02, 0.03),
+    ).execute(snapshot, bvh, spec)
+    preview = CudaDeviceBvhDirectLightOpticalExecutor(
+        device=engine._device,
+        stream=stream,
+        shadows=False,
+        ambient_rgb=(0.1, 0.2, 0.3),
+        background_rgb=(0.01, 0.02, 0.03),
+    ).execute(snapshot, bvh, spec, output_profile=OpticalOutputProfile.RGB_PREVIEW)
+    with pytest.raises(NotImplementedError, match="shadows are pending P12.3d"):
+        CudaDeviceBvhDirectLightOpticalExecutor(
+            device=engine._device,
+            stream=stream,
+            shadows=True,
+        ).execute(snapshot, bvh, spec)
+    done_event = engine.complete_device_consumer(consumer.consumer_id, frame.frame_id, stream=stream)
+
+    wp.synchronize_event(done_event)
+    assert gpu.output_profile is OpticalOutputProfile.DIRECT_LIGHT_FULL
+    assert getattr(gpu.channel("rgb"), "is_cuda", False) is True
+    assert preview.output_profile is OpticalOutputProfile.RGB_PREVIEW
+    assert set(preview.channels) == OpticalOutputProfile.RGB_PREVIEW.guaranteed_channels
+    gpu_host = stage_optical_compute_result_to_host(gpu)
+    preview_host = stage_optical_compute_result_to_host(preview)
+    np.testing.assert_array_equal(gpu_host.channel("hit_mask"), cpu.channel("hit_mask"))
+    np.testing.assert_array_equal(preview_host.channel("hit_mask"), cpu.channel("hit_mask"))
+    np.testing.assert_allclose(gpu_host.channel("range_m"), cpu.channel("range_m"), atol=1e-6)
+    np.testing.assert_allclose(gpu_host.channel("rgb"), cpu.channel("rgb"), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(preview_host.channel("rgb"), cpu.channel("rgb"), rtol=1e-5, atol=1e-5)
     np.testing.assert_allclose(
         gpu_host.channel("intensity"),
         cpu.channel("intensity"),

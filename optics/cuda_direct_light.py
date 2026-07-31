@@ -273,10 +273,24 @@ class CudaDeviceBvhDirectLightOpticalExecutor:
         output_profile: OpticalOutputProfile | str = OpticalOutputProfile.DIRECT_LIGHT_FULL,
         render_profile: list[tuple[str, float]] | None = None,
     ):
-        """Execute host-ray CUDA direct-light rendering once P12.3c lands."""
+        """Execute host-ray CUDA direct-light rendering."""
 
-        self._validate_output_profile(output_profile)
-        raise NotImplementedError("cuda_direct_light shading is pending P12.3c")
+        output_profile = self._validate_output_profile(output_profile)
+        if self.shadows:
+            raise NotImplementedError("cuda_direct_light shadows are pending P12.3d")
+        geometry = self._first_hit.execute(
+            snapshot,
+            bvh,
+            spec,
+            output_profile=OpticalOutputProfile.GEOMETRY_FULL,
+            render_profile=render_profile,
+        )
+        return self._shade_geometry_no_shadow(
+            snapshot,
+            geometry,
+            output_profile=output_profile,
+            render_profile=render_profile,
+        )
 
     def execute_camera(
         self,
@@ -292,10 +306,93 @@ class CudaDeviceBvhDirectLightOpticalExecutor:
         self._validate_output_profile(output_profile)
         raise NotImplementedError("cuda_direct_light camera raygen is pending P12.3e")
 
-    def _validate_output_profile(self, output_profile: OpticalOutputProfile | str) -> None:
+    def _validate_output_profile(self, output_profile: OpticalOutputProfile | str) -> OpticalOutputProfile:
         output_profile = normalize_output_profile(output_profile)
         if output_profile not in self.supported_profiles:
             raise ValueError(f"cuda_direct_light does not support output_profile={output_profile.value!r}")
+        return output_profile
+
+    def _shade_geometry_no_shadow(
+        self,
+        snapshot: DeviceOpticalSceneSnapshot,
+        geometry: OpticalComputeResult,
+        *,
+        output_profile: OpticalOutputProfile,
+        render_profile: list[tuple[str, float]] | None = None,
+    ) -> OpticalComputeResult:
+        scene = snapshot.scene
+        start = time.perf_counter()
+        module = _load_cuda_direct_light_extension()
+        _add_profile_ms(render_profile, "cuda_shade_load_extension_ms", start)
+
+        convert_start = time.perf_counter()
+        hit_mask = channel_to_torch(geometry.channels["hit_mask"])
+        position_world = channel_to_torch(geometry.channels["position_world"])
+        normal_world = channel_to_torch(geometry.channels["normal_world"])
+        material_index = channel_to_torch(geometry.channels["material_index"])
+        material_albedo_rgb = channel_to_torch(scene.material_albedo_rgb)
+        light_kind = channel_to_torch(scene.light_kind)
+        light_position_or_direction_world = channel_to_torch(scene.light_position_or_direction_world)
+        light_intensity = channel_to_torch(scene.light_intensity)
+        light_color_rgb = channel_to_torch(scene.light_color_rgb)
+        _add_profile_ms(render_profile, "cuda_shade_channel_views_ms", convert_start)
+
+        execute_start = time.perf_counter()
+        (
+            rgb,
+            intensity,
+            shadow_stack_overflow_count,
+            shadow_max_stack_depth,
+        ) = module.shade_direct_light_no_shadow(
+            hit_mask,
+            position_world,
+            normal_world,
+            material_index,
+            material_albedo_rgb,
+            light_kind,
+            light_position_or_direction_world,
+            light_intensity,
+            light_color_rgb,
+            int(scene.num_lights),
+            float(self.ambient_rgb[0]),
+            float(self.ambient_rgb[1]),
+            float(self.ambient_rgb[2]),
+            float(self.background_rgb[0]),
+            float(self.background_rgb[1]),
+            float(self.background_rgb[2]),
+        )
+        tensor_device = _torch_device_for_warp_device(self.device)
+        torch.cuda.synchronize(tensor_device)
+        _add_profile_ms(render_profile, "cuda_shade_kernel_sync_ms", execute_start)
+
+        channels = dict(geometry.channels)
+        channels["rgb"] = rgb
+        channels["intensity"] = intensity
+        channels["shadow_stack_overflow_count"] = shadow_stack_overflow_count
+        channels["shadow_max_stack_depth"] = shadow_max_stack_depth
+        channels = _filter_channels_for_profile(channels, output_profile)
+        return OpticalComputeResult(
+            frame_id=geometry.frame_id,
+            sim_time=geometry.sim_time,
+            env_idx=geometry.env_idx,
+            sensor_id=geometry.sensor_id,
+            location="device",
+            channels=channels,
+            output_profile=output_profile,
+            ready_event=None,
+            resources=geometry.resources
+            + (
+                material_albedo_rgb,
+                light_kind,
+                light_position_or_direction_world,
+                light_intensity,
+                light_color_rgb,
+                rgb,
+                intensity,
+                shadow_stack_overflow_count,
+                shadow_max_stack_depth,
+            ),
+        )
 
 
 class _FirstHitTensors:
@@ -330,14 +427,24 @@ def _add_profile_ms(render_profile: list[tuple[str, float]] | None, name: str, s
         render_profile.append((name, (time.perf_counter() - start) * 1000.0))
 
 
+def _filter_channels_for_profile(
+    channels: dict[str, object],
+    output_profile: OpticalOutputProfile,
+) -> dict[str, object]:
+    if output_profile is OpticalOutputProfile.DIRECT_LIGHT_FULL:
+        return channels
+    guaranteed = output_profile.guaranteed_channels
+    return {name: value for name, value in channels.items() if name in guaranteed}
+
+
 @lru_cache(maxsize=1)
 def _load_cuda_direct_light_extension():
     _require_cuda_direct_light_deps()
     return load_inline(
-        name="robot_sim_cuda_direct_light_v1",
+        name="robot_sim_cuda_direct_light_v2",
         cpp_sources=[_CPP_SOURCE],
         cuda_sources=[_CUDA_SOURCE],
-        functions=["first_hit_rays"],
+        functions=["first_hit_rays", "shade_direct_light_no_shadow"],
         with_cuda=True,
         extra_cflags=["-O2"],
         extra_cuda_cflags=["-O2"],
@@ -378,6 +485,24 @@ std::vector<torch::Tensor> first_hit_rays(
     torch::Tensor bvh_prim_ids,
     int64_t num_bvh_nodes,
     int64_t sensor_role_mask);
+
+std::vector<torch::Tensor> shade_direct_light_no_shadow(
+    torch::Tensor hit_mask,
+    torch::Tensor position_world,
+    torch::Tensor normal_world,
+    torch::Tensor material_index,
+    torch::Tensor material_albedo_rgb,
+    torch::Tensor light_kind,
+    torch::Tensor light_position_or_direction_world,
+    torch::Tensor light_intensity,
+    torch::Tensor light_color_rgb,
+    int64_t num_lights,
+    double ambient_r,
+    double ambient_g,
+    double ambient_b,
+    double background_r,
+    double background_g,
+    double background_b);
 """
 
 
@@ -758,6 +883,102 @@ __global__ void first_hit_rays_kernel(
   }
 }
 
+__global__ void shade_direct_light_no_shadow_kernel(
+    const int32_t* hit_mask,
+    const float* position_world,
+    const float* normal_world,
+    const int32_t* material_index,
+    const float* material_albedo_rgb,
+    const int32_t* light_kind,
+    const float* light_position_or_direction_world,
+    const float* light_intensity,
+    const float* light_color_rgb,
+    int num_lights,
+    float ambient_r,
+    float ambient_g,
+    float ambient_b,
+    float background_r,
+    float background_g,
+    float background_b,
+    float* rgb,
+    float* intensity,
+    int num_rays) {
+  int ray = blockIdx.x * blockDim.x + threadIdx.x;
+  if (ray >= num_rays) {
+    return;
+  }
+
+  float out_r = background_r;
+  float out_g = background_g;
+  float out_b = background_b;
+  if (hit_mask[ray] != 0) {
+    int mat = material_index[ray];
+    float albedo_r = material_albedo_rgb[mat * 3 + 0];
+    float albedo_g = material_albedo_rgb[mat * 3 + 1];
+    float albedo_b = material_albedo_rgb[mat * 3 + 2];
+    out_r = ambient_r * albedo_r;
+    out_g = ambient_g * albedo_g;
+    out_b = ambient_b * albedo_b;
+
+    float px = position_world[ray * 3 + 0];
+    float py = position_world[ray * 3 + 1];
+    float pz = position_world[ray * 3 + 2];
+    float nx = normal_world[ray * 3 + 0];
+    float ny = normal_world[ray * 3 + 1];
+    float nz = normal_world[ray * 3 + 2];
+
+    for (int light = 0; light < num_lights; ++light) {
+      float lx = light_position_or_direction_world[light * 3 + 0];
+      float ly = light_position_or_direction_world[light * 3 + 1];
+      float lz = light_position_or_direction_world[light * 3 + 2];
+      float attenuation = 1.0f;
+      if (light_kind[light] == 1) {
+        lx = lx - px;
+        ly = ly - py;
+        lz = lz - pz;
+        float distance_sq = lx * lx + ly * ly + lz * lz;
+        float distance = sqrtf(distance_sq);
+        if (distance > kDirEps) {
+          float inv_distance = 1.0f / distance;
+          lx = lx * inv_distance;
+          ly = ly * inv_distance;
+          lz = lz * inv_distance;
+          attenuation = 1.0f / fmaxf(distance_sq, 1.0e-12f);
+        } else {
+          attenuation = 0.0f;
+        }
+      } else {
+        float light_norm = sqrtf(lx * lx + ly * ly + lz * lz);
+        if (light_norm > kDirEps) {
+          float inv_light_norm = 1.0f / light_norm;
+          lx = lx * inv_light_norm;
+          ly = ly * inv_light_norm;
+          lz = lz * inv_light_norm;
+        } else {
+          attenuation = 0.0f;
+        }
+      }
+
+      float n_dot_l = nx * lx + ny * ly + nz * lz;
+      if (n_dot_l > 0.0f && attenuation > 0.0f) {
+        float scale = light_intensity[light] * attenuation * n_dot_l;
+        out_r += albedo_r * light_color_rgb[light * 3 + 0] * scale;
+        out_g += albedo_g * light_color_rgb[light * 3 + 1] * scale;
+        out_b += albedo_b * light_color_rgb[light * 3 + 2] * scale;
+      }
+    }
+  }
+
+  rgb[ray * 3 + 0] = out_r;
+  rgb[ray * 3 + 1] = out_g;
+  rgb[ray * 3 + 2] = out_b;
+  if (hit_mask[ray] != 0) {
+    intensity[ray] = out_r * 0.2126f + out_g * 0.7152f + out_b * 0.0722f;
+  } else {
+    intensity[ray] = 0.0f;
+  }
+}
+
 void check_float_2d_3(torch::Tensor value, const char* name) {
   TORCH_CHECK(value.is_cuda(), name, " must be a CUDA tensor");
   TORCH_CHECK(value.dtype() == torch::kFloat32, name, " must be float32");
@@ -905,5 +1126,83 @@ std::vector<torch::Tensor> first_hit_rays(
       bvh_stack_overflow_count,
       bvh_max_stack_depth,
   };
+}
+
+std::vector<torch::Tensor> shade_direct_light_no_shadow(
+    torch::Tensor hit_mask,
+    torch::Tensor position_world,
+    torch::Tensor normal_world,
+    torch::Tensor material_index,
+    torch::Tensor material_albedo_rgb,
+    torch::Tensor light_kind,
+    torch::Tensor light_position_or_direction_world,
+    torch::Tensor light_intensity,
+    torch::Tensor light_color_rgb,
+    int64_t num_lights,
+    double ambient_r,
+    double ambient_g,
+    double ambient_b,
+    double background_r,
+    double background_g,
+    double background_b) {
+  check_i32_1d(hit_mask, "hit_mask");
+  check_float_2d_3(position_world, "position_world");
+  check_float_2d_3(normal_world, "normal_world");
+  check_i32_1d(material_index, "material_index");
+  check_float_2d_3(material_albedo_rgb, "material_albedo_rgb");
+  check_i32_1d(light_kind, "light_kind");
+  check_float_2d_3(light_position_or_direction_world, "light_position_or_direction_world");
+  check_float_2d_3(light_color_rgb, "light_color_rgb");
+  TORCH_CHECK(light_intensity.is_cuda(), "light_intensity must be a CUDA tensor");
+  TORCH_CHECK(light_intensity.dtype() == torch::kFloat32, "light_intensity must be float32");
+  TORCH_CHECK(light_intensity.is_contiguous(), "light_intensity must be contiguous");
+  TORCH_CHECK(light_intensity.dim() == 1, "light_intensity must be rank-1");
+  TORCH_CHECK(position_world.sizes() == normal_world.sizes(), "position_world/normal_world shape mismatch");
+  TORCH_CHECK(hit_mask.size(0) == position_world.size(0), "hit_mask length must match position_world");
+  TORCH_CHECK(
+      material_index.size(0) == position_world.size(0),
+      "material_index length must match position_world");
+  TORCH_CHECK(num_lights >= 0 && num_lights <= light_kind.size(0), "num_lights out of range");
+  TORCH_CHECK(num_lights <= light_position_or_direction_world.size(0), "num_lights exceeds light vectors");
+  TORCH_CHECK(num_lights <= light_intensity.size(0), "num_lights exceeds light intensities");
+  TORCH_CHECK(num_lights <= light_color_rgb.size(0), "num_lights exceeds light colors");
+
+  int64_t num_rays = hit_mask.size(0);
+  TORCH_CHECK(num_rays <= static_cast<int64_t>(INT32_MAX), "too many rays");
+  auto int_options = torch::TensorOptions().dtype(torch::kInt32).device(hit_mask.device());
+  auto float_options = torch::TensorOptions().dtype(torch::kFloat32).device(hit_mask.device());
+  auto rgb = torch::empty({num_rays, 3}, float_options);
+  auto intensity = torch::empty({num_rays}, float_options);
+  auto shadow_stack_overflow_count = torch::zeros({1}, int_options);
+  auto shadow_max_stack_depth = torch::zeros({1}, int_options);
+
+  if (num_rays > 0) {
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    int block = 256;
+    int grid = (static_cast<int>(num_rays) + block - 1) / block;
+    shade_direct_light_no_shadow_kernel<<<grid, block, 0, stream>>>(
+        hit_mask.data_ptr<int32_t>(),
+        position_world.data_ptr<float>(),
+        normal_world.data_ptr<float>(),
+        material_index.data_ptr<int32_t>(),
+        material_albedo_rgb.data_ptr<float>(),
+        light_kind.data_ptr<int32_t>(),
+        light_position_or_direction_world.data_ptr<float>(),
+        light_intensity.data_ptr<float>(),
+        light_color_rgb.data_ptr<float>(),
+        static_cast<int>(num_lights),
+        static_cast<float>(ambient_r),
+        static_cast<float>(ambient_g),
+        static_cast<float>(ambient_b),
+        static_cast<float>(background_r),
+        static_cast<float>(background_g),
+        static_cast<float>(background_b),
+        rgb.data_ptr<float>(),
+        intensity.data_ptr<float>(),
+        static_cast<int>(num_rays));
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+  }
+
+  return {rgb, intensity, shadow_stack_overflow_count, shadow_max_stack_depth};
 }
 """

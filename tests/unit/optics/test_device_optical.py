@@ -13,6 +13,7 @@ from optics import (
     OpticalFrameInputs,
     OpticalInstanceSpec,
     OpticalMaterialSpec,
+    OpticalOutputProfile,
     OpticalSceneCache,
     OpticalWorldRegistry,
     build_host_optical_primitive_workload,
@@ -25,7 +26,7 @@ from optics import (
     stage_optical_channels,
     stage_optical_compute_result_to_host,
 )
-from optics.cuda_direct_light import _require_cuda_direct_light_deps
+from optics.cuda_direct_light import _filter_channels_for_profile, _require_cuda_direct_light_deps
 from physics.publish import CpuPublishedFrame
 
 
@@ -249,6 +250,22 @@ def test_cuda_first_hit_validation_rejects_scene_bvh_device_mismatch():
 
     with pytest.raises(ValueError, match="DeviceOpticalSceneSnapshot and DeviceOpticalBvh devices"):
         executor._validate(snapshot, bvh, spec)
+
+
+def test_cuda_direct_light_profile_filter_keeps_render_only_counters():
+    channels = {
+        "hit_mask": object(),
+        "range_m": object(),
+        "rgb": object(),
+        "bvh_stack_overflow_count": object(),
+        "bvh_max_stack_depth": object(),
+        "shadow_stack_overflow_count": object(),
+        "shadow_max_stack_depth": object(),
+    }
+
+    filtered = _filter_channels_for_profile(channels, OpticalOutputProfile.RENDER_ONLY)
+
+    assert set(filtered) == OpticalOutputProfile.RENDER_ONLY.guaranteed_channels
 
 
 def test_stage_optical_compute_result_to_host_rejects_host_result():
