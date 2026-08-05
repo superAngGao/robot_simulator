@@ -5073,12 +5073,16 @@ def test_cpu_direct_light_static_config_is_currently_implemented(tmp_path: Path)
     )
 
 
-def test_cuda_direct_light_static_config_is_known_for_host_raygen_sync(tmp_path: Path):
+def test_cuda_direct_light_synthetic_no_shadow_config_can_run_host_raygen_sync(tmp_path: Path):
     config = replace(
         get_preset("go2_video_ordered_static"),
-        scenario_name="go2_cuda_direct_light",
+        scenario_name="synthetic_cuda_direct_light",
+        scene_preset="synthetic_body_triangle",
+        width=24,
+        height=16,
         accel_backend=AccelBackend.CUDA_LBVH,
         render_backend=RenderBackend.CUDA_DIRECT_LIGHT,
+        shadows=False,
     )
 
     config.validate_implemented()
@@ -5095,9 +5099,57 @@ def test_cuda_direct_light_static_config_is_known_for_host_raygen_sync(tmp_path:
     )
     assert render_options.render_backend == "cuda_direct_light"
     assert render_options.bvh_backend == "cuda_lbvh"
-    assert can_run_scenario(config) is False
-    with pytest.raises(RunScenarioUnsupportedError, match="CUDA first-hit kernel"):
-        validate_run_scenario_supported(config)
+    args = build_menagerie_example_args(
+        config,
+        LabRunOptions(out=tmp_path / "cuda_direct", video_raygen="host"),
+    )
+    assert args.render_backend == "cuda_direct_light"
+    assert args.scene_preset == "synthetic_body_triangle"
+    assert can_run_scenario(config) is True
+    validate_run_scenario_supported(config)
+
+
+def test_cuda_direct_light_pre_smoke_keeps_existing_runner_backends(tmp_path: Path):
+    warp_config = get_preset("go2_video_ordered_static")
+    cpu_config = replace(
+        warp_config,
+        scenario_name="go2_cpu_direct_light",
+        accel_backend=AccelBackend.CPU_BVH,
+        render_backend=RenderBackend.CPU_DIRECT_LIGHT,
+    )
+
+    validate_run_scenario_supported(warp_config)
+    validate_run(
+        cpu_config,
+        LabRunOptions(
+            out=tmp_path / "cpu_direct",
+            video_raygen="host",
+        ),
+    )
+    validate_run_scenario_supported(cpu_config)
+
+
+def test_cuda_direct_light_pre_smoke_rejects_go2_and_shadows():
+    go2_config = replace(
+        get_preset("go2_video_ordered_static"),
+        scenario_name="go2_cuda_direct_light",
+        accel_backend=AccelBackend.CUDA_LBVH,
+        render_backend=RenderBackend.CUDA_DIRECT_LIGHT,
+        shadows=False,
+    )
+    shadow_config = replace(
+        go2_config,
+        scenario_name="synthetic_cuda_direct_light_shadow",
+        scene_preset="synthetic_body_triangle",
+        shadows=True,
+    )
+
+    assert can_run_scenario(go2_config) is False
+    with pytest.raises(RunScenarioUnsupportedError, match="synthetic_body_triangle"):
+        validate_run_scenario_supported(go2_config)
+    assert can_run_scenario(shadow_config) is False
+    with pytest.raises(RunScenarioUnsupportedError, match="P12.3d"):
+        validate_run_scenario_supported(shadow_config)
 
 
 def test_cuda_direct_light_rejects_incompatible_lab_options(tmp_path: Path):
@@ -5613,6 +5665,7 @@ def test_lab_runner_translates_go2_preset_to_menagerie_example_args(tmp_path: Pa
 
     assert args.device == "cuda:1"
     assert args.out == str(tmp_path / "run")
+    assert args.render_backend == "warp_bvh_direct_light"
     assert args.bvh_backend == "cuda_lbvh"
     assert args.video_frames == 3
     assert args.video_mode == "camera_orbit"

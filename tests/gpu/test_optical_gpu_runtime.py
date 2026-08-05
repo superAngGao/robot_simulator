@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -52,6 +53,9 @@ from tools.optical_pipeline_lab import (
     GeometryMode,
     OpticalLabScenarioConfig,
     OpticalLabScenarioFamily,
+    ReadbackPayload,
+    RenderBackend,
+    WritePolicy,
     dynamic_frames,
 )
 from tools.optical_pipeline_lab.presets import get_preset
@@ -2456,6 +2460,53 @@ def test_cuda_direct_light_no_shadow_matches_cpu():
     )
     np.testing.assert_array_equal(gpu_host.channel("shadow_stack_overflow_count"), [0])
     np.testing.assert_array_equal(gpu_host.channel("shadow_max_stack_depth"), [0])
+
+
+@pytest.mark.cuda_ext
+def test_cuda_direct_light_lab_smoke(tmp_path: Path):
+    pytest.importorskip("torch")
+    out_dir = tmp_path / "cuda_direct_lab"
+    config = OpticalLabScenarioConfig(
+        scenario_name="synthetic_cuda_direct_light_lab_smoke",
+        scenario_family=OpticalLabScenarioFamily.VIDEO_ORDERED_EXPORT,
+        width=24,
+        height=16,
+        scene_preset="synthetic_body_triangle",
+        accel_backend=AccelBackend.CUDA_LBVH,
+        render_backend=RenderBackend.CUDA_DIRECT_LIGHT,
+        readback_payload=ReadbackPayload.RGB,
+        write_policy=WritePolicy.PNG_SEQUENCE,
+        shadows=False,
+    )
+    options = LabRunOptions(
+        out=out_dir,
+        frames=1,
+        warmup_renders=1,
+        progress_every=0,
+        video_raygen="host",
+    )
+
+    run_scenario(config, options)
+
+    print(f"cuda_direct_light_lab_smoke_out={out_dir}")
+    payload = json.loads((out_dir / "scenario_config.json").read_text())
+    assert payload["scenario"]["render_backend"] == "cuda_direct_light"
+    assert payload["scenario"]["accel_backend"] == "cuda_lbvh"
+    assert payload["scenario"]["shadows"] is False
+    assert payload["run_options"]["warmup_renders"] == 1
+
+    with (out_dir / "frame_timing.csv").open(newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["render_backend"] == "cuda_direct_light"
+    assert row["accel_backend"] == "cuda_lbvh"
+    assert row["readback_payload"] == "rgb"
+    assert row["raygen_mode"] == "host"
+    frame_path = row["frame_path"]
+    assert frame_path
+    assert Path(frame_path).is_file()
+    assert Path(frame_path).is_relative_to(tmp_path)
 
 
 def test_device_bvh_no_shadow_point_light_matches_cpu():

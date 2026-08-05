@@ -192,7 +192,7 @@ def render_many_views(args: argparse.Namespace) -> None:
 
         with timings.measure(f"view_{view}_render_execute_wait"):
             result = session.executor.execute(session.snapshot, session.bvh, rays)
-            wp.synchronize_event(result.ready_event)
+            _synchronize_ready_event(result.ready_event)
         with timings.measure(f"view_{view}_readback_host"):
             host_result = stage_optical_compute_result_to_host(result)
         with timings.measure(f"view_{view}_image_build"):
@@ -302,9 +302,16 @@ def _print_video_summary(args: argparse.Namespace, video_rows: FrameTimingRecord
         print(f"    frame_timing_csv: {video_rows.csv_path}")
 
 
+def _synchronize_ready_event(event: object | None) -> None:
+    if event is None:
+        return
+    wp.synchronize_event(event)
+
+
 def _render_options_from_args(args: argparse.Namespace) -> OpticalLabRenderOptions:
     return OpticalLabRenderOptions(
         device=args.device,
+        render_backend=str(getattr(args, "render_backend", "warp_bvh_direct_light")),
         bvh_backend=str(args.bvh_backend),
         bvh_split_strategy=str(args.bvh_split_strategy),
         shadows=not args.no_shadows,
@@ -404,7 +411,7 @@ def _execute_warmup_render(
             if use_gpu_raygen
             else executor.execute(snapshot, bvh, rays)
         )
-        wp.synchronize_event(result.ready_event)
+        _synchronize_ready_event(result.ready_event)
 
 
 def _run_render_benchmark(
@@ -418,13 +425,13 @@ def _run_render_benchmark(
 ) -> list[float]:
     for _ in range(max(warmup, 0)):
         result = executor.execute(snapshot, bvh, rays)
-        wp.synchronize_event(result.ready_event)
+        _synchronize_ready_event(result.ready_event)
 
     elapsed_ms: list[float] = []
     for _ in range(max(repeat, 0)):
         start = time.perf_counter()
         result = executor.execute(snapshot, bvh, rays)
-        wp.synchronize_event(result.ready_event)
+        _synchronize_ready_event(result.ready_event)
         elapsed_ms.append((time.perf_counter() - start) * 1000.0)
     return elapsed_ms
 

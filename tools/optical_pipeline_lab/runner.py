@@ -177,10 +177,16 @@ def validate_run_scenario_supported(config: OpticalLabScenarioConfig) -> None:
             "use go2_menagerie_static/synthetic_body_triangle for now"
         )
     if config.render_backend is RenderBackend.CUDA_DIRECT_LIGHT:
-        raise RunScenarioUnsupportedError(
-            "run_scenario(...) cannot execute render_backend='cuda_direct_light' until "
-            "the P12.3 CUDA first-hit kernel lands"
-        )
+        if config.scene_preset != "synthetic_body_triangle":
+            raise RunScenarioUnsupportedError(
+                "run_scenario(...) supports render_backend='cuda_direct_light' only for "
+                "scene_preset='synthetic_body_triangle' until the full P12.3f smoke"
+            )
+        if config.shadows:
+            raise RunScenarioUnsupportedError(
+                "run_scenario(...) supports render_backend='cuda_direct_light' only with "
+                "shadows=False until P12.3d"
+            )
     if config.camera_mode not in ("camera_orbit", "fixed_view"):
         raise RunScenarioUnsupportedError(
             f"camera_mode={config.camera_mode!r} is reserved; use camera_orbit/fixed_view for now"
@@ -659,6 +665,7 @@ def _build_physics_video_args_unvalidated(
         height=int(config.height),
         out=str(options.out),
         no_shadows=not render_options.shadows,
+        render_backend=render_options.render_backend,
         bvh_backend=render_options.bvh_backend,
         bvh_split_strategy=render_options.bvh_split_strategy,
         fail_on_overflow=bool(options.fail_on_overflow),
@@ -702,6 +709,7 @@ def build_menagerie_example_args(
         views=["front"],
         out=str(options.out),
         no_shadows=not render_options.shadows,
+        render_backend=render_options.render_backend,
         bvh_backend=render_options.bvh_backend,
         bvh_split_strategy=render_options.bvh_split_strategy,
         fail_on_overflow=bool(options.fail_on_overflow),
