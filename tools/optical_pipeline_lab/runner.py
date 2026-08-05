@@ -182,11 +182,6 @@ def validate_run_scenario_supported(config: OpticalLabScenarioConfig) -> None:
                 "run_scenario(...) supports render_backend='cuda_direct_light' only for "
                 "scene_preset='synthetic_body_triangle' until the full P12.3f smoke"
             )
-        if config.shadows:
-            raise RunScenarioUnsupportedError(
-                "run_scenario(...) supports render_backend='cuda_direct_light' only with "
-                "shadows=False until P12.3d"
-            )
     if config.camera_mode not in ("camera_orbit", "fixed_view"):
         raise RunScenarioUnsupportedError(
             f"camera_mode={config.camera_mode!r} is reserved; use camera_orbit/fixed_view for now"

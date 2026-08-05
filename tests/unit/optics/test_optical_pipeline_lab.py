@@ -5129,7 +5129,7 @@ def test_cuda_direct_light_pre_smoke_keeps_existing_runner_backends(tmp_path: Pa
     validate_run_scenario_supported(cpu_config)
 
 
-def test_cuda_direct_light_pre_smoke_rejects_go2_and_shadows():
+def test_cuda_direct_light_pre_smoke_rejects_go2_but_allows_synthetic_shadows():
     go2_config = replace(
         get_preset("go2_video_ordered_static"),
         scenario_name="go2_cuda_direct_light",
@@ -5147,9 +5147,8 @@ def test_cuda_direct_light_pre_smoke_rejects_go2_and_shadows():
     assert can_run_scenario(go2_config) is False
     with pytest.raises(RunScenarioUnsupportedError, match="synthetic_body_triangle"):
         validate_run_scenario_supported(go2_config)
-    assert can_run_scenario(shadow_config) is False
-    with pytest.raises(RunScenarioUnsupportedError, match="P12.3d"):
-        validate_run_scenario_supported(shadow_config)
+    assert can_run_scenario(shadow_config) is True
+    validate_run_scenario_supported(shadow_config)
 
 
 def test_cuda_direct_light_rejects_incompatible_lab_options(tmp_path: Path):

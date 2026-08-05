@@ -2432,12 +2432,6 @@ def test_cuda_direct_light_no_shadow_matches_cpu():
         ambient_rgb=(0.1, 0.2, 0.3),
         background_rgb=(0.01, 0.02, 0.03),
     ).execute(snapshot, bvh, spec, output_profile=OpticalOutputProfile.RGB_PREVIEW)
-    with pytest.raises(NotImplementedError, match="shadows are pending P12.3d"):
-        CudaDeviceBvhDirectLightOpticalExecutor(
-            device=engine._device,
-            stream=stream,
-            shadows=True,
-        ).execute(snapshot, bvh, spec)
     done_event = engine.complete_device_consumer(consumer.consumer_id, frame.frame_id, stream=stream)
 
     wp.synchronize_event(done_event)
@@ -2460,6 +2454,90 @@ def test_cuda_direct_light_no_shadow_matches_cpu():
     )
     np.testing.assert_array_equal(gpu_host.channel("shadow_stack_overflow_count"), [0])
     np.testing.assert_array_equal(gpu_host.channel("shadow_max_stack_depth"), [0])
+
+
+@pytest.mark.cuda_ext
+def test_cuda_direct_light_shadowed_direct_light_matches_cpu_and_warp():
+    pytest.importorskip("torch")
+    engine = _make_engine()
+    consumer = _consumer()
+    engine.register_consumer(consumer)
+    engine.step()
+    frame = engine.latest_published_frame()
+    registry = _shadowed_floor_registry()
+    spec = OpticalRaySensorSpec(
+        frame_id=frame.frame_id,
+        sim_time=frame.sim_time,
+        env_idx=0,
+        sensor_id="gpu_camera",
+        origins_world=[[0.0, 0.0, 2.0], [-0.75, 0.0, 2.0]],
+        directions_world=[[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]],
+        max_distance=10.0,
+        sensor_role="rgb",
+    )
+    shadow_bias = 1.0e-6
+    host_snapshot = OpticalSceneCache(registry).snapshot_from_frame_inputs(
+        OpticalFrameInputs.from_published_frame(_cpu_frame_like(frame)),
+        acceleration="cpu_bvh",
+    )
+    cpu = CpuDirectLightOpticalExecutor(
+        shadows=True,
+        shadow_bias=shadow_bias,
+        ambient_rgb=(0.1, 0.1, 0.1),
+        background_rgb=(0.0, 0.0, 0.0),
+    ).execute(host_snapshot, spec)
+
+    stream = wp.Stream(device=engine._device)
+    borrowed = engine.borrow_device_frame(consumer.consumer_id, frame.frame_id, stream=stream)
+    cache = DeviceOpticalSceneCache(registry, device=engine._device, stream=stream)
+    snapshot = cache.snapshot_from_gpu_frame(borrowed, env_idx=0, stream=stream, include_aabb=True)
+    warp_bvh = build_device_bvh_from_snapshot(snapshot, device=engine._device, stream=stream)
+    cuda_bvh = build_cuda_lbvh_from_snapshot(snapshot, device=engine._device, stream=stream)
+    warp_gpu = GpuDeviceBvhDirectLightOpticalExecutor(
+        device=engine._device,
+        stream=stream,
+        shadows=True,
+        shadow_bias=shadow_bias,
+        ambient_rgb=(0.1, 0.1, 0.1),
+        background_rgb=(0.0, 0.0, 0.0),
+    ).execute(snapshot, warp_bvh, spec)
+    cuda_gpu = CudaDeviceBvhDirectLightOpticalExecutor(
+        device=engine._device,
+        stream=stream,
+        shadows=True,
+        shadow_bias=shadow_bias,
+        ambient_rgb=(0.1, 0.1, 0.1),
+        background_rgb=(0.0, 0.0, 0.0),
+    ).execute(snapshot, cuda_bvh, spec)
+    cuda_no_shadow = CudaDeviceBvhDirectLightOpticalExecutor(
+        device=engine._device,
+        stream=stream,
+        shadows=False,
+        shadow_bias=shadow_bias,
+        ambient_rgb=(0.1, 0.1, 0.1),
+        background_rgb=(0.0, 0.0, 0.0),
+    ).execute(snapshot, cuda_bvh, spec)
+    done_event = engine.complete_device_consumer(consumer.consumer_id, frame.frame_id, stream=stream)
+
+    wp.synchronize_event(done_event)
+    warp_host = stage_optical_compute_result_to_host(warp_gpu)
+    cuda_host = stage_optical_compute_result_to_host(cuda_gpu)
+    cuda_no_shadow_host = stage_optical_compute_result_to_host(cuda_no_shadow)
+    np.testing.assert_array_equal(cuda_host.channel("hit_mask"), cpu.channel("hit_mask"))
+    np.testing.assert_array_equal(cuda_host.channel("hit_mask"), warp_host.channel("hit_mask"))
+    np.testing.assert_allclose(cuda_host.channel("range_m"), cpu.channel("range_m"), atol=1e-6)
+    np.testing.assert_allclose(cuda_host.channel("rgb"), cpu.channel("rgb"), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(cuda_host.channel("rgb"), warp_host.channel("rgb"), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(
+        cuda_host.channel("intensity"),
+        cpu.channel("intensity"),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+    assert float(cuda_no_shadow_host.channel("intensity")[0]) > float(cuda_host.channel("intensity")[0])
+    np.testing.assert_allclose(cuda_host.channel("rgb")[0], [0.07, 0.06, 0.05], atol=1e-5)
+    np.testing.assert_array_equal(cuda_host.channel("shadow_stack_overflow_count"), [0])
+    assert 1 <= int(cuda_host.channel("shadow_max_stack_depth")[0]) <= 32
 
 
 @pytest.mark.cuda_ext
@@ -2503,6 +2581,49 @@ def test_cuda_direct_light_lab_smoke(tmp_path: Path):
     assert row["accel_backend"] == "cuda_lbvh"
     assert row["readback_payload"] == "rgb"
     assert row["raygen_mode"] == "host"
+    frame_path = row["frame_path"]
+    assert frame_path
+    assert Path(frame_path).is_file()
+    assert Path(frame_path).is_relative_to(tmp_path)
+
+
+@pytest.mark.cuda_ext
+def test_cuda_direct_light_shadowed_lab_smoke(tmp_path: Path):
+    pytest.importorskip("torch")
+    out_dir = tmp_path / "cuda_direct_shadow_lab"
+    config = OpticalLabScenarioConfig(
+        scenario_name="synthetic_cuda_direct_light_shadow_lab_smoke",
+        scenario_family=OpticalLabScenarioFamily.VIDEO_ORDERED_EXPORT,
+        width=24,
+        height=16,
+        scene_preset="synthetic_body_triangle",
+        accel_backend=AccelBackend.CUDA_LBVH,
+        render_backend=RenderBackend.CUDA_DIRECT_LIGHT,
+        readback_payload=ReadbackPayload.RGB,
+        write_policy=WritePolicy.PNG_SEQUENCE,
+        shadows=True,
+    )
+    options = LabRunOptions(
+        out=out_dir,
+        frames=1,
+        warmup_renders=1,
+        progress_every=0,
+        video_raygen="host",
+    )
+
+    run_scenario(config, options)
+
+    payload = json.loads((out_dir / "scenario_config.json").read_text())
+    assert payload["scenario"]["render_backend"] == "cuda_direct_light"
+    assert payload["scenario"]["accel_backend"] == "cuda_lbvh"
+    assert payload["scenario"]["shadows"] is True
+
+    with (out_dir / "frame_timing.csv").open(newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["render_backend"] == "cuda_direct_light"
+    assert row["accel_backend"] == "cuda_lbvh"
     frame_path = row["frame_path"]
     assert frame_path
     assert Path(frame_path).is_file()
