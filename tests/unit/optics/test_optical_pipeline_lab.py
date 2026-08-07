@@ -3687,6 +3687,80 @@ def test_lab_render_pipeline_create_from_source_builds_canonical_session(
     assert frame.env_idx == 3
 
 
+def test_lab_render_pipeline_does_not_pass_warp_stream_to_cuda_executor(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    registry = object()
+    base_frame = SimpleNamespace(frame_id=12, sim_time=1.2)
+    source = render_session.OpticalLabRenderSource(registry=registry, base_frame=base_frame)
+    snapshot = object()
+    bvh = SimpleNamespace(stats=SimpleNamespace(detail_ms=[]))
+    captured: dict[str, object] = {}
+
+    class FakeWp:
+        config = SimpleNamespace(quiet=False)
+
+        class Stream:
+            def __init__(self, *, device):
+                self.device = device
+
+        @staticmethod
+        def init():
+            return None
+
+        @staticmethod
+        def get_device(device):
+            return f"device:{device}"
+
+    class FakeCache:
+        def __init__(self, registry_arg, *, device, stream):
+            assert registry_arg is registry
+            captured["workspace_stream"] = stream
+
+        def snapshot_from_gpu_frame(self, frame, *, env_idx, stream, include_aabb):
+            assert frame is base_frame
+            assert env_idx == 0
+            assert stream is captured["workspace_stream"]
+            assert include_aabb is True
+            return snapshot
+
+    class FakeCudaExecutor:
+        def __init__(self, *, device, shadows, ambient_rgb, background_rgb):
+            captured["executor_device"] = device
+            captured["executor_shadows"] = shadows
+            captured["executor_ambient"] = ambient_rgb
+            captured["executor_background"] = background_rgb
+
+    def fake_build_cuda_bvh(snapshot_arg, *, device, stream):
+        assert snapshot_arg is snapshot
+        assert stream is captured["workspace_stream"]
+        return bvh
+
+    monkeypatch.setattr(render_session, "wp", FakeWp)
+    monkeypatch.setattr(render_session, "DeviceOpticalSceneCache", FakeCache)
+    monkeypatch.setattr(render_session, "build_cuda_lbvh_from_snapshot", fake_build_cuda_bvh)
+    monkeypatch.setattr(render_session, "CudaDeviceBvhDirectLightOpticalExecutor", FakeCudaExecutor)
+
+    pipeline = render_session.OpticalLabRenderPipeline.create_from_source(
+        source,
+        render_session.OpticalLabRenderOptions(
+            device="cuda:source",
+            render_backend="cuda_direct_light",
+            bvh_backend="cuda_lbvh",
+            shadows=False,
+        ),
+        TimingRecorder(),
+    )
+
+    assert captured == {
+        "workspace_stream": pipeline.session.workspace.stream,
+        "executor_device": "device:cuda:source",
+        "executor_shadows": False,
+        "executor_ambient": (0.08, 0.085, 0.09),
+        "executor_background": (0.025, 0.03, 0.038),
+    }
+
+
 def test_lab_render_pipeline_create_from_source_builds_cpu_direct_light_session():
     registry = dynamic_frames.make_body_bound_triangle_registry()
     base_frame = CpuPublishedFrame(
@@ -5073,7 +5147,7 @@ def test_cpu_direct_light_static_config_is_currently_implemented(tmp_path: Path)
     )
 
 
-def test_cuda_direct_light_synthetic_no_shadow_config_can_run_host_raygen_sync(tmp_path: Path):
+def test_cuda_direct_light_synthetic_no_shadow_config_can_run_host_or_gpu_raygen_sync(tmp_path: Path):
     config = replace(
         get_preset("go2_video_ordered_static"),
         scenario_name="synthetic_cuda_direct_light",
@@ -5091,6 +5165,14 @@ def test_cuda_direct_light_synthetic_no_shadow_config_can_run_host_raygen_sync(t
         LabRunOptions(
             out=tmp_path / "cuda_direct",
             video_raygen="host",
+        ),
+    )
+    validate_run(
+        config,
+        LabRunOptions(
+            out=tmp_path / "cuda_direct_gpu_raygen",
+            video_raygen="gpu",
+            video_ray_cache="off",
         ),
     )
     render_options = lab_runner.render_options_for_config(
@@ -5158,15 +5240,14 @@ def test_cuda_direct_light_rejects_incompatible_lab_options(tmp_path: Path):
         render_backend=RenderBackend.CUDA_DIRECT_LIGHT,
     )
 
-    with pytest.raises(ValueError, match="requires video_raygen='host'"):
-        validate_run(config, LabRunOptions(out=tmp_path / "cuda_direct"))
+    validate_run(config, LabRunOptions(out=tmp_path / "cuda_direct"))
 
     with pytest.raises(ValueError, match="requires video_readback_delivery='sync'"):
         validate_run(
             config,
             LabRunOptions(
                 out=tmp_path / "cuda_direct",
-                video_raygen="host",
+                video_raygen="gpu",
                 video_readback_delivery="torch_async",
             ),
         )
@@ -5177,7 +5258,7 @@ def test_cuda_direct_light_rejects_incompatible_lab_options(tmp_path: Path):
             rgb8_config,
             LabRunOptions(
                 out=tmp_path / "cuda_direct",
-                video_raygen="host",
+                video_raygen="gpu",
             ),
         )
 

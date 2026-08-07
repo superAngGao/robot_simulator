@@ -249,7 +249,13 @@ def test_cuda_first_hit_validation_rejects_scene_bvh_device_mismatch():
     spec = SimpleNamespace(frame_id=3, env_idx=0, max_distance=10.0)
 
     with pytest.raises(ValueError, match="DeviceOpticalSceneSnapshot and DeviceOpticalBvh devices"):
-        executor._validate(snapshot, bvh, spec)
+        executor._validate_request(
+            snapshot,
+            bvh,
+            frame_id=spec.frame_id,
+            env_idx=spec.env_idx,
+            max_distance=spec.max_distance,
+        )
 
 
 def test_cuda_direct_light_profile_filter_keeps_render_only_counters():

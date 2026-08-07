@@ -441,18 +441,19 @@ class OpticalLabRenderSession:
             timings.add(f"bvh_build_{detail_name}", detail_elapsed_ms)
 
         with timings.measure("executor_init"):
-            executor_cls = (
-                CudaDeviceBvhDirectLightOpticalExecutor
-                if _is_cuda_direct_light_backend(options)
-                else GpuDeviceBvhDirectLightOpticalExecutor
-            )
-            executor = executor_cls(
-                device=workspace.device,
-                stream=workspace.stream,
-                shadows=options.shadows,
-                ambient_rgb=(0.08, 0.085, 0.09),
-                background_rgb=(0.025, 0.03, 0.038),
-            )
+            executor_kwargs = {
+                "device": workspace.device,
+                "shadows": options.shadows,
+                "ambient_rgb": (0.08, 0.085, 0.09),
+                "background_rgb": (0.025, 0.03, 0.038),
+            }
+            if _is_cuda_direct_light_backend(options):
+                executor = CudaDeviceBvhDirectLightOpticalExecutor(**executor_kwargs)
+            else:
+                executor = GpuDeviceBvhDirectLightOpticalExecutor(
+                    **executor_kwargs,
+                    stream=workspace.stream,
+                )
 
         return cls(
             scene=scene,

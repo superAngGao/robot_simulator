@@ -858,8 +858,6 @@ def _validate_run_options(config: OpticalLabScenarioConfig, options: LabRunOptio
         if config.readback_payload is ReadbackPayload.RGB8:
             raise ValueError("render_backend='cpu_direct_light' does not support readback_payload='rgb8'")
     if config.render_backend is RenderBackend.CUDA_DIRECT_LIGHT:
-        if options.video_raygen != "host":
-            raise ValueError("render_backend='cuda_direct_light' requires video_raygen='host' until P12.3e")
         if options.video_readback_delivery != "sync":
             raise ValueError("render_backend='cuda_direct_light' requires video_readback_delivery='sync'")
         if config.readback_payload is ReadbackPayload.RGB8:

@@ -37,6 +37,7 @@ from optics import (
     refit_device_bvh_from_snapshot,
     stage_optical_compute_result_to_host,
 )
+from optics.cuda_direct_light import _generate_pinhole_camera_ray_tensors
 from optics.render_api import RenderRequest
 from physics.geometry import BodyCollisionGeometry, ShapeInstance, SphereShape
 from physics.joint import FreeJoint
@@ -67,7 +68,11 @@ from tools.optical_pipeline_lab.runner import (
     run_physics_video_scenario,
     run_scenario,
 )
-from tools.optical_pipeline_lab.timing import FrameTimingRecorder, TimingRecorder
+from tools.optical_pipeline_lab.timing import (
+    SHADOW_TRAVERSAL_COUNTER_FIELDS,
+    FrameTimingRecorder,
+    TimingRecorder,
+)
 
 try:
     import warp as wp
@@ -104,9 +109,9 @@ def _ball_model() -> RobotModel:
     )
 
 
-def _make_engine():
+def _make_engine(*, device: str = "cuda:0"):
     merged = merge_models({"ball": _ball_model()})
-    engine = GpuEngine(merged, num_envs=1, device="cuda:0")
+    engine = GpuEngine(merged, num_envs=1, device=device)
     q0, _ = merged.tree.default_state()
     q0[6] = 0.5
     engine.reset(q0=q0)
@@ -2048,6 +2053,71 @@ def test_cuda_lbvh_executor_matches_cpu_bvh_for_world_static_triangle_mesh():
 
 
 @pytest.mark.cuda_ext
+def test_cuda_pinhole_raygen_directly_matches_host_rays():
+    torch = pytest.importorskip("torch")
+    device = torch.device("cuda:0")
+    camera = OpticalPinholeCameraSpec(
+        frame_id=17,
+        sim_time=0.25,
+        env_idx=0,
+        sensor_id="cuda_raygen",
+        width=7,
+        height=3,
+        fx=5.25,
+        fy=3.75,
+        cx=2.35,
+        cy=0.8,
+        X_world_camera=SpatialTransform.from_rpy(
+            0.31,
+            -0.27,
+            0.43,
+            r=np.array([0.7, -0.4, 1.9], dtype=np.float64),
+        ),
+        max_distance=12.0,
+        sensor_role="rgb",
+    )
+    host = build_pinhole_camera_rays(camera)
+    profile: list[tuple[str, float]] = []
+
+    origins, directions, timing = _generate_pinhole_camera_ray_tensors(
+        camera,
+        device=device,
+        render_profile=profile,
+    )
+    torch.cuda.synchronize(device)
+
+    assert origins.shape == (camera.width * camera.height, 3)
+    assert directions.shape == origins.shape
+    assert origins.dtype == torch.float32
+    assert directions.dtype == torch.float32
+    assert origins.is_contiguous() and directions.is_contiguous()
+    assert origins.device == device and directions.device == device
+    origins_host = origins.cpu().numpy()
+    directions_host = directions.cpu().numpy()
+    expected_origins = np.asarray(host.origins_world, dtype=np.float32)
+    expected_directions = np.asarray(host.directions_world, dtype=np.float32)
+    np.testing.assert_allclose(origins_host, expected_origins, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(directions_host, expected_directions, rtol=1e-6, atol=2e-6)
+    np.testing.assert_allclose(np.linalg.norm(directions_host, axis=1), 1.0, atol=2e-6)
+    for py, px in ((0, 0), (0, 6), (1, 0), (1, 4), (2, 6)):
+        flat_index = py * camera.width + px
+        np.testing.assert_allclose(origins_host[flat_index], expected_origins[flat_index], atol=1e-6)
+        np.testing.assert_allclose(
+            directions_host[flat_index],
+            expected_directions[flat_index],
+            rtol=1e-6,
+            atol=2e-6,
+        )
+    assert timing is not None
+    assert float(timing.start.elapsed_time(timing.end)) >= 0.0
+    assert any(name == "raygen_camera_params_ms" for name, _ in profile)
+    assert any(name == "raygen_buffer_alloc_ms" for name, _ in profile)
+
+    with pytest.raises(TypeError, match="unexpected keyword argument 'stream'"):
+        CudaDeviceBvhOpticalExecutor(device="cuda:0", stream=object())
+
+
+@pytest.mark.cuda_ext
 def test_cuda_direct_light_first_hit_matches_warp_bvh_executor():
     pytest.importorskip("torch")
     engine = _make_engine()
@@ -2104,7 +2174,7 @@ def test_cuda_direct_light_first_hit_matches_warp_bvh_executor():
         include_aabb=True,
     )
     cuda_bvh = build_cuda_lbvh_from_snapshot(cuda_snapshot, device=engine._device, stream=stream)
-    cuda_result = CudaDeviceBvhOpticalExecutor(device=engine._device, stream=stream).execute(
+    cuda_result = CudaDeviceBvhOpticalExecutor(device=engine._device).execute(
         cuda_snapshot,
         cuda_bvh,
         spec,
@@ -2137,6 +2207,216 @@ def test_cuda_direct_light_first_hit_matches_warp_bvh_executor():
     np.testing.assert_array_equal(cuda_host.channel("material_index"), warp_host.channel("material_index"))
     np.testing.assert_array_equal(cuda_host.channel("bvh_stack_overflow_count"), [0])
     assert 1 <= int(cuda_host.channel("bvh_max_stack_depth")[0]) <= 32
+
+
+@pytest.mark.cuda_ext
+def test_cuda_camera_geometry_and_direct_light_profiles_match_materialized_rays():
+    pytest.importorskip("torch")
+    engine = _make_engine()
+    consumer = _consumer("cuda_camera_profiles")
+    engine.register_consumer(consumer)
+    engine.step()
+    frame = engine.latest_published_frame()
+    registry = _world_static_triangle_grid_registry()
+    camera = OpticalPinholeCameraSpec(
+        frame_id=frame.frame_id,
+        sim_time=frame.sim_time,
+        env_idx=0,
+        sensor_id="cuda_camera_profiles",
+        width=7,
+        height=3,
+        fx=5.25,
+        fy=3.75,
+        cx=2.35,
+        cy=0.8,
+        X_world_camera=SpatialTransform.from_rpy(
+            np.pi,
+            0.08,
+            0.19,
+            r=np.array([0.0, 0.0, 2.0], dtype=np.float64),
+        ),
+        max_distance=10.0,
+        sensor_role="rgb",
+    )
+    rays = build_pinhole_camera_rays(camera)
+    stream = wp.Stream(device=engine._device)
+    borrowed = engine.borrow_device_frame(consumer.consumer_id, frame.frame_id, stream=stream)
+    cache = DeviceOpticalSceneCache(registry, device=engine._device, stream=stream)
+    snapshot = cache.snapshot_from_gpu_frame(borrowed, env_idx=0, stream=stream, include_aabb=True)
+    bvh = build_cuda_lbvh_from_snapshot(snapshot, device=engine._device, stream=stream)
+
+    geometry_executor = CudaDeviceBvhOpticalExecutor(device=engine._device)
+    materialized_geometry = geometry_executor.execute(snapshot, bvh, rays)
+    camera_geometry = geometry_executor.execute_camera(snapshot, bvh, camera)
+    materialized_geometry_host = stage_optical_compute_result_to_host(materialized_geometry)
+    camera_geometry_host = stage_optical_compute_result_to_host(camera_geometry)
+    np.testing.assert_array_equal(
+        camera_geometry_host.channel("hit_mask"), materialized_geometry_host.channel("hit_mask")
+    )
+    assert np.count_nonzero(camera_geometry_host.channel("hit_mask")) not in (0, camera.width * camera.height)
+    np.testing.assert_allclose(
+        camera_geometry_host.channel("range_m"),
+        materialized_geometry_host.channel("range_m"),
+        atol=2e-6,
+    )
+    np.testing.assert_allclose(
+        camera_geometry_host.channel("position_world"),
+        materialized_geometry_host.channel("position_world"),
+        atol=2e-6,
+        equal_nan=True,
+    )
+    np.testing.assert_allclose(
+        camera_geometry_host.channel("normal_world"),
+        materialized_geometry_host.channel("normal_world"),
+        atol=2e-6,
+        equal_nan=True,
+    )
+    np.testing.assert_array_equal(
+        camera_geometry_host.channel("numeric_instance_id"),
+        materialized_geometry_host.channel("numeric_instance_id"),
+    )
+    np.testing.assert_array_equal(
+        camera_geometry_host.channel("material_index"),
+        materialized_geometry_host.channel("material_index"),
+    )
+
+    for shadows in (False, True):
+        executor = CudaDeviceBvhDirectLightOpticalExecutor(
+            device=engine._device,
+            shadows=shadows,
+            ambient_rgb=(0.1, 0.2, 0.3),
+            background_rgb=(0.01, 0.02, 0.03),
+        )
+        for profile in (
+            OpticalOutputProfile.DIRECT_LIGHT_FULL,
+            OpticalOutputProfile.RGB_PREVIEW,
+            OpticalOutputProfile.RENDER_ONLY,
+        ):
+            materialized = executor.execute(
+                snapshot,
+                bvh,
+                rays,
+                output_profile=profile,
+                render_profile=[],
+            )
+            render_profile: list[tuple[str, float]] = []
+            camera_result = executor.execute_camera(
+                snapshot,
+                bvh,
+                camera,
+                output_profile=profile,
+                render_profile=render_profile,
+            )
+            assert camera_result.output_profile is profile
+            assert profile.guaranteed_channels.issubset(camera_result.channels)
+            if profile is not OpticalOutputProfile.DIRECT_LIGHT_FULL:
+                assert set(camera_result.channels) - set(SHADOW_TRAVERSAL_COUNTER_FIELDS) == set(
+                    profile.guaranteed_channels
+                )
+            materialized_host = stage_optical_compute_result_to_host(materialized)
+            camera_host = stage_optical_compute_result_to_host(camera_result)
+            for name in camera_result.channels:
+                expected = materialized_host.channel(name)
+                actual = camera_host.channel(name)
+                if np.issubdtype(np.asarray(actual).dtype, np.floating):
+                    np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=2e-5, equal_nan=True)
+                else:
+                    np.testing.assert_array_equal(actual, expected)
+            raygen_timings = [elapsed for name, elapsed in render_profile if name == "raygen_kernel"]
+            assert len(raygen_timings) == 1
+            assert np.isfinite(raygen_timings[0]) and raygen_timings[0] >= 0.0
+
+    done_event = engine.complete_device_consumer(consumer.consumer_id, frame.frame_id, stream=stream)
+    wp.synchronize_event(done_event)
+
+
+@pytest.mark.cuda_ext
+def test_cuda_camera_paths_guard_target_device_and_restore_ambient_device():
+    torch = pytest.importorskip("torch")
+    if torch.cuda.device_count() < 2:
+        pytest.skip("requires two visible CUDA devices")
+
+    target = torch.device("cuda:1")
+    engine = _make_engine(device="cuda:1")
+    consumer = _consumer("cuda_camera_device_guard")
+    engine.register_consumer(consumer)
+    engine.step()
+    frame = engine.latest_published_frame()
+    registry = _lit_triangle_registry()
+    camera = _downward_camera_spec(frame)
+    rays = build_pinhole_camera_rays(camera)
+    stream = wp.Stream(device=engine._device)
+    borrowed = engine.borrow_device_frame(consumer.consumer_id, frame.frame_id, stream=stream)
+    cache = DeviceOpticalSceneCache(registry, device=engine._device, stream=stream)
+    snapshot = cache.snapshot_from_gpu_frame(borrowed, env_idx=0, stream=stream, include_aabb=True)
+    bvh = build_cuda_lbvh_from_snapshot(snapshot, device=engine._device, stream=stream)
+
+    torch.cuda.set_device(0)
+    assert torch.cuda.current_device() == 0
+    origins, directions, _ = _generate_pinhole_camera_ray_tensors(camera, device=target)
+    torch.cuda.synchronize(target)
+    assert torch.cuda.current_device() == 0
+    assert origins.device == target and directions.device == target
+    np.testing.assert_allclose(origins.cpu().numpy(), rays.origins_world, atol=1e-6)
+    np.testing.assert_allclose(directions.cpu().numpy(), rays.directions_world, rtol=1e-6, atol=2e-6)
+
+    geometry_executor = CudaDeviceBvhOpticalExecutor(device=engine._device)
+    torch.cuda.set_device(0)
+    assert torch.cuda.current_device() == 0
+    geometry = geometry_executor.execute_camera(snapshot, bvh, camera)
+    assert torch.cuda.current_device() == 0
+    assert all(getattr(resource, "device", target) == target for resource in geometry.resources)
+
+    torch.cuda.set_device(0)
+    assert torch.cuda.current_device() == 0
+    materialized_geometry = geometry_executor.execute(snapshot, bvh, rays)
+    assert torch.cuda.current_device() == 0
+    geometry_host = stage_optical_compute_result_to_host(geometry)
+    materialized_geometry_host = stage_optical_compute_result_to_host(materialized_geometry)
+    np.testing.assert_array_equal(
+        geometry_host.channel("hit_mask"), materialized_geometry_host.channel("hit_mask")
+    )
+    np.testing.assert_allclose(
+        geometry_host.channel("range_m"), materialized_geometry_host.channel("range_m"), atol=2e-6
+    )
+
+    direct_executor = CudaDeviceBvhDirectLightOpticalExecutor(
+        device=engine._device,
+        shadows=False,
+        ambient_rgb=(0.1, 0.2, 0.3),
+        background_rgb=(0.01, 0.02, 0.03),
+    )
+    torch.cuda.set_device(0)
+    assert torch.cuda.current_device() == 0
+    direct = direct_executor.execute_camera(
+        snapshot,
+        bvh,
+        camera,
+        output_profile=OpticalOutputProfile.RGB_PREVIEW,
+    )
+    assert torch.cuda.current_device() == 0
+    assert all(getattr(resource, "device", target) == target for resource in direct.resources)
+
+    torch.cuda.set_device(0)
+    assert torch.cuda.current_device() == 0
+    materialized_direct = direct_executor.execute(
+        snapshot,
+        bvh,
+        rays,
+        output_profile=OpticalOutputProfile.RGB_PREVIEW,
+    )
+    assert torch.cuda.current_device() == 0
+    direct_host = stage_optical_compute_result_to_host(direct)
+    materialized_direct_host = stage_optical_compute_result_to_host(materialized_direct)
+    np.testing.assert_array_equal(
+        direct_host.channel("hit_mask"), materialized_direct_host.channel("hit_mask")
+    )
+    np.testing.assert_allclose(
+        direct_host.channel("rgb"), materialized_direct_host.channel("rgb"), rtol=1e-5, atol=1e-5
+    )
+
+    done_event = engine.complete_device_consumer(consumer.consumer_id, frame.frame_id, stream=stream)
+    wp.synchronize_event(done_event)
 
 
 def test_device_bvh_executor_preserves_plane_triangle_tie_break():
@@ -2420,14 +2700,12 @@ def test_cuda_direct_light_no_shadow_matches_cpu():
     bvh = build_cuda_lbvh_from_snapshot(snapshot, device=engine._device, stream=stream)
     gpu = CudaDeviceBvhDirectLightOpticalExecutor(
         device=engine._device,
-        stream=stream,
         shadows=False,
         ambient_rgb=(0.1, 0.2, 0.3),
         background_rgb=(0.01, 0.02, 0.03),
     ).execute(snapshot, bvh, spec)
     preview = CudaDeviceBvhDirectLightOpticalExecutor(
         device=engine._device,
-        stream=stream,
         shadows=False,
         ambient_rgb=(0.1, 0.2, 0.3),
         background_rgb=(0.01, 0.02, 0.03),
@@ -2503,15 +2781,13 @@ def test_cuda_direct_light_shadowed_direct_light_matches_cpu_and_warp():
     ).execute(snapshot, warp_bvh, spec)
     cuda_gpu = CudaDeviceBvhDirectLightOpticalExecutor(
         device=engine._device,
-        stream=stream,
         shadows=True,
         shadow_bias=shadow_bias,
         ambient_rgb=(0.1, 0.1, 0.1),
         background_rgb=(0.0, 0.0, 0.0),
-    ).execute(snapshot, cuda_bvh, spec)
+    ).execute(snapshot, cuda_bvh, spec, render_profile=[])
     cuda_no_shadow = CudaDeviceBvhDirectLightOpticalExecutor(
         device=engine._device,
-        stream=stream,
         shadows=False,
         shadow_bias=shadow_bias,
         ambient_rgb=(0.1, 0.1, 0.1),
@@ -2538,6 +2814,19 @@ def test_cuda_direct_light_shadowed_direct_light_matches_cpu_and_warp():
     np.testing.assert_allclose(cuda_host.channel("rgb")[0], [0.07, 0.06, 0.05], atol=1e-5)
     np.testing.assert_array_equal(cuda_host.channel("shadow_stack_overflow_count"), [0])
     assert 1 <= int(cuda_host.channel("shadow_max_stack_depth")[0]) <= 32
+    shadow_ray_count = int(cuda_host.channel("shadow_traversal_ray_count")[0])
+    assert shadow_ray_count == 2
+    assert int(cuda_host.channel("shadow_traversal_directional_ray_count")[0]) == shadow_ray_count
+    assert int(cuda_host.channel("shadow_traversal_point_ray_count")[0]) == 0
+    assert (
+        int(cuda_host.channel("shadow_traversal_occluded_count")[0])
+        + int(cuda_host.channel("shadow_traversal_unoccluded_count")[0])
+        == shadow_ray_count
+    )
+    assert int(cuda_host.channel("shadow_traversal_node_visit_count")[0]) >= shadow_ray_count
+    assert int(cuda_host.channel("shadow_traversal_leaf_visit_count")[0]) >= shadow_ray_count
+    assert int(cuda_host.channel("shadow_traversal_triangle_test_count")[0]) >= 1
+    assert int(cuda_host.channel("shadow_traversal_plane_test_count")[0]) == 0
 
 
 @pytest.mark.cuda_ext
@@ -2561,7 +2850,8 @@ def test_cuda_direct_light_lab_smoke(tmp_path: Path):
         frames=1,
         warmup_renders=1,
         progress_every=0,
-        video_raygen="host",
+        video_raygen="gpu",
+        render_profile=True,
     )
 
     run_scenario(config, options)
@@ -2580,7 +2870,8 @@ def test_cuda_direct_light_lab_smoke(tmp_path: Path):
     assert row["render_backend"] == "cuda_direct_light"
     assert row["accel_backend"] == "cuda_lbvh"
     assert row["readback_payload"] == "rgb"
-    assert row["raygen_mode"] == "host"
+    assert row["raygen_mode"] == "gpu"
+    assert np.isfinite(float(row["render_raygen_kernel_ms"]))
     frame_path = row["frame_path"]
     assert frame_path
     assert Path(frame_path).is_file()
