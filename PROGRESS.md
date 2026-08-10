@@ -2,6 +2,7 @@
 
 > Last updated: 2026-04-16 (session 32)
 > Reference plan: [PLAN.md](./PLAN.md)
+> Q54 optical-pipeline milestone addendum updated: 2026-08-10
 
 ---
 
@@ -976,6 +977,34 @@ max|qdot|: initial=0.98, peak=5.20, final=4.65
 - [ ] `rendering/camera_sim.py` — 相机模型（噪声、畸变、运动模糊）
 - [ ] `rendering/lidar_sim.py` — LiDAR 点云仿真
 - [ ] IMU 噪声模型
+
+### Q54 Optical Pipeline Lab — P12.3e CUDA Camera Raygen ✅ (2026-08-10)
+
+- [x] Commit `39a8a13` approved after independent review and targeted reruns.
+- [x] CUDA camera rays are generated in row-major order on an explicit target
+      device and feed the shared CUDA LBVH first-hit/direct-light path.
+- [x] Raygen, first-hit, and shadow/no-shadow shade use target-device guards and
+      the target device's current Torch stream while restoring the caller's
+      ambient CUDA device.
+- [x] Direct ray parity, all three output profiles, Lab GPU-raygen, shadows, and
+      two-device restoration are covered.
+- [x] The relayed CUDA 12.8 environment evidence and 62-wheel SHA-256 manifest
+      are tracked under `deploy/robot_sim_cuda128/`.
+
+Accepted boundary:
+
+- The optical direction is CUDA-first. No Warp/Torch stream bridge is planned.
+- The current CUDA path remains blocking at two stages: geometry, then shade.
+- CUDA is not yet the default; Warp optical rendering remains a temporary
+  correctness/performance oracle.
+
+Next milestone:
+
+- [ ] P12.4 — freeze the owner-defined product budget, add explicit
+      CPU/Warp/CUDA capability/parity/benchmark rows, measure warmed end-to-end
+      workloads, and make the default/retirement decision from that evidence.
+- [ ] Do not delete the Warp optical oracle until CUDA passes the retained
+      capability, correctness, stability, and absolute product-budget gates.
 
 ---
 

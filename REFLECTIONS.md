@@ -2946,3 +2946,39 @@ Rationale:
   create arbitrary physics runtime state.
 - Future CLI/RL integration can wrap the same helper once engine ownership is
   defined.
+
+---
+
+## Session 2026-08-10 — Q54 P12.3e CUDA-First Optical Decision
+
+P12.3e commit `39a8a13` is approved. The reviewed implementation establishes a
+real CUDA camera path rather than a CUDA/Warp interoperability layer:
+
+```text
+wait for Warp-owned inputs
+-> CUDA raygen -> CUDA first-hit -> target-device synchronization
+-> resolve raygen CUDA event
+-> CUDA shade -> target-device synchronization
+-> blocking result with ready_event=None
+```
+
+Settled decisions:
+
+- The intended optical render architecture is CUDA-first. We will not invest in
+  a Warp/Torch stream bridge unless the owner explicitly reverses that choice.
+- CUDA operations own an explicit target device, use that device's current
+  Torch stream, and restore the caller's ambient CUDA device.
+- The two synchronization barriers and Warp-owned scene/LBVH input boundary are
+  measured baseline costs, not hidden asynchronous behavior.
+- Warp remains only as a temporary optical oracle/fallback while P12.4 proves
+  retained capability parity, numerical correctness, stability, and the
+  owner-defined absolute frame-time or throughput budget.
+- CUDA must not become the default, and the Warp optical executor must not be
+  removed, on a relative “faster than Warp” result alone.
+
+P12.4 therefore owns the evidence contract and the default/retirement decision.
+Compilation and warmup costs must be reported separately from steady-state
+frames; end-to-end rows must include scene/acceleration preparation, raygen,
+first-hit, shade, synchronization, delivery/readback, and memory. If CUDA misses
+the gate, optimize CUDA-native ownership and synchronization directly rather
+than adding bridging work.
