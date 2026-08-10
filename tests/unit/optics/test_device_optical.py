@@ -124,6 +124,7 @@ def test_stage_optical_compute_result_to_host_normalizes_device_channels():
                 np.array([[0.0, 0.0, 1.0], [np.nan, np.nan, np.nan]], dtype=np.float32)
             ),
             "numeric_instance_id": _ArrayLike(np.array([4, 0], dtype=np.int32)),
+            "material_index": _ArrayLike(np.array([2, 0], dtype=np.int32)),
         },
     )
 
@@ -138,6 +139,7 @@ def test_stage_optical_compute_result_to_host_normalizes_device_channels():
     assert host.channel("position_world").dtype == np.float64
     assert host.channel("normal_world").dtype == np.float64
     assert host.channel("numeric_instance_id").dtype == np.int64
+    assert host.channel("material_index").dtype == np.int32
     np.testing.assert_allclose(host.channel("range_m"), [1.5, np.inf])
 
 

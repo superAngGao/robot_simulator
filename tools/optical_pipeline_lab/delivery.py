@@ -10,7 +10,14 @@ from pathlib import Path
 import numpy as np
 
 from examples.optical_direct_light_preview import linear_rgb_to_preview_uint8
-from optics import stage_optical_channels, stage_optical_compute_result_to_host
+from optics import (
+    stage_optical_channels,
+)
+from optics.output_contract import (
+    DIRECT_LIGHT_FULL_PRIMARY_HOST_CHANNEL_SPECS,
+    PRIMARY_HOST_SCALAR_CHANNEL_SPECS,
+    SHADOW_TRAVERSAL_HOST_SCALAR_CHANNEL_SPECS,
+)
 from optics.render_api import (
     DeliveryPolicy as RuntimeDeliveryPolicy,
 )
@@ -39,7 +46,6 @@ from tools.optical_pipeline_lab.rgb_pack import (
     rgb_pack_import_error,
 )
 from tools.optical_pipeline_lab.timing import NAN as _NAN
-from tools.optical_pipeline_lab.timing import SHADOW_TRAVERSAL_COUNTER_FIELDS
 
 try:
     from PIL import Image
@@ -49,15 +55,12 @@ except Exception as exc:  # pragma: no cover - optional image writer dependency.
 else:
     _PIL_IMPORT_ERROR = None
 
-_VIDEO_DIAGNOSTIC_CHANNELS = (
-    "bvh_stack_overflow_count",
-    "shadow_stack_overflow_count",
-    "bvh_max_stack_depth",
-    "shadow_max_stack_depth",
-)
-_VIDEO_SHADOW_TRAVERSAL_CHANNELS = SHADOW_TRAVERSAL_COUNTER_FIELDS
+_VIDEO_DIAGNOSTIC_CHANNELS = tuple(spec.name for spec in PRIMARY_HOST_SCALAR_CHANNEL_SPECS)
+_VIDEO_SHADOW_TRAVERSAL_CHANNEL_SPECS = SHADOW_TRAVERSAL_HOST_SCALAR_CHANNEL_SPECS
+_VIDEO_SHADOW_TRAVERSAL_CHANNELS = tuple(spec.name for spec in _VIDEO_SHADOW_TRAVERSAL_CHANNEL_SPECS)
 _VIDEO_RGB_CHANNELS = ("rgb",) + _VIDEO_DIAGNOSTIC_CHANNELS
 _VIDEO_RGB8_CHANNELS = ("rgb8",) + _VIDEO_DIAGNOSTIC_CHANNELS
+_VIDEO_FULL_CHANNEL_SPECS = DIRECT_LIGHT_FULL_PRIMARY_HOST_CHANNEL_SPECS
 
 
 @dataclass
@@ -575,13 +578,18 @@ def readback_video_result(
             readback_mode,
             include_shadow_traversal_stats=include_shadow_traversal_stats,
         )
+    if readback_mode == "full":
+        specs = _full_video_readback_specs(include_shadow_traversal_stats)
+        return stage_optical_channels(
+            result,
+            tuple(spec.name for spec in specs),
+            canonical_dtypes=True,
+        )
     channels = video_readback_channels(
         readback_mode,
         include_shadow_traversal_stats=include_shadow_traversal_stats,
     )
-    if readback_mode in ("rgb", "rgb8"):
-        return stage_optical_channels(result, channels, canonical_dtypes=False)
-    return stage_optical_compute_result_to_host(result).channels
+    return stage_optical_channels(result, channels, canonical_dtypes=False)
 
 
 def _readback_host_video_result(
@@ -591,7 +599,10 @@ def _readback_host_video_result(
     include_shadow_traversal_stats: bool,
 ) -> dict[str, np.ndarray]:
     if readback_mode == "full":
-        return {name: np.asarray(value) for name, value in result.channels.items()}
+        specs = _full_video_readback_specs(include_shadow_traversal_stats)
+        return {
+            spec.name: np.asarray(result.channel(spec.name), dtype=np.dtype(spec.dtype)) for spec in specs
+        }
     channels = video_readback_channels(
         readback_mode,
         include_shadow_traversal_stats=include_shadow_traversal_stats,
@@ -599,11 +610,21 @@ def _readback_host_video_result(
     return {name: np.asarray(result.channel(name)) for name in channels}
 
 
+def _full_video_readback_specs(
+    include_shadow_traversal_stats: bool,
+):
+    if include_shadow_traversal_stats:
+        return (*_VIDEO_FULL_CHANNEL_SPECS, *_VIDEO_SHADOW_TRAVERSAL_CHANNEL_SPECS)
+    return _VIDEO_FULL_CHANNEL_SPECS
+
+
 def video_readback_channels(
     readback_mode: str,
     *,
     include_shadow_traversal_stats: bool = False,
 ) -> tuple[str, ...]:
+    if readback_mode == "full":
+        return tuple(spec.name for spec in _full_video_readback_specs(include_shadow_traversal_stats))
     if readback_mode == "rgb8":
         channels = _VIDEO_RGB8_CHANNELS
     else:

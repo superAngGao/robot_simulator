@@ -133,6 +133,34 @@ class TestCpuDirectLightOpticalExecutor:
         assert not result.has_channel("range_m")
         assert not result.has_channel("intensity")
 
+    def test_full_profile_material_index_matches_registry_ordinal(self):
+        registry = OpticalWorldRegistry()
+        registry.add_material(OpticalMaterialSpec("unused_first"))
+        registry.add_material(OpticalMaterialSpec("mat_wall"))
+        registry.add_plane_geometry(
+            "wall",
+            normal_local=[1.0, 0.0, 0.0],
+            point_local=[0.0, 0.0, 0.0],
+        )
+        registry.add_instance(
+            OpticalInstanceSpec(
+                "wall",
+                "wall",
+                "mat_wall",
+                roles=frozenset({"rgb"}),
+            )
+        )
+        snapshot = _snapshot(registry)
+
+        result = CpuDirectLightOpticalExecutor(shadows=False).execute(
+            snapshot,
+            _rgb_ray(snapshot),
+        )
+
+        assert "material_index" in OpticalOutputProfile.DIRECT_LIGHT_FULL.guaranteed_channels
+        assert result.channel("material_index").dtype == np.int32
+        np.testing.assert_array_equal(result.channel("material_index"), [1])
+
     def test_render_only_profile_keeps_diagnostics_only(self):
         registry = _registry_with_vertical_plane()
         snapshot = _snapshot(registry)

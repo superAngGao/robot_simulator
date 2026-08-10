@@ -38,6 +38,10 @@ import tools.optical_pipeline_lab.runner as lab_runner
 import tools.optical_pipeline_lab.static_asset_source as static_asset_source
 import tools.optical_pipeline_lab.video_loop as video_loop
 import tools.optical_pipeline_lab.video_products as video_products
+from optics.output_contract import (
+    DIRECT_LIGHT_FULL_PRIMARY_HOST_CHANNEL_SPECS,
+    SHADOW_TRAVERSAL_HOST_SCALAR_CHANNEL_SPECS,
+)
 from optics.render_api import DeliveryPolicy as RuntimeDeliveryPolicy
 from optics.render_api import DeliveryResult as RuntimeDeliveryResult
 from optics.render_api import DeliveryTimingSummary, RenderTimingSummary
@@ -1307,8 +1311,10 @@ def test_run_physics_products_wraps_existing_runtime_and_closes_when_owned(tmp_p
         engine=object(),
         registry=object(),
         base_frame=SimpleNamespace(frame_id=29, sim_time=2.9),
-        step_frame_fn=lambda frame_index: calls.append(("step", frame_index))
-        or SimpleNamespace(frame_id=30 + frame_index, sim_time=3.0 + frame_index),
+        step_frame_fn=lambda frame_index: (
+            calls.append(("step", frame_index))
+            or SimpleNamespace(frame_id=30 + frame_index, sim_time=3.0 + frame_index)
+        ),
         close_fn=close_runtime,
     )
     debug_product = frame_products.DebugFrameProduct(product_name="debug", metadata_keys=None)
@@ -1333,8 +1339,10 @@ def test_run_physics_product_scenario_writes_config_and_runs_products(tmp_path: 
         engine=object(),
         registry=object(),
         base_frame=SimpleNamespace(frame_id=39, sim_time=3.9),
-        step_frame_fn=lambda frame_index: calls.append(("step", frame_index))
-        or SimpleNamespace(frame_id=40 + frame_index, sim_time=4.0 + frame_index),
+        step_frame_fn=lambda frame_index: (
+            calls.append(("step", frame_index))
+            or SimpleNamespace(frame_id=40 + frame_index, sim_time=4.0 + frame_index)
+        ),
         metadata={"runtime_owner": "p10_helper_test"},
     )
     output = ArtifactOutput(root=tmp_path / "scenario", frames=2)
@@ -4437,6 +4445,82 @@ def test_video_delivery_request_maps_lab_options_to_runtime_api():
         )
 
 
+@pytest.mark.parametrize("include_shadow_traversal_stats", [False, True])
+def test_full_video_readback_uses_exact_formal_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    include_shadow_traversal_stats: bool,
+):
+    result = SimpleNamespace(location="device")
+    captured = {}
+    expected_specs = DIRECT_LIGHT_FULL_PRIMARY_HOST_CHANNEL_SPECS
+    if include_shadow_traversal_stats:
+        expected_specs = (*expected_specs, *SHADOW_TRAVERSAL_HOST_SCALAR_CHANNEL_SPECS)
+    expected_channels = tuple(spec.name for spec in expected_specs)
+
+    def fake_stage(observed_result, channels, *, canonical_dtypes):
+        captured["result"] = observed_result
+        captured["channels"] = channels
+        captured["canonical_dtypes"] = canonical_dtypes
+        return {name: np.zeros(1) for name in channels}
+
+    monkeypatch.setattr(delivery, "stage_optical_channels", fake_stage)
+
+    channels = delivery.readback_video_result(
+        result,
+        "full",
+        include_shadow_traversal_stats=include_shadow_traversal_stats,
+    )
+
+    assert captured == {
+        "result": result,
+        "channels": expected_channels,
+        "canonical_dtypes": True,
+    }
+    assert tuple(channels) == expected_channels
+    assert (
+        delivery.video_readback_channels(
+            "full",
+            include_shadow_traversal_stats=include_shadow_traversal_stats,
+        )
+        == expected_channels
+    )
+
+
+@pytest.mark.parametrize("include_shadow_traversal_stats", [False, True])
+def test_full_host_video_readback_filters_extras_and_normalizes_dtypes(
+    include_shadow_traversal_stats: bool,
+):
+    all_specs = (
+        *DIRECT_LIGHT_FULL_PRIMARY_HOST_CHANNEL_SPECS,
+        *SHADOW_TRAVERSAL_HOST_SCALAR_CHANNEL_SPECS,
+    )
+    source_channels = {spec.name: np.zeros(spec.expected_shape(1), dtype=np.float32) for spec in all_specs}
+    source_channels["executor_private_extra"] = np.ones(1)
+    result = SimpleNamespace(
+        location="host",
+        channels=source_channels,
+        channel=source_channels.__getitem__,
+    )
+
+    channels = delivery.readback_video_result(
+        result,
+        "full",
+        include_shadow_traversal_stats=include_shadow_traversal_stats,
+    )
+
+    expected_specs = DIRECT_LIGHT_FULL_PRIMARY_HOST_CHANNEL_SPECS
+    if include_shadow_traversal_stats:
+        expected_specs = (*expected_specs, *SHADOW_TRAVERSAL_HOST_SCALAR_CHANNEL_SPECS)
+    assert tuple(channels) == tuple(spec.name for spec in expected_specs)
+    for spec in expected_specs:
+        assert channels[spec.name].dtype == np.dtype(spec.dtype)
+    traversal_fields = delivery.staged_shadow_traversal_fields(channels)
+    if include_shadow_traversal_stats:
+        assert set(traversal_fields.values()) == {0}
+    else:
+        assert all(math.isnan(value) for value in traversal_fields.values())
+
+
 def test_sync_rgb8_delivery_packs_after_render(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     raw_result = object()
     packed_result = SimpleNamespace(ready_event=object())
@@ -4515,7 +4599,6 @@ def test_sync_video_readback_none_row_does_not_stage(tmp_path: Path, monkeypatch
 
     monkeypatch.setattr(menagerie_static_runner, "_render_video_frame", fake_render_video_frame)
     monkeypatch.setattr(delivery, "stage_optical_channels", fail_if_staged)
-    monkeypatch.setattr(delivery, "stage_optical_compute_result_to_host", fail_if_staged)
 
     frame_timing_csv = tmp_path / "frame_timing.csv"
     rows = menagerie_static_runner._run_video_benchmark(

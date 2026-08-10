@@ -10,6 +10,7 @@ import numpy as np
 
 from sensing.optical import OpticalRaySensorSpec
 
+from .output_contract import OUTPUT_PROFILE_REQUIRED_CHANNELS
 from .registry import OpticalPlaneGeometry, OpticalTriangleMeshGeometry
 from .scene import OpticalSceneSnapshot, transform_directions, transform_points
 
@@ -34,51 +35,7 @@ class OpticalOutputProfile(Enum):
 
     @property
     def guaranteed_channels(self) -> frozenset[str]:
-        if self is OpticalOutputProfile.GEOMETRY_FULL:
-            return frozenset(
-                {
-                    "hit_mask",
-                    "range_m",
-                    "position_world",
-                    "normal_world",
-                    "numeric_instance_id",
-                }
-            )
-        if self is OpticalOutputProfile.DIRECT_LIGHT_FULL:
-            return frozenset(
-                {
-                    "hit_mask",
-                    "range_m",
-                    "position_world",
-                    "normal_world",
-                    "numeric_instance_id",
-                    "rgb",
-                    "intensity",
-                    "bvh_stack_overflow_count",
-                    "bvh_max_stack_depth",
-                    "shadow_stack_overflow_count",
-                    "shadow_max_stack_depth",
-                }
-            )
-        if self is OpticalOutputProfile.RGB_PREVIEW:
-            return frozenset(
-                {
-                    "hit_mask",
-                    "rgb",
-                    "bvh_stack_overflow_count",
-                    "bvh_max_stack_depth",
-                    "shadow_stack_overflow_count",
-                    "shadow_max_stack_depth",
-                }
-            )
-        return frozenset(
-            {
-                "bvh_stack_overflow_count",
-                "bvh_max_stack_depth",
-                "shadow_stack_overflow_count",
-                "shadow_max_stack_depth",
-            }
-        )
+        return OUTPUT_PROFILE_REQUIRED_CHANNELS[self.value]
 
     def is_superset_of(self, other: "OpticalOutputProfile") -> bool:
         return self.guaranteed_channels.issuperset(other.guaranteed_channels)
@@ -385,6 +342,7 @@ class CpuDirectLightOpticalExecutor:
 
     capabilities = CpuReferenceOpticalExecutor.capabilities | frozenset(
         {
+            "material_index",
             "rgb",
             "intensity",
             "bvh_stack_overflow_count",
@@ -439,6 +397,7 @@ class CpuDirectLightOpticalExecutor:
         num_rays = int(geometry.channel("hit_mask").shape[0])
         rgb = np.repeat(np.asarray(self.background_rgb, dtype=np.float64)[None, :], num_rays, axis=0)
         intensity = np.zeros(num_rays, dtype=np.float64)
+        material_index = np.zeros(num_rays, dtype=np.int32)
         instances_by_id = {instance.instance_id: instance for instance in snapshot.instances}
         ambient = np.asarray(self.ambient_rgb, dtype=np.float64)
 
@@ -447,6 +406,7 @@ class CpuDirectLightOpticalExecutor:
             instance = instances_by_id.get(instance_id)
             if instance is None:
                 continue
+            material_index[ray_index] = instance.material_index
             albedo = np.asarray(instance.material.albedo_rgb, dtype=np.float64)
             position = np.asarray(geometry.channel("position_world")[ray_index], dtype=np.float64)
             normal = np.asarray(geometry.channel("normal_world")[ray_index], dtype=np.float64)
@@ -468,6 +428,7 @@ class CpuDirectLightOpticalExecutor:
 
         channels["rgb"] = rgb
         channels["intensity"] = intensity
+        channels["material_index"] = material_index
         channels["bvh_stack_overflow_count"] = np.zeros(1, dtype=np.int32)
         channels["bvh_max_stack_depth"] = np.zeros(1, dtype=np.int32)
         channels["shadow_stack_overflow_count"] = np.zeros(1, dtype=np.int32)

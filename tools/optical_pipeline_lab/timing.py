@@ -10,6 +10,8 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
+from optics.output_contract import SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES
+
 NAN = float("nan")
 
 RENDER_PROFILE_PHASES = (
@@ -35,17 +37,7 @@ RENDER_PROFILE_PHASES = (
     "shade_kernel",
 )
 
-SHADOW_TRAVERSAL_COUNTER_FIELDS = (
-    "shadow_traversal_ray_count",
-    "shadow_traversal_directional_ray_count",
-    "shadow_traversal_point_ray_count",
-    "shadow_traversal_occluded_count",
-    "shadow_traversal_unoccluded_count",
-    "shadow_traversal_node_visit_count",
-    "shadow_traversal_leaf_visit_count",
-    "shadow_traversal_triangle_test_count",
-    "shadow_traversal_plane_test_count",
-)
+SHADOW_TRAVERSAL_COUNTER_FIELDS = SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES
 
 FRAME_TIMING_FIELDNAMES = (
     "frame_index",

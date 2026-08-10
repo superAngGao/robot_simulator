@@ -1,7 +1,7 @@
 # Robot Simulator — Project Manifest
 
 > 面向具身智能研究的多物理仿真平台——多物理统一耦合、GPU 原生、渲染与合成数据生成、从第一性原理出发的 API 设计。
-> Last updated: 2026-06-03 (Q54 P9 source/clock metadata)
+> Last updated: 2026-08-10 (Q54 P12.4a0/a1 benchmark contract freeze)
 
 ## 一句话
 
@@ -20,6 +20,7 @@ rendering/                   Backend-agnostic RenderScene + matplotlib viewer
 sensing/                     Sensor specs/readings/views + optical camera postprocess
 optics/                      Optical registry/scene/executor/result pipeline
 tools/optical_pipeline_lab/   Q54 optical pipeline scenario/timing/preset lab tooling
+benchmarks/optical/           Durable canonical cases, gate schema, and selected-backend regressions
 ```
 
 依赖方向：`rl_env/ → simulator.py → robot/ → physics/`（不可逆）。
@@ -206,7 +207,7 @@ runtime-owner GPU smoke 验证 `PhysicsLabScenarioRuntime` context manager 可�
 | `optics/builder.py` | RobotModel collision geometry → OpticalWorldRegistry builder |
 | `optics/scene.py` | OpticalFrameInputs + OpticalSceneSnapshot + CPU BVH payload |
 | `optics/execution.py` | CPU reference/BVH/direct-light optical executors |
-| `optics/device.py` | Device workload packing + device→host result staging/readback helpers |
+| `optics/device.py` | Device workload packing + canonical host-channel contract and staging/readback helpers |
 | `optics/device_channel.py` | Optical result channel materialization boundary for Warp arrays, Torch tensors, and host arrays |
 | `optics/device_bvh.py` | Device BVH layout, CPU-build upload, refit, and traversal support buffers |
 | `optics/device_scene.py` | L5C.0/L5C.1b device-resident registry geometry + derived world primitive update |
@@ -247,6 +248,10 @@ runtime-owner GPU smoke 验证 `PhysicsLabScenarioRuntime` context manager 可�
 | `tools/optical_pipeline_lab/timing.py` | Timing and CSV helpers for optical pipeline lab runs |
 | `benchmarks/bench_optical_device_scene.py` | L5C.1c AABB/BVH decision benchmark harness |
 | `benchmarks/robot_optical_scene.py` | Shared robot-like optical scene generator for benchmarks/examples |
+| `benchmarks/optical/cases.py` | P12.4 backend-independent canonical workloads and stable hashes |
+| `benchmarks/optical/schema.py` | P12.4 versioned R0/R1/R2/D/I/S gate and inventory validators |
+| `benchmarks/results/q54_p12_4/` | Frozen gate, verified architecture inventory, and terminal cleanup ledger |
+| `optics/output_contract.py` | Implementation-neutral optical profile and canonical host-payload contracts shared by executors, staging, delivery, and benchmarks |
 | `rendering/render_scene.py` | Backend-agnostic 场景描述 |
 | `rendering/scene_builder.py` | Physics state → RenderScene |
 | `rendering/shape_artists.py` | matplotlib 形状绘制 |
@@ -305,6 +310,7 @@ runtime-owner GPU smoke 验证 `PhysicsLabScenarioRuntime` context manager 可�
 | Q54 L5C.4 — CUDA LBVH build + GPU raygen/readback optimization | 🟡 |
 | Q54 Stage B/C1-C5 + cleanup — Optical Pipeline Lab source-driven foundation + video loop split | ✅ |
 | Q54 Stage J.0 — physics-published frame → Optical Pipeline Lab ray/camera render smoke | ✅ |
+| Q54 P12.4a0/a1 — architecture inventory + frozen canonical benchmark contract | ✅ |
 | 4 — 域随机化 | ⬜ |
 | 5 — Sim-to-Real | ⬜ |
 

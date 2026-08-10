@@ -13,6 +13,7 @@ from .device_bvh import DeviceOpticalBvh
 from .device_channel import channel_to_torch
 from .device_scene import DeviceOpticalSceneSnapshot
 from .execution import OpticalComputeResult, OpticalOutputProfile, normalize_output_profile
+from .output_contract import SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES
 
 try:  # pragma: no cover - exercised in CUDA extension environments.
     import torch
@@ -29,17 +30,7 @@ except Exception:  # pragma: no cover - keeps CPU-only imports working.
 _DIR_EPS = 1.0e-8
 _T_EPS = 1.0e-5
 _MAX_BVH_STACK = 32
-_SHADOW_TRAVERSAL_COUNTER_CHANNELS = (
-    "shadow_traversal_ray_count",
-    "shadow_traversal_directional_ray_count",
-    "shadow_traversal_point_ray_count",
-    "shadow_traversal_occluded_count",
-    "shadow_traversal_unoccluded_count",
-    "shadow_traversal_node_visit_count",
-    "shadow_traversal_leaf_visit_count",
-    "shadow_traversal_triangle_test_count",
-    "shadow_traversal_plane_test_count",
-)
+_SHADOW_TRAVERSAL_COUNTER_CHANNELS = SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES
 
 
 class CudaDeviceBvhOpticalExecutor:

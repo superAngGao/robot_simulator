@@ -2992,3 +2992,99 @@ That was too weak and was corrected before implementation. Historical Warp
 2.5-3.1 ms without shadows, depending on run/hardware. They are anchors only;
 the actual gate reruns Warp and CUDA on the same commit, device, workload, and
 measurement protocol.
+
+---
+
+## Session 2026-08-10 — Q54 P12.4a0/a1 Benchmark Contract Freeze
+
+P12.4 proposal v5 was approved before implementation. The first implementation
+slice deliberately freezes inputs and decision rules before adding runners or
+observing new Warp/CUDA comparison results.
+
+Settled boundaries:
+
+- `R0` measures native renderer work from an already-resident world scene and
+  fixed BVH topology/order.
+- `R1` adds native scene update, production acceleration update, allocation/
+  lease bookkeeping, and native completion.
+- `R2` is a fresh execution of all R1 work followed by payload-specific
+  delivery and its terminal output reclaim/drain endpoint. It is never computed
+  by adding separately sampled phase medians.
+- `D` is a delivery-only diagnostic and cannot decide backend replacement.
+- `I` measures the real physics-publication handoff separately.
+- `S` begins immediately before `GpuEngine.step(...)` and retains distinct
+  device-ready, host-ready, consumer-completion-recorded, logical slot-
+  reclaimable, final-payload-drain, and final-reclaim endpoints.
+
+The native comparison starts from independently prepared backend-native data:
+Warp arrays for Warp and Torch CUDA tensors for CUDA. This follows the flat,
+backend-native hot-path pattern documented for Newton and MuJoCo Warp in
+`REFERENCES.md`; production modules may not import the benchmark package, and
+the benchmark package may call but never copy production kernels.
+
+The only permitted mixed-runtime product boundary remains the audited
+Warp-on-CUDA physics producer to CUDA optical consumer handoff. It belongs to
+physics publication, not either optical renderer. The planned public binding
+waits the publication event and records a publication-owned done event on one
+stable external CUDA stream; it does not insert a Torch event into ring state.
+C0a/C0b must still specify and test duplicate/invalid/ordered completion,
+active-lease close rejection, destroyed/reused stream handles, ordinary
+exceptions, event-record failure, CUDA fatal failure, and logical-versus-
+physical event completion before dynamic CUDA product enablement.
+
+The pre-result absolute product floor is now explicit: the synchronous RGB8
+shipping row must keep both host-ready and slot-reclaimable p90 at or below
+33.333 ms, ordered asynchronous RGB8 must sustain at least 30 FPS through final
+reclaim, and CUDA must remain no slower than matched Warp (`ratio <= 1.00`) on
+every mandatory row. The coarse 30 FPS floor therefore cannot excuse a
+regression from a roughly 6 ms Warp path. Device memory has no invented numeric
+threshold: it is measured in a clean single-lane shipping process from before
+physics initialization through final reclaim, and OOM on a mandatory workload
+is a hard failure. A future numeric limit requires a separate owner decision
+bound to a concrete product workload and deployment profile before its results
+are inspected.
+
+The first a1 candidate also showed why benchmark schemas must derive payloads
+from the formal product channel contract instead of a second handwritten byte
+table. `DIRECT_LIGHT_FULL` delivers `material_index` in addition to the public
+geometry/RGB/intensity channels, and primary full/RGB/RGB8 delivery includes
+four scalar traversal/overflow diagnostics. The corrected gate records per-ray
+and scalar channel specs separately and counts every transferred array.
+
+A gate hash proves only that the configuration file did not change. It does
+not prove a sample executed that configuration. Raw results therefore carry a
+row-semantics hash plus explicit renderer, acceleration, profile, shadow,
+payload, ring-depth, channel/dtype/shape/byte, completion, and lifecycle
+evidence. Validation rejects a result that stops before the row's required
+reclaim/drain endpoint even when its timing values are otherwise well formed.
+
+The second pre-baseline review exposed two more ways that apparently strict
+contracts can drift. `DIRECT_LIGHT_FULL.guaranteed_channels` must agree with
+the payload contract, so `material_index` is now a real CPU/Warp/CUDA profile
+guarantee; the CPU path uses the same registry material ordinal as device
+scene construction. Channel names, host dtypes, shapes, and byte calculations
+now live only in `optics/output_contract.py`. Staging, delivery, profile
+filtering, and benchmark validation consume that module.
+
+Result provenance is also structural rather than conventional. A backend lane
+must produce an `ExecutionReceipt` from the request, arena/ring, observed
+channels, and endpoints it actually used. The paired coordinator may attach
+only sample identity and timing. A receipt has its own content hash, and the
+validator compares both that hash and the receipt's row-semantics hash. This
+does not implement the a2/a3 adapters, but it freezes their ownership boundary
+before any baseline can exist.
+
+A strict payload allowlist must preserve explicit diagnostic overlays. The
+first FULL allowlist correctly stopped executor-private channels from changing
+the primary payload, but accidentally dropped the nine opt-in shadow traversal
+counters. These counters now have their own formal
+`shadow_traversal_counters_v1` contract and are merged only when requested.
+This keeps primary comparison bytes stable while preventing diagnostic data
+from silently becoming `NaN` in downstream timing rows.
+
+The a0 cleanup ledger is intentionally two-terminal. Whichever optical backend
+wins, P12.4e removes the losing executor, lane, selector/fallback, tests, and
+decision-only coordinator. If Warp wins, `cuda_lbvh.py` survives only through
+its independent quantitative retention gate; a CUDA publication binding added
+solely for the losing consumer is removed. This prevents the comparison
+infrastructure from becoming a permanent dual-backend product architecture.

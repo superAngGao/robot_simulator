@@ -27,3 +27,11 @@ venv/
 *.png
 !docs/assets/**/*.png
 out/
+
+# Benchmark output is external by default; keep only reviewed Q54 gate inputs.
+benchmarks/results/**
+!benchmarks/results/q54_p12_4/
+benchmarks/results/q54_p12_4/**
+!benchmarks/results/q54_p12_4/gate.json
+!benchmarks/results/q54_p12_4/architecture_inventory.json
+!benchmarks/results/q54_p12_4/cleanup_ledger.json

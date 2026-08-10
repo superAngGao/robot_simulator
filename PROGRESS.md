@@ -1000,9 +1000,18 @@ Accepted boundary:
 
 Next milestone:
 
-- [ ] P12.4 — freeze the owner-defined product budget, add explicit
-      CPU/Warp/CUDA capability/parity/benchmark rows, measure warmed end-to-end
-      workloads, and make the default/retirement decision from that evidence.
+- [x] P12.4 proposal v5 approved; the relative, absolute, capability,
+      correctness, lifecycle, and mandatory-cleanup gates are the implementation
+      baseline.
+- [x] P12.4a0 — verified architecture inventory and two-terminal cleanup ledger
+      are tracked under `benchmarks/results/q54_p12_4/`.
+- [x] P12.4a1 — canonical workload definitions, stable case hashes, versioned
+      R0/R1/R2/D/I/S boundaries, one implementation-neutral per-ray/scalar
+      payload source, lane-produced hashed execution/lifecycle receipts, and the pre-result `gate.json`
+      are frozen with CPU schema tests. Memory is measured in clean single-lane
+      processes without an invented numeric threshold; mandatory OOM fails.
+- [ ] P12.4a2 — implement the durable single-lane benchmark core and independent
+      Warp/Torch native input preparation; do not add a product backend registry.
 - [ ] Do not delete the Warp optical oracle until CUDA passes the retained
       capability, correctness, stability, absolute product-budget, and
       no-slower-than-Warp gates on matched workloads.

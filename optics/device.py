@@ -9,12 +9,20 @@ import numpy as np
 
 from .device_channel import channel_to_numpy
 from .execution import OpticalComputeResult
+from .output_contract import (
+    DIRECT_LIGHT_FULL_PRIMARY_HOST_CHANNEL_SPECS,
+)
 from .registry import OpticalPlaneGeometry, OpticalTriangleMeshGeometry
 from .scene import OpticalSceneSnapshot, transform_directions, transform_points
 
 MAX_PRIMITIVES_PER_INSTANCE = 2**32
 DEVICE_FLOAT32_RECOMMENDED_SCENE_SCALE_M = 1000.0
 _BUILD_EPS_F32 = 1e-8
+
+
+_CANONICAL_HOST_DTYPE_BY_CHANNEL = {
+    spec.name: np.dtype(spec.dtype) for spec in DIRECT_LIGHT_FULL_PRIMARY_HOST_CHANNEL_SPECS
+}
 
 
 @dataclass(frozen=True)
@@ -171,12 +179,9 @@ def _stage_channel_to_host_native(value: object) -> np.ndarray:
 
 def _stage_channel_to_host(name: str, value: object) -> np.ndarray:
     array = channel_to_numpy(value)
-    if name == "hit_mask":
-        return np.asarray(array, dtype=bool).copy()
-    if name in ("range_m", "position_world", "normal_world", "rgb", "intensity"):
-        return np.asarray(array, dtype=np.float64).copy()
-    if name == "numeric_instance_id":
-        return np.asarray(array, dtype=np.int64).copy()
+    canonical_dtype = _CANONICAL_HOST_DTYPE_BY_CHANNEL.get(name)
+    if canonical_dtype is not None:
+        return np.asarray(array, dtype=canonical_dtype).copy()
     return np.asarray(array).copy()
 
 

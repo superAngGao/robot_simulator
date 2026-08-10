@@ -68,6 +68,7 @@ class OpticalInstanceSnapshot:
     numeric_instance_id: int
     geometry_id: str
     material: OpticalMaterialSpec
+    material_index: int
     geometry: OpticalPlaneGeometry | OpticalTriangleMeshGeometry
     X_world_geometry: SpatialTransform
     roles: frozenset[str]
@@ -151,8 +152,15 @@ class OpticalSceneCache:
 
         geometry = self.registry.geometry
         materials = self.registry.materials
+        material_index_by_id = {material_id: index for index, material_id in enumerate(materials)}
         instances = tuple(
-            self._build_instance_snapshot(instance, inputs, geometry, materials)
+            self._build_instance_snapshot(
+                instance,
+                inputs,
+                geometry,
+                materials,
+                material_index_by_id,
+            )
             for instance in self.registry.instances
         )
         acceleration_payload = None
@@ -173,6 +181,7 @@ class OpticalSceneCache:
         inputs: OpticalFrameInputs,
         geometry: dict[str, OpticalPlaneGeometry | OpticalTriangleMeshGeometry],
         materials: dict[str, OpticalMaterialSpec],
+        material_index_by_id: dict[str, int],
     ) -> OpticalInstanceSnapshot:
         X_body = _world_transform_for_instance(inputs, instance)
         X_world_geometry = X_body @ instance.X_body_geometry
@@ -183,6 +192,7 @@ class OpticalSceneCache:
             numeric_instance_id=instance.numeric_instance_id,
             geometry_id=instance.geometry_id,
             material=materials[instance.material_id],
+            material_index=material_index_by_id[instance.material_id],
             geometry=geometry[instance.geometry_id],
             X_world_geometry=X_world_geometry,
             roles=instance.roles,
