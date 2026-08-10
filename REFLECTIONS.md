@@ -2973,8 +2973,11 @@ Settled decisions:
 - Warp remains only as a temporary optical oracle/fallback while P12.4 proves
   retained capability parity, numerical correctness, stability, and the
   owner-defined absolute frame-time or throughput budget.
+- CUDA must also be no slower than Warp on matched retained workloads. The
+  absolute product budget is an additional gate, not a replacement for this
+  relative non-regression requirement.
 - CUDA must not become the default, and the Warp optical executor must not be
-  removed, on a relative “faster than Warp” result alone.
+  removed, until both performance gates pass.
 
 P12.4 therefore owns the evidence contract and the default/retirement decision.
 Compilation and warmup costs must be reported separately from steady-state
@@ -2982,3 +2985,10 @@ frames; end-to-end rows must include scene/acceleration preparation, raygen,
 first-hit, shade, synchronization, delivery/readback, and memory. If CUDA misses
 the gate, optimize CUDA-native ownership and synchronization directly rather
 than adding bridging work.
+
+The first P12.4 proposal treated relative Warp performance as informational.
+That was too weak and was corrected before implementation. Historical Warp
+1080p Go2 render-only measurements are roughly 5.5-6.3 ms with shadows and
+2.5-3.1 ms without shadows, depending on run/hardware. They are anchors only;
+the actual gate reruns Warp and CUDA on the same commit, device, workload, and
+measurement protocol.

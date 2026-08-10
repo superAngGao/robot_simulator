@@ -1004,7 +1004,8 @@ Next milestone:
       CPU/Warp/CUDA capability/parity/benchmark rows, measure warmed end-to-end
       workloads, and make the default/retirement decision from that evidence.
 - [ ] Do not delete the Warp optical oracle until CUDA passes the retained
-      capability, correctness, stability, and absolute product-budget gates.
+      capability, correctness, stability, absolute product-budget, and
+      no-slower-than-Warp gates on matched workloads.
 
 ---
 

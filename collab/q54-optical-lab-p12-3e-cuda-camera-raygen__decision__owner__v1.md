@@ -72,9 +72,10 @@ implementation note.
 - decide whether CUDA becomes default for a validated workload;
 - define the milestone for freezing and later deleting the Warp optical path.
 
-The relative statement “CUDA is faster than Warp” is not sufficient by itself.
-CUDA must meet the absolute product budget and all retained capability and
-correctness requirements.
+CUDA must be no slower than Warp on matched retained workloads. It must also
+meet the absolute product budget and all retained capability and correctness
+requirements. Neither the relative nor absolute performance gate replaces the
+other.
 
 ## Out of Scope
 
