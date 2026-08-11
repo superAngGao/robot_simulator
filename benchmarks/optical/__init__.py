@@ -8,6 +8,26 @@ from .cases import (
     cases_by_id,
     get_case,
 )
+from .native import (
+    NATIVE_INPUT_SCHEMA_VERSION,
+    CanonicalNativeInput,
+    CudaPreparedNativeInput,
+    NativeInputManifest,
+    NativeReadinessEvidence,
+    WarpPreparedNativeInput,
+    assert_independent_native_inputs,
+    certify_native_readiness,
+    prepare_cuda_native_input,
+    prepare_warp_native_input,
+    validate_prepared_native_input,
+)
+from .runner import (
+    SINGLE_LANE_RUNNER_VERSION,
+    LaneSampleRequest,
+    ResolvedLaneSample,
+    SingleLaneSampleRunner,
+    SubmittedLaneSample,
+)
 from .schema import (
     BOUNDARY_VERSIONS,
     CLEANUP_SCHEMA_VERSION,
@@ -27,6 +47,13 @@ from .schema import (
     validate_repository_inventory,
     validate_result_record,
 )
+from .timing import (
+    FORBIDDEN_TIMED_OPERATIONS,
+    NATIVE_TIMING_CONTRACT_VERSION,
+    TimedBoundaryViolation,
+    assert_operation_allowed,
+    native_timed_submission,
+)
 
 __all__ = [
     "BOUNDARY_VERSIONS",
@@ -35,11 +62,18 @@ __all__ = [
     "EXECUTION_RECEIPT_REQUIRED_FIELDS",
     "GATE_SCHEMA_VERSION",
     "INVENTORY_SCHEMA_VERSION",
+    "NATIVE_INPUT_SCHEMA_VERSION",
+    "NATIVE_TIMING_CONTRACT_VERSION",
     "PUBLICATION_BINDING_CONTRACT_VERSION",
     "RESULT_RECORD_REQUIRED_FIELDS",
     "RESULT_SCHEMA_VERSION",
     "ExecutionReceipt",
+    "CanonicalNativeInput",
+    "CudaPreparedNativeInput",
+    "NativeInputManifest",
+    "NativeReadinessEvidence",
     "ObservedChannel",
+    "WarpPreparedNativeInput",
     "CanonicalOpticalCase",
     "canonical_gate_sha256",
     "canonical_execution_receipt_sha256",
@@ -48,8 +82,22 @@ __all__ = [
     "case_hashes",
     "cases_by_id",
     "get_case",
+    "assert_independent_native_inputs",
+    "assert_operation_allowed",
+    "certify_native_readiness",
+    "FORBIDDEN_TIMED_OPERATIONS",
+    "LaneSampleRequest",
     "load_frozen_gate",
+    "native_timed_submission",
+    "prepare_cuda_native_input",
+    "prepare_warp_native_input",
+    "ResolvedLaneSample",
+    "SINGLE_LANE_RUNNER_VERSION",
+    "SingleLaneSampleRunner",
+    "SubmittedLaneSample",
+    "TimedBoundaryViolation",
     "validate_frozen_gate",
+    "validate_prepared_native_input",
     "validate_result_record",
     "validate_repository_inventory",
 ]

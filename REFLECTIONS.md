@@ -3088,3 +3088,46 @@ decision-only coordinator. If Warp wins, `cuda_lbvh.py` survives only through
 its independent quantitative retention gate; a CUDA publication binding added
 solely for the losing consumer is removed. This prevents the comparison
 infrastructure from becoming a permanent dual-backend product architecture.
+
+## Session 2026-08-11 — Q54 P12.4a2 Durable Single-Lane Benchmark Core
+
+P12.4a2 turns the approved comparison rules into reusable infrastructure but
+still does not implement either real renderer lane or a paired selector. A
+canonical logical input is an immutable set of flat, contiguous host arrays
+with explicit semantic names and content/topology hashes. Warp and Torch each
+allocate directly from that source into their own CUDA-owned buffers. Neither
+input is a view of the other, and GPU tests replace the public Warp/Torch and
+DLPack bridge functions with failures while both preparation paths run.
+
+Preparation is intentionally outside every measurement. Direct value, dtype,
+shape, layout, content-hash, and topology-hash validation also stages outside
+timing. This follows the Newton/MJWarp model-state guidance recorded in
+`REFERENCES.md`: keep flat SoA buffers native to the owning runtime and make
+phase boundaries explicit rather than hiding conversions in the hot path.
+
+Device allocation alone is not a valid native-ready boundary. A lane must also
+produce immutable readiness evidence showing its producer event, direct input
+validation, allocation, compilation, and the frozen warmup count completed.
+The single-lane runner rejects a sample before submission when that evidence is
+missing or short. The lane then submits inside a context-marked timed region
+and returns a pending native completion; event resolution, host waiting, and
+receipt construction happen only after that region exits.
+
+The context guard centralizes the invalidating operations a3 lanes must
+instrument: allocation, compilation, host upload/materialization, global
+device synchronization, cross-lane waits, and Warp/Torch bridges. It cannot
+magically observe arbitrary runtime calls, so a3 still owes entry-point
+injection tests for each concrete lane. The durable core makes those tests one
+contract instead of relying on reviewer memory.
+
+Every result receipt now embeds and hashes its native-readiness evidence and
+binds the input manifest, content, and topology. The coordinator still owns
+only run/repeat/sample identity and timing; it cannot repair a lane receipt by
+copying the gate's expected execution fields. Artifacts use canonical JSON or
+JSONL, atomic replacement, root-scoped paths, and content hashes. No baseline
+was observed in this slice, and no product module imports the benchmark code.
+
+The cleanup ledger classifies cases, schema, native preparation, timing,
+single-lane execution, and artifacts as durable whichever backend wins. The
+future paired coordinator and losing renderer lane remain separate temporary
+surfaces that P12.4e must remove.

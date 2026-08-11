@@ -114,19 +114,23 @@
       "must_resolve_by": "P12.4e"
     },
     {
-      "entry_id": "paired_selection_infrastructure",
+      "entry_id": "durable_single_lane_benchmark_core",
       "paths": [
         "benchmarks/optical/cases.py",
-        "benchmarks/optical/schema.py"
+        "benchmarks/optical/schema.py",
+        "benchmarks/optical/native.py",
+        "benchmarks/optical/timing.py",
+        "benchmarks/optical/runner.py",
+        "benchmarks/optical/artifacts.py"
       ],
       "symbols": {},
       "cuda_selected": {
-        "action": "collapse",
-        "acceptance": "keep canonical cases/schema and the CUDA regression lane; delete the losing lane and paired decision-only coordinator"
+        "action": "retain",
+        "acceptance": "keep canonical cases, contracts, independent native preparation, single-lane runner, artifacts, and the selected CUDA regression lane; no paired selector remains in this surface"
       },
       "warp_selected": {
-        "action": "collapse",
-        "acceptance": "keep canonical cases/schema and the Warp regression lane; delete the losing lane and paired decision-only coordinator"
+        "action": "retain",
+        "acceptance": "keep canonical cases, contracts, independent native preparation, single-lane runner, artifacts, and the selected Warp regression lane; no paired selector remains in this surface"
       },
       "must_resolve_by": "P12.4e"
     },

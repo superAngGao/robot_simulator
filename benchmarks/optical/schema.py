@@ -17,9 +17,11 @@ from optics.output_contract import (
 )
 
 from .cases import CASE_SCHEMA_VERSION, case_hashes, cases_by_id
+from .native import NATIVE_INPUT_SCHEMA_VERSION, NativeReadinessEvidence
+from .timing import FORBIDDEN_TIMED_OPERATIONS, NATIVE_TIMING_CONTRACT_VERSION
 
-GATE_SCHEMA_VERSION = "q54.p12.4.gate.v3"
-RESULT_SCHEMA_VERSION = "q54.p12.4.result.v3"
+GATE_SCHEMA_VERSION = "q54.p12.4.gate.v4"
+RESULT_SCHEMA_VERSION = "q54.p12.4.result.v4"
 ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v1"
 INVENTORY_SCHEMA_VERSION = "q54.p12.4.architecture-inventory.v1"
 CLEANUP_SCHEMA_VERSION = "q54.p12.4.cleanup-ledger.v1"
@@ -136,6 +138,7 @@ EXPECTED_RECEIPT_PROVENANCE = {
     ],
     "coordinator_must_not_populate": [
         "execution",
+        "native_input",
         "observed_payload",
         "lifecycle",
         "counters",
@@ -147,6 +150,29 @@ EXPECTED_RECEIPT_PROVENANCE = {
         "wrong_actual_ring_depth_is_visible_in_receipt",
         "missing_actual_endpoint_is_visible_in_receipt",
         "gate_expectations_are_not_copied_as_observations",
+    ],
+}
+
+EXPECTED_NATIVE_INPUT_CONTRACT = {
+    "schema_version": NATIVE_INPUT_SCHEMA_VERSION,
+    "timing_contract_version": NATIVE_TIMING_CONTRACT_VERSION,
+    "logical_source": "immutable_canonical_host_arrays",
+    "warp_preparation": "direct_host_to_warp_cuda_allocation",
+    "cuda_preparation": "direct_host_to_torch_cuda_allocation",
+    "allocation_rule": "independent_runtime_owned_allocations",
+    "native_ready_requirements": [
+        "device_resident",
+        "dtype_shape_layout_semantics_validated",
+        "producer_ready_event_complete",
+        "compile_warmup_and_allocation_complete",
+    ],
+    "timed_forbidden_operations": sorted(FORBIDDEN_TIMED_OPERATIONS),
+    "receipt_fields": [
+        "native_input_manifest_sha256",
+        "native_input_content_sha256",
+        "topology_sha256",
+        "native_readiness",
+        "native_readiness_sha256",
     ],
 }
 
@@ -185,6 +211,11 @@ EXECUTION_RECEIPT_REQUIRED_FIELDS = frozenset(
         "row_id",
         "case_id",
         "case_sha256",
+        "native_input_manifest_sha256",
+        "native_input_content_sha256",
+        "topology_sha256",
+        "native_readiness",
+        "native_readiness_sha256",
         "boundary",
         "boundary_version",
         "lane",
@@ -260,6 +291,11 @@ class ExecutionReceipt:
     row_id: str
     case_id: str
     case_sha256: str
+    native_input_manifest_sha256: str
+    native_input_content_sha256: str
+    topology_sha256: str
+    native_readiness: NativeReadinessEvidence
+    native_readiness_sha256: str
     boundary: str
     boundary_version: str
     lane: str
@@ -317,6 +353,9 @@ class ExecutionReceipt:
             "row_id",
             "case_id",
             "case_sha256",
+            "native_input_manifest_sha256",
+            "native_input_content_sha256",
+            "topology_sha256",
             "boundary",
             "boundary_version",
             "lane",
@@ -330,12 +369,20 @@ class ExecutionReceipt:
         )
         if any(not isinstance(payload.get(name), str) for name in string_fields):
             raise ValueError("execution receipt identity and execution fields must be strings")
+        readiness = NativeReadinessEvidence.from_payload(payload.get("native_readiness"))
+        if payload.get("native_readiness_sha256") != readiness.sha256:
+            raise ValueError("native readiness SHA-256 does not match its evidence content")
         return cls(
             producer=payload["producer"],
             row_semantics_sha256=payload["row_semantics_sha256"],
             row_id=payload["row_id"],
             case_id=payload["case_id"],
             case_sha256=payload["case_sha256"],
+            native_input_manifest_sha256=payload["native_input_manifest_sha256"],
+            native_input_content_sha256=payload["native_input_content_sha256"],
+            topology_sha256=payload["topology_sha256"],
+            native_readiness=readiness,
+            native_readiness_sha256=payload["native_readiness_sha256"],
             boundary=payload["boundary"],
             boundary_version=payload["boundary_version"],
             lane=payload["lane"],
@@ -363,6 +410,11 @@ class ExecutionReceipt:
             "row_id": self.row_id,
             "case_id": self.case_id,
             "case_sha256": self.case_sha256,
+            "native_input_manifest_sha256": self.native_input_manifest_sha256,
+            "native_input_content_sha256": self.native_input_content_sha256,
+            "topology_sha256": self.topology_sha256,
+            "native_readiness": self.native_readiness.to_payload(),
+            "native_readiness_sha256": self.native_readiness_sha256,
             "boundary": self.boundary,
             "boundary_version": self.boundary_version,
             "lane": self.lane,
@@ -445,6 +497,7 @@ def canonical_row_semantics_sha256(row: Mapping[str, Any], gate: Mapping[str, An
         "lane_bindings": gate.get("lane_bindings"),
         "payload_channel_contracts": gate.get("payload_channel_contracts"),
         "diagnostic_overlay_contracts": gate.get("diagnostic_overlay_contracts"),
+        "native_input_contract": gate.get("native_input_contract"),
     }
     encoded = json.dumps(
         payload,
@@ -500,11 +553,30 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
         expected_case_hash = gate["cases"][row["case_id"]]["sha256"]
         if receipt.case_sha256 != expected_case_hash:
             errors.append("receipt case_sha256 does not match the frozen gate")
+        for field in (
+            "native_input_manifest_sha256",
+            "native_input_content_sha256",
+            "topology_sha256",
+            "native_readiness_sha256",
+        ):
+            if not _sha256_text(getattr(receipt, field)):
+                errors.append(f"receipt {field} must be a lowercase SHA-256 digest")
         expected_row_hash = canonical_row_semantics_sha256(row, gate)
         if receipt.row_semantics_sha256 != expected_row_hash:
             errors.append("receipt row_semantics_sha256 does not match its gate row")
 
         lane = receipt.lane
+        readiness = receipt.native_readiness
+        if readiness.backend != lane:
+            errors.append("receipt native readiness backend does not match its lane")
+        if readiness.manifest_sha256 != receipt.native_input_manifest_sha256:
+            errors.append("receipt native readiness manifest does not match input provenance")
+        if readiness.content_sha256 != receipt.native_input_content_sha256:
+            errors.append("receipt native readiness content does not match input provenance")
+        if readiness.topology_sha256 != receipt.topology_sha256:
+            errors.append("receipt native readiness topology does not match input provenance")
+        if readiness.warmup_frames_completed < int(gate["measurement"]["warmup_frames"]):
+            errors.append("receipt native readiness does not prove the frozen warmup count")
         lane_binding = gate["lane_bindings"].get(lane, {}) if isinstance(lane, str) else {}
         expected_renderer = lane_binding.get("renderer_id")
         acceleration_class = row.get("acceleration_class")
@@ -562,6 +634,14 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
         errors.append("result profile_mode is invalid")
     if record.get("profile_mode") == "primary_unprofiled" and record.get("profile_phases_ms"):
         errors.append("primary_unprofiled result must not contain profile phase timings")
+    artifact_hashes = record.get("artifact_hashes")
+    if not isinstance(artifact_hashes, Mapping):
+        errors.append("result artifact_hashes must be an object")
+    elif any(
+        not isinstance(name, str) or not name or not _sha256_text(digest)
+        for name, digest in artifact_hashes.items()
+    ):
+        errors.append("result artifact_hashes must map non-empty names to SHA-256 digests")
     gate_sha256 = record.get("gate_sha256")
     if not _sha256_text(gate_sha256):
         errors.append("result gate_sha256 must be a lowercase SHA-256 digest")
@@ -681,6 +761,8 @@ def validate_frozen_gate(payload: Mapping[str, Any]) -> None:
         errors.append("c0_blocking_acceptance does not match the approved lifecycle contract")
     if payload.get("receipt_provenance") != EXPECTED_RECEIPT_PROVENANCE:
         errors.append("receipt_provenance does not freeze lane-generated evidence ownership")
+    if payload.get("native_input_contract") != EXPECTED_NATIVE_INPUT_CONTRACT:
+        errors.append("native_input_contract does not match the durable a2 contract")
 
     continuation = payload.get("continuation")
     expected_continuation = {

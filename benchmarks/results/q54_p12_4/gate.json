@@ -1,9 +1,9 @@
 {
-  "schema_version": "q54.p12.4.gate.v3",
-  "result_schema_version": "q54.p12.4.result.v3",
+  "schema_version": "q54.p12.4.gate.v4",
+  "result_schema_version": "q54.p12.4.result.v4",
   "case_schema_version": "q54.p12.4.case.v1",
   "status": "frozen",
-  "frozen_at": "2026-08-10T19:57:05+08:00",
+  "frozen_at": "2026-08-11T14:20:12+08:00",
   "frozen_before_result_inspection": true,
   "approved_proposal_commit": "46a5d33",
   "owner_decisions": [
@@ -276,6 +276,7 @@
     ],
     "coordinator_must_not_populate": [
       "execution",
+      "native_input",
       "observed_payload",
       "lifecycle",
       "counters",
@@ -287,6 +288,37 @@
       "wrong_actual_ring_depth_is_visible_in_receipt",
       "missing_actual_endpoint_is_visible_in_receipt",
       "gate_expectations_are_not_copied_as_observations"
+    ]
+  },
+  "native_input_contract": {
+    "schema_version": "q54.p12.4.native-input.v1",
+    "timing_contract_version": "q54.p12.4.native-timing.v1",
+    "logical_source": "immutable_canonical_host_arrays",
+    "warp_preparation": "direct_host_to_warp_cuda_allocation",
+    "cuda_preparation": "direct_host_to_torch_cuda_allocation",
+    "allocation_rule": "independent_runtime_owned_allocations",
+    "native_ready_requirements": [
+      "device_resident",
+      "dtype_shape_layout_semantics_validated",
+      "producer_ready_event_complete",
+      "compile_warmup_and_allocation_complete"
+    ],
+    "timed_forbidden_operations": [
+      "allocation",
+      "compile",
+      "cross_lane_wait",
+      "global_device_synchronize",
+      "host_materialization",
+      "host_upload",
+      "torch_to_warp_bridge",
+      "warp_to_torch_bridge"
+    ],
+    "receipt_fields": [
+      "native_input_manifest_sha256",
+      "native_input_content_sha256",
+      "topology_sha256",
+      "native_readiness",
+      "native_readiness_sha256"
     ]
   },
   "mandatory_rows": [

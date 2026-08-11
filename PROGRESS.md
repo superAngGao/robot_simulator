@@ -1010,8 +1010,14 @@ Next milestone:
       payload source, lane-produced hashed execution/lifecycle receipts, and the pre-result `gate.json`
       are frozen with CPU schema tests. Memory is measured in clean single-lane
       processes without an invented numeric threshold; mandatory OOM fails.
-- [ ] P12.4a2 — implement the durable single-lane benchmark core and independent
-      Warp/Torch native input preparation; do not add a product backend registry.
+- [x] P12.4a2 — durable single-lane submit/resolve core, independently allocated
+      Warp/Torch native input preparation, direct untimed parity validation,
+      compile/warmup readiness evidence, timed-operation guards, lane-bound
+      input/topology receipt hashes, and atomic canonical artifacts. No product
+      backend registry or paired selector was added.
+- [ ] P12.4a3 — implement real Warp/CUDA R0-R2 lanes and acceleration attribution
+      on top of the a2 contracts; do not inspect replacement baselines until the
+      a4 comparator-validity review approves the paired coordinator.
 - [ ] Do not delete the Warp optical oracle until CUDA passes the retained
       capability, correctness, stability, absolute product-budget, and
       no-slower-than-Warp gates on matched workloads.

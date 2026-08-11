@@ -1,7 +1,7 @@
 # Robot Simulator — Project Manifest
 
 > 面向具身智能研究的多物理仿真平台——多物理统一耦合、GPU 原生、渲染与合成数据生成、从第一性原理出发的 API 设计。
-> Last updated: 2026-08-10 (Q54 P12.4a0/a1 benchmark contract freeze)
+> Last updated: 2026-08-11 (Q54 P12.4a2 durable benchmark core)
 
 ## 一句话
 
@@ -250,6 +250,10 @@ runtime-owner GPU smoke 验证 `PhysicsLabScenarioRuntime` context manager 可�
 | `benchmarks/robot_optical_scene.py` | Shared robot-like optical scene generator for benchmarks/examples |
 | `benchmarks/optical/cases.py` | P12.4 backend-independent canonical workloads and stable hashes |
 | `benchmarks/optical/schema.py` | P12.4 versioned R0/R1/R2/D/I/S gate and inventory validators |
+| `benchmarks/optical/native.py` | Independent Warp-array/Torch-tensor input preparation, direct parity validation, and readiness evidence |
+| `benchmarks/optical/timing.py` | Native timed-submission guard and forbidden-operation contract |
+| `benchmarks/optical/runner.py` | Backend-neutral single-lane submit/resolve runner with lane-owned receipts |
+| `benchmarks/optical/artifacts.py` | Canonical atomic JSON/JSONL artifact writer and content manifest |
 | `benchmarks/results/q54_p12_4/` | Frozen gate, verified architecture inventory, and terminal cleanup ledger |
 | `optics/output_contract.py` | Implementation-neutral optical profile and canonical host-payload contracts shared by executors, staging, delivery, and benchmarks |
 | `rendering/render_scene.py` | Backend-agnostic 场景描述 |
@@ -311,6 +315,7 @@ runtime-owner GPU smoke 验证 `PhysicsLabScenarioRuntime` context manager 可�
 | Q54 Stage B/C1-C5 + cleanup — Optical Pipeline Lab source-driven foundation + video loop split | ✅ |
 | Q54 Stage J.0 — physics-published frame → Optical Pipeline Lab ray/camera render smoke | ✅ |
 | Q54 P12.4a0/a1 — architecture inventory + frozen canonical benchmark contract | ✅ |
+| Q54 P12.4a2 — durable single-lane benchmark core + independent native inputs | ✅ |
 | 4 — 域随机化 | ⬜ |
 | 5 — Sim-to-Real | ⬜ |
 

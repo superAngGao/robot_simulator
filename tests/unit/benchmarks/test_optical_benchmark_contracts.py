@@ -9,6 +9,7 @@ import pytest
 from benchmarks.optical import (
     BOUNDARY_VERSIONS,
     ExecutionReceipt,
+    NativeReadinessEvidence,
     ObservedChannel,
     canonical_cases,
     canonical_execution_receipt_sha256,
@@ -122,6 +123,26 @@ def test_result_record_rejects_wrong_execution_semantics(field, wrong_value, mes
     _replace_receipt(record, **{field: wrong_value})
 
     with pytest.raises(ValueError, match=message):
+        validate_result_record(record, gate)
+
+
+def test_result_record_rejects_incomplete_native_readiness_and_bad_artifact_hash():
+    gate = load_frozen_gate()
+    record = _valid_r0_result(gate)
+    readiness_payload = copy.deepcopy(record["receipt"]["native_readiness"])
+    readiness_payload["warmup_frames_completed"] = gate["measurement"]["warmup_frames"] - 1
+    readiness = NativeReadinessEvidence.from_payload(readiness_payload)
+    _replace_receipt(
+        record,
+        native_readiness=readiness_payload,
+        native_readiness_sha256=readiness.sha256,
+    )
+    with pytest.raises(ValueError, match="warmup"):
+        validate_result_record(record, gate)
+
+    record = _valid_r0_result(gate)
+    record["artifact_hashes"] = {"native_input": "not-a-digest"}
+    with pytest.raises(ValueError, match="artifact_hashes"):
         validate_result_record(record, gate)
 
 
@@ -275,7 +296,7 @@ def test_gate_freezes_lane_receipt_provenance_before_runner_implementation():
         "sample_index",
         "timing",
     ]
-    assert {"execution", "observed_payload", "lifecycle"}.issubset(
+    assert {"execution", "native_input", "observed_payload", "lifecycle"}.issubset(
         provenance["coordinator_must_not_populate"]
     )
     assert provenance["a2_a3_lane_test_requirements"]
@@ -356,12 +377,30 @@ def _valid_result_record(gate, row):
     lane = "cuda"
     binding = gate["lane_bindings"][lane]
     per_ray, scalar, observed_bytes = _observed_payload(row)
+    readiness = NativeReadinessEvidence(
+        schema_version="q54.p12.4.native-input.v1",
+        backend="cuda",
+        device_ordinal=0,
+        manifest_sha256="1" * 64,
+        content_sha256="2" * 64,
+        topology_sha256="3" * 64,
+        producer_ready_event_complete=True,
+        direct_validation_complete=True,
+        allocation_complete=True,
+        compile_complete=True,
+        warmup_frames_completed=10,
+    )
     receipt = ExecutionReceipt(
         producer="cuda_lane",
         row_semantics_sha256=canonical_row_semantics_sha256(row, gate),
         row_id=row["row_id"],
         case_id=row["case_id"],
         case_sha256=gate["cases"][row["case_id"]]["sha256"],
+        native_input_manifest_sha256="1" * 64,
+        native_input_content_sha256="2" * 64,
+        topology_sha256="3" * 64,
+        native_readiness=readiness,
+        native_readiness_sha256=readiness.sha256,
         boundary=row["boundary"],
         boundary_version=gate["boundaries"][row["boundary"]],
         lane=lane,
@@ -383,7 +422,7 @@ def _valid_result_record(gate, row):
     )
     receipt_payload = receipt.to_payload()
     return {
-        "schema_version": "q54.p12.4.result.v3",
+        "schema_version": "q54.p12.4.result.v4",
         "gate_sha256": canonical_gate_sha256(gate),
         "run_id": "unit-test",
         "repeat_index": 0,
