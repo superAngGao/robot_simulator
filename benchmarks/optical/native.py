@@ -169,9 +169,7 @@ class CanonicalNativeInput:
         array_payload = [manifest.to_payload() for manifest in manifests]
         content_sha256 = _sha256_payload(array_payload)
         manifests_by_name = {manifest.name: manifest for manifest in manifests}
-        topology_sha256 = _sha256_payload(
-            [manifests_by_name[name].to_payload() for name in topology_names]
-        )
+        topology_sha256 = _sha256_payload([manifests_by_name[name].to_payload() for name in topology_names])
         manifest = NativeInputManifest(
             schema_version=NATIVE_INPUT_SCHEMA_VERSION,
             case_id=case.case_id,

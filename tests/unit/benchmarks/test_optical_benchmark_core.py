@@ -8,12 +8,17 @@ import numpy as np
 import pytest
 
 from benchmarks.optical.artifacts import BenchmarkArtifactWriter
+from benchmarks.optical.eligibility import EntryPointAudit, evaluate_lane_eligibility
 from benchmarks.optical.native import (
     CanonicalNativeInput,
     NativeInputValidationReport,
     NativeReadinessEvidence,
     WarpPreparedNativeInput,
     certify_native_readiness,
+)
+from benchmarks.optical.receipts import (
+    ACCELERATION_RECEIPT_SCHEMA_VERSION,
+    AccelerationReceipt,
 )
 from benchmarks.optical.runner import (
     LaneSampleRequest,
@@ -22,14 +27,19 @@ from benchmarks.optical.runner import (
 )
 from benchmarks.optical.schema import (
     ExecutionReceipt,
+    canonical_input_provenance_sha256,
     canonical_row_semantics_sha256,
     load_frozen_gate,
 )
 from benchmarks.optical.timing import (
+    OPERATION_TRACE_SCHEMA_VERSION,
+    RuntimeOperationRecord,
+    RuntimeOperationTraceEvidence,
     TimedBoundaryViolation,
     active_timed_boundary,
     assert_operation_allowed,
     native_timed_submission,
+    record_runtime_operation,
 )
 
 
@@ -101,7 +111,7 @@ def test_single_lane_runner_submits_inside_timing_and_resolves_outside():
     )
     trace: list[tuple[str, bool]] = []
     lane = _FakeLane(gate=gate, row=row, prepared=prepared, trace=trace)
-    runner = SingleLaneSampleRunner(gate)
+    runner = SingleLaneSampleRunner(gate, execution_phase="P12.4a3b")
 
     record = runner.run_sample(
         row_id=row["row_id"],
@@ -131,7 +141,7 @@ def test_single_lane_runner_rejects_lane_fabricated_native_provenance():
     lane = _FakeLane(gate=gate, row=row, prepared=prepared, trace=[], bad_manifest=True)
 
     with pytest.raises(ValueError, match="prepared input manifest"):
-        SingleLaneSampleRunner(gate).run_sample(
+        SingleLaneSampleRunner(gate, execution_phase="P12.4a3b").run_sample(
             row_id=row["row_id"],
             lane=lane,
             prepared=prepared,
@@ -153,7 +163,7 @@ def test_single_lane_runner_allows_ordered_submit_then_drain_and_rejects_double_
     readiness = _readiness(prepared)
     trace: list[tuple[str, bool]] = []
     lane = _FakeLane(gate=gate, row=row, prepared=prepared, trace=trace)
-    runner = SingleLaneSampleRunner(gate)
+    runner = SingleLaneSampleRunner(gate, execution_phase="P12.4a3b")
 
     submitted = [
         runner.submit_sample(
@@ -218,7 +228,7 @@ def test_single_lane_runner_rejects_incomplete_warmup_evidence():
     )
 
     with pytest.raises(ValueError, match="warmup frame count"):
-        SingleLaneSampleRunner(gate).run_sample(
+        SingleLaneSampleRunner(gate, execution_phase="P12.4a3b").run_sample(
             row_id=row["row_id"],
             lane=_FakeLane(gate=gate, row=row, prepared=prepared, trace=[]),
             prepared=prepared,
@@ -240,7 +250,7 @@ def test_single_lane_runner_does_not_copy_wrong_actual_request_from_gate():
     lane = _FakeLane(gate=gate, row=row, prepared=prepared, trace=[], wrong_shadows=True)
 
     with pytest.raises(ValueError, match="receipt shadows does not match"):
-        SingleLaneSampleRunner(gate).run_sample(
+        SingleLaneSampleRunner(gate, execution_phase="P12.4a3b").run_sample(
             row_id=row["row_id"],
             lane=lane,
             prepared=prepared,
@@ -343,25 +353,93 @@ class _FakeLane:
     def submit_sample(self, *, row, prepared, request):
         del request
         self.trace.append(("submit", active_timed_boundary() is not None))
+        for operation in _required_operations(row):
+            record_runtime_operation(operation, entry_point=f"unit.warp.{operation}")
+        operation_trace = RuntimeOperationTraceEvidence(
+            schema_version=OPERATION_TRACE_SCHEMA_VERSION,
+            row_id=row["row_id"],
+            lane=self.lane_id,
+            boundary=row["boundary"],
+            records=tuple(
+                RuntimeOperationRecord(
+                    sequence=index,
+                    operation=operation,
+                    entry_point=f"unit.warp.{operation}",
+                )
+                for index, operation in enumerate(_required_operations(row))
+            ),
+        )
         binding = self.gate["lane_bindings"][self.lane_id]
+        acceleration_id = binding["acceleration_by_class"][row["acceleration_class"]]
+        contract = self.gate["acceleration_contracts"]["by_lane_and_identity"][self.lane_id][acceleration_id]
+        classification = contract["operation_classification"]
+        scene_count, refit_count, rebuild_count = {
+            "none": (0, 0, 0),
+            "refit": (1, 1, 0),
+            "rebuild": (1, 0, 1),
+        }[classification]
+        eligibility = self.preflight_sample(row=row, prepared=prepared)
+        acceleration = AccelerationReceipt(
+            acceleration_schema_version=ACCELERATION_RECEIPT_SCHEMA_VERSION,
+            acceleration_id=acceleration_id,
+            workload_class=row["acceleration_class"],
+            topology_origin=contract["topology_origin"],
+            topology_lifetime=contract["topology_lifetime"],
+            topology_validation_sha256=prepared.manifest.topology_sha256,
+            timed_scene_update_operation=contract["timed_scene_update_operation"],
+            timed_acceleration_operation=contract["timed_acceleration_operation"],
+            operation_classification=classification,
+            scene_update_count=scene_count,
+            refit_count=refit_count,
+            rebuild_count=rebuild_count,
+            primitive_count=1,
+            node_count=1,
+            leaf_count=1,
+            scene_update_kernel_launch_count=0 if classification == "none" else 1,
+            acceleration_kernel_launch_count=0 if classification == "none" else 1,
+            device_allocation_count=0,
+            host_materialization_count=0,
+            host_upload_bytes=0,
+            device_to_host_bytes=0,
+            global_synchronize_count=0,
+            bridge_creation_count=0,
+            completion_event_recorded=True,
+            instrumentation_trace_sha256=operation_trace.sha256,
+        )
         receipt = ExecutionReceipt(
             producer="warp_lane",
             row_semantics_sha256=canonical_row_semantics_sha256(row, self.gate),
             row_id=row["row_id"],
             case_id=row["case_id"],
             case_sha256=self.gate["cases"][row["case_id"]]["sha256"],
-            native_input_manifest_sha256=(
-                "f" * 64 if self.bad_manifest else prepared.manifest.sha256
-            ),
+            native_input_manifest_sha256=("f" * 64 if self.bad_manifest else prepared.manifest.sha256),
             native_input_content_sha256=prepared.manifest.content_sha256,
             topology_sha256=prepared.manifest.topology_sha256,
             native_readiness=self.readiness,
             native_readiness_sha256=self.readiness_sha256,
+            input_contract=row["input_contract"],
+            input_provenance_sha256=canonical_input_provenance_sha256(
+                input_contract=row["input_contract"],
+                case_id=row["case_id"],
+                native_input_manifest_sha256=prepared.manifest.sha256,
+                native_input_content_sha256=prepared.manifest.content_sha256,
+                topology_sha256=prepared.manifest.topology_sha256,
+                asset_manifest_sha256=eligibility.asset_manifest_sha256,
+                shipping_publication_sha256=None,
+            ),
+            eligibility=eligibility,
+            eligibility_sha256=eligibility.sha256,
+            operation_trace=operation_trace,
+            operation_trace_sha256=operation_trace.sha256,
+            acceleration=acceleration,
+            acceleration_sha256=acceleration.sha256,
+            shipping_publication=None,
+            shipping_publication_sha256=None,
             boundary=row["boundary"],
             boundary_version=self.gate["boundaries"][row["boundary"]],
             lane=self.lane_id,
             renderer_id=binding["renderer_id"],
-            acceleration_id=binding["acceleration_by_class"][row["acceleration_class"]],
+            acceleration_id=acceleration_id,
             output_profile=row["output_profile"],
             shadows=not row["shadows"] if self.wrong_shadows else row["shadows"],
             payload=row.get("payload", "none"),
@@ -382,3 +460,27 @@ class _FakeLane:
             artifact_hashes={},
         )
         return _FakePending(sample=sample, trace=self.trace)
+
+    def preflight_sample(self, *, row, prepared):
+        del prepared
+        return evaluate_lane_eligibility(
+            row=row,
+            lane="warp",
+            entry_point_audits=tuple(
+                EntryPointAudit(
+                    operation=operation,
+                    entry_point=f"unit.warp.{operation}",
+                    instrumented=True,
+                )
+                for operation in _required_operations(row)
+            ),
+            asset_manifest_sha256=("a" * 64 if row["required_asset_manifest"] else None),
+        )
+
+
+def _required_operations(row):
+    if row["boundary"] == "R0":
+        return ("render",)
+    if row["boundary"] == "R1":
+        return ("scene_update", "acceleration", "render", "reclaim")
+    raise AssertionError("unit fake only supports native R0/R1")

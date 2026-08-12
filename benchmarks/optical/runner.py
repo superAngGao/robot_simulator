@@ -7,6 +7,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from .eligibility import (
+    LaneEligibilityEvidence,
+    LaneIneligibleError,
+    assert_eligible_for_submission,
+    evaluate_lane_eligibility,
+    required_runtime_operations,
+    validate_trace_entry_points,
+)
 from .native import NativeReadinessEvidence, PreparedNativeInput
 from .schema import (
     RESULT_SCHEMA_VERSION,
@@ -15,7 +23,13 @@ from .schema import (
     validate_frozen_gate,
     validate_result_record,
 )
-from .timing import active_timed_boundary, native_timed_submission
+from .timing import (
+    RuntimeOperationTrace,
+    RuntimeOperationTraceEvidence,
+    active_timed_boundary,
+    native_timed_submission,
+    validate_required_operation_order,
+)
 
 SINGLE_LANE_RUNNER_VERSION = "q54.p12.4.single-lane-runner.v1"
 
@@ -64,6 +78,14 @@ class SingleLane(Protocol):
 
     lane_id: str
 
+    def preflight_sample(
+        self,
+        *,
+        row: Mapping[str, Any],
+        prepared: PreparedNativeInput,
+    ) -> LaneEligibilityEvidence:
+        """Audit exact calls/assets and fail closed before timed submission."""
+
     def submit_sample(
         self,
         *,
@@ -82,6 +104,8 @@ class SubmittedLaneSample:
     lane_id: str
     prepared: PreparedNativeInput
     readiness: NativeReadinessEvidence
+    eligibility: LaneEligibilityEvidence
+    operation_trace: RuntimeOperationTraceEvidence
     request: LaneSampleRequest
     pending: PendingLaneSample
     _resolved: bool = field(default=False, init=False, repr=False)
@@ -95,9 +119,14 @@ class SubmittedLaneSample:
 class SingleLaneSampleRunner:
     """Run and validate one native sample without paired-backend policy."""
 
-    def __init__(self, gate: Mapping[str, Any]) -> None:
+    def __init__(self, gate: Mapping[str, Any], *, execution_phase: str) -> None:
         validate_frozen_gate(gate)
         self._gate = copy.deepcopy(dict(gate))
+        authorization = self._gate["phase_authorization"].get(execution_phase)
+        if not isinstance(authorization, Mapping):
+            raise ValueError(f"unsupported benchmark execution phase {execution_phase!r}")
+        self._execution_phase = execution_phase
+        self._executable_boundaries = frozenset(authorization["executable_boundaries"])
         self._rows = {str(row["row_id"]): row for row in self._gate["mandatory_rows"]}
         self._gate_sha256 = canonical_gate_sha256(self._gate)
 
@@ -140,6 +169,10 @@ class SingleLaneSampleRunner:
         row = self._rows.get(row_id)
         if row is None:
             raise KeyError(f"unknown frozen benchmark row {row_id!r}")
+        if row["boundary"] not in self._executable_boundaries:
+            raise LaneIneligibleError(
+                f"boundary {row['boundary']!r} is not executable during {self._execution_phase}"
+            )
         if lane.lane_id not in {"warp", "cuda"}:
             raise ValueError("single-lane runner requires lane_id 'warp' or 'cuda'")
         if prepared.backend != lane.lane_id:
@@ -152,21 +185,44 @@ class SingleLaneSampleRunner:
             raise ValueError("prepared native input case hash does not match the frozen gate")
 
         submitted_row = copy.deepcopy(row)
+        eligibility = lane.preflight_sample(row=submitted_row, prepared=prepared)
+        if not isinstance(eligibility, LaneEligibilityEvidence):
+            raise TypeError("lane preflight_sample must return LaneEligibilityEvidence")
+        self._validate_eligibility(
+            row=submitted_row,
+            lane_id=lane.lane_id,
+            eligibility=eligibility,
+        )
+        assert_eligible_for_submission(eligibility)
+        operation_trace = RuntimeOperationTrace(
+            row_id=row_id,
+            lane=lane.lane_id,
+            boundary=str(row["boundary"]),
+        )
         with native_timed_submission(
             row_id=row_id,
             lane=lane.lane_id,
             boundary=str(row["boundary"]),
+            operation_trace=operation_trace,
         ):
             pending = lane.submit_sample(row=submitted_row, prepared=prepared, request=request)
         if active_timed_boundary() is not None:
             raise AssertionError("native timed context leaked after lane submission")
         if not callable(getattr(pending, "resolve", None)):
             raise TypeError("lane submit_sample must return a pending native sample")
+        trace_evidence = operation_trace.evidence()
+        try:
+            validate_required_operation_order(trace_evidence, eligibility.required_operations)
+            validate_trace_entry_points(trace_evidence, eligibility)
+        except ValueError as exc:
+            raise LaneIneligibleError(str(exc)) from exc
         return SubmittedLaneSample(
             row=submitted_row,
             lane_id=lane.lane_id,
             prepared=prepared,
             readiness=readiness,
+            eligibility=eligibility,
+            operation_trace=trace_evidence,
             request=request,
             pending=pending,
         )
@@ -182,6 +238,8 @@ class SingleLaneSampleRunner:
             row=submitted.row,
             prepared=submitted.prepared,
             readiness=submitted.readiness,
+            eligibility=submitted.eligibility,
+            operation_trace=submitted.operation_trace,
             sample=sample,
         )
         receipt_payload = sample.receipt.to_payload()
@@ -208,6 +266,8 @@ class SingleLaneSampleRunner:
         row: Mapping[str, Any],
         prepared: PreparedNativeInput,
         readiness: NativeReadinessEvidence,
+        eligibility: LaneEligibilityEvidence,
+        operation_trace: RuntimeOperationTraceEvidence,
         sample: ResolvedLaneSample,
     ) -> None:
         receipt = sample.receipt
@@ -225,6 +285,48 @@ class SingleLaneSampleRunner:
             raise ValueError("lane receipt does not identify the certified native readiness")
         if receipt.row_id != row["row_id"]:
             raise ValueError("lane receipt row does not match the submitted row")
+        if receipt.eligibility != eligibility or receipt.eligibility_sha256 != eligibility.sha256:
+            raise ValueError("lane receipt eligibility does not match preflight evidence")
+        if (
+            receipt.operation_trace != operation_trace
+            or receipt.operation_trace_sha256 != operation_trace.sha256
+        ):
+            raise ValueError("lane receipt operation trace does not match timed submission")
+
+    def _validate_eligibility(
+        self,
+        *,
+        row: Mapping[str, Any],
+        lane_id: str,
+        eligibility: LaneEligibilityEvidence,
+    ) -> None:
+        binding = self._gate["lane_bindings"][lane_id]
+        expected = {
+            "row_id": row["row_id"],
+            "case_id": row["case_id"],
+            "boundary": row["boundary"],
+            "lane": lane_id,
+            "input_contract": row["input_contract"],
+            "renderer_id": binding["renderer_id"],
+            "acceleration_id": binding["acceleration_by_class"][row["acceleration_class"]],
+            "required_operations": required_runtime_operations(row),
+        }
+        for name, value in expected.items():
+            if getattr(eligibility, name) != value:
+                raise ValueError(f"lane eligibility {name} does not match the frozen row")
+        recalculated = evaluate_lane_eligibility(
+            row=row,
+            lane=lane_id,
+            entry_point_audits=eligibility.entry_point_audits,
+            asset_manifest_sha256=eligibility.asset_manifest_sha256,
+        )
+        if eligibility != recalculated:
+            raise ValueError("lane eligibility is not the result of the frozen preflight evaluation")
+        required_asset = row.get("required_asset_manifest")
+        if required_asset is not None and eligibility.asset_manifest_sha256 is None:
+            raise LaneIneligibleError("lane eligibility lacks mandatory exact asset evidence")
+        if required_asset is None and eligibility.asset_manifest_sha256 is not None:
+            raise ValueError("lane eligibility carries unexpected asset evidence")
 
     def _validate_readiness(
         self,

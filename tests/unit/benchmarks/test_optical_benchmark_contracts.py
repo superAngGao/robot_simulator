@@ -7,19 +7,31 @@ from pathlib import Path
 import pytest
 
 from benchmarks.optical import (
+    ACCELERATION_RECEIPT_SCHEMA_VERSION,
     BOUNDARY_VERSIONS,
+    SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION,
+    AccelerationReceipt,
+    EntryPointAudit,
     ExecutionReceipt,
     NativeReadinessEvidence,
     ObservedChannel,
+    ShippingPublicationReceipt,
     canonical_cases,
     canonical_execution_receipt_sha256,
     canonical_gate_sha256,
+    canonical_input_provenance_sha256,
     canonical_row_semantics_sha256,
     case_hashes,
+    evaluate_lane_eligibility,
     load_frozen_gate,
     validate_frozen_gate,
     validate_repository_inventory,
     validate_result_record,
+)
+from benchmarks.optical.timing import (
+    OPERATION_TRACE_SCHEMA_VERSION,
+    RuntimeOperationRecord,
+    RuntimeOperationTraceEvidence,
 )
 from optics import (
     DIRECT_LIGHT_FULL_HOST_PER_RAY_CHANNEL_SPECS,
@@ -63,6 +75,7 @@ def test_frozen_gate_validates_and_contains_no_observed_results():
 
     assert gate["boundaries"] == BOUNDARY_VERSIONS
     assert gate["approved_proposal_commit"] == "46a5d33"
+    assert gate["approved_dependency_order_commit"] == ("57073b8cabe39d7e4104d8cef77fce70fc17956c")
     assert gate["frozen_before_result_inspection"] is True
     assert "observed_results" not in gate
     assert "baseline_results" not in gate
@@ -299,6 +312,9 @@ def test_gate_freezes_lane_receipt_provenance_before_runner_implementation():
     assert {"execution", "native_input", "observed_payload", "lifecycle"}.issubset(
         provenance["coordinator_must_not_populate"]
     )
+    assert {"eligibility", "acceleration", "publication", "operation_trace"}.issubset(
+        provenance["coordinator_must_not_populate"]
+    )
     assert provenance["a2_a3_lane_test_requirements"]
 
 
@@ -331,6 +347,55 @@ def test_shipping_rows_keep_ready_and_reclaim_endpoints_distinct():
             assert endpoints["final_payload_drain_metric"]
             assert endpoints["final_reclaim_metric"]
             assert endpoints["final_reclaim_metric"] in row["primary_metrics"]
+
+
+def test_result_rejects_replay_provenance_in_shipping_receipt():
+    gate = load_frozen_gate()
+    row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "s_physics_rgb8_sync_shadow")
+    record = _valid_result_record(gate, row)
+    publication_payload = copy.deepcopy(record["receipt"]["shipping_publication"])
+    publication_payload["replay_source_count"] = 1
+    publication = ShippingPublicationReceipt.from_payload(publication_payload)
+    receipt = copy.deepcopy(record["receipt"])
+    receipt["shipping_publication"] = publication_payload
+    receipt["shipping_publication_sha256"] = publication.sha256
+    receipt["input_provenance_sha256"] = canonical_input_provenance_sha256(
+        input_contract=receipt["input_contract"],
+        case_id=receipt["case_id"],
+        native_input_manifest_sha256=receipt["native_input_manifest_sha256"],
+        native_input_content_sha256=receipt["native_input_content_sha256"],
+        topology_sha256=receipt["topology_sha256"],
+        asset_manifest_sha256=receipt["eligibility"]["asset_manifest_sha256"],
+        shipping_publication_sha256=publication.sha256,
+    )
+    record["receipt"] = receipt
+    record["receipt_sha256"] = canonical_execution_receipt_sha256(receipt)
+
+    with pytest.raises(ValueError, match="forbidden replay/host operation"):
+        validate_result_record(record, gate)
+
+
+def test_result_rejects_native_replay_receipt_as_shipping_input_even_if_values_match():
+    gate = load_frozen_gate()
+    row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "s_physics_device_only_no_shadow")
+    record = _valid_result_record(gate, row)
+    receipt = copy.deepcopy(record["receipt"])
+    receipt["input_contract"] = "canonical_native_replay_v1"
+    record["receipt"] = receipt
+    record["receipt_sha256"] = canonical_execution_receipt_sha256(receipt)
+
+    with pytest.raises(ValueError, match="input_contract"):
+        validate_result_record(record, gate)
+
+
+def test_go2_result_requires_the_exact_preflight_manifest_artifact():
+    gate = load_frozen_gate()
+    row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_go2_960_render_only_shadow")
+    record = _valid_result_record(gate, row)
+    record["artifact_hashes"] = {}
+
+    with pytest.raises(ValueError, match="asset manifest artifact"):
+        validate_result_record(record, gate)
 
 
 def test_inventory_and_cleanup_ledger_match_current_repository():
@@ -377,6 +442,70 @@ def _valid_result_record(gate, row):
     lane = "cuda"
     binding = gate["lane_bindings"][lane]
     per_ray, scalar, observed_bytes = _observed_payload(row)
+    audits = tuple(
+        EntryPointAudit(
+            operation=operation,
+            entry_point=f"unit.cuda.{operation}",
+            instrumented=True,
+        )
+        for operation in _required_operations_for_test(row)
+    )
+    eligibility = evaluate_lane_eligibility(
+        row=row,
+        lane="cuda",
+        entry_point_audits=audits,
+        asset_manifest_sha256=("a" * 64 if row["required_asset_manifest"] else None),
+    )
+    operation_trace = RuntimeOperationTraceEvidence(
+        schema_version=OPERATION_TRACE_SCHEMA_VERSION,
+        row_id=row["row_id"],
+        lane=lane,
+        boundary=row["boundary"],
+        records=tuple(
+            RuntimeOperationRecord(
+                sequence=index,
+                operation=operation,
+                entry_point=f"unit.cuda.{operation}",
+            )
+            for index, operation in enumerate(eligibility.required_operations)
+        ),
+    )
+    acceleration_id = binding["acceleration_by_class"][row["acceleration_class"]]
+    acceleration_contract = gate["acceleration_contracts"]["by_lane_and_identity"][lane][acceleration_id]
+    classification = acceleration_contract["operation_classification"]
+    scene_count, refit_count, rebuild_count = {
+        "none": (0, 0, 0),
+        "refit": (1, 1, 0),
+        "rebuild": (1, 0, 1),
+    }[classification]
+    acceleration = AccelerationReceipt(
+        acceleration_schema_version=ACCELERATION_RECEIPT_SCHEMA_VERSION,
+        acceleration_id=acceleration_id,
+        workload_class=row["acceleration_class"],
+        topology_origin=acceleration_contract["topology_origin"],
+        topology_lifetime=acceleration_contract["topology_lifetime"],
+        topology_validation_sha256="3" * 64,
+        timed_scene_update_operation=acceleration_contract["timed_scene_update_operation"],
+        timed_acceleration_operation=acceleration_contract["timed_acceleration_operation"],
+        operation_classification=classification,
+        scene_update_count=scene_count,
+        refit_count=refit_count,
+        rebuild_count=rebuild_count,
+        primitive_count=1,
+        node_count=1,
+        leaf_count=1,
+        scene_update_kernel_launch_count=0 if classification == "none" else 1,
+        acceleration_kernel_launch_count=0 if classification == "none" else 1,
+        device_allocation_count=0,
+        host_materialization_count=0,
+        host_upload_bytes=0,
+        device_to_host_bytes=0,
+        global_synchronize_count=0,
+        bridge_creation_count=0,
+        completion_event_recorded=True,
+        instrumentation_trace_sha256=operation_trace.sha256,
+    )
+    publication = _shipping_publication(row, operation_trace)
     readiness = NativeReadinessEvidence(
         schema_version="q54.p12.4.native-input.v1",
         backend="cuda",
@@ -401,11 +530,29 @@ def _valid_result_record(gate, row):
         topology_sha256="3" * 64,
         native_readiness=readiness,
         native_readiness_sha256=readiness.sha256,
+        input_contract=row["input_contract"],
+        input_provenance_sha256=canonical_input_provenance_sha256(
+            input_contract=row["input_contract"],
+            case_id=row["case_id"],
+            native_input_manifest_sha256="1" * 64,
+            native_input_content_sha256="2" * 64,
+            topology_sha256="3" * 64,
+            asset_manifest_sha256=eligibility.asset_manifest_sha256,
+            shipping_publication_sha256=(None if publication is None else publication.sha256),
+        ),
+        eligibility=eligibility,
+        eligibility_sha256=eligibility.sha256,
+        operation_trace=operation_trace,
+        operation_trace_sha256=operation_trace.sha256,
+        acceleration=acceleration,
+        acceleration_sha256=acceleration.sha256,
+        shipping_publication=publication,
+        shipping_publication_sha256=None if publication is None else publication.sha256,
         boundary=row["boundary"],
         boundary_version=gate["boundaries"][row["boundary"]],
         lane=lane,
         renderer_id=binding["renderer_id"],
-        acceleration_id=binding["acceleration_by_class"][row["acceleration_class"]],
+        acceleration_id=acceleration_id,
         output_profile=row["output_profile"],
         shadows=row["shadows"],
         payload=row.get("payload", "none"),
@@ -422,17 +569,84 @@ def _valid_result_record(gate, row):
     )
     receipt_payload = receipt.to_payload()
     return {
-        "schema_version": "q54.p12.4.result.v4",
+        "schema_version": "q54.p12.4.result.v5",
         "gate_sha256": canonical_gate_sha256(gate),
         "run_id": "unit-test",
         "repeat_index": 0,
         "sample_index": 0,
         "profile_mode": "primary_unprofiled",
         "metrics_ms": {metric: 1.25 for metric in row["primary_metrics"]},
-        "artifact_hashes": {},
+        "artifact_hashes": (
+            {"asset_manifest": eligibility.asset_manifest_sha256}
+            if eligibility.asset_manifest_sha256 is not None
+            else {}
+        ),
         "receipt": receipt_payload,
         "receipt_sha256": receipt.sha256,
     }
+
+
+def _required_operations_for_test(row):
+    boundary = row["boundary"]
+    if boundary == "R0":
+        return ("render",)
+    if boundary == "R1":
+        return ("scene_update", "acceleration", "render", "reclaim")
+    if boundary == "R2":
+        operations = ["scene_update", "acceleration", "render"]
+        if row["payload"] == "rgb8":
+            operations.append("pack")
+        return (*operations, "delivery", "reclaim")
+    operations = [
+        "physics_step",
+        "publication",
+        "stream_wait",
+        "view_binding",
+        "scene_update",
+        "consumer_completion",
+        "acceleration",
+        "render",
+    ]
+    if row["payload"] == "rgb8":
+        operations.append("pack")
+    return (*operations, "delivery", "reclaim")
+
+
+def _shipping_publication(row, operation_trace):
+    if row["boundary"] != "S":
+        return None
+    lifecycle = set(row["required_lifecycle"])
+    return ShippingPublicationReceipt(
+        publication_schema_version=SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION,
+        input_contract="gpu_engine_published_frame_v1",
+        physics_run_id="unit-physics-run",
+        physics_step_index=0,
+        physics_frame_id=0,
+        physics_slot_id=0,
+        physics_device_ordinal=0,
+        physics_step_count=1,
+        publish_event_token="publish-0",
+        publish_event_recorded=True,
+        producer_publish_completion_recorded=True,
+        consumer_binding_id="binding-0",
+        consumer_stream_token="stream-0",
+        borrow_count=1,
+        consumer_stream_wait_enqueued=True,
+        zero_copy_transform_binding=True,
+        last_physics_buffer_reader_operation="scene_update",
+        consumer_done_event_token="done-0",
+        consumer_completion_recorded=True,
+        slot_logically_reclaimable=True,
+        producer_reuse_wait_enqueued_when_reused=True,
+        done_event_retained_until_reuse_dependency=True,
+        physical_reclaim_evidence="producer_wait_enqueued_before_reuse",
+        final_payload_drain_complete="final_drain_complete" in lifecycle,
+        final_reclaim_complete="final_reclaim_complete" in lifecycle,
+        replay_source_count=0,
+        host_poll_count=0,
+        host_synchronize_count=0,
+        publication_trace_sha256=operation_trace.sha256,
+    )
 
 
 def _observed_payload(row):

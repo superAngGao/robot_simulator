@@ -1,11 +1,12 @@
 {
-  "schema_version": "q54.p12.4.gate.v4",
-  "result_schema_version": "q54.p12.4.result.v4",
+  "schema_version": "q54.p12.4.gate.v5",
+  "result_schema_version": "q54.p12.4.result.v5",
   "case_schema_version": "q54.p12.4.case.v1",
   "status": "frozen",
-  "frozen_at": "2026-08-11T14:20:12+08:00",
+  "frozen_at": "2026-08-12T16:40:11+08:00",
   "frozen_before_result_inspection": true,
   "approved_proposal_commit": "46a5d33",
+  "approved_dependency_order_commit": "57073b8cabe39d7e4104d8cef77fce70fc17956c",
   "owner_decisions": [
     "collab/q54-optical-lab-p12-4-backend-parity-performance-gate__decision__owner__v1.md",
     "collab/q54-optical-lab-p12-4-backend-parity-performance-gate__decision__owner__v2.md"
@@ -140,20 +141,161 @@
       "renderer_id": "warp_bvh_direct_light",
       "acceleration_by_class": {
         "fixed_bvh_fixture": "fixed_bvh_fixture",
-        "production_static": "cuda_lbvh",
-        "production_dynamic": "cpu_bvh",
-        "production_physics": "cpu_bvh"
+        "production_static": "cuda_morton_karras_lbvh_rebuild_v1",
+        "production_dynamic": "cpu_median_leaf4_topology_warp_refit_v1",
+        "production_physics": "cpu_median_leaf4_topology_warp_refit_v1"
       }
     },
     "cuda": {
       "renderer_id": "cuda_direct_light",
       "acceleration_by_class": {
         "fixed_bvh_fixture": "fixed_bvh_fixture",
-        "production_static": "cuda_lbvh",
-        "production_dynamic": "cuda_lbvh",
-        "production_physics": "cuda_lbvh"
+        "production_static": "cuda_morton_karras_lbvh_rebuild_v1",
+        "production_dynamic": "cuda_morton_karras_lbvh_rebuild_v1",
+        "production_physics": "cuda_morton_karras_lbvh_rebuild_v1"
       }
     }
+  },
+  "input_contracts": {
+    "schema_version": "q54.p12.4.input-contract.v1",
+    "by_boundary": {
+      "R0": "fixed_native_scene_v1",
+      "R1": "canonical_native_replay_v1",
+      "R2": "canonical_native_replay_v1",
+      "S": "gpu_engine_published_frame_v1"
+    },
+    "contracts": {
+      "fixed_native_scene_v1": {
+        "timed_start": "before_native_renderer_submission",
+        "measured_transform_owner": "prepared_candidate_native_world_scene",
+        "replay_source_allowed": false,
+        "physics_publication_required": false
+      },
+      "canonical_native_replay_v1": {
+        "timed_start": "before_candidate_native_scene_update",
+        "measured_transform_owner": "candidate_native_replay_arena",
+        "replay_source_allowed": true,
+        "physics_publication_required": false
+      },
+      "gpu_engine_published_frame_v1": {
+        "timed_start": "immediately_before_real_gpu_engine_step",
+        "measured_transform_owner": "physics_publish_ring_slot",
+        "replay_source_allowed": false,
+        "physics_publication_required": true
+      }
+    }
+  },
+  "eligibility_contract": {
+    "schema_version": "q54.p12.4.lane-eligibility.v1",
+    "operation_trace_schema_version": "q54.p12.4.operation-trace.v1",
+    "preflight_position": "before_timed_submission",
+    "ineligible_result_emission": "forbidden",
+    "required_runtime_operations": {
+      "R0": ["render"],
+      "R1": ["scene_update", "acceleration", "render", "reclaim"],
+      "R2": "derived_from_payload_and_delivery_policy",
+      "S": "derived_from_publication_payload_and_delivery_policy"
+    },
+    "a3a_baseline_emission": "forbidden",
+    "first_native_baseline_authorization": "P12.4a4"
+  },
+  "phase_authorization": {
+    "P12.4a3a": {
+      "executable_boundaries": [],
+      "result_emission": "forbidden",
+      "result_inspection": "forbidden"
+    },
+    "P12.4a3b": {
+      "executable_boundaries": ["R0", "R1", "R2"],
+      "result_emission": "sealed_native_artifacts_only",
+      "result_inspection": "forbidden_until_P12.4a4"
+    },
+    "P12.4a4": {
+      "executable_boundaries": [],
+      "result_emission": "forbidden",
+      "result_inspection": "native_common_subset_only"
+    },
+    "P12.4b4/d": {
+      "executable_boundaries": ["S"],
+      "result_emission": "shipping_artifacts",
+      "result_inspection": "shipping_gate_review"
+    }
+  },
+  "acceleration_contracts": {
+    "schema_version": "q54.p12.4.acceleration-receipt.v1",
+    "by_lane_and_identity": {
+      "warp": {
+        "fixed_bvh_fixture": {
+          "topology_origin": "cpu_median_longest_axis_leaf4_source_order_v1",
+          "topology_lifetime": "prepared_input_immutable_v1",
+          "timed_scene_update_operation": "none",
+          "timed_acceleration_operation": "none",
+          "operation_classification": "none"
+        },
+        "cpu_median_leaf4_topology_warp_refit_v1": {
+          "topology_origin": "cpu_median_longest_axis_leaf4_source_order_v1",
+          "topology_lifetime": "prepared_lane_session_immutable_v1",
+          "timed_scene_update_operation": "warp_local_scene_transform_and_aabb_out_v1",
+          "timed_acceleration_operation": "warp_bvh_leaf_internal_refit_out_v1",
+          "operation_classification": "refit"
+        },
+        "cuda_morton_karras_lbvh_rebuild_v1": {
+          "topology_origin": "cuda_morton30_karras_source_index_tiebreak_v1",
+          "topology_lifetime": "transaction_output_arena_lease_v1",
+          "timed_scene_update_operation": "warp_local_scene_transform_and_aabb_out_v1",
+          "timed_acceleration_operation": "cuda_lbvh_scene_bounds_morton_sort_topology_bounds_out_v1",
+          "operation_classification": "rebuild"
+        }
+      },
+      "cuda": {
+        "fixed_bvh_fixture": {
+          "topology_origin": "cpu_median_longest_axis_leaf4_source_order_v1",
+          "topology_lifetime": "prepared_input_immutable_v1",
+          "timed_scene_update_operation": "none",
+          "timed_acceleration_operation": "none",
+          "operation_classification": "none"
+        },
+        "cuda_morton_karras_lbvh_rebuild_v1": {
+          "topology_origin": "cuda_morton30_karras_source_index_tiebreak_v1",
+          "topology_lifetime": "transaction_output_arena_lease_v1",
+          "timed_scene_update_operation": "torch_cuda_local_scene_transform_and_aabb_out_v1",
+          "timed_acceleration_operation": "cuda_lbvh_scene_bounds_morton_sort_topology_bounds_out_v1",
+          "operation_classification": "rebuild"
+        }
+      }
+    },
+    "forbidden_primary_counts": {
+      "device_allocation_count": 0,
+      "host_materialization_count": 0,
+      "host_upload_bytes": 0,
+      "device_to_host_bytes": 0,
+      "global_synchronize_count": 0,
+      "bridge_creation_count": 0
+    }
+  },
+  "asset_manifest_contract": {
+    "schema_version": "q54.p12.4.external-asset-manifest.v1",
+    "go2_requirement_id": "mujoco_menagerie/unitree_go2@run_manifest",
+    "default_model_dir": "out/external/mujoco_menagerie/unitree_go2",
+    "default_manifest_name": "q54_asset_manifest.json",
+    "absent_or_mismatched": "hard_failure_before_timing",
+    "surrogate_allowed": false,
+    "coverage": "every_and_only_regular_model_files_excluding_manifest",
+    "source_checkout": "canonical_mujoco_menagerie_git_origin",
+    "source_revision": "manifest_revision_equals_checkout_HEAD",
+    "tracked_file_rule": "manifest_files_equal_clean_commit_tracked_unitree_go2_files"
+  },
+  "shipping_publication_receipt_contract": {
+    "schema_version": "q54.p12.4.shipping-publication-receipt.v1",
+    "required_input_contract": "gpu_engine_published_frame_v1",
+    "replay_source_count": 0,
+    "host_poll_count": 0,
+    "host_synchronize_count": 0,
+    "logical_reclaim_distinct_from_physical_safety": true,
+    "physical_safety_evidence": [
+      "producer_wait_enqueued_before_reuse",
+      "done_event_retained_no_reuse"
+    ]
   },
   "payload_channel_contracts": {
     "none_device_v1": {
@@ -276,7 +418,11 @@
     ],
     "coordinator_must_not_populate": [
       "execution",
+      "eligibility",
       "native_input",
+      "acceleration",
+      "publication",
+      "operation_trace",
       "observed_payload",
       "lifecycle",
       "counters",
@@ -292,8 +438,10 @@
   },
   "native_input_contract": {
     "schema_version": "q54.p12.4.native-input.v1",
-    "timing_contract_version": "q54.p12.4.native-timing.v1",
+    "timing_contract_version": "q54.p12.4.native-timing.v2",
+    "scope": "R0_R1_R2_and_S_static_optical_inputs_only",
     "logical_source": "immutable_canonical_host_arrays",
+    "S_measured_physics_transforms_excluded": true,
     "warp_preparation": "direct_host_to_warp_cuda_allocation",
     "cuda_preparation": "direct_host_to_torch_cuda_allocation",
     "allocation_rule": "independent_runtime_owned_allocations",
@@ -305,10 +453,13 @@
     ],
     "timed_forbidden_operations": [
       "allocation",
+      "bridge_creation",
       "compile",
       "cross_lane_wait",
+      "extension_load",
       "global_device_synchronize",
       "host_materialization",
+      "host_synchronize",
       "host_upload",
       "torch_to_warp_bridge",
       "warp_to_torch_bridge"
@@ -318,7 +469,11 @@
       "native_input_content_sha256",
       "topology_sha256",
       "native_readiness",
-      "native_readiness_sha256"
+      "native_readiness_sha256",
+      "input_contract",
+      "input_provenance_sha256",
+      "eligibility",
+      "eligibility_sha256"
     ]
   },
   "mandatory_rows": [
@@ -327,6 +482,8 @@
       "mandatory": true,
       "boundary": "R0",
       "case_id": "asymmetric_synthetic_7x3_v1",
+      "input_contract": "fixed_native_scene_v1",
+      "required_asset_manifest": null,
       "output_profile": "direct_light_full",
       "shadows": true,
       "acceleration_class": "fixed_bvh_fixture",
@@ -339,6 +496,8 @@
       "mandatory": true,
       "boundary": "R0",
       "case_id": "go2_static_960x640_v1",
+      "input_contract": "fixed_native_scene_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
       "output_profile": "render_only",
       "shadows": false,
       "acceleration_class": "fixed_bvh_fixture",
@@ -351,6 +510,8 @@
       "mandatory": true,
       "boundary": "R0",
       "case_id": "go2_static_960x640_v1",
+      "input_contract": "fixed_native_scene_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
       "output_profile": "render_only",
       "shadows": true,
       "acceleration_class": "fixed_bvh_fixture",
@@ -363,6 +524,8 @@
       "mandatory": true,
       "boundary": "R0",
       "case_id": "go2_static_1920x1080_v1",
+      "input_contract": "fixed_native_scene_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
       "output_profile": "render_only",
       "shadows": false,
       "acceleration_class": "fixed_bvh_fixture",
@@ -375,6 +538,8 @@
       "mandatory": true,
       "boundary": "R0",
       "case_id": "go2_static_1920x1080_v1",
+      "input_contract": "fixed_native_scene_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
       "output_profile": "render_only",
       "shadows": true,
       "acceleration_class": "fixed_bvh_fixture",
@@ -387,6 +552,8 @@
       "mandatory": true,
       "boundary": "R0",
       "case_id": "go2_static_1920x1080_v1",
+      "input_contract": "fixed_native_scene_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
       "output_profile": "rgb_preview",
       "shadows": true,
       "acceleration_class": "fixed_bvh_fixture",
@@ -399,6 +566,8 @@
       "mandatory": true,
       "boundary": "R1",
       "case_id": "synthetic_dynamic_rigid_960x640_v1",
+      "input_contract": "canonical_native_replay_v1",
+      "required_asset_manifest": null,
       "output_profile": "render_only",
       "shadows": false,
       "acceleration_class": "production_dynamic",
@@ -414,6 +583,8 @@
       "mandatory": true,
       "boundary": "R1",
       "case_id": "synthetic_dynamic_rigid_960x640_v1",
+      "input_contract": "canonical_native_replay_v1",
+      "required_asset_manifest": null,
       "output_profile": "direct_light_full",
       "shadows": true,
       "acceleration_class": "production_dynamic",
@@ -429,6 +600,8 @@
       "mandatory": true,
       "boundary": "R2",
       "case_id": "go2_static_1920x1080_v1",
+      "input_contract": "canonical_native_replay_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
       "output_profile": "render_only",
       "shadows": true,
       "payload": "none",
@@ -459,6 +632,8 @@
       "mandatory": true,
       "boundary": "R2",
       "case_id": "go2_static_1920x1080_v1",
+      "input_contract": "canonical_native_replay_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
       "output_profile": "rgb_preview",
       "shadows": true,
       "payload": "rgb",
@@ -495,6 +670,8 @@
       "mandatory": true,
       "boundary": "R2",
       "case_id": "go2_static_1920x1080_v1",
+      "input_contract": "canonical_native_replay_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
       "output_profile": "rgb_preview",
       "shadows": true,
       "payload": "rgb",
@@ -532,6 +709,8 @@
       "mandatory": true,
       "boundary": "R2",
       "case_id": "go2_static_1920x1080_v1",
+      "input_contract": "canonical_native_replay_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
       "output_profile": "direct_light_full",
       "shadows": true,
       "payload": "full",
@@ -577,6 +756,8 @@
       "mandatory": true,
       "boundary": "R2",
       "case_id": "go2_static_1920x1080_v1",
+      "input_contract": "canonical_native_replay_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
       "output_profile": "rgb_preview",
       "shadows": true,
       "payload": "rgb8",
@@ -613,6 +794,8 @@
       "mandatory": true,
       "boundary": "R2",
       "case_id": "go2_static_1920x1080_v1",
+      "input_contract": "canonical_native_replay_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
       "output_profile": "rgb_preview",
       "shadows": true,
       "payload": "rgb8",
@@ -650,6 +833,8 @@
       "mandatory": true,
       "boundary": "S",
       "case_id": "physics_body_triangle_960x640_v1",
+      "input_contract": "gpu_engine_published_frame_v1",
+      "required_asset_manifest": null,
       "output_profile": "render_only",
       "shadows": false,
       "payload": "none",
@@ -687,6 +872,8 @@
       "mandatory": true,
       "boundary": "S",
       "case_id": "physics_body_triangle_960x640_v1",
+      "input_contract": "gpu_engine_published_frame_v1",
+      "required_asset_manifest": null,
       "output_profile": "rgb_preview",
       "shadows": false,
       "payload": "rgb",
@@ -730,6 +917,8 @@
       "mandatory": true,
       "boundary": "S",
       "case_id": "physics_body_triangle_960x640_v1",
+      "input_contract": "gpu_engine_published_frame_v1",
+      "required_asset_manifest": null,
       "output_profile": "direct_light_full",
       "shadows": true,
       "payload": "full",
@@ -782,6 +971,8 @@
       "mandatory": true,
       "boundary": "S",
       "case_id": "physics_body_triangle_960x640_v1",
+      "input_contract": "gpu_engine_published_frame_v1",
+      "required_asset_manifest": null,
       "output_profile": "rgb_preview",
       "shadows": true,
       "payload": "rgb8",
@@ -825,6 +1016,8 @@
       "mandatory": true,
       "boundary": "S",
       "case_id": "physics_body_triangle_960x640_v1",
+      "input_contract": "gpu_engine_published_frame_v1",
+      "required_asset_manifest": null,
       "output_profile": "rgb_preview",
       "shadows": true,
       "payload": "rgb",
@@ -867,6 +1060,8 @@
       "mandatory": true,
       "boundary": "S",
       "case_id": "physics_body_triangle_960x640_v1",
+      "input_contract": "gpu_engine_published_frame_v1",
+      "required_asset_manifest": null,
       "output_profile": "rgb_preview",
       "shadows": true,
       "payload": "rgb8",

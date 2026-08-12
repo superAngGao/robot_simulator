@@ -16,13 +16,40 @@ from optics.output_contract import (
     host_payload_contract_schema,
 )
 
+from .assets import ASSET_MANIFEST_SCHEMA_VERSION, GO2_ASSET_REQUIREMENT
 from .cases import CASE_SCHEMA_VERSION, case_hashes, cases_by_id
+from .eligibility import (
+    CANONICAL_NATIVE_REPLAY_INPUT,
+    ELIGIBILITY_SCHEMA_VERSION,
+    EXACT_ACCELERATION_CONTRACTS,
+    EXACT_LANE_BINDINGS,
+    FIXED_NATIVE_SCENE_INPUT,
+    GPU_ENGINE_PUBLISHED_FRAME_INPUT,
+    INPUT_CONTRACT_BY_BOUNDARY,
+    INPUT_CONTRACT_SCHEMA_VERSION,
+    LaneEligibilityEvidence,
+    evaluate_lane_eligibility,
+    required_runtime_operations,
+    validate_trace_entry_points,
+)
 from .native import NATIVE_INPUT_SCHEMA_VERSION, NativeReadinessEvidence
-from .timing import FORBIDDEN_TIMED_OPERATIONS, NATIVE_TIMING_CONTRACT_VERSION
+from .receipts import (
+    ACCELERATION_RECEIPT_SCHEMA_VERSION,
+    SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION,
+    AccelerationReceipt,
+    ShippingPublicationReceipt,
+)
+from .timing import (
+    FORBIDDEN_TIMED_OPERATIONS,
+    NATIVE_TIMING_CONTRACT_VERSION,
+    OPERATION_TRACE_SCHEMA_VERSION,
+    RuntimeOperationTraceEvidence,
+    validate_required_operation_order,
+)
 
-GATE_SCHEMA_VERSION = "q54.p12.4.gate.v4"
-RESULT_SCHEMA_VERSION = "q54.p12.4.result.v4"
-ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v1"
+GATE_SCHEMA_VERSION = "q54.p12.4.gate.v5"
+RESULT_SCHEMA_VERSION = "q54.p12.4.result.v5"
+ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v2"
 INVENTORY_SCHEMA_VERSION = "q54.p12.4.architecture-inventory.v1"
 CLEANUP_SCHEMA_VERSION = "q54.p12.4.cleanup-ledger.v1"
 PUBLICATION_BINDING_CONTRACT_VERSION = "q54.p12.4.publication-cuda-binding.v1"
@@ -79,25 +106,108 @@ EXPECTED_MEMORY_MEASUREMENT = {
     "mandatory_workload_oom": "hard_failure",
 }
 
-EXPECTED_LANE_BINDINGS = {
-    "warp": {
-        "renderer_id": "warp_bvh_direct_light",
-        "acceleration_by_class": {
-            "fixed_bvh_fixture": "fixed_bvh_fixture",
-            "production_static": "cuda_lbvh",
-            "production_dynamic": "cpu_bvh",
-            "production_physics": "cpu_bvh",
+EXPECTED_LANE_BINDINGS = EXACT_LANE_BINDINGS
+
+EXPECTED_INPUT_CONTRACTS = {
+    "schema_version": INPUT_CONTRACT_SCHEMA_VERSION,
+    "by_boundary": INPUT_CONTRACT_BY_BOUNDARY,
+    "contracts": {
+        FIXED_NATIVE_SCENE_INPUT: {
+            "timed_start": "before_native_renderer_submission",
+            "measured_transform_owner": "prepared_candidate_native_world_scene",
+            "replay_source_allowed": False,
+            "physics_publication_required": False,
+        },
+        CANONICAL_NATIVE_REPLAY_INPUT: {
+            "timed_start": "before_candidate_native_scene_update",
+            "measured_transform_owner": "candidate_native_replay_arena",
+            "replay_source_allowed": True,
+            "physics_publication_required": False,
+        },
+        GPU_ENGINE_PUBLISHED_FRAME_INPUT: {
+            "timed_start": "immediately_before_real_gpu_engine_step",
+            "measured_transform_owner": "physics_publish_ring_slot",
+            "replay_source_allowed": False,
+            "physics_publication_required": True,
         },
     },
-    "cuda": {
-        "renderer_id": "cuda_direct_light",
-        "acceleration_by_class": {
-            "fixed_bvh_fixture": "fixed_bvh_fixture",
-            "production_static": "cuda_lbvh",
-            "production_dynamic": "cuda_lbvh",
-            "production_physics": "cuda_lbvh",
-        },
+}
+
+EXPECTED_ACCELERATION_CONTRACTS = {
+    "schema_version": ACCELERATION_RECEIPT_SCHEMA_VERSION,
+    "by_lane_and_identity": EXACT_ACCELERATION_CONTRACTS,
+    "forbidden_primary_counts": {
+        "device_allocation_count": 0,
+        "host_materialization_count": 0,
+        "host_upload_bytes": 0,
+        "device_to_host_bytes": 0,
+        "global_synchronize_count": 0,
+        "bridge_creation_count": 0,
     },
+}
+
+EXPECTED_ELIGIBILITY_CONTRACT = {
+    "schema_version": ELIGIBILITY_SCHEMA_VERSION,
+    "operation_trace_schema_version": OPERATION_TRACE_SCHEMA_VERSION,
+    "preflight_position": "before_timed_submission",
+    "ineligible_result_emission": "forbidden",
+    "required_runtime_operations": {
+        "R0": ["render"],
+        "R1": ["scene_update", "acceleration", "render", "reclaim"],
+        "R2": "derived_from_payload_and_delivery_policy",
+        "S": "derived_from_publication_payload_and_delivery_policy",
+    },
+    "a3a_baseline_emission": "forbidden",
+    "first_native_baseline_authorization": "P12.4a4",
+}
+
+EXPECTED_PHASE_AUTHORIZATION = {
+    "P12.4a3a": {
+        "executable_boundaries": [],
+        "result_emission": "forbidden",
+        "result_inspection": "forbidden",
+    },
+    "P12.4a3b": {
+        "executable_boundaries": ["R0", "R1", "R2"],
+        "result_emission": "sealed_native_artifacts_only",
+        "result_inspection": "forbidden_until_P12.4a4",
+    },
+    "P12.4a4": {
+        "executable_boundaries": [],
+        "result_emission": "forbidden",
+        "result_inspection": "native_common_subset_only",
+    },
+    "P12.4b4/d": {
+        "executable_boundaries": ["S"],
+        "result_emission": "shipping_artifacts",
+        "result_inspection": "shipping_gate_review",
+    },
+}
+
+EXPECTED_ASSET_MANIFEST_CONTRACT = {
+    "schema_version": ASSET_MANIFEST_SCHEMA_VERSION,
+    "go2_requirement_id": GO2_ASSET_REQUIREMENT,
+    "default_model_dir": "out/external/mujoco_menagerie/unitree_go2",
+    "default_manifest_name": "q54_asset_manifest.json",
+    "absent_or_mismatched": "hard_failure_before_timing",
+    "surrogate_allowed": False,
+    "coverage": "every_and_only_regular_model_files_excluding_manifest",
+    "source_checkout": "canonical_mujoco_menagerie_git_origin",
+    "source_revision": "manifest_revision_equals_checkout_HEAD",
+    "tracked_file_rule": "manifest_files_equal_clean_commit_tracked_unitree_go2_files",
+}
+
+EXPECTED_SHIPPING_PUBLICATION_RECEIPT_CONTRACT = {
+    "schema_version": SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION,
+    "required_input_contract": GPU_ENGINE_PUBLISHED_FRAME_INPUT,
+    "replay_source_count": 0,
+    "host_poll_count": 0,
+    "host_synchronize_count": 0,
+    "logical_reclaim_distinct_from_physical_safety": True,
+    "physical_safety_evidence": [
+        "producer_wait_enqueued_before_reuse",
+        "done_event_retained_no_reuse",
+    ],
 }
 
 EXPECTED_FIXED_R0_TOPOLOGY_CONTRACT = {
@@ -138,7 +248,11 @@ EXPECTED_RECEIPT_PROVENANCE = {
     ],
     "coordinator_must_not_populate": [
         "execution",
+        "eligibility",
         "native_input",
+        "acceleration",
+        "publication",
+        "operation_trace",
         "observed_payload",
         "lifecycle",
         "counters",
@@ -156,7 +270,9 @@ EXPECTED_RECEIPT_PROVENANCE = {
 EXPECTED_NATIVE_INPUT_CONTRACT = {
     "schema_version": NATIVE_INPUT_SCHEMA_VERSION,
     "timing_contract_version": NATIVE_TIMING_CONTRACT_VERSION,
+    "scope": "R0_R1_R2_and_S_static_optical_inputs_only",
     "logical_source": "immutable_canonical_host_arrays",
+    "S_measured_physics_transforms_excluded": True,
     "warp_preparation": "direct_host_to_warp_cuda_allocation",
     "cuda_preparation": "direct_host_to_torch_cuda_allocation",
     "allocation_rule": "independent_runtime_owned_allocations",
@@ -173,6 +289,10 @@ EXPECTED_NATIVE_INPUT_CONTRACT = {
         "topology_sha256",
         "native_readiness",
         "native_readiness_sha256",
+        "input_contract",
+        "input_provenance_sha256",
+        "eligibility",
+        "eligibility_sha256",
     ],
 }
 
@@ -216,6 +336,16 @@ EXECUTION_RECEIPT_REQUIRED_FIELDS = frozenset(
         "topology_sha256",
         "native_readiness",
         "native_readiness_sha256",
+        "input_contract",
+        "input_provenance_sha256",
+        "eligibility",
+        "eligibility_sha256",
+        "operation_trace",
+        "operation_trace_sha256",
+        "acceleration",
+        "acceleration_sha256",
+        "shipping_publication",
+        "shipping_publication_sha256",
         "boundary",
         "boundary_version",
         "lane",
@@ -296,6 +426,16 @@ class ExecutionReceipt:
     topology_sha256: str
     native_readiness: NativeReadinessEvidence
     native_readiness_sha256: str
+    input_contract: str
+    input_provenance_sha256: str
+    eligibility: LaneEligibilityEvidence
+    eligibility_sha256: str
+    operation_trace: RuntimeOperationTraceEvidence
+    operation_trace_sha256: str
+    acceleration: AccelerationReceipt
+    acceleration_sha256: str
+    shipping_publication: ShippingPublicationReceipt | None
+    shipping_publication_sha256: str | None
     boundary: str
     boundary_version: str
     lane: str
@@ -356,6 +496,11 @@ class ExecutionReceipt:
             "native_input_manifest_sha256",
             "native_input_content_sha256",
             "topology_sha256",
+            "input_contract",
+            "input_provenance_sha256",
+            "eligibility_sha256",
+            "operation_trace_sha256",
+            "acceleration_sha256",
             "boundary",
             "boundary_version",
             "lane",
@@ -372,6 +517,26 @@ class ExecutionReceipt:
         readiness = NativeReadinessEvidence.from_payload(payload.get("native_readiness"))
         if payload.get("native_readiness_sha256") != readiness.sha256:
             raise ValueError("native readiness SHA-256 does not match its evidence content")
+        eligibility = LaneEligibilityEvidence.from_payload(payload.get("eligibility"))
+        if payload.get("eligibility_sha256") != eligibility.sha256:
+            raise ValueError("lane eligibility SHA-256 does not match its evidence content")
+        operation_trace = RuntimeOperationTraceEvidence.from_payload(payload.get("operation_trace"))
+        if payload.get("operation_trace_sha256") != operation_trace.sha256:
+            raise ValueError("operation trace SHA-256 does not match its evidence content")
+        acceleration = AccelerationReceipt.from_payload(payload.get("acceleration"))
+        if payload.get("acceleration_sha256") != acceleration.sha256:
+            raise ValueError("acceleration SHA-256 does not match its receipt content")
+        publication_payload = payload.get("shipping_publication")
+        publication_hash = payload.get("shipping_publication_sha256")
+        shipping_publication: ShippingPublicationReceipt | None
+        if publication_payload is None:
+            if publication_hash is not None:
+                raise ValueError("shipping publication SHA-256 requires a receipt")
+            shipping_publication = None
+        else:
+            shipping_publication = ShippingPublicationReceipt.from_payload(publication_payload)
+            if publication_hash != shipping_publication.sha256:
+                raise ValueError("shipping publication SHA-256 does not match its receipt content")
         return cls(
             producer=payload["producer"],
             row_semantics_sha256=payload["row_semantics_sha256"],
@@ -383,6 +548,16 @@ class ExecutionReceipt:
             topology_sha256=payload["topology_sha256"],
             native_readiness=readiness,
             native_readiness_sha256=payload["native_readiness_sha256"],
+            input_contract=payload["input_contract"],
+            input_provenance_sha256=payload["input_provenance_sha256"],
+            eligibility=eligibility,
+            eligibility_sha256=payload["eligibility_sha256"],
+            operation_trace=operation_trace,
+            operation_trace_sha256=payload["operation_trace_sha256"],
+            acceleration=acceleration,
+            acceleration_sha256=payload["acceleration_sha256"],
+            shipping_publication=shipping_publication,
+            shipping_publication_sha256=publication_hash,
             boundary=payload["boundary"],
             boundary_version=payload["boundary_version"],
             lane=payload["lane"],
@@ -415,6 +590,18 @@ class ExecutionReceipt:
             "topology_sha256": self.topology_sha256,
             "native_readiness": self.native_readiness.to_payload(),
             "native_readiness_sha256": self.native_readiness_sha256,
+            "input_contract": self.input_contract,
+            "input_provenance_sha256": self.input_provenance_sha256,
+            "eligibility": self.eligibility.to_payload(),
+            "eligibility_sha256": self.eligibility_sha256,
+            "operation_trace": self.operation_trace.to_payload(),
+            "operation_trace_sha256": self.operation_trace_sha256,
+            "acceleration": self.acceleration.to_payload(),
+            "acceleration_sha256": self.acceleration_sha256,
+            "shipping_publication": (
+                None if self.shipping_publication is None else self.shipping_publication.to_payload()
+            ),
+            "shipping_publication_sha256": self.shipping_publication_sha256,
             "boundary": self.boundary,
             "boundary_version": self.boundary_version,
             "lane": self.lane,
@@ -484,6 +671,38 @@ def canonical_execution_receipt_sha256(receipt: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def canonical_input_provenance_sha256(
+    *,
+    input_contract: str,
+    case_id: str,
+    native_input_manifest_sha256: str,
+    native_input_content_sha256: str,
+    topology_sha256: str,
+    asset_manifest_sha256: str | None,
+    shipping_publication_sha256: str | None,
+) -> str:
+    """Bind the measured input source independently from numerical equality."""
+
+    payload = {
+        "schema_version": INPUT_CONTRACT_SCHEMA_VERSION,
+        "input_contract": input_contract,
+        "case_id": case_id,
+        "native_input_manifest_sha256": native_input_manifest_sha256,
+        "native_input_content_sha256": native_input_content_sha256,
+        "topology_sha256": topology_sha256,
+        "asset_manifest_sha256": asset_manifest_sha256,
+        "shipping_publication_sha256": shipping_publication_sha256,
+    }
+    encoded = json.dumps(
+        payload,
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def canonical_row_semantics_sha256(row: Mapping[str, Any], gate: Mapping[str, Any]) -> str:
     """Hash one row plus every shared contract that changes its execution meaning."""
 
@@ -498,6 +717,11 @@ def canonical_row_semantics_sha256(row: Mapping[str, Any], gate: Mapping[str, An
         "payload_channel_contracts": gate.get("payload_channel_contracts"),
         "diagnostic_overlay_contracts": gate.get("diagnostic_overlay_contracts"),
         "native_input_contract": gate.get("native_input_contract"),
+        "input_contracts": gate.get("input_contracts"),
+        "eligibility_contract": gate.get("eligibility_contract"),
+        "acceleration_contracts": gate.get("acceleration_contracts"),
+        "asset_manifest_contract": gate.get("asset_manifest_contract"),
+        "shipping_publication_receipt_contract": gate.get("shipping_publication_receipt_contract"),
     }
     encoded = json.dumps(
         payload,
@@ -558,6 +782,10 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
             "native_input_content_sha256",
             "topology_sha256",
             "native_readiness_sha256",
+            "input_provenance_sha256",
+            "eligibility_sha256",
+            "operation_trace_sha256",
+            "acceleration_sha256",
         ):
             if not _sha256_text(getattr(receipt, field)):
                 errors.append(f"receipt {field} must be a lowercase SHA-256 digest")
@@ -588,6 +816,166 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
         expected_producer = gate["receipt_provenance"]["producer_by_lane"].get(lane)
         if receipt.producer != expected_producer:
             errors.append("receipt producer does not match its backend lane")
+
+        expected_input_contract = row.get("input_contract")
+        if receipt.input_contract != expected_input_contract:
+            errors.append("receipt input_contract does not match its gate row")
+        eligibility = receipt.eligibility
+        expected_eligibility_identity = {
+            "row_id": receipt.row_id,
+            "case_id": receipt.case_id,
+            "boundary": receipt.boundary,
+            "lane": receipt.lane,
+            "input_contract": receipt.input_contract,
+            "renderer_id": receipt.renderer_id,
+            "acceleration_id": receipt.acceleration_id,
+        }
+        for name, expected in expected_eligibility_identity.items():
+            if getattr(eligibility, name) != expected:
+                errors.append(f"receipt eligibility {name} does not match execution")
+        expected_operations = required_runtime_operations(row)
+        if eligibility.required_operations != expected_operations:
+            errors.append("receipt eligibility required operations do not match its gate row")
+        if not eligibility.eligible or eligibility.reason_codes:
+            errors.append("receipt eligibility does not authorize timed submission")
+        recalculated_eligibility = evaluate_lane_eligibility(
+            row=row,
+            lane=lane,
+            entry_point_audits=eligibility.entry_point_audits,
+            asset_manifest_sha256=eligibility.asset_manifest_sha256,
+        )
+        if eligibility != recalculated_eligibility:
+            errors.append("receipt eligibility was not produced by the frozen evaluation")
+        required_asset = row.get("required_asset_manifest")
+        if required_asset is not None and not _sha256_text(eligibility.asset_manifest_sha256):
+            errors.append("receipt eligibility does not prove the required asset manifest")
+        if required_asset is None and eligibility.asset_manifest_sha256 is not None:
+            errors.append("receipt eligibility carries an unexpected asset manifest")
+        receipt_artifacts = record.get("artifact_hashes")
+        asset_artifact_sha256 = (
+            receipt_artifacts.get("asset_manifest") if isinstance(receipt_artifacts, Mapping) else None
+        )
+        if required_asset is not None and asset_artifact_sha256 != eligibility.asset_manifest_sha256:
+            errors.append("result asset manifest artifact does not match eligibility evidence")
+        if required_asset is None and asset_artifact_sha256 is not None:
+            errors.append("result carries an unexpected asset manifest artifact")
+
+        operation_trace = receipt.operation_trace
+        if (
+            operation_trace.row_id != receipt.row_id
+            or operation_trace.lane != receipt.lane
+            or operation_trace.boundary != receipt.boundary
+        ):
+            errors.append("receipt operation trace identity does not match execution")
+        try:
+            validate_required_operation_order(operation_trace, expected_operations)
+            validate_trace_entry_points(operation_trace, eligibility)
+        except ValueError as exc:
+            errors.append(str(exc))
+
+        acceleration = receipt.acceleration
+        if acceleration.acceleration_id != receipt.acceleration_id:
+            errors.append("receipt acceleration identity does not match execution")
+        if acceleration.workload_class != acceleration_class:
+            errors.append("receipt acceleration workload class does not match its gate row")
+        exact_acceleration = (
+            gate["acceleration_contracts"]["by_lane_and_identity"].get(lane, {}).get(receipt.acceleration_id)
+        )
+        if exact_acceleration is None:
+            errors.append("receipt acceleration has no frozen exact contract")
+        else:
+            for name, expected in exact_acceleration.items():
+                if getattr(acceleration, name) != expected:
+                    errors.append(f"receipt acceleration {name} does not match its exact contract")
+        if acceleration.topology_validation_sha256 != receipt.topology_sha256:
+            errors.append("receipt acceleration topology validation does not match native input")
+        if acceleration.instrumentation_trace_sha256 != receipt.operation_trace_sha256:
+            errors.append("receipt acceleration does not bind the actual operation trace")
+        if acceleration.completion_event_recorded is not True:
+            errors.append("receipt acceleration does not prove completion-event recording")
+        forbidden_counts = gate["acceleration_contracts"]["forbidden_primary_counts"]
+        for name, expected in forbidden_counts.items():
+            if getattr(acceleration, name) != expected:
+                errors.append(f"receipt acceleration {name} must equal {expected}")
+        classification = acceleration.operation_classification
+        expected_counts = {
+            "none": (0, 0, 0),
+            "refit": (1, 1, 0),
+            "rebuild": (1, 0, 1),
+        }.get(classification)
+        if (
+            expected_counts is not None
+            and (
+                acceleration.scene_update_count,
+                acceleration.refit_count,
+                acceleration.rebuild_count,
+            )
+            != expected_counts
+        ):
+            errors.append("receipt acceleration operation counts do not match classification")
+        if min(acceleration.primitive_count, acceleration.node_count, acceleration.leaf_count) <= 0:
+            errors.append("receipt acceleration primitive/node/leaf counts must be positive")
+        if acceleration.node_count < acceleration.leaf_count:
+            errors.append("receipt acceleration node_count cannot be smaller than leaf_count")
+        if classification == "none":
+            if (
+                acceleration.scene_update_kernel_launch_count != 0
+                or acceleration.acceleration_kernel_launch_count != 0
+            ):
+                errors.append("fixed R0 acceleration must not claim update/acceleration kernels")
+        elif (
+            acceleration.scene_update_kernel_launch_count <= 0
+            or acceleration.acceleration_kernel_launch_count <= 0
+        ):
+            errors.append("dynamic acceleration must prove scene and acceleration kernel launches")
+
+        publication = receipt.shipping_publication
+        if row["boundary"] == "S":
+            if publication is None:
+                errors.append("shipping receipt requires publication/lifecycle evidence")
+            else:
+                if publication.input_contract != receipt.input_contract:
+                    errors.append("shipping publication input contract does not match execution")
+                for name in (
+                    "publish_event_recorded",
+                    "producer_publish_completion_recorded",
+                    "consumer_stream_wait_enqueued",
+                    "zero_copy_transform_binding",
+                    "consumer_completion_recorded",
+                    "slot_logically_reclaimable",
+                    "done_event_retained_until_reuse_dependency",
+                ):
+                    if getattr(publication, name) is not True:
+                        errors.append(f"shipping publication {name} must be true")
+                if publication.physics_step_count != 1 or publication.borrow_count != 1:
+                    errors.append("shipping publication must prove one measured step and borrow")
+                if (
+                    publication.replay_source_count != 0
+                    or publication.host_poll_count != 0
+                    or publication.host_synchronize_count != 0
+                ):
+                    errors.append("shipping publication contains a forbidden replay/host operation")
+                if publication.publication_trace_sha256 != receipt.operation_trace_sha256:
+                    errors.append("shipping publication does not bind the actual operation trace")
+                lifecycle = dict(receipt.lifecycle)
+                if lifecycle.get("final_drain_complete", False) != publication.final_payload_drain_complete:
+                    errors.append("shipping publication final drain does not match lifecycle")
+                if lifecycle.get("final_reclaim_complete", False) != publication.final_reclaim_complete:
+                    errors.append("shipping publication final reclaim does not match lifecycle")
+        elif publication is not None or receipt.shipping_publication_sha256 is not None:
+            errors.append("non-shipping receipt must not contain publication evidence")
+
+        expected_input_provenance = canonical_input_provenance_sha256(
+            input_contract=receipt.input_contract,
+            case_id=receipt.case_id,
+            native_input_manifest_sha256=receipt.native_input_manifest_sha256,
+            native_input_content_sha256=receipt.native_input_content_sha256,
+            topology_sha256=receipt.topology_sha256,
+            asset_manifest_sha256=eligibility.asset_manifest_sha256,
+            shipping_publication_sha256=receipt.shipping_publication_sha256,
+        )
+        if receipt.input_provenance_sha256 != expected_input_provenance:
+            errors.append("receipt input provenance does not match its bound evidence")
 
         expected_execution = {
             "output_profile": row["output_profile"],
@@ -763,6 +1151,20 @@ def validate_frozen_gate(payload: Mapping[str, Any]) -> None:
         errors.append("receipt_provenance does not freeze lane-generated evidence ownership")
     if payload.get("native_input_contract") != EXPECTED_NATIVE_INPUT_CONTRACT:
         errors.append("native_input_contract does not match the durable a2 contract")
+    if payload.get("input_contracts") != EXPECTED_INPUT_CONTRACTS:
+        errors.append("input_contracts do not match the approved replay/shipping split")
+    if payload.get("eligibility_contract") != EXPECTED_ELIGIBILITY_CONTRACT:
+        errors.append("eligibility_contract does not match the approved a3a fail-closed gate")
+    if payload.get("phase_authorization") != EXPECTED_PHASE_AUTHORIZATION:
+        errors.append("phase_authorization does not preserve native/shipping review authority")
+    if payload.get("acceleration_contracts") != EXPECTED_ACCELERATION_CONTRACTS:
+        errors.append("acceleration_contracts do not match the approved exact identities")
+    if payload.get("asset_manifest_contract") != EXPECTED_ASSET_MANIFEST_CONTRACT:
+        errors.append("asset_manifest_contract does not enforce exact Go2 preflight")
+    if payload.get("shipping_publication_receipt_contract") != EXPECTED_SHIPPING_PUBLICATION_RECEIPT_CONTRACT:
+        errors.append("shipping publication receipt contract is not frozen")
+    if payload.get("approved_dependency_order_commit") != ("57073b8cabe39d7e4104d8cef77fce70fc17956c"):
+        errors.append("approved_dependency_order_commit is not the reviewed v3 commit")
 
     continuation = payload.get("continuation")
     expected_continuation = {
@@ -862,6 +1264,8 @@ def _validate_rows(
             "output_profile",
             "shadows",
             "acceleration_class",
+            "input_contract",
+            "required_asset_manifest",
             "completion_endpoint",
             "required_lifecycle",
         ):
@@ -869,6 +1273,12 @@ def _validate_rows(
                 errors.append(f"row {row_id} is missing {field}")
         if not isinstance(row.get("shadows"), bool):
             errors.append(f"row {row_id} shadows must be a boolean")
+        expected_input_contract = INPUT_CONTRACT_BY_BOUNDARY.get(str(boundary))
+        if row.get("input_contract") != expected_input_contract:
+            errors.append(f"row {row_id} input_contract does not match its boundary")
+        case = cases_by_id().get(str(row.get("case_id")))
+        if case is not None and row.get("required_asset_manifest") != case.required_asset_manifest:
+            errors.append(f"row {row_id} required_asset_manifest does not match its case")
         lifecycle = row.get("required_lifecycle")
         if not isinstance(lifecycle, Sequence) or isinstance(lifecycle, (str, bytes)) or not lifecycle:
             errors.append(f"row {row_id} required_lifecycle must be a non-empty array")

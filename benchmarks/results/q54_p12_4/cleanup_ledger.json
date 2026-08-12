@@ -120,6 +120,9 @@
         "benchmarks/optical/schema.py",
         "benchmarks/optical/native.py",
         "benchmarks/optical/timing.py",
+        "benchmarks/optical/eligibility.py",
+        "benchmarks/optical/assets.py",
+        "benchmarks/optical/receipts.py",
         "benchmarks/optical/runner.py",
         "benchmarks/optical/artifacts.py"
       ],
@@ -131,6 +134,61 @@
       "warp_selected": {
         "action": "retain",
         "acceptance": "keep canonical cases, contracts, independent native preparation, single-lane runner, artifacts, and the selected Warp regression lane; no paired selector remains in this surface"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
+      "entry_id": "temporary_warp_comparison_lane",
+      "paths": ["benchmarks/optical/lanes/warp.py"],
+      "symbols": {
+        "benchmarks/optical/lanes/warp.py": ["class CurrentWarpLanePreflight:"]
+      },
+      "cuda_selected": {
+        "action": "delete",
+        "acceptance": "remove the losing Warp comparison lane and every comparison-only import"
+      },
+      "warp_selected": {
+        "action": "collapse",
+        "acceptance": "replace the preflight-only adapter with one thin selected-backend durable regression lane"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
+      "entry_id": "temporary_cuda_comparison_lane",
+      "paths": ["benchmarks/optical/lanes/cuda.py"],
+      "symbols": {
+        "benchmarks/optical/lanes/cuda.py": ["class CurrentCudaLanePreflight:"]
+      },
+      "cuda_selected": {
+        "action": "collapse",
+        "acceptance": "replace the preflight-only adapter with one thin selected-backend durable regression lane"
+      },
+      "warp_selected": {
+        "action": "delete",
+        "acceptance": "remove the losing CUDA comparison lane and every comparison-only import"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
+      "entry_id": "temporary_paired_lane_audit_and_exports",
+      "paths": [
+        "benchmarks/optical/lanes/__init__.py",
+        "benchmarks/optical/lanes/audit.py",
+        "tests/unit/benchmarks/test_optical_benchmark_a3a.py"
+      ],
+      "symbols": {
+        "benchmarks/optical/lanes/audit.py": [
+          "def current_product_entry_point_audits(",
+          "def verify_current_product_entry_point_audits("
+        ]
+      },
+      "cuda_selected": {
+        "action": "collapse",
+        "acceptance": "export only the selected CUDA regression lane; remove pre-a3b source probes, Warp references, and comparison-only tests"
+      },
+      "warp_selected": {
+        "action": "collapse",
+        "acceptance": "export only the selected Warp regression lane; remove pre-a3b source probes, CUDA references, and comparison-only tests"
       },
       "must_resolve_by": "P12.4e"
     },
