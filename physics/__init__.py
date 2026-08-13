@@ -19,6 +19,19 @@ from .contact import (
     NullContactModel,
     PenaltyContactModel,
 )
+from .cuda_publication import (
+    PUBLICATION_CUDA_BINDING_CONTRACT_VERSION,
+    CudaConsumerResourceGuardian,
+    CudaDeviceConsumerBinding,
+    CudaPublicationAbortDisposition,
+    CudaPublicationCompletionRequiredError,
+    CudaPublicationError,
+    CudaPublicationLease,
+    CudaPublicationLeaseEvidence,
+    CudaPublicationPoisonedError,
+    CudaPublicationQuarantinedError,
+    CudaPublicationStateError,
+)
 from .dynamics_cache import DynamicsCache, ForceState
 from .force_source import ForceSource, PassiveForceSource
 from .geometry import (
@@ -60,6 +73,7 @@ from .publish import (
     PublishPolicy,
     PublishRuntimeStats,
     RingPressureStats,
+    SlotPoisonedError,
     SlotReclaimedError,
     SlotReclaimer,
     SnapshotHandle,
@@ -135,6 +149,7 @@ __all__ = [
     "DeviceSnapshotSpec",
     "LeaseExpiredError",
     "SlotReclaimedError",
+    "SlotPoisonedError",
     "OnRingFull",
     "ConsumerState",
     "ConsumerPublishStats",
@@ -146,6 +161,17 @@ __all__ = [
     "RingPressureStats",
     "SnapshotHandle",
     "SlotReclaimer",
+    "CudaConsumerResourceGuardian",
+    "CudaDeviceConsumerBinding",
+    "CudaPublicationAbortDisposition",
+    "CudaPublicationCompletionRequiredError",
+    "CudaPublicationError",
+    "CudaPublicationLease",
+    "CudaPublicationLeaseEvidence",
+    "CudaPublicationPoisonedError",
+    "CudaPublicationQuarantinedError",
+    "CudaPublicationStateError",
+    "PUBLICATION_CUDA_BINDING_CONTRACT_VERSION",
     # contact (legacy — use ConstraintSolver + CollisionPipeline instead)
     "ContactParams",
     "ContactPoint",

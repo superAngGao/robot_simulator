@@ -185,6 +185,10 @@ class GpuPublishedFrame:
         if name in guarded:
             slot_meta = object.__getattribute__(self, "slot_meta")
             frame_id = object.__getattribute__(self, "frame_id")
+            if slot_meta is not None and slot_meta.poisoned:
+                raise SlotPoisonedError(
+                    f"GpuPublishedFrame slot {slot_meta.slot_id} is poisoned: {slot_meta.poison_reason}"
+                )
             if slot_meta is not None and (slot_meta.invalidated or slot_meta.frame_id != frame_id):
                 raise SlotReclaimedError(
                     f"GpuPublishedFrame slot {slot_meta.slot_id} for frame {frame_id} has been reclaimed"
@@ -198,6 +202,10 @@ class LeaseExpiredError(RuntimeError):
 
 class SlotReclaimedError(RuntimeError):
     """Raised when code accesses a GPU published frame after slot reclaim."""
+
+
+class SlotPoisonedError(RuntimeError):
+    """Raised when code accesses a CUDA publication slot after timeline poison."""
 
 
 class BorrowedFrameLease(Generic[T]):
@@ -350,6 +358,10 @@ class ConsumerState:
     consumer_location: ConsumerLocation = "host"
     device_completed_frame_id: int = -1
     device_done_event: object | None = None
+    cuda_binding_id: str | None = None
+    cuda_binding_state: str | None = None
+    device_poisoned: bool = False
+    device_poison_reason: str | None = None
 
     def __post_init__(self) -> None:
         if self.max_lag_frames is not None and self.max_lag_frames < 0:
@@ -435,6 +447,8 @@ class PublishedSlotMeta:
     publish_event: object | None = None
     host_export_queued: bool = False
     invalidated: bool = False
+    poisoned: bool = False
+    poison_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -606,6 +620,11 @@ class PublishedRing:
         with self._condition:
             for idx, existing in enumerate(self._consumers):
                 if existing.consumer_id == consumer.consumer_id:
+                    if existing.cuda_binding_id is not None:
+                        raise RuntimeError(
+                            f"Cannot replace consumer {consumer.consumer_id!r} while its "
+                            "CUDA publication binding exists"
+                        )
                     self._consumers[idx] = consumer
                     self._condition.notify_all()
                     return
@@ -614,6 +633,19 @@ class PublishedRing:
 
     def unregister_consumer(self, consumer_id: str) -> None:
         with self._condition:
+            existing = next(
+                (consumer for consumer in self._consumers if consumer.consumer_id == consumer_id),
+                None,
+            )
+            if existing is not None and existing.cuda_binding_state not in {
+                None,
+                "closed",
+                "aborted_synced",
+            }:
+                raise RuntimeError(
+                    f"Cannot unregister consumer {consumer_id!r} while CUDA binding is "
+                    f"{existing.cuda_binding_state}"
+                )
             self._consumers[:] = [
                 consumer for consumer in self._consumers if consumer.consumer_id != consumer_id
             ]
@@ -637,6 +669,117 @@ class PublishedRing:
             consumer.device_completed_frame_id = max(consumer.device_completed_frame_id, frame_id)
             consumer.device_done_event = done_event
             self._condition.notify_all()
+
+    def bind_cuda_device_consumer(
+        self,
+        consumer: ConsumerState,
+        binding_id: str,
+        state: str,
+    ) -> None:
+        """Bind one lossless borrowed device consumer to a stable CUDA session."""
+        with self._condition:
+            if consumer not in self._consumers:
+                raise KeyError(f"Unknown publish consumer {consumer.consumer_id!r}")
+            if not consumer.enabled or not consumer.is_lossless:
+                raise ValueError("CUDA publication binding requires an enabled lossless consumer")
+            if consumer.consumer_location != "device" or consumer.access_mode != "borrow":
+                raise ValueError(
+                    "CUDA publication binding requires a device consumer with access_mode='borrow'"
+                )
+            if consumer.cuda_binding_id is not None:
+                raise RuntimeError(
+                    f"Consumer {consumer.consumer_id!r} already has a CUDA publication binding"
+                )
+            consumer.cuda_binding_id = binding_id
+            consumer.cuda_binding_state = state
+            self._condition.notify_all()
+
+    def update_cuda_device_binding_state(
+        self,
+        consumer: ConsumerState,
+        binding_id: str,
+        state: str,
+    ) -> None:
+        with self._condition:
+            self._require_cuda_binding_identity(consumer, binding_id)
+            consumer.cuda_binding_state = state
+            self._condition.notify_all()
+
+    def mark_cuda_device_consumer_borrowed(
+        self,
+        consumer: ConsumerState,
+        frame_id: int,
+        binding_id: str,
+    ) -> None:
+        with self._condition:
+            self._require_cuda_binding_identity(consumer, binding_id)
+            if consumer.cuda_binding_state != "open" or consumer.device_poisoned:
+                raise RuntimeError("CUDA publication consumer is not open for borrow")
+            if frame_id <= consumer.latest_seen_frame_id:
+                raise RuntimeError("CUDA publication borrow frame must be strictly increasing")
+            consumer.latest_seen_frame_id = frame_id
+            self._condition.notify_all()
+
+    def mark_cuda_device_consumer_complete_exact(
+        self,
+        consumer: ConsumerState,
+        frame_id: int,
+        binding_id: str,
+        done_event: object,
+    ) -> None:
+        """Commit one validated FIFO completion without unchecked ``max()``."""
+        with self._condition:
+            self._require_cuda_binding_identity(consumer, binding_id)
+            if consumer.cuda_binding_state != "open" or consumer.device_poisoned:
+                raise RuntimeError("CUDA publication consumer is not open for completion")
+            if frame_id > consumer.latest_seen_frame_id:
+                raise RuntimeError("Cannot complete a CUDA frame that was not borrowed")
+            if frame_id <= consumer.device_completed_frame_id:
+                raise RuntimeError("Duplicate or non-monotonic CUDA completion rejected")
+            consumer.device_completed_frame_id = frame_id
+            consumer.device_done_event = done_event
+            self._condition.notify_all()
+
+    def clear_cuda_device_done_event(
+        self,
+        consumer: ConsumerState,
+        event: object,
+    ) -> None:
+        with self._condition:
+            if consumer.device_done_event is event:
+                consumer.device_done_event = None
+            self._condition.notify_all()
+
+    def poison_cuda_device_consumer(
+        self,
+        consumer: ConsumerState,
+        slot_ids: tuple[int, ...],
+        reason: str,
+    ) -> None:
+        """Poison a lossless CUDA dependency without advancing completion."""
+        with self._condition:
+            if consumer not in self._consumers:
+                raise KeyError(f"Unknown publish consumer {consumer.consumer_id!r}")
+            consumer.device_poisoned = True
+            consumer.device_poison_reason = reason
+            consumer.cuda_binding_state = "poisoned"
+            for slot_id in slot_ids:
+                if slot_id < 0 or slot_id >= len(self._slot_meta):
+                    raise IndexError(f"Published slot {slot_id} is out of range")
+                meta = self._slot_meta[slot_id]
+                meta.poisoned = True
+                meta.poison_reason = reason
+            self._condition.notify_all()
+
+    def ready_frame_ids(self) -> tuple[int, ...]:
+        with self._condition:
+            return tuple(meta.frame_id for meta in self._slot_meta if meta.state == "ready")
+
+    def _require_cuda_binding_identity(self, consumer: ConsumerState, binding_id: str) -> None:
+        if consumer not in self._consumers:
+            raise KeyError(f"Unknown publish consumer {consumer.consumer_id!r}")
+        if consumer.cuda_binding_id != binding_id:
+            raise RuntimeError("CUDA publication binding identity mismatch")
 
     def ring_pressure_stats(self, next_frame_id: int | None = None) -> RingPressureStats:
         target = None if next_frame_id is None else self._target_meta(next_frame_id)
@@ -720,8 +863,17 @@ class PublishedRing:
         """Acquire the slot for ``frame_id`` or apply the ring-full policy."""
 
         with self._condition:
+            poisoned = tuple(
+                consumer.consumer_id
+                for consumer in self._consumers
+                if consumer.enabled and consumer.device_poisoned
+            )
+            if poisoned:
+                raise RuntimeError("Published ring is poisoned by CUDA consumer(s): " + ", ".join(poisoned))
             slot_id = self._target_slot_id(frame_id)
             meta = self._slot_meta[slot_id]
+            if meta.poisoned:
+                raise RuntimeError(f"Published slot {slot_id} is poisoned: {meta.poison_reason}")
             saw_backpressure = False
             while meta.state == "ready" and not self._reclaimer.reclaimable(meta):
                 if not saw_backpressure:
@@ -773,6 +925,8 @@ class PublishedRing:
         publish_event: object | None,
     ) -> PublishedSlotMeta:
         meta = self._slot_meta[slot_id]
+        if meta.poisoned:
+            raise RuntimeError(f"Cannot mark poisoned published slot {slot_id} ready")
         meta.frame_id = frame_id
         meta.step_index = step_index
         meta.sim_time = sim_time
@@ -791,6 +945,7 @@ class PublishedRing:
         return None
 
     def reset(self) -> None:
+        self.require_reset_allowed()
         self._latest_frame = None
         self._publish_host_times.clear()
         self._materialized_publish_count = 0
@@ -807,6 +962,21 @@ class PublishedRing:
             meta.publish_event = None
             meta.host_export_queued = False
             meta.invalidated = False
+            meta.poisoned = False
+            meta.poison_reason = None
+
+    def require_reset_allowed(self) -> None:
+        """Reject reset before a caller mutates engine or ring state."""
+        bound = tuple(
+            consumer.consumer_id for consumer in self._consumers if consumer.cuda_binding_state is not None
+        )
+        if bound:
+            raise RuntimeError(
+                "Cannot reset published ring while CUDA binding state exists: " + ", ".join(bound)
+            )
+        poisoned = tuple(meta.slot_id for meta in self._slot_meta if meta.poisoned)
+        if poisoned:
+            raise RuntimeError(f"Cannot reset poisoned published slots: {poisoned}")
 
     def _target_slot_id(self, frame_id: int) -> int:
         return frame_id % self.ring_size
@@ -913,6 +1083,7 @@ __all__ = [
     "RingPressureStats",
     "SnapshotHandle",
     "SlotReclaimedError",
+    "SlotPoisonedError",
     "SlotReclaimer",
     "SlotState",
     "ViewPolicy",

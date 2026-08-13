@@ -216,17 +216,33 @@
     {
       "entry_id": "physics_cuda_publication_binding",
       "paths": [
+        "physics/cuda_publication.py",
         "physics/gpu_engine.py",
-        "physics/publish.py"
+        "physics/publish.py",
+        "tests/gpu/test_cuda_publication_binding.py",
+        "tests/unit/physics/test_cuda_publication.py"
       ],
-      "symbols": {},
+      "symbols": {
+        "physics/cuda_publication.py": [
+          "class CudaConsumerResourceGuardian:",
+          "class CudaDeviceConsumerBinding:",
+          "class CudaPublicationLease:",
+          "class CudaPublicationQuarantineRegistry:"
+        ],
+        "physics/gpu_engine.py": [
+          "def bind_cuda_device_consumer("
+        ],
+        "physics/publish.py": [
+          "def bind_cuda_device_consumer("
+        ]
+      },
       "cuda_selected": {
         "action": "retain",
-        "acceptance": "retain the public consumer-stream binding only as the audited Warp-physics to CUDA-optical handoff with lifecycle GPU tests"
+        "acceptance": "retain the public consumer-stream binding only as the audited Warp-physics to CUDA-optical handoff with lifecycle GPU tests and a complete C2-C4/B3 guardian storage-provenance review"
       },
       "warp_selected": {
         "action": "collapse",
-        "acceptance": "delete any binding API introduced solely for the unselected CUDA optical consumer"
+        "acceptance": "delete the binding API, guardian/quarantine module, exports, and dedicated lifecycle tests introduced solely for the unselected CUDA optical consumer"
       },
       "must_resolve_by": "P12.4e"
     }

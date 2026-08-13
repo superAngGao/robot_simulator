@@ -12,6 +12,7 @@ The full physics step runs as a sequence of GPU kernel launches:
 
 from __future__ import annotations
 
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, List
 
@@ -39,6 +40,13 @@ from .backends.warp.solver_kernels import (
 )
 from .backends.warp.solver_kernels_v2 import _build_tangent_frame
 from .backends.warp.solver_scratch import SolverScratch
+from .cuda_publication import (
+    PROCESS_CUDA_PUBLICATION_QUARANTINE,
+    CudaConsumerResourceGuardian,
+    CudaDeviceConsumerBinding,
+    CudaPublicationQuarantineRegistry,
+    CudaPublicationStateError,
+)
 from .engine import ContactInfo, PhysicsEngine, StepOutput
 from .publish import (
     AckPolicy,
@@ -54,6 +62,41 @@ from .publish import (
 
 if TYPE_CHECKING:
     from .merged_model import MergedModel
+
+
+class _WarpCudaPublicationRuntime:
+    """Narrow Warp mapping for the physics-owned external CUDA handoff."""
+
+    def __init__(self, engine: "GpuEngine") -> None:
+        self._engine = engine
+        self._device = wp.get_device(engine._device)
+
+    def device_scope(self):
+        return wp.ScopedDevice(self._device)
+
+    def create_external_stream(self, cuda_stream_handle: int):
+        return wp.Stream(self._device, cuda_stream=cuda_stream_handle)
+
+    @staticmethod
+    def wait_event(stream, event) -> None:
+        stream.wait_event(event)
+
+    def allocate_event(self):
+        return wp.Event(self._device, enable_timing=False)
+
+    @staticmethod
+    def record_event(stream, event) -> None:
+        stream.record_event(event)
+
+    def producer_wait_event(self, event) -> None:
+        self._engine._current_stream().wait_event(event)
+
+    def emergency_synchronize(self) -> None:
+        wp.synchronize_device(self._device)
+
+    @staticmethod
+    def event_native_handle(event) -> int:
+        return int(event.cuda_event)
 
 
 # ── Contact force aggregation kernel ──
@@ -231,6 +274,13 @@ class GpuEngine(PhysicsEngine):
     ) -> None:
         super().__init__(merged)
         wp.init()
+        self._cuda_consumer_bindings: dict[str, CudaDeviceConsumerBinding] = {}
+        self._cuda_publication_quarantine: CudaPublicationQuarantineRegistry = (
+            PROCESS_CUDA_PUBLICATION_QUARANTINE
+        )
+        self._quarantined_logically_unregistered_consumers: set[str] = set()
+        self._closed = False
+        self._physics_run_id = uuid.uuid4().hex
 
         # GPU narrowphase only supports flat ground (single ground_z scalar in
         # static_data). Reject other terrain types loudly rather than silently
@@ -245,6 +295,8 @@ class GpuEngine(PhysicsEngine):
             )
 
         self._device = device
+        self._device_ordinal = int(wp.get_device(device).ordinal)
+        self._cuda_publication_quarantine.require_device_available(self._device_ordinal)
         self._num_envs = num_envs
         self._dt = dt
         self._solver = solver
@@ -523,11 +575,84 @@ class GpuEngine(PhysicsEngine):
 
     def register_consumer(self, consumer: ConsumerState) -> None:
         """Register or replace a publish consumer for ring-reclaim accounting."""
+        self._require_engine_open()
+        if consumer.consumer_id in self._cuda_consumer_bindings:
+            raise RuntimeError(
+                f"Cannot replace consumer {consumer.consumer_id!r} while its CUDA binding exists"
+            )
         self._published_ring.register_consumer(consumer)
 
     def unregister_consumer(self, consumer_id: str) -> None:
         """Remove one consumer from ring-reclaim accounting."""
+        binding = self._cuda_consumer_bindings.get(consumer_id)
+        if binding is not None:
+            if binding.state == "quarantined":
+                self._quarantined_logically_unregistered_consumers.add(consumer_id)
+                return
+            if binding.state not in {"closed", "aborted_synced"}:
+                raise RuntimeError(
+                    f"Cannot unregister CUDA consumer {consumer_id!r} while binding is {binding.state}"
+                )
         self._published_ring.unregister_consumer(consumer_id)
+        self._cuda_consumer_bindings.pop(consumer_id, None)
+
+    def bind_cuda_device_consumer(
+        self,
+        consumer_id: str,
+        *,
+        device_ordinal: int,
+        cuda_stream_handle: int,
+        consumer_resource_guardian: CudaConsumerResourceGuardian,
+    ) -> CudaDeviceConsumerBinding:
+        """Bind one lossless consumer to a stable externally owned CUDA stream.
+
+        The returned binding owns publication ordering and a lifetime hold over
+        the sealed consumer resource guardian.  It does not enable a CUDA
+        optical renderer or perform any Warp/Torch data conversion.
+        """
+        self._require_engine_open()
+        if consumer_id in self._cuda_consumer_bindings:
+            raise RuntimeError(f"CUDA consumer {consumer_id!r} is already bound")
+        if isinstance(device_ordinal, bool) or not isinstance(device_ordinal, int):
+            raise TypeError("device_ordinal must be an integer")
+        if device_ordinal != self._device_ordinal:
+            raise ValueError(
+                f"CUDA consumer device {device_ordinal} does not match engine device {self._device_ordinal}"
+            )
+        if isinstance(cuda_stream_handle, bool) or not isinstance(cuda_stream_handle, int):
+            raise TypeError("cuda_stream_handle must be an integer")
+        if cuda_stream_handle < 0:
+            raise ValueError("cuda_stream_handle must be >= 0")
+        consumer = self._require_consumer(consumer_id)
+        if (
+            not consumer.enabled
+            or consumer.qos_mode != "lossless"
+            or consumer.access_mode != "borrow"
+            or consumer.consumer_location != "device"
+        ):
+            raise ValueError("CUDA publication binding requires an enabled lossless borrowed device consumer")
+        consumer_resource_guardian.validate_identity(
+            device_ordinal=self._device_ordinal,
+            cuda_stream_handle=cuda_stream_handle,
+        )
+        binding = CudaDeviceConsumerBinding(
+            consumer=consumer,
+            device_ordinal=self._device_ordinal,
+            cuda_stream_handle=cuda_stream_handle,
+            guardian=consumer_resource_guardian,
+            runtime=_WarpCudaPublicationRuntime(self),
+            frame_resolver=self._resolve_cuda_published_frame,
+            borrow_commit=self._published_ring.mark_cuda_device_consumer_borrowed,
+            completion_commit=self._published_ring.mark_cuda_device_consumer_complete_exact,
+            poison_commit=self._published_ring.poison_cuda_device_consumer,
+            clear_done_event=self._published_ring.clear_cuda_device_done_event,
+            binding_state_commit=self._commit_cuda_binding_state,
+            engine_owner=self,
+            physics_run_id=self._physics_run_id,
+            quarantine_registry=self._cuda_publication_quarantine,
+        )
+        self._cuda_consumer_bindings[consumer_id] = binding
+        return binding
 
     def ring_pressure_stats(self):
         """Return current ring-pressure stats for the next slot that would be reused."""
@@ -609,6 +734,8 @@ class GpuEngine(PhysicsEngine):
         `max_lag_frames` is configured.
         """
         consumer = self._require_consumer(consumer_id)
+        if consumer_id in self._cuda_consumer_bindings:
+            raise RuntimeError("Bound CUDA consumers must use binding.borrow(), not borrow_device_frame()")
         if consumer.consumer_location != "device":
             raise ValueError("borrow_device_frame requires a device consumer")
         if consumer.access_mode != "borrow":
@@ -640,6 +767,10 @@ class GpuEngine(PhysicsEngine):
         CUDA migration equivalent: `cudaEventRecord(done_event, consumer_stream)`.
         """
         consumer = self._require_consumer(consumer_id)
+        if consumer_id in self._cuda_consumer_bindings:
+            raise RuntimeError(
+                "Bound CUDA consumers must use lease.complete(), not complete_device_consumer()"
+            )
         if consumer.consumer_location != "device":
             raise ValueError("complete_device_consumer requires a device consumer")
 
@@ -761,6 +892,12 @@ class GpuEngine(PhysicsEngine):
 
     def reset(self, q0: np.ndarray | None = None) -> None:
         """Reset all environments to default or given state."""
+        self._require_engine_open()
+        # Fail before changing the run identity, engine arrays, or counters.
+        # A live/poisoned CUDA publication binding makes the current run
+        # deliberately non-resettable.
+        self._published_ring.require_reset_allowed()
+        self._physics_run_id = uuid.uuid4().hex
         N = self._num_envs
         sc = self._scratch
         if q0 is not None:
@@ -838,6 +975,7 @@ class GpuEngine(PhysicsEngine):
             dt: Time step per substep. If None, uses self._dt.
             n_substeps: Number of physics substeps to run.
         """
+        self._require_engine_open()
         for _ in range(n_substeps):
             self._step_physics(tau=tau, dt=dt)
             self._publish_after_step(dt or self._dt)
@@ -845,6 +983,7 @@ class GpuEngine(PhysicsEngine):
 
     def step(self, q=None, qdot=None, tau=None, dt=None):
         """One physics step. If q/qdot/tau not given, uses internal state."""
+        self._require_engine_open()
         sc = self._scratch
 
         # If external state provided, upload it
@@ -891,6 +1030,69 @@ class GpuEngine(PhysicsEngine):
             if consumer.consumer_id == consumer_id:
                 return consumer
         raise KeyError(f"Unknown publish consumer {consumer_id!r}. Register it first.")
+
+    def _require_engine_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("GpuEngine is closed")
+
+    def _resolve_cuda_published_frame(self, frame_id: int | None) -> GpuPublishedFrame:
+        frame = (
+            self._published_ring.latest_frame if frame_id is None else self._require_published_frame(frame_id)
+        )
+        if frame is None:
+            raise KeyError("No published frame is currently available")
+        return frame
+
+    def _commit_cuda_binding_state(
+        self,
+        consumer: ConsumerState,
+        binding_id: str,
+        state: str,
+    ) -> None:
+        if consumer.cuda_binding_id is None:
+            self._published_ring.bind_cuda_device_consumer(consumer, binding_id, state)
+            return
+        self._published_ring.update_cuda_device_binding_state(consumer, binding_id, state)
+
+    def close(self) -> None:
+        """Drain or abort publication bindings and close host-side helpers.
+
+        This method never performs normal-path CUDA synchronization.  A target-
+        device synchronization is permitted only inside ``abort_poisoned()``.
+        """
+        if self._closed:
+            return
+        for binding in tuple(self._cuda_consumer_bindings.values()):
+            if binding.state == "open":
+                binding.close()
+            elif binding.state == "poisoned":
+                disposition = binding.abort_poisoned()
+                if disposition.process_terminal:
+                    self._closed = True
+                    return
+            elif binding.state == "aborting":
+                raise CudaPublicationStateError("cannot close engine during re-entrant abort")
+            elif binding.state == "quarantined":
+                self._closed = True
+                return
+        executor = self._host_snapshot_executor
+        if executor is not None:
+            executor.shutdown(wait=True)
+            self._host_snapshot_executor = None
+        self._closed = True
+
+    def __del__(self) -> None:
+        """Quarantine unsafe CUDA bindings without making CUDA calls."""
+        try:
+            if getattr(self, "_closed", True):
+                return
+            bindings = getattr(self, "_cuda_consumer_bindings", {})
+            for binding in tuple(bindings.values()):
+                binding.quarantine_from_finalizer("engine_finalizer_without_explicit_close")
+            self._closed = True
+        except (AttributeError, TypeError):
+            # Interpreter shutdown may already have cleared module globals.
+            pass
 
     def _require_published_frame(self, frame_id: int) -> GpuPublishedFrame:
         latest = self._published_ring.latest_frame
@@ -992,6 +1194,10 @@ class GpuEngine(PhysicsEngine):
                     "PublishedRing returned a slot before lossless device consumer "
                     f"{consumer.consumer_id!r} completed frame {meta.frame_id}"
                 )
+            binding = getattr(self, "_cuda_consumer_bindings", {}).get(consumer.consumer_id)
+            if binding is not None:
+                binding.prepare_slot_reuse(meta.frame_id)
+                continue
             if consumer.device_done_event is not None:
                 self._wait_on_event(consumer.device_done_event)
 
@@ -1100,6 +1306,10 @@ class GpuEngine(PhysicsEngine):
             slot_meta=meta,
         )
         self._published_ring.set_latest_frame(frame)
+        live_frame_ids = self._published_ring.ready_frame_ids()
+        for binding in self._cuda_consumer_bindings.values():
+            if binding.state == "open":
+                binding.release_reuse_safe_records(live_frame_ids)
 
     def _step_physics(self, tau=None, dt=None):
         """Run one physics substep (no output extraction)."""
