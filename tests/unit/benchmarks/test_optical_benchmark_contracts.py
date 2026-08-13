@@ -11,7 +11,6 @@ from benchmarks.optical import (
     BOUNDARY_VERSIONS,
     SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION,
     AccelerationReceipt,
-    EntryPointAudit,
     ExecutionReceipt,
     NativeReadinessEvidence,
     ObservedChannel,
@@ -27,7 +26,9 @@ from benchmarks.optical import (
     validate_frozen_gate,
     validate_repository_inventory,
     validate_result_record,
+    verified_runtime_entry_point_audit,
 )
+from benchmarks.optical.instrumentation import entry_point_hook_id
 from benchmarks.optical.timing import (
     OPERATION_TRACE_SCHEMA_VERSION,
     RuntimeOperationRecord,
@@ -55,6 +56,20 @@ EXPECTED_CASE_HASHES = {
     "go2_static_960x640_v1": "da4045e2d05e7cb731cd5da7690c74a07708359e038512d3da3e6aae5c3f5723",
     "physics_body_triangle_960x640_v1": "c6d0b6f8aa1313cddae6be84122420507bdccafc010e705eae53fa331e5734c6",
     "synthetic_dynamic_rigid_960x640_v1": "7ebdbb64c57f904c732cf10eadfaa96008fcb126497f6e8b66add74d29c077ab",
+}
+
+_TEST_ENTRY_POINTS = {
+    "physics_step": "time.process_time",
+    "publication": "json.loads",
+    "stream_wait": "math.ceil",
+    "view_binding": "operator.add",
+    "scene_update": "json.dumps",
+    "consumer_completion": "math.floor",
+    "acceleration": "hashlib.sha256",
+    "render": "math.isfinite",
+    "pack": "operator.sub",
+    "delivery": "time.monotonic",
+    "reclaim": "time.perf_counter",
 }
 
 
@@ -443,10 +458,9 @@ def _valid_result_record(gate, row):
     binding = gate["lane_bindings"][lane]
     per_ray, scalar, observed_bytes = _observed_payload(row)
     audits = tuple(
-        EntryPointAudit(
+        verified_runtime_entry_point_audit(
             operation=operation,
-            entry_point=f"unit.cuda.{operation}",
-            instrumented=True,
+            entry_point=_TEST_ENTRY_POINTS[operation],
         )
         for operation in _required_operations_for_test(row)
     )
@@ -465,7 +479,9 @@ def _valid_result_record(gate, row):
             RuntimeOperationRecord(
                 sequence=index,
                 operation=operation,
-                entry_point=f"unit.cuda.{operation}",
+                entry_point=_TEST_ENTRY_POINTS[operation],
+                capture_source="runtime_hook",
+                runtime_hook_id=entry_point_hook_id(_TEST_ENTRY_POINTS[operation]),
             )
             for index, operation in enumerate(eligibility.required_operations)
         ),
@@ -569,7 +585,7 @@ def _valid_result_record(gate, row):
     )
     receipt_payload = receipt.to_payload()
     return {
-        "schema_version": "q54.p12.4.result.v5",
+        "schema_version": "q54.p12.4.result.v6",
         "gate_sha256": canonical_gate_sha256(gate),
         "run_id": "unit-test",
         "repeat_index": 0,

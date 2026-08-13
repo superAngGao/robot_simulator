@@ -23,9 +23,14 @@ from benchmarks.optical.eligibility import (
     LaneIneligibleError,
     evaluate_lane_eligibility,
     validate_trace_entry_points,
+    verified_runtime_entry_point_audit,
+)
+from benchmarks.optical.instrumentation import (
+    instrument_runtime_entry_points,
+    invoke_instrumented_entry_point,
 )
 from benchmarks.optical.lanes import CurrentCudaLanePreflight, CurrentWarpLanePreflight
-from benchmarks.optical.lanes.audit import verify_current_product_entry_point_audits
+from benchmarks.optical.lanes.audit import verify_current_product_source_manifest
 from benchmarks.optical.native import (
     CanonicalNativeInput,
     NativeInputValidationReport,
@@ -80,11 +85,11 @@ def test_gate_freezes_exact_acceleration_and_separate_input_contracts():
 
 
 @pytest.mark.parametrize("lane", ["warp", "cuda"])
-def test_current_product_entry_point_audit_is_source_bound_and_ineligible(lane):
+def test_current_product_source_manifest_is_explicitly_not_runtime_evidence(lane):
     gate = load_frozen_gate()
     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r1_dynamic_full_shadow")
 
-    audits = verify_current_product_entry_point_audits(REPO_ROOT, lane)
+    audits = verify_current_product_source_manifest(lane)
     evidence = evaluate_lane_eligibility(
         row=row,
         lane=lane,
@@ -96,6 +101,8 @@ def test_current_product_entry_point_audit_is_source_bound_and_ineligible(lane):
     assert any(reason.startswith("uninstrumented_entry_point:") for reason in evidence.reason_codes)
     assert any(reason.startswith("timed_contamination:allocation:") for reason in evidence.reason_codes)
     assert any("execute_camera" in audit.entry_point for audit in audits)
+    assert all(audit.source_manifest_sha256 is not None for audit in audits)
+    assert all(not audit.verified_runtime_hooks for audit in audits)
 
 
 def test_current_preflight_adapters_do_not_expose_a_fake_submit_api():
@@ -162,6 +169,78 @@ def test_operation_trace_rejects_contamination_before_record_and_restores_contex
     assert active_operation_trace() is None
 
 
+def test_real_product_entry_point_runtime_hook_catches_unreported_low_level_allocation():
+    entry_point = "tools.optical_pipeline_lab.rgb_pack.pack_linear_rgb_to_preview_uint8"
+    audit = verified_runtime_entry_point_audit(
+        operation="pack",
+        entry_point=entry_point,
+    )
+    trace = RuntimeOperationTrace(row_id="runtime-hook", lane="warp", boundary="R0")
+
+    class Result:
+        def channel(self, name):
+            assert name == "rgb"
+            return type("Rgb", (), {"shape": (1, 3), "device": "cuda:0"})()
+
+    with pytest.raises(TimedBoundaryViolation, match="allocation is forbidden"):
+        with instrument_runtime_entry_points((audit,)) as observation:
+            with native_timed_submission(
+                row_id="runtime-hook",
+                lane="warp",
+                boundary="R0",
+                operation_trace=trace,
+            ):
+                invoke_instrumented_entry_point(entry_point, Result())
+
+    evidence = trace.evidence()
+    assert [(record.operation, record.capture_source) for record in evidence.records] == [
+        ("pack", "runtime_hook")
+    ]
+    assert observation.violation_hook_id == "warp.empty"
+    assert observation.violation_contamination == "allocation"
+    assert active_timed_boundary() is None
+    assert active_operation_trace() is None
+
+
+@pytest.mark.parametrize(
+    ("hook_target", "contamination"),
+    [
+        ("numpy.empty", "allocation"),
+        ("torch.tensor", "host_upload"),
+        (
+            "tools.optical_pipeline_lab.delivery.stage_optical_channels",
+            "host_materialization",
+        ),
+        ("torch.cuda.synchronize", "global_device_synchronize"),
+        ("warp.synchronize_event", "host_synchronize"),
+        ("warp.to_torch", "warp_to_torch_bridge"),
+        ("torch.utils.cpp_extension.load_inline", "extension_load"),
+    ],
+)
+def test_registered_low_level_hook_classes_fail_before_the_original_call(
+    hook_target,
+    contamination,
+):
+    audit = verified_runtime_entry_point_audit(
+        operation="delivery",
+        entry_point="tools.optical_pipeline_lab.delivery.VideoDeliveryFacade.submit",
+    )
+    trace = RuntimeOperationTrace(row_id="hook-classes", lane="cuda", boundary="R0")
+
+    with pytest.raises(TimedBoundaryViolation, match=f"{contamination} is forbidden"):
+        with instrument_runtime_entry_points((audit,)) as observation:
+            with native_timed_submission(
+                row_id="hook-classes",
+                lane="cuda",
+                boundary="R0",
+                operation_trace=trace,
+            ):
+                invoke_instrumented_entry_point(hook_target)
+
+    assert observation.violation_hook_id == hook_target
+    assert observation.violation_contamination == contamination
+
+
 def test_operation_trace_rejects_out_of_order_frozen_transaction():
     gate = load_frozen_gate()
     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r1_dynamic_full_shadow")
@@ -211,13 +290,13 @@ def test_operation_trace_rejects_entry_point_not_in_instrumented_preflight():
             EntryPointAudit(
                 operation="render",
                 entry_point="approved.warp.render",
-                instrumented=True,
+                instrumented=False,
             ),
         ),
         asset_manifest_sha256=None,
     )
     trace = RuntimeOperationTraceEvidence(
-        schema_version="q54.p12.4.operation-trace.v1",
+        schema_version="q54.p12.4.operation-trace.v2",
         row_id=row["row_id"],
         lane="warp",
         boundary="R0",
@@ -226,12 +305,58 @@ def test_operation_trace_rejects_entry_point_not_in_instrumented_preflight():
                 sequence=0,
                 operation="render",
                 entry_point="fabricated.warp.render",
+                capture_source="lane",
             ),
         ),
     )
 
     with pytest.raises(ValueError, match="unaudited entry points"):
         validate_trace_entry_points(trace, eligibility)
+
+
+def test_manual_instrumented_boolean_cannot_grant_lane_eligibility():
+    gate = load_frozen_gate()
+    row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
+    evidence = evaluate_lane_eligibility(
+        row=row,
+        lane="warp",
+        entry_point_audits=(
+            EntryPointAudit(
+                operation="render",
+                entry_point="json.dumps",
+                instrumented=True,
+            ),
+        ),
+        asset_manifest_sha256=None,
+    )
+
+    assert evidence.eligible is False
+    assert evidence.reason_codes == ("unverified_runtime_hook_plan:render",)
+
+
+def test_lane_cannot_forge_runtime_hook_trace_provenance():
+    audit = verified_runtime_entry_point_audit(
+        operation="render",
+        entry_point="json.dumps",
+    )
+    trace = RuntimeOperationTrace(row_id="forged-hook", lane="cuda", boundary="R0")
+
+    with pytest.raises(TimedBoundaryViolation, match="runtime operation hook is not installed"):
+        with instrument_runtime_entry_points((audit,)):
+            with native_timed_submission(
+                row_id="forged-hook",
+                lane="cuda",
+                boundary="R0",
+                operation_trace=trace,
+            ):
+                trace.record(
+                    "render",
+                    entry_point="json.dumps",
+                    capture_source="runtime_hook",
+                    runtime_hook_id="entry_point:json.dumps",
+                )
+
+    assert trace.evidence().records == ()
 
 
 def test_go2_asset_preflight_requires_exact_complete_manifest(tmp_path):
@@ -371,21 +496,32 @@ class _OutOfOrderLane:
             row=row,
             lane="warp",
             entry_point_audits=tuple(
-                EntryPointAudit(
-                    operation=operation,
-                    entry_point=f"unit.warp.{operation}",
-                    instrumented=True,
-                )
-                for operation in ("scene_update", "acceleration", "render", "reclaim")
+                verified_runtime_entry_point_audit(operation=operation, entry_point=entry_point)
+                for operation, entry_point in _UNIT_ENTRY_POINTS.items()
             ),
             asset_manifest_sha256=None,
         )
 
     def submit_sample(self, *, row, prepared, request):
         del row, prepared, request
-        for operation in ("scene_update", "render", "acceleration", "reclaim"):
-            record_runtime_operation(operation, entry_point=f"unit.warp.{operation}")
+        import hashlib
+        import json
+        import math
+        import time
+
+        json.dumps({})
+        math.isfinite(1.0)
+        hashlib.sha256(b"")
+        time.perf_counter()
         return _PendingNeverResolve()
+
+
+_UNIT_ENTRY_POINTS = {
+    "scene_update": "json.dumps",
+    "acceleration": "hashlib.sha256",
+    "render": "math.isfinite",
+    "reclaim": "time.perf_counter",
+}
 
 
 class _PendingNeverResolve:

@@ -8,14 +8,19 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from .instrumentation import (
+    declared_runtime_hook_plan,
+    resolve_runtime_hook_plan,
+    validate_runtime_hook_plan,
+)
 from .timing import (
     FORBIDDEN_TIMED_OPERATIONS,
     RUNTIME_OPERATION_KINDS,
     RuntimeOperationTraceEvidence,
 )
 
-ELIGIBILITY_SCHEMA_VERSION = "q54.p12.4.lane-eligibility.v1"
-ENTRY_POINT_AUDIT_SCHEMA_VERSION = "q54.p12.4.entry-point-audit.v1"
+ELIGIBILITY_SCHEMA_VERSION = "q54.p12.4.lane-eligibility.v2"
+ENTRY_POINT_AUDIT_SCHEMA_VERSION = "q54.p12.4.entry-point-audit.v2"
 INPUT_CONTRACT_SCHEMA_VERSION = "q54.p12.4.input-contract.v1"
 
 FIXED_NATIVE_SCENE_INPUT = "fixed_native_scene_v1"
@@ -106,12 +111,16 @@ def _canonical_sha256(payload: object) -> str:
 
 @dataclass(frozen=True)
 class EntryPointAudit:
-    """Static audit of one concrete product call used by a candidate lane."""
+    """Source coverage plus runtime-hook registration for one product call."""
 
     operation: str
     entry_point: str
     instrumented: bool
     contaminations: tuple[str, ...] = ()
+    registered_runtime_hooks: tuple[str, ...] = ()
+    verified_runtime_hooks: tuple[str, ...] = ()
+    runtime_hook_manifest_sha256: str | None = None
+    source_manifest_sha256: str | None = None
     schema_version: str = ENTRY_POINT_AUDIT_SCHEMA_VERSION
 
     @classmethod
@@ -121,6 +130,10 @@ class EntryPointAudit:
             "entry_point",
             "instrumented",
             "contaminations",
+            "registered_runtime_hooks",
+            "verified_runtime_hooks",
+            "runtime_hook_manifest_sha256",
+            "source_manifest_sha256",
             "schema_version",
         }
         if not isinstance(payload, Mapping) or set(payload) != expected:
@@ -129,6 +142,8 @@ class EntryPointAudit:
         entry_point = payload.get("entry_point")
         instrumented = payload.get("instrumented")
         contaminations = payload.get("contaminations")
+        registered_hooks = payload.get("registered_runtime_hooks")
+        verified_hooks = payload.get("verified_runtime_hooks")
         if payload.get("schema_version") != ENTRY_POINT_AUDIT_SCHEMA_VERSION:
             raise ValueError("entry-point audit schema version is invalid")
         if operation not in RUNTIME_OPERATION_KINDS:
@@ -144,11 +159,37 @@ class EntryPointAudit:
             value not in FORBIDDEN_TIMED_OPERATIONS for value in contamination_tuple
         ):
             raise ValueError("entry-point audit contaminations are invalid")
+        for name, hooks in (
+            ("registered_runtime_hooks", registered_hooks),
+            ("verified_runtime_hooks", verified_hooks),
+        ):
+            if not isinstance(hooks, Sequence) or isinstance(hooks, (str, bytes)):
+                raise ValueError(f"entry-point audit {name} must be an array")
+            if len(set(hooks)) != len(hooks) or any(
+                not isinstance(hook_id, str) or not hook_id for hook_id in hooks
+            ):
+                raise ValueError(f"entry-point audit {name} is invalid")
+        registered_tuple = tuple(registered_hooks)
+        verified_tuple = tuple(verified_hooks)
+        if any(hook_id not in registered_tuple for hook_id in verified_tuple):
+            raise ValueError("verified runtime hooks must be registered")
+        hook_manifest = payload.get("runtime_hook_manifest_sha256")
+        source_manifest = payload.get("source_manifest_sha256")
+        if hook_manifest is not None and not _sha256_text(hook_manifest):
+            raise ValueError("runtime hook manifest hash is invalid")
+        if source_manifest is not None and not _sha256_text(source_manifest):
+            raise ValueError("source manifest hash is invalid")
+        if instrumented != bool(registered_tuple and verified_tuple == registered_tuple):
+            raise ValueError("entry-point audit instrumented/runtime hooks are inconsistent")
         return cls(
             operation=operation,
             entry_point=entry_point,
             instrumented=instrumented,
             contaminations=contamination_tuple,
+            registered_runtime_hooks=registered_tuple,
+            verified_runtime_hooks=verified_tuple,
+            runtime_hook_manifest_sha256=hook_manifest,
+            source_manifest_sha256=source_manifest,
             schema_version=ENTRY_POINT_AUDIT_SCHEMA_VERSION,
         )
 
@@ -158,6 +199,10 @@ class EntryPointAudit:
             "entry_point": self.entry_point,
             "instrumented": self.instrumented,
             "contaminations": list(self.contaminations),
+            "registered_runtime_hooks": list(self.registered_runtime_hooks),
+            "verified_runtime_hooks": list(self.verified_runtime_hooks),
+            "runtime_hook_manifest_sha256": self.runtime_hook_manifest_sha256,
+            "source_manifest_sha256": self.source_manifest_sha256,
             "schema_version": self.schema_version,
         }
 
@@ -280,6 +325,50 @@ class LaneIneligibleError(RuntimeError):
     """Raised before timing when a lane cannot satisfy the frozen row."""
 
 
+def source_manifest_entry_point_audit(
+    *,
+    operation: str,
+    entry_point: str,
+    contaminations: Sequence[str],
+    source_manifest_sha256: str,
+) -> EntryPointAudit:
+    """Create a coverage-only audit; it deliberately cannot grant eligibility."""
+
+    plan = declared_runtime_hook_plan(operation=operation, entry_point=entry_point)
+    return EntryPointAudit(
+        operation=operation,
+        entry_point=entry_point,
+        instrumented=False,
+        contaminations=tuple(contaminations),
+        registered_runtime_hooks=plan.registered_hook_ids,
+        verified_runtime_hooks=(),
+        runtime_hook_manifest_sha256=plan.manifest_sha256,
+        source_manifest_sha256=source_manifest_sha256,
+    )
+
+
+def verified_runtime_entry_point_audit(
+    *,
+    operation: str,
+    entry_point: str,
+    observed_contaminations: Sequence[str] = (),
+    source_manifest_sha256: str | None = None,
+) -> EntryPointAudit:
+    """Resolve the complete hook plan and return runtime-installable evidence."""
+
+    plan = resolve_runtime_hook_plan(operation=operation, entry_point=entry_point)
+    return EntryPointAudit(
+        operation=operation,
+        entry_point=entry_point,
+        instrumented=True,
+        contaminations=tuple(observed_contaminations),
+        registered_runtime_hooks=plan.registered_hook_ids,
+        verified_runtime_hooks=plan.registered_hook_ids,
+        runtime_hook_manifest_sha256=plan.manifest_sha256,
+        source_manifest_sha256=source_manifest_sha256,
+    )
+
+
 def required_runtime_operations(row: Mapping[str, Any]) -> tuple[str, ...]:
     """Return the minimum high-level instrumented operations for one row."""
 
@@ -343,6 +432,19 @@ def evaluate_lane_eligibility(
             continue
         if not any(audit.instrumented for audit in matching):
             reasons.append(f"uninstrumented_entry_point:{operation}")
+            continue
+        if not any(
+            validate_runtime_hook_plan(
+                operation=audit.operation,
+                entry_point=audit.entry_point,
+                registered_hook_ids=audit.registered_runtime_hooks,
+                verified_hook_ids=audit.verified_runtime_hooks,
+                manifest_sha256=audit.runtime_hook_manifest_sha256,
+            )
+            for audit in matching
+            if audit.instrumented
+        ):
+            reasons.append(f"unverified_runtime_hook_plan:{operation}")
     for audit in audits:
         if audit.operation not in required:
             continue
@@ -384,12 +486,21 @@ def validate_trace_entry_points(
     """Reject trace records not backed by an instrumented preflight audit."""
 
     instrumented = {
-        (audit.operation, audit.entry_point) for audit in eligibility.entry_point_audits if audit.instrumented
+        (audit.operation, audit.entry_point, f"entry_point:{audit.entry_point}")
+        for audit in eligibility.entry_point_audits
+        if audit.instrumented
     }
     unaudited = [
-        (record.sequence, record.operation, record.entry_point)
+        (
+            record.sequence,
+            record.operation,
+            record.entry_point,
+            record.capture_source,
+            record.runtime_hook_id,
+        )
         for record in evidence.records
-        if (record.operation, record.entry_point) not in instrumented
+        if record.capture_source != "runtime_hook"
+        or (record.operation, record.entry_point, record.runtime_hook_id) not in instrumented
     ]
     if unaudited:
         raise ValueError(f"operation trace contains unaudited entry points: {unaudited}")

@@ -32,6 +32,7 @@ from .eligibility import (
     required_runtime_operations,
     validate_trace_entry_points,
 )
+from .instrumentation import RUNTIME_HOOK_REGISTRY_VERSION, runtime_hook_registry_sha256
 from .native import NATIVE_INPUT_SCHEMA_VERSION, NativeReadinessEvidence
 from .receipts import (
     ACCELERATION_RECEIPT_SCHEMA_VERSION,
@@ -47,9 +48,9 @@ from .timing import (
     validate_required_operation_order,
 )
 
-GATE_SCHEMA_VERSION = "q54.p12.4.gate.v5"
-RESULT_SCHEMA_VERSION = "q54.p12.4.result.v5"
-ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v2"
+GATE_SCHEMA_VERSION = "q54.p12.4.gate.v6"
+RESULT_SCHEMA_VERSION = "q54.p12.4.result.v6"
+ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v3"
 INVENTORY_SCHEMA_VERSION = "q54.p12.4.architecture-inventory.v1"
 CLEANUP_SCHEMA_VERSION = "q54.p12.4.cleanup-ledger.v1"
 PUBLICATION_BINDING_CONTRACT_VERSION = "q54.p12.4.publication-cuda-binding.v1"
@@ -149,7 +150,13 @@ EXPECTED_ACCELERATION_CONTRACTS = {
 EXPECTED_ELIGIBILITY_CONTRACT = {
     "schema_version": ELIGIBILITY_SCHEMA_VERSION,
     "operation_trace_schema_version": OPERATION_TRACE_SCHEMA_VERSION,
+    "runtime_hook_registry_version": RUNTIME_HOOK_REGISTRY_VERSION,
+    "runtime_hook_registry_sha256": runtime_hook_registry_sha256(),
     "preflight_position": "before_timed_submission",
+    "runtime_hook_installation_owner": "single_lane_runner",
+    "high_level_trace_capture": "installed_entry_point_wrapper_only",
+    "low_level_forbidden_capture": "mandatory_registry_wrapper_fail_fast",
+    "source_manifest_grants_instrumented": False,
     "ineligible_result_emission": "forbidden",
     "required_runtime_operations": {
         "R0": ["render"],

@@ -120,6 +120,7 @@
         "benchmarks/optical/schema.py",
         "benchmarks/optical/native.py",
         "benchmarks/optical/timing.py",
+        "benchmarks/optical/instrumentation.py",
         "benchmarks/optical/eligibility.py",
         "benchmarks/optical/assets.py",
         "benchmarks/optical/receipts.py",
@@ -178,8 +179,8 @@
       ],
       "symbols": {
         "benchmarks/optical/lanes/audit.py": [
-          "def current_product_entry_point_audits(",
-          "def verify_current_product_entry_point_audits("
+          "def current_product_source_entry_point_audits(",
+          "def verify_current_product_source_manifest("
         ]
       },
       "cuda_selected": {

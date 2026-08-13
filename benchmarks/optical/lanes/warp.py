@@ -12,7 +12,7 @@ from ..eligibility import (
     evaluate_lane_eligibility,
 )
 from ..native import PreparedNativeInput
-from .audit import verify_current_product_entry_point_audits
+from .audit import verify_current_product_source_manifest
 
 
 class CurrentWarpLanePreflight:
@@ -41,6 +41,6 @@ class CurrentWarpLanePreflight:
         return evaluate_lane_eligibility(
             row=row,
             lane="warp",
-            entry_point_audits=verify_current_product_entry_point_audits(self._repo_root, "warp"),
+            entry_point_audits=verify_current_product_source_manifest("warp"),
             asset_manifest_sha256=asset_hash,
         )

@@ -2,9 +2,9 @@
 
 Author: Codex
 
-Date: 2026-08-12
+Date: 2026-08-13
 
-Status: implemented for Claude review
+Status: P1 runtime-instrumentation revision implemented for Claude re-review
 
 Approved dependency-order contract:
 `57073b8cabe39d7e4104d8cef77fce70fc17956c`
@@ -23,7 +23,13 @@ approved C0/C2/C3/C4/B3 prerequisites replace the audited invalid entry points.
 
 ## Frozen identities and phase authority
 
-Gate schema v5 binds the approved exact acceleration identities:
+Gate schema v6 binds the approved exact acceleration identities and the
+runtime-hook registry digest:
+
+```text
+q54.p12.4.runtime-hook-registry.v1
+3edfec9d9bb11c16b2bd2af17a472f0928f4372c11c5e2ae13cd614089591985
+```
 
 ```text
 Warp production_dynamic / production_physics:
@@ -74,12 +80,25 @@ timer begins. It binds:
 - eligibility decision and reason codes.
 
 The runner rejects ineligible evidence before calling `submit_sample(...)`.
-Once eligible, the lane must instrument its concrete timed entries through one
-runner-owned `RuntimeOperationTrace`. The trace records actual entry-point
-names, operation kinds, counts, and bytes. Declared allocation, compile/load,
-host upload/materialization/synchronize, global synchronization, cross-lane
-wait, or Warp/Torch bridge contamination raises before the record can enter a
-valid trace.
+It then installs the frozen runtime-hook registry outside the timed boundary;
+the lane does not own this step. High-level product entry wrappers write to one
+runner-owned `RuntimeOperationTrace`, whose records now bind `capture_source`
+and `runtime_hook_id` in addition to entry point, operation, counts, and bytes.
+A lane-authored record cannot impersonate a runtime wrapper.
+
+The same scope wraps concrete NumPy, Torch, Warp, DLPack, product staging, CUDA
+extension-loader, Tensor materialization/upload, allocation-family, and
+host/global synchronization APIs. If one is reached inside timing, the wrapper
+raises `TimedBoundaryViolation` before calling the original function. Thus a
+lane that reports only `scene_update` or `render` cannot hide a lower-level
+`torch.empty`, `wp.to_torch`, host staging, or synchronize operation.
+Backend-specific alias hooks are entry-point scoped, so auditing a Warp call
+does not import the CUDA optical implementation merely to install its aliases.
+
+`instrumented=True` is not trusted by itself. Eligibility recomputes the exact
+registered/verified hook set and manifest digest, while the runner resolves and
+installs the same set again. Missing, stale, manually asserted, or unavailable
+hooks fail closed before submission.
 
 The trace must begin at and contain the frozen high-level transaction in order:
 
@@ -97,11 +116,30 @@ Missing, reordered, reused, or context-leaking traces are rejected. A lane
 cannot fabricate a replacement trace during resolve because the final receipt
 must equal the runner-captured trace and digest.
 
-## Current product audit
+## Source coverage versus runtime observation
 
-The current audit is bound to signatures in the actual repository sources. If
-the source changes and an expected audited signature disappears, preflight
-fails closed as a stale audit rather than silently becoming eligible.
+The pre-a3b source manifest now hashes exact callable bodies, including helper
+methods on the reviewed call graph. It is only a coverage checklist and returns
+no verified runtime hooks. It cannot set `instrumented=True` or grant lane
+eligibility.
+
+Runtime evidence is separate. Negative GPU tests construct the actual scene,
+BVH, executors, render result, and delivery facade outside timing, install the
+registry, then invoke the actual product callable inside a timed context. No
+high-level lane code reports contamination. The bottom-level wrapper observes
+and rejects the first real invalid operation:
+
+- CUDA LBVH: `warp.to_torch` (`warp_to_torch_bridge`);
+- Warp direct-light camera executor: `numpy.asarray`
+  (`host_materialization`);
+- CUDA direct-light camera executor: `warp.synchronize_event`
+  (`host_synchronize`);
+- synchronous FULL delivery: the real `stage_optical_channels` alias
+  (`host_materialization`).
+
+The unit suite separately exercises allocation, upload, host materialization,
+global sync, host sync, Warp-to-Torch view, and extension-load hook classes and
+proves each fails before its original callable runs.
 
 Confirmed current blockers include:
 
@@ -113,8 +151,8 @@ Confirmed current blockers include:
 - current CUDA LBVH allocates, synchronizes, converts Warp AABBs to Torch, and
   wraps Torch output back into Warp.
 
-These are negative audit facts only. No current product call is executed as a
-performance sample in a3a.
+These are negative instrumentation tests only. No current product call is
+executed as a performance sample in a3a.
 
 ## Receipt contracts
 
@@ -167,8 +205,10 @@ hard-fails. A surrogate directory with a self-consistent manifest cannot pass.
 The ledger now names the temporary Warp and CUDA comparison-lane adapters.
 P12.4e must delete the losing adapter and collapse the selected adapter into one
 thin durable regression lane. The reusable eligibility, asset, receipt,
-operation-trace, runner, case, validation, and artifact contracts remain in the
-durable core only while the selected-backend regression remains active.
+operation-trace, runtime-hook registry, runner, case, validation, and artifact
+contracts remain in the durable core only while the selected-backend
+regression remains active. The current source manifest and comparison-only
+tests remain explicitly temporary.
 
 ## Verification
 
@@ -193,10 +233,10 @@ conda run -n robot_sim python -m pytest \
 
 Observed before this implementation commit:
 
-- a3a/benchmark contract tests: 48 passed;
-- full unit suite: 1057 passed, 20 skipped;
+- a3a/benchmark contract tests: 58 passed;
+- full unit suite: 1067 passed, 20 skipped;
 - benchmark native GPU smoke: 2 passed;
-- related optical GPU regression: 50 passed;
+- related optical GPU regression: 51 passed;
 - Ruff check and format check: passed.
 
 No benchmark sample or baseline artifact was generated.
@@ -207,8 +247,8 @@ Please review whether:
 
 1. exact input/acceleration identities and phase authority match approved v3;
 2. preflight fails before timed submission and cannot emit an ineligible result;
-3. operation trace coverage/order and contamination rejection are sufficient
-   inputs for later real-lane instrumentation;
+3. runner-owned runtime wrappers, hook provenance, and real product-call
+   negative tests close the P1 instrumentation objection;
 4. execution/acceleration/publication provenance cannot be coordinator-filled;
 5. Go2 Git and file-manifest provenance prevents surrogate substitution;
 6. current adapters correctly remain audit-only and ineligible;

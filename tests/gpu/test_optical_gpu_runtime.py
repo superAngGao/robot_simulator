@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import json
+import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +17,16 @@ import tools.optical_pipeline_lab.menagerie_static_runner as menagerie_static_ru
 import tools.optical_pipeline_lab.physics_runtime as physics_runtime
 import tools.optical_pipeline_lab.runner as lab_runner
 import tools.optical_pipeline_lab.video_loop as video_loop
+from benchmarks.optical.eligibility import verified_runtime_entry_point_audit
+from benchmarks.optical.instrumentation import (
+    instrument_runtime_entry_points,
+    invoke_instrumented_entry_point,
+)
+from benchmarks.optical.timing import (
+    RuntimeOperationTrace,
+    TimedBoundaryViolation,
+    native_timed_submission,
+)
 from optics import (
     CpuDirectLightOpticalExecutor,
     CudaDeviceBvhDirectLightOpticalExecutor,
@@ -116,6 +128,149 @@ def _make_engine(*, device: str = "cuda:0"):
     q0[6] = 0.5
     engine.reset(q0=q0)
     return engine
+
+
+@pytest.mark.cuda_ext
+def test_a3a_runtime_hooks_reject_real_acceleration_render_and_delivery_calls(tmp_path):
+    """The product call itself is wrapped; the lane does not report pollution."""
+
+    engine = _make_engine()
+    consumer = _consumer()
+    engine.register_consumer(consumer)
+    engine.step()
+    frame = engine.latest_published_frame()
+    registry = _lit_triangle_registry()
+    camera = _downward_camera_spec(frame)
+    stream = wp.Stream(device=engine._device)
+    borrowed = engine.borrow_device_frame(consumer.consumer_id, frame.frame_id, stream=stream)
+    cache = DeviceOpticalSceneCache(registry, device=engine._device, stream=stream)
+    snapshot = cache.snapshot_from_gpu_frame(
+        borrowed,
+        env_idx=0,
+        stream=stream,
+        include_aabb=True,
+    )
+    warp_bvh = build_device_bvh_from_snapshot(snapshot, device=engine._device, stream=stream)
+    cuda_bvh = build_cuda_lbvh_from_snapshot(snapshot, device=engine._device, stream=stream)
+    warp_executor = GpuDeviceBvhDirectLightOpticalExecutor(
+        device=engine._device,
+        stream=stream,
+        shadows=False,
+    )
+    cuda_executor = CudaDeviceBvhDirectLightOpticalExecutor(
+        device=engine._device,
+        shadows=False,
+    )
+    rendered_result = warp_executor.execute_camera(
+        snapshot,
+        warp_bvh,
+        camera,
+        output_profile=OpticalOutputProfile.DIRECT_LIGHT_FULL,
+    )
+
+    def assert_product_violation(operation, entry_point, contamination, *args, **kwargs):
+        audit = verified_runtime_entry_point_audit(
+            operation=operation,
+            entry_point=entry_point,
+        )
+        trace = RuntimeOperationTrace(
+            row_id=f"runtime-{operation}",
+            lane="cuda" if "cuda" in entry_point else "warp",
+            boundary="R1" if operation == "acceleration" else "R2",
+        )
+        with pytest.raises(TimedBoundaryViolation, match=f"{contamination} is forbidden"):
+            with instrument_runtime_entry_points((audit,)) as observation:
+                with native_timed_submission(
+                    row_id=trace.row_id,
+                    lane=trace.lane,
+                    boundary=trace.boundary,
+                    operation_trace=trace,
+                ):
+                    invoke_instrumented_entry_point(entry_point, *args, **kwargs)
+        evidence = trace.evidence()
+        assert len(evidence.records) == 1
+        assert evidence.records[0].entry_point == entry_point
+        assert evidence.records[0].capture_source == "runtime_hook"
+        assert observation.violation_contamination == contamination
+        return observation.violation_hook_id
+
+    assert (
+        assert_product_violation(
+            "acceleration",
+            "optics.cuda_lbvh.build_cuda_lbvh_from_snapshot",
+            "warp_to_torch_bridge",
+            replace(snapshot, ready_event=None),
+            device=engine._device,
+            stream=stream,
+        )
+        == "warp.to_torch"
+    )
+    assert (
+        assert_product_violation(
+            "render",
+            "optics.warp_execution.GpuDeviceBvhDirectLightOpticalExecutor.execute_camera",
+            "host_materialization",
+            warp_executor,
+            snapshot,
+            warp_bvh,
+            camera,
+            output_profile=OpticalOutputProfile.DIRECT_LIGHT_FULL,
+        )
+        == "numpy.asarray"
+    )
+    assert (
+        assert_product_violation(
+            "render",
+            "optics.cuda_direct_light.CudaDeviceBvhDirectLightOpticalExecutor.execute_camera",
+            "host_synchronize",
+            cuda_executor,
+            snapshot,
+            cuda_bvh,
+            camera,
+            output_profile=OpticalOutputProfile.DIRECT_LIGHT_FULL,
+        )
+        == "warp.synchronize_event"
+    )
+
+    delivery = video_delivery.VideoDeliveryFacade.create(
+        request=video_delivery.video_delivery_request(
+            readback_mode="full",
+            delivery_mode="sync",
+            ring_depth=1,
+            write_frames=False,
+        ),
+        delivery_policy_label="sync",
+        frame_dir=tmp_path,
+        pack_rgb8=lambda result: result,
+        synchronize_event=wp.synchronize_event,
+    )
+    rendered = video_delivery.RenderedVideoFrame(
+        frame_index=0,
+        camera=camera,
+        result=rendered_result,
+        camera_rays_ms=0.0,
+        render_execute_ms=0.0,
+        render_profile_row={},
+        include_shadow_traversal_stats=False,
+    )
+    assert (
+        assert_product_violation(
+            "delivery",
+            "tools.optical_pipeline_lab.delivery.VideoDeliveryFacade.submit",
+            "host_materialization",
+            delivery,
+            rendered,
+            frame_start=time.perf_counter(),
+        )
+        == "tools.optical_pipeline_lab.delivery.stage_optical_channels"
+    )
+
+    done_event = engine.complete_device_consumer(
+        consumer.consumer_id,
+        frame.frame_id,
+        stream=stream,
+    )
+    wp.synchronize_event(done_event)
 
 
 def _world_static_registry() -> OpticalWorldRegistry:

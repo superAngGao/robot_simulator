@@ -9,8 +9,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 
-NATIVE_TIMING_CONTRACT_VERSION = "q54.p12.4.native-timing.v2"
-OPERATION_TRACE_SCHEMA_VERSION = "q54.p12.4.operation-trace.v1"
+NATIVE_TIMING_CONTRACT_VERSION = "q54.p12.4.native-timing.v3"
+OPERATION_TRACE_SCHEMA_VERSION = "q54.p12.4.operation-trace.v2"
 
 RUNTIME_OPERATION_KINDS = frozenset(
     {
@@ -72,10 +72,20 @@ class RuntimeOperationRecord:
     entry_point: str
     count: int = 1
     byte_count: int = 0
+    capture_source: str = "lane"
+    runtime_hook_id: str | None = None
 
     @classmethod
     def from_payload(cls, payload: object) -> "RuntimeOperationRecord":
-        expected = {"sequence", "operation", "entry_point", "count", "byte_count"}
+        expected = {
+            "sequence",
+            "operation",
+            "entry_point",
+            "count",
+            "byte_count",
+            "capture_source",
+            "runtime_hook_id",
+        }
         if not isinstance(payload, Mapping) or set(payload) != expected:
             raise ValueError("operation trace record fields are invalid")
         sequence = payload.get("sequence")
@@ -83,6 +93,8 @@ class RuntimeOperationRecord:
         entry_point = payload.get("entry_point")
         count = payload.get("count")
         byte_count = payload.get("byte_count")
+        capture_source = payload.get("capture_source")
+        runtime_hook_id = payload.get("runtime_hook_id")
         for name, value in (
             ("sequence", sequence),
             ("byte_count", byte_count),
@@ -95,12 +107,21 @@ class RuntimeOperationRecord:
             raise ValueError("operation trace kind is invalid")
         if not isinstance(entry_point, str) or not entry_point:
             raise ValueError("operation trace entry_point must be non-empty")
+        if capture_source not in {"lane", "runtime_hook"}:
+            raise ValueError("operation trace capture_source is invalid")
+        if capture_source == "runtime_hook":
+            if not isinstance(runtime_hook_id, str) or not runtime_hook_id:
+                raise ValueError("runtime-hook trace record requires runtime_hook_id")
+        elif runtime_hook_id is not None:
+            raise ValueError("lane trace record cannot claim runtime_hook_id")
         return cls(
             sequence=sequence,
             operation=operation,
             entry_point=entry_point,
             count=count,
             byte_count=byte_count,
+            capture_source=capture_source,
+            runtime_hook_id=runtime_hook_id,
         )
 
     def to_payload(self) -> dict[str, object]:
@@ -110,6 +131,8 @@ class RuntimeOperationRecord:
             "entry_point": self.entry_point,
             "count": self.count,
             "byte_count": self.byte_count,
+            "capture_source": self.capture_source,
+            "runtime_hook_id": self.runtime_hook_id,
         }
 
 
@@ -202,6 +225,9 @@ class RuntimeOperationTrace:
         count: int = 1,
         byte_count: int = 0,
         contamination: str | None = None,
+        capture_source: str = "lane",
+        runtime_hook_id: str | None = None,
+        _runtime_hook_capability: object | None = None,
     ) -> None:
         if not self._active or self._closed:
             raise TimedBoundaryViolation("runtime operation must be recorded inside its active trace")
@@ -215,6 +241,18 @@ class RuntimeOperationTrace:
             raise ValueError("runtime operation byte_count must be a non-negative integer")
         if contamination is not None:
             assert_operation_allowed(contamination)
+        if capture_source not in {"lane", "runtime_hook"}:
+            raise ValueError("runtime operation capture_source is invalid")
+        if capture_source == "runtime_hook":
+            capabilities = _ACTIVE_RUNTIME_HOOK_CAPABILITIES.get()
+            if (
+                not runtime_hook_id
+                or runtime_hook_id not in capabilities
+                or capabilities[runtime_hook_id] is not _runtime_hook_capability
+            ):
+                raise TimedBoundaryViolation("runtime operation hook is not installed")
+        elif runtime_hook_id is not None or _runtime_hook_capability is not None:
+            raise ValueError("lane runtime operation cannot claim hook provenance")
         self._records.append(
             RuntimeOperationRecord(
                 sequence=len(self._records),
@@ -222,6 +260,8 @@ class RuntimeOperationTrace:
                 entry_point=entry_point,
                 count=count,
                 byte_count=byte_count,
+                capture_source=capture_source,
+                runtime_hook_id=runtime_hook_id,
             )
         )
 
@@ -245,6 +285,11 @@ _ACTIVE_BOUNDARY: ContextVar[ActiveTimedBoundary | None] = ContextVar(
 _ACTIVE_OPERATION_TRACE: ContextVar[RuntimeOperationTrace | None] = ContextVar(
     "q54_p12_4_active_runtime_operation_trace",
     default=None,
+)
+
+_ACTIVE_RUNTIME_HOOK_CAPABILITIES: ContextVar[Mapping[str, object]] = ContextVar(
+    "q54_p12_4_active_runtime_hook_capabilities",
+    default={},
 )
 
 
@@ -304,6 +349,47 @@ def record_runtime_operation(
         byte_count=byte_count,
         contamination=contamination,
     )
+
+
+def record_runtime_hook_operation(
+    operation: str,
+    *,
+    entry_point: str,
+    runtime_hook_id: str,
+    count: int = 1,
+    byte_count: int = 0,
+    _capability: object,
+) -> None:
+    """Record a high-level operation from an installed runtime wrapper."""
+
+    trace = active_operation_trace()
+    if trace is None:
+        raise TimedBoundaryViolation("no runtime operation trace is active")
+    trace.record(
+        operation,
+        entry_point=entry_point,
+        count=count,
+        byte_count=byte_count,
+        capture_source="runtime_hook",
+        runtime_hook_id=runtime_hook_id,
+        _runtime_hook_capability=_capability,
+    )
+
+
+@contextmanager
+def activate_runtime_hooks(hook_ids: frozenset[str]) -> Iterator[Mapping[str, object]]:
+    """Authorize only wrappers installed by the current instrumentation scope."""
+
+    if _ACTIVE_RUNTIME_HOOK_CAPABILITIES.get():
+        raise TimedBoundaryViolation("nested runtime hook scopes are forbidden")
+    if not hook_ids or any(not isinstance(hook_id, str) or not hook_id for hook_id in hook_ids):
+        raise ValueError("runtime hook scope requires non-empty hook IDs")
+    capabilities = {hook_id: object() for hook_id in hook_ids}
+    token = _ACTIVE_RUNTIME_HOOK_CAPABILITIES.set(capabilities)
+    try:
+        yield capabilities
+    finally:
+        _ACTIVE_RUNTIME_HOOK_CAPABILITIES.reset(token)
 
 
 def validate_required_operation_order(

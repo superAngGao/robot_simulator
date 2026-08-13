@@ -15,6 +15,7 @@ from .eligibility import (
     required_runtime_operations,
     validate_trace_entry_points,
 )
+from .instrumentation import instrument_runtime_entry_points
 from .native import NativeReadinessEvidence, PreparedNativeInput
 from .schema import (
     RESULT_SCHEMA_VERSION,
@@ -199,13 +200,14 @@ class SingleLaneSampleRunner:
             lane=lane.lane_id,
             boundary=str(row["boundary"]),
         )
-        with native_timed_submission(
-            row_id=row_id,
-            lane=lane.lane_id,
-            boundary=str(row["boundary"]),
-            operation_trace=operation_trace,
-        ):
-            pending = lane.submit_sample(row=submitted_row, prepared=prepared, request=request)
+        with instrument_runtime_entry_points(eligibility.entry_point_audits):
+            with native_timed_submission(
+                row_id=row_id,
+                lane=lane.lane_id,
+                boundary=str(row["boundary"]),
+                operation_trace=operation_trace,
+            ):
+                pending = lane.submit_sample(row=submitted_row, prepared=prepared, request=request)
         if active_timed_boundary() is not None:
             raise AssertionError("native timed context leaked after lane submission")
         if not callable(getattr(pending, "resolve", None)):

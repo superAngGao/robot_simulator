@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import time
 from dataclasses import dataclass, field
 
 import numpy as np
 import pytest
 
 from benchmarks.optical.artifacts import BenchmarkArtifactWriter
-from benchmarks.optical.eligibility import EntryPointAudit, evaluate_lane_eligibility
+from benchmarks.optical.eligibility import (
+    evaluate_lane_eligibility,
+    verified_runtime_entry_point_audit,
+)
+from benchmarks.optical.instrumentation import entry_point_hook_id
 from benchmarks.optical.native import (
     CanonicalNativeInput,
     NativeInputValidationReport,
@@ -39,7 +45,6 @@ from benchmarks.optical.timing import (
     active_timed_boundary,
     assert_operation_allowed,
     native_timed_submission,
-    record_runtime_operation,
 )
 
 
@@ -354,7 +359,7 @@ class _FakeLane:
         del request
         self.trace.append(("submit", active_timed_boundary() is not None))
         for operation in _required_operations(row):
-            record_runtime_operation(operation, entry_point=f"unit.warp.{operation}")
+            _invoke_test_entry_point(operation)
         operation_trace = RuntimeOperationTraceEvidence(
             schema_version=OPERATION_TRACE_SCHEMA_VERSION,
             row_id=row["row_id"],
@@ -364,7 +369,9 @@ class _FakeLane:
                 RuntimeOperationRecord(
                     sequence=index,
                     operation=operation,
-                    entry_point=f"unit.warp.{operation}",
+                    entry_point=_TEST_ENTRY_POINTS[operation],
+                    capture_source="runtime_hook",
+                    runtime_hook_id=entry_point_hook_id(_TEST_ENTRY_POINTS[operation]),
                 )
                 for index, operation in enumerate(_required_operations(row))
             ),
@@ -467,10 +474,9 @@ class _FakeLane:
             row=row,
             lane="warp",
             entry_point_audits=tuple(
-                EntryPointAudit(
+                verified_runtime_entry_point_audit(
                     operation=operation,
-                    entry_point=f"unit.warp.{operation}",
-                    instrumented=True,
+                    entry_point=_TEST_ENTRY_POINTS[operation],
                 )
                 for operation in _required_operations(row)
             ),
@@ -484,3 +490,24 @@ def _required_operations(row):
     if row["boundary"] == "R1":
         return ("scene_update", "acceleration", "render", "reclaim")
     raise AssertionError("unit fake only supports native R0/R1")
+
+
+_TEST_ENTRY_POINTS = {
+    "scene_update": "json.dumps",
+    "acceleration": "hashlib.sha256",
+    "render": "math.isfinite",
+    "reclaim": "time.perf_counter",
+}
+
+
+def _invoke_test_entry_point(operation):
+    if operation == "scene_update":
+        json.dumps({})
+    elif operation == "acceleration":
+        hashlib.sha256(b"")
+    elif operation == "render":
+        math.isfinite(1.0)
+    elif operation == "reclaim":
+        time.perf_counter()
+    else:  # pragma: no cover - guarded by the fake-lane boundary restriction.
+        raise AssertionError(f"unsupported fake operation {operation}")
