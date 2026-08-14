@@ -4,7 +4,7 @@ Author: Codex
 
 Date: 2026-08-13
 
-Status: implemented for Claude review
+Status: P1/P2 shutdown-safety revision implemented for Claude re-review
 
 Approved C0a design:
 `a1e603bebdd939696d2ea4f174fc1cf82dcd8e35`
@@ -82,6 +82,15 @@ consumer session. It performs no host/device synchronization. This is a
 physics-lifetime handoff, not a claim that consumer buffers have physically
 completed their separate stream-aware cleanup.
 
+The new binding accepts only a fresh device consumer whose legacy
+`latest_seen_frame_id`, `device_completed_frame_id`, and `device_done_event`
+remain at their initial values. An incomplete or completed legacy borrow cannot
+move to a different external stream under the same consumer identity. A legacy
+consumer with an incomplete borrow also cannot unregister. Once its real done
+event exists, unregister first enqueues that event on the physics producer
+stream and only then removes logical reclaim accounting; callers may afterward
+register a new consumer ID for the CUDA binding.
+
 ## Poison and cross-owner teardown
 
 CUDA wait, stream identity, event allocation/record, ring commit, producer
@@ -105,7 +114,10 @@ two dispositions:
 
 `GpuEngine.__del__` never synchronizes. An unsafe unclosed binding is transferred
 directly to the same process-terminal quarantine. Explicit `GpuEngine.close()`
-is idempotent and is the normal lifecycle endpoint.
+is idempotent and is the normal lifecycle endpoint. If normal binding close
+itself poisons while enqueueing final drain, the same engine-close transaction
+catches that poison and immediately runs `abort_poisoned()`; callers never need
+a second close call to reach a legal resource disposition.
 
 ## Evidence boundary
 
@@ -152,10 +164,10 @@ conda run -n robot_sim python -m pytest -q \
 
 Observed before this implementation commit:
 
-- focused publication state-machine, ring and GPU API tests: 105 passed;
+- focused publication state-machine, ring and GPU API tests: 113 passed;
 - a3a/benchmark contract isolation tests: 58 passed;
-- full unit suite: 1087 passed, 20 skipped;
-- full GPU suite: 312 passed;
+- full unit suite: 1091 passed, 20 skipped;
+- full GPU suite: 316 passed;
 - Ruff and `git diff --check`: passed.
 
 No benchmark sample or baseline artifact was generated or inspected.
@@ -175,3 +187,8 @@ Please review whether:
 6. reset/rebind/legacy/unregister/finalizer behavior fails closed;
 7. the cleanup ledger guarantees a clean CUDA-selected or Warp-selected repo;
 8. no C2-C4/B3, a3b, shipping lane, sample, or baseline work leaked into C0b.
+
+The requested P1/P2 re-review should additionally confirm that legacy device
+state cannot cross into a new stream binding, legacy unregister retains its
+producer dependency, and a final-drain failure reaches emergency sync or
+quarantine exactly once in the original `GpuEngine.close()` call.

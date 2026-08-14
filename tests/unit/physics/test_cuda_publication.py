@@ -235,6 +235,45 @@ def test_guardian_seal_validates_identity_uniqueness_and_single_use():
     assert guardian.state == "closed"
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("latest_seen_frame_id", 0),
+        ("device_completed_frame_id", 0),
+        ("device_done_event", _Event()),
+    ),
+)
+def test_ring_rejects_binding_any_legacy_device_state(field, value):
+    consumer = ConsumerState(
+        consumer_id="legacy",
+        consumer_kind="render_backed_sensing",
+        qos_mode="lossless",
+        access_mode="borrow",
+        consumer_location="device",
+    )
+    setattr(consumer, field, value)
+    ring = PublishedRing(slot_buffers=[object()], consumers=[consumer])
+
+    with pytest.raises(RuntimeError, match="fresh consumer"):
+        ring.bind_cuda_device_consumer(consumer, "binding", "open")
+
+    assert consumer.cuda_binding_id is None
+    assert consumer.cuda_binding_state is None
+
+
+def test_host_consumer_history_is_not_legacy_device_state():
+    consumer = ConsumerState(
+        consumer_id="host",
+        consumer_kind="render_backed_sensing",
+        qos_mode="lossless",
+        access_mode="borrow",
+        consumer_location="host",
+        latest_seen_frame_id=3,
+        acked_frame_id=3,
+    )
+    assert consumer.has_legacy_device_api_state is False
+
+
 def test_binding_borrow_complete_is_fifo_exact_and_evidence_is_observed():
     fixture = _binding_fixture()
     binding = fixture["binding"]

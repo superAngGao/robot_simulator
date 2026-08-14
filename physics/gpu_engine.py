@@ -44,6 +44,7 @@ from .cuda_publication import (
     PROCESS_CUDA_PUBLICATION_QUARANTINE,
     CudaConsumerResourceGuardian,
     CudaDeviceConsumerBinding,
+    CudaPublicationPoisonedError,
     CudaPublicationQuarantineRegistry,
     CudaPublicationStateError,
 )
@@ -593,6 +594,28 @@ class GpuEngine(PhysicsEngine):
                 raise RuntimeError(
                     f"Cannot unregister CUDA consumer {consumer_id!r} while binding is {binding.state}"
                 )
+        consumer = next(
+            (
+                candidate
+                for candidate in self._published_ring.consumers
+                if candidate.consumer_id == consumer_id
+            ),
+            None,
+        )
+        if binding is None and consumer is not None and consumer.has_legacy_device_api_state:
+            if consumer.latest_seen_frame_id > consumer.device_completed_frame_id:
+                raise RuntimeError(
+                    f"Cannot unregister legacy device consumer {consumer_id!r} with an "
+                    "incomplete device borrow"
+                )
+            if consumer.device_done_event is None:
+                raise RuntimeError(
+                    f"Cannot unregister legacy device consumer {consumer_id!r} without its "
+                    "retained done event"
+                )
+            # Establish the GPU dependency before removing logical reclaim
+            # accounting.  This is a stream wait, never a host synchronization.
+            self._wait_on_event(consumer.device_done_event)
         self._published_ring.unregister_consumer(consumer_id)
         self._cuda_consumer_bindings.pop(consumer_id, None)
 
@@ -631,6 +654,11 @@ class GpuEngine(PhysicsEngine):
             or consumer.consumer_location != "device"
         ):
             raise ValueError("CUDA publication binding requires an enabled lossless borrowed device consumer")
+        if consumer.has_legacy_device_api_state:
+            raise RuntimeError(
+                "CUDA publication binding requires a fresh consumer that has never used the "
+                "legacy device API; unregister it safely and register a new consumer ID"
+            )
         consumer_resource_guardian.validate_identity(
             device_ordinal=self._device_ordinal,
             cuda_stream_handle=cuda_stream_handle,
@@ -1064,7 +1092,15 @@ class GpuEngine(PhysicsEngine):
             return
         for binding in tuple(self._cuda_consumer_bindings.values()):
             if binding.state == "open":
-                binding.close()
+                try:
+                    binding.close()
+                except CudaPublicationPoisonedError:
+                    if binding.state != "poisoned":
+                        raise
+                    disposition = binding.abort_poisoned()
+                    if disposition.process_terminal:
+                        self._closed = True
+                        return
             elif binding.state == "poisoned":
                 disposition = binding.abort_poisoned()
                 if disposition.process_terminal:

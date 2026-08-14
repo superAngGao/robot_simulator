@@ -150,6 +150,138 @@ def test_bound_consumer_rejects_legacy_api_rebind_reset_and_early_unregister():
     guardian.close()
 
 
+def test_legacy_incomplete_borrow_cannot_bind_or_unregister():
+    engine, _ = _make_engine(num_envs=1)
+    engine.step()
+    frame = engine.latest_published_frame()
+    assert frame is not None
+    consumer = _device_consumer("legacy_incomplete")
+    engine.register_consumer(consumer)
+    legacy_stream = wp.Stream(wp.get_device("cuda:0"))
+    engine.borrow_device_frame(consumer.consumer_id, frame.frame_id, stream=legacy_stream)
+
+    cuda_stream = torch.cuda.Stream(device="cuda:0")
+    resource = torch.empty(1, device="cuda:0")
+    guardian = CudaConsumerResourceGuardian.seal(
+        device_ordinal=0,
+        cuda_stream_owner=cuda_stream,
+        resources=(resource,),
+    )
+    with pytest.raises(RuntimeError, match="fresh consumer"):
+        engine.bind_cuda_device_consumer(
+            consumer.consumer_id,
+            device_ordinal=0,
+            cuda_stream_handle=cuda_stream.cuda_stream,
+            consumer_resource_guardian=guardian,
+        )
+    with pytest.raises(RuntimeError, match="incomplete device borrow"):
+        engine.unregister_consumer(consumer.consumer_id)
+
+    assert guardian.state == "sealed_unbound"
+    assert consumer.latest_seen_frame_id == frame.frame_id
+    assert consumer.device_completed_frame_id == -1
+    assert consumer.device_done_event is None
+    engine.complete_device_consumer(consumer.consumer_id, frame.frame_id, stream=legacy_stream)
+    engine.unregister_consumer(consumer.consumer_id)
+    engine.close()
+    guardian.close()
+
+
+def test_legacy_completed_borrow_cannot_bind_and_retains_done_event():
+    engine, _ = _make_engine(num_envs=1)
+    engine.step()
+    frame = engine.latest_published_frame()
+    assert frame is not None
+    consumer = _device_consumer("legacy_completed")
+    engine.register_consumer(consumer)
+    legacy_stream = wp.Stream(wp.get_device("cuda:0"))
+    engine.borrow_device_frame(consumer.consumer_id, frame.frame_id, stream=legacy_stream)
+    legacy_done_event = engine.complete_device_consumer(
+        consumer.consumer_id,
+        frame.frame_id,
+        stream=legacy_stream,
+    )
+
+    cuda_stream = torch.cuda.Stream(device="cuda:0")
+    resource = torch.empty(1, device="cuda:0")
+    guardian = CudaConsumerResourceGuardian.seal(
+        device_ordinal=0,
+        cuda_stream_owner=cuda_stream,
+        resources=(resource,),
+    )
+    with pytest.raises(RuntimeError, match="fresh consumer"):
+        engine.bind_cuda_device_consumer(
+            consumer.consumer_id,
+            device_ordinal=0,
+            cuda_stream_handle=cuda_stream.cuda_stream,
+            consumer_resource_guardian=guardian,
+        )
+
+    assert guardian.state == "sealed_unbound"
+    assert consumer.device_completed_frame_id == frame.frame_id
+    assert consumer.device_done_event is legacy_done_event
+    assert consumer.consumer_id not in engine._cuda_consumer_bindings
+    engine.unregister_consumer(consumer.consumer_id)
+    assert consumer.device_done_event is legacy_done_event
+    engine.close()
+    guardian.close()
+
+
+def test_legacy_unregister_enqueues_done_wait_before_fresh_id_can_bind(monkeypatch):
+    engine, _ = _make_engine(num_envs=1)
+    engine.step()
+    frame = engine.latest_published_frame()
+    assert frame is not None
+    legacy_consumer = _device_consumer("legacy_to_remove")
+    engine.register_consumer(legacy_consumer)
+    legacy_stream = wp.Stream(wp.get_device("cuda:0"))
+    engine.borrow_device_frame(legacy_consumer.consumer_id, frame.frame_id, stream=legacy_stream)
+    legacy_done_event = engine.complete_device_consumer(
+        legacy_consumer.consumer_id,
+        frame.frame_id,
+        stream=legacy_stream,
+    )
+
+    producer_waits = []
+    original_wait = engine._wait_on_event
+
+    def _observe_wait(event, *, stream=None):
+        producer_waits.append(event)
+        return original_wait(event, stream=stream)
+
+    def _forbidden_sync(*_args, **_kwargs):
+        raise AssertionError("legacy unregister attempted host/global synchronization")
+
+    monkeypatch.setattr(engine, "_wait_on_event", _observe_wait)
+    monkeypatch.setattr(torch.cuda, "synchronize", _forbidden_sync)
+    monkeypatch.setattr(wp, "synchronize", _forbidden_sync)
+    monkeypatch.setattr(wp, "synchronize_device", _forbidden_sync)
+    monkeypatch.setattr(wp, "synchronize_event", _forbidden_sync)
+    engine.unregister_consumer(legacy_consumer.consumer_id)
+    assert producer_waits == [legacy_done_event]
+    assert legacy_consumer.device_done_event is legacy_done_event
+
+    fresh_consumer = _device_consumer("fresh_cuda_consumer")
+    engine.register_consumer(fresh_consumer)
+    cuda_stream = torch.cuda.Stream(device="cuda:0")
+    resource = torch.empty(1, device="cuda:0")
+    guardian = CudaConsumerResourceGuardian.seal(
+        device_ordinal=0,
+        cuda_stream_owner=cuda_stream,
+        resources=(resource,),
+    )
+    binding = engine.bind_cuda_device_consumer(
+        fresh_consumer.consumer_id,
+        device_ordinal=0,
+        cuda_stream_handle=cuda_stream.cuda_stream,
+        consumer_resource_guardian=guardian,
+    )
+    binding.close()
+    engine.unregister_consumer(fresh_consumer.consumer_id)
+    engine.close()
+    guardian.close()
+
+
 def test_normal_hot_path_never_calls_host_or_global_synchronize(monkeypatch):
     engine, _ = _make_engine(num_envs=1)
     engine.step()
@@ -183,6 +315,57 @@ def test_normal_hot_path_never_calls_host_or_global_synchronize(monkeypatch):
     binding.close()
     engine.unregister_consumer(consumer.consumer_id)
     engine.close()
+    guardian.close()
+
+
+def test_engine_close_immediately_aborts_final_drain_poison(monkeypatch):
+    engine, _ = _make_engine(num_envs=1)
+    engine.step()
+    frame = engine.latest_published_frame()
+    assert frame is not None
+    consumer = _device_consumer("close_poison")
+    engine.register_consumer(consumer)
+    stream = torch.cuda.Stream(device="cuda:0")
+    resource = torch.empty(1, device="cuda:0")
+    guardian = CudaConsumerResourceGuardian.seal(
+        device_ordinal=0,
+        cuda_stream_owner=stream,
+        resources=(resource,),
+    )
+    binding = engine.bind_cuda_device_consumer(
+        consumer.consumer_id,
+        device_ordinal=0,
+        cuda_stream_handle=stream.cuda_stream,
+        consumer_resource_guardian=guardian,
+    )
+    binding.borrow(frame.frame_id).complete(last_reader_operation="no_consumer_reader_enqueued")
+
+    runtime = binding._runtime
+    original_emergency_sync = runtime.emergency_synchronize
+    emergency_sync_count = 0
+
+    def _fail_final_drain(_event):
+        raise RuntimeError("injected final-drain wait failure")
+
+    def _count_emergency_sync():
+        nonlocal emergency_sync_count
+        emergency_sync_count += 1
+        original_emergency_sync()
+
+    monkeypatch.setattr(runtime, "producer_wait_event", _fail_final_drain)
+    monkeypatch.setattr(runtime, "emergency_synchronize", _count_emergency_sync)
+
+    engine.close()
+    assert engine._closed is True
+    assert binding.state == "aborted_synced"
+    assert binding.abort_disposition is not None
+    assert binding.abort_disposition.disposition == "emergency_sync_succeeded"
+    assert emergency_sync_count == 1
+    assert guardian.state == "released_after_emergency_sync"
+
+    engine.close()
+    assert emergency_sync_count == 1
+    engine.unregister_consumer(consumer.consumer_id)
     guardian.close()
 
 

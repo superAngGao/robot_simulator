@@ -380,6 +380,15 @@ class ConsumerState:
     def lag_frames(self, producer_frame_id: int) -> int:
         return max(0, producer_frame_id - self.reclaim_frame_id)
 
+    @property
+    def has_legacy_device_api_state(self) -> bool:
+        """Whether the pre-binding device borrow/complete API touched this consumer."""
+        return self.consumer_location == "device" and (
+            self.latest_seen_frame_id >= 0
+            or self.device_completed_frame_id >= 0
+            or self.device_done_event is not None
+        )
+
 
 class DeviceConsumerStalledError(RuntimeError):
     """Raised when a lossless device consumer exceeds its frame-lag budget."""
@@ -689,6 +698,11 @@ class PublishedRing:
             if consumer.cuda_binding_id is not None:
                 raise RuntimeError(
                     f"Consumer {consumer.consumer_id!r} already has a CUDA publication binding"
+                )
+            if consumer.has_legacy_device_api_state:
+                raise RuntimeError(
+                    "CUDA publication binding requires a fresh consumer that has never used "
+                    "the legacy device borrow/complete API"
                 )
             consumer.cuda_binding_id = binding_id
             consumer.cuda_binding_state = state
