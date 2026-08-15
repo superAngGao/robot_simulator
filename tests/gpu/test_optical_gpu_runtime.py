@@ -232,6 +232,85 @@ def test_a3a_runtime_hooks_reject_real_acceleration_render_and_delivery_calls(tm
         == "warp.synchronize_event"
     )
 
+    torch = pytest.importorskip("torch")
+    from optics.cuda_direct_light import (
+        CudaCameraParameters,
+        CudaDirectLightNativeRenderer,
+        _first_hit_inputs_from_snapshot,
+        _shade_inputs_from_snapshot,
+        allocate_cuda_direct_light_buffers,
+    )
+    from optics.cuda_timeline import CudaOpticalExecutionContext
+
+    tensor_device = torch.device(str(engine._device))
+    with torch.cuda.device(tensor_device):
+        torch_stream = torch.cuda.Stream(device=tensor_device)
+    native_context = CudaOpticalExecutionContext(device=tensor_device, stream=torch_stream)
+    native_renderer = CudaDirectLightNativeRenderer.prepare(native_context)
+    first_hit_inputs = _first_hit_inputs_from_snapshot(
+        snapshot,
+        cuda_bvh,
+        max_distance=camera.max_distance,
+        sensor_role=camera.sensor_role,
+    )
+    shade_inputs = _shade_inputs_from_snapshot(snapshot)
+    camera_parameters = CudaCameraParameters.from_spec(camera)
+    native_buffers = allocate_cuda_direct_light_buffers(
+        num_rays=camera.width * camera.height,
+        device=tensor_device,
+        direct_light=True,
+        traversal_diagnostics=False,
+    )
+    native_stage = native_renderer.bind_direct_light(
+        first_hit_inputs=first_hit_inputs,
+        shade_inputs=shade_inputs,
+        buffers=native_buffers,
+        camera=camera_parameters,
+        output_profile=OpticalOutputProfile.DIRECT_LIGHT_FULL,
+        shadows=False,
+        ambient_rgb=(0.0, 0.0, 0.0),
+        background_rgb=(0.0, 0.0, 0.0),
+        shadow_bias=1.0e-6,
+    )
+    with native_context.activate():
+        native_terminal_event = torch.cuda.Event()
+        native_terminal_event.record(torch_stream)
+    native_terminal_event.synchronize()
+    native_transaction = native_context.begin_transaction(
+        stages=(native_stage,),
+        completion_event=native_terminal_event,
+    )
+    native_audits = (
+        verified_runtime_entry_point_audit(
+            operation="render",
+            entry_point="optics.cuda_direct_light.CudaDirectLightRenderStage.enqueue",
+        ),
+        verified_runtime_entry_point_audit(
+            operation="render",
+            entry_point="optics.cuda_timeline.CudaOpticalTransaction.finish",
+        ),
+    )
+    native_trace = RuntimeOperationTrace(
+        row_id="runtime-native-render",
+        lane="cuda",
+        boundary="R0",
+    )
+    with instrument_runtime_entry_points(native_audits) as native_observation:
+        with native_timed_submission(
+            row_id=native_trace.row_id,
+            lane=native_trace.lane,
+            boundary=native_trace.boundary,
+            operation_trace=native_trace,
+        ):
+            native_stage.enqueue(native_transaction)
+            native_completion = native_transaction.finish()
+    assert native_observation.violation_hook_id is None
+    assert [record.entry_point for record in native_trace.evidence().records] == [
+        "optics.cuda_direct_light.CudaDirectLightRenderStage.enqueue",
+        "optics.cuda_timeline.CudaOpticalTransaction.finish",
+    ]
+    native_completion.event.synchronize()
+
     delivery = video_delivery.VideoDeliveryFacade.create(
         request=video_delivery.video_delivery_request(
             readback_mode="full",

@@ -81,6 +81,16 @@ _LANE_SOURCE_COVERAGE = {
     ),
     "cuda": (
         _SourceCoverage(
+            operation="render",
+            entry_point="optics.cuda_direct_light.CudaDirectLightRenderStage.enqueue",
+            source_symbols=("optics.cuda_direct_light.CudaDirectLightRenderStage.enqueue",),
+        ),
+        _SourceCoverage(
+            operation="render",
+            entry_point="optics.cuda_timeline.CudaOpticalTransaction.finish",
+            source_symbols=("optics.cuda_timeline.CudaOpticalTransaction.finish",),
+        ),
+        _SourceCoverage(
             operation="acceleration",
             entry_point="optics.cuda_lbvh.build_cuda_lbvh_from_snapshot",
             source_symbols=("optics.cuda_lbvh.build_cuda_lbvh_from_snapshot",),
@@ -97,14 +107,7 @@ _LANE_SOURCE_COVERAGE = {
             entry_point=("optics.cuda_direct_light.CudaDeviceBvhDirectLightOpticalExecutor.execute_camera"),
             source_symbols=(
                 "optics.cuda_direct_light.CudaDeviceBvhDirectLightOpticalExecutor.execute_camera",
-                (
-                    "optics.cuda_direct_light.CudaDeviceBvhDirectLightOpticalExecutor."
-                    "_shade_geometry_no_shadow"
-                ),
-                (
-                    "optics.cuda_direct_light.CudaDeviceBvhDirectLightOpticalExecutor."
-                    "_shade_geometry_with_shadows"
-                ),
+                ("optics.cuda_direct_light.CudaDeviceBvhDirectLightOpticalExecutor._execute_direct_light"),
             ),
             known_contaminations=(
                 "allocation",

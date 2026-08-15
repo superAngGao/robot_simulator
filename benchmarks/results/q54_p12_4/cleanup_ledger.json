@@ -24,11 +24,22 @@
     },
     {
       "entry_id": "cuda_optical_executor",
-      "paths": ["optics/cuda_direct_light.py"],
+      "paths": [
+        "optics/cuda_direct_light.py",
+        "optics/cuda_timeline.py",
+        "tests/gpu/test_cuda_optical_timeline.py",
+        "tests/unit/optics/test_cuda_timeline.py"
+      ],
       "symbols": {
         "optics/cuda_direct_light.py": [
           "class CudaDeviceBvhOpticalExecutor:",
-          "class CudaDeviceBvhDirectLightOpticalExecutor:"
+          "class CudaDeviceBvhDirectLightOpticalExecutor:",
+          "class CudaDirectLightNativeRenderer:",
+          "class CudaDirectLightRenderStage:"
+        ],
+        "optics/cuda_timeline.py": [
+          "class CudaOpticalExecutionContext:",
+          "class CudaOpticalTransaction:"
         ]
       },
       "cuda_selected": {
@@ -37,7 +48,7 @@
       },
       "warp_selected": {
         "action": "delete",
-        "acceptance": "remove extension loader, exports, selectors, fallback, tests, and CUDA-only product flags"
+        "acceptance": "remove the CUDA timeline, native renderer, extension loader, exports, selectors, fallback, tests, and CUDA-only product flags"
       },
       "must_resolve_by": "P12.4e"
     },
