@@ -259,7 +259,7 @@ def test_a3a_runtime_hooks_reject_real_acceleration_render_and_delivery_calls(tm
         num_rays=camera.width * camera.height,
         device=tensor_device,
         direct_light=True,
-        traversal_diagnostics=False,
+        traversal_diagnostics=True,
     )
     native_stage = native_renderer.bind_direct_light(
         first_hit_inputs=first_hit_inputs,

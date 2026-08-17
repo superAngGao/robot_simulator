@@ -4,8 +4,8 @@ Author: Codex
 
 Date: 2026-08-15
 
-Status: implementation complete for Claude review; no a3b lane, sample, or
-baseline is authorized
+Status: P1 fixed-diagnostics-ABI revision implemented for Claude re-review; no
+a3b lane, sample, or baseline is authorized
 
 Approved C2 design:
 `ae7cdcb60ac799567988ffb6b7435253b0f07d00`
@@ -78,13 +78,24 @@ arena and is not used as evidence of C4 completion.
 
 ## Out-only extension surface
 
-The extension version is bumped to `robot_sim_cuda_direct_light_v7` and exports
-only:
+The extension version is bumped to `robot_sim_cuda_direct_light_v8` and exports
+only fixed-signature entries:
 
 - `pinhole_camera_rays_out`;
 - `first_hit_rays_out`;
 - `shade_direct_light_no_shadow_out`;
+- `shade_direct_light_no_shadow_diagnostics_out`;
 - `shade_direct_light_with_shadows_out`.
+- `shade_direct_light_with_shadows_diagnostics_out`.
+
+The two base shade entries accept no traversal counter argument. The two
+diagnostic entries accept nine fixed-position tensor arguments. Binding freezes
+the exact callable selected by shadow and diagnostics state together with one
+immutable positional-argument tuple. Enqueue only invokes that prebound pair;
+it constructs no Python list/tuple or C++ container. The C++ implementation
+uses only a fixed nine-element stack pointer array. It contains no
+`std::vector<torch::Tensor>` or `<vector>` include. The diagnostics-off entries
+therefore need neither dummy tensors nor a fallback container.
 
 All four accept caller-owned contiguous CUDA outputs, validate their related
 tensor contracts, install `c10::cuda::CUDAGuard`, and launch on
@@ -165,10 +176,11 @@ git diff --check
 
 Observed before this implementation commit:
 
-- focused timeline, a3a, benchmark, raygen, profile, shadow and compatibility
-  regressions: 117 passed in the final unfiltered run;
-- full unit suite: 1094 passed, 20 skipped;
-- full GPU suite: 324 passed;
+- P1-focused timeline, a3a, benchmark, raygen, profile, shadow and
+  compatibility regressions: 118 passed;
+- exact optical GPU files after the fixed-ABI revision: 56 passed;
+- full unit suite after the fixed-ABI revision: 1095 passed, 20 skipped;
+- parent C2 full GPU suite before the ABI-only revision: 324 passed;
 - Ruff and the extension rebuild: passed.
 
 No benchmark sample, timing artifact, baseline, threshold decision, backend
@@ -195,3 +207,8 @@ Please review whether:
    B3, a3b, and shipping ownership outside this slice;
 8. the cleanup ledger produces a clean repository under either terminal backend
    decision.
+
+The requested P1 re-review should additionally confirm that the timed shade ABI
+has no dynamic tensor container, diagnostics-on binds nine fixed ordered
+arguments, diagnostics-off has no counter/dummy/fallback argument, and both
+paths use the frozen callable selected before transaction enqueue.

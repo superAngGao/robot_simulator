@@ -158,6 +158,7 @@ class CudaDirectLightStageEvidence:
     ray_source: str
     output_profile: str
     shadows: bool
+    extension_entry: str | None
     num_rays: int
     traversal_diagnostics: bool
 
@@ -359,7 +360,94 @@ class CudaDirectLightRenderStage:
         self.ambient_rgb = tuple(float(value) for value in ambient_rgb)
         self.background_rgb = tuple(float(value) for value in background_rgb)
         self.shadow_bias = float(shadow_bias)
+        self._raygen_entry: object | None = None
+        self._raygen_args: tuple[object, ...] = ()
+        if camera is not None:
+            self._raygen_entry = getattr(renderer.module, "pinhole_camera_rays_out", None)
+            self._raygen_args = (
+                buffers.origins,
+                buffers.directions,
+                camera.width,
+                camera.height,
+                camera.fx,
+                camera.fy,
+                camera.cx,
+                camera.cy,
+                camera.origin[0],
+                camera.origin[1],
+                camera.origin[2],
+                camera.rotation[0],
+                camera.rotation[1],
+                camera.rotation[2],
+                camera.rotation[3],
+                camera.rotation[4],
+                camera.rotation[5],
+                camera.rotation[6],
+                camera.rotation[7],
+                camera.rotation[8],
+            )
+        self._shade_entry_name: str | None = None
+        self._shade_entry: object | None = None
+        if shade_inputs is not None:
+            self._shade_entry_name = _shade_extension_entry_name(
+                shadows=self.shadows,
+                traversal_diagnostics=bool(buffers.shadow_traversal_counters),
+            )
+            self._shade_entry = getattr(renderer.module, self._shade_entry_name, None)
+        self._shade_args = self._bind_shade_arguments()
         self._binding_signature: tuple[object, ...] | None = None
+
+    def _bind_shade_arguments(self) -> tuple[object, ...]:
+        shade = self.shade_inputs
+        if shade is None:
+            return ()
+        output = self.buffers
+        arguments = (
+            output.hit_mask,
+            output.position_world,
+            output.normal_world,
+            output.material_index,
+            shade.material_albedo_rgb,
+            shade.light_kind,
+            shade.light_position_or_direction_world,
+            shade.light_intensity,
+            shade.light_color_rgb,
+            shade.num_lights,
+        )
+        if self.shadows:
+            first = self.first_hit_inputs
+            arguments += (
+                first.triangle_v0_world,
+                first.triangle_e1_world,
+                first.triangle_e2_world,
+                first.triangle_normal_world,
+                first.triangle_role_mask,
+                first.bvh_bounds_min,
+                first.bvh_bounds_max,
+                first.bvh_left,
+                first.bvh_right,
+                first.bvh_start,
+                first.bvh_count,
+                first.bvh_prim_ids,
+                first.num_bvh_nodes,
+                first.sensor_role_mask,
+                self.shadow_bias,
+            )
+        arguments += (
+            self.ambient_rgb[0],
+            self.ambient_rgb[1],
+            self.ambient_rgb[2],
+            self.background_rgb[0],
+            self.background_rgb[1],
+            self.background_rgb[2],
+            output.rgb,
+            output.intensity,
+            output.shadow_stack_overflow_count,
+            output.shadow_max_stack_depth,
+        )
+        if output.shadow_traversal_counters:
+            arguments += output.shadow_traversal_counters
+        return arguments
 
     def enqueue(self, transaction: CudaOpticalTransaction) -> None:
         module = self.renderer.module
@@ -367,20 +455,11 @@ class CudaDirectLightRenderStage:
         output = self.buffers
         with transaction.enqueue_stage(self):
             if self.camera is not None:
-                camera = self.camera
                 transaction.record_diagnostic_start("raygen_kernel")
-                module.pinhole_camera_rays_out(
-                    output.origins,
-                    output.directions,
-                    camera.width,
-                    camera.height,
-                    camera.fx,
-                    camera.fy,
-                    camera.cx,
-                    camera.cy,
-                    *camera.origin,
-                    *camera.rotation,
-                )
+                raygen_entry = self._raygen_entry
+                if raygen_entry is None:  # pragma: no cover - rejected during validation.
+                    raise RuntimeError("CUDA raygen extension entry is not prepared")
+                raygen_entry(*self._raygen_args)
                 transaction.record_diagnostic_end("raygen_kernel")
 
             transaction.record_diagnostic_start("first_hit_kernel")
@@ -425,52 +504,11 @@ class CudaDirectLightRenderStage:
 
             if self.shade_inputs is None:
                 return
-            shade = self.shade_inputs
-            traversal = output.shadow_traversal_counters
             transaction.record_diagnostic_start("shade_kernel")
-            common_args = (
-                output.hit_mask,
-                output.position_world,
-                output.normal_world,
-                output.material_index,
-                shade.material_albedo_rgb,
-                shade.light_kind,
-                shade.light_position_or_direction_world,
-                shade.light_intensity,
-                shade.light_color_rgb,
-                shade.num_lights,
-            )
-            common_scalars = (
-                *self.ambient_rgb,
-                *self.background_rgb,
-                output.rgb,
-                output.intensity,
-                output.shadow_stack_overflow_count,
-                output.shadow_max_stack_depth,
-                traversal,
-            )
-            if self.shadows:
-                module.shade_direct_light_with_shadows_out(
-                    *common_args,
-                    first.triangle_v0_world,
-                    first.triangle_e1_world,
-                    first.triangle_e2_world,
-                    first.triangle_normal_world,
-                    first.triangle_role_mask,
-                    first.bvh_bounds_min,
-                    first.bvh_bounds_max,
-                    first.bvh_left,
-                    first.bvh_right,
-                    first.bvh_start,
-                    first.bvh_count,
-                    first.bvh_prim_ids,
-                    first.num_bvh_nodes,
-                    first.sensor_role_mask,
-                    self.shadow_bias,
-                    *common_scalars,
-                )
-            else:
-                module.shade_direct_light_no_shadow_out(*common_args, *common_scalars)
+            shade_entry = self._shade_entry
+            if shade_entry is None:  # pragma: no cover - rejected during bind/transaction validation.
+                raise RuntimeError("CUDA shade extension entry is not prepared")
+            shade_entry(*self._shade_args)
             transaction.record_diagnostic_end("shade_kernel")
 
     def output_channels(self, *, include_traversal_diagnostics: bool) -> dict[str, object]:
@@ -489,6 +527,14 @@ class CudaDirectLightRenderStage:
             direct_light=self.shade_inputs is not None,
             camera=self.camera is not None,
         )
+        prepared_raygen = getattr(self.renderer.module, "pinhole_camera_rays_out", None)
+        if self.camera is not None:
+            if not callable(prepared_raygen) or prepared_raygen is not self._raygen_entry:
+                raise ValueError("prepared CUDA renderer is missing stable pinhole_camera_rays_out")
+            if len(self._raygen_args) != 20:
+                raise ValueError("CUDA raygen extension argument binding changed")
+        elif self._raygen_entry is not None or self._raygen_args:
+            raise ValueError("device-ray CUDA binding cannot contain a raygen entry")
         if self.shade_inputs is None:
             if self.output_profile is not OpticalOutputProfile.GEOMETRY_FULL or self.shadows:
                 raise ValueError("geometry-only CUDA binding has invalid render identity")
@@ -498,6 +544,16 @@ class CudaDirectLightRenderStage:
             OpticalOutputProfile.RENDER_ONLY,
         }:
             raise ValueError("CUDA direct-light binding has invalid output profile")
+        if self.shade_inputs is not None:
+            expected_entry_name = _shade_extension_entry_name(
+                shadows=self.shadows,
+                traversal_diagnostics=bool(self.buffers.shadow_traversal_counters),
+            )
+            if self._shade_entry_name != expected_entry_name:
+                raise ValueError("CUDA shade extension entry identity changed")
+            prepared_entry = getattr(self.renderer.module, expected_entry_name, None)
+            if not callable(prepared_entry) or prepared_entry is not self._shade_entry:
+                raise ValueError(f"prepared CUDA renderer is missing stable {expected_entry_name}")
         if len(self.ambient_rgb) != 3 or len(self.background_rgb) != 3:
             raise ValueError("CUDA direct-light RGB scalars must have three components")
         if not all(math.isfinite(value) for value in (*self.ambient_rgb, *self.background_rgb)):
@@ -531,6 +587,7 @@ class CudaDirectLightRenderStage:
             ray_source="camera" if self.camera is not None else "device_rays",
             output_profile=self.output_profile.value,
             shadows=self.shadows,
+            extension_entry=self._shade_entry_name,
             num_rays=int(self.buffers.origins.shape[0]),
             traversal_diagnostics=bool(self.buffers.shadow_traversal_counters),
         )
@@ -859,16 +916,25 @@ def _render_binding_signature(stage: CudaDirectLightRenderStage) -> tuple[object
         stage.ambient_rgb,
         stage.background_rgb,
         stage.shadow_bias,
+        id(stage._raygen_entry),
+        id(stage._raygen_args),
+        stage._shade_entry_name,
+        id(stage._shade_entry),
+        id(stage._shade_args),
         storage,
     )
+
+
+def _shade_extension_entry_name(*, shadows: bool, traversal_diagnostics: bool) -> str:
+    base = "shade_direct_light_with_shadows" if shadows else "shade_direct_light_no_shadow"
+    suffix = "_diagnostics_out" if traversal_diagnostics else "_out"
+    return f"{base}{suffix}"
 
 
 def _validate_renderer_module(module: object, *, direct_light: bool, camera: bool) -> None:
     required = ["first_hit_rays_out"]
     if camera:
         required.append("pinhole_camera_rays_out")
-    if direct_light:
-        required.extend(("shade_direct_light_no_shadow_out", "shade_direct_light_with_shadows_out"))
     for name in required:
         if not callable(getattr(module, name, None)):
             raise ValueError(f"prepared CUDA renderer is missing {name}")
@@ -1526,14 +1592,16 @@ def _filter_channels_for_profile(
 def _load_cuda_direct_light_extension():
     _require_cuda_direct_light_deps()
     return load_inline(
-        name="robot_sim_cuda_direct_light_v7",
+        name="robot_sim_cuda_direct_light_v8",
         cpp_sources=[_CPP_SOURCE],
         cuda_sources=[_CUDA_SOURCE],
         functions=[
             "pinhole_camera_rays_out",
             "first_hit_rays_out",
             "shade_direct_light_no_shadow_out",
+            "shade_direct_light_no_shadow_diagnostics_out",
             "shade_direct_light_with_shadows_out",
+            "shade_direct_light_with_shadows_diagnostics_out",
         ],
         with_cuda=True,
         extra_cflags=["-O2"],
@@ -1544,8 +1612,6 @@ def _load_cuda_direct_light_extension():
 
 _CPP_SOURCE = r"""
 #include <torch/extension.h>
-
-#include <vector>
 
 void pinhole_camera_rays_out(
     torch::Tensor origins,
@@ -1626,8 +1692,38 @@ void shade_direct_light_no_shadow_out(
     torch::Tensor rgb,
     torch::Tensor intensity,
     torch::Tensor shadow_stack_overflow_count,
+    torch::Tensor shadow_max_stack_depth);
+
+void shade_direct_light_no_shadow_diagnostics_out(
+    torch::Tensor hit_mask,
+    torch::Tensor position_world,
+    torch::Tensor normal_world,
+    torch::Tensor material_index,
+    torch::Tensor material_albedo_rgb,
+    torch::Tensor light_kind,
+    torch::Tensor light_position_or_direction_world,
+    torch::Tensor light_intensity,
+    torch::Tensor light_color_rgb,
+    int64_t num_lights,
+    double ambient_r,
+    double ambient_g,
+    double ambient_b,
+    double background_r,
+    double background_g,
+    double background_b,
+    torch::Tensor rgb,
+    torch::Tensor intensity,
+    torch::Tensor shadow_stack_overflow_count,
     torch::Tensor shadow_max_stack_depth,
-    std::vector<torch::Tensor> shadow_traversal_counters);
+    torch::Tensor traversal_counter_0,
+    torch::Tensor traversal_counter_1,
+    torch::Tensor traversal_counter_2,
+    torch::Tensor traversal_counter_3,
+    torch::Tensor traversal_counter_4,
+    torch::Tensor traversal_counter_5,
+    torch::Tensor traversal_counter_6,
+    torch::Tensor traversal_counter_7,
+    torch::Tensor traversal_counter_8);
 
 void shade_direct_light_with_shadows_out(
     torch::Tensor hit_mask,
@@ -1664,8 +1760,53 @@ void shade_direct_light_with_shadows_out(
     torch::Tensor rgb,
     torch::Tensor intensity,
     torch::Tensor shadow_stack_overflow_count,
+    torch::Tensor shadow_max_stack_depth);
+
+void shade_direct_light_with_shadows_diagnostics_out(
+    torch::Tensor hit_mask,
+    torch::Tensor position_world,
+    torch::Tensor normal_world,
+    torch::Tensor material_index,
+    torch::Tensor material_albedo_rgb,
+    torch::Tensor light_kind,
+    torch::Tensor light_position_or_direction_world,
+    torch::Tensor light_intensity,
+    torch::Tensor light_color_rgb,
+    int64_t num_lights,
+    torch::Tensor triangle_v0,
+    torch::Tensor triangle_e1,
+    torch::Tensor triangle_e2,
+    torch::Tensor triangle_normal,
+    torch::Tensor triangle_role_masks,
+    torch::Tensor bvh_bounds_min,
+    torch::Tensor bvh_bounds_max,
+    torch::Tensor bvh_left,
+    torch::Tensor bvh_right,
+    torch::Tensor bvh_start,
+    torch::Tensor bvh_count,
+    torch::Tensor bvh_prim_ids,
+    int64_t num_bvh_nodes,
+    int64_t sensor_role_mask,
+    double shadow_bias,
+    double ambient_r,
+    double ambient_g,
+    double ambient_b,
+    double background_r,
+    double background_g,
+    double background_b,
+    torch::Tensor rgb,
+    torch::Tensor intensity,
+    torch::Tensor shadow_stack_overflow_count,
     torch::Tensor shadow_max_stack_depth,
-    std::vector<torch::Tensor> shadow_traversal_counters);
+    torch::Tensor traversal_counter_0,
+    torch::Tensor traversal_counter_1,
+    torch::Tensor traversal_counter_2,
+    torch::Tensor traversal_counter_3,
+    torch::Tensor traversal_counter_4,
+    torch::Tensor traversal_counter_5,
+    torch::Tensor traversal_counter_6,
+    torch::Tensor traversal_counter_7,
+    torch::Tensor traversal_counter_8);
 """
 
 
@@ -1679,8 +1820,6 @@ _CUDA_SOURCE = r"""
 #include <cmath>
 #include <cstdint>
 #include <limits>
-#include <vector>
-
 namespace {
 
 constexpr float kBuildEps = 1.0e-8f;
@@ -2806,7 +2945,7 @@ void first_hit_rays_out(
   }
 }
 
-void shade_direct_light_no_shadow_out(
+void shade_direct_light_no_shadow_impl(
     torch::Tensor hit_mask,
     torch::Tensor position_world,
     torch::Tensor normal_world,
@@ -2827,7 +2966,15 @@ void shade_direct_light_no_shadow_out(
     torch::Tensor intensity,
     torch::Tensor shadow_stack_overflow_count,
     torch::Tensor shadow_max_stack_depth,
-    std::vector<torch::Tensor> shadow_traversal_counters) {
+    torch::Tensor* traversal_counter_0,
+    torch::Tensor* traversal_counter_1,
+    torch::Tensor* traversal_counter_2,
+    torch::Tensor* traversal_counter_3,
+    torch::Tensor* traversal_counter_4,
+    torch::Tensor* traversal_counter_5,
+    torch::Tensor* traversal_counter_6,
+    torch::Tensor* traversal_counter_7,
+    torch::Tensor* traversal_counter_8) {
   check_i32_1d(hit_mask, "hit_mask");
   check_float_2d_3(position_world, "position_world");
   check_float_2d_3(normal_world, "normal_world");
@@ -2844,12 +2991,25 @@ void shade_direct_light_no_shadow_out(
   check_float_1d(intensity, "intensity");
   check_i32_1d(shadow_stack_overflow_count, "shadow_stack_overflow_count");
   check_i32_1d(shadow_max_stack_depth, "shadow_max_stack_depth");
-  TORCH_CHECK(
-      shadow_traversal_counters.empty() || shadow_traversal_counters.size() == 9,
-      "shadow_traversal_counters must be empty or contain 9 tensors");
-  for (const auto& counter : shadow_traversal_counters) {
-    check_i32_1d(counter, "shadow_traversal_counter");
-    TORCH_CHECK(counter.size(0) == 1, "shadow traversal counters must have shape [1]");
+  torch::Tensor* traversal_counters[9] = {
+      traversal_counter_0,
+      traversal_counter_1,
+      traversal_counter_2,
+      traversal_counter_3,
+      traversal_counter_4,
+      traversal_counter_5,
+      traversal_counter_6,
+      traversal_counter_7,
+      traversal_counter_8};
+  bool traversal_stats_enabled = traversal_counter_0 != nullptr;
+  for (torch::Tensor* counter : traversal_counters) {
+    TORCH_CHECK(
+        (counter != nullptr) == traversal_stats_enabled,
+        "shadow traversal counters must be completely absent or present");
+    if (counter != nullptr) {
+      check_i32_1d(*counter, "shadow_traversal_counter");
+      TORCH_CHECK(counter->size(0) == 1, "shadow traversal counters must have shape [1]");
+    }
   }
   TORCH_CHECK(position_world.sizes() == normal_world.sizes(), "position_world/normal_world shape mismatch");
   TORCH_CHECK(hit_mask.size(0) == position_world.size(0), "hit_mask length must match position_world");
@@ -2878,8 +3038,10 @@ void shade_direct_light_no_shadow_out(
   check_same_device(hit_mask, intensity, "intensity");
   check_same_device(hit_mask, shadow_stack_overflow_count, "shadow_stack_overflow_count");
   check_same_device(hit_mask, shadow_max_stack_depth, "shadow_max_stack_depth");
-  for (const auto& counter : shadow_traversal_counters) {
-    check_same_device(hit_mask, counter, "shadow_traversal_counter");
+  for (torch::Tensor* counter : traversal_counters) {
+    if (counter != nullptr) {
+      check_same_device(hit_mask, *counter, "shadow_traversal_counter");
+    }
   }
 
   int64_t num_rays = hit_mask.size(0);
@@ -2894,8 +3056,10 @@ void shade_direct_light_no_shadow_out(
   C10_CUDA_CHECK(cudaMemsetAsync(
       shadow_stack_overflow_count.data_ptr<int32_t>(), 0, sizeof(int32_t), stream));
   C10_CUDA_CHECK(cudaMemsetAsync(shadow_max_stack_depth.data_ptr<int32_t>(), 0, sizeof(int32_t), stream));
-  for (const auto& counter : shadow_traversal_counters) {
-    C10_CUDA_CHECK(cudaMemsetAsync(counter.data_ptr<int32_t>(), 0, sizeof(int32_t), stream));
+  for (torch::Tensor* counter : traversal_counters) {
+    if (counter != nullptr) {
+      C10_CUDA_CHECK(cudaMemsetAsync(counter->data_ptr<int32_t>(), 0, sizeof(int32_t), stream));
+    }
   }
 
   if (num_rays > 0) {
@@ -2925,7 +3089,122 @@ void shade_direct_light_no_shadow_out(
   }
 }
 
-void shade_direct_light_with_shadows_out(
+void shade_direct_light_no_shadow_out(
+    torch::Tensor hit_mask,
+    torch::Tensor position_world,
+    torch::Tensor normal_world,
+    torch::Tensor material_index,
+    torch::Tensor material_albedo_rgb,
+    torch::Tensor light_kind,
+    torch::Tensor light_position_or_direction_world,
+    torch::Tensor light_intensity,
+    torch::Tensor light_color_rgb,
+    int64_t num_lights,
+    double ambient_r,
+    double ambient_g,
+    double ambient_b,
+    double background_r,
+    double background_g,
+    double background_b,
+    torch::Tensor rgb,
+    torch::Tensor intensity,
+    torch::Tensor shadow_stack_overflow_count,
+    torch::Tensor shadow_max_stack_depth) {
+  shade_direct_light_no_shadow_impl(
+      hit_mask,
+      position_world,
+      normal_world,
+      material_index,
+      material_albedo_rgb,
+      light_kind,
+      light_position_or_direction_world,
+      light_intensity,
+      light_color_rgb,
+      num_lights,
+      ambient_r,
+      ambient_g,
+      ambient_b,
+      background_r,
+      background_g,
+      background_b,
+      rgb,
+      intensity,
+      shadow_stack_overflow_count,
+      shadow_max_stack_depth,
+      nullptr,
+      nullptr,
+      nullptr,
+      nullptr,
+      nullptr,
+      nullptr,
+      nullptr,
+      nullptr,
+      nullptr);
+}
+
+void shade_direct_light_no_shadow_diagnostics_out(
+    torch::Tensor hit_mask,
+    torch::Tensor position_world,
+    torch::Tensor normal_world,
+    torch::Tensor material_index,
+    torch::Tensor material_albedo_rgb,
+    torch::Tensor light_kind,
+    torch::Tensor light_position_or_direction_world,
+    torch::Tensor light_intensity,
+    torch::Tensor light_color_rgb,
+    int64_t num_lights,
+    double ambient_r,
+    double ambient_g,
+    double ambient_b,
+    double background_r,
+    double background_g,
+    double background_b,
+    torch::Tensor rgb,
+    torch::Tensor intensity,
+    torch::Tensor shadow_stack_overflow_count,
+    torch::Tensor shadow_max_stack_depth,
+    torch::Tensor traversal_counter_0,
+    torch::Tensor traversal_counter_1,
+    torch::Tensor traversal_counter_2,
+    torch::Tensor traversal_counter_3,
+    torch::Tensor traversal_counter_4,
+    torch::Tensor traversal_counter_5,
+    torch::Tensor traversal_counter_6,
+    torch::Tensor traversal_counter_7,
+    torch::Tensor traversal_counter_8) {
+  shade_direct_light_no_shadow_impl(
+      hit_mask,
+      position_world,
+      normal_world,
+      material_index,
+      material_albedo_rgb,
+      light_kind,
+      light_position_or_direction_world,
+      light_intensity,
+      light_color_rgb,
+      num_lights,
+      ambient_r,
+      ambient_g,
+      ambient_b,
+      background_r,
+      background_g,
+      background_b,
+      rgb,
+      intensity,
+      shadow_stack_overflow_count,
+      shadow_max_stack_depth,
+      &traversal_counter_0,
+      &traversal_counter_1,
+      &traversal_counter_2,
+      &traversal_counter_3,
+      &traversal_counter_4,
+      &traversal_counter_5,
+      &traversal_counter_6,
+      &traversal_counter_7,
+      &traversal_counter_8);
+}
+
+void shade_direct_light_with_shadows_impl(
     torch::Tensor hit_mask,
     torch::Tensor position_world,
     torch::Tensor normal_world,
@@ -2961,7 +3240,15 @@ void shade_direct_light_with_shadows_out(
     torch::Tensor intensity,
     torch::Tensor shadow_stack_overflow_count,
     torch::Tensor shadow_max_stack_depth,
-    std::vector<torch::Tensor> shadow_traversal_counters) {
+    torch::Tensor* traversal_counter_0,
+    torch::Tensor* traversal_counter_1,
+    torch::Tensor* traversal_counter_2,
+    torch::Tensor* traversal_counter_3,
+    torch::Tensor* traversal_counter_4,
+    torch::Tensor* traversal_counter_5,
+    torch::Tensor* traversal_counter_6,
+    torch::Tensor* traversal_counter_7,
+    torch::Tensor* traversal_counter_8) {
   check_i32_1d(hit_mask, "hit_mask");
   check_float_2d_3(position_world, "position_world");
   check_float_2d_3(normal_world, "normal_world");
@@ -2978,12 +3265,25 @@ void shade_direct_light_with_shadows_out(
   check_float_1d(intensity, "intensity");
   check_i32_1d(shadow_stack_overflow_count, "shadow_stack_overflow_count");
   check_i32_1d(shadow_max_stack_depth, "shadow_max_stack_depth");
-  TORCH_CHECK(
-      shadow_traversal_counters.empty() || shadow_traversal_counters.size() == 9,
-      "shadow_traversal_counters must be empty or contain 9 tensors");
-  for (const auto& counter : shadow_traversal_counters) {
-    check_i32_1d(counter, "shadow_traversal_counter");
-    TORCH_CHECK(counter.size(0) == 1, "shadow traversal counters must have shape [1]");
+  torch::Tensor* traversal_counters[9] = {
+      traversal_counter_0,
+      traversal_counter_1,
+      traversal_counter_2,
+      traversal_counter_3,
+      traversal_counter_4,
+      traversal_counter_5,
+      traversal_counter_6,
+      traversal_counter_7,
+      traversal_counter_8};
+  bool traversal_stats_enabled = traversal_counter_0 != nullptr;
+  for (torch::Tensor* counter : traversal_counters) {
+    TORCH_CHECK(
+        (counter != nullptr) == traversal_stats_enabled,
+        "shadow traversal counters must be completely absent or present");
+    if (counter != nullptr) {
+      check_i32_1d(*counter, "shadow_traversal_counter");
+      TORCH_CHECK(counter->size(0) == 1, "shadow traversal counters must have shape [1]");
+    }
   }
   check_float_2d_3(triangle_v0, "triangle_v0");
   check_float_2d_3(triangle_e1, "triangle_e1");
@@ -3049,8 +3349,10 @@ void shade_direct_light_with_shadows_out(
   check_same_device(hit_mask, intensity, "intensity");
   check_same_device(hit_mask, shadow_stack_overflow_count, "shadow_stack_overflow_count");
   check_same_device(hit_mask, shadow_max_stack_depth, "shadow_max_stack_depth");
-  for (const auto& counter : shadow_traversal_counters) {
-    check_same_device(hit_mask, counter, "shadow_traversal_counter");
+  for (torch::Tensor* counter : traversal_counters) {
+    if (counter != nullptr) {
+      check_same_device(hit_mask, *counter, "shadow_traversal_counter");
+    }
   }
 
   int64_t num_rays = hit_mask.size(0);
@@ -3065,15 +3367,16 @@ void shade_direct_light_with_shadows_out(
   C10_CUDA_CHECK(cudaMemsetAsync(
       shadow_stack_overflow_count.data_ptr<int32_t>(), 0, sizeof(int32_t), stream));
   C10_CUDA_CHECK(cudaMemsetAsync(shadow_max_stack_depth.data_ptr<int32_t>(), 0, sizeof(int32_t), stream));
-  for (const auto& counter : shadow_traversal_counters) {
-    C10_CUDA_CHECK(cudaMemsetAsync(counter.data_ptr<int32_t>(), 0, sizeof(int32_t), stream));
+  for (torch::Tensor* counter : traversal_counters) {
+    if (counter != nullptr) {
+      C10_CUDA_CHECK(cudaMemsetAsync(counter->data_ptr<int32_t>(), 0, sizeof(int32_t), stream));
+    }
   }
-  bool traversal_stats_enabled = !shadow_traversal_counters.empty();
   int32_t* traversal_counter_ptrs[9];
   for (int counter = 0; counter < 9; ++counter) {
     traversal_counter_ptrs[counter] = traversal_stats_enabled
-        ? shadow_traversal_counters[counter].data_ptr<int32_t>()
-        : shadow_stack_overflow_count.data_ptr<int32_t>();
+        ? traversal_counters[counter]->data_ptr<int32_t>()
+        : nullptr;
   }
 
   if (num_rays > 0) {
@@ -3128,5 +3431,180 @@ void shade_direct_light_with_shadows_out(
         static_cast<int>(num_rays));
     C10_CUDA_KERNEL_LAUNCH_CHECK();
   }
+}
+
+void shade_direct_light_with_shadows_out(
+    torch::Tensor hit_mask,
+    torch::Tensor position_world,
+    torch::Tensor normal_world,
+    torch::Tensor material_index,
+    torch::Tensor material_albedo_rgb,
+    torch::Tensor light_kind,
+    torch::Tensor light_position_or_direction_world,
+    torch::Tensor light_intensity,
+    torch::Tensor light_color_rgb,
+    int64_t num_lights,
+    torch::Tensor triangle_v0,
+    torch::Tensor triangle_e1,
+    torch::Tensor triangle_e2,
+    torch::Tensor triangle_normal,
+    torch::Tensor triangle_role_masks,
+    torch::Tensor bvh_bounds_min,
+    torch::Tensor bvh_bounds_max,
+    torch::Tensor bvh_left,
+    torch::Tensor bvh_right,
+    torch::Tensor bvh_start,
+    torch::Tensor bvh_count,
+    torch::Tensor bvh_prim_ids,
+    int64_t num_bvh_nodes,
+    int64_t sensor_role_mask,
+    double shadow_bias,
+    double ambient_r,
+    double ambient_g,
+    double ambient_b,
+    double background_r,
+    double background_g,
+    double background_b,
+    torch::Tensor rgb,
+    torch::Tensor intensity,
+    torch::Tensor shadow_stack_overflow_count,
+    torch::Tensor shadow_max_stack_depth) {
+  shade_direct_light_with_shadows_impl(
+      hit_mask,
+      position_world,
+      normal_world,
+      material_index,
+      material_albedo_rgb,
+      light_kind,
+      light_position_or_direction_world,
+      light_intensity,
+      light_color_rgb,
+      num_lights,
+      triangle_v0,
+      triangle_e1,
+      triangle_e2,
+      triangle_normal,
+      triangle_role_masks,
+      bvh_bounds_min,
+      bvh_bounds_max,
+      bvh_left,
+      bvh_right,
+      bvh_start,
+      bvh_count,
+      bvh_prim_ids,
+      num_bvh_nodes,
+      sensor_role_mask,
+      shadow_bias,
+      ambient_r,
+      ambient_g,
+      ambient_b,
+      background_r,
+      background_g,
+      background_b,
+      rgb,
+      intensity,
+      shadow_stack_overflow_count,
+      shadow_max_stack_depth,
+      nullptr,
+      nullptr,
+      nullptr,
+      nullptr,
+      nullptr,
+      nullptr,
+      nullptr,
+      nullptr,
+      nullptr);
+}
+
+void shade_direct_light_with_shadows_diagnostics_out(
+    torch::Tensor hit_mask,
+    torch::Tensor position_world,
+    torch::Tensor normal_world,
+    torch::Tensor material_index,
+    torch::Tensor material_albedo_rgb,
+    torch::Tensor light_kind,
+    torch::Tensor light_position_or_direction_world,
+    torch::Tensor light_intensity,
+    torch::Tensor light_color_rgb,
+    int64_t num_lights,
+    torch::Tensor triangle_v0,
+    torch::Tensor triangle_e1,
+    torch::Tensor triangle_e2,
+    torch::Tensor triangle_normal,
+    torch::Tensor triangle_role_masks,
+    torch::Tensor bvh_bounds_min,
+    torch::Tensor bvh_bounds_max,
+    torch::Tensor bvh_left,
+    torch::Tensor bvh_right,
+    torch::Tensor bvh_start,
+    torch::Tensor bvh_count,
+    torch::Tensor bvh_prim_ids,
+    int64_t num_bvh_nodes,
+    int64_t sensor_role_mask,
+    double shadow_bias,
+    double ambient_r,
+    double ambient_g,
+    double ambient_b,
+    double background_r,
+    double background_g,
+    double background_b,
+    torch::Tensor rgb,
+    torch::Tensor intensity,
+    torch::Tensor shadow_stack_overflow_count,
+    torch::Tensor shadow_max_stack_depth,
+    torch::Tensor traversal_counter_0,
+    torch::Tensor traversal_counter_1,
+    torch::Tensor traversal_counter_2,
+    torch::Tensor traversal_counter_3,
+    torch::Tensor traversal_counter_4,
+    torch::Tensor traversal_counter_5,
+    torch::Tensor traversal_counter_6,
+    torch::Tensor traversal_counter_7,
+    torch::Tensor traversal_counter_8) {
+  shade_direct_light_with_shadows_impl(
+      hit_mask,
+      position_world,
+      normal_world,
+      material_index,
+      material_albedo_rgb,
+      light_kind,
+      light_position_or_direction_world,
+      light_intensity,
+      light_color_rgb,
+      num_lights,
+      triangle_v0,
+      triangle_e1,
+      triangle_e2,
+      triangle_normal,
+      triangle_role_masks,
+      bvh_bounds_min,
+      bvh_bounds_max,
+      bvh_left,
+      bvh_right,
+      bvh_start,
+      bvh_count,
+      bvh_prim_ids,
+      num_bvh_nodes,
+      sensor_role_mask,
+      shadow_bias,
+      ambient_r,
+      ambient_g,
+      ambient_b,
+      background_r,
+      background_g,
+      background_b,
+      rgb,
+      intensity,
+      shadow_stack_overflow_count,
+      shadow_max_stack_depth,
+      &traversal_counter_0,
+      &traversal_counter_1,
+      &traversal_counter_2,
+      &traversal_counter_3,
+      &traversal_counter_4,
+      &traversal_counter_5,
+      &traversal_counter_6,
+      &traversal_counter_7,
+      &traversal_counter_8);
 }
 """

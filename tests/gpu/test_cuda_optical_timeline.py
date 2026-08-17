@@ -297,7 +297,7 @@ def test_native_binding_rejects_dtype_overlay_overlap_and_post_bind_resize():
     with pytest.raises(AttributeError, match="immutable"):
         stage.shadows = True
     object.__setattr__(stage, "shadows", True)
-    with pytest.raises(ValueError, match="binding changed"):
+    with pytest.raises(ValueError, match="extension entry identity changed"):
         context.begin_transaction(
             stages=(stage,),
             completion_event=_initialized_event(context.stream),
@@ -387,6 +387,10 @@ def test_native_render_enqueue_is_out_only_and_returns_no_early_completion(shado
         background_rgb=(0.1, 0.2, 0.3),
         shadow_bias=1.0e-6,
     )
+    assert len(stage._shade_args) == (44 if shadows else 29)
+    assert all(
+        stage._shade_args[-9 + index] is buffers.shadow_traversal_counters[index] for index in range(9)
+    )
     transaction = context.begin_transaction(
         stages=(stage,),
         completion_event=_initialized_event(context.stream),
@@ -423,6 +427,11 @@ def test_native_render_enqueue_is_out_only_and_returns_no_early_completion(shado
     assert evidence.output_profile == OpticalOutputProfile.DIRECT_LIGHT_FULL.value
     assert evidence.shadows is shadows
     assert evidence.ray_source == "camera"
+    assert evidence.extension_entry == (
+        "shade_direct_light_with_shadows_diagnostics_out"
+        if shadows
+        else "shade_direct_light_no_shadow_diagnostics_out"
+    )
 
 
 def test_native_render_diagnostic_events_are_deferred_until_terminal_wait():
@@ -455,6 +464,7 @@ def test_native_render_diagnostic_events_are_deferred_until_terminal_wait():
         background_rgb=(0.0, 0.0, 0.0),
         shadow_bias=1.0e-6,
     )
+    assert len(stage._shade_args) == 20
     diagnostics = {
         name: (
             _initialized_event(context.stream, enable_timing=True),
@@ -471,6 +481,7 @@ def test_native_render_diagnostic_events_are_deferred_until_terminal_wait():
     stage.enqueue(transaction)
     completion = transaction.finish()
     assert completion.deferred_profile is not None
+    assert completion.stage_evidence[0].extension_entry == "shade_direct_light_no_shadow_out"
     completion.event.synchronize()
     resolved = dict(completion.deferred_profile.resolve_ms())
 
