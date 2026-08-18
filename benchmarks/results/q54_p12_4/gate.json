@@ -1,12 +1,13 @@
 {
-  "schema_version": "q54.p12.4.gate.v6",
-  "result_schema_version": "q54.p12.4.result.v6",
+  "schema_version": "q54.p12.4.gate.v7",
+  "result_schema_version": "q54.p12.4.result.v7",
   "case_schema_version": "q54.p12.4.case.v1",
   "status": "frozen",
   "frozen_at": "2026-08-13T10:41:19+08:00",
   "frozen_before_result_inspection": true,
   "approved_proposal_commit": "46a5d33",
   "approved_dependency_order_commit": "57073b8cabe39d7e4104d8cef77fce70fc17956c",
+  "approved_c3_design_commit": "435ffb275674c04f6452cb41775533db0f47f1d3",
   "owner_decisions": [
     "collab/q54-optical-lab-p12-4-backend-parity-performance-gate__decision__owner__v1.md",
     "collab/q54-optical-lab-p12-4-backend-parity-performance-gate__decision__owner__v2.md"
@@ -157,7 +158,7 @@
     }
   },
   "input_contracts": {
-    "schema_version": "q54.p12.4.input-contract.v1",
+    "schema_version": "q54.p12.4.input-contract.v2",
     "by_boundary": {
       "R0": "fixed_native_scene_v1",
       "R1": "canonical_native_replay_v1",
@@ -228,7 +229,7 @@
     }
   },
   "acceleration_contracts": {
-    "schema_version": "q54.p12.4.acceleration-receipt.v1",
+    "schema_version": "q54.p12.4.acceleration-receipt.v2",
     "by_lane_and_identity": {
       "warp": {
         "fixed_bvh_fixture": {
@@ -426,6 +427,8 @@
       "execution",
       "eligibility",
       "native_input",
+      "native_execution_binding",
+      "stage_evidence",
       "acceleration",
       "publication",
       "operation_trace",
@@ -443,14 +446,26 @@
     ]
   },
   "native_input_contract": {
-    "schema_version": "q54.p12.4.native-input.v1",
+    "schema_version": "q54.p12.4.native-input.v2",
     "timing_contract_version": "q54.p12.4.native-timing.v3",
     "scope": "R0_R1_R2_and_S_static_optical_inputs_only",
-    "logical_source": "immutable_canonical_host_arrays",
+    "logical_source": "PackedOpticalSceneHost_single_materialization_source",
+    "scene_contract_schema_version": "q54.optical-scene-contract.v1",
+    "transform_replay_schema_version": "q54.p12.4.transform-replay.v1",
+    "fixed_render_fixture_schema_version": "q54.p12.4.fixed-render-fixture.v1",
+    "result_capable_constructor": "CanonicalNativeInput.from_scene_contract",
+    "generic_from_arrays_result_capable": false,
     "S_measured_physics_transforms_excluded": true,
     "warp_preparation": "direct_host_to_warp_cuda_allocation",
     "cuda_preparation": "direct_host_to_torch_cuda_allocation",
     "allocation_rule": "independent_runtime_owned_allocations",
+    "R0_array_ownership": {
+      "packed_scene": "local_geometry_metadata_material_light_role_source",
+      "fixed_fixture": "derived_world_geometry_and_normalized_bvh_only",
+      "name_and_semantic_sets": "strictly_disjoint",
+      "upload_count_per_logical_array_per_candidate": 1,
+      "packed_owner_rule": "exact_object_identity_not_content_equality"
+    },
     "native_ready_requirements": [
       "device_resident",
       "dtype_shape_layout_semantics_validated",
@@ -478,9 +493,38 @@
       "native_readiness_sha256",
       "input_contract",
       "input_provenance_sha256",
+      "scene_contract_sha256",
+      "transform_replay_sha256",
+      "transform_frame_index",
+      "fixed_render_fixture_sha256",
+      "native_execution_binding",
+      "native_execution_binding_sha256",
       "eligibility",
       "eligibility_sha256"
     ]
+  },
+  "native_execution_binding_contract": {
+    "schema_version": "q54.p12.4.native-execution-binding.v1",
+    "stage_schema_version": "q54.p12.4.native-stage-evidence.v1",
+    "construction_order": [
+      "source_and_prepared_storage",
+      "independent_stage_evidence",
+      "native_execution_binding",
+      "execution_receipt"
+    ],
+    "stage_payload_contains_own_sha256": false,
+    "stage_payload_references_outer_binding": false,
+    "binding_references_stage_sha256": true,
+    "acceleration_receipt_references_acceleration_stage_sha256": true,
+    "pre_enqueue_validation": [
+      "row_case_boundary_lane_and_input_contract",
+      "native_manifest_and_readiness",
+      "scene_replay_or_fixed_fixture_provenance",
+      "exact_prepared_scene_storage",
+      "exact_prepared_derived_fixture_storage",
+      "ordered_stage_evidence_and_dataflow_sha256"
+    ],
+    "a3b_result_capable_before_C4_B3_review": false
   },
   "mandatory_rows": [
     {

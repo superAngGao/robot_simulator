@@ -32,17 +32,26 @@ from benchmarks.optical.instrumentation import (
 from benchmarks.optical.lanes import CurrentCudaLanePreflight, CurrentWarpLanePreflight
 from benchmarks.optical.lanes.audit import verify_current_product_source_manifest
 from benchmarks.optical.native import (
+    CanonicalFixedRenderFixtureHost,
     CanonicalNativeInput,
+    CanonicalTransformReplayHost,
     NativeInputValidationReport,
     WarpPreparedNativeInput,
     certify_native_readiness,
+    prepared_storage_signatures,
+    prepared_transform_frame_signatures,
 )
 from benchmarks.optical.receipts import (
+    NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
     SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION,
+    NativeStageEvidence,
+    NativeStorageSignature,
     ShippingPublicationReceipt,
+    build_native_execution_binding,
 )
 from benchmarks.optical.runner import LaneSampleRequest, SingleLaneSampleRunner
 from benchmarks.optical.schema import load_frozen_gate
+from benchmarks.optical.cases import get_case
 from benchmarks.optical.timing import (
     RuntimeOperationRecord,
     RuntimeOperationTrace,
@@ -53,6 +62,8 @@ from benchmarks.optical.timing import (
     native_timed_submission,
     record_runtime_operation,
 )
+from optics.registry import OpticalInstanceSpec, OpticalMaterialSpec, OpticalWorldRegistry
+from optics.scene_contract import PackedOpticalSceneHost
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -502,8 +513,93 @@ class _OutOfOrderLane:
             asset_manifest_sha256=None,
         )
 
-    def submit_sample(self, *, row, prepared, request):
-        del row, prepared, request
+    def bind_sample(self, *, row, prepared, readiness):
+        scene_storage = prepared_storage_signatures(
+            prepared, prepared.manifest.scene_array_names
+        )
+        transform_storage = prepared_transform_frame_signatures(prepared, 0)
+        world = NativeStorageSignature(
+            name="world",
+            backend="warp",
+            device_ordinal=0,
+            storage_token="warp:0x8000",
+            dtype="<f4",
+            shape=(1,),
+            nbytes=4,
+            active_start=0,
+            active_count=4,
+            owner_token="unit-slot",
+        )
+        bvh = NativeStorageSignature(
+            name="bvh",
+            backend="warp",
+            device_ordinal=0,
+            storage_token="warp:0x8100",
+            dtype="<f4",
+            shape=(1,),
+            nbytes=4,
+            active_start=0,
+            active_count=4,
+            owner_token="unit-slot",
+        )
+        output = NativeStorageSignature(
+            name="output",
+            backend="warp",
+            device_ordinal=0,
+            storage_token="warp:0x8200",
+            dtype="<f4",
+            shape=(1,),
+            nbytes=4,
+            active_start=0,
+            active_count=4,
+            owner_token="unit-slot",
+        )
+        stage_specs = (
+            (
+                "scene_update",
+                scene_storage + transform_storage,
+                (world,),
+            ),
+            ("acceleration", (world,), (bvh,)),
+            ("render", scene_storage + (world, bvh), (output,)),
+        )
+        stages = tuple(
+            NativeStageEvidence(
+                schema_version=NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
+                stage_name=name,
+                operation_id=f"unit_{name}_v1",
+                scene_contract_sha256=prepared.manifest.scene_contract_sha256,
+                input_contract=prepared.manifest.input_contract,
+                transform_replay_sha256=prepared.manifest.transform_replay_sha256,
+                transform_frame_index=0,
+                fixed_render_fixture_sha256=None,
+                topology_sha256=prepared.manifest.topology_sha256,
+                input_storage=inputs,
+                output_storage=outputs,
+                dispatch_plan_sha256=hex(index + 10)[2:] * 64,
+            )
+            for index, (name, inputs, outputs) in enumerate(stage_specs)
+        )
+        return build_native_execution_binding(
+            row_id=row["row_id"],
+            case_id=row["case_id"],
+            case_sha256=prepared.manifest.case_sha256,
+            boundary=row["boundary"],
+            lane="warp",
+            input_contract=prepared.manifest.input_contract,
+            native_input_manifest_sha256=prepared.manifest.sha256,
+            native_readiness_sha256=readiness.sha256,
+            scene_contract_sha256=prepared.manifest.scene_contract_sha256,
+            transform_replay_sha256=prepared.manifest.transform_replay_sha256,
+            transform_frame_index=0,
+            fixed_render_fixture_sha256=None,
+            runtime_scene_storage=scene_storage,
+            derived_fixture_storage=(),
+            stage_evidence=stages,
+        )
+
+    def submit_sample(self, *, row, prepared, binding, request):
+        del row, prepared, binding, request
         import hashlib
         import json
         import math
@@ -530,20 +626,77 @@ class _PendingNeverResolve:
 
 
 def _prepared_input(*, case_id="asymmetric_synthetic_7x3_v1"):
-    source = CanonicalNativeInput.from_arrays(
-        case_id=case_id,
-        materializer_id="a3a_unit_input_v1",
-        arrays={"bvh_left": np.array([-1], dtype=np.int32)},
-        array_semantics={"bvh_left": "fixed topology left child"},
-        topology_arrays=("bvh_left",),
-        semantics={"coordinate_system": "world"},
+    case = get_case(case_id)
+    registry = OpticalWorldRegistry()
+    registry.add_material(OpticalMaterialSpec("mat"))
+    registry.add_triangle_mesh_geometry(
+        "triangle",
+        vertices_local=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        triangles=[[0, 1, 2]],
     )
+    registry.add_instance(
+        OpticalInstanceSpec(
+            "instance",
+            "triangle",
+            "mat",
+            body_index=0,
+            roles=frozenset({"rgb"}),
+        )
+    )
+    packed = PackedOpticalSceneHost.from_registry(
+        registry,
+        source_contract_id=case.case_id,
+        source_contract_sha256=case.sha256,
+        scene_id=case.scene_id,
+    )
+    if case_id == "asymmetric_synthetic_7x3_v1":
+        fixture = CanonicalFixedRenderFixtureHost.from_scene_contract(
+            packed,
+            fixed_transform_id="a3a_fixed_v1",
+            x_world_R=np.eye(3, dtype=np.float32)[None, :, :],
+            x_world_r=np.zeros((1, 3), dtype=np.float32),
+        )
+        source = CanonicalNativeInput.from_scene_contract(
+            packed,
+            input_contract="fixed_native_scene_v1",
+            fixed_fixture=fixture,
+        )
+    elif case_id == "synthetic_dynamic_rigid_960x640_v1":
+        frame_count = int(case.transform_sequence["frames"])
+        replay = CanonicalTransformReplayHost.from_arrays(
+            case_id=case_id,
+            x_world_R=np.broadcast_to(
+                np.eye(3, dtype=np.float32), (frame_count, 1, 3, 3)
+            ).copy(),
+            x_world_r=np.zeros((frame_count, 1, 3), dtype=np.float32),
+        )
+        source = CanonicalNativeInput.from_scene_contract(
+            packed,
+            input_contract=CANONICAL_NATIVE_REPLAY_INPUT,
+            replay=replay,
+        )
+    else:
+        source = CanonicalNativeInput.from_scene_contract(
+            packed,
+            input_contract=GPU_ENGINE_PUBLISHED_FRAME_INPUT,
+        )
     return WarpPreparedNativeInput(
         manifest=source.manifest,
         device_ordinal=0,
-        arrays={"bvh_left": object()},
+        arrays={
+            manifest.name: _FakeWarpArray(
+                0 if manifest.nbytes == 0 else 0x1000 + index * 0x100
+            )
+            for index, manifest in enumerate(source.manifest.arrays)
+        },
         ready_event=object(),
+        source=source,
     )
+
+
+@dataclass(frozen=True)
+class _FakeWarpArray:
+    ptr: int
 
 
 def _readiness(prepared):
@@ -552,7 +705,12 @@ def _readiness(prepared):
         manifest_sha256=prepared.manifest.sha256,
         content_sha256=prepared.manifest.content_sha256,
         topology_sha256=prepared.manifest.topology_sha256,
-        validated_arrays=("bvh_left",),
+        validated_arrays=tuple(value.name for value in prepared.manifest.arrays),
+        input_contract=prepared.manifest.input_contract,
+        scene_contract_sha256=prepared.manifest.scene_contract_sha256,
+        transform_replay_sha256=prepared.manifest.transform_replay_sha256,
+        transform_frame_count=prepared.manifest.transform_frame_count,
+        fixed_render_fixture_sha256=prepared.manifest.fixed_render_fixture_sha256,
     )
     return certify_native_readiness(
         prepared,

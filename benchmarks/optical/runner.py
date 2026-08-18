@@ -16,7 +16,13 @@ from .eligibility import (
     validate_trace_entry_points,
 )
 from .instrumentation import instrument_runtime_entry_points
-from .native import NativeReadinessEvidence, PreparedNativeInput
+from .native import (
+    NativeReadinessEvidence,
+    PreparedNativeInput,
+    prepared_storage_signatures,
+    prepared_transform_frame_signatures,
+)
+from .receipts import NativeExecutionBindingEvidence
 from .schema import (
     RESULT_SCHEMA_VERSION,
     ExecutionReceipt,
@@ -92,9 +98,19 @@ class SingleLane(Protocol):
         *,
         row: Mapping[str, Any],
         prepared: PreparedNativeInput,
+        binding: NativeExecutionBindingEvidence,
         request: LaneSampleRequest,
     ) -> PendingLaneSample:
         """Enqueue one sample and return without host/global synchronization."""
+
+    def bind_sample(
+        self,
+        *,
+        row: Mapping[str, Any],
+        prepared: PreparedNativeInput,
+        readiness: NativeReadinessEvidence,
+    ) -> NativeExecutionBindingEvidence:
+        """Freeze exact stage/storage provenance before timed submission."""
 
 
 @dataclass
@@ -107,6 +123,7 @@ class SubmittedLaneSample:
     readiness: NativeReadinessEvidence
     eligibility: LaneEligibilityEvidence
     operation_trace: RuntimeOperationTraceEvidence
+    native_execution_binding: NativeExecutionBindingEvidence
     request: LaneSampleRequest
     pending: PendingLaneSample
     _resolved: bool = field(default=False, init=False, repr=False)
@@ -195,6 +212,22 @@ class SingleLaneSampleRunner:
             eligibility=eligibility,
         )
         assert_eligible_for_submission(eligibility)
+        bind_sample = getattr(lane, "bind_sample", None)
+        if not callable(bind_sample):
+            raise LaneIneligibleError("lane does not expose pre-enqueue native binding")
+        binding = bind_sample(
+            row=submitted_row,
+            prepared=prepared,
+            readiness=readiness,
+        )
+        if not isinstance(binding, NativeExecutionBindingEvidence):
+            raise TypeError("lane bind_sample must return NativeExecutionBindingEvidence")
+        self._validate_native_binding_pre_enqueue(
+            row=submitted_row,
+            prepared=prepared,
+            readiness=readiness,
+            binding=binding,
+        )
         operation_trace = RuntimeOperationTrace(
             row_id=row_id,
             lane=lane.lane_id,
@@ -207,7 +240,12 @@ class SingleLaneSampleRunner:
                 boundary=str(row["boundary"]),
                 operation_trace=operation_trace,
             ):
-                pending = lane.submit_sample(row=submitted_row, prepared=prepared, request=request)
+                pending = lane.submit_sample(
+                    row=submitted_row,
+                    prepared=prepared,
+                    binding=binding,
+                    request=request,
+                )
         if active_timed_boundary() is not None:
             raise AssertionError("native timed context leaked after lane submission")
         if not callable(getattr(pending, "resolve", None)):
@@ -225,6 +263,7 @@ class SingleLaneSampleRunner:
             readiness=readiness,
             eligibility=eligibility,
             operation_trace=trace_evidence,
+            native_execution_binding=binding,
             request=request,
             pending=pending,
         )
@@ -242,6 +281,7 @@ class SingleLaneSampleRunner:
             readiness=submitted.readiness,
             eligibility=submitted.eligibility,
             operation_trace=submitted.operation_trace,
+            native_execution_binding=submitted.native_execution_binding,
             sample=sample,
         )
         receipt_payload = sample.receipt.to_payload()
@@ -270,6 +310,7 @@ class SingleLaneSampleRunner:
         readiness: NativeReadinessEvidence,
         eligibility: LaneEligibilityEvidence,
         operation_trace: RuntimeOperationTraceEvidence,
+        native_execution_binding: NativeExecutionBindingEvidence,
         sample: ResolvedLaneSample,
     ) -> None:
         receipt = sample.receipt
@@ -285,6 +326,11 @@ class SingleLaneSampleRunner:
             raise ValueError("lane receipt native readiness does not match certification")
         if receipt.native_readiness_sha256 != readiness.sha256:
             raise ValueError("lane receipt does not identify the certified native readiness")
+        if (
+            receipt.native_execution_binding != native_execution_binding
+            or receipt.native_execution_binding_sha256 != native_execution_binding.sha256
+        ):
+            raise ValueError("lane receipt native binding does not match pre-enqueue evidence")
         if receipt.row_id != row["row_id"]:
             raise ValueError("lane receipt row does not match the submitted row")
         if receipt.eligibility != eligibility or receipt.eligibility_sha256 != eligibility.sha256:
@@ -294,6 +340,66 @@ class SingleLaneSampleRunner:
             or receipt.operation_trace_sha256 != operation_trace.sha256
         ):
             raise ValueError("lane receipt operation trace does not match timed submission")
+
+    @staticmethod
+    def _validate_native_binding_pre_enqueue(
+        *,
+        row: Mapping[str, Any],
+        prepared: PreparedNativeInput,
+        readiness: NativeReadinessEvidence,
+        binding: NativeExecutionBindingEvidence,
+    ) -> None:
+        manifest = prepared.manifest
+        if not manifest.result_capable:
+            raise LaneIneligibleError("generic native input cannot enter a result-capable lane")
+        expected = {
+            "row_id": row["row_id"],
+            "case_id": manifest.case_id,
+            "case_sha256": manifest.case_sha256,
+            "boundary": row["boundary"],
+            "lane": prepared.backend,
+            "input_contract": manifest.input_contract,
+            "native_input_manifest_sha256": manifest.sha256,
+            "native_readiness_sha256": readiness.sha256,
+            "scene_contract_sha256": manifest.scene_contract_sha256,
+            "transform_replay_sha256": manifest.transform_replay_sha256,
+            "fixed_render_fixture_sha256": manifest.fixed_render_fixture_sha256,
+        }
+        for name, value in expected.items():
+            if getattr(binding, name) != value:
+                raise LaneIneligibleError(f"native execution binding {name} is not prepared-input-owned")
+        if binding.transform_frame_index is not None and (
+            binding.transform_frame_index >= manifest.transform_frame_count
+        ):
+            raise LaneIneligibleError("native execution binding replay frame index is out of range")
+        expected_scene_storage = prepared_storage_signatures(
+            prepared,
+            manifest.scene_array_names,
+        )
+        expected_fixture_storage = prepared_storage_signatures(
+            prepared,
+            manifest.fixed_render_fixture_arrays,
+        )
+        if binding.runtime_scene_storage != expected_scene_storage:
+            raise LaneIneligibleError("native binding substituted prepared scene storage")
+        if binding.derived_fixture_storage != expected_fixture_storage:
+            raise LaneIneligibleError("native binding substituted prepared fixture storage")
+        stages = {stage.stage_name: stage.evidence for stage in binding.ordered_stage_evidence}
+        if binding.boundary == "R0":
+            if stages["render"].input_storage != expected_scene_storage + expected_fixture_storage:
+                raise LaneIneligibleError("R0 render stage substituted prepared input storage")
+        elif binding.boundary in {"R1", "R2"}:
+            assert binding.transform_frame_index is not None
+            expected_transform_storage = prepared_transform_frame_signatures(
+                prepared,
+                binding.transform_frame_index,
+            )
+            if stages["scene_update"].input_storage != (
+                expected_scene_storage + expected_transform_storage
+            ):
+                raise LaneIneligibleError(
+                    "scene-update stage substituted prepared scene or replay-frame storage"
+                )
 
     def _validate_eligibility(
         self,
@@ -344,6 +450,13 @@ class SingleLaneSampleRunner:
             "manifest_sha256": prepared.manifest.sha256,
             "content_sha256": prepared.manifest.content_sha256,
             "topology_sha256": prepared.manifest.topology_sha256,
+            "input_contract": prepared.manifest.input_contract,
+            "scene_contract_schema_version": prepared.manifest.scene_contract_schema_version,
+            "scene_contract_sha256": prepared.manifest.scene_contract_sha256,
+            "scene_id": prepared.manifest.scene_id,
+            "transform_replay_sha256": prepared.manifest.transform_replay_sha256,
+            "transform_frame_count": prepared.manifest.transform_frame_count,
+            "fixed_render_fixture_sha256": prepared.manifest.fixed_render_fixture_sha256,
             "producer_ready_event_complete": True,
             "direct_validation_complete": True,
             "allocation_complete": True,

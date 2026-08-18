@@ -10,8 +10,8 @@ import numpy as np
 
 from physics.publish import GpuPublishedFrame
 
-from .device import pack_source_order_key
-from .registry import OpticalPlaneGeometry, OpticalTriangleMeshGeometry, OpticalWorldRegistry
+from .registry import OpticalWorldRegistry
+from .scene_contract import PackedOpticalSceneHost
 
 try:  # pragma: no cover - exercised in GPU environments.
     import warp as wp
@@ -44,6 +44,16 @@ class DeviceOpticalRoleTable:
         for instance in registry.instances:
             roles.update(instance.roles)
         return cls.from_roles(roles)
+
+    @classmethod
+    def from_mapping(cls, role_to_mask: object) -> "DeviceOpticalRoleTable":
+        mapping = dict(role_to_mask)
+        if any(not isinstance(role, str) or not role for role in mapping):
+            raise ValueError("role names must be non-empty strings")
+        expected = {role: 1 << index for index, role in enumerate(sorted(mapping))}
+        if mapping != expected:
+            raise ValueError("role-to-mask mapping is not canonical")
+        return cls(MappingProxyType(mapping))
 
     def mask_for(self, role: str) -> int:
         """Return zero for unknown roles so device queries naturally miss."""
@@ -100,6 +110,8 @@ class DeviceOpticalScene:
     instance_body_index: object
     instance_X_body_geometry_R: object
     instance_X_body_geometry_r: object
+    scene_contract_sha256: str | None = None
+    resources: tuple[object, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -157,136 +169,73 @@ def build_device_optical_scene(
     stream=None,
 ) -> DeviceOpticalScene:
     """Upload registry geometry and metadata into long-lived device buffers."""
+    packed_scene = PackedOpticalSceneHost.from_registry(registry)
+    return build_device_optical_scene_from_packed(
+        packed_scene,
+        device=device,
+        stream=stream,
+    )
+
+
+def build_device_optical_scene_from_packed(
+    packed_scene: PackedOpticalSceneHost,
+    *,
+    device=None,
+    stream=None,
+) -> DeviceOpticalScene:
+    """Upload one canonical host contract into Warp-owned CUDA arrays."""
     _require_warp()
     wp.init()
     resolved_device = wp.get_device("cuda:0" if device is None else device)
-    role_table = DeviceOpticalRoleTable.from_registry(registry)
-    packed = _pack_registry_for_device(registry, role_table)
-
+    arrays: dict[str, object] = {}
     with _scoped_stream(stream):
-        return DeviceOpticalScene(
+        for name, value in packed_scene.arrays.items():
+            arrays[name] = _wp_array(
+                value,
+                dtype=_warp_dtype_for_numpy(value.dtype),
+                device=resolved_device,
+            )
+        return device_optical_scene_from_arrays(
+            packed_scene,
+            arrays,
             device=resolved_device,
-            role_table=role_table,
-            num_instances=int(packed["instance_body_index"].shape[0]),
-            num_materials=int(packed["material_albedo_rgb"].shape[0]),
-            num_lights=int(packed["light_kind"].shape[0]),
-            num_triangles=int(packed["triangle_vertices_local"].shape[0]),
-            num_planes=int(packed["plane_normal_local"].shape[0]),
-            max_body_index=int(packed["max_body_index"]),
-            material_albedo_rgb=_wp_array(
-                packed["material_albedo_rgb"],
-                dtype=wp.float32,
-                device=resolved_device,
-            ),
-            light_kind=_wp_array(
-                packed["light_kind"],
-                dtype=wp.int32,
-                device=resolved_device,
-            ),
-            light_position_or_direction_world=_wp_array(
-                packed["light_position_or_direction_world"],
-                dtype=wp.float32,
-                device=resolved_device,
-            ),
-            light_intensity=_wp_array(
-                packed["light_intensity"],
-                dtype=wp.float32,
-                device=resolved_device,
-            ),
-            light_color_rgb=_wp_array(
-                packed["light_color_rgb"],
-                dtype=wp.float32,
-                device=resolved_device,
-            ),
-            triangle_vertices_local=_wp_array(
-                packed["triangle_vertices_local"],
-                dtype=wp.float32,
-                device=resolved_device,
-            ),
-            triangle_instance_index=_wp_array(
-                packed["triangle_instance_index"],
-                dtype=wp.int32,
-                device=resolved_device,
-            ),
-            triangle_primitive_global_id=_wp_array(
-                packed["triangle_primitive_global_id"],
-                dtype=wp.int32,
-                device=resolved_device,
-            ),
-            triangle_primitive_index_within_instance=_wp_array(
-                packed["triangle_primitive_index_within_instance"],
-                dtype=wp.int32,
-                device=resolved_device,
-            ),
-            triangle_geometry_index=_wp_array(
-                packed["triangle_geometry_index"],
-                dtype=wp.int32,
-                device=resolved_device,
-            ),
-            triangle_geometry_primitive_index=_wp_array(
-                packed["triangle_geometry_primitive_index"],
-                dtype=wp.int32,
-                device=resolved_device,
-            ),
-            triangle_source_order_key=_wp_array(
-                packed["triangle_source_order_key"],
-                dtype=wp.int64,
-                device=resolved_device,
-            ),
-            triangle_role_mask=_wp_array(
-                packed["triangle_role_mask"], dtype=wp.int64, device=resolved_device
-            ),
-            triangle_numeric_instance_id=_wp_array(
-                packed["triangle_numeric_instance_id"],
-                dtype=wp.int32,
-                device=resolved_device,
-            ),
-            triangle_material_index=_wp_array(
-                packed["triangle_material_index"],
-                dtype=wp.int32,
-                device=resolved_device,
-            ),
-            plane_normal_local=_wp_array(
-                packed["plane_normal_local"], dtype=wp.float32, device=resolved_device
-            ),
-            plane_point_local=_wp_array(
-                packed["plane_point_local"], dtype=wp.float32, device=resolved_device
-            ),
-            plane_instance_index=_wp_array(
-                packed["plane_instance_index"],
-                dtype=wp.int32,
-                device=resolved_device,
-            ),
-            plane_source_order_key=_wp_array(
-                packed["plane_source_order_key"],
-                dtype=wp.int64,
-                device=resolved_device,
-            ),
-            plane_role_mask=_wp_array(packed["plane_role_mask"], dtype=wp.int64, device=resolved_device),
-            plane_numeric_instance_id=_wp_array(
-                packed["plane_numeric_instance_id"],
-                dtype=wp.int32,
-                device=resolved_device,
-            ),
-            plane_material_index=_wp_array(
-                packed["plane_material_index"],
-                dtype=wp.int32,
-                device=resolved_device,
-            ),
-            instance_body_index=_wp_array(
-                packed["instance_body_index"], dtype=wp.int32, device=resolved_device
-            ),
-            instance_X_body_geometry_R=_wp_array(
-                packed["instance_X_body_geometry_R"],
-                dtype=wp.float32,
-                device=resolved_device,
-            ),
-            instance_X_body_geometry_r=_wp_array(
-                packed["instance_X_body_geometry_r"],
-                dtype=wp.float32,
-                device=resolved_device,
-            ),
+            resources=(),
         )
+
+
+def device_optical_scene_from_arrays(
+    packed_scene: PackedOpticalSceneHost,
+    arrays: dict[str, object],
+    *,
+    device: object,
+    resources: tuple[object, ...],
+) -> DeviceOpticalScene:
+    """Wrap exact caller-owned Warp arrays without allocating or copying."""
+    _require_warp()
+    resolved_device = wp.get_device(device)
+    if set(arrays) != set(packed_scene.arrays):
+        raise ValueError("Warp scene arrays do not match the packed scene contract")
+    for name, host in packed_scene.arrays.items():
+        value = arrays[name]
+        if wp.get_device(value.device).ordinal != resolved_device.ordinal:
+            raise ValueError(f"Warp scene array {name!r} is on the wrong device")
+        if tuple(value.shape) != tuple(host.shape):
+            raise ValueError(f"Warp scene array {name!r} shape does not match")
+        if value.dtype != _warp_dtype_for_numpy(host.dtype):
+            raise ValueError(f"Warp scene array {name!r} dtype does not match")
+    return DeviceOpticalScene(
+        device=resolved_device,
+        role_table=DeviceOpticalRoleTable.from_mapping(packed_scene.role_to_mask),
+        num_instances=packed_scene.num_instances,
+        num_materials=packed_scene.num_materials,
+        num_lights=packed_scene.num_lights,
+        num_triangles=packed_scene.num_triangles,
+        num_planes=packed_scene.num_planes,
+        max_body_index=packed_scene.max_body_index,
+        **{name: arrays[name] for name in packed_scene.arrays},
+        scene_contract_sha256=packed_scene.scene_contract_sha256,
+        resources=tuple(resources) + (packed_scene,),
+    )
 
 
 def update_device_optical_scene_from_gpu_frame(
@@ -382,136 +331,6 @@ def update_device_optical_scene_from_gpu_frame(
     )
 
 
-def _pack_registry_for_device(
-    registry: OpticalWorldRegistry,
-    role_table: DeviceOpticalRoleTable,
-) -> dict[str, np.ndarray]:
-    geometry = registry.geometry
-    instances = registry.instances
-    materials = registry.materials
-    lights = registry.lights
-    geometry_index_by_id = {geometry_id: index for index, geometry_id in enumerate(geometry.keys())}
-    material_index_by_id = {material_id: index for index, material_id in enumerate(materials.keys())}
-    material_albedo_rgb = [
-        np.asarray(material.albedo_rgb, dtype=np.float32) for material in materials.values()
-    ]
-    light_kind: list[int] = []
-    light_position_or_direction_world: list[np.ndarray] = []
-    light_intensity: list[float] = []
-    light_color_rgb: list[np.ndarray] = []
-    for light in lights.values():
-        if not light.enabled:
-            continue
-        light_kind.append(0 if light.kind == "directional" else 1)
-        light_position_or_direction_world.append(
-            np.asarray(light.position_or_direction_world, dtype=np.float32)
-        )
-        light_intensity.append(float(light.intensity))
-        light_color_rgb.append(np.asarray(light.color_rgb, dtype=np.float32))
-
-    instance_body_index: list[int] = []
-    instance_X_R: list[np.ndarray] = []
-    instance_X_r: list[np.ndarray] = []
-    triangles: list[np.ndarray] = []
-    triangle_instance_index: list[int] = []
-    triangle_primitive_global_id: list[int] = []
-    triangle_primitive_index_within_instance: list[int] = []
-    triangle_geometry_index: list[int] = []
-    triangle_geometry_primitive_index: list[int] = []
-    triangle_source_order_key: list[int] = []
-    triangle_role_mask: list[int] = []
-    triangle_numeric_instance_id: list[int] = []
-    triangle_material_index: list[int] = []
-    plane_normals: list[np.ndarray] = []
-    plane_points: list[np.ndarray] = []
-    plane_instance_index: list[int] = []
-    plane_source_order_key: list[int] = []
-    plane_role_mask: list[int] = []
-    plane_numeric_instance_id: list[int] = []
-    plane_material_index: list[int] = []
-
-    for instance_index, instance in enumerate(instances):
-        if instance.numeric_instance_id is None:
-            raise ValueError("OpticalInstanceSpec must have a registry-assigned numeric_instance_id")
-        instance_body_index.append(-1 if instance.body_index is None else int(instance.body_index))
-        instance_X_R.append(np.asarray(instance.X_body_geometry.R, dtype=np.float32).reshape(9))
-        instance_X_r.append(np.asarray(instance.X_body_geometry.r, dtype=np.float32))
-        role_mask = role_table.mask_for_roles(instance.roles)
-        material_index = material_index_by_id[instance.material_id]
-
-        instance_geometry = geometry[instance.geometry_id]
-        if isinstance(instance_geometry, OpticalPlaneGeometry):
-            plane_normals.append(np.asarray(instance_geometry.normal_local, dtype=np.float32))
-            plane_points.append(np.asarray(instance_geometry.point_local, dtype=np.float32))
-            plane_instance_index.append(instance_index)
-            plane_source_order_key.append(pack_source_order_key(instance_index, 0))
-            plane_role_mask.append(role_mask)
-            plane_numeric_instance_id.append(int(instance.numeric_instance_id))
-            plane_material_index.append(material_index)
-            continue
-
-        if isinstance(instance_geometry, OpticalTriangleMeshGeometry):
-            vertices = np.asarray(instance_geometry.vertices_local, dtype=np.float64)
-            for primitive_index, triangle in enumerate(
-                np.asarray(instance_geometry.triangles, dtype=np.int64)
-            ):
-                tri_local = vertices[triangle]
-                edge1 = tri_local[1] - tri_local[0]
-                edge2 = tri_local[2] - tri_local[0]
-                if np.linalg.norm(np.cross(edge1, edge2)) <= _BUILD_EPS_F32:
-                    continue
-                global_primitive_id = len(triangles)
-                triangles.append(tri_local.astype(np.float32).reshape(9))
-                triangle_instance_index.append(instance_index)
-                triangle_primitive_global_id.append(global_primitive_id)
-                triangle_primitive_index_within_instance.append(primitive_index)
-                triangle_geometry_index.append(geometry_index_by_id[instance.geometry_id])
-                triangle_geometry_primitive_index.append(primitive_index)
-                triangle_source_order_key.append(pack_source_order_key(instance_index, primitive_index))
-                triangle_role_mask.append(role_mask)
-                triangle_numeric_instance_id.append(int(instance.numeric_instance_id))
-                triangle_material_index.append(material_index)
-
-    return {
-        "material_albedo_rgb": _array_or_empty(material_albedo_rgb, shape=(0, 3), dtype=np.float32),
-        "light_kind": np.asarray(light_kind, dtype=np.int32),
-        "light_position_or_direction_world": _array_or_empty(
-            light_position_or_direction_world,
-            shape=(0, 3),
-            dtype=np.float32,
-        ),
-        "light_intensity": np.asarray(light_intensity, dtype=np.float32),
-        "light_color_rgb": _array_or_empty(light_color_rgb, shape=(0, 3), dtype=np.float32),
-        "triangle_vertices_local": _array_or_empty(triangles, shape=(0, 9), dtype=np.float32),
-        "triangle_instance_index": np.asarray(triangle_instance_index, dtype=np.int32),
-        "triangle_primitive_global_id": np.asarray(triangle_primitive_global_id, dtype=np.int32),
-        "triangle_primitive_index_within_instance": np.asarray(
-            triangle_primitive_index_within_instance,
-            dtype=np.int32,
-        ),
-        "triangle_geometry_index": np.asarray(triangle_geometry_index, dtype=np.int32),
-        "triangle_geometry_primitive_index": np.asarray(
-            triangle_geometry_primitive_index,
-            dtype=np.int32,
-        ),
-        "triangle_source_order_key": np.asarray(triangle_source_order_key, dtype=np.int64),
-        "triangle_role_mask": np.asarray(triangle_role_mask, dtype=np.int64),
-        "triangle_numeric_instance_id": np.asarray(triangle_numeric_instance_id, dtype=np.int32),
-        "triangle_material_index": np.asarray(triangle_material_index, dtype=np.int32),
-        "plane_normal_local": _array_or_empty(plane_normals, shape=(0, 3), dtype=np.float32),
-        "plane_point_local": _array_or_empty(plane_points, shape=(0, 3), dtype=np.float32),
-        "plane_instance_index": np.asarray(plane_instance_index, dtype=np.int32),
-        "plane_source_order_key": np.asarray(plane_source_order_key, dtype=np.int64),
-        "plane_role_mask": np.asarray(plane_role_mask, dtype=np.int64),
-        "plane_numeric_instance_id": np.asarray(plane_numeric_instance_id, dtype=np.int32),
-        "plane_material_index": np.asarray(plane_material_index, dtype=np.int32),
-        "instance_body_index": np.asarray(instance_body_index, dtype=np.int32),
-        "instance_X_body_geometry_R": _array_or_empty(instance_X_R, shape=(0, 9), dtype=np.float32),
-        "instance_X_body_geometry_r": _array_or_empty(instance_X_r, shape=(0, 3), dtype=np.float32),
-        "max_body_index": max(instance_body_index, default=-1),
-    }
-
-
 def _validate_gpu_frame_transform_shape(
     scene: DeviceOpticalScene,
     frame: GpuPublishedFrame,
@@ -534,14 +353,29 @@ def _validate_gpu_frame_transform_shape(
         )
 
 
-def _array_or_empty(values: list[object], *, shape: tuple[int, ...], dtype) -> np.ndarray:
-    if not values:
-        return np.empty(shape, dtype=dtype)
-    return np.asarray(values, dtype=dtype)
-
-
 def _wp_array(values: np.ndarray, *, dtype, device):
     return wp.array(values, dtype=dtype, device=device)
+
+
+def _warp_dtype_for_numpy(dtype):
+    mapping = {
+        np.dtype(np.bool_): wp.bool,
+        np.dtype(np.int8): wp.int8,
+        np.dtype(np.int16): wp.int16,
+        np.dtype(np.int32): wp.int32,
+        np.dtype(np.int64): wp.int64,
+        np.dtype(np.uint8): wp.uint8,
+        np.dtype(np.uint16): wp.uint16,
+        np.dtype(np.uint32): wp.uint32,
+        np.dtype(np.uint64): wp.uint64,
+        np.dtype(np.float16): wp.float16,
+        np.dtype(np.float32): wp.float32,
+        np.dtype(np.float64): wp.float64,
+    }
+    try:
+        return mapping[np.dtype(dtype)]
+    except KeyError as exc:
+        raise ValueError(f"unsupported Warp scene dtype {np.dtype(dtype)}") from exc
 
 
 def _scoped_stream(stream):

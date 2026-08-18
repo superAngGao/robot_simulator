@@ -3,14 +3,21 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from benchmarks.optical.cases import get_case
+from benchmarks.optical.eligibility import FIXED_NATIVE_SCENE_INPUT
 from benchmarks.optical.native import (
+    CanonicalFixedRenderFixtureHost,
     CanonicalNativeInput,
     assert_independent_native_inputs,
+    build_prepared_cuda_local_scene,
+    build_prepared_warp_local_scene,
     certify_native_readiness,
     prepare_cuda_native_input,
     prepare_warp_native_input,
     validate_prepared_native_input,
 )
+from optics.registry import OpticalInstanceSpec, OpticalMaterialSpec, OpticalWorldRegistry
+from optics.scene_contract import PackedOpticalSceneHost
 
 pytestmark = pytest.mark.gpu
 
@@ -84,6 +91,39 @@ def test_native_preparation_rejects_cpu_targets():
         prepare_cuda_native_input(source, device="cpu")
 
 
+def test_result_capable_scene_wrappers_reuse_exact_independent_native_allocations(monkeypatch):
+    torch = pytest.importorskip("torch")
+    wp = pytest.importorskip("warp")
+    if not torch.cuda.is_available() or wp.get_cuda_device_count() == 0:
+        pytest.skip("CUDA is required")
+
+    def _bridge_forbidden(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("scene wrapper must not create a Warp/Torch bridge")
+
+    monkeypatch.setattr(wp, "to_torch", _bridge_forbidden)
+    monkeypatch.setattr(wp, "from_torch", _bridge_forbidden)
+    monkeypatch.setattr(torch.utils.dlpack, "from_dlpack", _bridge_forbidden)
+    monkeypatch.setattr(torch.utils.dlpack, "to_dlpack", _bridge_forbidden)
+
+    target = 1 if torch.cuda.device_count() > 1 and wp.get_cuda_device_count() > 1 else 0
+    ambient = 0
+    torch.cuda.set_device(ambient)
+    source = _result_capable_source()
+    warp_input = prepare_warp_native_input(source, device=f"cuda:{target}")
+    cuda_input = prepare_cuda_native_input(source, device=f"cuda:{target}")
+    assert_independent_native_inputs(warp_input, cuda_input)
+
+    warp_scene = build_prepared_warp_local_scene(warp_input)
+    cuda_scene = build_prepared_cuda_local_scene(cuda_input)
+    assert torch.cuda.current_device() == ambient
+    assert warp_scene.scene_contract_sha256 == source.manifest.scene_contract_sha256
+    assert cuda_scene.scene_contract_sha256 == source.manifest.scene_contract_sha256
+    for name in source.manifest.scene_array_names:
+        assert getattr(warp_scene, name) is warp_input.arrays[name]
+        assert cuda_scene.arrays[name] is cuda_input.arrays[name]
+
+
 def _source() -> CanonicalNativeInput:
     return CanonicalNativeInput.from_arrays(
         case_id="asymmetric_synthetic_7x3_v1",
@@ -112,4 +152,41 @@ def _source() -> CanonicalNativeInput:
             "primitive_order": "canonical_source_order",
             "flat_pixel_index": "py * width + px",
         },
+    )
+
+
+def _result_capable_source() -> CanonicalNativeInput:
+    case = get_case("asymmetric_synthetic_7x3_v1")
+    registry = OpticalWorldRegistry()
+    registry.add_material(OpticalMaterialSpec("mat", albedo_rgb=(0.2, 0.3, 0.4)))
+    registry.add_triangle_mesh_geometry(
+        "triangle",
+        vertices_local=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        triangles=[[0, 1, 2]],
+    )
+    registry.add_instance(
+        OpticalInstanceSpec(
+            "triangle-instance",
+            "triangle",
+            "mat",
+            body_index=0,
+            roles=frozenset({"rgb"}),
+        )
+    )
+    packed = PackedOpticalSceneHost.from_registry(
+        registry,
+        source_contract_id=case.case_id,
+        source_contract_sha256=case.sha256,
+        scene_id=case.scene_id,
+    )
+    fixture = CanonicalFixedRenderFixtureHost.from_scene_contract(
+        packed,
+        fixed_transform_id="gpu-fixed-v1",
+        x_world_R=np.eye(3, dtype=np.float32)[None, :, :],
+        x_world_r=np.zeros((1, 3), dtype=np.float32),
+    )
+    return CanonicalNativeInput.from_scene_contract(
+        packed,
+        input_contract=FIXED_NATIVE_SCENE_INPUT,
+        fixed_fixture=fixture,
     )

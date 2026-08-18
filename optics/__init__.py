@@ -20,6 +20,7 @@ from .cuda_direct_light import (
     cuda_direct_light_available,
 )
 from .cuda_lbvh import build_cuda_lbvh_from_snapshot
+from .cuda_scene import CudaOpticalLocalScene, build_cuda_optical_scene, cuda_optical_scene_from_arrays
 from .cuda_timeline import (
     CudaDeferredProfile,
     CudaOpticalCompletion,
@@ -41,6 +42,7 @@ from .device_bvh import (
     DeviceBvhBuildStats,
     DeviceOpticalBvh,
     build_device_bvh_from_snapshot,
+    build_host_median_bvh,
     refit_device_bvh_from_snapshot,
 )
 from .device_channel import channel_is_device, channel_to_numpy, channel_to_torch, stage_channels_to_host
@@ -50,6 +52,8 @@ from .device_scene import (
     DeviceOpticalSceneCache,
     DeviceOpticalSceneSnapshot,
     build_device_optical_scene,
+    build_device_optical_scene_from_packed,
+    device_optical_scene_from_arrays,
     update_device_optical_scene_from_gpu_frame,
 )
 from .execution import (
@@ -84,6 +88,12 @@ from .registry import (
     OpticalTriangleMeshGeometry,
     OpticalWorldRegistry,
 )
+from .scene_contract import (
+    SCENE_ARRAY_SEMANTICS,
+    SCENE_CONTRACT_SCHEMA_VERSION,
+    SCENE_MATERIALIZER_ID,
+    PackedOpticalSceneHost,
+)
 from .scene import (
     CpuBvhNode,
     OpticalFrameInputs,
@@ -114,6 +124,7 @@ __all__ = [
     "CudaDirectLightStageEvidence",
     "CudaFirstHitInputs",
     "CudaOpticalCompletion",
+    "CudaOpticalLocalScene",
     "CudaOpticalExecutionContext",
     "CudaOpticalTimelineError",
     "CudaOpticalTransaction",
@@ -155,10 +166,14 @@ __all__ = [
     "OpticalSourceKey",
     "OpticalTriangleMeshGeometry",
     "OpticalWorldRegistry",
+    "PackedOpticalSceneHost",
     "OUTPUT_PROFILE_REQUIRED_CHANNELS",
     "PRIMARY_HOST_SCALAR_CHANNEL_SPECS",
     "SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES",
     "SHADOW_TRAVERSAL_HOST_SCALAR_CHANNEL_SPECS",
+    "SCENE_ARRAY_SEMANTICS",
+    "SCENE_CONTRACT_SCHEMA_VERSION",
+    "SCENE_MATERIALIZER_ID",
     "CanonicalHostChannelSpec",
     "build_host_optical_primitive_workload",
     "allocate_cuda_direct_light_buffers",
@@ -169,8 +184,13 @@ __all__ = [
     "host_payload_contract_schema",
     "channel_to_torch",
     "build_device_bvh_from_snapshot",
+    "build_host_median_bvh",
     "build_cuda_lbvh_from_snapshot",
+    "build_cuda_optical_scene",
     "build_device_optical_scene",
+    "build_device_optical_scene_from_packed",
+    "cuda_optical_scene_from_arrays",
+    "device_optical_scene_from_arrays",
     "build_optical_registry_from_robot_model",
     "execute_optical_on_gpu_published_frame",
     "pack_source_order_key",

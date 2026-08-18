@@ -21,7 +21,7 @@ from .timing import (
 
 ELIGIBILITY_SCHEMA_VERSION = "q54.p12.4.lane-eligibility.v2"
 ENTRY_POINT_AUDIT_SCHEMA_VERSION = "q54.p12.4.entry-point-audit.v2"
-INPUT_CONTRACT_SCHEMA_VERSION = "q54.p12.4.input-contract.v1"
+INPUT_CONTRACT_SCHEMA_VERSION = "q54.p12.4.input-contract.v2"
 
 FIXED_NATIVE_SCENE_INPUT = "fixed_native_scene_v1"
 CANONICAL_NATIVE_REPLAY_INPUT = "canonical_native_replay_v1"

@@ -15,6 +15,7 @@ from optics.output_contract import (
     host_diagnostic_overlay_contract_schema,
     host_payload_contract_schema,
 )
+from optics.scene_contract import SCENE_CONTRACT_SCHEMA_VERSION
 
 from .assets import ASSET_MANIFEST_SCHEMA_VERSION, GO2_ASSET_REQUIREMENT
 from .cases import CASE_SCHEMA_VERSION, case_hashes, cases_by_id
@@ -33,11 +34,19 @@ from .eligibility import (
     validate_trace_entry_points,
 )
 from .instrumentation import RUNTIME_HOOK_REGISTRY_VERSION, runtime_hook_registry_sha256
-from .native import NATIVE_INPUT_SCHEMA_VERSION, NativeReadinessEvidence
+from .native import (
+    FIXED_RENDER_FIXTURE_SCHEMA_VERSION,
+    NATIVE_INPUT_SCHEMA_VERSION,
+    TRANSFORM_REPLAY_SCHEMA_VERSION,
+    NativeReadinessEvidence,
+)
 from .receipts import (
     ACCELERATION_RECEIPT_SCHEMA_VERSION,
+    NATIVE_EXECUTION_BINDING_SCHEMA_VERSION,
+    NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
     SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION,
     AccelerationReceipt,
+    NativeExecutionBindingEvidence,
     ShippingPublicationReceipt,
 )
 from .timing import (
@@ -48,9 +57,9 @@ from .timing import (
     validate_required_operation_order,
 )
 
-GATE_SCHEMA_VERSION = "q54.p12.4.gate.v6"
-RESULT_SCHEMA_VERSION = "q54.p12.4.result.v6"
-ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v3"
+GATE_SCHEMA_VERSION = "q54.p12.4.gate.v7"
+RESULT_SCHEMA_VERSION = "q54.p12.4.result.v7"
+ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v4"
 INVENTORY_SCHEMA_VERSION = "q54.p12.4.architecture-inventory.v1"
 CLEANUP_SCHEMA_VERSION = "q54.p12.4.cleanup-ledger.v1"
 PUBLICATION_BINDING_CONTRACT_VERSION = "q54.p12.4.publication-cuda-binding.v1"
@@ -257,6 +266,8 @@ EXPECTED_RECEIPT_PROVENANCE = {
         "execution",
         "eligibility",
         "native_input",
+        "native_execution_binding",
+        "stage_evidence",
         "acceleration",
         "publication",
         "operation_trace",
@@ -278,11 +289,23 @@ EXPECTED_NATIVE_INPUT_CONTRACT = {
     "schema_version": NATIVE_INPUT_SCHEMA_VERSION,
     "timing_contract_version": NATIVE_TIMING_CONTRACT_VERSION,
     "scope": "R0_R1_R2_and_S_static_optical_inputs_only",
-    "logical_source": "immutable_canonical_host_arrays",
+    "logical_source": "PackedOpticalSceneHost_single_materialization_source",
+    "scene_contract_schema_version": SCENE_CONTRACT_SCHEMA_VERSION,
+    "transform_replay_schema_version": TRANSFORM_REPLAY_SCHEMA_VERSION,
+    "fixed_render_fixture_schema_version": FIXED_RENDER_FIXTURE_SCHEMA_VERSION,
+    "result_capable_constructor": "CanonicalNativeInput.from_scene_contract",
+    "generic_from_arrays_result_capable": False,
     "S_measured_physics_transforms_excluded": True,
     "warp_preparation": "direct_host_to_warp_cuda_allocation",
     "cuda_preparation": "direct_host_to_torch_cuda_allocation",
     "allocation_rule": "independent_runtime_owned_allocations",
+    "R0_array_ownership": {
+        "packed_scene": "local_geometry_metadata_material_light_role_source",
+        "fixed_fixture": "derived_world_geometry_and_normalized_bvh_only",
+        "name_and_semantic_sets": "strictly_disjoint",
+        "upload_count_per_logical_array_per_candidate": 1,
+        "packed_owner_rule": "exact_object_identity_not_content_equality",
+    },
     "native_ready_requirements": [
         "device_resident",
         "dtype_shape_layout_semantics_validated",
@@ -298,9 +321,39 @@ EXPECTED_NATIVE_INPUT_CONTRACT = {
         "native_readiness_sha256",
         "input_contract",
         "input_provenance_sha256",
+        "scene_contract_sha256",
+        "transform_replay_sha256",
+        "transform_frame_index",
+        "fixed_render_fixture_sha256",
+        "native_execution_binding",
+        "native_execution_binding_sha256",
         "eligibility",
         "eligibility_sha256",
     ],
+}
+
+EXPECTED_NATIVE_EXECUTION_BINDING_CONTRACT = {
+    "schema_version": NATIVE_EXECUTION_BINDING_SCHEMA_VERSION,
+    "stage_schema_version": NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
+    "construction_order": [
+        "source_and_prepared_storage",
+        "independent_stage_evidence",
+        "native_execution_binding",
+        "execution_receipt",
+    ],
+    "stage_payload_contains_own_sha256": False,
+    "stage_payload_references_outer_binding": False,
+    "binding_references_stage_sha256": True,
+    "acceleration_receipt_references_acceleration_stage_sha256": True,
+    "pre_enqueue_validation": [
+        "row_case_boundary_lane_and_input_contract",
+        "native_manifest_and_readiness",
+        "scene_replay_or_fixed_fixture_provenance",
+        "exact_prepared_scene_storage",
+        "exact_prepared_derived_fixture_storage",
+        "ordered_stage_evidence_and_dataflow_sha256",
+    ],
+    "a3b_result_capable_before_C4_B3_review": False,
 }
 
 REQUIRED_SHIPPING_ENDPOINT_FIELDS = frozenset(
@@ -345,6 +398,12 @@ EXECUTION_RECEIPT_REQUIRED_FIELDS = frozenset(
         "native_readiness_sha256",
         "input_contract",
         "input_provenance_sha256",
+        "scene_contract_sha256",
+        "transform_replay_sha256",
+        "transform_frame_index",
+        "fixed_render_fixture_sha256",
+        "native_execution_binding",
+        "native_execution_binding_sha256",
         "eligibility",
         "eligibility_sha256",
         "operation_trace",
@@ -435,6 +494,12 @@ class ExecutionReceipt:
     native_readiness_sha256: str
     input_contract: str
     input_provenance_sha256: str
+    scene_contract_sha256: str
+    transform_replay_sha256: str | None
+    transform_frame_index: int | None
+    fixed_render_fixture_sha256: str | None
+    native_execution_binding: NativeExecutionBindingEvidence
+    native_execution_binding_sha256: str
     eligibility: LaneEligibilityEvidence
     eligibility_sha256: str
     operation_trace: RuntimeOperationTraceEvidence
@@ -505,6 +570,8 @@ class ExecutionReceipt:
             "topology_sha256",
             "input_contract",
             "input_provenance_sha256",
+            "scene_contract_sha256",
+            "native_execution_binding_sha256",
             "eligibility_sha256",
             "operation_trace_sha256",
             "acceleration_sha256",
@@ -521,6 +588,19 @@ class ExecutionReceipt:
         )
         if any(not isinstance(payload.get(name), str) for name in string_fields):
             raise ValueError("execution receipt identity and execution fields must be strings")
+        for name in ("transform_replay_sha256", "fixed_render_fixture_sha256"):
+            value = payload.get(name)
+            if value is not None and not _sha256_text(value):
+                raise ValueError(f"execution receipt {name} is invalid")
+        transform_frame_index = payload.get("transform_frame_index")
+        if transform_frame_index is not None and (
+            not isinstance(transform_frame_index, int)
+            or isinstance(transform_frame_index, bool)
+            or transform_frame_index < 0
+        ):
+            raise ValueError("execution receipt transform_frame_index is invalid")
+        if (payload.get("transform_replay_sha256") is None) != (transform_frame_index is None):
+            raise ValueError("execution receipt replay hash/index must appear together")
         readiness = NativeReadinessEvidence.from_payload(payload.get("native_readiness"))
         if payload.get("native_readiness_sha256") != readiness.sha256:
             raise ValueError("native readiness SHA-256 does not match its evidence content")
@@ -533,6 +613,11 @@ class ExecutionReceipt:
         acceleration = AccelerationReceipt.from_payload(payload.get("acceleration"))
         if payload.get("acceleration_sha256") != acceleration.sha256:
             raise ValueError("acceleration SHA-256 does not match its receipt content")
+        native_binding = NativeExecutionBindingEvidence.from_payload(
+            payload.get("native_execution_binding")
+        )
+        if payload.get("native_execution_binding_sha256") != native_binding.sha256:
+            raise ValueError("native execution binding SHA-256 does not match its content")
         publication_payload = payload.get("shipping_publication")
         publication_hash = payload.get("shipping_publication_sha256")
         shipping_publication: ShippingPublicationReceipt | None
@@ -557,6 +642,12 @@ class ExecutionReceipt:
             native_readiness_sha256=payload["native_readiness_sha256"],
             input_contract=payload["input_contract"],
             input_provenance_sha256=payload["input_provenance_sha256"],
+            scene_contract_sha256=payload["scene_contract_sha256"],
+            transform_replay_sha256=payload["transform_replay_sha256"],
+            transform_frame_index=transform_frame_index,
+            fixed_render_fixture_sha256=payload["fixed_render_fixture_sha256"],
+            native_execution_binding=native_binding,
+            native_execution_binding_sha256=payload["native_execution_binding_sha256"],
             eligibility=eligibility,
             eligibility_sha256=payload["eligibility_sha256"],
             operation_trace=operation_trace,
@@ -599,6 +690,12 @@ class ExecutionReceipt:
             "native_readiness_sha256": self.native_readiness_sha256,
             "input_contract": self.input_contract,
             "input_provenance_sha256": self.input_provenance_sha256,
+            "scene_contract_sha256": self.scene_contract_sha256,
+            "transform_replay_sha256": self.transform_replay_sha256,
+            "transform_frame_index": self.transform_frame_index,
+            "fixed_render_fixture_sha256": self.fixed_render_fixture_sha256,
+            "native_execution_binding": self.native_execution_binding.to_payload(),
+            "native_execution_binding_sha256": self.native_execution_binding_sha256,
             "eligibility": self.eligibility.to_payload(),
             "eligibility_sha256": self.eligibility_sha256,
             "operation_trace": self.operation_trace.to_payload(),
@@ -682,9 +779,15 @@ def canonical_input_provenance_sha256(
     *,
     input_contract: str,
     case_id: str,
+    case_sha256: str,
     native_input_manifest_sha256: str,
     native_input_content_sha256: str,
     topology_sha256: str,
+    scene_contract_sha256: str,
+    transform_replay_sha256: str | None,
+    transform_frame_index: int | None,
+    fixed_render_fixture_sha256: str | None,
+    native_execution_binding_sha256: str,
     asset_manifest_sha256: str | None,
     shipping_publication_sha256: str | None,
 ) -> str:
@@ -694,9 +797,15 @@ def canonical_input_provenance_sha256(
         "schema_version": INPUT_CONTRACT_SCHEMA_VERSION,
         "input_contract": input_contract,
         "case_id": case_id,
+        "case_sha256": case_sha256,
         "native_input_manifest_sha256": native_input_manifest_sha256,
         "native_input_content_sha256": native_input_content_sha256,
         "topology_sha256": topology_sha256,
+        "scene_contract_sha256": scene_contract_sha256,
+        "transform_replay_sha256": transform_replay_sha256,
+        "transform_frame_index": transform_frame_index,
+        "fixed_render_fixture_sha256": fixed_render_fixture_sha256,
+        "native_execution_binding_sha256": native_execution_binding_sha256,
         "asset_manifest_sha256": asset_manifest_sha256,
         "shipping_publication_sha256": shipping_publication_sha256,
     }
@@ -724,6 +833,7 @@ def canonical_row_semantics_sha256(row: Mapping[str, Any], gate: Mapping[str, An
         "payload_channel_contracts": gate.get("payload_channel_contracts"),
         "diagnostic_overlay_contracts": gate.get("diagnostic_overlay_contracts"),
         "native_input_contract": gate.get("native_input_contract"),
+        "native_execution_binding_contract": gate.get("native_execution_binding_contract"),
         "input_contracts": gate.get("input_contracts"),
         "eligibility_contract": gate.get("eligibility_contract"),
         "acceleration_contracts": gate.get("acceleration_contracts"),
@@ -790,6 +900,8 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
             "topology_sha256",
             "native_readiness_sha256",
             "input_provenance_sha256",
+            "scene_contract_sha256",
+            "native_execution_binding_sha256",
             "eligibility_sha256",
             "operation_trace_sha256",
             "acceleration_sha256",
@@ -810,6 +922,18 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
             errors.append("receipt native readiness content does not match input provenance")
         if readiness.topology_sha256 != receipt.topology_sha256:
             errors.append("receipt native readiness topology does not match input provenance")
+        if readiness.input_contract != receipt.input_contract:
+            errors.append("receipt native readiness input contract does not match execution")
+        if readiness.scene_contract_sha256 != receipt.scene_contract_sha256:
+            errors.append("receipt native readiness scene contract does not match execution")
+        if readiness.transform_replay_sha256 != receipt.transform_replay_sha256:
+            errors.append("receipt native readiness replay contract does not match execution")
+        if readiness.fixed_render_fixture_sha256 != receipt.fixed_render_fixture_sha256:
+            errors.append("receipt native readiness fixed fixture does not match execution")
+        if receipt.transform_frame_index is not None and (
+            receipt.transform_frame_index >= readiness.transform_frame_count
+        ):
+            errors.append("receipt transform frame index is outside the prepared replay")
         if readiness.warmup_frames_completed < int(gate["measurement"]["warmup_frames"]):
             errors.append("receipt native readiness does not prove the frozen warmup count")
         lane_binding = gate["lane_bindings"].get(lane, {}) if isinstance(lane, str) else {}
@@ -827,6 +951,45 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
         expected_input_contract = row.get("input_contract")
         if receipt.input_contract != expected_input_contract:
             errors.append("receipt input_contract does not match its gate row")
+        if row["boundary"] == "R0":
+            if (
+                receipt.transform_replay_sha256 is not None
+                or receipt.transform_frame_index is not None
+                or receipt.fixed_render_fixture_sha256 is None
+            ):
+                errors.append("R0 receipt must bind only fixed-render-fixture provenance")
+        elif row["boundary"] in {"R1", "R2"}:
+            if (
+                receipt.transform_replay_sha256 is None
+                or receipt.transform_frame_index is None
+                or receipt.fixed_render_fixture_sha256 is not None
+            ):
+                errors.append("R1/R2 receipt must bind only replay provenance")
+        elif row["boundary"] == "S" and (
+            receipt.transform_replay_sha256 is not None
+            or receipt.transform_frame_index is not None
+            or receipt.fixed_render_fixture_sha256 is not None
+        ):
+            errors.append("S receipt must not carry replay or fixed-fixture provenance")
+
+        native_binding = receipt.native_execution_binding
+        expected_binding_identity = {
+            "row_id": receipt.row_id,
+            "case_id": receipt.case_id,
+            "case_sha256": receipt.case_sha256,
+            "boundary": receipt.boundary,
+            "lane": receipt.lane,
+            "input_contract": receipt.input_contract,
+            "native_input_manifest_sha256": receipt.native_input_manifest_sha256,
+            "native_readiness_sha256": receipt.native_readiness_sha256,
+            "scene_contract_sha256": receipt.scene_contract_sha256,
+            "transform_replay_sha256": receipt.transform_replay_sha256,
+            "transform_frame_index": receipt.transform_frame_index,
+            "fixed_render_fixture_sha256": receipt.fixed_render_fixture_sha256,
+        }
+        for name, expected in expected_binding_identity.items():
+            if getattr(native_binding, name) != expected:
+                errors.append(f"receipt native execution binding {name} does not match execution")
         eligibility = receipt.eligibility
         expected_eligibility_identity = {
             "row_id": receipt.row_id,
@@ -883,6 +1046,8 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
         acceleration = receipt.acceleration
         if acceleration.acceleration_id != receipt.acceleration_id:
             errors.append("receipt acceleration identity does not match execution")
+        if acceleration.scene_contract_sha256 != receipt.scene_contract_sha256:
+            errors.append("receipt acceleration scene contract does not match execution")
         if acceleration.workload_class != acceleration_class:
             errors.append("receipt acceleration workload class does not match its gate row")
         exact_acceleration = (
@@ -925,16 +1090,29 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
         if acceleration.node_count < acceleration.leaf_count:
             errors.append("receipt acceleration node_count cannot be smaller than leaf_count")
         if classification == "none":
+            if acceleration.acceleration_stage_evidence_sha256 is not None:
+                errors.append("fixed R0 acceleration must not bind stage evidence")
             if (
                 acceleration.scene_update_kernel_launch_count != 0
                 or acceleration.acceleration_kernel_launch_count != 0
             ):
                 errors.append("fixed R0 acceleration must not claim update/acceleration kernels")
-        elif (
-            acceleration.scene_update_kernel_launch_count <= 0
-            or acceleration.acceleration_kernel_launch_count <= 0
-        ):
-            errors.append("dynamic acceleration must prove scene and acceleration kernel launches")
+        else:
+            acceleration_stages = {
+                stage.stage_name: stage for stage in native_binding.ordered_stage_evidence
+            }
+            acceleration_stage = acceleration_stages.get("acceleration")
+            if (
+                acceleration_stage is None
+                or acceleration.acceleration_stage_evidence_sha256
+                != acceleration_stage.evidence_sha256
+            ):
+                errors.append("dynamic acceleration does not bind its stage evidence")
+            if (
+                acceleration.scene_update_kernel_launch_count <= 0
+                or acceleration.acceleration_kernel_launch_count <= 0
+            ):
+                errors.append("dynamic acceleration must prove scene and acceleration kernel launches")
 
         publication = receipt.shipping_publication
         if row["boundary"] == "S":
@@ -975,9 +1153,15 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
         expected_input_provenance = canonical_input_provenance_sha256(
             input_contract=receipt.input_contract,
             case_id=receipt.case_id,
+            case_sha256=receipt.case_sha256,
             native_input_manifest_sha256=receipt.native_input_manifest_sha256,
             native_input_content_sha256=receipt.native_input_content_sha256,
             topology_sha256=receipt.topology_sha256,
+            scene_contract_sha256=receipt.scene_contract_sha256,
+            transform_replay_sha256=receipt.transform_replay_sha256,
+            transform_frame_index=receipt.transform_frame_index,
+            fixed_render_fixture_sha256=receipt.fixed_render_fixture_sha256,
+            native_execution_binding_sha256=receipt.native_execution_binding_sha256,
             asset_manifest_sha256=eligibility.asset_manifest_sha256,
             shipping_publication_sha256=receipt.shipping_publication_sha256,
         )
@@ -1158,6 +1342,10 @@ def validate_frozen_gate(payload: Mapping[str, Any]) -> None:
         errors.append("receipt_provenance does not freeze lane-generated evidence ownership")
     if payload.get("native_input_contract") != EXPECTED_NATIVE_INPUT_CONTRACT:
         errors.append("native_input_contract does not match the durable a2 contract")
+    if payload.get("native_execution_binding_contract") != (
+        EXPECTED_NATIVE_EXECUTION_BINDING_CONTRACT
+    ):
+        errors.append("native_execution_binding_contract does not match C3a provenance")
     if payload.get("input_contracts") != EXPECTED_INPUT_CONTRACTS:
         errors.append("input_contracts do not match the approved replay/shipping split")
     if payload.get("eligibility_contract") != EXPECTED_ELIGIBILITY_CONTRACT:
@@ -1172,6 +1360,10 @@ def validate_frozen_gate(payload: Mapping[str, Any]) -> None:
         errors.append("shipping publication receipt contract is not frozen")
     if payload.get("approved_dependency_order_commit") != ("57073b8cabe39d7e4104d8cef77fce70fc17956c"):
         errors.append("approved_dependency_order_commit is not the reviewed v3 commit")
+    if payload.get("approved_c3_design_commit") != (
+        "435ffb275674c04f6452cb41775533db0f47f1d3"
+    ):
+        errors.append("approved_c3_design_commit is not the reviewed C3 v4 commit")
 
     continuation = payload.get("continuation")
     expected_continuation = {

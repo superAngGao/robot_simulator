@@ -121,7 +121,7 @@ def build_device_bvh_from_snapshot(
     device_to_host_ms = (time.perf_counter() - device_to_host_start) * 1000.0
 
     host_build_start = time.perf_counter()
-    host_bvh = _build_host_bvh(
+    host_bvh = build_host_median_bvh(
         aabb_min,
         aabb_max,
         source_keys,
@@ -285,7 +285,7 @@ class _HostNode:
     depth: int = 0
 
 
-def _build_host_bvh(
+def build_host_median_bvh(
     aabb_min: np.ndarray,
     aabb_max: np.ndarray,
     source_keys: np.ndarray,
@@ -293,6 +293,7 @@ def _build_host_bvh(
     leaf_size: int,
     split_strategy: str = "sort",
 ) -> dict[str, object]:
+    """Build the canonical CPU median/longest-axis normalized BVH arrays."""
     if split_strategy not in {"sort", "partition"}:
         raise ValueError("split_strategy must be 'sort' or 'partition'")
     num_primitives = int(aabb_min.shape[0])

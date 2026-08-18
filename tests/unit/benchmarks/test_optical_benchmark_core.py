@@ -4,27 +4,35 @@ import hashlib
 import json
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pytest
 
 from benchmarks.optical.artifacts import BenchmarkArtifactWriter
+from benchmarks.optical.cases import get_case
 from benchmarks.optical.eligibility import (
+    LaneIneligibleError,
     evaluate_lane_eligibility,
     verified_runtime_entry_point_audit,
 )
 from benchmarks.optical.instrumentation import entry_point_hook_id
 from benchmarks.optical.native import (
+    CanonicalFixedRenderFixtureHost,
     CanonicalNativeInput,
     NativeInputValidationReport,
     NativeReadinessEvidence,
     WarpPreparedNativeInput,
     certify_native_readiness,
+    prepared_storage_signatures,
 )
 from benchmarks.optical.receipts import (
     ACCELERATION_RECEIPT_SCHEMA_VERSION,
+    NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
     AccelerationReceipt,
+    NativeStageEvidence,
+    NativeStorageSignature,
+    build_native_execution_binding,
 )
 from benchmarks.optical.runner import (
     LaneSampleRequest,
@@ -46,6 +54,8 @@ from benchmarks.optical.timing import (
     assert_operation_allowed,
     native_timed_submission,
 )
+from optics.registry import OpticalInstanceSpec, OpticalMaterialSpec, OpticalWorldRegistry
+from optics.scene_contract import PackedOpticalSceneHost
 
 
 def test_canonical_native_input_is_immutable_and_order_independent():
@@ -107,13 +117,8 @@ def test_timed_boundary_restores_context_after_lane_failure():
 def test_single_lane_runner_submits_inside_timing_and_resolves_outside():
     gate = load_frozen_gate()
     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
-    source = _native_source()
-    prepared = WarpPreparedNativeInput(
-        manifest=source.manifest,
-        device_ordinal=0,
-        arrays={"placeholder": object()},
-        ready_event=object(),
-    )
+    source = _runner_native_source()
+    prepared = _prepared(source)
     trace: list[tuple[str, bool]] = []
     lane = _FakeLane(gate=gate, row=row, prepared=prepared, trace=trace)
     runner = SingleLaneSampleRunner(gate, execution_phase="P12.4a3b")
@@ -136,13 +141,8 @@ def test_single_lane_runner_submits_inside_timing_and_resolves_outside():
 def test_single_lane_runner_rejects_lane_fabricated_native_provenance():
     gate = load_frozen_gate()
     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
-    source = _native_source()
-    prepared = WarpPreparedNativeInput(
-        manifest=source.manifest,
-        device_ordinal=0,
-        arrays={"placeholder": object()},
-        ready_event=object(),
-    )
+    source = _runner_native_source()
+    prepared = _prepared(source)
     lane = _FakeLane(gate=gate, row=row, prepared=prepared, trace=[], bad_manifest=True)
 
     with pytest.raises(ValueError, match="prepared input manifest"):
@@ -158,13 +158,8 @@ def test_single_lane_runner_rejects_lane_fabricated_native_provenance():
 def test_single_lane_runner_allows_ordered_submit_then_drain_and_rejects_double_resolve():
     gate = load_frozen_gate()
     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
-    source = _native_source()
-    prepared = WarpPreparedNativeInput(
-        manifest=source.manifest,
-        device_ordinal=0,
-        arrays={"placeholder": object()},
-        ready_event=object(),
-    )
+    source = _runner_native_source()
+    prepared = _prepared(source)
     readiness = _readiness(prepared)
     trace: list[tuple[str, bool]] = []
     lane = _FakeLane(gate=gate, row=row, prepared=prepared, trace=trace)
@@ -197,19 +192,19 @@ def test_single_lane_runner_allows_ordered_submit_then_drain_and_rejects_double_
 def test_single_lane_runner_rejects_incomplete_warmup_evidence():
     gate = load_frozen_gate()
     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
-    source = _native_source()
-    prepared = WarpPreparedNativeInput(
-        manifest=source.manifest,
-        device_ordinal=0,
-        arrays={"placeholder": object()},
-        ready_event=object(),
-    )
+    source = _runner_native_source()
+    prepared = _prepared(source)
     validation = NativeInputValidationReport(
         backend="warp",
         manifest_sha256=prepared.manifest.sha256,
         content_sha256=prepared.manifest.content_sha256,
         topology_sha256=prepared.manifest.topology_sha256,
         validated_arrays=tuple(item.name for item in prepared.manifest.arrays),
+        input_contract=prepared.manifest.input_contract,
+        scene_contract_sha256=prepared.manifest.scene_contract_sha256,
+        transform_replay_sha256=prepared.manifest.transform_replay_sha256,
+        transform_frame_count=prepared.manifest.transform_frame_count,
+        fixed_render_fixture_sha256=prepared.manifest.fixed_render_fixture_sha256,
     )
     incomplete_validation = NativeInputValidationReport(
         backend="warp",
@@ -217,6 +212,11 @@ def test_single_lane_runner_rejects_incomplete_warmup_evidence():
         content_sha256=prepared.manifest.content_sha256,
         topology_sha256=prepared.manifest.topology_sha256,
         validated_arrays=(),
+        input_contract=prepared.manifest.input_contract,
+        scene_contract_sha256=prepared.manifest.scene_contract_sha256,
+        transform_replay_sha256=prepared.manifest.transform_replay_sha256,
+        transform_frame_count=prepared.manifest.transform_frame_count,
+        fixed_render_fixture_sha256=prepared.manifest.fixed_render_fixture_sha256,
     )
     with pytest.raises(ValueError, match="every prepared input array"):
         certify_native_readiness(
@@ -245,13 +245,8 @@ def test_single_lane_runner_rejects_incomplete_warmup_evidence():
 def test_single_lane_runner_does_not_copy_wrong_actual_request_from_gate():
     gate = load_frozen_gate()
     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
-    source = _native_source()
-    prepared = WarpPreparedNativeInput(
-        manifest=source.manifest,
-        device_ordinal=0,
-        arrays={"placeholder": object()},
-        ready_event=object(),
-    )
+    source = _runner_native_source()
+    prepared = _prepared(source)
     lane = _FakeLane(gate=gate, row=row, prepared=prepared, trace=[], wrong_shadows=True)
 
     with pytest.raises(ValueError, match="receipt shadows does not match"):
@@ -313,6 +308,87 @@ def _native_source(*, reverse: bool = False) -> CanonicalNativeInput:
     )
 
 
+def _runner_native_source() -> CanonicalNativeInput:
+    case = get_case("asymmetric_synthetic_7x3_v1")
+    registry = OpticalWorldRegistry()
+    registry.add_material(OpticalMaterialSpec("mat"))
+    registry.add_triangle_mesh_geometry(
+        "triangle",
+        vertices_local=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        triangles=[[0, 1, 2]],
+    )
+    registry.add_instance(
+        OpticalInstanceSpec(
+            "instance",
+            "triangle",
+            "mat",
+            body_index=0,
+            roles=frozenset({"rgb"}),
+        )
+    )
+    packed = PackedOpticalSceneHost.from_registry(
+        registry,
+        source_contract_id=case.case_id,
+        source_contract_sha256=case.sha256,
+        scene_id=case.scene_id,
+    )
+    fixture = CanonicalFixedRenderFixtureHost.from_scene_contract(
+        packed,
+        fixed_transform_id="unit_fixed_v1",
+        x_world_R=np.eye(3, dtype=np.float32)[None, :, :],
+        x_world_r=np.zeros((1, 3), dtype=np.float32),
+    )
+    return CanonicalNativeInput.from_scene_contract(
+        packed,
+        input_contract="fixed_native_scene_v1",
+        fixed_fixture=fixture,
+    )
+
+
+def test_single_lane_runner_rejects_same_shape_substitute_storage_before_enqueue():
+    gate = load_frozen_gate()
+    row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
+    source = _runner_native_source()
+    prepared = _prepared(source)
+    trace: list[tuple[str, bool]] = []
+    lane = _FakeLane(
+        gate=gate,
+        row=row,
+        prepared=prepared,
+        trace=trace,
+        substitute_scene_storage=True,
+    )
+
+    with pytest.raises(LaneIneligibleError, match="substituted prepared scene storage"):
+        SingleLaneSampleRunner(gate, execution_phase="P12.4a3b").run_sample(
+            row_id=row["row_id"],
+            lane=lane,
+            prepared=prepared,
+            readiness=_readiness(prepared),
+            request=LaneSampleRequest(run_id="unit-run", repeat_index=0, sample_index=0),
+        )
+    assert trace == []
+
+
+@dataclass(frozen=True)
+class _FakeWarpArray:
+    ptr: int
+
+
+def _prepared(source: CanonicalNativeInput) -> WarpPreparedNativeInput:
+    arrays = {
+        manifest.name: _FakeWarpArray(0 if manifest.nbytes == 0 else 0x1000 + index * 0x100)
+        for index, manifest in enumerate(source.manifest.arrays)
+    }
+    return WarpPreparedNativeInput(
+        manifest=source.manifest,
+        device_ordinal=0,
+        arrays=arrays,
+        ready_event=object(),
+        source=source,
+    )
+
+
 def _readiness(prepared: WarpPreparedNativeInput):
     validation = NativeInputValidationReport(
         backend="warp",
@@ -320,6 +396,11 @@ def _readiness(prepared: WarpPreparedNativeInput):
         content_sha256=prepared.manifest.content_sha256,
         topology_sha256=prepared.manifest.topology_sha256,
         validated_arrays=tuple(item.name for item in prepared.manifest.arrays),
+        input_contract=prepared.manifest.input_contract,
+        scene_contract_sha256=prepared.manifest.scene_contract_sha256,
+        transform_replay_sha256=prepared.manifest.transform_replay_sha256,
+        transform_frame_count=prepared.manifest.transform_frame_count,
+        fixed_render_fixture_sha256=prepared.manifest.fixed_render_fixture_sha256,
     )
     return certify_native_readiness(
         prepared,
@@ -347,6 +428,7 @@ class _FakeLane:
     trace: list[tuple[str, bool]]
     bad_manifest: bool = False
     wrong_shadows: bool = False
+    substitute_scene_storage: bool = False
     lane_id: str = "warp"
     readiness: NativeReadinessEvidence = field(init=False)
     readiness_sha256: str = field(init=False)
@@ -355,7 +437,63 @@ class _FakeLane:
         self.readiness = _readiness(self.prepared)
         self.readiness_sha256 = self.readiness.sha256
 
-    def submit_sample(self, *, row, prepared, request):
+    def bind_sample(self, *, row, prepared, readiness):
+        scene_storage = prepared_storage_signatures(
+            prepared, prepared.manifest.scene_array_names
+        )
+        if self.substitute_scene_storage:
+            scene_storage = (
+                replace(scene_storage[0], storage_token="warp:0xdeadbeef"),
+                *scene_storage[1:],
+            )
+        fixture_storage = prepared_storage_signatures(
+            prepared, prepared.manifest.fixed_render_fixture_arrays
+        )
+        render_output = NativeStorageSignature(
+            name="render_output",
+            backend="warp",
+            device_ordinal=0,
+            storage_token="warp:0x9000",
+            dtype="<f4",
+            shape=(21, 3),
+            nbytes=252,
+            active_start=0,
+            active_count=252,
+            owner_token="unit-output-slot",
+        )
+        render = NativeStageEvidence(
+            schema_version=NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
+            stage_name="render",
+            operation_id="warp_bvh_direct_light",
+            scene_contract_sha256=prepared.manifest.scene_contract_sha256,
+            input_contract=prepared.manifest.input_contract,
+            transform_replay_sha256=None,
+            transform_frame_index=None,
+            fixed_render_fixture_sha256=prepared.manifest.fixed_render_fixture_sha256,
+            topology_sha256=prepared.manifest.topology_sha256,
+            input_storage=scene_storage + fixture_storage,
+            output_storage=(render_output,),
+            dispatch_plan_sha256="d" * 64,
+        )
+        return build_native_execution_binding(
+            row_id=row["row_id"],
+            case_id=row["case_id"],
+            case_sha256=prepared.manifest.case_sha256,
+            boundary=row["boundary"],
+            lane="warp",
+            input_contract=prepared.manifest.input_contract,
+            native_input_manifest_sha256=prepared.manifest.sha256,
+            native_readiness_sha256=readiness.sha256,
+            scene_contract_sha256=prepared.manifest.scene_contract_sha256,
+            transform_replay_sha256=None,
+            transform_frame_index=None,
+            fixed_render_fixture_sha256=prepared.manifest.fixed_render_fixture_sha256,
+            runtime_scene_storage=scene_storage,
+            derived_fixture_storage=fixture_storage,
+            stage_evidence=(render,),
+        )
+
+    def submit_sample(self, *, row, prepared, binding, request):
         del request
         self.trace.append(("submit", active_timed_boundary() is not None))
         for operation in _required_operations(row):
@@ -376,8 +514,9 @@ class _FakeLane:
                 for index, operation in enumerate(_required_operations(row))
             ),
         )
-        binding = self.gate["lane_bindings"][self.lane_id]
-        acceleration_id = binding["acceleration_by_class"][row["acceleration_class"]]
+        native_execution_binding = binding
+        lane_binding = self.gate["lane_bindings"][self.lane_id]
+        acceleration_id = lane_binding["acceleration_by_class"][row["acceleration_class"]]
         contract = self.gate["acceleration_contracts"]["by_lane_and_identity"][self.lane_id][acceleration_id]
         classification = contract["operation_classification"]
         scene_count, refit_count, rebuild_count = {
@@ -388,6 +527,8 @@ class _FakeLane:
         eligibility = self.preflight_sample(row=row, prepared=prepared)
         acceleration = AccelerationReceipt(
             acceleration_schema_version=ACCELERATION_RECEIPT_SCHEMA_VERSION,
+            scene_contract_sha256=prepared.manifest.scene_contract_sha256,
+            acceleration_stage_evidence_sha256=None,
             acceleration_id=acceleration_id,
             workload_class=row["acceleration_class"],
             topology_origin=contract["topology_origin"],
@@ -428,12 +569,24 @@ class _FakeLane:
             input_provenance_sha256=canonical_input_provenance_sha256(
                 input_contract=row["input_contract"],
                 case_id=row["case_id"],
+                case_sha256=self.gate["cases"][row["case_id"]]["sha256"],
                 native_input_manifest_sha256=prepared.manifest.sha256,
                 native_input_content_sha256=prepared.manifest.content_sha256,
                 topology_sha256=prepared.manifest.topology_sha256,
+                scene_contract_sha256=prepared.manifest.scene_contract_sha256,
+                transform_replay_sha256=None,
+                transform_frame_index=None,
+                fixed_render_fixture_sha256=prepared.manifest.fixed_render_fixture_sha256,
+                native_execution_binding_sha256=native_execution_binding.sha256,
                 asset_manifest_sha256=eligibility.asset_manifest_sha256,
                 shipping_publication_sha256=None,
             ),
+            scene_contract_sha256=prepared.manifest.scene_contract_sha256,
+            transform_replay_sha256=None,
+            transform_frame_index=None,
+            fixed_render_fixture_sha256=prepared.manifest.fixed_render_fixture_sha256,
+            native_execution_binding=native_execution_binding,
+            native_execution_binding_sha256=native_execution_binding.sha256,
             eligibility=eligibility,
             eligibility_sha256=eligibility.sha256,
             operation_trace=operation_trace,
@@ -445,7 +598,7 @@ class _FakeLane:
             boundary=row["boundary"],
             boundary_version=self.gate["boundaries"][row["boundary"]],
             lane=self.lane_id,
-            renderer_id=binding["renderer_id"],
+            renderer_id=lane_binding["renderer_id"],
             acceleration_id=acceleration_id,
             output_profile=row["output_profile"],
             shadows=not row["shadows"] if self.wrong_shadows else row["shadows"],

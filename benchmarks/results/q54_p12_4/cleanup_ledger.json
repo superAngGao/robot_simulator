@@ -4,6 +4,27 @@
   "must_complete": true,
   "entries": [
     {
+      "entry_id": "logical_optical_scene_contract",
+      "paths": [
+        "optics/scene_contract.py",
+        "tests/unit/optics/test_scene_contract.py"
+      ],
+      "symbols": {
+        "optics/scene_contract.py": [
+          "class PackedOpticalSceneHost:"
+        ]
+      },
+      "cuda_selected": {
+        "action": "retain",
+        "acceptance": "remain the implementation-neutral single materialization source for the selected CUDA optical data plane"
+      },
+      "warp_selected": {
+        "action": "retain",
+        "acceptance": "remain the implementation-neutral single materialization source for the selected Warp optical data plane"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
       "entry_id": "warp_optical_executors",
       "paths": ["optics/warp_execution.py"],
       "symbols": {
@@ -57,9 +78,22 @@
       "paths": [
         "optics/device_scene.py",
         "optics/device_bvh.py",
-        "optics/device.py"
+        "optics/device.py",
+        "benchmarks/optical/native.py",
+        "tests/gpu/test_optical_benchmark_native.py"
       ],
-      "symbols": {},
+      "symbols": {
+        "optics/device_scene.py": [
+          "def build_device_optical_scene_from_packed(",
+          "def device_optical_scene_from_arrays("
+        ],
+        "optics/device_bvh.py": [
+          "def build_host_median_bvh("
+        ],
+        "benchmarks/optical/native.py": [
+          "def build_prepared_warp_local_scene("
+        ]
+      },
       "cuda_selected": {
         "action": "replace_then_delete",
         "acceptance": "CUDA product scene, acceleration, result, and staging ownership are Torch/CUDA native; remove obsolete Warp optical buffers/views/events"
@@ -67,6 +101,34 @@
       "warp_selected": {
         "action": "retain",
         "acceptance": "keep only production-called Warp scene/BVH/result helpers with active GPU tests"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
+      "entry_id": "cuda_native_scene_data_plane",
+      "paths": [
+        "optics/cuda_scene.py",
+        "benchmarks/optical/native.py",
+        "tests/unit/benchmarks/test_optical_benchmark_c3a.py",
+        "tests/gpu/test_optical_benchmark_native.py"
+      ],
+      "symbols": {
+        "optics/cuda_scene.py": [
+          "class CudaOpticalLocalScene:",
+          "def build_cuda_optical_scene(",
+          "def cuda_optical_scene_from_arrays("
+        ],
+        "benchmarks/optical/native.py": [
+          "def build_prepared_cuda_local_scene("
+        ]
+      },
+      "cuda_selected": {
+        "action": "retain",
+        "acceptance": "becomes the sole native scene owner after C3-C4/B3 and all replacement gates pass"
+      },
+      "warp_selected": {
+        "action": "delete",
+        "acceptance": "remove Torch CUDA scene ownership, exports, candidate-only tests, and all CUDA scene call sites"
       },
       "must_resolve_by": "P12.4e"
     },
@@ -138,7 +200,15 @@
         "benchmarks/optical/runner.py",
         "benchmarks/optical/artifacts.py"
       ],
-      "symbols": {},
+      "symbols": {
+        "benchmarks/optical/native.py": [
+          "class CanonicalTransformReplayHost:",
+          "class CanonicalFixedRenderFixtureHost:"
+        ],
+        "benchmarks/optical/receipts.py": [
+          "class NativeExecutionBindingEvidence:"
+        ]
+      },
       "cuda_selected": {
         "action": "retain",
         "acceptance": "keep canonical cases, contracts, independent native preparation, single-lane runner, artifacts, and the selected CUDA regression lane; no paired selector remains in this surface"
@@ -208,10 +278,14 @@
       "entry_id": "exports_examples_tests_and_docs",
       "paths": [
         "optics/__init__.py",
+        "benchmarks/optical/__init__.py",
         "examples/mujoco_menagerie_gpu_preview.py",
         "examples/optical_readback_microbench.py",
         "tests/gpu/test_optical_gpu_runtime.py",
-        "tests/gpu/test_optical_warp_executor.py"
+        "tests/gpu/test_optical_warp_executor.py",
+        "tests/gpu/test_optical_benchmark_native.py",
+        "tests/unit/benchmarks/test_optical_benchmark_c3a.py",
+        "tests/unit/optics/test_scene_contract.py"
       ],
       "symbols": {},
       "cuda_selected": {

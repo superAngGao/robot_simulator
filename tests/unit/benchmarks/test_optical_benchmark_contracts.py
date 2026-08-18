@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -9,10 +10,14 @@ import pytest
 from benchmarks.optical import (
     ACCELERATION_RECEIPT_SCHEMA_VERSION,
     BOUNDARY_VERSIONS,
+    NATIVE_INPUT_SCHEMA_VERSION,
+    NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
     SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION,
     AccelerationReceipt,
     ExecutionReceipt,
     NativeReadinessEvidence,
+    NativeStageEvidence,
+    NativeStorageSignature,
     ObservedChannel,
     ShippingPublicationReceipt,
     canonical_cases,
@@ -20,6 +25,7 @@ from benchmarks.optical import (
     canonical_gate_sha256,
     canonical_input_provenance_sha256,
     canonical_row_semantics_sha256,
+    build_native_execution_binding,
     case_hashes,
     evaluate_lane_eligibility,
     load_frozen_gate,
@@ -85,6 +91,48 @@ def test_canonical_case_ids_and_hashes_are_frozen():
         assert case.transform_sequence["frames"] > 0
 
 
+@pytest.mark.parametrize("forbidden_field", ["evidence_sha256", "native_execution_binding_sha256"])
+def test_native_stage_payload_cannot_self_reference_or_reference_outer_binding(
+    forbidden_field: str,
+):
+    gate = load_frozen_gate()
+    row = next(row for row in gate["mandatory_rows"] if row["boundary"] == "R1")
+    receipt = ExecutionReceipt.from_payload(_valid_result_record(gate, row)["receipt"])
+    payload = receipt.native_execution_binding.ordered_stage_evidence[0].evidence.to_payload()
+    payload[forbidden_field] = "f" * 64
+
+    with pytest.raises(ValueError, match="fields are invalid"):
+        NativeStageEvidence.from_payload(payload)
+
+
+def test_native_binding_rejects_same_shape_unproduced_stage_storage():
+    gate = load_frozen_gate()
+    row = next(row for row in gate["mandatory_rows"] if row["boundary"] == "R1")
+    receipt = ExecutionReceipt.from_payload(_valid_result_record(gate, row)["receipt"])
+    binding = receipt.native_execution_binding
+    stages = [stage.evidence for stage in binding.ordered_stage_evidence]
+    render = stages[2]
+    substitute = replace(render.input_storage[-1], storage_token="cuda:0xdeadbeef")
+    stages[2] = replace(render, input_storage=render.input_storage[:-1] + (substitute,))
+
+    with pytest.raises(ValueError, match="render input is not prepared or produced storage"):
+        build_native_execution_binding(
+            row_id=binding.row_id,
+            case_id=binding.case_id,
+            case_sha256=binding.case_sha256,
+            boundary=binding.boundary,
+            lane=binding.lane,
+            input_contract=binding.input_contract,
+            native_input_manifest_sha256=binding.native_input_manifest_sha256,
+            native_readiness_sha256=binding.native_readiness_sha256,
+            scene_contract_sha256=binding.scene_contract_sha256,
+            transform_replay_sha256=binding.transform_replay_sha256,
+            transform_frame_index=binding.transform_frame_index,
+            fixed_render_fixture_sha256=binding.fixed_render_fixture_sha256,
+            runtime_scene_storage=binding.runtime_scene_storage,
+            derived_fixture_storage=binding.derived_fixture_storage,
+            stage_evidence=stages,
+        )
 def test_frozen_gate_validates_and_contains_no_observed_results():
     gate = load_frozen_gate()
 
@@ -377,9 +425,15 @@ def test_result_rejects_replay_provenance_in_shipping_receipt():
     receipt["input_provenance_sha256"] = canonical_input_provenance_sha256(
         input_contract=receipt["input_contract"],
         case_id=receipt["case_id"],
+        case_sha256=receipt["case_sha256"],
         native_input_manifest_sha256=receipt["native_input_manifest_sha256"],
         native_input_content_sha256=receipt["native_input_content_sha256"],
         topology_sha256=receipt["topology_sha256"],
+        scene_contract_sha256=receipt["scene_contract_sha256"],
+        transform_replay_sha256=receipt["transform_replay_sha256"],
+        transform_frame_index=receipt["transform_frame_index"],
+        fixed_render_fixture_sha256=receipt["fixed_render_fixture_sha256"],
+        native_execution_binding_sha256=receipt["native_execution_binding_sha256"],
         asset_manifest_sha256=receipt["eligibility"]["asset_manifest_sha256"],
         shipping_publication_sha256=publication.sha256,
     )
@@ -494,8 +548,37 @@ def _valid_result_record(gate, row):
         "refit": (1, 1, 0),
         "rebuild": (1, 0, 1),
     }[classification]
+    scene_contract_sha256 = "4" * 64
+    fixed_fixture_sha256 = "5" * 64 if row["boundary"] == "R0" else None
+    replay_sha256 = "6" * 64 if row["boundary"] in {"R1", "R2"} else None
+    replay_index = 0 if replay_sha256 is not None else None
+    runtime_storage = (
+        _storage(name="scene", lane=lane, token="cuda:0x1000", owner="prepared-scene"),
+    )
+    fixture_storage = (
+        (_storage(name="fixture", lane=lane, token="cuda:0x2000", owner="prepared-fixture"),)
+        if fixed_fixture_sha256 is not None
+        else ()
+    )
+    native_stages = _native_stages(
+        row=row,
+        lane=lane,
+        scene_contract_sha256=scene_contract_sha256,
+        replay_sha256=replay_sha256,
+        replay_index=replay_index,
+        fixed_fixture_sha256=fixed_fixture_sha256,
+        topology_sha256="3" * 64,
+        runtime_storage=runtime_storage,
+        fixture_storage=fixture_storage,
+    )
     acceleration = AccelerationReceipt(
         acceleration_schema_version=ACCELERATION_RECEIPT_SCHEMA_VERSION,
+        scene_contract_sha256=scene_contract_sha256,
+        acceleration_stage_evidence_sha256=(
+            None
+            if classification == "none"
+            else next(stage.sha256 for stage in native_stages if stage.stage_name == "acceleration")
+        ),
         acceleration_id=acceleration_id,
         workload_class=row["acceleration_class"],
         topology_origin=acceleration_contract["topology_origin"],
@@ -523,17 +606,41 @@ def _valid_result_record(gate, row):
     )
     publication = _shipping_publication(row, operation_trace)
     readiness = NativeReadinessEvidence(
-        schema_version="q54.p12.4.native-input.v1",
+        schema_version=NATIVE_INPUT_SCHEMA_VERSION,
         backend="cuda",
         device_ordinal=0,
         manifest_sha256="1" * 64,
         content_sha256="2" * 64,
         topology_sha256="3" * 64,
+        input_contract=row["input_contract"],
+        scene_contract_schema_version="q54.optical-scene-contract.v1",
+        scene_contract_sha256=scene_contract_sha256,
+        scene_id=next(case.scene_id for case in canonical_cases() if case.case_id == row["case_id"]),
+        transform_replay_sha256=replay_sha256,
+        transform_frame_count=120 if replay_sha256 is not None else 0,
+        fixed_render_fixture_sha256=fixed_fixture_sha256,
         producer_ready_event_complete=True,
         direct_validation_complete=True,
         allocation_complete=True,
         compile_complete=True,
         warmup_frames_completed=10,
+    )
+    native_binding = build_native_execution_binding(
+        row_id=row["row_id"],
+        case_id=row["case_id"],
+        case_sha256=gate["cases"][row["case_id"]]["sha256"],
+        boundary=row["boundary"],
+        lane=lane,
+        input_contract=row["input_contract"],
+        native_input_manifest_sha256="1" * 64,
+        native_readiness_sha256=readiness.sha256,
+        scene_contract_sha256=scene_contract_sha256,
+        transform_replay_sha256=replay_sha256,
+        transform_frame_index=replay_index,
+        fixed_render_fixture_sha256=fixed_fixture_sha256,
+        runtime_scene_storage=runtime_storage,
+        derived_fixture_storage=fixture_storage,
+        stage_evidence=native_stages,
     )
     receipt = ExecutionReceipt(
         producer="cuda_lane",
@@ -550,12 +657,24 @@ def _valid_result_record(gate, row):
         input_provenance_sha256=canonical_input_provenance_sha256(
             input_contract=row["input_contract"],
             case_id=row["case_id"],
+            case_sha256=gate["cases"][row["case_id"]]["sha256"],
             native_input_manifest_sha256="1" * 64,
             native_input_content_sha256="2" * 64,
             topology_sha256="3" * 64,
+            scene_contract_sha256=scene_contract_sha256,
+            transform_replay_sha256=replay_sha256,
+            transform_frame_index=replay_index,
+            fixed_render_fixture_sha256=fixed_fixture_sha256,
+            native_execution_binding_sha256=native_binding.sha256,
             asset_manifest_sha256=eligibility.asset_manifest_sha256,
             shipping_publication_sha256=(None if publication is None else publication.sha256),
         ),
+        scene_contract_sha256=scene_contract_sha256,
+        transform_replay_sha256=replay_sha256,
+        transform_frame_index=replay_index,
+        fixed_render_fixture_sha256=fixed_fixture_sha256,
+        native_execution_binding=native_binding,
+        native_execution_binding_sha256=native_binding.sha256,
         eligibility=eligibility,
         eligibility_sha256=eligibility.sha256,
         operation_trace=operation_trace,
@@ -585,7 +704,7 @@ def _valid_result_record(gate, row):
     )
     receipt_payload = receipt.to_payload()
     return {
-        "schema_version": "q54.p12.4.result.v6",
+        "schema_version": "q54.p12.4.result.v7",
         "gate_sha256": canonical_gate_sha256(gate),
         "run_id": "unit-test",
         "repeat_index": 0,
@@ -626,6 +745,77 @@ def _required_operations_for_test(row):
     if row["payload"] == "rgb8":
         operations.append("pack")
     return (*operations, "delivery", "reclaim")
+
+
+def _storage(*, name: str, lane: str, token: str, owner: str) -> NativeStorageSignature:
+    return NativeStorageSignature(
+        name=name,
+        backend=lane,
+        device_ordinal=0,
+        storage_token=token,
+        dtype="<f4",
+        shape=(1,),
+        nbytes=4,
+        active_start=0,
+        active_count=4,
+        owner_token=owner,
+    )
+
+
+def _native_stages(
+    *,
+    row,
+    lane,
+    scene_contract_sha256,
+    replay_sha256,
+    replay_index,
+    fixed_fixture_sha256,
+    topology_sha256,
+    runtime_storage,
+    fixture_storage,
+):
+    world = _storage(name="world", lane=lane, token="cuda:0x3000", owner="slot")
+    bvh = _storage(name="bvh", lane=lane, token="cuda:0x4000", owner="slot")
+    output = _storage(name="render", lane=lane, token="cuda:0x5000", owner="slot")
+    if row["boundary"] == "R0":
+        specs = (("render", runtime_storage + fixture_storage, (output,)),)
+    else:
+        transform_storage = (
+            _storage(
+                name="replay_x_world_R",
+                lane=lane,
+                token="cuda:0x2100",
+                owner="prepared-replay",
+            ),
+            _storage(
+                name="replay_x_world_r",
+                lane=lane,
+                token="cuda:0x2200",
+                owner="prepared-replay",
+            ),
+        )
+        specs = (
+            ("scene_update", runtime_storage + transform_storage, (world,)),
+            ("acceleration", (world,), (bvh,)),
+            ("render", runtime_storage + (world, bvh), (output,)),
+        )
+    return tuple(
+        NativeStageEvidence(
+            schema_version=NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
+            stage_name=name,
+            operation_id=f"unit_{name}_v1",
+            scene_contract_sha256=scene_contract_sha256,
+            input_contract=row["input_contract"],
+            transform_replay_sha256=replay_sha256,
+            transform_frame_index=replay_index,
+            fixed_render_fixture_sha256=fixed_fixture_sha256,
+            topology_sha256=topology_sha256,
+            input_storage=inputs,
+            output_storage=outputs,
+            dispatch_plan_sha256=hex(index + 10)[2:] * 64,
+        )
+        for index, (name, inputs, outputs) in enumerate(specs)
+    )
 
 
 def _shipping_publication(row, operation_trace):
