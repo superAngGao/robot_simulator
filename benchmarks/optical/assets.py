@@ -10,6 +10,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .cases import get_case
+from .workload_contract import (
+    GO2_FROZEN_ASSET_AGGREGATE_SHA256,
+    GO2_FROZEN_SOURCE_REVISION,
+)
 
 ASSET_MANIFEST_SCHEMA_VERSION = "q54.p12.4.external-asset-manifest.v1"
 GO2_ASSET_REQUIREMENT = "mujoco_menagerie/unitree_go2@run_manifest"
@@ -135,6 +139,8 @@ def preflight_case_asset(
     source_revision = payload.get("source_revision")
     if not _git_commit_text(source_revision):
         raise AssetPreflightError("Go2 asset manifest source_revision must be a full Git commit")
+    if source_revision != GO2_FROZEN_SOURCE_REVISION:
+        raise AssetPreflightError("Go2 asset revision does not match the frozen workload source")
     if payload.get("entrypoint") != "scene.xml":
         raise AssetPreflightError("Go2 asset manifest entrypoint must be scene.xml")
     checkout_root = root.parent
@@ -223,6 +229,8 @@ def preflight_case_asset(
     aggregate = _canonical_sha256([item.to_payload() for item in verified])
     if payload.get("aggregate_sha256") != aggregate:
         raise AssetPreflightError("Go2 aggregate asset digest does not match file records")
+    if aggregate != GO2_FROZEN_ASSET_AGGREGATE_SHA256:
+        raise AssetPreflightError("Go2 asset content does not match the frozen workload source")
     return AssetManifestEvidence(
         schema_version=ASSET_MANIFEST_SCHEMA_VERSION,
         requirement_id=requirement,

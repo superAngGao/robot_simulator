@@ -20,6 +20,11 @@ from benchmarks.optical.native import (
     wrap_prepared_fixed_render_inputs,
     wrap_prepared_optical_local_scene,
 )
+from benchmarks.optical.workloads import (
+    build_canonical_fixed_fixture,
+    build_canonical_packed_scene,
+    build_canonical_transform_replay,
+)
 from optics.registry import OpticalInstanceSpec, OpticalMaterialSpec, OpticalWorldRegistry
 from optics.scene_contract import PackedOpticalSceneHost
 
@@ -45,11 +50,11 @@ def test_r0_fixture_owns_only_derived_arrays_and_native_union_preserves_identity
     for name, value in fixture.arrays.items():
         assert native.arrays[name] is value
 
-    np.testing.assert_allclose(fixture.arrays["triangle_v0_world"], [[0.25, -0.5, 2.0]])
-    np.testing.assert_allclose(fixture.arrays["triangle_e1_world"], [[1.0, 0.0, 0.0]])
-    np.testing.assert_allclose(fixture.arrays["triangle_e2_world"], [[0.0, 1.0, 0.0]])
-    np.testing.assert_allclose(fixture.arrays["triangle_normal_world"], [[0.0, 0.0, 1.0]])
-    np.testing.assert_array_equal(fixture.arrays["bvh_prim_ids"], [0])
+    assert fixture.arrays["triangle_v0_world"].shape == (21, 3)
+    assert fixture.arrays["triangle_e1_world"].shape == (21, 3)
+    assert fixture.arrays["triangle_e2_world"].shape == (21, 3)
+    assert fixture.arrays["triangle_normal_world"].shape == (21, 3)
+    np.testing.assert_array_equal(np.sort(fixture.arrays["bvh_prim_ids"]), np.arange(21))
     assert "material_albedo_rgb" not in fixture.arrays
     assert "triangle_material_index" not in fixture.arrays
 
@@ -86,13 +91,7 @@ def test_fixed_fixture_composition_rejects_duplicate_scene_ownership(collision_k
 def test_replay_and_shipping_contracts_are_mutually_exclusive():
     case = get_case("synthetic_dynamic_rigid_960x640_v1")
     packed = _packed(case.case_id)
-    rotations = np.broadcast_to(np.eye(3, dtype=np.float32), (120, 1, 3, 3)).copy()
-    translations = np.zeros((120, 1, 3), dtype=np.float32)
-    replay = CanonicalTransformReplayHost.from_arrays(
-        case_id=case.case_id,
-        x_world_R=rotations,
-        x_world_r=translations,
-    )
+    replay = build_canonical_transform_replay(case.case_id)
     native = CanonicalNativeInput.from_scene_contract(
         packed,
         input_contract=CANONICAL_NATIVE_REPLAY_INPUT,
@@ -140,13 +139,7 @@ def test_prepared_wrappers_select_exact_storage_without_substitution():
 def test_selected_replay_frame_binds_base_allocation_and_exact_active_range():
     case = get_case("synthetic_dynamic_rigid_960x640_v1")
     packed = _packed(case.case_id)
-    rotations = np.broadcast_to(np.eye(3, dtype=np.float32), (120, 1, 3, 3)).copy()
-    translations = np.zeros((120, 1, 3), dtype=np.float32)
-    replay = CanonicalTransformReplayHost.from_arrays(
-        case_id=case.case_id,
-        x_world_R=rotations,
-        x_world_r=translations,
-    )
+    replay = build_canonical_transform_replay(case.case_id)
     native = CanonicalNativeInput.from_scene_contract(
         packed,
         input_contract=CANONICAL_NATIVE_REPLAY_INPUT,
@@ -199,43 +192,79 @@ def test_generic_native_fixture_cannot_receive_result_capable_provenance():
         )
 
 
-def _packed(case_id: str) -> PackedOpticalSceneHost:
-    case = get_case(case_id)
-    return PackedOpticalSceneHost.from_registry(
-        _registry(),
+def test_correct_case_labels_cannot_make_different_scene_result_capable():
+    case = get_case("asymmetric_synthetic_7x3_v1")
+    registry = OpticalWorldRegistry()
+    registry.add_material(OpticalMaterialSpec("wrong"))
+    registry.add_triangle_mesh_geometry(
+        "wrong",
+        vertices_local=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        triangles=[[0, 1, 2]],
+    )
+    registry.add_instance(OpticalInstanceSpec("wrong", "wrong", "wrong"))
+    packed = PackedOpticalSceneHost.from_registry(
+        registry,
         source_contract_id=case.case_id,
         source_contract_sha256=case.sha256,
         scene_id=case.scene_id,
     )
+    fixture = CanonicalFixedRenderFixtureHost.from_scene_contract(
+        packed,
+        fixed_transform_id="asymmetric_fixed_world_v1",
+        x_world_R=np.empty((0, 3, 3), dtype=np.float32),
+        x_world_r=np.empty((0, 3), dtype=np.float32),
+    )
+
+    with pytest.raises(ValueError, match="packed scene content"):
+        CanonicalNativeInput.from_scene_contract(
+            packed,
+            input_contract=FIXED_NATIVE_SCENE_INPUT,
+            fixed_fixture=fixture,
+        )
+
+
+def test_correct_case_labels_cannot_make_wrong_replay_result_capable():
+    case_id = "synthetic_dynamic_rigid_960x640_v1"
+    packed = _packed(case_id)
+    wrong_replay = CanonicalTransformReplayHost.from_arrays(
+        case_id=case_id,
+        x_world_R=np.broadcast_to(
+            np.eye(3, dtype=np.float32), (120, 1, 3, 3)
+        ).copy(),
+        x_world_r=np.full((120, 1, 3), 123.0, dtype=np.float32),
+    )
+
+    with pytest.raises(ValueError, match="transform replay"):
+        CanonicalNativeInput.from_scene_contract(
+            packed,
+            input_contract=CANONICAL_NATIVE_REPLAY_INPUT,
+            replay=wrong_replay,
+        )
+
+
+def test_correct_case_labels_cannot_make_wrong_fixed_transform_result_capable():
+    packed = _packed("asymmetric_synthetic_7x3_v1")
+    wrong_fixture = CanonicalFixedRenderFixtureHost.from_scene_contract(
+        packed,
+        fixed_transform_id="wrong-transform-v1",
+        x_world_R=np.eye(3, dtype=np.float32)[None, :, :],
+        x_world_r=np.full((1, 3), 123.0, dtype=np.float32),
+    )
+
+    with pytest.raises(ValueError, match="fixed render fixture"):
+        CanonicalNativeInput.from_scene_contract(
+            packed,
+            input_contract=FIXED_NATIVE_SCENE_INPUT,
+            fixed_fixture=wrong_fixture,
+        )
+
+
+def _packed(case_id: str) -> PackedOpticalSceneHost:
+    return build_canonical_packed_scene(case_id)
 
 
 def _fixture(packed: PackedOpticalSceneHost) -> CanonicalFixedRenderFixtureHost:
-    return CanonicalFixedRenderFixtureHost.from_scene_contract(
-        packed,
-        fixed_transform_id="asymmetric_fixed_world_v1",
-        x_world_R=np.eye(3, dtype=np.float32)[None, :, :],
-        x_world_r=np.array([[0.25, -0.5, 2.0]], dtype=np.float32),
-    )
-
-
-def _registry() -> OpticalWorldRegistry:
-    registry = OpticalWorldRegistry()
-    registry.add_material(OpticalMaterialSpec("mat", albedo_rgb=(0.2, 0.3, 0.4)))
-    registry.add_triangle_mesh_geometry(
-        "triangle",
-        vertices_local=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-        triangles=[[0, 1, 2]],
-    )
-    registry.add_instance(
-        OpticalInstanceSpec(
-            "triangle_instance",
-            "triangle",
-            "mat",
-            body_index=0,
-            roles=frozenset({"rgb"}),
-        )
-    )
-    return registry
+    return build_canonical_fixed_fixture(packed)
 
 
 def _forge_fixture_collision(

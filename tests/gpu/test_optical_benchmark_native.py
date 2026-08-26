@@ -3,10 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from benchmarks.optical.cases import get_case
 from benchmarks.optical.eligibility import FIXED_NATIVE_SCENE_INPUT
 from benchmarks.optical.native import (
-    CanonicalFixedRenderFixtureHost,
     CanonicalNativeInput,
     assert_independent_native_inputs,
     build_prepared_cuda_local_scene,
@@ -16,8 +14,10 @@ from benchmarks.optical.native import (
     prepare_warp_native_input,
     validate_prepared_native_input,
 )
-from optics.registry import OpticalInstanceSpec, OpticalMaterialSpec, OpticalWorldRegistry
-from optics.scene_contract import PackedOpticalSceneHost
+from benchmarks.optical.workloads import (
+    build_canonical_fixed_fixture,
+    build_canonical_packed_scene,
+)
 
 pytestmark = pytest.mark.gpu
 
@@ -156,35 +156,8 @@ def _source() -> CanonicalNativeInput:
 
 
 def _result_capable_source() -> CanonicalNativeInput:
-    case = get_case("asymmetric_synthetic_7x3_v1")
-    registry = OpticalWorldRegistry()
-    registry.add_material(OpticalMaterialSpec("mat", albedo_rgb=(0.2, 0.3, 0.4)))
-    registry.add_triangle_mesh_geometry(
-        "triangle",
-        vertices_local=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-        triangles=[[0, 1, 2]],
-    )
-    registry.add_instance(
-        OpticalInstanceSpec(
-            "triangle-instance",
-            "triangle",
-            "mat",
-            body_index=0,
-            roles=frozenset({"rgb"}),
-        )
-    )
-    packed = PackedOpticalSceneHost.from_registry(
-        registry,
-        source_contract_id=case.case_id,
-        source_contract_sha256=case.sha256,
-        scene_id=case.scene_id,
-    )
-    fixture = CanonicalFixedRenderFixtureHost.from_scene_contract(
-        packed,
-        fixed_transform_id="gpu-fixed-v1",
-        x_world_R=np.eye(3, dtype=np.float32)[None, :, :],
-        x_world_r=np.zeros((1, 3), dtype=np.float32),
-    )
+    packed = build_canonical_packed_scene("asymmetric_synthetic_7x3_v1")
+    fixture = build_canonical_fixed_fixture(packed)
     return CanonicalNativeInput.from_scene_contract(
         packed,
         input_contract=FIXED_NATIVE_SCENE_INPUT,

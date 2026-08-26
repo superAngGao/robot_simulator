@@ -1,6 +1,6 @@
 {
-  "schema_version": "q54.p12.4.gate.v7",
-  "result_schema_version": "q54.p12.4.result.v7",
+  "schema_version": "q54.p12.4.gate.v8",
+  "result_schema_version": "q54.p12.4.result.v8",
   "case_schema_version": "q54.p12.4.case.v1",
   "status": "frozen",
   "frozen_at": "2026-08-13T10:41:19+08:00",
@@ -14,19 +14,44 @@
   ],
   "cases": {
     "asymmetric_synthetic_7x3_v1": {
-      "sha256": "3f6ce0ac1d59d0c0d0e5ea57f497c308a9d5c4b2a5c19462c900627fd99d0181"
+      "sha256": "3f6ce0ac1d59d0c0d0e5ea57f497c308a9d5c4b2a5c19462c900627fd99d0181",
+      "scene_contract_sha256": "ab3b06cd48e0315ce5d33c0f81a880e71fe5df7369c805a2ae85f5c0197b9e35",
+      "transform_replay_sha256": null,
+      "fixed_render_fixture_sha256": "4fcece950264cb2ebb78cf1ec06ad52f5a151b3d2cf2970314f1cae5a2aa7907",
+      "asset_source_revision": null,
+      "asset_aggregate_sha256": null
     },
     "go2_static_1920x1080_v1": {
-      "sha256": "a6df8bd3f2020be74cef32a285ec8a697879e4e1dbc7dd6e7c4c6fe09816392a"
+      "sha256": "a6df8bd3f2020be74cef32a285ec8a697879e4e1dbc7dd6e7c4c6fe09816392a",
+      "scene_contract_sha256": "57e86366429979a2460a0ceb01f00749c7e4be7449bbc3acc1577ed5ce94b923",
+      "transform_replay_sha256": "2b1ecfb401476a9737400b401a72377c880bc9e289370f2d3bd5600cc287a216",
+      "fixed_render_fixture_sha256": "8354993fb682d5a13a2dff62d1d7521afd7d3d46d20b876e15732b4c38415db0",
+      "asset_source_revision": "da76818e269b82289eba39808e2fb91d679d6994",
+      "asset_aggregate_sha256": "479dcbdb52c64ca86243d6b1d3b7167bb7d3820af1e60e355168b3c17ddf3ed0"
     },
     "go2_static_960x640_v1": {
-      "sha256": "da4045e2d05e7cb731cd5da7690c74a07708359e038512d3da3e6aae5c3f5723"
+      "sha256": "da4045e2d05e7cb731cd5da7690c74a07708359e038512d3da3e6aae5c3f5723",
+      "scene_contract_sha256": "745f01f3d526681c3a350086d55211f92d4a1e5f5b22bcbbc9c43f7dd18f072f",
+      "transform_replay_sha256": null,
+      "fixed_render_fixture_sha256": "fce32d13427918022c4eaee45485ed6fbfaf5e03b13d1390a0216e138e483182",
+      "asset_source_revision": "da76818e269b82289eba39808e2fb91d679d6994",
+      "asset_aggregate_sha256": "479dcbdb52c64ca86243d6b1d3b7167bb7d3820af1e60e355168b3c17ddf3ed0"
     },
     "physics_body_triangle_960x640_v1": {
-      "sha256": "c6d0b6f8aa1313cddae6be84122420507bdccafc010e705eae53fa331e5734c6"
+      "sha256": "c6d0b6f8aa1313cddae6be84122420507bdccafc010e705eae53fa331e5734c6",
+      "scene_contract_sha256": "04a10a8414cae5f8e620684a4068810cc0813e4c15bbf51ba1080862bc36b056",
+      "transform_replay_sha256": null,
+      "fixed_render_fixture_sha256": null,
+      "asset_source_revision": null,
+      "asset_aggregate_sha256": null
     },
     "synthetic_dynamic_rigid_960x640_v1": {
-      "sha256": "7ebdbb64c57f904c732cf10eadfaa96008fcb126497f6e8b66add74d29c077ab"
+      "sha256": "7ebdbb64c57f904c732cf10eadfaa96008fcb126497f6e8b66add74d29c077ab",
+      "scene_contract_sha256": "a13f77e42e409cd8f929d01177845fe8c1ee9d90c79fe14eb59639ed845a5ce9",
+      "transform_replay_sha256": "d62076e56e4e0e15b0481f8a38b596cffdba6b7b23033c1b0dae14d335c59557",
+      "fixed_render_fixture_sha256": null,
+      "asset_source_revision": null,
+      "asset_aggregate_sha256": null
     }
   },
   "boundaries": {
@@ -289,7 +314,8 @@
     "surrogate_allowed": false,
     "coverage": "every_and_only_regular_model_files_excluding_manifest",
     "source_checkout": "canonical_mujoco_menagerie_git_origin",
-    "source_revision": "manifest_revision_equals_checkout_HEAD",
+    "source_revision": "da76818e269b82289eba39808e2fb91d679d6994",
+    "asset_aggregate_sha256": "479dcbdb52c64ca86243d6b1d3b7167bb7d3820af1e60e355168b3c17ddf3ed0",
     "tracked_file_rule": "manifest_files_equal_clean_commit_tracked_unitree_go2_files"
   },
   "shipping_publication_receipt_contract": {
@@ -455,6 +481,8 @@
     "fixed_render_fixture_schema_version": "q54.p12.4.fixed-render-fixture.v1",
     "result_capable_constructor": "CanonicalNativeInput.from_scene_contract",
     "generic_from_arrays_result_capable": false,
+    "workload_content_schema_version": "q54.p12.4.workload-content.v1",
+    "result_capable_content_rule": "scene_replay_and_fixed_fixture_digests_must_match_frozen_case_content",
     "S_measured_physics_transforms_excluded": true,
     "warp_preparation": "direct_host_to_warp_cuda_allocation",
     "cuda_preparation": "direct_host_to_torch_cuda_allocation",
@@ -504,7 +532,7 @@
     ]
   },
   "native_execution_binding_contract": {
-    "schema_version": "q54.p12.4.native-execution-binding.v1",
+    "schema_version": "q54.p12.4.native-execution-binding.v2",
     "stage_schema_version": "q54.p12.4.native-stage-evidence.v1",
     "construction_order": [
       "source_and_prepared_storage",
@@ -516,6 +544,9 @@
     "stage_payload_references_outer_binding": false,
     "binding_references_stage_sha256": true,
     "acceleration_receipt_references_acceleration_stage_sha256": true,
+    "C3_factory_capability": "c3_one_shot_non_result_capable",
+    "C4_result_capability": "c4_result_capable",
+    "C3_one_shot_result_emission": "forbidden",
     "pre_enqueue_validation": [
       "row_case_boundary_lane_and_input_contract",
       "native_manifest_and_readiness",
@@ -525,6 +556,14 @@
       "ordered_stage_evidence_and_dataflow_sha256"
     ],
     "a3b_result_capable_before_C4_B3_review": false
+  },
+  "native_result_activation": {
+    "schema_version": "q54.p12.4.native-result-activation.v1",
+    "blocked_result_phases": ["P12.4a3b", "P12.4b4/d"],
+    "result_capable": false,
+    "required_reviews": ["C4", "B3"],
+    "activation_commit": null,
+    "activation_rule": "versioned_owner_decision_before_preflight_or_submit"
   },
   "mandatory_rows": [
     {

@@ -63,6 +63,8 @@ from .native import (
 )
 from .receipts import (
     ACCELERATION_RECEIPT_SCHEMA_VERSION,
+    C3_ONE_SHOT_BINDING_CAPABILITY,
+    C4_RESULT_BINDING_CAPABILITY,
     NATIVE_EXECUTION_BINDING_SCHEMA_VERSION,
     NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
     SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION,
@@ -116,9 +118,24 @@ from .timing import (
     record_runtime_operation,
     validate_required_operation_order,
 )
+from .workload_contract import (
+    FROZEN_WORKLOAD_CONTENT,
+    GO2_FROZEN_ASSET_AGGREGATE_SHA256,
+    GO2_FROZEN_SOURCE_REVISION,
+    WORKLOAD_CONTENT_SCHEMA_VERSION,
+    FrozenWorkloadContent,
+    frozen_workload_content,
+)
+from .workloads import (
+    build_canonical_fixed_fixture,
+    build_canonical_packed_scene,
+    build_canonical_transform_replay,
+)
 
 __all__ = [
     "ACCELERATION_RECEIPT_SCHEMA_VERSION",
+    "C3_ONE_SHOT_BINDING_CAPABILITY",
+    "C4_RESULT_BINDING_CAPABILITY",
     "NATIVE_EXECUTION_BINDING_SCHEMA_VERSION",
     "NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION",
     "ASSET_MANIFEST_SCHEMA_VERSION",
@@ -216,4 +233,13 @@ __all__ = [
     "wrap_prepared_optical_local_scene",
     "validate_result_record",
     "validate_repository_inventory",
+    "FROZEN_WORKLOAD_CONTENT",
+    "GO2_FROZEN_ASSET_AGGREGATE_SHA256",
+    "GO2_FROZEN_SOURCE_REVISION",
+    "WORKLOAD_CONTENT_SCHEMA_VERSION",
+    "FrozenWorkloadContent",
+    "frozen_workload_content",
+    "build_canonical_fixed_fixture",
+    "build_canonical_packed_scene",
+    "build_canonical_transform_replay",
 ]

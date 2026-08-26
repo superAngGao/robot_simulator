@@ -12,7 +12,9 @@ from .eligibility import GPU_ENGINE_PUBLISHED_FRAME_INPUT
 ACCELERATION_RECEIPT_SCHEMA_VERSION = "q54.p12.4.acceleration-receipt.v2"
 SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION = "q54.p12.4.shipping-publication-receipt.v1"
 NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION = "q54.p12.4.native-stage-evidence.v1"
-NATIVE_EXECUTION_BINDING_SCHEMA_VERSION = "q54.p12.4.native-execution-binding.v1"
+NATIVE_EXECUTION_BINDING_SCHEMA_VERSION = "q54.p12.4.native-execution-binding.v2"
+C3_ONE_SHOT_BINDING_CAPABILITY = "c3_one_shot_non_result_capable"
+C4_RESULT_BINDING_CAPABILITY = "c4_result_capable"
 
 
 def _canonical_sha256(payload: object) -> str:
@@ -222,6 +224,7 @@ class NativeExecutionBindingEvidence:
     case_sha256: str
     boundary: str
     lane: str
+    submission_capability: str
     input_contract: str
     native_input_manifest_sha256: str
     native_readiness_sha256: str
@@ -248,6 +251,11 @@ class NativeExecutionBindingEvidence:
                 raise ValueError(f"native execution binding {name} must be non-empty")
         if payload.get("lane") not in {"warp", "cuda"}:
             raise ValueError("native execution binding lane is invalid")
+        if payload.get("submission_capability") not in {
+            C3_ONE_SHOT_BINDING_CAPABILITY,
+            C4_RESULT_BINDING_CAPABILITY,
+        }:
+            raise ValueError("native execution binding submission capability is invalid")
         for name in (
             "case_sha256",
             "native_input_manifest_sha256",
@@ -352,6 +360,7 @@ class NativeExecutionBindingEvidence:
             case_sha256=payload["case_sha256"],
             boundary=payload["boundary"],
             lane=payload["lane"],
+            submission_capability=payload["submission_capability"],
             input_contract=payload["input_contract"],
             native_input_manifest_sha256=payload["native_input_manifest_sha256"],
             native_readiness_sha256=payload["native_readiness_sha256"],
@@ -375,6 +384,7 @@ class NativeExecutionBindingEvidence:
             "case_sha256": self.case_sha256,
             "boundary": self.boundary,
             "lane": self.lane,
+            "submission_capability": self.submission_capability,
             "input_contract": self.input_contract,
             "native_input_manifest_sha256": self.native_input_manifest_sha256,
             "native_readiness_sha256": self.native_readiness_sha256,
@@ -700,6 +710,7 @@ def build_native_execution_binding(
     case_sha256: str,
     boundary: str,
     lane: str,
+    submission_capability: str = C3_ONE_SHOT_BINDING_CAPABILITY,
     input_contract: str,
     native_input_manifest_sha256: str,
     native_readiness_sha256: str,
@@ -730,6 +741,7 @@ def build_native_execution_binding(
         case_sha256=case_sha256,
         boundary=boundary,
         lane=lane,
+        submission_capability=submission_capability,
         input_contract=input_contract,
         native_input_manifest_sha256=native_input_manifest_sha256,
         native_readiness_sha256=native_readiness_sha256,

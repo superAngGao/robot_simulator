@@ -10,22 +10,26 @@ import pytest
 from benchmarks.optical import (
     ACCELERATION_RECEIPT_SCHEMA_VERSION,
     BOUNDARY_VERSIONS,
+    C3_ONE_SHOT_BINDING_CAPABILITY,
+    C4_RESULT_BINDING_CAPABILITY,
     NATIVE_INPUT_SCHEMA_VERSION,
     NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
+    RESULT_SCHEMA_VERSION,
     SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION,
     AccelerationReceipt,
     ExecutionReceipt,
+    NativeExecutionBindingEvidence,
     NativeReadinessEvidence,
     NativeStageEvidence,
     NativeStorageSignature,
     ObservedChannel,
     ShippingPublicationReceipt,
+    build_native_execution_binding,
     canonical_cases,
     canonical_execution_receipt_sha256,
     canonical_gate_sha256,
     canonical_input_provenance_sha256,
     canonical_row_semantics_sha256,
-    build_native_execution_binding,
     case_hashes,
     evaluate_lane_eligibility,
     load_frozen_gate,
@@ -122,6 +126,7 @@ def test_native_binding_rejects_same_shape_unproduced_stage_storage():
             case_sha256=binding.case_sha256,
             boundary=binding.boundary,
             lane=binding.lane,
+            submission_capability=binding.submission_capability,
             input_contract=binding.input_contract,
             native_input_manifest_sha256=binding.native_input_manifest_sha256,
             native_readiness_sha256=binding.native_readiness_sha256,
@@ -133,6 +138,40 @@ def test_native_binding_rejects_same_shape_unproduced_stage_storage():
             derived_fixture_storage=binding.derived_fixture_storage,
             stage_evidence=stages,
         )
+
+
+def test_result_rejects_c3_one_shot_binding_capability():
+    gate = load_frozen_gate()
+    row = next(row for row in gate["mandatory_rows"] if row["boundary"] == "R0")
+    record = _valid_result_record(gate, row)
+    receipt = copy.deepcopy(record["receipt"])
+    binding_payload = copy.deepcopy(receipt["native_execution_binding"])
+    binding_payload["submission_capability"] = C3_ONE_SHOT_BINDING_CAPABILITY
+    binding = NativeExecutionBindingEvidence.from_payload(binding_payload)
+    receipt["native_execution_binding"] = binding_payload
+    receipt["native_execution_binding_sha256"] = binding.sha256
+    receipt["input_provenance_sha256"] = canonical_input_provenance_sha256(
+        input_contract=receipt["input_contract"],
+        case_id=receipt["case_id"],
+        case_sha256=receipt["case_sha256"],
+        native_input_manifest_sha256=receipt["native_input_manifest_sha256"],
+        native_input_content_sha256=receipt["native_input_content_sha256"],
+        topology_sha256=receipt["topology_sha256"],
+        scene_contract_sha256=receipt["scene_contract_sha256"],
+        transform_replay_sha256=receipt["transform_replay_sha256"],
+        transform_frame_index=receipt["transform_frame_index"],
+        fixed_render_fixture_sha256=receipt["fixed_render_fixture_sha256"],
+        native_execution_binding_sha256=binding.sha256,
+        asset_manifest_sha256=receipt["eligibility"]["asset_manifest_sha256"],
+        shipping_publication_sha256=receipt["shipping_publication_sha256"],
+    )
+    record["receipt"] = receipt
+    record["receipt_sha256"] = canonical_execution_receipt_sha256(receipt)
+
+    with pytest.raises(ValueError, match="non-result-capable C3 one-shot"):
+        validate_result_record(record, gate)
+
+
 def test_frozen_gate_validates_and_contains_no_observed_results():
     gate = load_frozen_gate()
 
@@ -149,7 +188,18 @@ def test_gate_rejects_case_drift():
     changed = copy.deepcopy(gate)
     changed["cases"]["go2_static_1920x1080_v1"]["sha256"] = "0" * 64
 
-    with pytest.raises(ValueError, match="case ids/hashes"):
+    with pytest.raises(ValueError, match="case definitions and frozen scene/replay/fixture"):
+        validate_frozen_gate(changed)
+
+
+def test_gate_rejects_frozen_workload_content_drift():
+    gate = load_frozen_gate()
+    changed = copy.deepcopy(gate)
+    changed["cases"]["synthetic_dynamic_rigid_960x640_v1"][
+        "transform_replay_sha256"
+    ] = "0" * 64
+
+    with pytest.raises(ValueError, match="case definitions and frozen scene/replay/fixture"):
         validate_frozen_gate(changed)
 
 
@@ -548,9 +598,16 @@ def _valid_result_record(gate, row):
         "refit": (1, 1, 0),
         "rebuild": (1, 0, 1),
     }[classification]
-    scene_contract_sha256 = "4" * 64
-    fixed_fixture_sha256 = "5" * 64 if row["boundary"] == "R0" else None
-    replay_sha256 = "6" * 64 if row["boundary"] in {"R1", "R2"} else None
+    case_contract = gate["cases"][row["case_id"]]
+    scene_contract_sha256 = case_contract["scene_contract_sha256"]
+    fixed_fixture_sha256 = (
+        case_contract["fixed_render_fixture_sha256"] if row["boundary"] == "R0" else None
+    )
+    replay_sha256 = (
+        case_contract["transform_replay_sha256"]
+        if row["boundary"] in {"R1", "R2"}
+        else None
+    )
     replay_index = 0 if replay_sha256 is not None else None
     runtime_storage = (
         _storage(name="scene", lane=lane, token="cuda:0x1000", owner="prepared-scene"),
@@ -631,6 +688,7 @@ def _valid_result_record(gate, row):
         case_sha256=gate["cases"][row["case_id"]]["sha256"],
         boundary=row["boundary"],
         lane=lane,
+        submission_capability=C4_RESULT_BINDING_CAPABILITY,
         input_contract=row["input_contract"],
         native_input_manifest_sha256="1" * 64,
         native_readiness_sha256=readiness.sha256,
@@ -704,7 +762,7 @@ def _valid_result_record(gate, row):
     )
     receipt_payload = receipt.to_payload()
     return {
-        "schema_version": "q54.p12.4.result.v7",
+        "schema_version": RESULT_SCHEMA_VERSION,
         "gate_sha256": canonical_gate_sha256(gate),
         "run_id": "unit-test",
         "repeat_index": 0,

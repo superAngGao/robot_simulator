@@ -9,8 +9,8 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 import pytest
 
+import benchmarks.optical.schema as optical_schema
 from benchmarks.optical.artifacts import BenchmarkArtifactWriter
-from benchmarks.optical.cases import get_case
 from benchmarks.optical.eligibility import (
     LaneIneligibleError,
     evaluate_lane_eligibility,
@@ -18,7 +18,6 @@ from benchmarks.optical.eligibility import (
 )
 from benchmarks.optical.instrumentation import entry_point_hook_id
 from benchmarks.optical.native import (
-    CanonicalFixedRenderFixtureHost,
     CanonicalNativeInput,
     NativeInputValidationReport,
     NativeReadinessEvidence,
@@ -28,6 +27,7 @@ from benchmarks.optical.native import (
 )
 from benchmarks.optical.receipts import (
     ACCELERATION_RECEIPT_SCHEMA_VERSION,
+    C4_RESULT_BINDING_CAPABILITY,
     NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
     AccelerationReceipt,
     NativeStageEvidence,
@@ -54,8 +54,10 @@ from benchmarks.optical.timing import (
     assert_operation_allowed,
     native_timed_submission,
 )
-from optics.registry import OpticalInstanceSpec, OpticalMaterialSpec, OpticalWorldRegistry
-from optics.scene_contract import PackedOpticalSceneHost
+from benchmarks.optical.workloads import (
+    build_canonical_fixed_fixture,
+    build_canonical_packed_scene,
+)
 
 
 def test_canonical_native_input_is_immutable_and_order_independent():
@@ -114,8 +116,8 @@ def test_timed_boundary_restores_context_after_lane_failure():
     assert active_timed_boundary() is None
 
 
-def test_single_lane_runner_submits_inside_timing_and_resolves_outside():
-    gate = load_frozen_gate()
+def test_single_lane_runner_submits_inside_timing_and_resolves_outside(monkeypatch):
+    gate = _activated_gate(monkeypatch)
     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
     source = _runner_native_source()
     prepared = _prepared(source)
@@ -138,8 +140,8 @@ def test_single_lane_runner_submits_inside_timing_and_resolves_outside():
     assert record["receipt"]["native_input_manifest_sha256"] == source.manifest.sha256
 
 
-def test_single_lane_runner_rejects_lane_fabricated_native_provenance():
-    gate = load_frozen_gate()
+def test_single_lane_runner_rejects_lane_fabricated_native_provenance(monkeypatch):
+    gate = _activated_gate(monkeypatch)
     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
     source = _runner_native_source()
     prepared = _prepared(source)
@@ -155,8 +157,10 @@ def test_single_lane_runner_rejects_lane_fabricated_native_provenance():
         )
 
 
-def test_single_lane_runner_allows_ordered_submit_then_drain_and_rejects_double_resolve():
-    gate = load_frozen_gate()
+def test_single_lane_runner_allows_ordered_submit_then_drain_and_rejects_double_resolve(
+    monkeypatch,
+):
+    gate = _activated_gate(monkeypatch)
     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
     source = _runner_native_source()
     prepared = _prepared(source)
@@ -189,8 +193,8 @@ def test_single_lane_runner_allows_ordered_submit_then_drain_and_rejects_double_
         runner.resolve_sample(submitted[0])
 
 
-def test_single_lane_runner_rejects_incomplete_warmup_evidence():
-    gate = load_frozen_gate()
+def test_single_lane_runner_rejects_incomplete_warmup_evidence(monkeypatch):
+    gate = _activated_gate(monkeypatch)
     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
     source = _runner_native_source()
     prepared = _prepared(source)
@@ -242,8 +246,8 @@ def test_single_lane_runner_rejects_incomplete_warmup_evidence():
         )
 
 
-def test_single_lane_runner_does_not_copy_wrong_actual_request_from_gate():
-    gate = load_frozen_gate()
+def test_single_lane_runner_does_not_copy_wrong_actual_request_from_gate(monkeypatch):
+    gate = _activated_gate(monkeypatch)
     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
     source = _runner_native_source()
     prepared = _prepared(source)
@@ -309,35 +313,8 @@ def _native_source(*, reverse: bool = False) -> CanonicalNativeInput:
 
 
 def _runner_native_source() -> CanonicalNativeInput:
-    case = get_case("asymmetric_synthetic_7x3_v1")
-    registry = OpticalWorldRegistry()
-    registry.add_material(OpticalMaterialSpec("mat"))
-    registry.add_triangle_mesh_geometry(
-        "triangle",
-        vertices_local=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-        triangles=[[0, 1, 2]],
-    )
-    registry.add_instance(
-        OpticalInstanceSpec(
-            "instance",
-            "triangle",
-            "mat",
-            body_index=0,
-            roles=frozenset({"rgb"}),
-        )
-    )
-    packed = PackedOpticalSceneHost.from_registry(
-        registry,
-        source_contract_id=case.case_id,
-        source_contract_sha256=case.sha256,
-        scene_id=case.scene_id,
-    )
-    fixture = CanonicalFixedRenderFixtureHost.from_scene_contract(
-        packed,
-        fixed_transform_id="unit_fixed_v1",
-        x_world_R=np.eye(3, dtype=np.float32)[None, :, :],
-        x_world_r=np.zeros((1, 3), dtype=np.float32),
-    )
+    packed = build_canonical_packed_scene("asymmetric_synthetic_7x3_v1")
+    fixture = build_canonical_fixed_fixture(packed)
     return CanonicalNativeInput.from_scene_contract(
         packed,
         input_contract="fixed_native_scene_v1",
@@ -345,8 +322,20 @@ def _runner_native_source() -> CanonicalNativeInput:
     )
 
 
-def test_single_lane_runner_rejects_same_shape_substitute_storage_before_enqueue():
+def _activated_gate(monkeypatch):
     gate = load_frozen_gate()
+    activation = {
+        **gate["native_result_activation"],
+        "result_capable": True,
+        "activation_commit": "f" * 40,
+    }
+    monkeypatch.setattr(optical_schema, "EXPECTED_NATIVE_RESULT_ACTIVATION", activation)
+    gate["native_result_activation"] = activation
+    return gate
+
+
+def test_single_lane_runner_rejects_same_shape_substitute_storage_before_enqueue(monkeypatch):
+    gate = _activated_gate(monkeypatch)
     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
     source = _runner_native_source()
     prepared = _prepared(source)
@@ -367,6 +356,79 @@ def test_single_lane_runner_rejects_same_shape_substitute_storage_before_enqueue
             readiness=_readiness(prepared),
             request=LaneSampleRequest(run_id="unit-run", repeat_index=0, sample_index=0),
         )
+    assert trace == []
+
+
+def test_runner_rejects_input_contract_mismatch_before_preflight_or_enqueue(monkeypatch):
+    gate = _activated_gate(monkeypatch)
+    row = next(row for row in gate["mandatory_rows"] if row["boundary"] == "R1")
+    prepared = _prepared(_runner_native_source())
+    trace: list[tuple[str, bool]] = []
+    lane = _FakeLane(gate=gate, row=row, prepared=prepared, trace=trace)
+
+    with pytest.raises(LaneIneligibleError, match="input contract"):
+        SingleLaneSampleRunner(gate, execution_phase="P12.4a3b").submit_sample(
+            row_id=row["row_id"],
+            lane=lane,
+            prepared=prepared,
+            readiness=_readiness(prepared),
+            request=LaneSampleRequest(run_id="wrong-contract", repeat_index=0, sample_index=0),
+        )
+
+    assert lane.preflight_called is False
+    assert lane.bind_called is False
+    assert trace == []
+
+
+def test_runner_canonicalizes_binding_before_timed_enqueue(monkeypatch):
+    gate = _activated_gate(monkeypatch)
+    row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
+    prepared = _prepared(_runner_native_source())
+    trace: list[tuple[str, bool]] = []
+    lane = _FakeLane(
+        gate=gate,
+        row=row,
+        prepared=prepared,
+        trace=trace,
+        invalid_direct_binding=True,
+    )
+
+    with pytest.raises(LaneIneligibleError, match="canonical pre-enqueue validation"):
+        SingleLaneSampleRunner(gate, execution_phase="P12.4a3b").submit_sample(
+            row_id=row["row_id"],
+            lane=lane,
+            prepared=prepared,
+            readiness=_readiness(prepared),
+            request=LaneSampleRequest(run_id="invalid-binding", repeat_index=0, sample_index=0),
+        )
+
+    assert lane.preflight_called is True
+    assert lane.bind_called is True
+    assert trace == []
+
+
+def test_runner_rejects_c3_one_shot_binding_before_timed_enqueue(monkeypatch):
+    gate = _activated_gate(monkeypatch)
+    row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
+    prepared = _prepared(_runner_native_source())
+    trace: list[tuple[str, bool]] = []
+    lane = _FakeLane(
+        gate=gate,
+        row=row,
+        prepared=prepared,
+        trace=trace,
+        one_shot_binding=True,
+    )
+
+    with pytest.raises(LaneIneligibleError, match="C3 one-shot"):
+        SingleLaneSampleRunner(gate, execution_phase="P12.4a3b").submit_sample(
+            row_id=row["row_id"],
+            lane=lane,
+            prepared=prepared,
+            readiness=_readiness(prepared),
+            request=LaneSampleRequest(run_id="one-shot", repeat_index=0, sample_index=0),
+        )
+
     assert trace == []
 
 
@@ -429,7 +491,11 @@ class _FakeLane:
     bad_manifest: bool = False
     wrong_shadows: bool = False
     substitute_scene_storage: bool = False
+    invalid_direct_binding: bool = False
+    one_shot_binding: bool = False
     lane_id: str = "warp"
+    preflight_called: bool = field(default=False, init=False)
+    bind_called: bool = field(default=False, init=False)
     readiness: NativeReadinessEvidence = field(init=False)
     readiness_sha256: str = field(init=False)
 
@@ -438,6 +504,7 @@ class _FakeLane:
         self.readiness_sha256 = self.readiness.sha256
 
     def bind_sample(self, *, row, prepared, readiness):
+        self.bind_called = True
         scene_storage = prepared_storage_signatures(
             prepared, prepared.manifest.scene_array_names
         )
@@ -475,12 +542,17 @@ class _FakeLane:
             output_storage=(render_output,),
             dispatch_plan_sha256="d" * 64,
         )
-        return build_native_execution_binding(
+        binding = build_native_execution_binding(
             row_id=row["row_id"],
             case_id=row["case_id"],
             case_sha256=prepared.manifest.case_sha256,
             boundary=row["boundary"],
             lane="warp",
+            submission_capability=(
+                "c3_one_shot_non_result_capable"
+                if self.one_shot_binding
+                else C4_RESULT_BINDING_CAPABILITY
+            ),
             input_contract=prepared.manifest.input_contract,
             native_input_manifest_sha256=prepared.manifest.sha256,
             native_readiness_sha256=readiness.sha256,
@@ -492,6 +564,9 @@ class _FakeLane:
             derived_fixture_storage=fixture_storage,
             stage_evidence=(render,),
         )
+        if self.invalid_direct_binding:
+            return replace(binding, dataflow_binding_sha256="0" * 64)
+        return binding
 
     def submit_sample(self, *, row, prepared, binding, request):
         del request
@@ -623,6 +698,7 @@ class _FakeLane:
 
     def preflight_sample(self, *, row, prepared):
         del prepared
+        self.preflight_called = True
         return evaluate_lane_eligibility(
             row=row,
             lane="warp",

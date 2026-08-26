@@ -22,6 +22,7 @@ from .eligibility import (
 )
 from .receipts import NativeStorageSignature
 from .timing import assert_operation_allowed, assert_outside_timed_boundary
+from .workload_contract import frozen_workload_content
 
 NATIVE_INPUT_SCHEMA_VERSION = "q54.p12.4.native-input.v2"
 TRANSFORM_REPLAY_SCHEMA_VERSION = "q54.p12.4.transform-replay.v1"
@@ -350,6 +351,11 @@ class CanonicalNativeInput:
 
         assert_outside_timed_boundary("canonical native scene input construction")
         case = _validate_packed_scene_case(packed_scene)
+        frozen_content = frozen_workload_content(case.case_id)
+        if packed_scene.scene_contract_sha256 != frozen_content.scene_contract_sha256:
+            raise ValueError(
+                "packed scene content does not match the frozen canonical workload"
+            )
         if input_contract not in {
             FIXED_NATIVE_SCENE_INPUT,
             CANONICAL_NATIVE_REPLAY_INPUT,
@@ -374,6 +380,14 @@ class CanonicalNativeInput:
                 raise ValueError("fixed fixture must retain the exact packed scene object")
             if fixed_fixture.case_id != case.case_id or fixed_fixture.case_sha256 != case.sha256:
                 raise ValueError("fixed fixture case identity does not match the packed scene")
+            if (
+                frozen_content.fixed_render_fixture_sha256 is None
+                or fixed_fixture.fixed_render_fixture_sha256
+                != frozen_content.fixed_render_fixture_sha256
+            ):
+                raise ValueError(
+                    "fixed render fixture does not match the frozen canonical workload"
+                )
             _insert_disjoint_arrays(
                 arrays,
                 array_semantics,
@@ -391,6 +405,14 @@ class CanonicalNativeInput:
                 raise ValueError("native replay input requires a canonical transform replay")
             if replay.case_id != case.case_id or replay.case_sha256 != case.sha256:
                 raise ValueError("transform replay case identity does not match the packed scene")
+            if (
+                frozen_content.transform_replay_sha256 is None
+                or replay.transform_replay_sha256
+                != frozen_content.transform_replay_sha256
+            ):
+                raise ValueError(
+                    "transform replay does not match the frozen canonical workload"
+                )
             _insert_disjoint_arrays(
                 arrays,
                 array_semantics,

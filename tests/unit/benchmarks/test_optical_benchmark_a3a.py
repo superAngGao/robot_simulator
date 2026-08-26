@@ -6,9 +6,10 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 import pytest
 
+import benchmarks.optical.assets as optical_assets
+import benchmarks.optical.schema as optical_schema
 from benchmarks.optical.assets import (
     ASSET_MANIFEST_SCHEMA_VERSION,
     GO2_ASSET_REQUIREMENT,
@@ -32,9 +33,7 @@ from benchmarks.optical.instrumentation import (
 from benchmarks.optical.lanes import CurrentCudaLanePreflight, CurrentWarpLanePreflight
 from benchmarks.optical.lanes.audit import verify_current_product_source_manifest
 from benchmarks.optical.native import (
-    CanonicalFixedRenderFixtureHost,
     CanonicalNativeInput,
-    CanonicalTransformReplayHost,
     NativeInputValidationReport,
     WarpPreparedNativeInput,
     certify_native_readiness,
@@ -42,6 +41,7 @@ from benchmarks.optical.native import (
     prepared_transform_frame_signatures,
 )
 from benchmarks.optical.receipts import (
+    C4_RESULT_BINDING_CAPABILITY,
     NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
     SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION,
     NativeStageEvidence,
@@ -51,7 +51,6 @@ from benchmarks.optical.receipts import (
 )
 from benchmarks.optical.runner import LaneSampleRequest, SingleLaneSampleRunner
 from benchmarks.optical.schema import load_frozen_gate
-from benchmarks.optical.cases import get_case
 from benchmarks.optical.timing import (
     RuntimeOperationRecord,
     RuntimeOperationTrace,
@@ -62,8 +61,11 @@ from benchmarks.optical.timing import (
     native_timed_submission,
     record_runtime_operation,
 )
-from optics.registry import OpticalInstanceSpec, OpticalMaterialSpec, OpticalWorldRegistry
-from optics.scene_contract import PackedOpticalSceneHost
+from benchmarks.optical.workloads import (
+    build_canonical_fixed_fixture,
+    build_canonical_packed_scene,
+    build_canonical_transform_replay,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -124,8 +126,19 @@ def test_current_preflight_adapters_do_not_expose_a_fake_submit_api():
     assert not hasattr(cuda, "submit_sample")
 
 
-def test_runner_rejects_ineligible_lane_before_submit_or_result_creation():
+@pytest.mark.parametrize("phase", ["P12.4a3b", "P12.4b4/d"])
+def test_frozen_result_activation_blocks_runner_before_lane_preflight(phase):
     gate = load_frozen_gate()
+    lane = _NeverCalledLane()
+
+    with pytest.raises(LaneIneligibleError, match="closed until versioned C4/B3 approval"):
+        SingleLaneSampleRunner(gate, execution_phase=phase)
+
+    assert lane.preflight_called is False
+
+
+def test_runner_rejects_ineligible_lane_before_submit_or_result_creation(monkeypatch):
+    gate = _activated_gate(monkeypatch)
     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
     prepared = _prepared_input(case_id=row["case_id"])
     lane = _IneligibleLane(row=row)
@@ -142,8 +155,8 @@ def test_runner_rejects_ineligible_lane_before_submit_or_result_creation():
     assert lane.submit_called is False
 
 
-def test_runner_phase_authorization_rejects_shipping_during_a3b_before_preflight():
-    gate = load_frozen_gate()
+def test_runner_phase_authorization_rejects_shipping_during_a3b_before_preflight(monkeypatch):
+    gate = _activated_gate(monkeypatch)
     row = next(row for row in gate["mandatory_rows"] if row["boundary"] == "S")
     lane = _NeverCalledLane()
 
@@ -252,8 +265,8 @@ def test_registered_low_level_hook_classes_fail_before_the_original_call(
     assert observation.violation_contamination == contamination
 
 
-def test_operation_trace_rejects_out_of_order_frozen_transaction():
-    gate = load_frozen_gate()
+def test_operation_trace_rejects_out_of_order_frozen_transaction(monkeypatch):
+    gate = _activated_gate(monkeypatch)
     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r1_dynamic_full_shadow")
     prepared = _prepared_input(case_id=row["case_id"])
     lane = _OutOfOrderLane(row=row)
@@ -370,7 +383,7 @@ def test_lane_cannot_forge_runtime_hook_trace_provenance():
     assert trace.evidence().records == ()
 
 
-def test_go2_asset_preflight_requires_exact_complete_manifest(tmp_path):
+def test_go2_asset_preflight_requires_exact_complete_manifest(tmp_path, monkeypatch):
     root = tmp_path
     model = root / "out/external/mujoco_menagerie/unitree_go2"
     (model / "meshes").mkdir(parents=True)
@@ -410,6 +423,15 @@ def test_go2_asset_preflight_requires_exact_complete_manifest(tmp_path):
     (model / "q54_asset_manifest.json").write_text(
         json.dumps(payload, sort_keys=True),
         encoding="utf-8",
+    )
+
+    with pytest.raises(AssetPreflightError, match="frozen workload source"):
+        preflight_case_asset("go2_static_960x640_v1", repo_root=root)
+    monkeypatch.setattr(optical_assets, "GO2_FROZEN_SOURCE_REVISION", source_revision)
+    monkeypatch.setattr(
+        optical_assets,
+        "GO2_FROZEN_ASSET_AGGREGATE_SHA256",
+        payload["aggregate_sha256"],
     )
 
     evidence = preflight_case_asset("go2_static_960x640_v1", repo_root=root)
@@ -586,6 +608,7 @@ class _OutOfOrderLane:
             case_sha256=prepared.manifest.case_sha256,
             boundary=row["boundary"],
             lane="warp",
+            submission_capability=C4_RESULT_BINDING_CAPABILITY,
             input_contract=prepared.manifest.input_contract,
             native_input_manifest_sha256=prepared.manifest.sha256,
             native_readiness_sha256=readiness.sha256,
@@ -626,50 +649,16 @@ class _PendingNeverResolve:
 
 
 def _prepared_input(*, case_id="asymmetric_synthetic_7x3_v1"):
-    case = get_case(case_id)
-    registry = OpticalWorldRegistry()
-    registry.add_material(OpticalMaterialSpec("mat"))
-    registry.add_triangle_mesh_geometry(
-        "triangle",
-        vertices_local=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-        triangles=[[0, 1, 2]],
-    )
-    registry.add_instance(
-        OpticalInstanceSpec(
-            "instance",
-            "triangle",
-            "mat",
-            body_index=0,
-            roles=frozenset({"rgb"}),
-        )
-    )
-    packed = PackedOpticalSceneHost.from_registry(
-        registry,
-        source_contract_id=case.case_id,
-        source_contract_sha256=case.sha256,
-        scene_id=case.scene_id,
-    )
+    packed = build_canonical_packed_scene(case_id)
     if case_id == "asymmetric_synthetic_7x3_v1":
-        fixture = CanonicalFixedRenderFixtureHost.from_scene_contract(
-            packed,
-            fixed_transform_id="a3a_fixed_v1",
-            x_world_R=np.eye(3, dtype=np.float32)[None, :, :],
-            x_world_r=np.zeros((1, 3), dtype=np.float32),
-        )
+        fixture = build_canonical_fixed_fixture(packed)
         source = CanonicalNativeInput.from_scene_contract(
             packed,
             input_contract="fixed_native_scene_v1",
             fixed_fixture=fixture,
         )
     elif case_id == "synthetic_dynamic_rigid_960x640_v1":
-        frame_count = int(case.transform_sequence["frames"])
-        replay = CanonicalTransformReplayHost.from_arrays(
-            case_id=case_id,
-            x_world_R=np.broadcast_to(
-                np.eye(3, dtype=np.float32), (frame_count, 1, 3, 3)
-            ).copy(),
-            x_world_r=np.zeros((frame_count, 1, 3), dtype=np.float32),
-        )
+        replay = build_canonical_transform_replay(case_id)
         source = CanonicalNativeInput.from_scene_contract(
             packed,
             input_contract=CANONICAL_NATIVE_REPLAY_INPUT,
@@ -692,6 +681,18 @@ def _prepared_input(*, case_id="asymmetric_synthetic_7x3_v1"):
         ready_event=object(),
         source=source,
     )
+
+
+def _activated_gate(monkeypatch):
+    gate = load_frozen_gate()
+    activation = {
+        **gate["native_result_activation"],
+        "result_capable": True,
+        "activation_commit": "f" * 40,
+    }
+    monkeypatch.setattr(optical_schema, "EXPECTED_NATIVE_RESULT_ACTIVATION", activation)
+    gate["native_result_activation"] = activation
+    return gate
 
 
 @dataclass(frozen=True)

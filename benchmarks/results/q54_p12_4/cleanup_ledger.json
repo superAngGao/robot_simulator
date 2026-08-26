@@ -196,6 +196,8 @@
         "benchmarks/optical/instrumentation.py",
         "benchmarks/optical/eligibility.py",
         "benchmarks/optical/assets.py",
+        "benchmarks/optical/workload_contract.py",
+        "benchmarks/optical/workloads.py",
         "benchmarks/optical/receipts.py",
         "benchmarks/optical/runner.py",
         "benchmarks/optical/artifacts.py"
@@ -207,6 +209,9 @@
         ],
         "benchmarks/optical/receipts.py": [
           "class NativeExecutionBindingEvidence:"
+        ],
+        "benchmarks/optical/workload_contract.py": [
+          "class FrozenWorkloadContent:"
         ]
       },
       "cuda_selected": {

@@ -22,7 +22,7 @@ from .native import (
     prepared_storage_signatures,
     prepared_transform_frame_signatures,
 )
-from .receipts import NativeExecutionBindingEvidence
+from .receipts import C4_RESULT_BINDING_CAPABILITY, NativeExecutionBindingEvidence
 from .schema import (
     RESULT_SCHEMA_VERSION,
     ExecutionReceipt,
@@ -147,6 +147,14 @@ class SingleLaneSampleRunner:
         self._executable_boundaries = frozenset(authorization["executable_boundaries"])
         self._rows = {str(row["row_id"]): row for row in self._gate["mandatory_rows"]}
         self._gate_sha256 = canonical_gate_sha256(self._gate)
+        activation = self._gate["native_result_activation"]
+        if (
+            execution_phase in activation["blocked_result_phases"]
+            and activation["result_capable"] is not True
+        ):
+            raise LaneIneligibleError(
+                f"{execution_phase} result submission is closed until versioned C4/B3 approval"
+            )
 
     def run_sample(
         self,
@@ -195,6 +203,7 @@ class SingleLaneSampleRunner:
             raise ValueError("single-lane runner requires lane_id 'warp' or 'cuda'")
         if prepared.backend != lane.lane_id:
             raise ValueError("prepared native input backend does not match the lane")
+        self._validate_prepared_input_for_row(row=row, prepared=prepared)
         self._validate_readiness(prepared=prepared, readiness=readiness)
         expected_case_hash = self._gate["cases"][row["case_id"]]["sha256"]
         if prepared.manifest.case_id != row["case_id"]:
@@ -222,6 +231,16 @@ class SingleLaneSampleRunner:
         )
         if not isinstance(binding, NativeExecutionBindingEvidence):
             raise TypeError("lane bind_sample must return NativeExecutionBindingEvidence")
+        try:
+            binding = NativeExecutionBindingEvidence.from_payload(binding.to_payload())
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise LaneIneligibleError(
+                f"native execution binding failed canonical pre-enqueue validation: {exc}"
+            ) from exc
+        if binding.submission_capability != C4_RESULT_BINDING_CAPABILITY:
+            raise LaneIneligibleError(
+                "C3 one-shot native binding is not result-capable; a reviewed C4 binding is required"
+            )
         self._validate_native_binding_pre_enqueue(
             row=submitted_row,
             prepared=prepared,
@@ -267,6 +286,56 @@ class SingleLaneSampleRunner:
             request=request,
             pending=pending,
         )
+
+    def _validate_prepared_input_for_row(
+        self,
+        *,
+        row: Mapping[str, Any],
+        prepared: PreparedNativeInput,
+    ) -> None:
+        """Bind the frozen row to exact input content before lane preflight."""
+
+        manifest = prepared.manifest
+        if not manifest.result_capable:
+            raise LaneIneligibleError("generic native input cannot enter a result-capable lane")
+        if manifest.input_contract != row["input_contract"]:
+            raise LaneIneligibleError(
+                "prepared native input contract does not match the frozen row"
+            )
+        case_contract = self._gate["cases"][row["case_id"]]
+        if manifest.scene_contract_sha256 != case_contract["scene_contract_sha256"]:
+            raise LaneIneligibleError(
+                "prepared scene content does not match the frozen row workload"
+            )
+        boundary = row["boundary"]
+        if boundary == "R0":
+            valid_source = (
+                manifest.transform_replay_sha256 is None
+                and manifest.transform_frame_count == 0
+                and manifest.fixed_render_fixture_sha256
+                == case_contract["fixed_render_fixture_sha256"]
+                and manifest.fixed_render_fixture_sha256 is not None
+            )
+        elif boundary in {"R1", "R2"}:
+            valid_source = (
+                manifest.transform_replay_sha256
+                == case_contract["transform_replay_sha256"]
+                and manifest.transform_replay_sha256 is not None
+                and manifest.transform_frame_count > 0
+                and manifest.fixed_render_fixture_sha256 is None
+            )
+        elif boundary == "S":
+            valid_source = (
+                manifest.transform_replay_sha256 is None
+                and manifest.transform_frame_count == 0
+                and manifest.fixed_render_fixture_sha256 is None
+            )
+        else:  # protected by the frozen gate validator
+            valid_source = False
+        if not valid_source:
+            raise LaneIneligibleError(
+                "prepared input provenance is incompatible with the frozen row boundary"
+            )
 
     def resolve_sample(self, submitted: SubmittedLaneSample) -> dict[str, object]:
         """Resolve a previously submitted sample exactly once outside timing."""

@@ -42,6 +42,8 @@ from .native import (
 )
 from .receipts import (
     ACCELERATION_RECEIPT_SCHEMA_VERSION,
+    C3_ONE_SHOT_BINDING_CAPABILITY,
+    C4_RESULT_BINDING_CAPABILITY,
     NATIVE_EXECUTION_BINDING_SCHEMA_VERSION,
     NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
     SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION,
@@ -56,10 +58,16 @@ from .timing import (
     RuntimeOperationTraceEvidence,
     validate_required_operation_order,
 )
+from .workload_contract import (
+    GO2_FROZEN_ASSET_AGGREGATE_SHA256,
+    GO2_FROZEN_SOURCE_REVISION,
+    WORKLOAD_CONTENT_SCHEMA_VERSION,
+    frozen_workload_payloads,
+)
 
-GATE_SCHEMA_VERSION = "q54.p12.4.gate.v7"
-RESULT_SCHEMA_VERSION = "q54.p12.4.result.v7"
-ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v4"
+GATE_SCHEMA_VERSION = "q54.p12.4.gate.v8"
+RESULT_SCHEMA_VERSION = "q54.p12.4.result.v8"
+ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v5"
 INVENTORY_SCHEMA_VERSION = "q54.p12.4.architecture-inventory.v1"
 CLEANUP_SCHEMA_VERSION = "q54.p12.4.cleanup-ledger.v1"
 PUBLICATION_BINDING_CONTRACT_VERSION = "q54.p12.4.publication-cuda-binding.v1"
@@ -209,7 +217,8 @@ EXPECTED_ASSET_MANIFEST_CONTRACT = {
     "surrogate_allowed": False,
     "coverage": "every_and_only_regular_model_files_excluding_manifest",
     "source_checkout": "canonical_mujoco_menagerie_git_origin",
-    "source_revision": "manifest_revision_equals_checkout_HEAD",
+    "source_revision": GO2_FROZEN_SOURCE_REVISION,
+    "asset_aggregate_sha256": GO2_FROZEN_ASSET_AGGREGATE_SHA256,
     "tracked_file_rule": "manifest_files_equal_clean_commit_tracked_unitree_go2_files",
 }
 
@@ -295,6 +304,10 @@ EXPECTED_NATIVE_INPUT_CONTRACT = {
     "fixed_render_fixture_schema_version": FIXED_RENDER_FIXTURE_SCHEMA_VERSION,
     "result_capable_constructor": "CanonicalNativeInput.from_scene_contract",
     "generic_from_arrays_result_capable": False,
+    "workload_content_schema_version": WORKLOAD_CONTENT_SCHEMA_VERSION,
+    "result_capable_content_rule": (
+        "scene_replay_and_fixed_fixture_digests_must_match_frozen_case_content"
+    ),
     "S_measured_physics_transforms_excluded": True,
     "warp_preparation": "direct_host_to_warp_cuda_allocation",
     "cuda_preparation": "direct_host_to_torch_cuda_allocation",
@@ -345,6 +358,9 @@ EXPECTED_NATIVE_EXECUTION_BINDING_CONTRACT = {
     "stage_payload_references_outer_binding": False,
     "binding_references_stage_sha256": True,
     "acceleration_receipt_references_acceleration_stage_sha256": True,
+    "C3_factory_capability": C3_ONE_SHOT_BINDING_CAPABILITY,
+    "C4_result_capability": C4_RESULT_BINDING_CAPABILITY,
+    "C3_one_shot_result_emission": "forbidden",
     "pre_enqueue_validation": [
         "row_case_boundary_lane_and_input_contract",
         "native_manifest_and_readiness",
@@ -354,6 +370,15 @@ EXPECTED_NATIVE_EXECUTION_BINDING_CONTRACT = {
         "ordered_stage_evidence_and_dataflow_sha256",
     ],
     "a3b_result_capable_before_C4_B3_review": False,
+}
+
+EXPECTED_NATIVE_RESULT_ACTIVATION = {
+    "schema_version": "q54.p12.4.native-result-activation.v1",
+    "blocked_result_phases": ["P12.4a3b", "P12.4b4/d"],
+    "result_capable": False,
+    "required_reviews": ["C4", "B3"],
+    "activation_commit": None,
+    "activation_rule": "versioned_owner_decision_before_preflight_or_submit",
 }
 
 REQUIRED_SHIPPING_ENDPOINT_FIELDS = frozenset(
@@ -827,13 +852,14 @@ def canonical_row_semantics_sha256(row: Mapping[str, Any], gate: Mapping[str, An
     payload = {
         "schema_version": ROW_SEMANTICS_SCHEMA_VERSION,
         "row": row,
-        "case_sha256": gate.get("cases", {}).get(case_id, {}).get("sha256"),
+        "case_contract": gate.get("cases", {}).get(case_id),
         "boundary_version": gate.get("boundaries", {}).get(boundary),
         "lane_bindings": gate.get("lane_bindings"),
         "payload_channel_contracts": gate.get("payload_channel_contracts"),
         "diagnostic_overlay_contracts": gate.get("diagnostic_overlay_contracts"),
         "native_input_contract": gate.get("native_input_contract"),
         "native_execution_binding_contract": gate.get("native_execution_binding_contract"),
+        "native_result_activation": gate.get("native_result_activation"),
         "input_contracts": gate.get("input_contracts"),
         "eligibility_contract": gate.get("eligibility_contract"),
         "acceleration_contracts": gate.get("acceleration_contracts"),
@@ -892,8 +918,11 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
         if receipt.boundary_version != expected_boundary_version:
             errors.append("receipt boundary_version does not match the frozen gate")
         expected_case_hash = gate["cases"][row["case_id"]]["sha256"]
+        expected_case_content = gate["cases"][row["case_id"]]
         if receipt.case_sha256 != expected_case_hash:
             errors.append("receipt case_sha256 does not match the frozen gate")
+        if receipt.scene_contract_sha256 != expected_case_content["scene_contract_sha256"]:
+            errors.append("receipt scene contract does not match the frozen workload")
         for field in (
             "native_input_manifest_sha256",
             "native_input_content_sha256",
@@ -958,6 +987,11 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
                 or receipt.fixed_render_fixture_sha256 is None
             ):
                 errors.append("R0 receipt must bind only fixed-render-fixture provenance")
+            elif (
+                receipt.fixed_render_fixture_sha256
+                != expected_case_content["fixed_render_fixture_sha256"]
+            ):
+                errors.append("receipt fixed fixture does not match the frozen workload")
         elif row["boundary"] in {"R1", "R2"}:
             if (
                 receipt.transform_replay_sha256 is None
@@ -965,6 +999,11 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
                 or receipt.fixed_render_fixture_sha256 is not None
             ):
                 errors.append("R1/R2 receipt must bind only replay provenance")
+            elif (
+                receipt.transform_replay_sha256
+                != expected_case_content["transform_replay_sha256"]
+            ):
+                errors.append("receipt replay does not match the frozen workload")
         elif row["boundary"] == "S" and (
             receipt.transform_replay_sha256 is not None
             or receipt.transform_frame_index is not None
@@ -973,6 +1012,8 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
             errors.append("S receipt must not carry replay or fixed-fixture provenance")
 
         native_binding = receipt.native_execution_binding
+        if native_binding.submission_capability != C4_RESULT_BINDING_CAPABILITY:
+            errors.append("receipt uses a non-result-capable C3 one-shot binding")
         expected_binding_identity = {
             "row_id": receipt.row_id,
             "case_id": receipt.case_id,
@@ -1247,16 +1288,18 @@ def validate_frozen_gate(payload: Mapping[str, Any]) -> None:
         errors.append("frozen_before_result_inspection must be true")
 
     expected_hashes = case_hashes()
+    expected_content = frozen_workload_payloads()
+    expected_cases = {
+        case_id: {"sha256": case_sha256, **expected_content[case_id]}
+        for case_id, case_sha256 in sorted(expected_hashes.items())
+    }
     configured_cases = payload.get("cases")
     if not isinstance(configured_cases, Mapping):
         errors.append("cases must be an object")
-    else:
-        observed_hashes = {
-            str(case_id): value.get("sha256") if isinstance(value, Mapping) else None
-            for case_id, value in configured_cases.items()
-        }
-        if observed_hashes != expected_hashes:
-            errors.append("case ids/hashes do not match canonical cases.py definitions")
+    elif configured_cases != expected_cases:
+        errors.append(
+            "case definitions and frozen scene/replay/fixture identities do not match"
+        )
 
     if payload.get("boundaries") != BOUNDARY_VERSIONS:
         errors.append("boundary versions do not match schema.py")
@@ -1346,6 +1389,8 @@ def validate_frozen_gate(payload: Mapping[str, Any]) -> None:
         EXPECTED_NATIVE_EXECUTION_BINDING_CONTRACT
     ):
         errors.append("native_execution_binding_contract does not match C3a provenance")
+    if payload.get("native_result_activation") != EXPECTED_NATIVE_RESULT_ACTIVATION:
+        errors.append("native_result_activation does not preserve the C4/B3 review gate")
     if payload.get("input_contracts") != EXPECTED_INPUT_CONTRACTS:
         errors.append("input_contracts do not match the approved replay/shipping split")
     if payload.get("eligibility_contract") != EXPECTED_ELIGIBILITY_CONTRACT:
