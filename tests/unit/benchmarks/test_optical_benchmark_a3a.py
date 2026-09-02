@@ -41,13 +41,19 @@ from benchmarks.optical.native import (
     prepared_transform_frame_signatures,
 )
 from benchmarks.optical.receipts import (
-    C4_RESULT_BINDING_CAPABILITY,
+    DYNAMIC_ACCELERATION_INPUT_NAMES,
+    DYNAMIC_ACCELERATION_OUTPUT_NAMES,
+    DYNAMIC_RENDER_METADATA_INPUT_NAMES,
+    DYNAMIC_RENDER_SHADE_INPUT_NAMES,
+    DYNAMIC_RENDER_WORLD_INPUT_NAMES,
+    DYNAMIC_SCENE_OUTPUT_NAMES,
+    DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES,
     NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
     SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION,
     NativeStageEvidence,
     NativeStorageSignature,
     ShippingPublicationReceipt,
-    build_native_execution_binding,
+    build_c3_one_shot_native_execution_binding,
 )
 from benchmarks.optical.runner import LaneSampleRequest, SingleLaneSampleRunner
 from benchmarks.optical.schema import load_frozen_gate
@@ -265,13 +271,13 @@ def test_registered_low_level_hook_classes_fail_before_the_original_call(
     assert observation.violation_contamination == contamination
 
 
-def test_operation_trace_rejects_out_of_order_frozen_transaction(monkeypatch):
+def test_c3_one_shot_binding_cannot_reach_operation_trace(monkeypatch):
     gate = _activated_gate(monkeypatch)
     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r1_dynamic_full_shadow")
     prepared = _prepared_input(case_id=row["case_id"])
     lane = _OutOfOrderLane(row=row)
 
-    with pytest.raises(LaneIneligibleError, match="ordered transaction"):
+    with pytest.raises(LaneIneligibleError, match="C3 one-shot"):
         SingleLaneSampleRunner(gate, execution_phase="P12.4a3b").submit_sample(
             row_id=row["row_id"],
             lane=lane,
@@ -540,29 +546,13 @@ class _OutOfOrderLane:
             prepared, prepared.manifest.scene_array_names
         )
         transform_storage = prepared_transform_frame_signatures(prepared, 0)
-        world = NativeStorageSignature(
-            name="world",
-            backend="warp",
-            device_ordinal=0,
-            storage_token="warp:0x8000",
-            dtype="<f4",
-            shape=(1,),
-            nbytes=4,
-            active_start=0,
-            active_count=4,
-            owner_token="unit-slot",
+        scene_outputs = tuple(
+            _unit_storage(name=name, token=0x8000 + index * 0x10)
+            for index, name in enumerate(DYNAMIC_SCENE_OUTPUT_NAMES)
         )
-        bvh = NativeStorageSignature(
-            name="bvh",
-            backend="warp",
-            device_ordinal=0,
-            storage_token="warp:0x8100",
-            dtype="<f4",
-            shape=(1,),
-            nbytes=4,
-            active_start=0,
-            active_count=4,
-            owner_token="unit-slot",
+        acceleration_outputs = tuple(
+            _unit_storage(name=name, token=0x9000 + index * 0x10)
+            for index, name in enumerate(DYNAMIC_ACCELERATION_OUTPUT_NAMES)
         )
         output = NativeStorageSignature(
             name="output",
@@ -576,20 +566,49 @@ class _OutOfOrderLane:
             active_count=4,
             owner_token="unit-slot",
         )
+        runtime_by_name = {value.name: value for value in scene_storage}
+        scene_by_name = {value.name: value for value in scene_outputs}
+        acceleration_by_name = {value.name: value for value in acceleration_outputs}
+        render_names = (
+            DYNAMIC_RENDER_WORLD_INPUT_NAMES
+            + DYNAMIC_RENDER_METADATA_INPUT_NAMES
+            + DYNAMIC_ACCELERATION_OUTPUT_NAMES
+            + DYNAMIC_RENDER_SHADE_INPUT_NAMES
+        )
         stage_specs = (
             (
                 "scene_update",
-                scene_storage + transform_storage,
-                (world,),
+                "warp_local_scene_transform_and_aabb_out_v1",
+                tuple(
+                    runtime_by_name[name]
+                    for name in DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES
+                )
+                + transform_storage,
+                scene_outputs,
             ),
-            ("acceleration", (world,), (bvh,)),
-            ("render", scene_storage + (world, bvh), (output,)),
+            (
+                "acceleration",
+                "warp_bvh_leaf_internal_refit_out_v1",
+                tuple(scene_by_name[name] for name in DYNAMIC_ACCELERATION_INPUT_NAMES),
+                acceleration_outputs,
+            ),
+            (
+                "render",
+                "warp_bvh_direct_light",
+                tuple(
+                    (runtime_by_name | scene_by_name | acceleration_by_name)[name]
+                    for name in render_names
+                ),
+                (output,),
+            ),
         )
         stages = tuple(
             NativeStageEvidence(
                 schema_version=NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
                 stage_name=name,
-                operation_id=f"unit_{name}_v1",
+                operation_id=operation_id,
+                output_profile=row["output_profile"] if name == "render" else None,
+                shadows=row["shadows"] if name == "render" else None,
                 scene_contract_sha256=prepared.manifest.scene_contract_sha256,
                 input_contract=prepared.manifest.input_contract,
                 transform_replay_sha256=prepared.manifest.transform_replay_sha256,
@@ -600,15 +619,18 @@ class _OutOfOrderLane:
                 output_storage=outputs,
                 dispatch_plan_sha256=hex(index + 10)[2:] * 64,
             )
-            for index, (name, inputs, outputs) in enumerate(stage_specs)
+            for index, (name, operation_id, inputs, outputs) in enumerate(stage_specs)
         )
-        return build_native_execution_binding(
+        return build_c3_one_shot_native_execution_binding(
             row_id=row["row_id"],
             case_id=row["case_id"],
             case_sha256=prepared.manifest.case_sha256,
             boundary=row["boundary"],
             lane="warp",
-            submission_capability=C4_RESULT_BINDING_CAPABILITY,
+            renderer_id="warp_bvh_direct_light",
+            acceleration_id="cpu_median_leaf4_topology_warp_refit_v1",
+            output_profile=row["output_profile"],
+            shadows=row["shadows"],
             input_contract=prepared.manifest.input_contract,
             native_input_manifest_sha256=prepared.manifest.sha256,
             native_readiness_sha256=readiness.sha256,
@@ -633,6 +655,21 @@ class _OutOfOrderLane:
         hashlib.sha256(b"")
         time.perf_counter()
         return _PendingNeverResolve()
+
+
+def _unit_storage(*, name: str, token: int) -> NativeStorageSignature:
+    return NativeStorageSignature(
+        name=name,
+        backend="warp",
+        device_ordinal=0,
+        storage_token=f"warp:0x{token:x}",
+        dtype="<f4",
+        shape=(1,),
+        nbytes=4,
+        active_start=0,
+        active_count=4,
+        owner_token="unit-slot",
+    )
 
 
 _UNIT_ENTRY_POINTS = {

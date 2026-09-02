@@ -1,30 +1,36 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+import benchmarks.optical as optical_benchmarks
 from benchmarks.optical import (
     ACCELERATION_RECEIPT_SCHEMA_VERSION,
     BOUNDARY_VERSIONS,
-    C3_ONE_SHOT_BINDING_CAPABILITY,
-    C4_RESULT_BINDING_CAPABILITY,
+    DYNAMIC_ACCELERATION_INPUT_NAMES,
+    DYNAMIC_ACCELERATION_OUTPUT_NAMES,
+    DYNAMIC_RENDER_METADATA_INPUT_NAMES,
+    DYNAMIC_RENDER_SHADE_INPUT_NAMES,
+    DYNAMIC_RENDER_WORLD_INPUT_NAMES,
+    DYNAMIC_SCENE_OUTPUT_NAMES,
+    DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES,
     NATIVE_INPUT_SCHEMA_VERSION,
     NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
     RESULT_SCHEMA_VERSION,
     SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION,
     AccelerationReceipt,
     ExecutionReceipt,
-    NativeExecutionBindingEvidence,
     NativeReadinessEvidence,
     NativeStageEvidence,
     NativeStorageSignature,
     ObservedChannel,
     ShippingPublicationReceipt,
-    build_native_execution_binding,
+    build_c3_one_shot_native_execution_binding,
     canonical_cases,
     canonical_execution_receipt_sha256,
     canonical_gate_sha256,
@@ -83,6 +89,17 @@ _TEST_ENTRY_POINTS = {
 }
 
 
+def test_c3_public_api_has_no_forgeable_c4_capability():
+    parameters = inspect.signature(
+        optical_benchmarks.build_c3_one_shot_native_execution_binding
+    ).parameters
+
+    assert "submission_capability" not in parameters
+    assert not hasattr(optical_benchmarks, "C4_RESULT_BINDING_CAPABILITY")
+    assert not hasattr(optical_benchmarks, "build_native_execution_binding")
+    assert hasattr(optical_benchmarks, "C3OneShotNativeExecutionBindingEvidence")
+
+
 def test_canonical_case_ids_and_hashes_are_frozen():
     cases = canonical_cases()
 
@@ -119,56 +136,88 @@ def test_native_binding_rejects_same_shape_unproduced_stage_storage():
     substitute = replace(render.input_storage[-1], storage_token="cuda:0xdeadbeef")
     stages[2] = replace(render, input_storage=render.input_storage[:-1] + (substitute,))
 
-    with pytest.raises(ValueError, match="render input is not prepared or produced storage"):
-        build_native_execution_binding(
-            row_id=binding.row_id,
-            case_id=binding.case_id,
-            case_sha256=binding.case_sha256,
-            boundary=binding.boundary,
-            lane=binding.lane,
-            submission_capability=binding.submission_capability,
-            input_contract=binding.input_contract,
-            native_input_manifest_sha256=binding.native_input_manifest_sha256,
-            native_readiness_sha256=binding.native_readiness_sha256,
-            scene_contract_sha256=binding.scene_contract_sha256,
-            transform_replay_sha256=binding.transform_replay_sha256,
-            transform_frame_index=binding.transform_frame_index,
-            fixed_render_fixture_sha256=binding.fixed_render_fixture_sha256,
-            runtime_scene_storage=binding.runtime_scene_storage,
-            derived_fixture_storage=binding.derived_fixture_storage,
-            stage_evidence=stages,
+    with pytest.raises(ValueError, match="complete ordered storage contract"):
+        _rebuild_c3_binding(binding, stages)
+
+
+@pytest.mark.parametrize(
+    ("stage_name", "storage_name"),
+    [
+        ("render", "triangle_v0_world"),
+        ("acceleration", "triangle_aabb_min"),
+        ("render", "bvh_left"),
+        ("render", "triangle_numeric_instance_id"),
+        ("render", "material_albedo_rgb"),
+        ("render", "light_kind"),
+    ],
+)
+def test_dynamic_binding_rejects_each_missing_required_storage(stage_name, storage_name):
+    gate = load_frozen_gate()
+    row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r1_dynamic_full_shadow")
+    binding = ExecutionReceipt.from_payload(
+        _valid_result_record(gate, row)["receipt"]
+    ).native_execution_binding
+    stages = [stage.evidence for stage in binding.ordered_stage_evidence]
+    stage_index = next(index for index, stage in enumerate(stages) if stage.stage_name == stage_name)
+    stage = stages[stage_index]
+    stages[stage_index] = replace(
+        stage,
+        input_storage=tuple(value for value in stage.input_storage if value.name != storage_name),
+    )
+
+    with pytest.raises(ValueError, match="complete ordered storage contract"):
+        _rebuild_c3_binding(binding, stages)
+
+
+def test_dynamic_binding_rejects_extra_and_reordered_render_storage():
+    gate = load_frozen_gate()
+    row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r1_dynamic_full_shadow")
+    binding = ExecutionReceipt.from_payload(
+        _valid_result_record(gate, row)["receipt"]
+    ).native_execution_binding
+    stages = [stage.evidence for stage in binding.ordered_stage_evidence]
+    render = stages[2]
+    extra = next(
+        value for value in binding.runtime_scene_storage if value.name == "triangle_vertices_local"
+    )
+
+    stages[2] = replace(render, input_storage=render.input_storage + (extra,))
+    with pytest.raises(ValueError, match="complete ordered storage contract"):
+        _rebuild_c3_binding(binding, stages)
+
+    stages[2] = replace(
+        render,
+        input_storage=(render.input_storage[1], render.input_storage[0]) + render.input_storage[2:],
+    )
+    with pytest.raises(ValueError, match="complete ordered storage contract"):
+        _rebuild_c3_binding(binding, stages)
+
+
+def test_dynamic_binding_contract_is_bound_to_operation_and_profile():
+    gate = load_frozen_gate()
+    row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r1_dynamic_full_shadow")
+    binding = ExecutionReceipt.from_payload(
+        _valid_result_record(gate, row)["receipt"]
+    ).native_execution_binding
+    stages = [stage.evidence for stage in binding.ordered_stage_evidence]
+    stages[1] = replace(stages[1], operation_id="unit_fake_refit")
+
+    with pytest.raises(ValueError, match="operation sequence"):
+        _rebuild_c3_binding(binding, stages)
+
+    with pytest.raises(ValueError, match="render stage identity"):
+        _rebuild_c3_binding(
+            binding,
+            [stage.evidence for stage in binding.ordered_stage_evidence],
+            output_profile="render_only",
         )
 
 
-def test_result_rejects_c3_one_shot_binding_capability():
+def test_result_rejects_c3_one_shot_binding_type():
     gate = load_frozen_gate()
     row = next(row for row in gate["mandatory_rows"] if row["boundary"] == "R0")
     record = _valid_result_record(gate, row)
-    receipt = copy.deepcopy(record["receipt"])
-    binding_payload = copy.deepcopy(receipt["native_execution_binding"])
-    binding_payload["submission_capability"] = C3_ONE_SHOT_BINDING_CAPABILITY
-    binding = NativeExecutionBindingEvidence.from_payload(binding_payload)
-    receipt["native_execution_binding"] = binding_payload
-    receipt["native_execution_binding_sha256"] = binding.sha256
-    receipt["input_provenance_sha256"] = canonical_input_provenance_sha256(
-        input_contract=receipt["input_contract"],
-        case_id=receipt["case_id"],
-        case_sha256=receipt["case_sha256"],
-        native_input_manifest_sha256=receipt["native_input_manifest_sha256"],
-        native_input_content_sha256=receipt["native_input_content_sha256"],
-        topology_sha256=receipt["topology_sha256"],
-        scene_contract_sha256=receipt["scene_contract_sha256"],
-        transform_replay_sha256=receipt["transform_replay_sha256"],
-        transform_frame_index=receipt["transform_frame_index"],
-        fixed_render_fixture_sha256=receipt["fixed_render_fixture_sha256"],
-        native_execution_binding_sha256=binding.sha256,
-        asset_manifest_sha256=receipt["eligibility"]["asset_manifest_sha256"],
-        shipping_publication_sha256=receipt["shipping_publication_sha256"],
-    )
-    record["receipt"] = receipt
-    record["receipt_sha256"] = canonical_execution_receipt_sha256(receipt)
-
-    with pytest.raises(ValueError, match="non-result-capable C3 one-shot"):
+    with pytest.raises(ValueError, match="C3 one-shot binding"):
         validate_result_record(record, gate)
 
 
@@ -208,7 +257,8 @@ def test_result_record_is_bound_to_gate_row_case_and_unprofiled_primary_mode():
     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
     record = _valid_result_record(gate, row)
 
-    validate_result_record(record, gate)
+    with pytest.raises(ValueError, match="C3 one-shot binding"):
+        validate_result_record(record, gate)
     changed = copy.deepcopy(record)
     changed["profile_phases_ms"] = {"raygen_kernel_ms": 0.1}
     with pytest.raises(ValueError, match="must not contain profile phase"):
@@ -277,7 +327,8 @@ def test_result_record_rejects_wrong_r2_payload_ring_or_reclaim_evidence():
     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r2_go2_rgb8_async_shadow")
     record = _valid_result_record(gate, row)
 
-    validate_result_record(record, gate)
+    with pytest.raises(ValueError, match="C3 one-shot binding"):
+        validate_result_record(record, gate)
     changes = (
         ("payload", "rgb", "payload"),
         ("ring_depth", 1, "ring_depth"),
@@ -609,9 +660,27 @@ def _valid_result_record(gate, row):
         else None
     )
     replay_index = 0 if replay_sha256 is not None else None
-    runtime_storage = (
-        _storage(name="scene", lane=lane, token="cuda:0x1000", owner="prepared-scene"),
-    )
+    if row["boundary"] == "R0":
+        runtime_storage = (
+            _storage(name="scene", lane=lane, token="cuda:0x1000", owner="prepared-scene"),
+        )
+    else:
+        runtime_names = tuple(
+            dict.fromkeys(
+                DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES
+                + DYNAMIC_RENDER_METADATA_INPUT_NAMES
+                + DYNAMIC_RENDER_SHADE_INPUT_NAMES
+            )
+        )
+        runtime_storage = tuple(
+            _storage(
+                name=name,
+                lane=lane,
+                token=f"cuda:0x1{index:03x}",
+                owner="prepared-scene",
+            )
+            for index, name in enumerate(runtime_names)
+        )
     fixture_storage = (
         (_storage(name="fixture", lane=lane, token="cuda:0x2000", owner="prepared-fixture"),)
         if fixed_fixture_sha256 is not None
@@ -682,13 +751,18 @@ def _valid_result_record(gate, row):
         compile_complete=True,
         warmup_frames_completed=10,
     )
-    native_binding = build_native_execution_binding(
+    native_binding = build_c3_one_shot_native_execution_binding(
         row_id=row["row_id"],
         case_id=row["case_id"],
         case_sha256=gate["cases"][row["case_id"]]["sha256"],
         boundary=row["boundary"],
         lane=lane,
-        submission_capability=C4_RESULT_BINDING_CAPABILITY,
+        renderer_id=gate["lane_bindings"][lane]["renderer_id"],
+        acceleration_id=gate["lane_bindings"][lane]["acceleration_by_class"][
+            row["acceleration_class"]
+        ],
+        output_profile=row["output_profile"],
+        shadows=row["shadows"],
         input_contract=row["input_contract"],
         native_input_manifest_sha256="1" * 64,
         native_readiness_sha256=readiness.sha256,
@@ -832,11 +906,47 @@ def _native_stages(
     runtime_storage,
     fixture_storage,
 ):
-    world = _storage(name="world", lane=lane, token="cuda:0x3000", owner="slot")
-    bvh = _storage(name="bvh", lane=lane, token="cuda:0x4000", owner="slot")
+    operation_ids = {
+        "warp": (
+            "warp_local_scene_transform_and_aabb_out_v1",
+            "warp_bvh_leaf_internal_refit_out_v1",
+            "warp_bvh_direct_light",
+        ),
+        "cuda": (
+            "torch_cuda_local_scene_transform_and_aabb_out_v1",
+            "cuda_lbvh_scene_bounds_morton_sort_topology_bounds_out_v1",
+            "cuda_direct_light",
+        ),
+    }[lane]
+    scene_operation_id, acceleration_operation_id, renderer_id = operation_ids
+    scene_outputs = tuple(
+        _storage(
+            name=name,
+            lane=lane,
+            token=f"cuda:0x3{index:03x}",
+            owner="scene-slot",
+        )
+        for index, name in enumerate(DYNAMIC_SCENE_OUTPUT_NAMES)
+    )
+    acceleration_outputs = tuple(
+        _storage(
+            name=name,
+            lane=lane,
+            token=f"cuda:0x4{index:03x}",
+            owner="acceleration-slot",
+        )
+        for index, name in enumerate(DYNAMIC_ACCELERATION_OUTPUT_NAMES)
+    )
     output = _storage(name="render", lane=lane, token="cuda:0x5000", owner="slot")
     if row["boundary"] == "R0":
-        specs = (("render", runtime_storage + fixture_storage, (output,)),)
+        specs = (
+            (
+                "render",
+                renderer_id,
+                runtime_storage + fixture_storage,
+                (output,),
+            ),
+        )
     else:
         transform_storage = (
             _storage(
@@ -852,16 +962,45 @@ def _native_stages(
                 owner="prepared-replay",
             ),
         )
+        runtime_by_name = {value.name: value for value in runtime_storage}
+        scene_by_name = {value.name: value for value in scene_outputs}
+        acceleration_by_name = {value.name: value for value in acceleration_outputs}
+        scene_input = tuple(
+            runtime_by_name[name] for name in DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES
+        ) + transform_storage
+        acceleration_input = tuple(
+            scene_by_name[name] for name in DYNAMIC_ACCELERATION_INPUT_NAMES
+        )
+        render_names = (
+            DYNAMIC_RENDER_WORLD_INPUT_NAMES
+            + DYNAMIC_RENDER_METADATA_INPUT_NAMES
+            + DYNAMIC_ACCELERATION_OUTPUT_NAMES
+            + DYNAMIC_RENDER_SHADE_INPUT_NAMES
+        )
+        all_by_name = runtime_by_name | scene_by_name | acceleration_by_name
+        render_input = tuple(all_by_name[name] for name in render_names)
         specs = (
-            ("scene_update", runtime_storage + transform_storage, (world,)),
-            ("acceleration", (world,), (bvh,)),
-            ("render", runtime_storage + (world, bvh), (output,)),
+            (
+                "scene_update",
+                scene_operation_id,
+                scene_input,
+                scene_outputs,
+            ),
+            (
+                "acceleration",
+                acceleration_operation_id,
+                acceleration_input,
+                acceleration_outputs,
+            ),
+            ("render", renderer_id, render_input, (output,)),
         )
     return tuple(
         NativeStageEvidence(
             schema_version=NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
             stage_name=name,
-            operation_id=f"unit_{name}_v1",
+            operation_id=operation_id,
+            output_profile=row["output_profile"] if name == "render" else None,
+            shadows=row["shadows"] if name == "render" else None,
             scene_contract_sha256=scene_contract_sha256,
             input_contract=row["input_contract"],
             transform_replay_sha256=replay_sha256,
@@ -872,7 +1011,31 @@ def _native_stages(
             output_storage=outputs,
             dispatch_plan_sha256=hex(index + 10)[2:] * 64,
         )
-        for index, (name, inputs, outputs) in enumerate(specs)
+        for index, (name, operation_id, inputs, outputs) in enumerate(specs)
+    )
+
+
+def _rebuild_c3_binding(binding, stages, *, output_profile=None):
+    return build_c3_one_shot_native_execution_binding(
+        row_id=binding.row_id,
+        case_id=binding.case_id,
+        case_sha256=binding.case_sha256,
+        boundary=binding.boundary,
+        lane=binding.lane,
+        renderer_id=binding.renderer_id,
+        acceleration_id=binding.acceleration_id,
+        output_profile=binding.output_profile if output_profile is None else output_profile,
+        shadows=binding.shadows,
+        input_contract=binding.input_contract,
+        native_input_manifest_sha256=binding.native_input_manifest_sha256,
+        native_readiness_sha256=binding.native_readiness_sha256,
+        scene_contract_sha256=binding.scene_contract_sha256,
+        transform_replay_sha256=binding.transform_replay_sha256,
+        transform_frame_index=binding.transform_frame_index,
+        fixed_render_fixture_sha256=binding.fixed_render_fixture_sha256,
+        runtime_scene_storage=binding.runtime_scene_storage,
+        derived_fixture_storage=binding.derived_fixture_storage,
+        stage_evidence=stages,
     )
 
 

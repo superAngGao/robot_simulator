@@ -42,13 +42,12 @@ from .native import (
 )
 from .receipts import (
     ACCELERATION_RECEIPT_SCHEMA_VERSION,
-    C3_ONE_SHOT_BINDING_CAPABILITY,
-    C4_RESULT_BINDING_CAPABILITY,
+    DYNAMIC_DATAFLOW_CONTRACT_SCHEMA_VERSION,
     NATIVE_EXECUTION_BINDING_SCHEMA_VERSION,
     NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
     SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION,
     AccelerationReceipt,
-    NativeExecutionBindingEvidence,
+    C3OneShotNativeExecutionBindingEvidence,
     ShippingPublicationReceipt,
 )
 from .timing import (
@@ -65,8 +64,8 @@ from .workload_contract import (
     frozen_workload_payloads,
 )
 
-GATE_SCHEMA_VERSION = "q54.p12.4.gate.v8"
-RESULT_SCHEMA_VERSION = "q54.p12.4.result.v8"
+GATE_SCHEMA_VERSION = "q54.p12.4.gate.v9"
+RESULT_SCHEMA_VERSION = "q54.p12.4.result.v9"
 ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v5"
 INVENTORY_SCHEMA_VERSION = "q54.p12.4.architecture-inventory.v1"
 CLEANUP_SCHEMA_VERSION = "q54.p12.4.cleanup-ledger.v1"
@@ -358,9 +357,13 @@ EXPECTED_NATIVE_EXECUTION_BINDING_CONTRACT = {
     "stage_payload_references_outer_binding": False,
     "binding_references_stage_sha256": True,
     "acceleration_receipt_references_acceleration_stage_sha256": True,
-    "C3_factory_capability": C3_ONE_SHOT_BINDING_CAPABILITY,
-    "C4_result_capability": C4_RESULT_BINDING_CAPABILITY,
+    "C3_constructor": "build_c3_one_shot_native_execution_binding",
+    "C3_binding_type": "C3OneShotNativeExecutionBindingEvidence",
     "C3_one_shot_result_emission": "forbidden",
+    "C4_binding_schema": "not_implemented_until_C4_review",
+    "C4_required_evidence": ["arena", "slot", "generation", "lease", "ring"],
+    "dynamic_dataflow_contract_schema_version": DYNAMIC_DATAFLOW_CONTRACT_SCHEMA_VERSION,
+    "dynamic_storage_rule": "complete_ordered_profile_specific_no_missing_or_extra_storage",
     "pre_enqueue_validation": [
         "row_case_boundary_lane_and_input_contract",
         "native_manifest_and_readiness",
@@ -523,7 +526,7 @@ class ExecutionReceipt:
     transform_replay_sha256: str | None
     transform_frame_index: int | None
     fixed_render_fixture_sha256: str | None
-    native_execution_binding: NativeExecutionBindingEvidence
+    native_execution_binding: C3OneShotNativeExecutionBindingEvidence
     native_execution_binding_sha256: str
     eligibility: LaneEligibilityEvidence
     eligibility_sha256: str
@@ -638,7 +641,7 @@ class ExecutionReceipt:
         acceleration = AccelerationReceipt.from_payload(payload.get("acceleration"))
         if payload.get("acceleration_sha256") != acceleration.sha256:
             raise ValueError("acceleration SHA-256 does not match its receipt content")
-        native_binding = NativeExecutionBindingEvidence.from_payload(
+        native_binding = C3OneShotNativeExecutionBindingEvidence.from_payload(
             payload.get("native_execution_binding")
         )
         if payload.get("native_execution_binding_sha256") != native_binding.sha256:
@@ -1012,8 +1015,10 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
             errors.append("S receipt must not carry replay or fixed-fixture provenance")
 
         native_binding = receipt.native_execution_binding
-        if native_binding.submission_capability != C4_RESULT_BINDING_CAPABILITY:
-            errors.append("receipt uses a non-result-capable C3 one-shot binding")
+        errors.append(
+            "result receipt cannot contain C3 one-shot binding; reviewed C4 binding schema "
+            "is not implemented"
+        )
         expected_binding_identity = {
             "row_id": receipt.row_id,
             "case_id": receipt.case_id,

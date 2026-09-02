@@ -208,7 +208,7 @@
           "class CanonicalFixedRenderFixtureHost:"
         ],
         "benchmarks/optical/receipts.py": [
-          "class NativeExecutionBindingEvidence:"
+          "class C3OneShotNativeExecutionBindingEvidence:"
         ],
         "benchmarks/optical/workload_contract.py": [
           "class FrozenWorkloadContent:"

@@ -27,12 +27,11 @@ from benchmarks.optical.native import (
 )
 from benchmarks.optical.receipts import (
     ACCELERATION_RECEIPT_SCHEMA_VERSION,
-    C4_RESULT_BINDING_CAPABILITY,
     NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
     AccelerationReceipt,
     NativeStageEvidence,
     NativeStorageSignature,
-    build_native_execution_binding,
+    build_c3_one_shot_native_execution_binding,
 )
 from benchmarks.optical.runner import (
     LaneSampleRequest,
@@ -116,7 +115,7 @@ def test_timed_boundary_restores_context_after_lane_failure():
     assert active_timed_boundary() is None
 
 
-def test_single_lane_runner_submits_inside_timing_and_resolves_outside(monkeypatch):
+def test_single_lane_runner_refuses_c3_before_timing_even_if_activation_is_flipped(monkeypatch):
     gate = _activated_gate(monkeypatch)
     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
     source = _runner_native_source()
@@ -125,29 +124,26 @@ def test_single_lane_runner_submits_inside_timing_and_resolves_outside(monkeypat
     lane = _FakeLane(gate=gate, row=row, prepared=prepared, trace=trace)
     runner = SingleLaneSampleRunner(gate, execution_phase="P12.4a3b")
 
-    record = runner.run_sample(
-        row_id=row["row_id"],
-        lane=lane,
-        prepared=prepared,
-        readiness=_readiness(prepared),
-        request=LaneSampleRequest(run_id="unit-run", repeat_index=1, sample_index=2),
-    )
+    with pytest.raises(LaneIneligibleError, match="C3 one-shot"):
+        runner.run_sample(
+            row_id=row["row_id"],
+            lane=lane,
+            prepared=prepared,
+            readiness=_readiness(prepared),
+            request=LaneSampleRequest(run_id="unit-run", repeat_index=1, sample_index=2),
+        )
 
-    assert trace == [("submit", True), ("resolve", False)]
-    assert record["run_id"] == "unit-run"
-    assert record["repeat_index"] == 1
-    assert record["sample_index"] == 2
-    assert record["receipt"]["native_input_manifest_sha256"] == source.manifest.sha256
+    assert trace == []
 
 
-def test_single_lane_runner_rejects_lane_fabricated_native_provenance(monkeypatch):
+def test_c3_rejection_prevents_lane_from_fabricating_result_provenance(monkeypatch):
     gate = _activated_gate(monkeypatch)
     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
     source = _runner_native_source()
     prepared = _prepared(source)
     lane = _FakeLane(gate=gate, row=row, prepared=prepared, trace=[], bad_manifest=True)
 
-    with pytest.raises(ValueError, match="prepared input manifest"):
+    with pytest.raises(LaneIneligibleError, match="C3 one-shot"):
         SingleLaneSampleRunner(gate, execution_phase="P12.4a3b").run_sample(
             row_id=row["row_id"],
             lane=lane,
@@ -157,7 +153,7 @@ def test_single_lane_runner_rejects_lane_fabricated_native_provenance(monkeypatc
         )
 
 
-def test_single_lane_runner_allows_ordered_submit_then_drain_and_rejects_double_resolve(
+def test_c3_rejection_prevents_ordered_submit_or_drain(
     monkeypatch,
 ):
     gate = _activated_gate(monkeypatch)
@@ -169,28 +165,15 @@ def test_single_lane_runner_allows_ordered_submit_then_drain_and_rejects_double_
     lane = _FakeLane(gate=gate, row=row, prepared=prepared, trace=trace)
     runner = SingleLaneSampleRunner(gate, execution_phase="P12.4a3b")
 
-    submitted = [
+    with pytest.raises(LaneIneligibleError, match="C3 one-shot"):
         runner.submit_sample(
             row_id=row["row_id"],
             lane=lane,
             prepared=prepared,
             readiness=readiness,
-            request=LaneSampleRequest(run_id="ordered", repeat_index=0, sample_index=index),
+            request=LaneSampleRequest(run_id="ordered", repeat_index=0, sample_index=0),
         )
-        for index in range(2)
-    ]
-    assert trace == [("submit", True), ("submit", True)]
-
-    records = [runner.resolve_sample(sample) for sample in submitted]
-    assert trace == [
-        ("submit", True),
-        ("submit", True),
-        ("resolve", False),
-        ("resolve", False),
-    ]
-    assert [record["sample_index"] for record in records] == [0, 1]
-    with pytest.raises(RuntimeError, match="already been resolved"):
-        runner.resolve_sample(submitted[0])
+    assert trace == []
 
 
 def test_single_lane_runner_rejects_incomplete_warmup_evidence(monkeypatch):
@@ -246,14 +229,14 @@ def test_single_lane_runner_rejects_incomplete_warmup_evidence(monkeypatch):
         )
 
 
-def test_single_lane_runner_does_not_copy_wrong_actual_request_from_gate(monkeypatch):
+def test_c3_rejection_prevents_lane_request_receipt_fabrication(monkeypatch):
     gate = _activated_gate(monkeypatch)
     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
     source = _runner_native_source()
     prepared = _prepared(source)
     lane = _FakeLane(gate=gate, row=row, prepared=prepared, trace=[], wrong_shadows=True)
 
-    with pytest.raises(ValueError, match="receipt shadows does not match"):
+    with pytest.raises(LaneIneligibleError, match="C3 one-shot"):
         SingleLaneSampleRunner(gate, execution_phase="P12.4a3b").run_sample(
             row_id=row["row_id"],
             lane=lane,
@@ -417,7 +400,6 @@ def test_runner_rejects_c3_one_shot_binding_before_timed_enqueue(monkeypatch):
         row=row,
         prepared=prepared,
         trace=trace,
-        one_shot_binding=True,
     )
 
     with pytest.raises(LaneIneligibleError, match="C3 one-shot"):
@@ -492,7 +474,6 @@ class _FakeLane:
     wrong_shadows: bool = False
     substitute_scene_storage: bool = False
     invalid_direct_binding: bool = False
-    one_shot_binding: bool = False
     lane_id: str = "warp"
     preflight_called: bool = field(default=False, init=False)
     bind_called: bool = field(default=False, init=False)
@@ -532,6 +513,8 @@ class _FakeLane:
             schema_version=NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
             stage_name="render",
             operation_id="warp_bvh_direct_light",
+            output_profile=row["output_profile"],
+            shadows=row["shadows"],
             scene_contract_sha256=prepared.manifest.scene_contract_sha256,
             input_contract=prepared.manifest.input_contract,
             transform_replay_sha256=None,
@@ -542,17 +525,16 @@ class _FakeLane:
             output_storage=(render_output,),
             dispatch_plan_sha256="d" * 64,
         )
-        binding = build_native_execution_binding(
+        binding = build_c3_one_shot_native_execution_binding(
             row_id=row["row_id"],
             case_id=row["case_id"],
             case_sha256=prepared.manifest.case_sha256,
             boundary=row["boundary"],
             lane="warp",
-            submission_capability=(
-                "c3_one_shot_non_result_capable"
-                if self.one_shot_binding
-                else C4_RESULT_BINDING_CAPABILITY
-            ),
+            renderer_id="warp_bvh_direct_light",
+            acceleration_id="fixed_bvh_fixture",
+            output_profile=row["output_profile"],
+            shadows=row["shadows"],
             input_contract=prepared.manifest.input_contract,
             native_input_manifest_sha256=prepared.manifest.sha256,
             native_readiness_sha256=readiness.sha256,

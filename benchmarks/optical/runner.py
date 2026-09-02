@@ -22,7 +22,10 @@ from .native import (
     prepared_storage_signatures,
     prepared_transform_frame_signatures,
 )
-from .receipts import C4_RESULT_BINDING_CAPABILITY, NativeExecutionBindingEvidence
+from .receipts import (
+    C3OneShotNativeExecutionBindingEvidence,
+    dynamic_scene_update_input_storage,
+)
 from .schema import (
     RESULT_SCHEMA_VERSION,
     ExecutionReceipt,
@@ -98,7 +101,7 @@ class SingleLane(Protocol):
         *,
         row: Mapping[str, Any],
         prepared: PreparedNativeInput,
-        binding: NativeExecutionBindingEvidence,
+        binding: C3OneShotNativeExecutionBindingEvidence,
         request: LaneSampleRequest,
     ) -> PendingLaneSample:
         """Enqueue one sample and return without host/global synchronization."""
@@ -109,7 +112,7 @@ class SingleLane(Protocol):
         row: Mapping[str, Any],
         prepared: PreparedNativeInput,
         readiness: NativeReadinessEvidence,
-    ) -> NativeExecutionBindingEvidence:
+    ) -> C3OneShotNativeExecutionBindingEvidence:
         """Freeze exact stage/storage provenance before timed submission."""
 
 
@@ -123,7 +126,7 @@ class SubmittedLaneSample:
     readiness: NativeReadinessEvidence
     eligibility: LaneEligibilityEvidence
     operation_trace: RuntimeOperationTraceEvidence
-    native_execution_binding: NativeExecutionBindingEvidence
+    native_execution_binding: C3OneShotNativeExecutionBindingEvidence
     request: LaneSampleRequest
     pending: PendingLaneSample
     _resolved: bool = field(default=False, init=False, repr=False)
@@ -229,23 +232,27 @@ class SingleLaneSampleRunner:
             prepared=prepared,
             readiness=readiness,
         )
-        if not isinstance(binding, NativeExecutionBindingEvidence):
-            raise TypeError("lane bind_sample must return NativeExecutionBindingEvidence")
+        if not isinstance(binding, C3OneShotNativeExecutionBindingEvidence):
+            raise TypeError(
+                "lane bind_sample must return C3OneShotNativeExecutionBindingEvidence"
+            )
         try:
-            binding = NativeExecutionBindingEvidence.from_payload(binding.to_payload())
+            binding = C3OneShotNativeExecutionBindingEvidence.from_payload(
+                binding.to_payload()
+            )
         except (AttributeError, TypeError, ValueError) as exc:
             raise LaneIneligibleError(
                 f"native execution binding failed canonical pre-enqueue validation: {exc}"
             ) from exc
-        if binding.submission_capability != C4_RESULT_BINDING_CAPABILITY:
-            raise LaneIneligibleError(
-                "C3 one-shot native binding is not result-capable; a reviewed C4 binding is required"
-            )
         self._validate_native_binding_pre_enqueue(
             row=submitted_row,
             prepared=prepared,
             readiness=readiness,
             binding=binding,
+        )
+        raise LaneIneligibleError(
+            "C3 one-shot native binding cannot enter timed submission; "
+            "the independently reviewed C4 arena/slot/lease binding is not implemented"
         )
         operation_trace = RuntimeOperationTrace(
             row_id=row_id,
@@ -379,7 +386,7 @@ class SingleLaneSampleRunner:
         readiness: NativeReadinessEvidence,
         eligibility: LaneEligibilityEvidence,
         operation_trace: RuntimeOperationTraceEvidence,
-        native_execution_binding: NativeExecutionBindingEvidence,
+        native_execution_binding: C3OneShotNativeExecutionBindingEvidence,
         sample: ResolvedLaneSample,
     ) -> None:
         receipt = sample.receipt
@@ -410,13 +417,13 @@ class SingleLaneSampleRunner:
         ):
             raise ValueError("lane receipt operation trace does not match timed submission")
 
-    @staticmethod
     def _validate_native_binding_pre_enqueue(
+        self,
         *,
         row: Mapping[str, Any],
         prepared: PreparedNativeInput,
         readiness: NativeReadinessEvidence,
-        binding: NativeExecutionBindingEvidence,
+        binding: C3OneShotNativeExecutionBindingEvidence,
     ) -> None:
         manifest = prepared.manifest
         if not manifest.result_capable:
@@ -427,6 +434,12 @@ class SingleLaneSampleRunner:
             "case_sha256": manifest.case_sha256,
             "boundary": row["boundary"],
             "lane": prepared.backend,
+            "renderer_id": self._gate["lane_bindings"][prepared.backend]["renderer_id"],
+            "acceleration_id": self._gate["lane_bindings"][prepared.backend][
+                "acceleration_by_class"
+            ][row["acceleration_class"]],
+            "output_profile": row["output_profile"],
+            "shadows": row["shadows"],
             "input_contract": manifest.input_contract,
             "native_input_manifest_sha256": manifest.sha256,
             "native_readiness_sha256": readiness.sha256,
@@ -463,8 +476,9 @@ class SingleLaneSampleRunner:
                 prepared,
                 binding.transform_frame_index,
             )
-            if stages["scene_update"].input_storage != (
-                expected_scene_storage + expected_transform_storage
+            if stages["scene_update"].input_storage != dynamic_scene_update_input_storage(
+                expected_scene_storage,
+                expected_transform_storage,
             ):
                 raise LaneIneligibleError(
                     "scene-update stage substituted prepared scene or replay-frame storage"

@@ -7,14 +7,81 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from .eligibility import GPU_ENGINE_PUBLISHED_FRAME_INPUT
+from .eligibility import (
+    EXACT_ACCELERATION_CONTRACTS,
+    EXACT_LANE_BINDINGS,
+    GPU_ENGINE_PUBLISHED_FRAME_INPUT,
+)
 
 ACCELERATION_RECEIPT_SCHEMA_VERSION = "q54.p12.4.acceleration-receipt.v2"
 SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION = "q54.p12.4.shipping-publication-receipt.v1"
-NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION = "q54.p12.4.native-stage-evidence.v1"
-NATIVE_EXECUTION_BINDING_SCHEMA_VERSION = "q54.p12.4.native-execution-binding.v2"
-C3_ONE_SHOT_BINDING_CAPABILITY = "c3_one_shot_non_result_capable"
-C4_RESULT_BINDING_CAPABILITY = "c4_result_capable"
+NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION = "q54.p12.4.native-stage-evidence.v2"
+NATIVE_EXECUTION_BINDING_SCHEMA_VERSION = "q54.p12.4.c3-one-shot-binding.v4"
+DYNAMIC_DATAFLOW_CONTRACT_SCHEMA_VERSION = "q54.p12.4.dynamic-dataflow.v1"
+
+# These names are the logical allocation ABI between C3 stages.  They mirror
+# DeviceOpticalSceneSnapshot, DeviceOpticalBvh, CudaFirstHitInputs, and
+# CudaShadeInputs.  The tuple order is part of the contract.
+DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES = (
+    "triangle_vertices_local",
+    "triangle_instance_index",
+    "plane_normal_local",
+    "plane_point_local",
+    "plane_instance_index",
+    "instance_body_index",
+    "instance_X_body_geometry_R",
+    "instance_X_body_geometry_r",
+)
+DYNAMIC_TRANSFORM_INPUT_NAMES = ("replay_x_world_R", "replay_x_world_r")
+DYNAMIC_SCENE_OUTPUT_NAMES = (
+    "triangle_v0_world",
+    "triangle_e1_world",
+    "triangle_e2_world",
+    "triangle_normal_world",
+    "plane_normal_world",
+    "plane_point_world",
+    "triangle_aabb_min",
+    "triangle_aabb_max",
+)
+DYNAMIC_ACCELERATION_INPUT_NAMES = ("triangle_aabb_min", "triangle_aabb_max")
+DYNAMIC_ACCELERATION_OUTPUT_NAMES = (
+    "bvh_bounds_min",
+    "bvh_bounds_max",
+    "bvh_left",
+    "bvh_right",
+    "bvh_start",
+    "bvh_count",
+    "bvh_prim_ids",
+)
+DYNAMIC_RENDER_WORLD_INPUT_NAMES = (
+    "plane_normal_world",
+    "plane_point_world",
+    "triangle_v0_world",
+    "triangle_e1_world",
+    "triangle_e2_world",
+    "triangle_normal_world",
+)
+DYNAMIC_RENDER_METADATA_INPUT_NAMES = (
+    "plane_numeric_instance_id",
+    "plane_source_order_key",
+    "plane_role_mask",
+    "plane_material_index",
+    "triangle_numeric_instance_id",
+    "triangle_source_order_key",
+    "triangle_role_mask",
+    "triangle_material_index",
+)
+DYNAMIC_RENDER_SHADE_INPUT_NAMES = (
+    "material_albedo_rgb",
+    "light_kind",
+    "light_position_or_direction_world",
+    "light_intensity",
+    "light_color_rgb",
+)
+
+_SUPPORTED_OUTPUT_PROFILES = frozenset(
+    {"direct_light_full", "rgb_preview", "render_only"}
+)
 
 
 def _canonical_sha256(payload: object) -> str:
@@ -100,6 +167,8 @@ class NativeStageEvidence:
     schema_version: str
     stage_name: str
     operation_id: str
+    output_profile: str | None
+    shadows: bool | None
     scene_contract_sha256: str
     input_contract: str
     transform_replay_sha256: str | None
@@ -120,6 +189,13 @@ class NativeStageEvidence:
         for name in ("stage_name", "operation_id", "input_contract"):
             if not isinstance(payload.get(name), str) or not payload[name]:
                 raise ValueError(f"native stage evidence {name} must be non-empty")
+        if payload["stage_name"] == "render":
+            if payload.get("output_profile") not in _SUPPORTED_OUTPUT_PROFILES:
+                raise ValueError("native render stage output profile is invalid")
+            if not isinstance(payload.get("shadows"), bool):
+                raise ValueError("native render stage shadows must be boolean")
+        elif payload.get("output_profile") is not None or payload.get("shadows") is not None:
+            raise ValueError("non-render native stage cannot carry render identity")
         for name in (
             "scene_contract_sha256",
             "transform_replay_sha256",
@@ -147,6 +223,8 @@ class NativeStageEvidence:
             schema_version=NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
             stage_name=payload["stage_name"],
             operation_id=payload["operation_id"],
+            output_profile=payload["output_profile"],
+            shadows=payload["shadows"],
             scene_contract_sha256=payload["scene_contract_sha256"],
             input_contract=payload["input_contract"],
             transform_replay_sha256=payload["transform_replay_sha256"],
@@ -163,6 +241,8 @@ class NativeStageEvidence:
             "schema_version": self.schema_version,
             "stage_name": self.stage_name,
             "operation_id": self.operation_id,
+            "output_profile": self.output_profile,
+            "shadows": self.shadows,
             "scene_contract_sha256": self.scene_contract_sha256,
             "input_contract": self.input_contract,
             "transform_replay_sha256": self.transform_replay_sha256,
@@ -215,8 +295,13 @@ class NativeStageBinding:
 
 
 @dataclass(frozen=True)
-class NativeExecutionBindingEvidence:
-    """Outer aggregate binding stage facts to one prepared input and row."""
+class C3OneShotNativeExecutionBindingEvidence:
+    """C3 one-shot aggregate binding stage facts to prepared allocations.
+
+    This type is deliberately not a result-submission capability.  C4 must
+    introduce a separate evidence type whose constructor proves arena, slot,
+    generation, lease, and ring ownership.
+    """
 
     schema_version: str
     row_id: str
@@ -224,7 +309,11 @@ class NativeExecutionBindingEvidence:
     case_sha256: str
     boundary: str
     lane: str
-    submission_capability: str
+    renderer_id: str
+    acceleration_id: str
+    output_profile: str
+    shadows: bool
+    dataflow_contract_id: str
     input_contract: str
     native_input_manifest_sha256: str
     native_readiness_sha256: str
@@ -240,22 +329,31 @@ class NativeExecutionBindingEvidence:
     dataflow_binding_sha256: str
 
     @classmethod
-    def from_payload(cls, payload: object) -> "NativeExecutionBindingEvidence":
+    def from_payload(cls, payload: object) -> "C3OneShotNativeExecutionBindingEvidence":
         expected = set(cls.__dataclass_fields__)
         if not isinstance(payload, Mapping) or set(payload) != expected:
             raise ValueError("native execution binding fields are invalid")
         if payload.get("schema_version") != NATIVE_EXECUTION_BINDING_SCHEMA_VERSION:
             raise ValueError("native execution binding schema version is invalid")
-        for name in ("row_id", "case_id", "boundary", "lane", "input_contract"):
+        for name in (
+            "row_id",
+            "case_id",
+            "boundary",
+            "lane",
+            "renderer_id",
+            "acceleration_id",
+            "output_profile",
+            "dataflow_contract_id",
+            "input_contract",
+        ):
             if not isinstance(payload.get(name), str) or not payload[name]:
                 raise ValueError(f"native execution binding {name} must be non-empty")
         if payload.get("lane") not in {"warp", "cuda"}:
             raise ValueError("native execution binding lane is invalid")
-        if payload.get("submission_capability") not in {
-            C3_ONE_SHOT_BINDING_CAPABILITY,
-            C4_RESULT_BINDING_CAPABILITY,
-        }:
-            raise ValueError("native execution binding submission capability is invalid")
+        if payload.get("output_profile") not in _SUPPORTED_OUTPUT_PROFILES:
+            raise ValueError("native execution binding output profile is invalid")
+        if not isinstance(payload.get("shadows"), bool):
+            raise ValueError("native execution binding shadows must be boolean")
         for name in (
             "case_sha256",
             "native_input_manifest_sha256",
@@ -336,6 +434,12 @@ class NativeExecutionBindingEvidence:
             all_storage += evidence.input_storage + evidence.output_storage
         _validate_stage_dataflow(
             boundary=boundary,
+            lane=payload["lane"],
+            renderer_id=payload["renderer_id"],
+            acceleration_id=payload["acceleration_id"],
+            output_profile=payload["output_profile"],
+            shadows=payload["shadows"],
+            dataflow_contract_id=payload["dataflow_contract_id"],
             runtime_scene_storage=runtime_scene_storage,
             derived_fixture_storage=derived_fixture_storage,
             ordered_stage_evidence=tuple(stages),
@@ -360,7 +464,11 @@ class NativeExecutionBindingEvidence:
             case_sha256=payload["case_sha256"],
             boundary=payload["boundary"],
             lane=payload["lane"],
-            submission_capability=payload["submission_capability"],
+            renderer_id=payload["renderer_id"],
+            acceleration_id=payload["acceleration_id"],
+            output_profile=payload["output_profile"],
+            shadows=payload["shadows"],
+            dataflow_contract_id=payload["dataflow_contract_id"],
             input_contract=payload["input_contract"],
             native_input_manifest_sha256=payload["native_input_manifest_sha256"],
             native_readiness_sha256=payload["native_readiness_sha256"],
@@ -384,7 +492,11 @@ class NativeExecutionBindingEvidence:
             "case_sha256": self.case_sha256,
             "boundary": self.boundary,
             "lane": self.lane,
-            "submission_capability": self.submission_capability,
+            "renderer_id": self.renderer_id,
+            "acceleration_id": self.acceleration_id,
+            "output_profile": self.output_profile,
+            "shadows": self.shadows,
+            "dataflow_contract_id": self.dataflow_contract_id,
             "input_contract": self.input_contract,
             "native_input_manifest_sha256": self.native_input_manifest_sha256,
             "native_readiness_sha256": self.native_readiness_sha256,
@@ -626,6 +738,12 @@ def _storage_sequence(payload: object, *, label: str) -> tuple[NativeStorageSign
 def _validate_stage_dataflow(
     *,
     boundary: str,
+    lane: str,
+    renderer_id: str,
+    acceleration_id: str,
+    output_profile: str,
+    shadows: bool,
+    dataflow_contract_id: str,
     runtime_scene_storage: tuple[NativeStorageSignature, ...],
     derived_fixture_storage: tuple[NativeStorageSignature, ...],
     ordered_stage_evidence: tuple[NativeStageBinding, ...],
@@ -638,6 +756,23 @@ def _validate_stage_dataflow(
     evidence = tuple(stage.evidence for stage in ordered_stage_evidence)
     if boundary == "R0":
         render = evidence[0]
+        expected_renderer = EXACT_LANE_BINDINGS[lane]["renderer_id"]
+        if renderer_id != expected_renderer or render.operation_id != expected_renderer:
+            raise ValueError("R0 render operation does not match its lane renderer")
+        if acceleration_id != "fixed_bvh_fixture":
+            raise ValueError("R0 acceleration identity must be fixed_bvh_fixture")
+        if render.output_profile != output_profile or render.shadows != shadows:
+            raise ValueError("R0 render stage identity does not match its binding")
+        expected_contract_id = canonical_dataflow_contract_id(
+            boundary=boundary,
+            lane=lane,
+            renderer_id=renderer_id,
+            acceleration_id=acceleration_id,
+            output_profile=output_profile,
+            shadows=shadows,
+        )
+        if dataflow_contract_id != expected_contract_id:
+            raise ValueError("R0 dataflow contract identity is invalid")
         if render.input_storage != initial:
             raise ValueError("R0 render must read the exact scene/fixture storage union")
         if not render.output_storage:
@@ -647,32 +782,97 @@ def _validate_stage_dataflow(
         return
 
     scene, acceleration, render = evidence[:3]
-    scene_prefix = scene.input_storage[: len(runtime_scene_storage)]
-    transform_storage = scene.input_storage[len(runtime_scene_storage) :]
-    if scene_prefix != runtime_scene_storage or tuple(value.name for value in transform_storage) != (
-        "replay_x_world_R",
-        "replay_x_world_r",
-    ):
-        raise ValueError(
-            "dynamic scene update must read the exact local scene and selected replay frame"
-        )
-    if not scene.output_storage:
-        raise ValueError("dynamic scene update output storage is empty")
-    if not acceleration.input_storage or not acceleration.output_storage:
-        raise ValueError("dynamic acceleration storage is incomplete")
-    if any(value not in scene.output_storage for value in acceleration.input_storage):
-        raise ValueError("dynamic acceleration input is not a scene-update output")
+    expected_lane_binding = EXACT_LANE_BINDINGS[lane]
+    expected_acceleration_id = expected_lane_binding["acceleration_by_class"][
+        "production_dynamic"
+    ]
+    acceleration_contract = EXACT_ACCELERATION_CONTRACTS[lane][expected_acceleration_id]
+    if renderer_id != expected_lane_binding["renderer_id"]:
+        raise ValueError("dynamic renderer identity does not match its lane")
+    if acceleration_id != expected_acceleration_id:
+        raise ValueError("dynamic acceleration identity does not match its lane")
+    expected_operations = (
+        acceleration_contract["timed_scene_update_operation"],
+        acceleration_contract["timed_acceleration_operation"],
+        expected_lane_binding["renderer_id"],
+    )
+    if tuple(stage.operation_id for stage in (scene, acceleration, render)) != expected_operations:
+        raise ValueError("dynamic stage operation sequence is not the frozen lane contract")
+    if render.output_profile != output_profile or render.shadows != shadows:
+        raise ValueError("dynamic render stage identity does not match its binding")
+    expected_contract_id = canonical_dataflow_contract_id(
+        boundary=boundary,
+        lane=lane,
+        renderer_id=renderer_id,
+        acceleration_id=acceleration_id,
+        output_profile=output_profile,
+        shadows=shadows,
+    )
+    if dataflow_contract_id != expected_contract_id:
+        raise ValueError("dynamic dataflow contract identity is invalid")
 
-    available = runtime_scene_storage + scene.output_storage + acceleration.output_storage
-    if any(value not in available for value in render.input_storage):
-        raise ValueError("dynamic render input is not prepared or produced storage")
-    if not any(value in scene.output_storage for value in render.input_storage):
-        raise ValueError("dynamic render does not read scene-update output")
-    if not any(value in acceleration.output_storage for value in render.input_storage):
-        raise ValueError("dynamic render does not read acceleration output")
+    runtime_by_name = _storage_by_name(runtime_scene_storage, label="runtime scene")
+    expected_transform = _require_named_storage(
+        scene.input_storage,
+        DYNAMIC_TRANSFORM_INPUT_NAMES,
+        label="dynamic scene transform input",
+        allow_other_names=True,
+    )
+    expected_scene_input = _select_storage(
+        runtime_by_name,
+        DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES,
+        label="dynamic scene runtime input",
+    ) + expected_transform
+    _require_exact_storage(
+        scene.input_storage,
+        expected_scene_input,
+        label="dynamic scene-update input",
+    )
+    _require_exact_storage_names(
+        scene.output_storage,
+        DYNAMIC_SCENE_OUTPUT_NAMES,
+        label="dynamic scene-update output",
+    )
+    scene_by_name = _storage_by_name(scene.output_storage, label="dynamic scene output")
+    expected_acceleration_input = _select_storage(
+        scene_by_name,
+        DYNAMIC_ACCELERATION_INPUT_NAMES,
+        label="dynamic acceleration input",
+    )
+    _require_exact_storage(
+        acceleration.input_storage,
+        expected_acceleration_input,
+        label="dynamic acceleration input",
+    )
+    _require_exact_storage_names(
+        acceleration.output_storage,
+        DYNAMIC_ACCELERATION_OUTPUT_NAMES,
+        label="dynamic acceleration output",
+    )
+    acceleration_by_name = _storage_by_name(
+        acceleration.output_storage, label="dynamic acceleration output"
+    )
+    render_names = (
+        DYNAMIC_RENDER_WORLD_INPUT_NAMES
+        + DYNAMIC_RENDER_METADATA_INPUT_NAMES
+        + DYNAMIC_ACCELERATION_OUTPUT_NAMES
+        + DYNAMIC_RENDER_SHADE_INPUT_NAMES
+    )
+    combined_by_name = runtime_by_name | scene_by_name | acceleration_by_name
+    expected_render_input = _select_storage(
+        combined_by_name,
+        render_names,
+        label="dynamic render input",
+    )
+    _require_exact_storage(
+        render.input_storage,
+        expected_render_input,
+        label="dynamic render input",
+    )
     if not render.output_storage:
         raise ValueError("dynamic render output storage is empty")
 
+    available = runtime_scene_storage + scene.output_storage + acceleration.output_storage
     available += render.output_storage
     for later in evidence[3:]:
         if any(value not in available for value in later.input_storage):
@@ -680,6 +880,103 @@ def _validate_stage_dataflow(
         if not later.output_storage:
             raise ValueError(f"native stage {later.stage_name} output storage is empty")
         available += later.output_storage
+
+
+def _storage_by_name(
+    storage: Sequence[NativeStorageSignature], *, label: str
+) -> dict[str, NativeStorageSignature]:
+    result = {value.name: value for value in storage}
+    if len(result) != len(storage):
+        raise ValueError(f"{label} storage names must be unique")
+    return result
+
+
+def _select_storage(
+    storage_by_name: Mapping[str, NativeStorageSignature],
+    names: Sequence[str],
+    *,
+    label: str,
+) -> tuple[NativeStorageSignature, ...]:
+    missing = tuple(name for name in names if name not in storage_by_name)
+    if missing:
+        raise ValueError(f"{label} is missing required storage {missing!r}")
+    return tuple(storage_by_name[name] for name in names)
+
+
+def _require_exact_storage(
+    actual: Sequence[NativeStorageSignature],
+    expected: Sequence[NativeStorageSignature],
+    *,
+    label: str,
+) -> None:
+    if tuple(actual) != tuple(expected):
+        raise ValueError(f"{label} must match the complete ordered storage contract")
+
+
+def _require_exact_storage_names(
+    actual: Sequence[NativeStorageSignature],
+    expected_names: Sequence[str],
+    *,
+    label: str,
+) -> None:
+    if tuple(value.name for value in actual) != tuple(expected_names):
+        raise ValueError(f"{label} must match the complete ordered storage-name contract")
+
+
+def _require_named_storage(
+    actual: Sequence[NativeStorageSignature],
+    expected_names: Sequence[str],
+    *,
+    label: str,
+    allow_other_names: bool = False,
+) -> tuple[NativeStorageSignature, ...]:
+    by_name = _storage_by_name(actual, label=label)
+    if not allow_other_names and tuple(by_name) != tuple(expected_names):
+        raise ValueError(f"{label} contains missing or extra storage")
+    return _select_storage(by_name, expected_names, label=label)
+
+
+def dynamic_scene_update_input_storage(
+    runtime_scene_storage: Sequence[NativeStorageSignature],
+    transform_storage: Sequence[NativeStorageSignature],
+) -> tuple[NativeStorageSignature, ...]:
+    """Return the exact ordered C3 scene-update input allocation tuple."""
+
+    runtime_by_name = _storage_by_name(runtime_scene_storage, label="runtime scene")
+    transform_by_name = _storage_by_name(transform_storage, label="replay transform")
+    return _select_storage(
+        runtime_by_name,
+        DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES,
+        label="dynamic scene runtime input",
+    ) + _select_storage(
+        transform_by_name,
+        DYNAMIC_TRANSFORM_INPUT_NAMES,
+        label="dynamic scene transform input",
+    )
+
+
+def canonical_dataflow_contract_id(
+    *,
+    boundary: str,
+    lane: str,
+    renderer_id: str,
+    acceleration_id: str,
+    output_profile: str,
+    shadows: bool,
+) -> str:
+    """Hash the frozen stage/operation/profile identity, independent of storage tokens."""
+
+    identity_sha256 = _canonical_sha256(
+        {
+            "boundary": boundary,
+            "lane": lane,
+            "renderer_id": renderer_id,
+            "acceleration_id": acceleration_id,
+            "output_profile": output_profile,
+            "shadows": shadows,
+        }
+    )
+    return f"{DYNAMIC_DATAFLOW_CONTRACT_SCHEMA_VERSION}:{identity_sha256}"
 
 
 def canonical_storage_manifest_sha256(values: Sequence[NativeStorageSignature]) -> str:
@@ -703,14 +1000,17 @@ def canonical_dataflow_binding_sha256(
     )
 
 
-def build_native_execution_binding(
+def build_c3_one_shot_native_execution_binding(
     *,
     row_id: str,
     case_id: str,
     case_sha256: str,
     boundary: str,
     lane: str,
-    submission_capability: str = C3_ONE_SHOT_BINDING_CAPABILITY,
+    renderer_id: str,
+    acceleration_id: str,
+    output_profile: str,
+    shadows: bool,
     input_contract: str,
     native_input_manifest_sha256: str,
     native_readiness_sha256: str,
@@ -721,8 +1021,8 @@ def build_native_execution_binding(
     runtime_scene_storage: Sequence[NativeStorageSignature],
     derived_fixture_storage: Sequence[NativeStorageSignature],
     stage_evidence: Sequence[NativeStageEvidence],
-) -> NativeExecutionBindingEvidence:
-    """Freeze stage payloads, then construct their one-way outer aggregate."""
+) -> C3OneShotNativeExecutionBindingEvidence:
+    """Build C3 one-shot evidence; this constructor can never authorize results."""
 
     runtime_storage = tuple(runtime_scene_storage)
     derived_storage = tuple(derived_fixture_storage)
@@ -734,14 +1034,25 @@ def build_native_execution_binding(
         )
         for evidence in stage_evidence
     )
-    binding = NativeExecutionBindingEvidence(
+    binding = C3OneShotNativeExecutionBindingEvidence(
         schema_version=NATIVE_EXECUTION_BINDING_SCHEMA_VERSION,
         row_id=row_id,
         case_id=case_id,
         case_sha256=case_sha256,
         boundary=boundary,
         lane=lane,
-        submission_capability=submission_capability,
+        renderer_id=renderer_id,
+        acceleration_id=acceleration_id,
+        output_profile=output_profile,
+        shadows=shadows,
+        dataflow_contract_id=canonical_dataflow_contract_id(
+            boundary=boundary,
+            lane=lane,
+            renderer_id=renderer_id,
+            acceleration_id=acceleration_id,
+            output_profile=output_profile,
+            shadows=shadows,
+        ),
         input_contract=input_contract,
         native_input_manifest_sha256=native_input_manifest_sha256,
         native_readiness_sha256=native_readiness_sha256,
@@ -762,4 +1073,4 @@ def build_native_execution_binding(
             ordered_stage_evidence=stages,
         ),
     )
-    return NativeExecutionBindingEvidence.from_payload(binding.to_payload())
+    return C3OneShotNativeExecutionBindingEvidence.from_payload(binding.to_payload())
