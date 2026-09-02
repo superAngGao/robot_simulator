@@ -28,7 +28,9 @@ from benchmarks.optical.workloads import (
 )
 from optics.device import stage_optical_compute_result_to_host
 from optics.device_bvh import (
+    WARP_BVH_REFIT_ACCELERATION_ID,
     WARP_BVH_REFIT_OPERATION_ID,
+    WARP_BVH_TOPOLOGY_ORIGIN_ID,
     WarpBvhRefitCommandFactory,
     build_device_bvh_from_snapshot,
     refit_device_bvh_from_snapshot,
@@ -64,6 +66,8 @@ def test_prebound_warp_scene_and_refit_use_exact_a2_inputs_without_timed_contami
     refit_bundle = setup.refit_factory.seal(world=setup.frame_one_world)
     assert scene_bundle.evidence.operation_id == WARP_SCENE_UPDATE_OPERATION_ID
     assert refit_bundle.evidence.operation_id == WARP_BVH_REFIT_OPERATION_ID
+    assert refit_bundle.evidence.acceleration_id == WARP_BVH_REFIT_ACCELERATION_ID
+    assert refit_bundle.evidence.topology_origin_id == WARP_BVH_TOPOLOGY_ORIGIN_ID
     assert scene_bundle.evidence.native_input_manifest_sha256 == setup.prepared.manifest.sha256
     assert refit_bundle.evidence.native_input_manifest_sha256 == setup.prepared.manifest.sha256
     assert scene_bundle.evidence.scene_contract_sha256 == setup.scene.scene_contract_sha256
@@ -230,6 +234,14 @@ def test_warp_scene_factory_rejects_alias_and_stream_drift_before_recording():
         pytest.skip("CUDA is required")
 
     setup = _canonical_dynamic_setup(wp)
+    with pytest.raises(AttributeError, match="immutable"):
+        setup.scene_factory.native_input_manifest_sha256 = "0" * 64
+    with pytest.raises(AttributeError, match="immutable"):
+        setup.refit_factory.topology = replace(
+            setup.refit_factory.topology,
+            scene_contract_sha256="0" * 64,
+        )
+
     aliased = replace(
         setup.frame_one_world,
         triangle_e1_world=setup.frame_one_world.triangle_v0_world,
@@ -291,6 +303,32 @@ def test_warp_scene_factory_rejects_alias_and_stream_drift_before_recording():
             stream=setup.stream,
         )
 
+    drifted_scene_factory = WarpSceneUpdateCommandFactory(
+        setup.scene,
+        stream=setup.stream,
+        native_input_manifest_sha256=setup.prepared.manifest.sha256,
+        input_contract=setup.prepared.manifest.input_contract,
+    )
+    object.__setattr__(
+        drifted_scene_factory,
+        "native_input_manifest_sha256",
+        "0" * 64,
+    )
+    with pytest.raises(ValueError, match="provenance drifted"):
+        drifted_scene_factory.seal(
+            transforms=setup.frame_one,
+            outputs=setup.frame_one_world,
+        )
+
+    drifted_refit_factory = build_prepared_warp_bvh_refit_factory(
+        setup.prepared,
+        setup.refit_factory.topology,
+        stream=setup.stream,
+    )
+    object.__setattr__(drifted_refit_factory, "topology", wrong_scene_topology)
+    with pytest.raises(ValueError, match="scene contract drifted"):
+        drifted_refit_factory.seal(world=setup.frame_one_world)
+
     wrong_stream = wp.Stream(device=setup.scene.device)
     wrong_factory = WarpSceneUpdateCommandFactory(
         setup.scene,
@@ -303,6 +341,18 @@ def test_warp_scene_factory_rejects_alias_and_stream_drift_before_recording():
         outputs=allocate_warp_world_scene_buffers(setup.scene, stream=wrong_stream),
     )
     assert wrong_bundle.evidence.stream_handle != setup.scene_factory.stream.cuda_stream
+    drifted_stream_factory = WarpSceneUpdateCommandFactory(
+        setup.scene,
+        stream=setup.stream,
+        native_input_manifest_sha256=setup.prepared.manifest.sha256,
+        input_contract=setup.prepared.manifest.input_contract,
+    )
+    object.__setattr__(drifted_stream_factory, "stream", wrong_stream)
+    with pytest.raises(ValueError, match="stream drifted"):
+        drifted_stream_factory.seal(
+            transforms=setup.frame_one,
+            outputs=setup.frame_one_world,
+        )
     with pytest.raises(TypeError, match="unexpected keyword argument"):
         wrong_bundle.enqueue(stream=setup.stream)
     assert not hasattr(wrong_bundle, "rebind")
@@ -498,7 +548,32 @@ def test_prebound_warp_empty_triangle_path_records_no_dummy_refit_command():
     refit_bundle.enqueue()
 
 
-def _canonical_dynamic_setup(wp):
+@pytest.mark.parametrize(
+    ("leaf_size", "split_strategy"),
+    ((1, "sort"), (2, "sort"), (8, "sort"), (4, "partition")),
+)
+def test_warp_refit_factory_rejects_noncanonical_topology_contract(
+    leaf_size,
+    split_strategy,
+):
+    wp = pytest.importorskip("warp")
+    if wp.get_cuda_device_count() == 0:
+        pytest.skip("CUDA is required")
+
+    with pytest.raises(ValueError, match="frozen leaf-4 topology origin"):
+        _canonical_dynamic_setup(
+            wp,
+            leaf_size=leaf_size,
+            split_strategy=split_strategy,
+        )
+
+
+def _canonical_dynamic_setup(
+    wp,
+    *,
+    leaf_size: int = 4,
+    split_strategy: str = "sort",
+):
     packed = build_canonical_packed_scene("synthetic_dynamic_rigid_960x640_v1")
     replay = build_canonical_transform_replay("synthetic_dynamic_rigid_960x640_v1")
     source = CanonicalNativeInput.from_scene_contract(
@@ -525,8 +600,8 @@ def _canonical_dynamic_setup(wp):
     )
     bvh = build_device_bvh_from_snapshot(
         frame_zero_snapshot,
-        leaf_size=4,
-        split_strategy="sort",
+        leaf_size=leaf_size,
+        split_strategy=split_strategy,
         device=scene.device,
         stream=stream,
     )

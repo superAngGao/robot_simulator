@@ -31,8 +31,10 @@ except Exception:  # pragma: no cover - keeps CPU-only imports working.
 
 _CENTROID_EPS = 1.0e-12
 WARP_BVH_REFIT_OPERATION_ID = "warp_bvh_leaf_internal_refit_out_v1"
-WARP_BVH_REFIT_COMMAND_SCHEMA_VERSION = "q54.p12.4.warp-bvh-refit-command.v1"
-WARP_BVH_TOPOLOGY_SCHEMA_VERSION = "q54.p12.4.warp-bvh-topology.v1"
+WARP_BVH_REFIT_ACCELERATION_ID = "cpu_median_leaf4_topology_warp_refit_v1"
+WARP_BVH_REFIT_COMMAND_SCHEMA_VERSION = "q54.p12.4.warp-bvh-refit-command.v2"
+WARP_BVH_TOPOLOGY_SCHEMA_VERSION = "q54.p12.4.warp-bvh-topology.v2"
+WARP_BVH_TOPOLOGY_ORIGIN_ID = "cpu_median_longest_axis_leaf4_source_order_v1"
 
 
 @dataclass(frozen=True)
@@ -81,6 +83,7 @@ class DeviceOpticalBvh:
     primitive_geometry_primitive_index: object
     primitive_source_order_key: object
     stats: DeviceBvhBuildStats
+    topology_origin_id: str | None = None
     scene_contract_sha256: str | None = None
     topology_sha256: str | None = None
     ready_event: object | None = None
@@ -101,12 +104,14 @@ class WarpBvhRefitCommandEvidence:
 
     schema_version: str
     operation_id: str
+    acceleration_id: str
     device_ordinal: int
     stream_handle: int
     native_input_manifest_sha256: str
     scene_contract_sha256: str
     input_contract: str
     native_input_topology_sha256: str
+    topology_origin_id: str
     topology_sha256: str
     primitive_count: int
     node_count: int
@@ -181,6 +186,17 @@ class WarpBvhRefitCommandFactory:
     """Seal immutable topology and caller-owned slot bounds into Warp commands."""
 
     __slots__ = (
+        "_frozen_device_ordinal",
+        "_frozen_immutable_storage_sha256",
+        "_frozen_input_contract",
+        "_frozen_native_input_manifest_sha256",
+        "_frozen_native_input_topology_sha256",
+        "_frozen_scene_contract_sha256",
+        "_frozen_stream_handle",
+        "_frozen_topology_facts",
+        "_frozen_topology_origin_id",
+        "_frozen_topology_sha256",
+        "_sealed",
         "input_contract",
         "native_input_manifest_sha256",
         "native_input_topology_sha256",
@@ -213,6 +229,10 @@ class WarpBvhRefitCommandFactory:
             raise ValueError("Warp BVH topology belongs to a different scene contract")
         if not _sha256_text(topology.topology_sha256):
             raise ValueError("Warp BVH lacks canonical topology evidence")
+        if topology.topology_origin_id != WARP_BVH_TOPOLOGY_ORIGIN_ID:
+            raise ValueError("Warp refit requires the frozen leaf-4 topology origin")
+        if topology.stats.leaf_size != 4 or topology.stats.split_strategy != "sort":
+            raise ValueError("Warp refit requires leaf_size=4 and split_strategy='sort'")
         if topology.ready_event is not None:
             stream.wait_event(topology.ready_event)
         self.topology = topology
@@ -221,6 +241,24 @@ class WarpBvhRefitCommandFactory:
         self.native_input_topology_sha256 = native_input_topology_sha256
         self.scene_contract_sha256 = scene_contract_sha256
         self.input_contract = input_contract
+        self._frozen_device_ordinal = int(topology.device.ordinal)
+        self._frozen_stream_handle = int(stream.cuda_stream)
+        self._frozen_scene_contract_sha256 = topology.scene_contract_sha256
+        self._frozen_topology_origin_id = topology.topology_origin_id
+        self._frozen_topology_sha256 = topology.topology_sha256
+        self._frozen_immutable_storage_sha256 = _warp_storage_manifest_sha256(
+            _warp_bvh_immutable_arrays(topology)
+        )
+        self._frozen_topology_facts = _warp_bvh_topology_facts(topology)
+        self._frozen_native_input_manifest_sha256 = native_input_manifest_sha256
+        self._frozen_native_input_topology_sha256 = native_input_topology_sha256
+        self._frozen_input_contract = input_contract
+        self._sealed = True
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_sealed", False):
+            raise AttributeError("Warp BVH-refit command factory is immutable")
+        object.__setattr__(self, name, value)
 
     def seal(
         self,
@@ -230,6 +268,7 @@ class WarpBvhRefitCommandFactory:
     ) -> WarpBvhRefitCommandBundle:
         """Validate and record one immutable refit plan outside timing."""
 
+        self._validate_frozen_state()
         bvh = self.topology if bvh is None else bvh
         if not isinstance(world, WarpWorldSceneBuffers):
             raise TypeError("world must be WarpWorldSceneBuffers")
@@ -312,12 +351,14 @@ class WarpBvhRefitCommandFactory:
         evidence = WarpBvhRefitCommandEvidence(
             schema_version=WARP_BVH_REFIT_COMMAND_SCHEMA_VERSION,
             operation_id=WARP_BVH_REFIT_OPERATION_ID,
+            acceleration_id=WARP_BVH_REFIT_ACCELERATION_ID,
             device_ordinal=int(bvh.device.ordinal),
             stream_handle=int(self.stream.cuda_stream),
             native_input_manifest_sha256=self.native_input_manifest_sha256,
             scene_contract_sha256=self.scene_contract_sha256,
             input_contract=self.input_contract,
             native_input_topology_sha256=self.native_input_topology_sha256,
+            topology_origin_id=bvh.topology_origin_id,
             topology_sha256=bvh.topology_sha256,
             primitive_count=bvh.num_primitives,
             node_count=bvh.num_nodes,
@@ -334,6 +375,36 @@ class WarpBvhRefitCommandFactory:
             bvh=bvh,
             stream=self.stream,
         )
+
+    def _validate_frozen_state(self) -> None:
+        topology = self.topology
+        _validate_warp_stream(self.stream, device=topology.device)
+        if int(topology.device.ordinal) != self._frozen_device_ordinal:
+            raise ValueError("Warp refit factory device drifted after construction")
+        if int(self.stream.cuda_stream) != self._frozen_stream_handle:
+            raise ValueError("Warp refit factory stream drifted after construction")
+        if topology.scene_contract_sha256 != self._frozen_scene_contract_sha256:
+            raise ValueError("Warp refit factory scene contract drifted after construction")
+        if topology.topology_origin_id != self._frozen_topology_origin_id:
+            raise ValueError("Warp refit factory topology origin drifted after construction")
+        if topology.topology_sha256 != self._frozen_topology_sha256:
+            raise ValueError("Warp refit factory topology hash drifted after construction")
+        if (
+            _warp_storage_manifest_sha256(_warp_bvh_immutable_arrays(topology))
+            != self._frozen_immutable_storage_sha256
+        ):
+            raise ValueError("Warp refit factory topology storage drifted after construction")
+        if _warp_bvh_topology_facts(topology) != self._frozen_topology_facts:
+            raise ValueError("Warp refit factory topology facts drifted after construction")
+        if (
+            self.native_input_manifest_sha256
+            != self._frozen_native_input_manifest_sha256
+            or self.native_input_topology_sha256
+            != self._frozen_native_input_topology_sha256
+            or self.scene_contract_sha256 != self._frozen_scene_contract_sha256
+            or self.input_contract != self._frozen_input_contract
+        ):
+            raise ValueError("Warp refit factory provenance drifted after construction")
 
 
 def _validate_warp_bvh_storage(bvh: DeviceOpticalBvh) -> None:
@@ -423,26 +494,26 @@ def _validate_matching_warp_bvh_topology(
         raise ValueError("Warp BVH slot belongs to a different scene contract")
     if target.topology_sha256 != source.topology_sha256:
         raise ValueError("Warp BVH slot topology hash does not match the factory")
+    if target.topology_origin_id != source.topology_origin_id:
+        raise ValueError("Warp BVH slot topology origin does not match the factory")
     if _warp_storage_manifest_sha256(
         _warp_bvh_immutable_arrays(target)
     ) != _warp_storage_manifest_sha256(_warp_bvh_immutable_arrays(source)):
         raise ValueError("Warp BVH slot replaced immutable topology storage")
-    source_facts = (
-        source.stats.num_nodes,
-        source.stats.num_leaves,
-        source.stats.max_depth,
-        source.stats.leaf_size,
-        source.stats.level_ranges,
-    )
-    target_facts = (
-        target.stats.num_nodes,
-        target.stats.num_leaves,
-        target.stats.max_depth,
-        target.stats.leaf_size,
-        target.stats.level_ranges,
-    )
-    if target_facts != source_facts:
+    if _warp_bvh_topology_facts(target) != _warp_bvh_topology_facts(source):
         raise ValueError("Warp BVH slot topology facts do not match the factory")
+
+
+def _warp_bvh_topology_facts(bvh: DeviceOpticalBvh) -> tuple[object, ...]:
+    return (
+        bvh.stats.num_nodes,
+        bvh.stats.num_leaves,
+        bvh.stats.max_depth,
+        bvh.stats.leaf_size,
+        bvh.stats.split_strategy,
+        bvh.stats.supports_refit,
+        bvh.stats.level_ranges,
+    )
 
 
 def _warp_bvh_immutable_arrays(
@@ -616,6 +687,11 @@ def build_device_bvh_from_snapshot(
         primitive_geometry_primitive_index=primitive_geometry_primitive_index_wp,
         primitive_source_order_key=primitive_source_order_key_wp,
         stats=stats,
+        topology_origin_id=(
+            WARP_BVH_TOPOLOGY_ORIGIN_ID
+            if int(leaf_size) == 4 and split_strategy == "sort"
+            else None
+        ),
         scene_contract_sha256=scene.scene_contract_sha256,
         topology_sha256=topology_sha256,
         ready_event=ready_event,
@@ -705,6 +781,8 @@ def build_host_median_bvh(
     split_strategy: str = "sort",
 ) -> dict[str, object]:
     """Build the canonical CPU median/longest-axis normalized BVH arrays."""
+    if leaf_size <= 0:
+        raise ValueError("leaf_size must be > 0")
     if split_strategy not in {"sort", "partition"}:
         raise ValueError("split_strategy must be 'sort' or 'partition'")
     num_primitives = int(aabb_min.shape[0])
@@ -717,6 +795,7 @@ def build_host_median_bvh(
             max_depth=0,
             leaf_size=leaf_size,
             sah_quality_cost=0.0,
+            split_strategy=split_strategy,
             level_ranges=(),
         )
         return {
@@ -852,7 +931,19 @@ def build_host_median_bvh(
 def host_bvh_topology_sha256(host_bvh: dict[str, object]) -> str:
     """Hash the complete normalized CPU topology before its one-time upload."""
 
+    stats = host_bvh.get("stats")
+    if not isinstance(stats, DeviceBvhBuildStats):
+        raise ValueError("host BVH topology requires canonical build stats")
     digest = hashlib.sha256(WARP_BVH_TOPOLOGY_SCHEMA_VERSION.encode("ascii"))
+    digest.update(
+        _canonical_sha256(
+            {
+                "builder": "cpu_median_longest_axis_source_order_v1",
+                "leaf_size": stats.leaf_size,
+                "split_strategy": stats.split_strategy,
+            }
+        ).encode("ascii")
+    )
     for name in (
         "left",
         "right",

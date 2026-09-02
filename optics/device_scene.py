@@ -318,6 +318,13 @@ class WarpSceneUpdateCommandFactory:
     """Seal caller-owned world outputs into allocation-free Warp commands."""
 
     __slots__ = (
+        "_frozen_device_ordinal",
+        "_frozen_input_contract",
+        "_frozen_local_scene_storage_sha256",
+        "_frozen_native_input_manifest_sha256",
+        "_frozen_scene_contract_sha256",
+        "_frozen_stream_handle",
+        "_sealed",
         "input_contract",
         "local_scene",
         "native_input_manifest_sha256",
@@ -342,6 +349,20 @@ class WarpSceneUpdateCommandFactory:
         self.stream = stream
         self.native_input_manifest_sha256 = native_input_manifest_sha256
         self.input_contract = input_contract
+        self._frozen_device_ordinal = int(local_scene.device.ordinal)
+        self._frozen_stream_handle = int(stream.cuda_stream)
+        self._frozen_scene_contract_sha256 = local_scene.scene_contract_sha256
+        self._frozen_local_scene_storage_sha256 = _warp_storage_manifest_sha256(
+            _warp_local_scene_arrays(local_scene)
+        )
+        self._frozen_native_input_manifest_sha256 = native_input_manifest_sha256
+        self._frozen_input_contract = input_contract
+        self._sealed = True
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_sealed", False):
+            raise AttributeError("Warp scene-update command factory is immutable")
+        object.__setattr__(self, name, value)
 
     def seal(
         self,
@@ -351,6 +372,7 @@ class WarpSceneUpdateCommandFactory:
     ) -> WarpSceneUpdateCommandBundle:
         """Validate and record an immutable command bundle outside timing."""
 
+        self._validate_frozen_state()
         scene = self.local_scene
         if transforms.input_contract != self.input_contract:
             raise ValueError("Warp transform input contract does not match the factory")
@@ -445,6 +467,27 @@ class WarpSceneUpdateCommandFactory:
             outputs=outputs,
             stream=self.stream,
         )
+
+    def _validate_frozen_state(self) -> None:
+        scene = self.local_scene
+        _validate_warp_stream(self.stream, device=scene.device)
+        if int(scene.device.ordinal) != self._frozen_device_ordinal:
+            raise ValueError("Warp scene factory device drifted after construction")
+        if int(self.stream.cuda_stream) != self._frozen_stream_handle:
+            raise ValueError("Warp scene factory stream drifted after construction")
+        if scene.scene_contract_sha256 != self._frozen_scene_contract_sha256:
+            raise ValueError("Warp scene factory contract drifted after construction")
+        if (
+            _warp_storage_manifest_sha256(_warp_local_scene_arrays(scene))
+            != self._frozen_local_scene_storage_sha256
+        ):
+            raise ValueError("Warp scene factory storage drifted after construction")
+        if (
+            self.native_input_manifest_sha256
+            != self._frozen_native_input_manifest_sha256
+            or self.input_contract != self._frozen_input_contract
+        ):
+            raise ValueError("Warp scene factory provenance drifted after construction")
 
 
 def allocate_warp_world_scene_buffers(

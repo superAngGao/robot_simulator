@@ -39,6 +39,8 @@ from .device import (
     stage_optical_compute_result_to_host,
 )
 from .device_bvh import (
+    WARP_BVH_REFIT_ACCELERATION_ID,
+    WARP_BVH_TOPOLOGY_ORIGIN_ID,
     DeviceBvhBuildStats,
     DeviceOpticalBvh,
     WarpBvhRefitCommandBundle,
@@ -149,6 +151,8 @@ __all__ = [
     "DeviceOpticalScene",
     "DeviceOpticalSceneCache",
     "DeviceOpticalSceneSnapshot",
+    "WARP_BVH_REFIT_ACCELERATION_ID",
+    "WARP_BVH_TOPOLOGY_ORIGIN_ID",
     "WarpBvhRefitCommandBundle",
     "WarpBvhRefitCommandEvidence",
     "WarpBvhRefitCommandFactory",
