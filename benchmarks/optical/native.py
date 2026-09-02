@@ -859,6 +859,54 @@ def build_prepared_cuda_local_scene(prepared: CudaPreparedNativeInput):
     )
 
 
+def build_prepared_cuda_transform_inputs(
+    prepared: CudaPreparedNativeInput,
+    frame_index: int,
+):
+    """Bind one exact a2 replay allocation range to the CUDA scene factory."""
+
+    assert_outside_timed_boundary("prepared CUDA transform-frame construction")
+    manifest = prepared.manifest
+    if prepared.backend != "cuda" or manifest.input_contract != CANONICAL_NATIVE_REPLAY_INPUT:
+        raise ValueError("prepared CUDA transform inputs require canonical_native_replay_v1")
+    if manifest.transform_replay_sha256 is None:
+        raise ValueError("prepared CUDA transform replay provenance is incomplete")
+    if frame_index < 0 or frame_index >= manifest.transform_frame_count:
+        raise ValueError("prepared CUDA transform frame index is out of range")
+    from optics.cuda_scene import cuda_replay_transform_inputs
+
+    return cuda_replay_transform_inputs(
+        prepared.arrays["replay_x_world_R"],
+        prepared.arrays["replay_x_world_r"],
+        frame_index=frame_index,
+        input_contract=manifest.input_contract,
+        transform_replay_sha256=manifest.transform_replay_sha256,
+        resources=(prepared,),
+    )
+
+
+def build_prepared_cuda_scene_update_factory(
+    prepared: CudaPreparedNativeInput,
+    *,
+    context: object,
+):
+    """Bind the CUDA scene factory to the exact prepared manifest and scene."""
+
+    assert_outside_timed_boundary("prepared CUDA scene-command factory construction")
+    if not prepared.manifest.result_capable or prepared.manifest.input_contract is None:
+        raise ValueError("prepared CUDA scene factory requires result-capable provenance")
+    if int(getattr(getattr(context, "device", None), "index", -1)) != prepared.device_ordinal:
+        raise ValueError("prepared CUDA scene factory context is on the wrong device")
+    from optics.cuda_scene import CudaSceneUpdateStageFactory
+
+    return CudaSceneUpdateStageFactory.prepare(
+        context=context,
+        local_scene=build_prepared_cuda_local_scene(prepared),
+        native_input_manifest_sha256=prepared.manifest.sha256,
+        input_contract=prepared.manifest.input_contract,
+    )
+
+
 @dataclass(frozen=True)
 class NativeInputValidationReport:
     """Direct, untimed parity evidence for one prepared native input."""

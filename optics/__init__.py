@@ -20,7 +20,19 @@ from .cuda_direct_light import (
     cuda_direct_light_available,
 )
 from .cuda_lbvh import build_cuda_lbvh_from_snapshot
-from .cuda_scene import CudaOpticalLocalScene, build_cuda_optical_scene, cuda_optical_scene_from_arrays
+from .cuda_scene import (
+    CUDA_SCENE_UPDATE_OPERATION_ID,
+    CudaOpticalLocalScene,
+    CudaSceneTransformInputs,
+    CudaSceneUpdateStage,
+    CudaSceneUpdateStageEvidence,
+    CudaSceneUpdateStageFactory,
+    CudaWorldSceneBuffers,
+    allocate_cuda_world_scene_buffers,
+    build_cuda_optical_scene,
+    cuda_optical_scene_from_arrays,
+    cuda_replay_transform_inputs,
+)
 from .cuda_timeline import (
     CudaDeferredProfile,
     CudaOpticalCompletion,
@@ -141,6 +153,12 @@ __all__ = [
     "CudaOpticalTimelineError",
     "CudaOpticalTransaction",
     "CudaOpticalTransactionPoisonedError",
+    "CUDA_SCENE_UPDATE_OPERATION_ID",
+    "CudaSceneTransformInputs",
+    "CudaSceneUpdateStage",
+    "CudaSceneUpdateStageEvidence",
+    "CudaSceneUpdateStageFactory",
+    "CudaWorldSceneBuffers",
     "CudaShadeInputs",
     "DIRECT_LIGHT_FULL_HOST_PER_RAY_CHANNEL_SPECS",
     "DIRECT_LIGHT_FULL_PRIMARY_HOST_CHANNEL_SPECS",
@@ -200,7 +218,9 @@ __all__ = [
     "build_host_optical_primitive_workload",
     "allocate_warp_world_scene_buffers",
     "allocate_cuda_direct_light_buffers",
+    "allocate_cuda_world_scene_buffers",
     "cuda_direct_light_available",
+    "cuda_replay_transform_inputs",
     "channel_is_device",
     "channel_to_numpy",
     "host_diagnostic_overlay_contract_schema",
