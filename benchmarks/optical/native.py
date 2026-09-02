@@ -761,6 +761,83 @@ def build_prepared_warp_local_scene(prepared: WarpPreparedNativeInput):
     )
 
 
+def build_prepared_warp_transform_inputs(
+    prepared: WarpPreparedNativeInput,
+    frame_index: int,
+):
+    """Bind one exact a2 replay allocation range to the Warp scene factory."""
+
+    assert_outside_timed_boundary("prepared Warp transform-frame construction")
+    manifest = prepared.manifest
+    if prepared.backend != "warp" or manifest.input_contract != CANONICAL_NATIVE_REPLAY_INPUT:
+        raise ValueError("prepared Warp transform inputs require canonical_native_replay_v1")
+    if manifest.transform_replay_sha256 is None:
+        raise ValueError("prepared Warp transform replay provenance is incomplete")
+    if frame_index < 0 or frame_index >= manifest.transform_frame_count:
+        raise ValueError("prepared Warp transform frame index is out of range")
+    from optics.device_scene import warp_replay_transform_inputs
+
+    return warp_replay_transform_inputs(
+        prepared.arrays["replay_x_world_R"],
+        prepared.arrays["replay_x_world_r"],
+        frame_index=frame_index,
+        input_contract=manifest.input_contract,
+        transform_replay_sha256=manifest.transform_replay_sha256,
+        resources=(prepared,),
+    )
+
+
+def build_prepared_warp_scene_update_factory(
+    prepared: WarpPreparedNativeInput,
+    *,
+    stream: object,
+):
+    """Bind the Warp scene factory to the exact prepared manifest and scene."""
+
+    assert_outside_timed_boundary("prepared Warp scene-command factory construction")
+    if not prepared.manifest.result_capable or prepared.manifest.input_contract is None:
+        raise ValueError("prepared Warp scene factory requires result-capable provenance")
+    from optics.device_scene import WarpSceneUpdateCommandFactory
+
+    return WarpSceneUpdateCommandFactory(
+        build_prepared_warp_local_scene(prepared),
+        stream=stream,
+        native_input_manifest_sha256=prepared.manifest.sha256,
+        input_contract=prepared.manifest.input_contract,
+    )
+
+
+def build_prepared_warp_bvh_refit_factory(
+    prepared: WarpPreparedNativeInput,
+    bvh: object,
+    *,
+    stream: object,
+):
+    """Bind one actual Warp topology to the exact prepared scene provenance."""
+
+    assert_outside_timed_boundary("prepared Warp BVH-refit factory construction")
+    manifest = prepared.manifest
+    if not manifest.result_capable or manifest.input_contract is None:
+        raise ValueError("prepared Warp refit factory requires result-capable provenance")
+    packed = prepared.source.packed_scene_owner if prepared.source is not None else None
+    if packed is None:
+        raise ValueError("prepared Warp refit factory lacks its packed scene owner")
+    if int(getattr(bvh, "num_primitives", -1)) != packed.num_triangles:
+        raise ValueError("prepared Warp refit topology primitive count does not match its scene")
+    if int(getattr(getattr(bvh, "device", None), "ordinal", -1)) != prepared.device_ordinal:
+        raise ValueError("prepared Warp refit topology is on the wrong device")
+    from optics.device_bvh import WarpBvhRefitCommandFactory
+
+    return WarpBvhRefitCommandFactory(
+        bvh,
+        stream=stream,
+        native_input_manifest_sha256=manifest.sha256,
+        native_input_topology_sha256=manifest.topology_sha256,
+        scene_contract_sha256=manifest.scene_contract_sha256,
+        input_contract=manifest.input_contract,
+    )
+
+
 def build_prepared_cuda_local_scene(prepared: CudaPreparedNativeInput):
     """Create a production CUDA scene wrapper over exact a2 allocations."""
 

@@ -41,6 +41,9 @@ from .device import (
 from .device_bvh import (
     DeviceBvhBuildStats,
     DeviceOpticalBvh,
+    WarpBvhRefitCommandBundle,
+    WarpBvhRefitCommandEvidence,
+    WarpBvhRefitCommandFactory,
     build_device_bvh_from_snapshot,
     build_host_median_bvh,
     refit_device_bvh_from_snapshot,
@@ -51,10 +54,17 @@ from .device_scene import (
     DeviceOpticalScene,
     DeviceOpticalSceneCache,
     DeviceOpticalSceneSnapshot,
+    WarpSceneTransformInputs,
+    WarpSceneUpdateCommandBundle,
+    WarpSceneUpdateCommandEvidence,
+    WarpSceneUpdateCommandFactory,
+    WarpWorldSceneBuffers,
+    allocate_warp_world_scene_buffers,
     build_device_optical_scene,
     build_device_optical_scene_from_packed,
     device_optical_scene_from_arrays,
     update_device_optical_scene_from_gpu_frame,
+    warp_replay_transform_inputs,
 )
 from .execution import (
     CpuBvhOpticalExecutor,
@@ -88,12 +98,6 @@ from .registry import (
     OpticalTriangleMeshGeometry,
     OpticalWorldRegistry,
 )
-from .scene_contract import (
-    SCENE_ARRAY_SEMANTICS,
-    SCENE_CONTRACT_SCHEMA_VERSION,
-    SCENE_MATERIALIZER_ID,
-    PackedOpticalSceneHost,
-)
 from .scene import (
     CpuBvhNode,
     OpticalFrameInputs,
@@ -101,6 +105,12 @@ from .scene import (
     OpticalSceneAcceleration,
     OpticalSceneCache,
     OpticalSceneSnapshot,
+)
+from .scene_contract import (
+    SCENE_ARRAY_SEMANTICS,
+    SCENE_CONTRACT_SCHEMA_VERSION,
+    SCENE_MATERIALIZER_ID,
+    PackedOpticalSceneHost,
 )
 from .warp_execution import (
     GpuBruteForceOpticalExecutor,
@@ -139,6 +149,14 @@ __all__ = [
     "DeviceOpticalScene",
     "DeviceOpticalSceneCache",
     "DeviceOpticalSceneSnapshot",
+    "WarpBvhRefitCommandBundle",
+    "WarpBvhRefitCommandEvidence",
+    "WarpBvhRefitCommandFactory",
+    "WarpSceneTransformInputs",
+    "WarpSceneUpdateCommandBundle",
+    "WarpSceneUpdateCommandEvidence",
+    "WarpSceneUpdateCommandFactory",
+    "WarpWorldSceneBuffers",
     "GpuBruteForceOpticalExecutor",
     "GpuDeviceBvhDirectLightOpticalExecutor",
     "GpuDeviceBvhOpticalExecutor",
@@ -176,6 +194,7 @@ __all__ = [
     "SCENE_MATERIALIZER_ID",
     "CanonicalHostChannelSpec",
     "build_host_optical_primitive_workload",
+    "allocate_warp_world_scene_buffers",
     "allocate_cuda_direct_light_buffers",
     "cuda_direct_light_available",
     "channel_is_device",
@@ -199,4 +218,5 @@ __all__ = [
     "stage_channels_to_host",
     "stage_optical_compute_result_to_host",
     "update_device_optical_scene_from_gpu_frame",
+    "warp_replay_transform_inputs",
 ]

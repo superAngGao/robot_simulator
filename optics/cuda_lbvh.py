@@ -181,6 +181,7 @@ def build_cuda_lbvh_from_snapshot(
         primitive_geometry_primitive_index=scene.triangle_geometry_primitive_index,
         primitive_source_order_key=scene.triangle_source_order_key,
         stats=stats,
+        scene_contract_sha256=scene.scene_contract_sha256,
         ready_event=ready_event,
         resources=resources,
     )

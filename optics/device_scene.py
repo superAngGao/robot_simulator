@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from contextlib import nullcontext
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -23,6 +25,35 @@ except Exception:  # pragma: no cover - keeps CPU-only imports working.
 
 _BUILD_EPS_F32 = 1.0e-8
 _MAX_INT64_ROLE_BITS = 63
+WARP_SCENE_UPDATE_OPERATION_ID = "warp_local_scene_transform_and_aabb_out_v1"
+WARP_SCENE_COMMAND_SCHEMA_VERSION = "q54.p12.4.warp-scene-command.v1"
+_DEVICE_SCENE_ARRAY_NAMES = (
+    "material_albedo_rgb",
+    "light_kind",
+    "light_position_or_direction_world",
+    "light_intensity",
+    "light_color_rgb",
+    "triangle_vertices_local",
+    "triangle_instance_index",
+    "triangle_primitive_global_id",
+    "triangle_primitive_index_within_instance",
+    "triangle_geometry_index",
+    "triangle_geometry_primitive_index",
+    "triangle_source_order_key",
+    "triangle_role_mask",
+    "triangle_numeric_instance_id",
+    "triangle_material_index",
+    "plane_normal_local",
+    "plane_point_local",
+    "plane_instance_index",
+    "plane_source_order_key",
+    "plane_role_mask",
+    "plane_numeric_instance_id",
+    "plane_material_index",
+    "instance_body_index",
+    "instance_X_body_geometry_R",
+    "instance_X_body_geometry_r",
+)
 
 
 @dataclass(frozen=True)
@@ -137,6 +168,590 @@ class DeviceOpticalSceneSnapshot:
     triangle_aabb_max: object | None = None
     ready_event: object | None = None
     resources: tuple[object, ...] = ()
+
+
+@dataclass(frozen=True)
+class WarpSceneTransformInputs:
+    """One already-created Warp transform view bound outside native timing."""
+
+    x_world_R: object
+    x_world_r: object
+    env_idx: int
+    input_contract: str
+    transform_replay_sha256: str | None
+    transform_frame_index: int | None
+    resources: tuple[object, ...] = ()
+
+
+@dataclass(frozen=True)
+class WarpWorldSceneBuffers:
+    """Caller-owned mutable world geometry and AABB outputs.
+
+    The allocation helper below exists for compatibility callers and C3
+    one-shot tests. C4 must supply the final arena-owned instances.
+    """
+
+    device: object
+    triangle_v0_world: object
+    triangle_e1_world: object
+    triangle_e2_world: object
+    triangle_normal_world: object
+    plane_normal_world: object
+    plane_point_world: object
+    triangle_aabb_min: object
+    triangle_aabb_max: object
+    resources: tuple[object, ...] = ()
+
+    def as_snapshot(
+        self,
+        scene: DeviceOpticalScene,
+        *,
+        frame_id: int,
+        sim_time: float,
+        env_idx: int,
+    ) -> DeviceOpticalSceneSnapshot:
+        """Create an untimed compatibility view without recording an event."""
+
+        if scene.device != self.device:
+            raise ValueError("Warp world-scene buffers and local scene devices must match")
+        return DeviceOpticalSceneSnapshot(
+            frame_id=int(frame_id),
+            sim_time=float(sim_time),
+            env_idx=int(env_idx),
+            scene=scene,
+            triangle_v0_world=self.triangle_v0_world,
+            triangle_e1_world=self.triangle_e1_world,
+            triangle_e2_world=self.triangle_e2_world,
+            triangle_normal_world=self.triangle_normal_world,
+            triangle_aabb_min=self.triangle_aabb_min,
+            triangle_aabb_max=self.triangle_aabb_max,
+            plane_normal_world=self.plane_normal_world,
+            plane_point_world=self.plane_point_world,
+            ready_event=None,
+            resources=(self,) + tuple(self.resources),
+        )
+
+
+@dataclass(frozen=True)
+class WarpSceneUpdateCommandEvidence:
+    """Independent facts captured while a Warp scene bundle is sealed."""
+
+    schema_version: str
+    operation_id: str
+    device_ordinal: int
+    stream_handle: int
+    native_input_manifest_sha256: str
+    scene_contract_sha256: str
+    input_contract: str
+    transform_replay_sha256: str | None
+    transform_frame_index: int | None
+    input_storage_sha256: str
+    output_storage_sha256: str
+    dispatch_count: int
+    dispatch_plan_sha256: str
+
+    @property
+    def sha256(self) -> str:
+        return _canonical_sha256(self.__dict__)
+
+
+class WarpSceneUpdateCommandBundle:
+    """Immutable pre-recorded Warp scene commands for one storage graph."""
+
+    __slots__ = (
+        "_commands",
+        "_poisoned",
+        "_sealed",
+        "evidence",
+        "local_scene",
+        "outputs",
+        "stream",
+        "transforms",
+    )
+
+    def __init__(
+        self,
+        *,
+        commands: tuple[object, ...],
+        evidence: WarpSceneUpdateCommandEvidence,
+        local_scene: DeviceOpticalScene,
+        transforms: WarpSceneTransformInputs,
+        outputs: WarpWorldSceneBuffers,
+        stream: object,
+    ) -> None:
+        self._commands = commands
+        self._poisoned = False
+        self.evidence = evidence
+        self.local_scene = local_scene
+        self.transforms = transforms
+        self.outputs = outputs
+        self.stream = stream
+        self._sealed = True
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_sealed", False):
+            raise AttributeError("Warp scene-update command bundle is immutable")
+        object.__setattr__(self, name, value)
+
+    @property
+    def dispatch_count(self) -> int:
+        return len(self._commands)
+
+    @property
+    def poisoned(self) -> bool:
+        return self._poisoned
+
+    def enqueue(self) -> None:
+        """Launch only the frozen commands on the frozen stream."""
+
+        if self._poisoned:
+            raise RuntimeError("Warp scene-update command bundle is poisoned")
+        try:
+            for command in self._commands:
+                command.launch(stream=self.stream)
+        except Exception:
+            object.__setattr__(self, "_poisoned", True)
+            raise
+
+
+class WarpSceneUpdateCommandFactory:
+    """Seal caller-owned world outputs into allocation-free Warp commands."""
+
+    __slots__ = (
+        "input_contract",
+        "local_scene",
+        "native_input_manifest_sha256",
+        "stream",
+    )
+
+    def __init__(
+        self,
+        local_scene: DeviceOpticalScene,
+        *,
+        stream: object,
+        native_input_manifest_sha256: str,
+        input_contract: str,
+    ) -> None:
+        _require_warp()
+        if not local_scene.scene_contract_sha256:
+            raise ValueError("Warp scene command requires scene-contract provenance")
+        if not _sha256_text(native_input_manifest_sha256) or not input_contract:
+            raise ValueError("Warp scene command provenance must be non-empty")
+        _validate_warp_stream(stream, device=local_scene.device)
+        self.local_scene = local_scene
+        self.stream = stream
+        self.native_input_manifest_sha256 = native_input_manifest_sha256
+        self.input_contract = input_contract
+
+    def seal(
+        self,
+        *,
+        transforms: WarpSceneTransformInputs,
+        outputs: WarpWorldSceneBuffers,
+    ) -> WarpSceneUpdateCommandBundle:
+        """Validate and record an immutable command bundle outside timing."""
+
+        scene = self.local_scene
+        if transforms.input_contract != self.input_contract:
+            raise ValueError("Warp transform input contract does not match the factory")
+        _validate_warp_transform_inputs(scene, transforms)
+        _validate_warp_world_scene_buffers(scene, outputs)
+        input_arrays = _warp_scene_command_inputs(scene, transforms)
+        output_arrays = _warp_world_scene_arrays(outputs)
+        protected_arrays = _warp_local_scene_arrays(scene) + (
+            ("x_world_R", transforms.x_world_R),
+            ("x_world_r", transforms.x_world_r),
+        )
+        _validate_disjoint_warp_storage(protected_arrays, output_arrays)
+
+        commands: list[object] = []
+        dispatches: list[dict[str, object]] = []
+        if scene.num_triangles > 0:
+            commands.append(
+                wp.launch(
+                    _update_triangles_derived_aabb_world_kernel,
+                    dim=scene.num_triangles,
+                    inputs=(
+                        scene.triangle_vertices_local,
+                        scene.triangle_instance_index,
+                        scene.instance_body_index,
+                        scene.instance_X_body_geometry_R,
+                        scene.instance_X_body_geometry_r,
+                        transforms.x_world_R,
+                        transforms.x_world_r,
+                        int(transforms.env_idx),
+                        outputs.triangle_v0_world,
+                        outputs.triangle_e1_world,
+                        outputs.triangle_e2_world,
+                        outputs.triangle_normal_world,
+                        outputs.triangle_aabb_min,
+                        outputs.triangle_aabb_max,
+                    ),
+                    device=scene.device,
+                    stream=self.stream,
+                    record_tape=False,
+                    record_cmd=True,
+                )
+            )
+            dispatches.append(
+                {"kernel": "update_triangles_derived_aabb_world", "dim": scene.num_triangles}
+            )
+        if scene.num_planes > 0:
+            commands.append(
+                wp.launch(
+                    _update_planes_world_kernel,
+                    dim=scene.num_planes,
+                    inputs=(
+                        scene.plane_normal_local,
+                        scene.plane_point_local,
+                        scene.plane_instance_index,
+                        scene.instance_body_index,
+                        scene.instance_X_body_geometry_R,
+                        scene.instance_X_body_geometry_r,
+                        transforms.x_world_R,
+                        transforms.x_world_r,
+                        int(transforms.env_idx),
+                        outputs.plane_normal_world,
+                        outputs.plane_point_world,
+                    ),
+                    device=scene.device,
+                    stream=self.stream,
+                    record_tape=False,
+                    record_cmd=True,
+                )
+            )
+            dispatches.append({"kernel": "update_planes_world", "dim": scene.num_planes})
+
+        evidence = WarpSceneUpdateCommandEvidence(
+            schema_version=WARP_SCENE_COMMAND_SCHEMA_VERSION,
+            operation_id=WARP_SCENE_UPDATE_OPERATION_ID,
+            device_ordinal=int(scene.device.ordinal),
+            stream_handle=int(self.stream.cuda_stream),
+            native_input_manifest_sha256=self.native_input_manifest_sha256,
+            scene_contract_sha256=scene.scene_contract_sha256,
+            input_contract=self.input_contract,
+            transform_replay_sha256=transforms.transform_replay_sha256,
+            transform_frame_index=transforms.transform_frame_index,
+            input_storage_sha256=_warp_storage_manifest_sha256(input_arrays),
+            output_storage_sha256=_warp_storage_manifest_sha256(output_arrays),
+            dispatch_count=len(commands),
+            dispatch_plan_sha256=_canonical_sha256(dispatches),
+        )
+        return WarpSceneUpdateCommandBundle(
+            commands=tuple(commands),
+            evidence=evidence,
+            local_scene=scene,
+            transforms=transforms,
+            outputs=outputs,
+            stream=self.stream,
+        )
+
+
+def allocate_warp_world_scene_buffers(
+    scene: DeviceOpticalScene,
+    *,
+    stream: object | None = None,
+) -> WarpWorldSceneBuffers:
+    """Allocate one caller-owned C3 test/compatibility output bundle.
+
+    This helper is intentionally not an arena and must run before native
+    timing. The sealed command factory itself never allocates outputs.
+    """
+
+    _require_warp()
+    if stream is not None:
+        _validate_warp_stream(stream, device=scene.device)
+    with _scoped_stream(stream):
+        arrays = {
+            "triangle_v0_world": wp.empty(
+                (scene.num_triangles, 3), dtype=wp.float32, device=scene.device
+            ),
+            "triangle_e1_world": wp.empty(
+                (scene.num_triangles, 3), dtype=wp.float32, device=scene.device
+            ),
+            "triangle_e2_world": wp.empty(
+                (scene.num_triangles, 3), dtype=wp.float32, device=scene.device
+            ),
+            "triangle_normal_world": wp.empty(
+                (scene.num_triangles, 3), dtype=wp.float32, device=scene.device
+            ),
+            "plane_normal_world": wp.empty(
+                (scene.num_planes, 3), dtype=wp.float32, device=scene.device
+            ),
+            "plane_point_world": wp.empty(
+                (scene.num_planes, 3), dtype=wp.float32, device=scene.device
+            ),
+            "triangle_aabb_min": wp.empty(
+                (scene.num_triangles, 3), dtype=wp.float32, device=scene.device
+            ),
+            "triangle_aabb_max": wp.empty(
+                (scene.num_triangles, 3), dtype=wp.float32, device=scene.device
+            ),
+        }
+    return WarpWorldSceneBuffers(
+        device=scene.device,
+        resources=(scene,),
+        **arrays,
+    )
+
+
+def warp_replay_transform_inputs(
+    x_world_R: object,
+    x_world_r: object,
+    *,
+    frame_index: int,
+    input_contract: str,
+    transform_replay_sha256: str,
+    resources: tuple[object, ...] = (),
+) -> WarpSceneTransformInputs:
+    """Create leading-env Warp views for one already-uploaded replay frame."""
+
+    _require_warp()
+    if not isinstance(frame_index, int) or isinstance(frame_index, bool) or frame_index < 0:
+        raise ValueError("transform replay frame index must be a non-negative integer")
+    if not input_contract or not _sha256_text(transform_replay_sha256):
+        raise ValueError("transform replay provenance must be non-empty")
+    _validate_warp_array(x_world_R, name="replay_x_world_R", dtype=wp.float32, ndim=4)
+    _validate_warp_array(x_world_r, name="replay_x_world_r", dtype=wp.float32, ndim=3)
+    if tuple(x_world_R.shape[:2]) != tuple(x_world_r.shape[:2]):
+        raise ValueError("Warp replay transform shapes do not agree")
+    if tuple(x_world_R.shape[2:]) != (3, 3) or tuple(x_world_r.shape[2:]) != (3,):
+        raise ValueError("Warp replay transform trailing shapes are invalid")
+    if frame_index >= int(x_world_R.shape[0]):
+        raise IndexError("transform replay frame index is out of range")
+    if int(x_world_R.shape[1]) == 0:
+        # Warp 1.12 rejects slicing an array that has a later zero-length
+        # dimension. Static zero-body replays never dereference transforms, so
+        # retain the exact base allocation and select the frame as the env.
+        rotation_view = x_world_R
+        translation_view = x_world_r
+        env_idx = frame_index
+    else:
+        rotation_view = x_world_R[frame_index : frame_index + 1]
+        translation_view = x_world_r[frame_index : frame_index + 1]
+        env_idx = 0
+    return WarpSceneTransformInputs(
+        x_world_R=rotation_view,
+        x_world_r=translation_view,
+        env_idx=env_idx,
+        input_contract=input_contract,
+        transform_replay_sha256=transform_replay_sha256,
+        transform_frame_index=frame_index,
+        resources=tuple(resources) + (x_world_R, x_world_r),
+    )
+
+
+def _validate_warp_transform_inputs(
+    scene: DeviceOpticalScene,
+    transforms: WarpSceneTransformInputs,
+) -> None:
+    if not isinstance(transforms, WarpSceneTransformInputs):
+        raise TypeError("transforms must be WarpSceneTransformInputs")
+    _validate_warp_array(
+        transforms.x_world_R,
+        name="x_world_R",
+        dtype=wp.float32,
+        ndim=4,
+        device=scene.device,
+    )
+    _validate_warp_array(
+        transforms.x_world_r,
+        name="x_world_r",
+        dtype=wp.float32,
+        ndim=3,
+        device=scene.device,
+    )
+    rotation_shape = tuple(transforms.x_world_R.shape)
+    translation_shape = tuple(transforms.x_world_r.shape)
+    if rotation_shape[2:] != (3, 3) or translation_shape[2:] != (3,):
+        raise ValueError("Warp transform trailing shapes are invalid")
+    if rotation_shape[:2] != translation_shape[:2]:
+        raise ValueError("Warp transform env/body dimensions do not agree")
+    if (
+        not isinstance(transforms.env_idx, int)
+        or isinstance(transforms.env_idx, bool)
+        or transforms.env_idx < 0
+        or transforms.env_idx >= rotation_shape[0]
+    ):
+        raise ValueError("Warp transform env index is out of range")
+    if scene.max_body_index >= rotation_shape[1]:
+        raise ValueError("Warp transforms do not cover the scene body indices")
+    has_replay_hash = transforms.transform_replay_sha256 is not None
+    has_replay_index = transforms.transform_frame_index is not None
+    if has_replay_hash != has_replay_index:
+        raise ValueError("Warp replay hash and frame index must appear together")
+    if has_replay_hash:
+        if not _sha256_text(transforms.transform_replay_sha256):
+            raise ValueError("Warp transform replay hash is invalid")
+        if (
+            not isinstance(transforms.transform_frame_index, int)
+            or isinstance(transforms.transform_frame_index, bool)
+            or transforms.transform_frame_index < 0
+        ):
+            raise ValueError("Warp transform replay frame index is invalid")
+
+
+def _validate_warp_world_scene_buffers(
+    scene: DeviceOpticalScene,
+    outputs: WarpWorldSceneBuffers,
+) -> None:
+    if not isinstance(outputs, WarpWorldSceneBuffers):
+        raise TypeError("outputs must be WarpWorldSceneBuffers")
+    if wp.get_device(outputs.device) != scene.device:
+        raise ValueError("Warp world-scene output device does not match the local scene")
+    expected = {
+        "triangle_v0_world": scene.num_triangles,
+        "triangle_e1_world": scene.num_triangles,
+        "triangle_e2_world": scene.num_triangles,
+        "triangle_normal_world": scene.num_triangles,
+        "triangle_aabb_min": scene.num_triangles,
+        "triangle_aabb_max": scene.num_triangles,
+        "plane_normal_world": scene.num_planes,
+        "plane_point_world": scene.num_planes,
+    }
+    for name, count in expected.items():
+        _validate_warp_array(
+            getattr(outputs, name),
+            name=name,
+            dtype=wp.float32,
+            ndim=2,
+            shape=(count, 3),
+            device=scene.device,
+        )
+
+
+def _validate_warp_stream(stream: object, *, device: object) -> None:
+    if getattr(stream, "device", None) != wp.get_device(device):
+        raise ValueError("Warp prepared stream device does not match")
+    handle = getattr(stream, "cuda_stream", None)
+    if not isinstance(handle, int) or isinstance(handle, bool) or handle <= 0:
+        raise ValueError("Warp prepared stream must expose a nonzero CUDA handle")
+
+
+def _validate_warp_array(
+    value: object,
+    *,
+    name: str,
+    dtype: object,
+    ndim: int,
+    shape: tuple[int, ...] | None = None,
+    device: object | None = None,
+) -> None:
+    if not isinstance(value, wp.array):
+        raise TypeError(f"Warp array {name!r} has the wrong type")
+    if value.dtype != dtype or int(value.ndim) != ndim:
+        raise ValueError(f"Warp array {name!r} dtype/rank does not match")
+    if shape is not None and tuple(value.shape) != shape:
+        raise ValueError(f"Warp array {name!r} shape does not match")
+    if not value.is_contiguous:
+        raise ValueError(f"Warp array {name!r} must be contiguous")
+    if device is not None and wp.get_device(value.device) != wp.get_device(device):
+        raise ValueError(f"Warp array {name!r} is on the wrong device")
+    if int(value.capacity) > 0 and int(value.ptr or 0) <= 0:
+        raise ValueError(f"Warp array {name!r} has a null pointer")
+
+
+def _warp_scene_command_inputs(
+    scene: DeviceOpticalScene,
+    transforms: WarpSceneTransformInputs,
+) -> tuple[tuple[str, object], ...]:
+    return (
+        ("triangle_vertices_local", scene.triangle_vertices_local),
+        ("triangle_instance_index", scene.triangle_instance_index),
+        ("plane_normal_local", scene.plane_normal_local),
+        ("plane_point_local", scene.plane_point_local),
+        ("plane_instance_index", scene.plane_instance_index),
+        ("instance_body_index", scene.instance_body_index),
+        ("instance_X_body_geometry_R", scene.instance_X_body_geometry_R),
+        ("instance_X_body_geometry_r", scene.instance_X_body_geometry_r),
+        ("x_world_R", transforms.x_world_R),
+        ("x_world_r", transforms.x_world_r),
+    )
+
+
+def _warp_local_scene_arrays(
+    scene: DeviceOpticalScene,
+) -> tuple[tuple[str, object], ...]:
+    return tuple((name, getattr(scene, name)) for name in _DEVICE_SCENE_ARRAY_NAMES)
+
+
+def _warp_world_scene_arrays(
+    outputs: WarpWorldSceneBuffers,
+) -> tuple[tuple[str, object], ...]:
+    return tuple(
+        (name, getattr(outputs, name))
+        for name in (
+            "triangle_v0_world",
+            "triangle_e1_world",
+            "triangle_e2_world",
+            "triangle_normal_world",
+            "plane_normal_world",
+            "plane_point_world",
+            "triangle_aabb_min",
+            "triangle_aabb_max",
+        )
+    )
+
+
+def _validate_disjoint_warp_storage(
+    inputs: tuple[tuple[str, object], ...],
+    outputs: tuple[tuple[str, object], ...],
+) -> None:
+    seen_outputs: list[tuple[str, int, int]] = []
+    input_ranges = tuple(
+        (name, int(value.ptr or 0), int(value.capacity))
+        for name, value in inputs
+        if int(value.capacity) > 0
+    )
+    for name, value in outputs:
+        start = int(value.ptr or 0)
+        size = int(value.capacity)
+        if size <= 0:
+            continue
+        end = start + size
+        for other_name, other_start, other_size in input_ranges:
+            if start < other_start + other_size and other_start < end:
+                raise ValueError(f"Warp output {name!r} overlaps input {other_name!r}")
+        for other_name, other_start, other_end in seen_outputs:
+            if start < other_end and other_start < end:
+                raise ValueError(f"Warp outputs {name!r} and {other_name!r} overlap")
+        seen_outputs.append((name, start, end))
+
+
+def _warp_storage_manifest_sha256(values: tuple[tuple[str, object], ...]) -> str:
+    return _canonical_sha256(
+        [
+            {
+                "name": name,
+                "device_ordinal": int(value.device.ordinal),
+                "ptr": int(value.ptr or 0),
+                "capacity": int(value.capacity),
+                "dtype": str(value.dtype),
+                "shape": list(value.shape),
+                "strides": list(value.strides),
+            }
+            for name, value in values
+        ]
+    )
+
+
+def _canonical_sha256(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _sha256_text(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 class DeviceOpticalSceneCache:
