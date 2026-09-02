@@ -1,6 +1,6 @@
 {
-  "schema_version": "q54.p12.4.gate.v9",
-  "result_schema_version": "q54.p12.4.result.v9",
+  "schema_version": "q54.p12.4.gate.v10",
+  "result_schema_version": "q54.p12.4.result.v10",
   "case_schema_version": "q54.p12.4.case.v1",
   "status": "frozen",
   "frozen_at": "2026-08-13T10:41:19+08:00",
@@ -532,7 +532,7 @@
     ]
   },
   "native_execution_binding_contract": {
-    "schema_version": "q54.p12.4.c3-one-shot-binding.v4",
+    "schema_version": "q54.p12.4.c3-one-shot-binding.v5",
     "stage_schema_version": "q54.p12.4.native-stage-evidence.v2",
     "construction_order": [
       "source_and_prepared_storage",
@@ -549,10 +549,12 @@
     "C3_one_shot_result_emission": "forbidden",
     "C4_binding_schema": "not_implemented_until_C4_review",
     "C4_required_evidence": ["arena", "slot", "generation", "lease", "ring"],
-    "dynamic_dataflow_contract_schema_version": "q54.p12.4.dynamic-dataflow.v1",
+    "dynamic_dataflow_contract_schema_version": "q54.p12.4.dynamic-dataflow.v2",
+    "acceleration_resolution": "lane_plus_row_acceleration_class",
     "dynamic_storage_rule": "complete_ordered_profile_specific_no_missing_or_extra_storage",
     "pre_enqueue_validation": [
       "row_case_boundary_lane_and_input_contract",
+      "row_acceleration_class_and_lane_resolved_acceleration_identity",
       "native_manifest_and_readiness",
       "scene_replay_or_fixed_fixture_provenance",
       "exact_prepared_scene_storage",

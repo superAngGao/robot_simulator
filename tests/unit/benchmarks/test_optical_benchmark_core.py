@@ -532,6 +532,7 @@ class _FakeLane:
             boundary=row["boundary"],
             lane="warp",
             renderer_id="warp_bvh_direct_light",
+            acceleration_class=row["acceleration_class"],
             acceleration_id="fixed_bvh_fixture",
             output_profile=row["output_profile"],
             shadows=row["shadows"],

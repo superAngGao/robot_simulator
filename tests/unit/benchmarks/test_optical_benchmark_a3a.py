@@ -287,6 +287,22 @@ def test_c3_one_shot_binding_cannot_reach_operation_trace(monkeypatch):
         )
 
 
+def test_runner_rejects_binding_acceleration_class_that_differs_from_row(monkeypatch):
+    gate = _activated_gate(monkeypatch)
+    row = next(row for row in gate["mandatory_rows"] if row["boundary"] == "R1")
+    prepared = _prepared_input(case_id=row["case_id"])
+    lane = _OutOfOrderLane(row=row, acceleration_class="production_static")
+
+    with pytest.raises(LaneIneligibleError, match="acceleration_class"):
+        SingleLaneSampleRunner(gate, execution_phase="P12.4a3b").submit_sample(
+            row_id=row["row_id"],
+            lane=lane,
+            prepared=prepared,
+            readiness=_readiness(prepared),
+            request=LaneSampleRequest(run_id="wrong-class", repeat_index=0, sample_index=0),
+        )
+
+
 def test_operation_trace_reuse_fails_without_leaking_context():
     trace = RuntimeOperationTrace(row_id="row", lane="warp", boundary="R0")
     with native_timed_submission(
@@ -527,6 +543,7 @@ class _NeverCalledLane:
 @dataclass
 class _OutOfOrderLane:
     row: dict[str, object]
+    acceleration_class: str = "production_dynamic"
     lane_id: str = "warp"
 
     def preflight_sample(self, *, row, prepared):
@@ -575,6 +592,11 @@ class _OutOfOrderLane:
             + DYNAMIC_ACCELERATION_OUTPUT_NAMES
             + DYNAMIC_RENDER_SHADE_INPUT_NAMES
         )
+        acceleration_operation = (
+            "warp_bvh_leaf_internal_refit_out_v1"
+            if self.acceleration_class == "production_dynamic"
+            else "cuda_lbvh_scene_bounds_morton_sort_topology_bounds_out_v1"
+        )
         stage_specs = (
             (
                 "scene_update",
@@ -588,7 +610,7 @@ class _OutOfOrderLane:
             ),
             (
                 "acceleration",
-                "warp_bvh_leaf_internal_refit_out_v1",
+                acceleration_operation,
                 tuple(scene_by_name[name] for name in DYNAMIC_ACCELERATION_INPUT_NAMES),
                 acceleration_outputs,
             ),
@@ -628,7 +650,12 @@ class _OutOfOrderLane:
             boundary=row["boundary"],
             lane="warp",
             renderer_id="warp_bvh_direct_light",
-            acceleration_id="cpu_median_leaf4_topology_warp_refit_v1",
+            acceleration_class=self.acceleration_class,
+            acceleration_id=(
+                "cpu_median_leaf4_topology_warp_refit_v1"
+                if self.acceleration_class == "production_dynamic"
+                else "cuda_morton_karras_lbvh_rebuild_v1"
+            ),
             output_profile=row["output_profile"],
             shadows=row["shadows"],
             input_contract=prepared.manifest.input_contract,

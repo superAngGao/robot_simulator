@@ -16,8 +16,8 @@ from .eligibility import (
 ACCELERATION_RECEIPT_SCHEMA_VERSION = "q54.p12.4.acceleration-receipt.v2"
 SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION = "q54.p12.4.shipping-publication-receipt.v1"
 NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION = "q54.p12.4.native-stage-evidence.v2"
-NATIVE_EXECUTION_BINDING_SCHEMA_VERSION = "q54.p12.4.c3-one-shot-binding.v4"
-DYNAMIC_DATAFLOW_CONTRACT_SCHEMA_VERSION = "q54.p12.4.dynamic-dataflow.v1"
+NATIVE_EXECUTION_BINDING_SCHEMA_VERSION = "q54.p12.4.c3-one-shot-binding.v5"
+DYNAMIC_DATAFLOW_CONTRACT_SCHEMA_VERSION = "q54.p12.4.dynamic-dataflow.v2"
 
 # These names are the logical allocation ABI between C3 stages.  They mirror
 # DeviceOpticalSceneSnapshot, DeviceOpticalBvh, CudaFirstHitInputs, and
@@ -310,6 +310,7 @@ class C3OneShotNativeExecutionBindingEvidence:
     boundary: str
     lane: str
     renderer_id: str
+    acceleration_class: str
     acceleration_id: str
     output_profile: str
     shadows: bool
@@ -341,6 +342,7 @@ class C3OneShotNativeExecutionBindingEvidence:
             "boundary",
             "lane",
             "renderer_id",
+            "acceleration_class",
             "acceleration_id",
             "output_profile",
             "dataflow_contract_id",
@@ -436,6 +438,7 @@ class C3OneShotNativeExecutionBindingEvidence:
             boundary=boundary,
             lane=payload["lane"],
             renderer_id=payload["renderer_id"],
+            acceleration_class=payload["acceleration_class"],
             acceleration_id=payload["acceleration_id"],
             output_profile=payload["output_profile"],
             shadows=payload["shadows"],
@@ -465,6 +468,7 @@ class C3OneShotNativeExecutionBindingEvidence:
             boundary=payload["boundary"],
             lane=payload["lane"],
             renderer_id=payload["renderer_id"],
+            acceleration_class=payload["acceleration_class"],
             acceleration_id=payload["acceleration_id"],
             output_profile=payload["output_profile"],
             shadows=payload["shadows"],
@@ -493,6 +497,7 @@ class C3OneShotNativeExecutionBindingEvidence:
             "boundary": self.boundary,
             "lane": self.lane,
             "renderer_id": self.renderer_id,
+            "acceleration_class": self.acceleration_class,
             "acceleration_id": self.acceleration_id,
             "output_profile": self.output_profile,
             "shadows": self.shadows,
@@ -740,6 +745,7 @@ def _validate_stage_dataflow(
     boundary: str,
     lane: str,
     renderer_id: str,
+    acceleration_class: str,
     acceleration_id: str,
     output_profile: str,
     shadows: bool,
@@ -759,14 +765,20 @@ def _validate_stage_dataflow(
         expected_renderer = EXACT_LANE_BINDINGS[lane]["renderer_id"]
         if renderer_id != expected_renderer or render.operation_id != expected_renderer:
             raise ValueError("R0 render operation does not match its lane renderer")
-        if acceleration_id != "fixed_bvh_fixture":
-            raise ValueError("R0 acceleration identity must be fixed_bvh_fixture")
+        if acceleration_class != "fixed_bvh_fixture":
+            raise ValueError("R0 acceleration class must be fixed_bvh_fixture")
+        expected_acceleration_id = EXACT_LANE_BINDINGS[lane]["acceleration_by_class"][
+            acceleration_class
+        ]
+        if acceleration_id != expected_acceleration_id:
+            raise ValueError("R0 acceleration identity does not match its class")
         if render.output_profile != output_profile or render.shadows != shadows:
             raise ValueError("R0 render stage identity does not match its binding")
         expected_contract_id = canonical_dataflow_contract_id(
             boundary=boundary,
             lane=lane,
             renderer_id=renderer_id,
+            acceleration_class=acceleration_class,
             acceleration_id=acceleration_id,
             output_profile=output_profile,
             shadows=shadows,
@@ -783,9 +795,11 @@ def _validate_stage_dataflow(
 
     scene, acceleration, render = evidence[:3]
     expected_lane_binding = EXACT_LANE_BINDINGS[lane]
-    expected_acceleration_id = expected_lane_binding["acceleration_by_class"][
-        "production_dynamic"
-    ]
+    expected_acceleration_id = expected_lane_binding["acceleration_by_class"].get(
+        acceleration_class
+    )
+    if expected_acceleration_id is None:
+        raise ValueError("dynamic acceleration class is not defined for its lane")
     acceleration_contract = EXACT_ACCELERATION_CONTRACTS[lane][expected_acceleration_id]
     if renderer_id != expected_lane_binding["renderer_id"]:
         raise ValueError("dynamic renderer identity does not match its lane")
@@ -804,6 +818,7 @@ def _validate_stage_dataflow(
         boundary=boundary,
         lane=lane,
         renderer_id=renderer_id,
+        acceleration_class=acceleration_class,
         acceleration_id=acceleration_id,
         output_profile=output_profile,
         shadows=shadows,
@@ -960,6 +975,7 @@ def canonical_dataflow_contract_id(
     boundary: str,
     lane: str,
     renderer_id: str,
+    acceleration_class: str,
     acceleration_id: str,
     output_profile: str,
     shadows: bool,
@@ -971,6 +987,7 @@ def canonical_dataflow_contract_id(
             "boundary": boundary,
             "lane": lane,
             "renderer_id": renderer_id,
+            "acceleration_class": acceleration_class,
             "acceleration_id": acceleration_id,
             "output_profile": output_profile,
             "shadows": shadows,
@@ -1008,6 +1025,7 @@ def build_c3_one_shot_native_execution_binding(
     boundary: str,
     lane: str,
     renderer_id: str,
+    acceleration_class: str,
     acceleration_id: str,
     output_profile: str,
     shadows: bool,
@@ -1042,6 +1060,7 @@ def build_c3_one_shot_native_execution_binding(
         boundary=boundary,
         lane=lane,
         renderer_id=renderer_id,
+        acceleration_class=acceleration_class,
         acceleration_id=acceleration_id,
         output_profile=output_profile,
         shadows=shadows,
@@ -1049,6 +1068,7 @@ def build_c3_one_shot_native_execution_binding(
             boundary=boundary,
             lane=lane,
             renderer_id=renderer_id,
+            acceleration_class=acceleration_class,
             acceleration_id=acceleration_id,
             output_profile=output_profile,
             shadows=shadows,

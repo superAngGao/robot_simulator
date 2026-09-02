@@ -64,8 +64,8 @@ from .workload_contract import (
     frozen_workload_payloads,
 )
 
-GATE_SCHEMA_VERSION = "q54.p12.4.gate.v9"
-RESULT_SCHEMA_VERSION = "q54.p12.4.result.v9"
+GATE_SCHEMA_VERSION = "q54.p12.4.gate.v10"
+RESULT_SCHEMA_VERSION = "q54.p12.4.result.v10"
 ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v5"
 INVENTORY_SCHEMA_VERSION = "q54.p12.4.architecture-inventory.v1"
 CLEANUP_SCHEMA_VERSION = "q54.p12.4.cleanup-ledger.v1"
@@ -363,9 +363,11 @@ EXPECTED_NATIVE_EXECUTION_BINDING_CONTRACT = {
     "C4_binding_schema": "not_implemented_until_C4_review",
     "C4_required_evidence": ["arena", "slot", "generation", "lease", "ring"],
     "dynamic_dataflow_contract_schema_version": DYNAMIC_DATAFLOW_CONTRACT_SCHEMA_VERSION,
+    "acceleration_resolution": "lane_plus_row_acceleration_class",
     "dynamic_storage_rule": "complete_ordered_profile_specific_no_missing_or_extra_storage",
     "pre_enqueue_validation": [
         "row_case_boundary_lane_and_input_contract",
+        "row_acceleration_class_and_lane_resolved_acceleration_identity",
         "native_manifest_and_readiness",
         "scene_replay_or_fixed_fixture_provenance",
         "exact_prepared_scene_storage",
@@ -1025,6 +1027,11 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
             "case_sha256": receipt.case_sha256,
             "boundary": receipt.boundary,
             "lane": receipt.lane,
+            "renderer_id": receipt.renderer_id,
+            "acceleration_class": acceleration_class,
+            "acceleration_id": receipt.acceleration_id,
+            "output_profile": receipt.output_profile,
+            "shadows": receipt.shadows,
             "input_contract": receipt.input_contract,
             "native_input_manifest_sha256": receipt.native_input_manifest_sha256,
             "native_readiness_sha256": receipt.native_readiness_sha256,

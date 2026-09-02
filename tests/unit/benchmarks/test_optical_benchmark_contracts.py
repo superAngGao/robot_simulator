@@ -100,6 +100,47 @@ def test_c3_public_api_has_no_forgeable_c4_capability():
     assert hasattr(optical_benchmarks, "C3OneShotNativeExecutionBindingEvidence")
 
 
+@pytest.mark.parametrize("lane", ["warp", "cuda"])
+def test_every_native_mandatory_row_constructs_its_exact_lane_acceleration(lane):
+    gate = load_frozen_gate()
+    rows = [
+        row for row in gate["mandatory_rows"] if row["boundary"] in {"R0", "R1", "R2"}
+    ]
+
+    for row in rows:
+        receipt = ExecutionReceipt.from_payload(
+            _valid_result_record(gate, row, lane=lane)["receipt"]
+        )
+        native_binding = receipt.native_execution_binding
+        expected_acceleration_id = gate["lane_bindings"][lane]["acceleration_by_class"][
+            row["acceleration_class"]
+        ]
+        acceleration_contract = gate["acceleration_contracts"]["by_lane_and_identity"][lane][
+            expected_acceleration_id
+        ]
+
+        assert native_binding.acceleration_class == row["acceleration_class"]
+        assert native_binding.acceleration_id == expected_acceleration_id
+        if row["boundary"] in {"R1", "R2"}:
+            stage_operations = {
+                stage.stage_name: stage.evidence.operation_id
+                for stage in native_binding.ordered_stage_evidence
+            }
+            assert stage_operations["scene_update"] == acceleration_contract[
+                "timed_scene_update_operation"
+            ]
+            assert stage_operations["acceleration"] == acceleration_contract[
+                "timed_acceleration_operation"
+            ]
+
+    warp_static_rows = [
+        row for row in rows if lane == "warp" and row["acceleration_class"] == "production_static"
+    ]
+    if lane == "warp":
+        assert warp_static_rows
+        assert all(row["boundary"] == "R2" for row in warp_static_rows)
+
+
 def test_canonical_case_ids_and_hashes_are_frozen():
     cases = canonical_cases()
 
@@ -210,6 +251,23 @@ def test_dynamic_binding_contract_is_bound_to_operation_and_profile():
             binding,
             [stage.evidence for stage in binding.ordered_stage_evidence],
             output_profile="render_only",
+        )
+
+
+def test_warp_r2_binding_rejects_acceleration_class_identity_drift():
+    gate = load_frozen_gate()
+    row = next(row for row in gate["mandatory_rows"] if row["boundary"] == "R2")
+    binding = ExecutionReceipt.from_payload(
+        _valid_result_record(gate, row, lane="warp")["receipt"]
+    ).native_execution_binding
+
+    assert binding.acceleration_class == "production_static"
+    assert binding.acceleration_id == "cuda_morton_karras_lbvh_rebuild_v1"
+    with pytest.raises(ValueError, match="acceleration identity does not match"):
+        _rebuild_c3_binding(
+            binding,
+            [stage.evidence for stage in binding.ordered_stage_evidence],
+            acceleration_class="production_dynamic",
         )
 
 
@@ -608,8 +666,7 @@ def _valid_r0_result(gate):
     return _valid_result_record(gate, row)
 
 
-def _valid_result_record(gate, row):
-    lane = "cuda"
+def _valid_result_record(gate, row, *, lane="cuda"):
     binding = gate["lane_bindings"][lane]
     per_ray, scalar, observed_bytes = _observed_payload(row)
     audits = tuple(
@@ -621,7 +678,7 @@ def _valid_result_record(gate, row):
     )
     eligibility = evaluate_lane_eligibility(
         row=row,
-        lane="cuda",
+        lane=lane,
         entry_point_audits=audits,
         asset_manifest_sha256=("a" * 64 if row["required_asset_manifest"] else None),
     )
@@ -696,6 +753,8 @@ def _valid_result_record(gate, row):
         topology_sha256="3" * 64,
         runtime_storage=runtime_storage,
         fixture_storage=fixture_storage,
+        renderer_id=binding["renderer_id"],
+        acceleration_contract=acceleration_contract,
     )
     acceleration = AccelerationReceipt(
         acceleration_schema_version=ACCELERATION_RECEIPT_SCHEMA_VERSION,
@@ -733,7 +792,7 @@ def _valid_result_record(gate, row):
     publication = _shipping_publication(row, operation_trace)
     readiness = NativeReadinessEvidence(
         schema_version=NATIVE_INPUT_SCHEMA_VERSION,
-        backend="cuda",
+        backend=lane,
         device_ordinal=0,
         manifest_sha256="1" * 64,
         content_sha256="2" * 64,
@@ -758,6 +817,7 @@ def _valid_result_record(gate, row):
         boundary=row["boundary"],
         lane=lane,
         renderer_id=gate["lane_bindings"][lane]["renderer_id"],
+        acceleration_class=row["acceleration_class"],
         acceleration_id=gate["lane_bindings"][lane]["acceleration_by_class"][
             row["acceleration_class"]
         ],
@@ -775,7 +835,7 @@ def _valid_result_record(gate, row):
         stage_evidence=native_stages,
     )
     receipt = ExecutionReceipt(
-        producer="cuda_lane",
+        producer=f"{lane}_lane",
         row_semantics_sha256=canonical_row_semantics_sha256(row, gate),
         row_id=row["row_id"],
         case_id=row["case_id"],
@@ -905,20 +965,11 @@ def _native_stages(
     topology_sha256,
     runtime_storage,
     fixture_storage,
+    renderer_id,
+    acceleration_contract,
 ):
-    operation_ids = {
-        "warp": (
-            "warp_local_scene_transform_and_aabb_out_v1",
-            "warp_bvh_leaf_internal_refit_out_v1",
-            "warp_bvh_direct_light",
-        ),
-        "cuda": (
-            "torch_cuda_local_scene_transform_and_aabb_out_v1",
-            "cuda_lbvh_scene_bounds_morton_sort_topology_bounds_out_v1",
-            "cuda_direct_light",
-        ),
-    }[lane]
-    scene_operation_id, acceleration_operation_id, renderer_id = operation_ids
+    scene_operation_id = acceleration_contract["timed_scene_update_operation"]
+    acceleration_operation_id = acceleration_contract["timed_acceleration_operation"]
     scene_outputs = tuple(
         _storage(
             name=name,
@@ -1015,7 +1066,13 @@ def _native_stages(
     )
 
 
-def _rebuild_c3_binding(binding, stages, *, output_profile=None):
+def _rebuild_c3_binding(
+    binding,
+    stages,
+    *,
+    output_profile=None,
+    acceleration_class=None,
+):
     return build_c3_one_shot_native_execution_binding(
         row_id=binding.row_id,
         case_id=binding.case_id,
@@ -1023,6 +1080,11 @@ def _rebuild_c3_binding(binding, stages, *, output_profile=None):
         boundary=binding.boundary,
         lane=binding.lane,
         renderer_id=binding.renderer_id,
+        acceleration_class=(
+            binding.acceleration_class
+            if acceleration_class is None
+            else acceleration_class
+        ),
         acceleration_id=binding.acceleration_id,
         output_profile=binding.output_profile if output_profile is None else output_profile,
         shadows=binding.shadows,

@@ -435,6 +435,7 @@ class SingleLaneSampleRunner:
             "boundary": row["boundary"],
             "lane": prepared.backend,
             "renderer_id": self._gate["lane_bindings"][prepared.backend]["renderer_id"],
+            "acceleration_class": row["acceleration_class"],
             "acceleration_id": self._gate["lane_bindings"][prepared.backend][
                 "acceleration_by_class"
             ][row["acceleration_class"]],
