@@ -4,14 +4,18 @@ import inspect
 from dataclasses import fields
 from pathlib import Path
 
+import pytest
+
 from optics._cuda_lbvh_source import CPP_SOURCE, CUDA_SOURCE
 from optics.cuda_lbvh import (
     CUDA_LBVH_ACCELERATION_ID,
+    CUDA_LBVH_MAX_PRIMITIVES,
     CUDA_LBVH_OPERATION_ID,
     CUDA_LBVH_TOPOLOGY_LIFETIME,
     CUDA_LBVH_TOPOLOGY_ORIGIN_ID,
     CudaLbvhRebuildStage,
     CudaLbvhRebuildStageEvidence,
+    _validate_primitive_count,
 )
 
 
@@ -92,3 +96,15 @@ def test_cuda_lbvh_example_is_a_thin_production_caller():
     assert "CPP_SOURCE" not in source
     assert "load_inline" not in source
     assert "PYBIND11_MODULE" not in source
+
+
+def test_cuda_lbvh_python_limit_matches_int32_flattened_node_boundary():
+    assert CUDA_LBVH_MAX_PRIMITIVES == 357_913_941
+    assert (CUDA_LBVH_MAX_PRIMITIVES * 2 - 1) * 3 <= (1 << 31) - 1
+    assert ((CUDA_LBVH_MAX_PRIMITIVES + 1) * 2 - 1) * 3 > (1 << 31) - 1
+    _validate_primitive_count(CUDA_LBVH_MAX_PRIMITIVES)
+    with pytest.raises(ValueError, match="int32 flattened-node range"):
+        _validate_primitive_count(CUDA_LBVH_MAX_PRIMITIVES + 1)
+    assert "constexpr int64_t kMaxPrimitiveCount = 357913941;" in CUDA_SOURCE
+    assert "primitive_count <= kMaxPrimitiveCount" in CUDA_SOURCE
+    assert "primitive_count_64 <= kMaxPrimitiveCount" in CUDA_SOURCE

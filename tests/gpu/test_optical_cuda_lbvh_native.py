@@ -34,11 +34,14 @@ from optics.cuda_direct_light import (
 )
 from optics.cuda_lbvh import (
     CUDA_LBVH_ACCELERATION_ID,
+    CUDA_LBVH_MAX_PRIMITIVES,
     CUDA_LBVH_OPERATION_ID,
     CUDA_LBVH_TOPOLOGY_ORIGIN_ID,
     CudaLbvhRebuildStageFactory,
+    _load_cuda_lbvh_extension,
     allocate_cuda_lbvh_buffers,
     allocate_cuda_lbvh_workspace,
+    cuda_lbvh_workspace_requirements,
 )
 from optics.cuda_scene import CudaWorldSceneBuffers, allocate_cuda_world_scene_buffers
 from optics.cuda_timeline import CudaOpticalExecutionContext
@@ -203,6 +206,20 @@ def test_cuda_lbvh_zero_and_single_primitive_have_explicit_dispatch_contract(
         assert setup.outputs.count.cpu().tolist() == [1]
         np.testing.assert_array_equal(setup.outputs.node_bounds_min.cpu().numpy(), minimum)
         np.testing.assert_array_equal(setup.outputs.node_bounds_max.cpu().numpy(), maximum)
+
+
+def test_cuda_lbvh_cpp_workspace_query_matches_flattened_index_boundary():
+    requirements = cuda_lbvh_workspace_requirements(
+        CUDA_LBVH_MAX_PRIMITIVES,
+        0,
+    )
+    assert requirements.primitive_count == CUDA_LBVH_MAX_PRIMITIVES
+    assert requirements.node_capacity == CUDA_LBVH_MAX_PRIMITIVES * 2 - 1
+    with pytest.raises(RuntimeError, match="int32 flattened-node range"):
+        _load_cuda_lbvh_extension().cuda_lbvh_workspace_requirements(
+            CUDA_LBVH_MAX_PRIMITIVES + 1,
+            0,
+        )
 
 
 def test_cuda_lbvh_overwrites_stale_output_and_is_deterministic():

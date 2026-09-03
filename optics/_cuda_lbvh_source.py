@@ -58,6 +58,9 @@ namespace {
 
 constexpr int kThreads = 256;
 constexpr int64_t kWorkspaceAlignment = 256;
+constexpr int64_t kMaxPrimitiveCount = 357913941;
+static_assert((kMaxPrimitiveCount * 2 - 1) * 3 <= INT32_MAX);
+static_assert(((kMaxPrimitiveCount + 1) * 2 - 1) * 3 > INT32_MAX);
 
 struct AxisValue {
   const float* values;
@@ -414,8 +417,8 @@ std::tuple<int64_t, int64_t, int64_t> cuda_lbvh_workspace_requirements(
     int64_t device_ordinal) {
   TORCH_CHECK(primitive_count >= 0, "primitive_count must be non-negative");
   TORCH_CHECK(
-      primitive_count <= static_cast<int64_t>((INT32_MAX + 1LL) / 2),
-      "primitive_count exceeds int32 node range");
+      primitive_count <= kMaxPrimitiveCount,
+      "primitive_count exceeds int32 flattened-node range");
   int device_count = 0;
   C10_CUDA_CHECK(cudaGetDeviceCount(&device_count));
   TORCH_CHECK(
@@ -488,8 +491,8 @@ void cuda_lbvh_rebuild_out(
   const int64_t primitive_count_64 = primitive_aabb_min.size(0);
   TORCH_CHECK(primitive_count_64 > 0, "native LBVH entry requires primitives");
   TORCH_CHECK(
-      primitive_count_64 <= static_cast<int64_t>((INT32_MAX + 1LL) / 2),
-      "primitive_count exceeds int32 node range");
+      primitive_count_64 <= kMaxPrimitiveCount,
+      "primitive_count exceeds int32 flattened-node range");
   const int primitive_count = static_cast<int>(primitive_count_64);
   const int64_t node_count = primitive_count_64 * 2 - 1;
   const int64_t internal_count = primitive_count_64 - 1;

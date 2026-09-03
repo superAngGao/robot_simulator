@@ -36,10 +36,10 @@ CUDA_LBVH_ACCELERATION_ID = "cuda_morton_karras_lbvh_rebuild_v1"
 CUDA_LBVH_OPERATION_ID = "cuda_lbvh_scene_bounds_morton_sort_topology_bounds_out_v1"
 CUDA_LBVH_TOPOLOGY_ORIGIN_ID = "cuda_morton30_karras_source_index_tiebreak_v1"
 CUDA_LBVH_TOPOLOGY_LIFETIME = "transaction_output_arena_lease_v1"
-CUDA_LBVH_EXTENSION_ABI_VERSION = "q54.p12.4.cuda-lbvh-extension.v1"
+CUDA_LBVH_EXTENSION_ABI_VERSION = "q54.p12.4.cuda-lbvh-extension.v2"
 CUDA_LBVH_WORKSPACE_SCHEMA_VERSION = "q54.p12.4.cuda-lbvh-workspace.v1"
 CUDA_LBVH_STAGE_SCHEMA_VERSION = "q54.p12.4.cuda-lbvh-stage.v1"
-_MAX_PRIMITIVES = ((1 << 31) - 1 + 1) // 2
+CUDA_LBVH_MAX_PRIMITIVES = 357_913_941
 _PREPARED_EXTENSION_TOKEN = object()
 _CUDA_LBVH_EXTENSION_SOURCE_SHA256 = hashlib.sha256(
     (CUDA_LBVH_EXTENSION_ABI_VERSION + CPP_SOURCE + CUDA_SOURCE).encode("utf-8")
@@ -683,8 +683,8 @@ def _identity_arguments_match(
 def _validate_primitive_count(primitive_count: int) -> None:
     if not isinstance(primitive_count, int) or isinstance(primitive_count, bool):
         raise TypeError("primitive_count must be an integer")
-    if primitive_count < 0 or primitive_count > _MAX_PRIMITIVES:
-        raise ValueError("primitive_count exceeds the native CUDA LBVH range")
+    if primitive_count < 0 or primitive_count > CUDA_LBVH_MAX_PRIMITIVES:
+        raise ValueError("primitive_count exceeds the int32 flattened-node range")
 
 
 def _node_count(primitive_count: int) -> int:
@@ -1075,7 +1075,7 @@ def build_cuda_lbvh_from_snapshot(
 def _load_cuda_lbvh_extension():
     _require_torch_cuda_lbvh()
     return load_inline(
-        name="robot_sim_cuda_lbvh_native_v1",
+        name="robot_sim_cuda_lbvh_native_v2",
         cpp_sources=[CPP_SOURCE],
         cuda_sources=[CUDA_SOURCE],
         with_cuda=True,
