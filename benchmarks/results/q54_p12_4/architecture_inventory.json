@@ -87,14 +87,23 @@
     },
     {
       "surface_id": "cuda_lbvh_acceleration",
-      "role": "Torch-owned CUDA LBVH builder wrapped as Warp arrays for current consumers",
+      "role": "Caller-owned native CUDA LBVH stage plus benchmark-ineligible Warp compatibility facade",
       "paths": [
         "optics/cuda_lbvh.py",
+        "optics/_cuda_lbvh_source.py",
         "examples/cuda_lbvh_extension_spike.py"
       ],
       "symbols": {
-        "optics/cuda_lbvh.py": ["def build_cuda_lbvh_from_snapshot("],
-        "examples/cuda_lbvh_extension_spike.py": ["CUDA_SOURCE"]
+        "optics/cuda_lbvh.py": [
+          "class CudaLbvhRebuildStageFactory:",
+          "class CudaLbvhRebuildStage:",
+          "def build_cuda_lbvh_from_snapshot("
+        ],
+        "optics/_cuda_lbvh_source.py": [
+          "CPP_SOURCE",
+          "CUDA_SOURCE"
+        ],
+        "examples/cuda_lbvh_extension_spike.py": ["def main("]
       },
       "ownership": "conditional_acceleration"
     },

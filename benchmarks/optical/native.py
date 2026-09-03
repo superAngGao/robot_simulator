@@ -907,6 +907,37 @@ def build_prepared_cuda_scene_update_factory(
     )
 
 
+def build_prepared_cuda_lbvh_rebuild_factory(
+    prepared: CudaPreparedNativeInput,
+    *,
+    context: object,
+):
+    """Bind the CUDA LBVH factory to the exact prepared scene provenance."""
+
+    assert_outside_timed_boundary("prepared CUDA LBVH-rebuild factory construction")
+    manifest = prepared.manifest
+    if not manifest.result_capable or manifest.input_contract is None:
+        raise ValueError("prepared CUDA LBVH factory requires result-capable provenance")
+    if prepared.backend != "cuda" or prepared.source is None:
+        raise ValueError("prepared CUDA LBVH factory requires its canonical source owner")
+    packed = prepared.source.packed_scene_owner
+    if packed is None or manifest.scene_contract_sha256 is None:
+        raise ValueError("prepared CUDA LBVH factory lacks packed-scene provenance")
+    if packed.scene_contract_sha256 != manifest.scene_contract_sha256:
+        raise ValueError("prepared CUDA LBVH packed scene does not match its manifest")
+    if int(getattr(getattr(context, "device", None), "index", -1)) != prepared.device_ordinal:
+        raise ValueError("prepared CUDA LBVH factory context is on the wrong device")
+    from optics.cuda_lbvh import CudaLbvhRebuildStageFactory
+
+    return CudaLbvhRebuildStageFactory.prepare(
+        context=context,
+        primitive_count=packed.num_triangles,
+        native_input_manifest_sha256=manifest.sha256,
+        scene_contract_sha256=manifest.scene_contract_sha256,
+        input_contract=manifest.input_contract,
+    )
+
+
 @dataclass(frozen=True)
 class NativeInputValidationReport:
     """Direct, untimed parity evidence for one prepared native input."""

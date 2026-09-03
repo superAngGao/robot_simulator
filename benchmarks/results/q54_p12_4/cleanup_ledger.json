@@ -136,16 +136,17 @@
       "entry_id": "cuda_lbvh_builder",
       "paths": [
         "optics/cuda_lbvh.py",
+        "optics/_cuda_lbvh_source.py",
         "examples/cuda_lbvh_extension_spike.py"
       ],
       "symbols": {},
       "cuda_selected": {
         "action": "replace_then_delete",
-        "acceptance": "move extension source out of examples, return native CUDA ownership, remove Warp wrapping and experiment naming"
+        "acceptance": "retain the native caller-owned source and stage API; remove the Warp-snapshot compatibility facade, Warp wrapping, and experiment filename"
       },
       "warp_selected": {
         "action": "conditional",
-        "acceptance": "retain only after the independent 20 percent build/refit and 10 percent dynamic-transaction benefit gate; otherwise delete both files"
+        "acceptance": "retain and productionize the native source/API only after the independent 20 percent build/refit and 10 percent dynamic-transaction benefit gate; otherwise delete the module, source, and thin example"
       },
       "must_resolve_by": "P12.4e"
     },
