@@ -36,7 +36,7 @@ CUDA_LBVH_ACCELERATION_ID = "cuda_morton_karras_lbvh_rebuild_v1"
 CUDA_LBVH_OPERATION_ID = "cuda_lbvh_scene_bounds_morton_sort_topology_bounds_out_v1"
 CUDA_LBVH_TOPOLOGY_ORIGIN_ID = "cuda_morton30_karras_source_index_tiebreak_v1"
 CUDA_LBVH_TOPOLOGY_LIFETIME = "transaction_output_arena_lease_v1"
-CUDA_LBVH_EXTENSION_ABI_VERSION = "q54.p12.4.cuda-lbvh-extension.v2"
+CUDA_LBVH_EXTENSION_ABI_VERSION = "q54.p12.4.cuda-lbvh-extension.v3"
 CUDA_LBVH_WORKSPACE_SCHEMA_VERSION = "q54.p12.4.cuda-lbvh-workspace.v1"
 CUDA_LBVH_STAGE_SCHEMA_VERSION = "q54.p12.4.cuda-lbvh-stage.v1"
 CUDA_LBVH_MAX_PRIMITIVES = 357_913_941
@@ -1075,7 +1075,7 @@ def build_cuda_lbvh_from_snapshot(
 def _load_cuda_lbvh_extension():
     _require_torch_cuda_lbvh()
     return load_inline(
-        name="robot_sim_cuda_lbvh_native_v2",
+        name="robot_sim_cuda_lbvh_native_v3",
         cpp_sources=[CPP_SOURCE],
         cuda_sources=[CUDA_SOURCE],
         with_cuda=True,

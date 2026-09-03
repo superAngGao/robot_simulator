@@ -62,6 +62,15 @@ constexpr int64_t kMaxPrimitiveCount = 357913941;
 static_assert((kMaxPrimitiveCount * 2 - 1) * 3 <= INT32_MAX);
 static_assert(((kMaxPrimitiveCount + 1) * 2 - 1) * 3 > INT32_MAX);
 
+constexpr int ceil_div_positive_int(int value, int divisor) {
+  return value / divisor + (value % divisor != 0);
+}
+
+constexpr int kMaxBoundValueCount =
+    static_cast<int>((kMaxPrimitiveCount * 2 - 1) * 3);
+static_assert(
+    ceil_div_positive_int(kMaxBoundValueCount, kThreads) == 8388608);
+
 struct AxisValue {
   const float* values;
   int axis;
@@ -638,7 +647,7 @@ void cuda_lbvh_rebuild_out(
   }
 
   const int primitive_blocks =
-      (primitive_count + kThreads - 1) / kThreads;
+      ceil_div_positive_int(primitive_count, kThreads);
   compute_morton_keys_kernel<<<primitive_blocks, kThreads, 0, stream>>>(
       primitive_aabb_min.data_ptr<float>(),
       primitive_aabb_max.data_ptr<float>(),
@@ -668,8 +677,8 @@ void cuda_lbvh_rebuild_out(
       primitive_count);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   if (internal_count > 0) {
-    const int internal_blocks =
-        (static_cast<int>(internal_count) + kThreads - 1) / kThreads;
+    const int internal_blocks = ceil_div_positive_int(
+        static_cast<int>(internal_count), kThreads);
     build_lbvh_internal_topology_kernel<<<
         internal_blocks, kThreads, 0, stream>>>(
         sorted_morton_keys.data_ptr<int64_t>(),
@@ -684,7 +693,8 @@ void cuda_lbvh_rebuild_out(
   }
 
   const int bound_value_count = static_cast<int>(node_count * 3);
-  const int bound_blocks = (bound_value_count + kThreads - 1) / kThreads;
+  const int bound_blocks =
+      ceil_div_positive_int(bound_value_count, kThreads);
   initialize_node_bounds_kernel<<<bound_blocks, kThreads, 0, stream>>>(
       node_bounds_min.data_ptr<float>(),
       node_bounds_max.data_ptr<float>(),

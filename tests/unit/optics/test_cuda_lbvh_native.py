@@ -108,3 +108,13 @@ def test_cuda_lbvh_python_limit_matches_int32_flattened_node_boundary():
     assert "constexpr int64_t kMaxPrimitiveCount = 357913941;" in CUDA_SOURCE
     assert "primitive_count <= kMaxPrimitiveCount" in CUDA_SOURCE
     assert "primitive_count_64 <= kMaxPrimitiveCount" in CUDA_SOURCE
+
+
+def test_cuda_lbvh_maximum_grid_ceil_division_cannot_overflow_int32():
+    bound_value_count = (CUDA_LBVH_MAX_PRIMITIVES * 2 - 1) * 3
+    block_count = bound_value_count // 256 + (bound_value_count % 256 != 0)
+    assert bound_value_count == 2_147_483_643
+    assert block_count == 8_388_608
+    assert "ceil_div_positive_int(bound_value_count, kThreads)" in CUDA_SOURCE
+    assert "ceil_div_positive_int(kMaxBoundValueCount, kThreads) == 8388608" in CUDA_SOURCE
+    assert "+ kThreads - 1" not in CUDA_SOURCE
