@@ -101,6 +101,22 @@ class CudaLbvhWorkspace:
 
 
 @dataclass(frozen=True)
+class CudaWorldAabbBuffers:
+    """Narrow caller-owned world-AABB input required by the LBVH command."""
+
+    device_ordinal: int
+    triangle_aabb_min: object
+    triangle_aabb_max: object
+    resources: tuple[object, ...] = ()
+
+    def tensor_items(self) -> tuple[tuple[str, object], ...]:
+        return (
+            ("triangle_aabb_min", self.triangle_aabb_min),
+            ("triangle_aabb_max", self.triangle_aabb_max),
+        )
+
+
+@dataclass(frozen=True)
 class CudaLbvhBuffers:
     """Caller-owned mutable outputs for one native CUDA LBVH rebuild."""
 
@@ -395,7 +411,7 @@ class CudaLbvhRebuildStageFactory:
     def bind(
         self,
         *,
-        world: CudaWorldSceneBuffers,
+        world: CudaWorldAabbBuffers | CudaWorldSceneBuffers,
         outputs: CudaLbvhBuffers,
         workspace: CudaLbvhWorkspace,
     ) -> "CudaLbvhRebuildStage":
@@ -475,7 +491,7 @@ class CudaLbvhRebuildStage:
         self,
         *,
         factory: CudaLbvhRebuildStageFactory,
-        world: CudaWorldSceneBuffers,
+        world: CudaWorldAabbBuffers | CudaWorldSceneBuffers,
         outputs: CudaLbvhBuffers,
         workspace: CudaLbvhWorkspace,
         extension_entry: object | None,
@@ -504,10 +520,31 @@ class CudaLbvhRebuildStage:
         """Invoke only the frozen native entry on the transaction stream."""
 
         with transaction.enqueue_stage(self):
-            if self._extension_entry is not None:
-                transaction.record_diagnostic_start("acceleration_kernel")
-                self._extension_entry(*self._extension_args)
-                transaction.record_diagnostic_end("acceleration_kernel")
+            transaction.record_diagnostic_start("acceleration_kernel")
+            self._launch_bound_entry()
+            transaction.record_diagnostic_end("acceleration_kernel")
+
+    def enqueue_bound_stream(self) -> None:
+        """Launch the sealed command without assuming a CUDA optical transaction.
+
+        This is the completion-neutral command entry used by an external native
+        sequence owner.  It records no event and creates no view; the owner must
+        validate its full stage sequence before timing and provide completion.
+        """
+
+        self._assert_cuda_transaction_stage_stable(self.factory.context)
+        with self.factory.context.activate():
+            self._launch_bound_entry()
+
+    def validate_bound(self) -> None:
+        """Revalidate the sealed ABI for an external sequence owner."""
+
+        self._validate_cuda_transaction_stage(self.factory.context)
+        self._assert_cuda_transaction_stage_stable(self.factory.context)
+
+    def _launch_bound_entry(self) -> None:
+        if self._extension_entry is not None:
+            self._extension_entry(*self._extension_args)
 
     def _validate_cuda_transaction_stage(self, context: object) -> None:
         if context is not self.factory.context:
@@ -573,7 +610,7 @@ class CudaLbvhRebuildStage:
 def _build_stage_evidence(
     *,
     factory: CudaLbvhRebuildStageFactory,
-    world: CudaWorldSceneBuffers,
+    world: CudaWorldAabbBuffers | CudaWorldSceneBuffers,
     outputs: CudaLbvhBuffers,
     workspace: CudaLbvhWorkspace,
     extension_entry: object | None,
@@ -643,7 +680,7 @@ def _kernel_dispatch_count(primitive_count: int) -> int:
 
 
 def _lbvh_abi_arguments(
-    world: CudaWorldSceneBuffers,
+    world: CudaWorldAabbBuffers | CudaWorldSceneBuffers,
     outputs: CudaLbvhBuffers,
     workspace: CudaLbvhWorkspace,
 ) -> tuple[object, ...]:
@@ -742,12 +779,12 @@ def _validate_workspace(
 
 
 def _validate_world_aabbs(
-    world: CudaWorldSceneBuffers,
+    world: CudaWorldAabbBuffers | CudaWorldSceneBuffers,
     primitive_count: int,
     device: object,
 ) -> None:
-    if not isinstance(world, CudaWorldSceneBuffers):
-        raise TypeError("world must be CudaWorldSceneBuffers")
+    if not isinstance(world, (CudaWorldAabbBuffers, CudaWorldSceneBuffers)):
+        raise TypeError("world must provide native CUDA world-AABB buffers")
     target = torch.device(device)
     if world.device_ordinal != target.index:
         raise ValueError("CUDA LBVH world buffers are on the wrong device")
@@ -829,7 +866,7 @@ def _validate_tensor(
 
 
 def _validate_lbvh_storage_disjointness(
-    world: CudaWorldSceneBuffers,
+    world: CudaWorldAabbBuffers | CudaWorldSceneBuffers,
     outputs: CudaLbvhBuffers,
     workspace: CudaLbvhWorkspace,
 ) -> None:
@@ -856,7 +893,7 @@ def _validate_lbvh_storage_disjointness(
 
 
 def _world_aabb_items(
-    world: CudaWorldSceneBuffers,
+    world: CudaWorldAabbBuffers | CudaWorldSceneBuffers,
 ) -> tuple[tuple[str, object], ...]:
     return (
         ("triangle_aabb_min", world.triangle_aabb_min),

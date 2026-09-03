@@ -21,7 +21,7 @@ from .timing import (
     record_runtime_hook_operation,
 )
 
-RUNTIME_HOOK_REGISTRY_VERSION = "q54.p12.4.runtime-hook-registry.v1"
+RUNTIME_HOOK_REGISTRY_VERSION = "q54.p12.4.runtime-hook-registry.v2"
 
 
 @dataclass(frozen=True)
@@ -158,7 +158,10 @@ FORBIDDEN_RUNTIME_HOOKS = (
         "optics.cuda_lbvh.load_inline",
         "optics.cuda_lbvh.load_inline",
         "extension_load",
-        ("optics.cuda_lbvh.",),
+        (
+            "optics.cuda_lbvh.",
+            "benchmarks.optical.lanes.warp.WarpCudaLbvhComparisonCommandBundle.",
+        ),
     ),
     RuntimeHookSpec(
         "optics.cuda_direct_light.load_inline",

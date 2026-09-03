@@ -214,8 +214,8 @@
   "eligibility_contract": {
     "schema_version": "q54.p12.4.lane-eligibility.v2",
     "operation_trace_schema_version": "q54.p12.4.operation-trace.v2",
-    "runtime_hook_registry_version": "q54.p12.4.runtime-hook-registry.v1",
-    "runtime_hook_registry_sha256": "3edfec9d9bb11c16b2bd2af17a472f0928f4372c11c5e2ae13cd614089591985",
+    "runtime_hook_registry_version": "q54.p12.4.runtime-hook-registry.v2",
+    "runtime_hook_registry_sha256": "fd03c565975848414d47f40331e8131b1fd3950740f3f5ea04ddfed02b3467e9",
     "preflight_position": "before_timed_submission",
     "runtime_hook_installation_owner": "single_lane_runner",
     "high_level_trace_capture": "installed_entry_point_wrapper_only",

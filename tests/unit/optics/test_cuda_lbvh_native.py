@@ -49,7 +49,9 @@ def test_cuda_lbvh_extension_uses_fixed_caller_owned_abi_without_allocation():
 def test_cuda_lbvh_timed_stage_only_invokes_prebound_entry():
     source = inspect.getsource(CudaLbvhRebuildStage.enqueue)
     assert "transaction.enqueue_stage(self)" in source
-    assert "self._extension_entry(*self._extension_args)" in source
+    assert "self._launch_bound_entry()" in source
+    launch_source = inspect.getsource(CudaLbvhRebuildStage._launch_bound_entry)
+    assert "self._extension_entry(*self._extension_args)" in launch_source
     for forbidden in (
         "torch.empty",
         "torch.zeros",

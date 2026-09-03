@@ -85,10 +85,17 @@ def test_gate_freezes_exact_acceleration_and_separate_input_contracts():
     assert gate["lane_bindings"]["cuda"]["acceleration_by_class"]["production_dynamic"] == (
         "cuda_morton_karras_lbvh_rebuild_v1"
     )
+    assert gate["lane_bindings"]["warp"]["acceleration_by_class"]["production_static"] == (
+        "cuda_morton_karras_lbvh_rebuild_v1"
+    )
+    assert gate["lane_bindings"]["cuda"]["acceleration_by_class"]["production_static"] == (
+        "cuda_morton_karras_lbvh_rebuild_v1"
+    )
     r1_rows = [row for row in gate["mandatory_rows"] if row["boundary"] == "R1"]
     r2_rows = [row for row in gate["mandatory_rows"] if row["boundary"] == "R2"]
     shipping_rows = [row for row in gate["mandatory_rows"] if row["boundary"] == "S"]
     assert all(row["input_contract"] == CANONICAL_NATIVE_REPLAY_INPUT for row in r1_rows + r2_rows)
+    assert all(row["acceleration_class"] == "production_static" for row in r2_rows)
     assert all(row["input_contract"] == GPU_ENGINE_PUBLISHED_FRAME_INPUT for row in shipping_rows)
     assert gate["eligibility_contract"]["ineligible_result_emission"] == "forbidden"
     assert gate["eligibility_contract"]["a3a_baseline_emission"] == "forbidden"
@@ -122,6 +129,29 @@ def test_current_product_source_manifest_is_explicitly_not_runtime_evidence(lane
     assert any("execute_camera" in audit.entry_point for audit in audits)
     assert all(audit.source_manifest_sha256 is not None for audit in audits)
     assert all(not audit.verified_runtime_hooks for audit in audits)
+
+
+def test_c3_source_manifests_name_real_prepared_scene_and_acceleration_entries():
+    warp_entries = {
+        audit.entry_point for audit in verify_current_product_source_manifest("warp")
+    }
+    cuda_entries = {
+        audit.entry_point for audit in verify_current_product_source_manifest("cuda")
+    }
+
+    assert (
+        "optics.device_scene.WarpSceneUpdateCommandBundle.enqueue" in warp_entries
+    )
+    assert (
+        "benchmarks.optical.lanes.warp."
+        "WarpCudaLbvhComparisonCommandBundle.enqueue_scene_update"
+    ) in warp_entries
+    assert (
+        "benchmarks.optical.lanes.warp."
+        "WarpCudaLbvhComparisonCommandBundle.enqueue_acceleration"
+    ) in warp_entries
+    assert "optics.cuda_scene.CudaSceneUpdateStage.enqueue" in cuda_entries
+    assert "optics.cuda_lbvh.CudaLbvhRebuildStage.enqueue" in cuda_entries
 
 
 def test_current_preflight_adapters_do_not_expose_a_fake_submit_api():

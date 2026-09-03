@@ -27,16 +27,6 @@ class _SourceCoverage:
 
 _SHARED_SOURCE_COVERAGE = (
     _SourceCoverage(
-        operation="scene_update",
-        entry_point=(
-            "tools.optical_pipeline_lab.render_session.OpticalLabRenderWorkspace.prepare_dynamic_frame"
-        ),
-        source_symbols=(
-            "tools.optical_pipeline_lab.render_session.OpticalLabRenderWorkspace.prepare_dynamic_frame",
-        ),
-        known_contaminations=("allocation", "host_synchronize"),
-    ),
-    _SourceCoverage(
         operation="delivery",
         entry_point="tools.optical_pipeline_lab.delivery.VideoDeliveryFacade.submit",
         source_symbols=(
@@ -65,9 +55,34 @@ _SHARED_SOURCE_COVERAGE = (
 _LANE_SOURCE_COVERAGE = {
     "warp": (
         _SourceCoverage(
+            operation="scene_update",
+            entry_point="optics.device_scene.WarpSceneUpdateCommandBundle.enqueue",
+            source_symbols=("optics.device_scene.WarpSceneUpdateCommandBundle.enqueue",),
+        ),
+        _SourceCoverage(
             operation="acceleration",
-            entry_point="optics.device_bvh.refit_device_bvh_from_snapshot",
-            source_symbols=("optics.device_bvh.refit_device_bvh_from_snapshot",),
+            entry_point="optics.device_bvh.WarpBvhRefitCommandBundle.enqueue",
+            source_symbols=("optics.device_bvh.WarpBvhRefitCommandBundle.enqueue",),
+        ),
+        _SourceCoverage(
+            operation="scene_update",
+            entry_point=(
+                "benchmarks.optical.lanes.warp.WarpCudaLbvhComparisonCommandBundle.enqueue_scene_update"
+            ),
+            source_symbols=(
+                "benchmarks.optical.lanes.warp.WarpCudaLbvhComparisonCommandBundle.enqueue_scene_update",
+                "optics.device_scene.WarpSceneUpdateCommandBundle.enqueue",
+            ),
+        ),
+        _SourceCoverage(
+            operation="acceleration",
+            entry_point=(
+                "benchmarks.optical.lanes.warp.WarpCudaLbvhComparisonCommandBundle.enqueue_acceleration"
+            ),
+            source_symbols=(
+                "benchmarks.optical.lanes.warp.WarpCudaLbvhComparisonCommandBundle.enqueue_acceleration",
+                "optics.cuda_lbvh.CudaLbvhRebuildStage.enqueue_bound_stream",
+            ),
         ),
         _SourceCoverage(
             operation="render",
@@ -81,6 +96,11 @@ _LANE_SOURCE_COVERAGE = {
     ),
     "cuda": (
         _SourceCoverage(
+            operation="scene_update",
+            entry_point="optics.cuda_scene.CudaSceneUpdateStage.enqueue",
+            source_symbols=("optics.cuda_scene.CudaSceneUpdateStage.enqueue",),
+        ),
+        _SourceCoverage(
             operation="render",
             entry_point="optics.cuda_direct_light.CudaDirectLightRenderStage.enqueue",
             source_symbols=("optics.cuda_direct_light.CudaDirectLightRenderStage.enqueue",),
@@ -92,15 +112,8 @@ _LANE_SOURCE_COVERAGE = {
         ),
         _SourceCoverage(
             operation="acceleration",
-            entry_point="optics.cuda_lbvh.build_cuda_lbvh_from_snapshot",
-            source_symbols=("optics.cuda_lbvh.build_cuda_lbvh_from_snapshot",),
-            known_contaminations=(
-                "allocation",
-                "global_device_synchronize",
-                "host_synchronize",
-                "warp_to_torch_bridge",
-                "torch_to_warp_bridge",
-            ),
+            entry_point="optics.cuda_lbvh.CudaLbvhRebuildStage.enqueue",
+            source_symbols=("optics.cuda_lbvh.CudaLbvhRebuildStage.enqueue",),
         ),
         _SourceCoverage(
             operation="render",

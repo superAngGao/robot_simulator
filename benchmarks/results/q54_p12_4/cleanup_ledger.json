@@ -80,18 +80,25 @@
         "optics/device_bvh.py",
         "optics/device.py",
         "benchmarks/optical/native.py",
-        "tests/gpu/test_optical_benchmark_native.py"
+        "tests/gpu/test_optical_benchmark_native.py",
+        "tests/gpu/test_optical_warp_native_commands.py"
       ],
       "symbols": {
         "optics/device_scene.py": [
+          "class WarpSceneUpdateCommandFactory:",
+          "class WarpSceneUpdateCommandBundle:",
           "def build_device_optical_scene_from_packed(",
           "def device_optical_scene_from_arrays("
         ],
         "optics/device_bvh.py": [
+          "class WarpBvhRefitCommandFactory:",
+          "class WarpBvhRefitCommandBundle:",
           "def build_host_median_bvh("
         ],
         "benchmarks/optical/native.py": [
-          "def build_prepared_warp_local_scene("
+          "def build_prepared_warp_local_scene(",
+          "def build_prepared_warp_scene_update_factory(",
+          "def build_prepared_warp_bvh_refit_factory("
         ]
       },
       "cuda_selected": {
@@ -110,7 +117,8 @@
         "optics/cuda_scene.py",
         "benchmarks/optical/native.py",
         "tests/unit/benchmarks/test_optical_benchmark_c3a.py",
-        "tests/gpu/test_optical_benchmark_native.py"
+        "tests/gpu/test_optical_benchmark_native.py",
+        "tests/gpu/test_optical_cuda_scene.py"
       ],
       "symbols": {
         "optics/cuda_scene.py": [
@@ -137,9 +145,22 @@
       "paths": [
         "optics/cuda_lbvh.py",
         "optics/_cuda_lbvh_source.py",
-        "examples/cuda_lbvh_extension_spike.py"
+        "examples/cuda_lbvh_extension_spike.py",
+        "tests/unit/optics/test_cuda_lbvh_native.py",
+        "tests/gpu/test_optical_cuda_lbvh_native.py"
       ],
-      "symbols": {},
+      "symbols": {
+        "optics/cuda_lbvh.py": [
+          "class CudaLbvhWorkspaceRequirements:",
+          "class CudaWorldAabbBuffers:",
+          "class CudaLbvhRebuildStageFactory:",
+          "class CudaLbvhRebuildStage:",
+          "def cuda_lbvh_workspace_requirements(",
+          "def allocate_cuda_lbvh_workspace(",
+          "def allocate_cuda_lbvh_buffers(",
+          "def build_cuda_lbvh_from_snapshot("
+        ]
+      },
       "cuda_selected": {
         "action": "replace_then_delete",
         "acceptance": "retain the native caller-owned source and stage API; remove the Warp-snapshot compatibility facade, Warp wrapping, and experiment filename"
@@ -227,9 +248,17 @@
     },
     {
       "entry_id": "temporary_warp_comparison_lane",
-      "paths": ["benchmarks/optical/lanes/warp.py"],
+      "paths": [
+        "benchmarks/optical/lanes/warp.py",
+        "tests/gpu/test_optical_warp_cuda_lbvh_comparison.py"
+      ],
       "symbols": {
-        "benchmarks/optical/lanes/warp.py": ["class CurrentWarpLanePreflight:"]
+        "benchmarks/optical/lanes/warp.py": [
+          "class CurrentWarpLanePreflight:",
+          "class WarpCudaLbvhComparisonFactory:",
+          "class WarpCudaLbvhComparisonCommandBundle:",
+          "def allocate_warp_cuda_lbvh_comparison_storage("
+        ]
       },
       "cuda_selected": {
         "action": "delete",
@@ -265,6 +294,11 @@
         "tests/unit/benchmarks/test_optical_benchmark_a3a.py"
       ],
       "symbols": {
+        "benchmarks/optical/lanes/__init__.py": [
+          "WarpCudaLbvhComparisonFactory",
+          "WarpCudaLbvhComparisonCommandBundle",
+          "allocate_warp_cuda_lbvh_comparison_storage"
+        ],
         "benchmarks/optical/lanes/audit.py": [
           "def current_product_source_entry_point_audits(",
           "def verify_current_product_source_manifest("
@@ -290,6 +324,7 @@
         "tests/gpu/test_optical_gpu_runtime.py",
         "tests/gpu/test_optical_warp_executor.py",
         "tests/gpu/test_optical_benchmark_native.py",
+        "tests/gpu/test_optical_warp_cuda_lbvh_comparison.py",
         "tests/unit/benchmarks/test_optical_benchmark_c3a.py",
         "tests/unit/optics/test_scene_contract.py"
       ],
