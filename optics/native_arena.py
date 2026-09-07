@@ -13,6 +13,7 @@ import hashlib
 import json
 import threading
 import uuid
+import weakref
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -21,9 +22,9 @@ NATIVE_OPTICAL_ARENA_LAYOUT_SCHEMA_VERSION = "optics.native-optical-arena-layout
 NATIVE_OPTICAL_ARENA_SPEC_SCHEMA_VERSION = "optics.native-optical-arena-spec.v1"
 NATIVE_OPTICAL_SLOT_RESOURCE_SCHEMA_VERSION = "optics.native-optical-slot-resource.v1"
 NATIVE_OPTICAL_RESOURCE_MANIFEST_SCHEMA_VERSION = "optics.native-optical-arena-resource-manifest.v1"
-C4_PREPARED_SAMPLE_PLAN_SCHEMA_VERSION = "q54.p12.4.c4-prepared-sample-plan.v1"
-C4_ACTIVE_LEASE_BINDING_SCHEMA_VERSION = "q54.p12.4.c4-active-lease-binding.v1"
-C4_ARENA_LIFECYCLE_SCHEMA_VERSION = "q54.p12.4.c4-arena-lifecycle.v1"
+C4_PREPARED_SAMPLE_PLAN_SCHEMA_VERSION = "q54.p12.4.c4-prepared-sample-plan.v2"
+C4_ACTIVE_LEASE_BINDING_SCHEMA_VERSION = "q54.p12.4.c4-active-lease-binding.v2"
+C4_ARENA_LIFECYCLE_SCHEMA_VERSION = "q54.p12.4.c4-arena-lifecycle.v2"
 
 _ARENA_STATES = frozenset(
     {
@@ -48,6 +49,29 @@ _SLOT_STATES = frozenset(
         "RETAINED_POISONED",
     }
 )
+C4_LIFECYCLE_OPERATION_KINDS = (
+    "arena_opened",
+    "acquire_backpressure",
+    "acquired",
+    "cancelled_generation_burned",
+    "enqueue_started",
+    "completion_recorded",
+    "completion_resolved",
+    "device_result_hold_released",
+    "slot_reclaimable",
+    "slot_reclaimed",
+    "drain_started",
+    "final_drain_complete",
+    "arena_closed",
+    "arena_poisoned",
+)
+C4_SHUTDOWN_DISPOSITIONS = (
+    "synced_waiting_external_holds",
+    "aborted_synced_release_authorized",
+    "quarantined_until_process_exit",
+)
+_LIFECYCLE_OPERATION_KIND_SET = frozenset(C4_LIFECYCLE_OPERATION_KINDS)
+_SHUTDOWN_DISPOSITION_SET = frozenset(C4_SHUTDOWN_DISPOSITIONS)
 _SUPPORTED_OUTPUT_PROFILES = frozenset({"direct_light_full", "rgb_preview", "render_only"})
 _SUPPORTED_DIAGNOSTIC_MODES = frozenset({"primary_unprofiled", "diagnostic_profiled"})
 _SUPPORTED_PAYLOAD_POLICIES = frozenset(
@@ -279,6 +303,7 @@ class C4PreparedSamplePlanEvidence:
     ordered_stage_evidence_sha256: str
     dataflow_binding_sha256: str
     terminal_event_token: str
+    planned_acquisition_offset: int
 
     def __post_init__(self) -> None:
         _validate_prepared_evidence_payload(self.to_payload())
@@ -336,6 +361,7 @@ class C4ActiveLeaseBindingEvidence:
     ordered_stage_evidence_sha256: str
     dataflow_binding_sha256: str
     terminal_event_token: str
+    planned_acquisition_offset: int
     result_capable: bool
 
     def __post_init__(self) -> None:
@@ -381,7 +407,8 @@ class C4ArenaLifecycleTransition:
     def _validate(self) -> None:
         if not _nonnegative_int(self.sequence):
             raise ValueError("C4 lifecycle transition sequence is invalid")
-        _require_token(self.operation, "C4 lifecycle transition operation")
+        if self.operation not in _LIFECYCLE_OPERATION_KIND_SET:
+            raise ValueError("C4 lifecycle transition operation is invalid")
         if self.arena_state not in _ARENA_STATES:
             raise ValueError("C4 lifecycle transition arena state is invalid")
         if (self.slot_id is None) != (self.generation is None):
@@ -409,6 +436,34 @@ class C4ArenaLifecycleTransition:
 
 
 @dataclass(frozen=True, slots=True)
+class C4ArenaSlotLifecycleSnapshot:
+    """Final state of one slot, checked against the replayed transition trace."""
+
+    slot_id: int
+    generation: int
+    state: str
+    terminal_event_record_count: int
+    completion_resolved: bool
+    payload_ready: bool
+    transaction_hold_count: int
+    device_result_hold_count: int
+    delivery_device_hold_count: int
+    external_hold_count: int
+
+    def __post_init__(self) -> None:
+        _validate_slot_lifecycle_snapshot(self)
+
+    @classmethod
+    def from_payload(cls, payload: object) -> "C4ArenaSlotLifecycleSnapshot":
+        if not isinstance(payload, Mapping) or set(payload) != set(cls.__dataclass_fields__):
+            raise ValueError("C4 arena slot lifecycle snapshot fields are invalid")
+        return cls(**{name: payload[name] for name in cls.__dataclass_fields__})
+
+    def to_payload(self) -> dict[str, object]:
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+
+@dataclass(frozen=True, slots=True)
 class C4ArenaLifecycleEvidence:
     """Immutable snapshot generated from the arena's transition authority."""
 
@@ -417,6 +472,7 @@ class C4ArenaLifecycleEvidence:
     arena_resource_manifest_sha256: str
     arena_token: str
     arena_state: str
+    ring_depth: int
     next_acquire_slot_id: int
     backpressure_count: int
     terminal_event_record_count: int
@@ -438,6 +494,7 @@ class C4ArenaLifecycleEvidence:
     retained_pinned_storage_count: int
     shutdown_disposition: str | None
     shutdown_transition_trace_sha256: str | None
+    slots: tuple[C4ArenaSlotLifecycleSnapshot, ...]
     transitions: tuple[C4ArenaLifecycleTransition, ...]
     transition_trace_sha256: str
 
@@ -449,16 +506,29 @@ class C4ArenaLifecycleEvidence:
         if not isinstance(payload, Mapping) or set(payload) != set(cls.__dataclass_fields__):
             raise ValueError("C4 arena lifecycle evidence fields are invalid")
         transitions = payload["transitions"]
+        slots = payload["slots"]
         if not isinstance(transitions, Sequence) or isinstance(transitions, (str, bytes)):
             raise ValueError("C4 lifecycle transitions must be an array")
+        if not isinstance(slots, Sequence) or isinstance(slots, (str, bytes)):
+            raise ValueError("C4 lifecycle slots must be an array")
         return cls(
-            **{name: payload[name] for name in cls.__dataclass_fields__ if name != "transitions"},
+            **{
+                name: payload[name]
+                for name in cls.__dataclass_fields__
+                if name not in {"slots", "transitions"}
+            },
+            slots=tuple(C4ArenaSlotLifecycleSnapshot.from_payload(value) for value in slots),
             transitions=tuple(C4ArenaLifecycleTransition.from_payload(value) for value in transitions),
         )
 
     def to_payload(self) -> dict[str, object]:
         return {
-            **{name: getattr(self, name) for name in self.__dataclass_fields__ if name != "transitions"},
+            **{
+                name: getattr(self, name)
+                for name in self.__dataclass_fields__
+                if name not in {"slots", "transitions"}
+            },
+            "slots": [slot.to_payload() for slot in self.slots],
             "transitions": [transition.to_payload() for transition in self.transitions],
         }
 
@@ -487,7 +557,7 @@ class _SlotRecord:
 class C4PreparedSamplePlan:
     """Arena-issued prevalidated plan that cannot itself authorize output."""
 
-    __slots__ = ("_arena_authority", "_evidence", "_live_lease", "_sealed")
+    __slots__ = ("_arena_authority", "_evidence", "_live_lease", "_sealed", "__weakref__")
 
     def __init__(
         self,
@@ -614,10 +684,6 @@ class NativeOpticalArena:
         object.__setattr__(self, "_sealed", False)
         canonical_spec = NativeOpticalArenaSpec.from_payload(spec.to_payload())
         canonical_manifest = NativeOpticalArenaResourceManifest.from_payload(resource_manifest.to_payload())
-        if canonical_spec.payload in {"rgb", "full", "rgb8"}:
-            raise NativeOpticalArenaNotActivatedError(
-                "host-payload arena sealing is closed until B3 and joint activation review"
-            )
         if canonical_manifest.arena_spec_sha256 != canonical_spec.sha256:
             raise ValueError("arena resource manifest does not bind the exact arena spec")
         expected_slot_ids = tuple(range(canonical_spec.ring_depth))
@@ -645,15 +711,14 @@ class NativeOpticalArena:
             (token, self._resource_owners[token]) for token in sorted(self._resource_owners)
         )
         self._slots = tuple(_SlotRecord(manifest=slot) for slot in canonical_manifest.slots)
-        self._prepared_registry: dict[
-            int,
+        self._prepared_registry: weakref.WeakKeyDictionary[
+            C4PreparedSamplePlan,
             tuple[
-                C4PreparedSamplePlan,
                 C4PreparedSamplePlanEvidence,
                 C4ActiveOutputLease,
                 C4ActiveLeaseBindingEvidence,
             ],
-        ] = {}
+        ] = weakref.WeakKeyDictionary()
         self._active_fifo: list[C4ActiveOutputLease] = []
         self._next_acquire_slot_id = 0
         self._state = "OPEN"
@@ -706,6 +771,7 @@ class NativeOpticalArena:
         c3_one_shot_binding_sha256: str,
         ordered_stage_evidence_sha256: str,
         dataflow_binding_sha256: str,
+        planned_acquisition_offset: int = 0,
     ) -> C4PreparedSamplePlan:
         """Build an immutable next-slot plan outside measured acquisition."""
 
@@ -716,14 +782,11 @@ class NativeOpticalArena:
             _require_sha256(ordered_stage_evidence_sha256, "ordered stage evidence digest")
             _require_sha256(dataflow_binding_sha256, "dataflow binding digest")
             self._validate_frame_index(transform_frame_index)
-            slot = self._slots[self._next_acquire_slot_id]
-            expected_generation = slot.generation + 1
-            if any(
-                registered[1].slot_id == slot.manifest.slot_id
-                and registered[1].expected_generation == expected_generation
-                for registered in self._prepared_registry.values()
-            ):
-                raise NativeOpticalArenaProtocolError("the next slot generation already has a prepared plan")
+            if not _nonnegative_int(planned_acquisition_offset):
+                raise ValueError("planned acquisition offset must be non-negative")
+            planned_position = self._next_acquire_slot_id + planned_acquisition_offset
+            slot = self._slots[planned_position % self._spec.ring_depth]
+            expected_generation = slot.generation + 1 + planned_position // self._spec.ring_depth
             prepared_evidence = C4PreparedSamplePlanEvidence(
                 schema_version=C4_PREPARED_SAMPLE_PLAN_SCHEMA_VERSION,
                 arena_spec_sha256=self._spec.sha256,
@@ -758,6 +821,7 @@ class NativeOpticalArena:
                 ordered_stage_evidence_sha256=ordered_stage_evidence_sha256,
                 dataflow_binding_sha256=dataflow_binding_sha256,
                 terminal_event_token=slot.manifest.terminal_event_token,
+                planned_acquisition_offset=planned_acquisition_offset,
             )
             lease_token = _canonical_sha256(
                 {
@@ -804,6 +868,7 @@ class NativeOpticalArena:
                 ordered_stage_evidence_sha256=ordered_stage_evidence_sha256,
                 dataflow_binding_sha256=dataflow_binding_sha256,
                 terminal_event_token=slot.manifest.terminal_event_token,
+                planned_acquisition_offset=planned_acquisition_offset,
                 result_capable=False,
             )
             lease = C4ActiveOutputLease(
@@ -818,8 +883,7 @@ class NativeOpticalArena:
                 live_lease=lease,
                 _key=_LIVE_AUTHORITY_KEY,
             )
-            self._prepared_registry[id(plan)] = (
-                plan,
+            self._prepared_registry[plan] = (
                 prepared_evidence,
                 lease,
                 active_evidence,
@@ -832,16 +896,14 @@ class NativeOpticalArena:
         with self._lock:
             self._require_arena_state("OPEN", operation="acquire")
             self._validate_frozen_lightweight()
-            registered = self._prepared_registry.get(id(plan))
-            if (
-                registered is None
-                or registered[0] is not plan
-                or plan._arena_authority is not self._authority
-            ):
+            if not isinstance(plan, C4PreparedSamplePlan):
                 raise NativeOpticalArenaProtocolError("prepared plan is not owned by this arena")
-            if plan.evidence != registered[1]:
+            registered = self._prepared_registry.get(plan)
+            if registered is None or plan._arena_authority is not self._authority:
+                raise NativeOpticalArenaProtocolError("prepared plan is not owned by this arena")
+            if plan.evidence != registered[0]:
                 raise NativeOpticalArenaProtocolError("prepared plan evidence changed after seal")
-            if plan._live_lease is not registered[2] or plan._live_lease.evidence != registered[3]:
+            if plan._live_lease is not registered[1] or plan._live_lease.evidence != registered[2]:
                 raise NativeOpticalArenaProtocolError("prepared plan live lease changed after seal")
             evidence = plan.evidence
             slot = self._slots[self._next_acquire_slot_id]
@@ -865,7 +927,7 @@ class NativeOpticalArena:
             slot.generation = evidence.expected_generation
             slot.state = "LEASED"
             slot.lease = lease
-            slot.lease_evidence = registered[3]
+            slot.lease_evidence = registered[2]
             slot.first_enqueue_started = False
             slot.terminal_event_record_count = 0
             slot.completion_resolved = False
@@ -876,7 +938,7 @@ class NativeOpticalArena:
             slot.external_hold_count = 0
             self._active_fifo.append(lease)
             self._next_acquire_slot_id = (slot.manifest.slot_id + 1) % self._spec.ring_depth
-            del self._prepared_registry[id(plan)]
+            del self._prepared_registry[plan]
             self._record_transition("acquired", slot=slot)
             return lease
 
@@ -915,6 +977,7 @@ class NativeOpticalArena:
                 arena_resource_manifest_sha256=self._resource_manifest.sha256,
                 arena_token=self._arena_token,
                 arena_state=self._state,
+                ring_depth=self._spec.ring_depth,
                 next_acquire_slot_id=self._next_acquire_slot_id,
                 backpressure_count=self._backpressure_count,
                 terminal_event_record_count=sum(
@@ -938,6 +1001,7 @@ class NativeOpticalArena:
                 retained_pinned_storage_count=0,
                 shutdown_disposition=None,
                 shutdown_transition_trace_sha256=None,
+                slots=tuple(_slot_lifecycle_snapshot(slot) for slot in self._slots),
                 transitions=transitions,
                 transition_trace_sha256=_canonical_sha256(
                     [transition.to_payload() for transition in transitions]
@@ -1405,8 +1469,9 @@ def _validate_prepared_evidence_payload(payload: Mapping[str, object]) -> None:
     for name in ("ring_depth", "expected_generation"):
         if not _positive_int(payload.get(name)):
             raise ValueError(f"C4 prepared sample plan {name} must be positive")
-    if not _nonnegative_int(payload.get("slot_id")):
-        raise ValueError("C4 prepared sample plan slot ID must be non-negative")
+    for name in ("slot_id", "planned_acquisition_offset"):
+        if not _nonnegative_int(payload.get(name)):
+            raise ValueError(f"C4 prepared sample plan {name} must be non-negative")
     if not _nonnegative_int(payload.get("device_ordinal")):
         raise ValueError("C4 prepared sample plan device ordinal must be non-negative")
     if not isinstance(payload.get("shadows"), bool):
@@ -1439,6 +1504,332 @@ def _validate_active_evidence_payload(payload: Mapping[str, object]) -> None:
         raise ValueError("C4a active lease binding must remain non-result-capable")
 
 
+def _slot_lifecycle_snapshot(slot: _SlotRecord) -> C4ArenaSlotLifecycleSnapshot:
+    return C4ArenaSlotLifecycleSnapshot(
+        slot_id=slot.manifest.slot_id,
+        generation=slot.generation,
+        state=slot.state,
+        terminal_event_record_count=slot.terminal_event_record_count,
+        completion_resolved=slot.completion_resolved,
+        payload_ready=slot.payload_ready,
+        transaction_hold_count=slot.transaction_hold_count,
+        device_result_hold_count=slot.device_result_hold_count,
+        delivery_device_hold_count=slot.delivery_device_hold_count,
+        external_hold_count=slot.external_hold_count,
+    )
+
+
+def _validate_slot_lifecycle_snapshot(snapshot: C4ArenaSlotLifecycleSnapshot) -> None:
+    if not _nonnegative_int(snapshot.slot_id) or not _nonnegative_int(snapshot.generation):
+        raise ValueError("C4 arena slot lifecycle identity is invalid")
+    if snapshot.state not in _SLOT_STATES:
+        raise ValueError("C4 arena slot lifecycle state is invalid")
+    for name in (
+        "terminal_event_record_count",
+        "transaction_hold_count",
+        "device_result_hold_count",
+        "delivery_device_hold_count",
+        "external_hold_count",
+    ):
+        if not _nonnegative_int(getattr(snapshot, name)):
+            raise ValueError(f"C4 arena slot lifecycle {name} is invalid")
+    for name in ("completion_resolved", "payload_ready"):
+        if not isinstance(getattr(snapshot, name), bool):
+            raise ValueError(f"C4 arena slot lifecycle {name} must be boolean")
+    if snapshot.generation == 0 and (
+        snapshot.state != "FREE"
+        or snapshot.terminal_event_record_count != 0
+        or snapshot.completion_resolved
+        or snapshot.payload_ready
+        or snapshot.transaction_hold_count
+        or snapshot.device_result_hold_count
+        or snapshot.delivery_device_hold_count
+        or snapshot.external_hold_count
+    ):
+        raise ValueError("an unused C4 arena slot must remain in its zero state")
+
+
+def _transition_matches_slot(
+    transition: C4ArenaLifecycleTransition,
+    slot: dict[str, object],
+) -> bool:
+    return (
+        transition.slot_id == slot["slot_id"]
+        and transition.generation == slot["generation"]
+        and transition.slot_state == slot["state"]
+        and transition.transaction_hold_count == slot["transaction_hold_count"]
+        and transition.device_result_hold_count == slot["device_result_hold_count"]
+        and transition.delivery_device_hold_count == slot["delivery_device_hold_count"]
+        and transition.external_hold_count == slot["external_hold_count"]
+    )
+
+
+def _require_arena_only_transition(transition: C4ArenaLifecycleTransition) -> None:
+    if (
+        transition.slot_id is not None
+        or transition.slot_state is not None
+        or transition.transaction_hold_count
+        or transition.device_result_hold_count
+        or transition.delivery_device_hold_count
+        or transition.external_hold_count
+    ):
+        raise ValueError(f"C4 lifecycle {transition.operation} must be arena-only")
+
+
+def _replay_lifecycle_evidence(evidence: C4ArenaLifecycleEvidence) -> dict[str, object]:
+    slots: list[dict[str, object]] = [
+        {
+            "slot_id": slot_id,
+            "generation": 0,
+            "state": "FREE",
+            "terminal_event_record_count": 0,
+            "completion_resolved": False,
+            "payload_ready": False,
+            "transaction_hold_count": 0,
+            "device_result_hold_count": 0,
+            "delivery_device_hold_count": 0,
+            "external_hold_count": 0,
+        }
+        for slot_id in range(evidence.ring_depth)
+    ]
+    arena_state: str | None = None
+    active_fifo: list[int] = []
+    next_acquire_slot_id = 0
+    backpressure_count = 0
+    terminal_event_record_count = 0
+    completion_resolution_count = 0
+    slot_reclaim_count = 0
+    final_drain_complete = False
+    external_hold_count_at_poison: int | None = None
+
+    for index, transition in enumerate(evidence.transitions):
+        if transition.sequence != index:
+            raise ValueError("C4 lifecycle transition sequence is not contiguous")
+        operation = transition.operation
+        if operation == "arena_opened":
+            if index != 0 or arena_state is not None or transition.arena_state != "OPEN":
+                raise ValueError("C4 lifecycle must begin with exactly one arena_opened transition")
+            _require_arena_only_transition(transition)
+            arena_state = "OPEN"
+            continue
+        if arena_state is None:
+            raise ValueError("C4 lifecycle transition occurred before arena_opened")
+
+        if operation in {"drain_started", "final_drain_complete", "arena_closed"}:
+            _require_arena_only_transition(transition)
+            if operation == "drain_started":
+                if arena_state != "OPEN" or transition.arena_state != "DRAINING":
+                    raise ValueError("C4 drain_started transition is illegal")
+                arena_state = "DRAINING"
+            elif operation == "final_drain_complete":
+                if (
+                    arena_state != "DRAINING"
+                    or active_fifo
+                    or transition.arena_state != "DRAINING"
+                    or final_drain_complete
+                ):
+                    raise ValueError("C4 final_drain_complete transition is illegal")
+                final_drain_complete = True
+            else:
+                if (
+                    arena_state not in {"OPEN", "DRAINING"}
+                    or active_fifo
+                    or any(slot["state"] != "FREE" for slot in slots)
+                    or transition.arena_state != "CLOSED"
+                ):
+                    raise ValueError("C4 arena_closed transition is illegal")
+                arena_state = "CLOSED"
+            continue
+
+        if transition.slot_id is None or transition.slot_id >= evidence.ring_depth:
+            raise ValueError(f"C4 lifecycle {operation} has an invalid slot")
+        slot = slots[transition.slot_id]
+
+        if operation == "acquire_backpressure":
+            if (
+                arena_state != "OPEN"
+                or transition.arena_state != "OPEN"
+                or transition.slot_id != next_acquire_slot_id
+                or slot["state"] == "FREE"
+                or not _transition_matches_slot(transition, slot)
+            ):
+                raise ValueError("C4 acquire_backpressure transition is illegal")
+            backpressure_count += 1
+            continue
+
+        if operation == "acquired":
+            if (
+                arena_state != "OPEN"
+                or transition.arena_state != "OPEN"
+                or transition.slot_id != next_acquire_slot_id
+                or slot["state"] != "FREE"
+                or transition.generation != slot["generation"] + 1
+                or transition.slot_state != "LEASED"
+                or transition.transaction_hold_count != 1
+                or transition.device_result_hold_count != 1
+                or transition.delivery_device_hold_count not in {0, 1}
+                or transition.external_hold_count != 0
+            ):
+                raise ValueError("C4 acquired transition is illegal")
+            slot.update(
+                {
+                    "generation": transition.generation,
+                    "state": "LEASED",
+                    "terminal_event_record_count": 0,
+                    "completion_resolved": False,
+                    "payload_ready": False,
+                    "transaction_hold_count": 1,
+                    "device_result_hold_count": 1,
+                    "delivery_device_hold_count": transition.delivery_device_hold_count,
+                    "external_hold_count": 0,
+                }
+            )
+            active_fifo.append(transition.slot_id)
+            next_acquire_slot_id = (transition.slot_id + 1) % evidence.ring_depth
+            continue
+
+        if transition.generation != slot["generation"] or transition.slot_id not in active_fifo:
+            raise ValueError(f"C4 lifecycle {operation} targets a stale generation")
+
+        if operation == "cancelled_generation_burned":
+            if (
+                arena_state not in {"OPEN", "DRAINING"}
+                or slot["state"] != "LEASED"
+                or transition.arena_state != arena_state
+                or transition.slot_state != "FREE"
+                or any(
+                    (
+                        transition.transaction_hold_count,
+                        transition.device_result_hold_count,
+                        transition.delivery_device_hold_count,
+                        transition.external_hold_count,
+                    )
+                )
+            ):
+                raise ValueError("C4 cancelled generation transition is illegal")
+            slot.update(
+                {
+                    "state": "FREE",
+                    "transaction_hold_count": 0,
+                    "device_result_hold_count": 0,
+                    "delivery_device_hold_count": 0,
+                    "external_hold_count": 0,
+                }
+            )
+            active_fifo.remove(transition.slot_id)
+            continue
+
+        if operation == "enqueue_started":
+            if (
+                arena_state not in {"OPEN", "DRAINING"}
+                or slot["state"] != "LEASED"
+                or transition.arena_state != arena_state
+            ):
+                raise ValueError("C4 enqueue_started transition is illegal")
+            position = active_fifo.index(transition.slot_id)
+            if any(slots[slot_id]["state"] in {"LEASED", "ENQUEUING"} for slot_id in active_fifo[:position]):
+                raise ValueError("C4 enqueue_started transition violates FIFO")
+            slot["state"] = "ENQUEUING"
+        elif operation == "completion_recorded":
+            if (
+                arena_state not in {"OPEN", "DRAINING"}
+                or slot["state"] != "ENQUEUING"
+                or slot["terminal_event_record_count"] != 0
+                or transition.arena_state != arena_state
+            ):
+                raise ValueError("C4 completion_recorded transition is illegal")
+            slot["terminal_event_record_count"] = 1
+            slot["state"] = "COMPLETION_RECORDED"
+            terminal_event_record_count += 1
+        elif operation == "completion_resolved":
+            if (
+                arena_state not in {"OPEN", "DRAINING"}
+                or not active_fifo
+                or active_fifo[0] != transition.slot_id
+                or slot["state"] != "COMPLETION_RECORDED"
+                or slot["terminal_event_record_count"] != 1
+                or slot["completion_resolved"]
+                or transition.arena_state != arena_state
+            ):
+                raise ValueError("C4 completion_resolved transition is illegal")
+            slot["completion_resolved"] = True
+            slot["transaction_hold_count"] = 0
+            completion_resolution_count += 1
+            if transition.slot_state == "PAYLOAD_READY":
+                slot["state"] = "PAYLOAD_READY"
+                slot["payload_ready"] = True
+                slot["delivery_device_hold_count"] = 0
+            elif transition.slot_state != "COMPLETION_RECORDED":
+                raise ValueError("C4 completion_resolved target state is invalid")
+        elif operation == "device_result_hold_released":
+            if (
+                arena_state not in {"OPEN", "DRAINING"}
+                or not slot["completion_resolved"]
+                or slot["device_result_hold_count"] != 1
+                or transition.arena_state != arena_state
+            ):
+                raise ValueError("C4 device-result release transition is illegal")
+            slot["device_result_hold_count"] = 0
+        elif operation == "slot_reclaimable":
+            if (
+                arena_state not in {"OPEN", "DRAINING"}
+                or not slot["payload_ready"]
+                or any(
+                    slot[name]
+                    for name in (
+                        "transaction_hold_count",
+                        "device_result_hold_count",
+                        "delivery_device_hold_count",
+                        "external_hold_count",
+                    )
+                )
+                or transition.arena_state != arena_state
+            ):
+                raise ValueError("C4 slot_reclaimable transition is illegal")
+            slot["state"] = "RECLAIMABLE"
+        elif operation == "slot_reclaimed":
+            if (
+                arena_state not in {"OPEN", "DRAINING"}
+                or not active_fifo
+                or active_fifo[0] != transition.slot_id
+                or slot["state"] != "RECLAIMABLE"
+                or transition.arena_state != arena_state
+            ):
+                raise ValueError("C4 slot_reclaimed transition is illegal")
+            slot["state"] = "FREE"
+            active_fifo.pop(0)
+            slot_reclaim_count += 1
+        elif operation == "arena_poisoned":
+            if arena_state not in {"OPEN", "DRAINING"} or slot["state"] == "LEASED":
+                raise ValueError("C4 arena_poisoned transition is illegal")
+            external_hold_count_at_poison = sum(int(value["external_hold_count"]) for value in slots)
+            arena_state = "POISONED"
+            for active_slot_id in active_fifo:
+                slots[active_slot_id]["state"] = "RETAINED_POISONED"
+        else:
+            raise ValueError(f"unsupported C4 lifecycle transition {operation!r}")
+
+        if transition.arena_state != arena_state or not _transition_matches_slot(transition, slot):
+            raise ValueError(f"C4 lifecycle {operation} snapshot does not match replayed state")
+
+    if arena_state is None:
+        raise ValueError("C4 lifecycle transition trace is empty")
+    return {
+        "arena_state": arena_state,
+        "slots": slots,
+        "next_acquire_slot_id": next_acquire_slot_id,
+        "backpressure_count": backpressure_count,
+        "terminal_event_record_count": terminal_event_record_count,
+        "completion_resolution_count": completion_resolution_count,
+        "slot_reclaim_count": slot_reclaim_count,
+        "final_drain_complete": final_drain_complete,
+        "final_reclaim_complete": final_drain_complete,
+        "external_hold_count": sum(int(slot["external_hold_count"]) for slot in slots),
+        "external_hold_count_at_poison": external_hold_count_at_poison,
+        "poisoned_slot_count": sum(slot["state"] == "RETAINED_POISONED" for slot in slots),
+    }
+
+
 def _validate_lifecycle_evidence(evidence: C4ArenaLifecycleEvidence) -> None:
     if evidence.schema_version != C4_ARENA_LIFECYCLE_SCHEMA_VERSION:
         raise ValueError("C4 arena lifecycle schema version is invalid")
@@ -1451,6 +1842,12 @@ def _validate_lifecycle_evidence(evidence: C4ArenaLifecycleEvidence) -> None:
     _require_token(evidence.arena_token, "C4 lifecycle arena token")
     if evidence.arena_state not in _ARENA_STATES:
         raise ValueError("C4 lifecycle arena state is invalid")
+    if not _positive_int(evidence.ring_depth) or evidence.ring_depth not in {1, 2}:
+        raise ValueError("C4 lifecycle ring depth is invalid")
+    if len(evidence.slots) != evidence.ring_depth or tuple(slot.slot_id for slot in evidence.slots) != tuple(
+        range(evidence.ring_depth)
+    ):
+        raise ValueError("C4 lifecycle must contain every slot snapshot in order")
     for name in (
         "next_acquire_slot_id",
         "backpressure_count",
@@ -1480,11 +1877,34 @@ def _validate_lifecycle_evidence(evidence: C4ArenaLifecycleEvidence) -> None:
     ):
         if not isinstance(getattr(evidence, name), bool):
             raise ValueError(f"C4 lifecycle {name} must be boolean")
-    if any(transition.sequence != index for index, transition in enumerate(evidence.transitions)):
-        raise ValueError("C4 lifecycle transition sequence is not contiguous")
     expected_trace = _canonical_sha256([transition.to_payload() for transition in evidence.transitions])
     if evidence.transition_trace_sha256 != expected_trace:
         raise ValueError("C4 lifecycle transition trace digest is invalid")
+    replayed = _replay_lifecycle_evidence(evidence)
+    for name in (
+        "arena_state",
+        "next_acquire_slot_id",
+        "backpressure_count",
+        "terminal_event_record_count",
+        "completion_resolution_count",
+        "slot_reclaim_count",
+        "final_drain_complete",
+        "final_reclaim_complete",
+        "external_hold_count",
+        "external_hold_count_at_poison",
+        "poisoned_slot_count",
+    ):
+        if getattr(evidence, name) != replayed[name]:
+            raise ValueError(f"C4 lifecycle {name} does not match the replayed transition trace")
+    if tuple(slot.to_payload() for slot in evidence.slots) != tuple(replayed["slots"]):
+        raise ValueError("C4 lifecycle slot summaries do not match the replayed transition trace")
+    if evidence.external_hold_discharge_count != 0 or evidence.retained_pinned_storage_count != 0:
+        raise ValueError("C4a transition trace cannot claim B3 external-hold activity")
+    if (
+        evidence.shutdown_disposition is not None
+        and evidence.shutdown_disposition not in _SHUTDOWN_DISPOSITION_SET
+    ):
+        raise ValueError("C4 lifecycle shutdown disposition is invalid")
     if evidence.resource_release_authorized and not (
         evidence.device_quiesced
         and evidence.device_emergency_sync_succeeded
@@ -1522,6 +1942,18 @@ def _validate_lifecycle_evidence(evidence: C4ArenaLifecycleEvidence) -> None:
         raise ValueError("C4 current external hold count cannot exceed its post-sync count")
     if evidence.external_holds_discharged != (evidence.external_hold_count == 0):
         raise ValueError("C4 external hold discharge evidence is inconsistent")
+    expected_disposition_by_state = {
+        "SYNCED_WAITING_EXTERNAL_HOLDS": "synced_waiting_external_holds",
+        "ABORTED_SYNCED": "aborted_synced_release_authorized",
+        "QUARANTINED_UNTIL_PROCESS_EXIT": "quarantined_until_process_exit",
+    }
+    expected_disposition = expected_disposition_by_state.get(evidence.arena_state)
+    if evidence.shutdown_disposition != expected_disposition:
+        raise ValueError("C4 lifecycle state and shutdown disposition are inconsistent")
+    if evidence.resource_release_authorized != (evidence.arena_state == "ABORTED_SYNCED"):
+        raise ValueError("C4 aborted-synced state and release authorization must agree")
+    if evidence.waiting_external_holds != (evidence.arena_state == "SYNCED_WAITING_EXTERNAL_HOLDS"):
+        raise ValueError("C4 waiting state and external-hold flag must agree")
     if evidence.shutdown_disposition is None:
         if evidence.shutdown_transition_trace_sha256 is not None:
             raise ValueError("C4 shutdown trace requires a shutdown disposition")

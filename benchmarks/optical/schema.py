@@ -13,7 +13,9 @@ from typing import Any
 from optics.native_arena import (
     C4_ACTIVE_LEASE_BINDING_SCHEMA_VERSION,
     C4_ARENA_LIFECYCLE_SCHEMA_VERSION,
+    C4_LIFECYCLE_OPERATION_KINDS,
     C4_PREPARED_SAMPLE_PLAN_SCHEMA_VERSION,
+    C4_SHUTDOWN_DISPOSITIONS,
     NATIVE_OPTICAL_ARENA_LAYOUT_SCHEMA_VERSION,
     NATIVE_OPTICAL_ARENA_SPEC_SCHEMA_VERSION,
     NATIVE_OPTICAL_RESOURCE_MANIFEST_SCHEMA_VERSION,
@@ -74,9 +76,9 @@ from .workload_contract import (
     frozen_workload_payloads,
 )
 
-GATE_SCHEMA_VERSION = "q54.p12.4.gate.v11"
-RESULT_SCHEMA_VERSION = "q54.p12.4.result.v11"
-ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v6"
+GATE_SCHEMA_VERSION = "q54.p12.4.gate.v12"
+RESULT_SCHEMA_VERSION = "q54.p12.4.result.v12"
+ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v7"
 INVENTORY_SCHEMA_VERSION = "q54.p12.4.architecture-inventory.v1"
 CLEANUP_SCHEMA_VERSION = "q54.p12.4.cleanup-ledger.v1"
 PUBLICATION_BINDING_CONTRACT_VERSION = "q54.p12.4.publication-cuda-binding.v1"
@@ -411,7 +413,7 @@ EXPECTED_NATIVE_EXECUTION_BINDING_CONTRACT = {
 }
 
 EXPECTED_NATIVE_OUTPUT_ARENA_CONTRACT = {
-    "schema_version": "q54.p12.4.native-output-arena-contract.v1",
+    "schema_version": "q54.p12.4.native-output-arena-contract.v2",
     "arena_layout_schema_version": NATIVE_OPTICAL_ARENA_LAYOUT_SCHEMA_VERSION,
     "arena_spec_schema_version": NATIVE_OPTICAL_ARENA_SPEC_SCHEMA_VERSION,
     "slot_resource_schema_version": NATIVE_OPTICAL_SLOT_RESOURCE_SCHEMA_VERSION,
@@ -421,13 +423,19 @@ EXPECTED_NATIVE_OUTPUT_ARENA_CONTRACT = {
     "lifecycle_schema_version": C4_ARENA_LIFECYCLE_SCHEMA_VERSION,
     "allowed_ring_depths": [1, 2],
     "slot_selection": "strict_round_robin_fifo_no_overwrite",
+    "prepared_plan_policy": "non_reserving_speculative_multiple_candidates_allowed",
+    "batch_preparation": "planned_acquisition_offset_binds_future_slot_and_generation",
+    "discarded_plan_retention": "weak_none",
     "generation_rule": "strictly_increasing_and_burned_on_pre_enqueue_cancel",
     "measured_acquire": "O1_identity_and_state_bookkeeping_only",
     "prepared_plan_result_capable": False,
     "active_lease_result_capable": False,
     "serialized_evidence_is_live_authority": False,
-    "host_payload_arena_seal": "blocked_until_B3_and_joint_activation_review",
+    "host_payload_control_arena_result_capable": False,
     "reclaim_evidence_owner": "arena_lifecycle_transition_authority",
+    "lifecycle_validation": "canonical_full_state_machine_replay",
+    "lifecycle_operation_kinds": list(C4_LIFECYCLE_OPERATION_KINDS),
+    "shutdown_dispositions": list(C4_SHUTDOWN_DISPOSITIONS),
     "submission_trace_contains_reclaim": False,
     "poison_release_barrier": {
         "device_quiescence_required": True,

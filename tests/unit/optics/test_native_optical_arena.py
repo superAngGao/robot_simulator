@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import gc
+import hashlib
+import json
 import weakref
 from dataclasses import replace
 
@@ -19,7 +21,6 @@ from optics.native_arena import (
     C4PreparedSamplePlanEvidence,
     NativeOpticalArena,
     NativeOpticalArenaBackpressure,
-    NativeOpticalArenaNotActivatedError,
     NativeOpticalArenaPoisonedError,
     NativeOpticalArenaProtocolError,
     NativeOpticalArenaResourceManifest,
@@ -124,12 +125,18 @@ def _arena(spec: NativeOpticalArenaSpec | None = None) -> NativeOpticalArena:
     )
 
 
-def _plan(arena: NativeOpticalArena, *, frame: int | None = 0):
+def _plan(
+    arena: NativeOpticalArena,
+    *,
+    frame: int | None = 0,
+    planned_acquisition_offset: int = 0,
+):
     return arena.prepare_plan(
         transform_frame_index=frame,
         c3_one_shot_binding_sha256=_SHA_A,
         ordered_stage_evidence_sha256=_SHA_B,
         dataflow_binding_sha256=_SHA_C,
+        planned_acquisition_offset=planned_acquisition_offset,
     )
 
 
@@ -140,6 +147,17 @@ def _complete_and_reclaim(lease) -> None:
     lease.release_device_result()
     assert lease.state == "RECLAIMABLE"
     lease.reclaim()
+
+
+def _rehash_transition_trace(payload: dict[str, object]) -> None:
+    encoded = json.dumps(
+        payload["transitions"],
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    payload["transition_trace_sha256"] = hashlib.sha256(encoded).hexdigest()
 
 
 def test_spec_resource_plan_and_lifecycle_evidence_round_trip_canonically():
@@ -189,6 +207,60 @@ def test_exact_depth_one_slot_backpressures_without_mutating_generation():
     second = arena.acquire(blocked_plan)
     assert not isinstance(second, NativeOpticalArenaBackpressure)
     assert second.evidence.generation == 2
+
+
+def test_discarded_speculative_plan_does_not_block_later_preparation():
+    arena = _arena()
+    discarded = _plan(arena)
+    discarded_ref = weakref.ref(discarded)
+    del discarded
+    gc.collect()
+    assert discarded_ref() is None
+
+    replacement = _plan(arena)
+    lease = arena.acquire(replacement)
+    assert not isinstance(lease, NativeOpticalArenaBackpressure)
+    assert lease.evidence.generation == 1
+
+
+def test_competing_plans_are_non_reserving_and_only_first_acquire_wins():
+    arena = _arena()
+    winner = _plan(arena, frame=0)
+    stale_competitor = _plan(arena, frame=1)
+    lease = arena.acquire(winner)
+    assert not isinstance(lease, NativeOpticalArenaBackpressure)
+    before = arena.lifecycle_evidence()
+
+    with pytest.raises(NativeOpticalArenaProtocolError, match="stale"):
+        arena.acquire(stale_competitor)
+    after = arena.lifecycle_evidence()
+    assert after.transition_trace_sha256 == before.transition_trace_sha256
+    assert lease.state == "LEASED"
+
+
+def test_depth_two_batch_plans_every_slot_before_any_measured_acquire():
+    spec = _spec(
+        boundary="R2",
+        payload="rgb",
+        delivery_policy="torch_async_ordered",
+        payload_contract_id="rgb_native_host_v1",
+        ring_depth=2,
+    )
+    arena = _arena(spec)
+    first_plan = _plan(arena, frame=0, planned_acquisition_offset=0)
+    second_plan = _plan(arena, frame=1, planned_acquisition_offset=1)
+    assert first_plan.evidence.slot_id == 0
+    assert second_plan.evidence.slot_id == 1
+    assert first_plan.evidence.expected_generation == 1
+    assert second_plan.evidence.expected_generation == 1
+
+    first = arena.acquire(first_plan)
+    second = arena.acquire(second_plan)
+    assert not isinstance(first, NativeOpticalArenaBackpressure)
+    assert not isinstance(second, NativeOpticalArenaBackpressure)
+    assert (first.evidence.slot_id, second.evidence.slot_id) == (0, 1)
+    second.cancel_before_enqueue()
+    first.cancel_before_enqueue()
 
 
 def test_pre_enqueue_cancel_burns_generation_and_keeps_fifo_progress_safe():
@@ -339,7 +411,7 @@ def test_arena_strongly_retains_every_manifest_owner():
     assert arena.resource_manifest == manifest
 
 
-def test_host_payload_arena_cannot_seal_before_b3_activation():
+def test_host_payload_control_arena_remains_non_result_capable_before_b3_activation():
     spec = _spec(
         boundary="R2",
         payload="rgb",
@@ -347,13 +419,11 @@ def test_host_payload_arena_cannot_seal_before_b3_activation():
         payload_contract_id="rgb_native_host_v1",
         ring_depth=2,
     )
-    manifest, owners = _manifest(spec)
-    with pytest.raises(NativeOpticalArenaNotActivatedError, match="joint activation"):
-        NativeOpticalArena(
-            spec=spec,
-            resource_manifest=manifest,
-            resource_owners=owners,
-        )
+    arena = _arena(spec)
+    lease = arena.acquire(_plan(arena, frame=0))
+    assert not isinstance(lease, NativeOpticalArenaBackpressure)
+    assert lease.result_capable is False
+    assert lease.evidence.result_capable is False
 
 
 def test_release_authorization_requires_both_device_and_external_hold_proofs():
@@ -370,5 +440,49 @@ def test_release_authorization_requires_both_device_and_external_hold_proofs():
             "external_holds_discharged": False,
         }
     )
-    with pytest.raises(ValueError, match="both safety proofs"):
+    with pytest.raises(ValueError, match="replayed transition trace|both safety proofs"):
+        C4ArenaLifecycleEvidence.from_payload(payload)
+
+
+def test_lifecycle_rejects_invented_operation_even_with_recomputed_public_hash():
+    payload = _arena().lifecycle_evidence().to_payload()
+    payload["transitions"][0]["operation"] = "invented_transition"
+    _rehash_transition_trace(payload)
+    with pytest.raises(ValueError, match="operation is invalid"):
+        C4ArenaLifecycleEvidence.from_payload(payload)
+
+
+def test_lifecycle_rejects_unknown_or_one_way_shutdown_claims():
+    payload = _arena().lifecycle_evidence().to_payload()
+    payload["shutdown_disposition"] = "made_up_disposition"
+    with pytest.raises(ValueError, match="shutdown disposition is invalid"):
+        C4ArenaLifecycleEvidence.from_payload(payload)
+
+    payload = _arena().lifecycle_evidence().to_payload()
+    payload["arena_state"] = "SYNCED_WAITING_EXTERNAL_HOLDS"
+    payload["shutdown_disposition"] = "synced_waiting_external_holds"
+    payload["shutdown_transition_trace_sha256"] = _SHA_A
+    with pytest.raises(ValueError, match="replayed transition trace"):
+        C4ArenaLifecycleEvidence.from_payload(payload)
+
+    payload["arena_state"] = "ABORTED_SYNCED"
+    payload["shutdown_disposition"] = "aborted_synced_release_authorized"
+    payload["resource_release_authorized"] = False
+    with pytest.raises(ValueError, match="replayed transition trace|release authorization"):
+        C4ArenaLifecycleEvidence.from_payload(payload)
+
+
+def test_lifecycle_replay_rejects_fabricated_summary_counters():
+    arena = _arena()
+    _complete_and_reclaim(arena.acquire(_plan(arena)))
+    payload = arena.lifecycle_evidence().to_payload()
+    payload["terminal_event_record_count"] = 77
+    payload["slot_reclaim_count"] = 99
+    with pytest.raises(ValueError, match="replayed transition trace"):
+        C4ArenaLifecycleEvidence.from_payload(payload)
+
+    payload = arena.lifecycle_evidence().to_payload()
+    payload["transitions"] = payload["transitions"][:1]
+    _rehash_transition_trace(payload)
+    with pytest.raises(ValueError, match="replayed transition trace|slot summaries"):
         C4ArenaLifecycleEvidence.from_payload(payload)
