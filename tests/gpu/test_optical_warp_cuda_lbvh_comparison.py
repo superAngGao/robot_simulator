@@ -136,6 +136,25 @@ def test_warp_static_comparison_rejects_order_mutation_and_wrong_class():
     with pytest.raises(ValueError, match="traversal view"):
         tampered_traversal.arm()
 
+    missing_scene_command = _comparison_setup().bundle
+    object.__setattr__(missing_scene_command.scene_bundle, "_commands", ())
+    with pytest.raises(ValueError, match="command tuple changed"):
+        missing_scene_command.arm()
+
+    substituted_scene_command = _comparison_setup().bundle
+    substitute = _comparison_setup().bundle.scene_bundle._commands
+    assert len(substitute) == len(substituted_scene_command.scene_bundle._commands)
+    object.__setattr__(substituted_scene_command.scene_bundle, "_commands", substitute)
+    with pytest.raises(ValueError, match="command tuple changed"):
+        substituted_scene_command.arm()
+
+    post_arm_scene_mutation = _comparison_setup().bundle
+    post_arm_scene_mutation.arm()
+    object.__setattr__(post_arm_scene_mutation.scene_bundle, "_commands", ())
+    with pytest.raises(ValueError, match="command tuple changed"):
+        post_arm_scene_mutation.enqueue_scene_update()
+    assert post_arm_scene_mutation.state == "poisoned"
+
     with pytest.raises(ValueError, match="restricted to production_static"):
         WarpCudaLbvhComparisonFactory.prepare(
             setup.prepared,

@@ -259,7 +259,18 @@ class WarpSceneUpdateCommandBundle:
     """Immutable pre-recorded Warp scene commands for one storage graph."""
 
     __slots__ = (
+        "_binding_signature",
         "_commands",
+        "_frozen_commands",
+        "_frozen_device_ordinal",
+        "_frozen_dispatch_count",
+        "_frozen_dispatch_plan_sha256",
+        "_frozen_evidence",
+        "_frozen_evidence_sha256",
+        "_frozen_input_contract",
+        "_frozen_native_input_manifest_sha256",
+        "_frozen_owners",
+        "_frozen_stream_handle",
         "_poisoned",
         "_sealed",
         "evidence",
@@ -279,6 +290,8 @@ class WarpSceneUpdateCommandBundle:
         outputs: WarpWorldSceneBuffers,
         stream: object,
     ) -> None:
+        self._sealed = False
+        self._binding_signature: tuple[object, ...] | None = None
         self._commands = commands
         self._poisoned = False
         self.evidence = evidence
@@ -286,12 +299,25 @@ class WarpSceneUpdateCommandBundle:
         self.transforms = transforms
         self.outputs = outputs
         self.stream = stream
-        self._sealed = True
+        self._frozen_commands = commands
+        self._frozen_owners = (local_scene, transforms, outputs, stream)
+        self._frozen_evidence = evidence
+        self._frozen_device_ordinal = evidence.device_ordinal
+        self._frozen_stream_handle = evidence.stream_handle
+        self._frozen_native_input_manifest_sha256 = evidence.native_input_manifest_sha256
+        self._frozen_input_contract = evidence.input_contract
+        self._frozen_dispatch_count = evidence.dispatch_count
+        self._frozen_dispatch_plan_sha256 = evidence.dispatch_plan_sha256
+        self._frozen_evidence_sha256 = evidence.sha256
+        self._freeze()
 
     def __setattr__(self, name: str, value: object) -> None:
-        if getattr(self, "_sealed", False):
+        if getattr(self, "_sealed", False) or getattr(self, "_binding_signature", None) is not None:
             raise AttributeError("Warp scene-update command bundle is immutable")
         object.__setattr__(self, name, value)
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError("Warp scene-update command bundle is immutable")
 
     @property
     def dispatch_count(self) -> int:
@@ -301,17 +327,109 @@ class WarpSceneUpdateCommandBundle:
     def poisoned(self) -> bool:
         return self._poisoned
 
+    def validate_bound(self) -> None:
+        """Revalidate the exact sealed command/storage graph outside timing."""
+
+        self._validate_lightweight_bound()
+        scene = self.local_scene
+        transforms = self.transforms
+        outputs = self.outputs
+        _validate_warp_stream(self.stream, device=scene.device)
+        if int(scene.device.ordinal) != self._frozen_device_ordinal:
+            raise ValueError("Warp scene command device changed after sealing")
+        if transforms.input_contract != self._frozen_input_contract:
+            raise ValueError("Warp scene command input contract changed after sealing")
+        _validate_warp_transform_inputs(scene, transforms)
+        _validate_warp_world_scene_buffers(scene, outputs)
+        input_arrays = _warp_scene_command_inputs(scene, transforms)
+        output_arrays = _warp_world_scene_arrays(outputs)
+        protected_arrays = _warp_local_scene_arrays(scene) + (
+            ("x_world_R", transforms.x_world_R),
+            ("x_world_r", transforms.x_world_r),
+        )
+        _validate_disjoint_warp_storage(protected_arrays, output_arrays)
+
+        expected_evidence = WarpSceneUpdateCommandEvidence(
+            schema_version=WARP_SCENE_COMMAND_SCHEMA_VERSION,
+            operation_id=WARP_SCENE_UPDATE_OPERATION_ID,
+            device_ordinal=int(scene.device.ordinal),
+            stream_handle=int(self.stream.cuda_stream),
+            native_input_manifest_sha256=self._frozen_native_input_manifest_sha256,
+            scene_contract_sha256=scene.scene_contract_sha256,
+            input_contract=self._frozen_input_contract,
+            transform_replay_sha256=transforms.transform_replay_sha256,
+            transform_frame_index=transforms.transform_frame_index,
+            input_storage_sha256=_warp_storage_manifest_sha256(input_arrays),
+            output_storage_sha256=_warp_storage_manifest_sha256(output_arrays),
+            dispatch_count=len(self._commands),
+            dispatch_plan_sha256=_canonical_sha256(_warp_scene_dispatch_plan(scene)),
+        )
+        if self.evidence != expected_evidence:
+            raise ValueError("Warp scene command evidence changed after sealing")
+        if self._bundle_signature() != self._binding_signature:
+            raise ValueError("Warp scene command binding changed after sealing")
+
     def enqueue(self) -> None:
         """Launch only the frozen commands on the frozen stream."""
 
         if self._poisoned:
             raise RuntimeError("Warp scene-update command bundle is poisoned")
         try:
+            self._validate_lightweight_bound()
             for command in self._commands:
                 command.launch(stream=self.stream)
         except Exception:
             object.__setattr__(self, "_poisoned", True)
             raise
+
+    def _freeze(self) -> None:
+        if self._sealed or self._binding_signature is not None:
+            raise RuntimeError("Warp scene-update command bundle seal is one-way")
+        object.__setattr__(self, "_binding_signature", self._bundle_signature())
+        object.__setattr__(self, "_sealed", True)
+
+    def _validate_lightweight_bound(self) -> None:
+        if not self._sealed or self._binding_signature is None:
+            raise ValueError("Warp scene command bundle is not sealed")
+        local_scene, transforms, outputs, stream = self._frozen_owners
+        if (
+            self.local_scene is not local_scene
+            or self.transforms is not transforms
+            or self.outputs is not outputs
+            or self.stream is not stream
+        ):
+            raise ValueError("Warp scene command owners changed after sealing")
+        if self._commands is not self._frozen_commands:
+            raise ValueError("Warp scene command tuple changed after sealing")
+        if self.evidence is not self._frozen_evidence:
+            raise ValueError("Warp scene command evidence object changed after sealing")
+        if (
+            len(self._commands) != self._frozen_dispatch_count
+            or self.evidence.dispatch_count != self._frozen_dispatch_count
+        ):
+            raise ValueError("Warp scene command dispatch count changed after sealing")
+        if int(self.stream.cuda_stream) != self._frozen_stream_handle:
+            raise ValueError("Warp scene command stream changed after sealing")
+
+    def _bundle_signature(self) -> tuple[object, ...]:
+        return (
+            id(self._commands),
+            tuple(id(command) for command in self._commands),
+            id(self._frozen_commands),
+            tuple(id(command) for command in self._frozen_commands),
+            id(self.local_scene),
+            id(self.transforms),
+            id(self.outputs),
+            id(self.stream),
+            self._frozen_device_ordinal,
+            self._frozen_stream_handle,
+            self._frozen_native_input_manifest_sha256,
+            self._frozen_input_contract,
+            self._frozen_dispatch_count,
+            self._frozen_dispatch_plan_sha256,
+            self._frozen_evidence_sha256,
+            self.evidence.sha256,
+        )
 
 
 class WarpSceneUpdateCommandFactory:
@@ -387,7 +505,6 @@ class WarpSceneUpdateCommandFactory:
         _validate_disjoint_warp_storage(protected_arrays, output_arrays)
 
         commands: list[object] = []
-        dispatches: list[dict[str, object]] = []
         if scene.num_triangles > 0:
             commands.append(
                 wp.launch(
@@ -415,9 +532,6 @@ class WarpSceneUpdateCommandFactory:
                     record_cmd=True,
                 )
             )
-            dispatches.append(
-                {"kernel": "update_triangles_derived_aabb_world", "dim": scene.num_triangles}
-            )
         if scene.num_planes > 0:
             commands.append(
                 wp.launch(
@@ -442,7 +556,7 @@ class WarpSceneUpdateCommandFactory:
                     record_cmd=True,
                 )
             )
-            dispatches.append({"kernel": "update_planes_world", "dim": scene.num_planes})
+        dispatches = _warp_scene_dispatch_plan(scene)
 
         evidence = WarpSceneUpdateCommandEvidence(
             schema_version=WARP_SCENE_COMMAND_SCHEMA_VERSION,
@@ -488,6 +602,17 @@ class WarpSceneUpdateCommandFactory:
             or self.input_contract != self._frozen_input_contract
         ):
             raise ValueError("Warp scene factory provenance drifted after construction")
+
+
+def _warp_scene_dispatch_plan(scene: DeviceOpticalScene) -> list[dict[str, object]]:
+    dispatches: list[dict[str, object]] = []
+    if scene.num_triangles > 0:
+        dispatches.append(
+            {"kernel": "update_triangles_derived_aabb_world", "dim": scene.num_triangles}
+        )
+    if scene.num_planes > 0:
+        dispatches.append({"kernel": "update_planes_world", "dim": scene.num_planes})
+    return dispatches
 
 
 def allocate_warp_world_scene_buffers(

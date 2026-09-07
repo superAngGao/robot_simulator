@@ -359,6 +359,50 @@ def test_warp_scene_factory_rejects_alias_and_stream_drift_before_recording():
     assert not hasattr(setup.refit_factory.seal(world=setup.frame_one_world), "rebind")
 
 
+def test_warp_scene_bundle_rejects_reordered_recorded_commands_before_enqueue():
+    wp = pytest.importorskip("warp")
+    if wp.get_cuda_device_count() == 0:
+        pytest.skip("CUDA is required")
+
+    registry = _body_grid_registry()
+    registry.add_material(OpticalMaterialSpec("mat_plane"))
+    registry.add_plane_geometry(
+        "floor",
+        normal_local=[0.0, 0.0, 1.0],
+        point_local=[0.0, 0.0, -0.25],
+    )
+    registry.add_instance(OpticalInstanceSpec("floor_instance", "floor", "mat_plane"))
+    scene = build_device_optical_scene(registry, device="cuda:0")
+    stream = wp.Stream(device=scene.device)
+    rotations = np.broadcast_to(np.eye(3, dtype=np.float32), (1, 1, 3, 3)).copy()
+    translations = np.zeros((1, 1, 3), dtype=np.float32)
+    transforms = warp_replay_transform_inputs(
+        wp.array(rotations, dtype=wp.float32, device=scene.device),
+        wp.array(translations, dtype=wp.float32, device=scene.device),
+        frame_index=0,
+        input_contract="unit_mixed_replay_v1",
+        transform_replay_sha256="a" * 64,
+    )
+    world = allocate_warp_world_scene_buffers(scene, stream=stream)
+    bundle = WarpSceneUpdateCommandFactory(
+        scene,
+        stream=stream,
+        native_input_manifest_sha256="b" * 64,
+        input_contract="unit_mixed_replay_v1",
+    ).seal(transforms=transforms, outputs=world)
+    assert bundle.dispatch_count == 2
+    bundle.validate_bound()
+    with pytest.raises(AttributeError, match="immutable"):
+        bundle._sealed = False
+
+    object.__setattr__(bundle, "_commands", tuple(reversed(bundle._commands)))
+    with pytest.raises(ValueError, match="command tuple changed"):
+        bundle.validate_bound()
+    with pytest.raises(ValueError, match="command tuple changed"):
+        bundle.enqueue()
+    assert bundle.poisoned
+
+
 def test_prebound_warp_internal_refit_matches_fresh_grid_bounds_and_traversal():
     wp = pytest.importorskip("warp")
     if wp.get_cuda_device_count() == 0:

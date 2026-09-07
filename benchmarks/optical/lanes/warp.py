@@ -420,6 +420,7 @@ class WarpCudaLbvhComparisonCommandBundle:
         if self._state != "open":
             raise RuntimeError("Warp CUDA-LBVH comparison bundle can only be armed once")
         self.factory._assert_stable()
+        self.scene_bundle.validate_bound()
         self.acceleration_stage.validate_bound()
         _validate_bound_graph(self)
         expected_evidence = _build_comparison_evidence(

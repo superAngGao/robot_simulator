@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import fields
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -99,7 +100,7 @@ def test_warp_scene_bundle_is_immutable_and_poison_is_fail_closed():
         local_scene=object(),
         transforms=object(),
         outputs=object(),
-        stream=object(),
+        stream=SimpleNamespace(cuda_stream=1),
     )
     with pytest.raises(RuntimeError, match="injected launch failure"):
         bundle.enqueue()
