@@ -135,7 +135,9 @@ from .native_arena import (
     NativeOpticalArenaProtocolError,
     NativeOpticalArenaResourceManifest,
     NativeOpticalArenaSpec,
+    NativeOpticalPlannedAcquisition,
     NativeOpticalSlotResourceManifest,
+    plan_native_optical_acquisition,
 )
 from .output_contract import (
     DIRECT_LIGHT_FULL_HOST_PER_RAY_CHANNEL_SPECS,
@@ -292,6 +294,7 @@ __all__ = [
     "NativeOpticalArenaProtocolError",
     "NativeOpticalArenaResourceManifest",
     "NativeOpticalArenaSpec",
+    "NativeOpticalPlannedAcquisition",
     "NativeOpticalSlotResourceManifest",
     "PackedOpticalSceneHost",
     "OUTPUT_PROFILE_REQUIRED_CHANNELS",
@@ -327,6 +330,7 @@ __all__ = [
     "build_optical_registry_from_robot_model",
     "execute_optical_on_gpu_published_frame",
     "pack_source_order_key",
+    "plan_native_optical_acquisition",
     "refit_device_bvh_from_snapshot",
     "stage_optical_channels",
     "stage_channels_to_host",

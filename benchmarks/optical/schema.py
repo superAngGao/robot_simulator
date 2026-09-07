@@ -431,7 +431,7 @@ EXPECTED_NATIVE_OUTPUT_ARENA_CONTRACT = {
     "prepared_plan_result_capable": False,
     "active_lease_result_capable": False,
     "serialized_evidence_is_live_authority": False,
-    "host_payload_control_arena_result_capable": False,
+    "host_payload_arena_seal": "blocked_until_B3_and_joint_activation_review",
     "reclaim_evidence_owner": "arena_lifecycle_transition_authority",
     "lifecycle_validation": "canonical_full_state_machine_replay",
     "lifecycle_operation_kinds": list(C4_LIFECYCLE_OPERATION_KINDS),

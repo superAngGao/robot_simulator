@@ -21,11 +21,13 @@ from optics.native_arena import (
     C4PreparedSamplePlanEvidence,
     NativeOpticalArena,
     NativeOpticalArenaBackpressure,
+    NativeOpticalArenaNotActivatedError,
     NativeOpticalArenaPoisonedError,
     NativeOpticalArenaProtocolError,
     NativeOpticalArenaResourceManifest,
     NativeOpticalArenaSpec,
     NativeOpticalSlotResourceManifest,
+    plan_native_optical_acquisition,
 )
 
 _SHA_A = "a" * 64
@@ -160,6 +162,17 @@ def _rehash_transition_trace(payload: dict[str, object]) -> None:
     payload["transition_trace_sha256"] = hashlib.sha256(encoded).hexdigest()
 
 
+def _duplicate_transition(payload: dict[str, object], operation: str) -> None:
+    transitions = payload["transitions"]
+    source_index = next(
+        index for index, transition in enumerate(transitions) if transition["operation"] == operation
+    )
+    transitions.insert(source_index + 1, dict(transitions[source_index]))
+    for sequence, transition in enumerate(transitions):
+        transition["sequence"] = sequence
+    _rehash_transition_trace(payload)
+
+
 def test_spec_resource_plan_and_lifecycle_evidence_round_trip_canonically():
     spec = _spec()
     manifest, owners = _manifest(spec)
@@ -238,29 +251,35 @@ def test_competing_plans_are_non_reserving_and_only_first_acquire_wins():
     assert lease.state == "LEASED"
 
 
-def test_depth_two_batch_plans_every_slot_before_any_measured_acquire():
-    spec = _spec(
-        boundary="R2",
-        payload="rgb",
-        delivery_policy="torch_async_ordered",
-        payload_contract_id="rgb_native_host_v1",
-        ring_depth=2,
+@pytest.mark.parametrize(
+    ("offset", "expected_slot", "expected_generation"),
+    [(0, 1, 1), (1, 0, 2), (2, 1, 2)],
+)
+def test_depth_two_planner_handles_nonzero_cursor_and_cross_ring_generation(
+    offset,
+    expected_slot,
+    expected_generation,
+):
+    planned = plan_native_optical_acquisition(
+        next_acquire_slot_id=1,
+        slot_generations=(1, 0),
+        planned_acquisition_offset=offset,
     )
-    arena = _arena(spec)
-    first_plan = _plan(arena, frame=0, planned_acquisition_offset=0)
-    second_plan = _plan(arena, frame=1, planned_acquisition_offset=1)
-    assert first_plan.evidence.slot_id == 0
-    assert second_plan.evidence.slot_id == 1
-    assert first_plan.evidence.expected_generation == 1
-    assert second_plan.evidence.expected_generation == 1
+    assert (planned.slot_id, planned.expected_generation) == (
+        expected_slot,
+        expected_generation,
+    )
 
-    first = arena.acquire(first_plan)
-    second = arena.acquire(second_plan)
-    assert not isinstance(first, NativeOpticalArenaBackpressure)
-    assert not isinstance(second, NativeOpticalArenaBackpressure)
-    assert (first.evidence.slot_id, second.evidence.slot_id) == (0, 1)
-    second.cancel_before_enqueue()
-    first.cancel_before_enqueue()
+
+def test_depth_one_batch_plans_survive_each_pre_enqueue_cancel():
+    arena = _arena()
+    plans = tuple(_plan(arena, frame=index, planned_acquisition_offset=index) for index in range(3))
+    assert tuple(plan.evidence.expected_generation for plan in plans) == (1, 2, 3)
+    for expected_generation, plan in enumerate(plans, start=1):
+        lease = arena.acquire(plan)
+        assert not isinstance(lease, NativeOpticalArenaBackpressure)
+        assert lease.evidence.generation == expected_generation
+        lease.cancel_before_enqueue()
 
 
 def test_pre_enqueue_cancel_burns_generation_and_keeps_fifo_progress_safe():
@@ -411,7 +430,7 @@ def test_arena_strongly_retains_every_manifest_owner():
     assert arena.resource_manifest == manifest
 
 
-def test_host_payload_control_arena_remains_non_result_capable_before_b3_activation():
+def test_host_payload_arena_cannot_seal_before_b3_activation():
     spec = _spec(
         boundary="R2",
         payload="rgb",
@@ -419,11 +438,13 @@ def test_host_payload_control_arena_remains_non_result_capable_before_b3_activat
         payload_contract_id="rgb_native_host_v1",
         ring_depth=2,
     )
-    arena = _arena(spec)
-    lease = arena.acquire(_plan(arena, frame=0))
-    assert not isinstance(lease, NativeOpticalArenaBackpressure)
-    assert lease.result_capable is False
-    assert lease.evidence.result_capable is False
+    manifest, owners = _manifest(spec)
+    with pytest.raises(NativeOpticalArenaNotActivatedError, match="joint activation"):
+        NativeOpticalArena(
+            spec=spec,
+            resource_manifest=manifest,
+            resource_owners=owners,
+        )
 
 
 def test_release_authorization_requires_both_device_and_external_hold_proofs():
@@ -485,4 +506,46 @@ def test_lifecycle_replay_rejects_fabricated_summary_counters():
     payload["transitions"] = payload["transitions"][:1]
     _rehash_transition_trace(payload)
     with pytest.raises(ValueError, match="replayed transition trace|slot summaries"):
+        C4ArenaLifecycleEvidence.from_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "arena_opened",
+        "acquired",
+        "cancelled_generation_burned",
+        "enqueue_started",
+        "completion_recorded",
+        "completion_resolved",
+        "device_result_hold_released",
+        "slot_reclaimable",
+        "slot_reclaimed",
+        "drain_started",
+        "final_drain_complete",
+        "arena_closed",
+        "arena_poisoned",
+    ],
+)
+def test_lifecycle_rejects_every_duplicate_non_idempotent_transition(operation):
+    arena = _arena()
+    lease = arena.acquire(_plan(arena))
+    assert not isinstance(lease, NativeOpticalArenaBackpressure)
+    if operation == "cancelled_generation_burned":
+        lease.cancel_before_enqueue()
+    elif operation == "arena_poisoned":
+        lease.begin_enqueue()
+        with pytest.raises(NativeOpticalArenaPoisonedError):
+            lease.release_device_result()
+    else:
+        lease.begin_enqueue()
+        lease.record_completion()
+        arena.begin_drain()
+        lease.resolve_terminal_completion()
+        lease.release_device_result()
+        lease.reclaim()
+        arena.close()
+    payload = arena.lifecycle_evidence().to_payload()
+    _duplicate_transition(payload, operation)
+    with pytest.raises(ValueError, match="transition|lifecycle|arena_opened"):
         C4ArenaLifecycleEvidence.from_payload(payload)

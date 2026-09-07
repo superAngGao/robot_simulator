@@ -116,6 +116,39 @@ class NativeOpticalArenaBackpressure:
 
 
 @dataclass(frozen=True, slots=True)
+class NativeOpticalPlannedAcquisition:
+    """Pure next-slot/generation projection used before measured acquire."""
+
+    slot_id: int
+    expected_generation: int
+
+
+def plan_native_optical_acquisition(
+    *,
+    next_acquire_slot_id: int,
+    slot_generations: Sequence[int],
+    planned_acquisition_offset: int,
+) -> NativeOpticalPlannedAcquisition:
+    """Project a future FIFO acquisition without reserving or mutating a slot."""
+
+    ring_depth = len(slot_generations)
+    if ring_depth not in {1, 2}:
+        raise ValueError("native optical acquisition planning requires ring depth one or two")
+    if not _nonnegative_int(next_acquire_slot_id) or next_acquire_slot_id >= ring_depth:
+        raise ValueError("next native optical acquisition slot is invalid")
+    if any(not _nonnegative_int(generation) for generation in slot_generations):
+        raise ValueError("native optical slot generations must be non-negative")
+    if not _nonnegative_int(planned_acquisition_offset):
+        raise ValueError("planned acquisition offset must be non-negative")
+    slot_id = (next_acquire_slot_id + planned_acquisition_offset) % ring_depth
+    expected_generation = slot_generations[slot_id] + 1 + planned_acquisition_offset // ring_depth
+    return NativeOpticalPlannedAcquisition(
+        slot_id=slot_id,
+        expected_generation=expected_generation,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class NativeOpticalArenaSpec:
     """Immutable logical capacity and policy for one native optical lane."""
 
@@ -684,6 +717,10 @@ class NativeOpticalArena:
         object.__setattr__(self, "_sealed", False)
         canonical_spec = NativeOpticalArenaSpec.from_payload(spec.to_payload())
         canonical_manifest = NativeOpticalArenaResourceManifest.from_payload(resource_manifest.to_payload())
+        if canonical_spec.payload in {"rgb", "full", "rgb8"}:
+            raise NativeOpticalArenaNotActivatedError(
+                "host-payload arena sealing is closed until B3 and joint activation review"
+            )
         if canonical_manifest.arena_spec_sha256 != canonical_spec.sha256:
             raise ValueError("arena resource manifest does not bind the exact arena spec")
         expected_slot_ids = tuple(range(canonical_spec.ring_depth))
@@ -782,11 +819,13 @@ class NativeOpticalArena:
             _require_sha256(ordered_stage_evidence_sha256, "ordered stage evidence digest")
             _require_sha256(dataflow_binding_sha256, "dataflow binding digest")
             self._validate_frame_index(transform_frame_index)
-            if not _nonnegative_int(planned_acquisition_offset):
-                raise ValueError("planned acquisition offset must be non-negative")
-            planned_position = self._next_acquire_slot_id + planned_acquisition_offset
-            slot = self._slots[planned_position % self._spec.ring_depth]
-            expected_generation = slot.generation + 1 + planned_position // self._spec.ring_depth
+            planned = plan_native_optical_acquisition(
+                next_acquire_slot_id=self._next_acquire_slot_id,
+                slot_generations=tuple(slot.generation for slot in self._slots),
+                planned_acquisition_offset=planned_acquisition_offset,
+            )
+            slot = self._slots[planned.slot_id]
+            expected_generation = planned.expected_generation
             prepared_evidence = C4PreparedSamplePlanEvidence(
                 schema_version=C4_PREPARED_SAMPLE_PLAN_SCHEMA_VERSION,
                 arena_spec_sha256=self._spec.sha256,
@@ -1773,6 +1812,7 @@ def _replay_lifecycle_evidence(evidence: C4ArenaLifecycleEvidence) -> dict[str, 
         elif operation == "slot_reclaimable":
             if (
                 arena_state not in {"OPEN", "DRAINING"}
+                or slot["state"] != "PAYLOAD_READY"
                 or not slot["payload_ready"]
                 or any(
                     slot[name]
