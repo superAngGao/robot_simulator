@@ -79,20 +79,20 @@ _TEST_ENTRY_POINTS = {
     "publication": "json.loads",
     "stream_wait": "math.ceil",
     "view_binding": "operator.add",
+    "arena_acquire": "operator.mul",
     "scene_update": "json.dumps",
     "consumer_completion": "math.floor",
     "acceleration": "hashlib.sha256",
     "render": "math.isfinite",
     "pack": "operator.sub",
     "delivery": "time.monotonic",
+    "terminal_completion": "math.trunc",
     "reclaim": "time.perf_counter",
 }
 
 
 def test_c3_public_api_has_no_forgeable_c4_capability():
-    parameters = inspect.signature(
-        optical_benchmarks.build_c3_one_shot_native_execution_binding
-    ).parameters
+    parameters = inspect.signature(optical_benchmarks.build_c3_one_shot_native_execution_binding).parameters
 
     assert "submission_capability" not in parameters
     assert not hasattr(optical_benchmarks, "C4_RESULT_BINDING_CAPABILITY")
@@ -103,14 +103,10 @@ def test_c3_public_api_has_no_forgeable_c4_capability():
 @pytest.mark.parametrize("lane", ["warp", "cuda"])
 def test_every_native_mandatory_row_constructs_its_exact_lane_acceleration(lane):
     gate = load_frozen_gate()
-    rows = [
-        row for row in gate["mandatory_rows"] if row["boundary"] in {"R0", "R1", "R2"}
-    ]
+    rows = [row for row in gate["mandatory_rows"] if row["boundary"] in {"R0", "R1", "R2"}]
 
     for row in rows:
-        receipt = ExecutionReceipt.from_payload(
-            _valid_result_record(gate, row, lane=lane)["receipt"]
-        )
+        receipt = ExecutionReceipt.from_payload(_valid_result_record(gate, row, lane=lane)["receipt"])
         native_binding = receipt.native_execution_binding
         expected_acceleration_id = gate["lane_bindings"][lane]["acceleration_by_class"][
             row["acceleration_class"]
@@ -126,12 +122,8 @@ def test_every_native_mandatory_row_constructs_its_exact_lane_acceleration(lane)
                 stage.stage_name: stage.evidence.operation_id
                 for stage in native_binding.ordered_stage_evidence
             }
-            assert stage_operations["scene_update"] == acceleration_contract[
-                "timed_scene_update_operation"
-            ]
-            assert stage_operations["acceleration"] == acceleration_contract[
-                "timed_acceleration_operation"
-            ]
+            assert stage_operations["scene_update"] == acceleration_contract["timed_scene_update_operation"]
+            assert stage_operations["acceleration"] == acceleration_contract["timed_acceleration_operation"]
 
     warp_static_rows = [
         row for row in rows if lane == "warp" and row["acceleration_class"] == "production_static"
@@ -218,9 +210,7 @@ def test_dynamic_binding_rejects_extra_and_reordered_render_storage():
     ).native_execution_binding
     stages = [stage.evidence for stage in binding.ordered_stage_evidence]
     render = stages[2]
-    extra = next(
-        value for value in binding.runtime_scene_storage if value.name == "triangle_vertices_local"
-    )
+    extra = next(value for value in binding.runtime_scene_storage if value.name == "triangle_vertices_local")
 
     stages[2] = replace(render, input_storage=render.input_storage + (extra,))
     with pytest.raises(ValueError, match="complete ordered storage contract"):
@@ -302,9 +292,7 @@ def test_gate_rejects_case_drift():
 def test_gate_rejects_frozen_workload_content_drift():
     gate = load_frozen_gate()
     changed = copy.deepcopy(gate)
-    changed["cases"]["synthetic_dynamic_rigid_960x640_v1"][
-        "transform_replay_sha256"
-    ] = "0" * 64
+    changed["cases"]["synthetic_dynamic_rigid_960x640_v1"]["transform_replay_sha256"] = "0" * 64
 
     with pytest.raises(ValueError, match="case definitions and frozen scene/replay/fixture"):
         validate_frozen_gate(changed)
@@ -708,19 +696,11 @@ def _valid_result_record(gate, row, *, lane="cuda"):
     }[classification]
     case_contract = gate["cases"][row["case_id"]]
     scene_contract_sha256 = case_contract["scene_contract_sha256"]
-    fixed_fixture_sha256 = (
-        case_contract["fixed_render_fixture_sha256"] if row["boundary"] == "R0" else None
-    )
-    replay_sha256 = (
-        case_contract["transform_replay_sha256"]
-        if row["boundary"] in {"R1", "R2"}
-        else None
-    )
+    fixed_fixture_sha256 = case_contract["fixed_render_fixture_sha256"] if row["boundary"] == "R0" else None
+    replay_sha256 = case_contract["transform_replay_sha256"] if row["boundary"] in {"R1", "R2"} else None
     replay_index = 0 if replay_sha256 is not None else None
     if row["boundary"] == "R0":
-        runtime_storage = (
-            _storage(name="scene", lane=lane, token="cuda:0x1000", owner="prepared-scene"),
-        )
+        runtime_storage = (_storage(name="scene", lane=lane, token="cuda:0x1000", owner="prepared-scene"),)
     else:
         runtime_names = tuple(
             dict.fromkeys(
@@ -818,9 +798,7 @@ def _valid_result_record(gate, row, *, lane="cuda"):
         lane=lane,
         renderer_id=gate["lane_bindings"][lane]["renderer_id"],
         acceleration_class=row["acceleration_class"],
-        acceleration_id=gate["lane_bindings"][lane]["acceleration_by_class"][
-            row["acceleration_class"]
-        ],
+        acceleration_id=gate["lane_bindings"][lane]["acceleration_by_class"][row["acceleration_class"]],
         output_profile=row["output_profile"],
         shadows=row["shadows"],
         input_contract=row["input_contract"],
@@ -916,19 +894,27 @@ def _valid_result_record(gate, row, *, lane="cuda"):
 def _required_operations_for_test(row):
     boundary = row["boundary"]
     if boundary == "R0":
-        return ("render",)
+        return ("render", "terminal_completion", "reclaim")
     if boundary == "R1":
-        return ("scene_update", "acceleration", "render", "reclaim")
+        return (
+            "arena_acquire",
+            "scene_update",
+            "acceleration",
+            "render",
+            "terminal_completion",
+            "reclaim",
+        )
     if boundary == "R2":
-        operations = ["scene_update", "acceleration", "render"]
+        operations = ["arena_acquire", "scene_update", "acceleration", "render"]
         if row["payload"] == "rgb8":
             operations.append("pack")
-        return (*operations, "delivery", "reclaim")
+        return (*operations, "delivery", "terminal_completion", "reclaim")
     operations = [
         "physics_step",
         "publication",
         "stream_wait",
         "view_binding",
+        "arena_acquire",
         "scene_update",
         "consumer_completion",
         "acceleration",
@@ -936,7 +922,7 @@ def _required_operations_for_test(row):
     ]
     if row["payload"] == "rgb8":
         operations.append("pack")
-    return (*operations, "delivery", "reclaim")
+    return (*operations, "delivery", "terminal_completion", "reclaim")
 
 
 def _storage(*, name: str, lane: str, token: str, owner: str) -> NativeStorageSignature:
@@ -1016,12 +1002,11 @@ def _native_stages(
         runtime_by_name = {value.name: value for value in runtime_storage}
         scene_by_name = {value.name: value for value in scene_outputs}
         acceleration_by_name = {value.name: value for value in acceleration_outputs}
-        scene_input = tuple(
-            runtime_by_name[name] for name in DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES
-        ) + transform_storage
-        acceleration_input = tuple(
-            scene_by_name[name] for name in DYNAMIC_ACCELERATION_INPUT_NAMES
+        scene_input = (
+            tuple(runtime_by_name[name] for name in DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES)
+            + transform_storage
         )
+        acceleration_input = tuple(scene_by_name[name] for name in DYNAMIC_ACCELERATION_INPUT_NAMES)
         render_names = (
             DYNAMIC_RENDER_WORLD_INPUT_NAMES
             + DYNAMIC_RENDER_METADATA_INPUT_NAMES
@@ -1080,11 +1065,7 @@ def _rebuild_c3_binding(
         boundary=binding.boundary,
         lane=binding.lane,
         renderer_id=binding.renderer_id,
-        acceleration_class=(
-            binding.acceleration_class
-            if acceleration_class is None
-            else acceleration_class
-        ),
+        acceleration_class=(binding.acceleration_class if acceleration_class is None else acceleration_class),
         acceleration_id=binding.acceleration_id,
         output_profile=binding.output_profile if output_profile is None else output_profile,
         shadows=binding.shadows,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import operator
 import time
 from dataclasses import dataclass, field, replace
 
@@ -486,17 +487,13 @@ class _FakeLane:
 
     def bind_sample(self, *, row, prepared, readiness):
         self.bind_called = True
-        scene_storage = prepared_storage_signatures(
-            prepared, prepared.manifest.scene_array_names
-        )
+        scene_storage = prepared_storage_signatures(prepared, prepared.manifest.scene_array_names)
         if self.substitute_scene_storage:
             scene_storage = (
                 replace(scene_storage[0], storage_token="warp:0xdeadbeef"),
                 *scene_storage[1:],
             )
-        fixture_storage = prepared_storage_signatures(
-            prepared, prepared.manifest.fixed_render_fixture_arrays
-        )
+        fixture_storage = prepared_storage_signatures(prepared, prepared.manifest.fixed_render_fixture_arrays)
         render_output = NativeStorageSignature(
             name="render_output",
             backend="warp",
@@ -554,7 +551,7 @@ class _FakeLane:
     def submit_sample(self, *, row, prepared, binding, request):
         del request
         self.trace.append(("submit", active_timed_boundary() is not None))
-        for operation in _required_operations(row):
+        for operation in _submission_operations(row):
             _invoke_test_entry_point(operation)
         operation_trace = RuntimeOperationTraceEvidence(
             schema_version=OPERATION_TRACE_SCHEMA_VERSION,
@@ -569,7 +566,7 @@ class _FakeLane:
                     capture_source="runtime_hook",
                     runtime_hook_id=entry_point_hook_id(_TEST_ENTRY_POINTS[operation]),
                 )
-                for index, operation in enumerate(_required_operations(row))
+                for index, operation in enumerate(_submission_operations(row))
             ),
         )
         native_execution_binding = binding
@@ -690,35 +687,51 @@ class _FakeLane:
                     operation=operation,
                     entry_point=_TEST_ENTRY_POINTS[operation],
                 )
-                for operation in _required_operations(row)
+                for operation in _audited_operations(row)
             ),
             asset_manifest_sha256=("a" * 64 if row["required_asset_manifest"] else None),
         )
 
 
-def _required_operations(row):
+def _submission_operations(row):
     if row["boundary"] == "R0":
-        return ("render",)
+        return ("render", "terminal_completion")
     if row["boundary"] == "R1":
-        return ("scene_update", "acceleration", "render", "reclaim")
+        return (
+            "arena_acquire",
+            "scene_update",
+            "acceleration",
+            "render",
+            "terminal_completion",
+        )
     raise AssertionError("unit fake only supports native R0/R1")
 
 
+def _audited_operations(row):
+    return (*_submission_operations(row), "reclaim")
+
+
 _TEST_ENTRY_POINTS = {
+    "arena_acquire": "operator.mul",
     "scene_update": "json.dumps",
     "acceleration": "hashlib.sha256",
     "render": "math.isfinite",
+    "terminal_completion": "math.trunc",
     "reclaim": "time.perf_counter",
 }
 
 
 def _invoke_test_entry_point(operation):
-    if operation == "scene_update":
+    if operation == "arena_acquire":
+        operator.mul(1, 1)
+    elif operation == "scene_update":
         json.dumps({})
     elif operation == "acceleration":
         hashlib.sha256(b"")
     elif operation == "render":
         math.isfinite(1.0)
+    elif operation == "terminal_completion":
+        math.trunc(1.0)
     elif operation == "reclaim":
         time.perf_counter()
     else:  # pragma: no cover - guarded by the fake-lane boundary restriction.

@@ -1,6 +1,6 @@
 {
-  "schema_version": "q54.p12.4.gate.v10",
-  "result_schema_version": "q54.p12.4.result.v10",
+  "schema_version": "q54.p12.4.gate.v11",
+  "result_schema_version": "q54.p12.4.result.v11",
   "case_schema_version": "q54.p12.4.case.v1",
   "status": "frozen",
   "frozen_at": "2026-08-13T10:41:19+08:00",
@@ -212,8 +212,8 @@
     }
   },
   "eligibility_contract": {
-    "schema_version": "q54.p12.4.lane-eligibility.v2",
-    "operation_trace_schema_version": "q54.p12.4.operation-trace.v2",
+    "schema_version": "q54.p12.4.lane-eligibility.v3",
+    "operation_trace_schema_version": "q54.p12.4.operation-trace.v3",
     "runtime_hook_registry_version": "q54.p12.4.runtime-hook-registry.v2",
     "runtime_hook_registry_sha256": "fd03c565975848414d47f40331e8131b1fd3950740f3f5ea04ddfed02b3467e9",
     "preflight_position": "before_timed_submission",
@@ -223,11 +223,31 @@
     "source_manifest_grants_instrumented": false,
     "ineligible_result_emission": "forbidden",
     "required_runtime_operations": {
-      "R0": ["render"],
-      "R1": ["scene_update", "acceleration", "render", "reclaim"],
+      "R0": ["render", "terminal_completion"],
+      "R1": [
+        "arena_acquire",
+        "scene_update",
+        "acceleration",
+        "render",
+        "terminal_completion"
+      ],
       "R2": "derived_from_payload_and_delivery_policy",
       "S": "derived_from_publication_payload_and_delivery_policy"
     },
+    "required_lifecycle_operations": {
+      "R0": ["reclaim"],
+      "R1": ["reclaim"],
+      "R2": ["reclaim"],
+      "S": ["reclaim"]
+    },
+    "submission_trace_excludes": [
+      "completion_resolution",
+      "payload_release",
+      "slot_reclaim",
+      "final_drain",
+      "final_reclaim"
+    ],
+    "lifecycle_evidence_owner": "native_optical_arena",
     "a3a_baseline_emission": "forbidden",
     "first_native_baseline_authorization": "P12.4a4"
   },
@@ -473,7 +493,7 @@
   },
   "native_input_contract": {
     "schema_version": "q54.p12.4.native-input.v2",
-    "timing_contract_version": "q54.p12.4.native-timing.v3",
+    "timing_contract_version": "q54.p12.4.native-timing.v4",
     "scope": "R0_R1_R2_and_S_static_optical_inputs_only",
     "logical_source": "PackedOpticalSceneHost_single_materialization_source",
     "scene_contract_schema_version": "q54.optical-scene-contract.v1",
@@ -547,7 +567,12 @@
     "C3_constructor": "build_c3_one_shot_native_execution_binding",
     "C3_binding_type": "C3OneShotNativeExecutionBindingEvidence",
     "C3_one_shot_result_emission": "forbidden",
-    "C4_binding_schema": "not_implemented_until_C4_review",
+    "C4_prepared_plan_schema": "q54.p12.4.c4-prepared-sample-plan.v1",
+    "C4_binding_schema": "q54.p12.4.c4-active-lease-binding.v1",
+    "C4_binding_type": "C4ActiveLeaseBindingEvidence",
+    "C4_live_authority_owner": "NativeOpticalArena",
+    "C4_serialized_evidence_alone_authorizes_submission": false,
+    "C4_result_emission": "forbidden_until_B3_and_joint_activation_review",
     "C4_required_evidence": ["arena", "slot", "generation", "lease", "ring"],
     "dynamic_dataflow_contract_schema_version": "q54.p12.4.dynamic-dataflow.v2",
     "acceleration_resolution": "lane_plus_row_acceleration_class",
@@ -562,6 +587,33 @@
       "ordered_stage_evidence_and_dataflow_sha256"
     ],
     "a3b_result_capable_before_C4_B3_review": false
+  },
+  "native_output_arena_contract": {
+    "schema_version": "q54.p12.4.native-output-arena-contract.v1",
+    "arena_layout_schema_version": "optics.native-optical-arena-layout.v1",
+    "arena_spec_schema_version": "optics.native-optical-arena-spec.v1",
+    "slot_resource_schema_version": "optics.native-optical-slot-resource.v1",
+    "resource_manifest_schema_version": "optics.native-optical-arena-resource-manifest.v1",
+    "prepared_plan_schema_version": "q54.p12.4.c4-prepared-sample-plan.v1",
+    "active_lease_binding_schema_version": "q54.p12.4.c4-active-lease-binding.v1",
+    "lifecycle_schema_version": "q54.p12.4.c4-arena-lifecycle.v1",
+    "allowed_ring_depths": [1, 2],
+    "slot_selection": "strict_round_robin_fifo_no_overwrite",
+    "generation_rule": "strictly_increasing_and_burned_on_pre_enqueue_cancel",
+    "measured_acquire": "O1_identity_and_state_bookkeeping_only",
+    "prepared_plan_result_capable": false,
+    "active_lease_result_capable": false,
+    "serialized_evidence_is_live_authority": false,
+    "host_payload_arena_seal": "blocked_until_B3_and_joint_activation_review",
+    "reclaim_evidence_owner": "arena_lifecycle_transition_authority",
+    "submission_trace_contains_reclaim": false,
+    "poison_release_barrier": {
+      "device_quiescence_required": true,
+      "zero_external_holds_required": true,
+      "synced_with_external_holds_state": "SYNCED_WAITING_EXTERNAL_HOLDS",
+      "poisoned_slot_returns_to_free": false,
+      "sync_failure_disposition": "quarantined_until_process_exit"
+    }
   },
   "native_result_activation": {
     "schema_version": "q54.p12.4.native-result-activation.v1",

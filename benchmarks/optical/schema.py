@@ -10,6 +10,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from optics.native_arena import (
+    C4_ACTIVE_LEASE_BINDING_SCHEMA_VERSION,
+    C4_ARENA_LIFECYCLE_SCHEMA_VERSION,
+    C4_PREPARED_SAMPLE_PLAN_SCHEMA_VERSION,
+    NATIVE_OPTICAL_ARENA_LAYOUT_SCHEMA_VERSION,
+    NATIVE_OPTICAL_ARENA_SPEC_SCHEMA_VERSION,
+    NATIVE_OPTICAL_RESOURCE_MANIFEST_SCHEMA_VERSION,
+    NATIVE_OPTICAL_SLOT_RESOURCE_SCHEMA_VERSION,
+)
 from optics.output_contract import (
     HOST_PAYLOAD_CONTRACTS,
     host_diagnostic_overlay_contract_schema,
@@ -30,6 +39,7 @@ from .eligibility import (
     INPUT_CONTRACT_SCHEMA_VERSION,
     LaneEligibilityEvidence,
     evaluate_lane_eligibility,
+    required_lifecycle_operations,
     required_runtime_operations,
     validate_trace_entry_points,
 )
@@ -64,9 +74,9 @@ from .workload_contract import (
     frozen_workload_payloads,
 )
 
-GATE_SCHEMA_VERSION = "q54.p12.4.gate.v10"
-RESULT_SCHEMA_VERSION = "q54.p12.4.result.v10"
-ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v5"
+GATE_SCHEMA_VERSION = "q54.p12.4.gate.v11"
+RESULT_SCHEMA_VERSION = "q54.p12.4.result.v11"
+ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v6"
 INVENTORY_SCHEMA_VERSION = "q54.p12.4.architecture-inventory.v1"
 CLEANUP_SCHEMA_VERSION = "q54.p12.4.cleanup-ledger.v1"
 PUBLICATION_BINDING_CONTRACT_VERSION = "q54.p12.4.publication-cuda-binding.v1"
@@ -175,11 +185,31 @@ EXPECTED_ELIGIBILITY_CONTRACT = {
     "source_manifest_grants_instrumented": False,
     "ineligible_result_emission": "forbidden",
     "required_runtime_operations": {
-        "R0": ["render"],
-        "R1": ["scene_update", "acceleration", "render", "reclaim"],
+        "R0": ["render", "terminal_completion"],
+        "R1": [
+            "arena_acquire",
+            "scene_update",
+            "acceleration",
+            "render",
+            "terminal_completion",
+        ],
         "R2": "derived_from_payload_and_delivery_policy",
         "S": "derived_from_publication_payload_and_delivery_policy",
     },
+    "required_lifecycle_operations": {
+        "R0": ["reclaim"],
+        "R1": ["reclaim"],
+        "R2": ["reclaim"],
+        "S": ["reclaim"],
+    },
+    "submission_trace_excludes": [
+        "completion_resolution",
+        "payload_release",
+        "slot_reclaim",
+        "final_drain",
+        "final_reclaim",
+    ],
+    "lifecycle_evidence_owner": "native_optical_arena",
     "a3a_baseline_emission": "forbidden",
     "first_native_baseline_authorization": "P12.4a4",
 }
@@ -304,9 +334,7 @@ EXPECTED_NATIVE_INPUT_CONTRACT = {
     "result_capable_constructor": "CanonicalNativeInput.from_scene_contract",
     "generic_from_arrays_result_capable": False,
     "workload_content_schema_version": WORKLOAD_CONTENT_SCHEMA_VERSION,
-    "result_capable_content_rule": (
-        "scene_replay_and_fixed_fixture_digests_must_match_frozen_case_content"
-    ),
+    "result_capable_content_rule": ("scene_replay_and_fixed_fixture_digests_must_match_frozen_case_content"),
     "S_measured_physics_transforms_excluded": True,
     "warp_preparation": "direct_host_to_warp_cuda_allocation",
     "cuda_preparation": "direct_host_to_torch_cuda_allocation",
@@ -360,7 +388,12 @@ EXPECTED_NATIVE_EXECUTION_BINDING_CONTRACT = {
     "C3_constructor": "build_c3_one_shot_native_execution_binding",
     "C3_binding_type": "C3OneShotNativeExecutionBindingEvidence",
     "C3_one_shot_result_emission": "forbidden",
-    "C4_binding_schema": "not_implemented_until_C4_review",
+    "C4_prepared_plan_schema": C4_PREPARED_SAMPLE_PLAN_SCHEMA_VERSION,
+    "C4_binding_schema": C4_ACTIVE_LEASE_BINDING_SCHEMA_VERSION,
+    "C4_binding_type": "C4ActiveLeaseBindingEvidence",
+    "C4_live_authority_owner": "NativeOpticalArena",
+    "C4_serialized_evidence_alone_authorizes_submission": False,
+    "C4_result_emission": "forbidden_until_B3_and_joint_activation_review",
     "C4_required_evidence": ["arena", "slot", "generation", "lease", "ring"],
     "dynamic_dataflow_contract_schema_version": DYNAMIC_DATAFLOW_CONTRACT_SCHEMA_VERSION,
     "acceleration_resolution": "lane_plus_row_acceleration_class",
@@ -375,6 +408,34 @@ EXPECTED_NATIVE_EXECUTION_BINDING_CONTRACT = {
         "ordered_stage_evidence_and_dataflow_sha256",
     ],
     "a3b_result_capable_before_C4_B3_review": False,
+}
+
+EXPECTED_NATIVE_OUTPUT_ARENA_CONTRACT = {
+    "schema_version": "q54.p12.4.native-output-arena-contract.v1",
+    "arena_layout_schema_version": NATIVE_OPTICAL_ARENA_LAYOUT_SCHEMA_VERSION,
+    "arena_spec_schema_version": NATIVE_OPTICAL_ARENA_SPEC_SCHEMA_VERSION,
+    "slot_resource_schema_version": NATIVE_OPTICAL_SLOT_RESOURCE_SCHEMA_VERSION,
+    "resource_manifest_schema_version": NATIVE_OPTICAL_RESOURCE_MANIFEST_SCHEMA_VERSION,
+    "prepared_plan_schema_version": C4_PREPARED_SAMPLE_PLAN_SCHEMA_VERSION,
+    "active_lease_binding_schema_version": C4_ACTIVE_LEASE_BINDING_SCHEMA_VERSION,
+    "lifecycle_schema_version": C4_ARENA_LIFECYCLE_SCHEMA_VERSION,
+    "allowed_ring_depths": [1, 2],
+    "slot_selection": "strict_round_robin_fifo_no_overwrite",
+    "generation_rule": "strictly_increasing_and_burned_on_pre_enqueue_cancel",
+    "measured_acquire": "O1_identity_and_state_bookkeeping_only",
+    "prepared_plan_result_capable": False,
+    "active_lease_result_capable": False,
+    "serialized_evidence_is_live_authority": False,
+    "host_payload_arena_seal": "blocked_until_B3_and_joint_activation_review",
+    "reclaim_evidence_owner": "arena_lifecycle_transition_authority",
+    "submission_trace_contains_reclaim": False,
+    "poison_release_barrier": {
+        "device_quiescence_required": True,
+        "zero_external_holds_required": True,
+        "synced_with_external_holds_state": "SYNCED_WAITING_EXTERNAL_HOLDS",
+        "poisoned_slot_returns_to_free": False,
+        "sync_failure_disposition": "quarantined_until_process_exit",
+    },
 }
 
 EXPECTED_NATIVE_RESULT_ACTIVATION = {
@@ -864,6 +925,7 @@ def canonical_row_semantics_sha256(row: Mapping[str, Any], gate: Mapping[str, An
         "diagnostic_overlay_contracts": gate.get("diagnostic_overlay_contracts"),
         "native_input_contract": gate.get("native_input_contract"),
         "native_execution_binding_contract": gate.get("native_execution_binding_contract"),
+        "native_output_arena_contract": gate.get("native_output_arena_contract"),
         "native_result_activation": gate.get("native_result_activation"),
         "input_contracts": gate.get("input_contracts"),
         "eligibility_contract": gate.get("eligibility_contract"),
@@ -992,10 +1054,7 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
                 or receipt.fixed_render_fixture_sha256 is None
             ):
                 errors.append("R0 receipt must bind only fixed-render-fixture provenance")
-            elif (
-                receipt.fixed_render_fixture_sha256
-                != expected_case_content["fixed_render_fixture_sha256"]
-            ):
+            elif receipt.fixed_render_fixture_sha256 != expected_case_content["fixed_render_fixture_sha256"]:
                 errors.append("receipt fixed fixture does not match the frozen workload")
         elif row["boundary"] in {"R1", "R2"}:
             if (
@@ -1004,10 +1063,7 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
                 or receipt.fixed_render_fixture_sha256 is not None
             ):
                 errors.append("R1/R2 receipt must bind only replay provenance")
-            elif (
-                receipt.transform_replay_sha256
-                != expected_case_content["transform_replay_sha256"]
-            ):
+            elif receipt.transform_replay_sha256 != expected_case_content["transform_replay_sha256"]:
                 errors.append("receipt replay does not match the frozen workload")
         elif row["boundary"] == "S" and (
             receipt.transform_replay_sha256 is not None
@@ -1018,8 +1074,7 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
 
         native_binding = receipt.native_execution_binding
         errors.append(
-            "result receipt cannot contain C3 one-shot binding; reviewed C4 binding schema "
-            "is not implemented"
+            "result receipt cannot contain C3 one-shot binding; reviewed C4 binding schema is not implemented"
         )
         expected_binding_identity = {
             "row_id": receipt.row_id,
@@ -1059,6 +1114,9 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
         expected_operations = required_runtime_operations(row)
         if eligibility.required_operations != expected_operations:
             errors.append("receipt eligibility required operations do not match its gate row")
+        expected_lifecycle_operations = required_lifecycle_operations(row)
+        if eligibility.required_lifecycle_operations != expected_lifecycle_operations:
+            errors.append("receipt eligibility required lifecycle operations do not match its gate row")
         if not eligibility.eligible or eligibility.reason_codes:
             errors.append("receipt eligibility does not authorize timed submission")
         recalculated_eligibility = evaluate_lane_eligibility(
@@ -1151,14 +1209,11 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
             ):
                 errors.append("fixed R0 acceleration must not claim update/acceleration kernels")
         else:
-            acceleration_stages = {
-                stage.stage_name: stage for stage in native_binding.ordered_stage_evidence
-            }
+            acceleration_stages = {stage.stage_name: stage for stage in native_binding.ordered_stage_evidence}
             acceleration_stage = acceleration_stages.get("acceleration")
             if (
                 acceleration_stage is None
-                or acceleration.acceleration_stage_evidence_sha256
-                != acceleration_stage.evidence_sha256
+                or acceleration.acceleration_stage_evidence_sha256 != acceleration_stage.evidence_sha256
             ):
                 errors.append("dynamic acceleration does not bind its stage evidence")
             if (
@@ -1309,9 +1364,7 @@ def validate_frozen_gate(payload: Mapping[str, Any]) -> None:
     if not isinstance(configured_cases, Mapping):
         errors.append("cases must be an object")
     elif configured_cases != expected_cases:
-        errors.append(
-            "case definitions and frozen scene/replay/fixture identities do not match"
-        )
+        errors.append("case definitions and frozen scene/replay/fixture identities do not match")
 
     if payload.get("boundaries") != BOUNDARY_VERSIONS:
         errors.append("boundary versions do not match schema.py")
@@ -1397,10 +1450,10 @@ def validate_frozen_gate(payload: Mapping[str, Any]) -> None:
         errors.append("receipt_provenance does not freeze lane-generated evidence ownership")
     if payload.get("native_input_contract") != EXPECTED_NATIVE_INPUT_CONTRACT:
         errors.append("native_input_contract does not match the durable a2 contract")
-    if payload.get("native_execution_binding_contract") != (
-        EXPECTED_NATIVE_EXECUTION_BINDING_CONTRACT
-    ):
+    if payload.get("native_execution_binding_contract") != (EXPECTED_NATIVE_EXECUTION_BINDING_CONTRACT):
         errors.append("native_execution_binding_contract does not match C3a provenance")
+    if payload.get("native_output_arena_contract") != EXPECTED_NATIVE_OUTPUT_ARENA_CONTRACT:
+        errors.append("native_output_arena_contract does not match the approved C4a contract")
     if payload.get("native_result_activation") != EXPECTED_NATIVE_RESULT_ACTIVATION:
         errors.append("native_result_activation does not preserve the C4/B3 review gate")
     if payload.get("input_contracts") != EXPECTED_INPUT_CONTRACTS:
@@ -1417,9 +1470,7 @@ def validate_frozen_gate(payload: Mapping[str, Any]) -> None:
         errors.append("shipping publication receipt contract is not frozen")
     if payload.get("approved_dependency_order_commit") != ("57073b8cabe39d7e4104d8cef77fce70fc17956c"):
         errors.append("approved_dependency_order_commit is not the reviewed v3 commit")
-    if payload.get("approved_c3_design_commit") != (
-        "435ffb275674c04f6452cb41775533db0f47f1d3"
-    ):
+    if payload.get("approved_c3_design_commit") != ("435ffb275674c04f6452cb41775533db0f47f1d3"):
         errors.append("approved_c3_design_commit is not the reviewed C3 v4 commit")
 
     continuation = payload.get("continuation")

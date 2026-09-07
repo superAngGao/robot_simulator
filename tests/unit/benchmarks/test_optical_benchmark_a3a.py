@@ -132,23 +132,15 @@ def test_current_product_source_manifest_is_explicitly_not_runtime_evidence(lane
 
 
 def test_c3_source_manifests_name_real_prepared_scene_and_acceleration_entries():
-    warp_entries = {
-        audit.entry_point for audit in verify_current_product_source_manifest("warp")
-    }
-    cuda_entries = {
-        audit.entry_point for audit in verify_current_product_source_manifest("cuda")
-    }
+    warp_entries = {audit.entry_point for audit in verify_current_product_source_manifest("warp")}
+    cuda_entries = {audit.entry_point for audit in verify_current_product_source_manifest("cuda")}
 
+    assert "optics.device_scene.WarpSceneUpdateCommandBundle.enqueue" in warp_entries
     assert (
-        "optics.device_scene.WarpSceneUpdateCommandBundle.enqueue" in warp_entries
-    )
-    assert (
-        "benchmarks.optical.lanes.warp."
-        "WarpCudaLbvhComparisonCommandBundle.enqueue_scene_update"
+        "benchmarks.optical.lanes.warp.WarpCudaLbvhComparisonCommandBundle.enqueue_scene_update"
     ) in warp_entries
     assert (
-        "benchmarks.optical.lanes.warp."
-        "WarpCudaLbvhComparisonCommandBundle.enqueue_acceleration"
+        "benchmarks.optical.lanes.warp.WarpCudaLbvhComparisonCommandBundle.enqueue_acceleration"
     ) in warp_entries
     assert "optics.cuda_scene.CudaSceneUpdateStage.enqueue" in cuda_entries
     assert "optics.cuda_lbvh.CudaLbvhRebuildStage.enqueue" in cuda_entries
@@ -372,7 +364,7 @@ def test_operation_trace_rejects_entry_point_not_in_instrumented_preflight():
         asset_manifest_sha256=None,
     )
     trace = RuntimeOperationTraceEvidence(
-        schema_version="q54.p12.4.operation-trace.v2",
+        schema_version="q54.p12.4.operation-trace.v3",
         row_id=row["row_id"],
         lane="warp",
         boundary="R0",
@@ -387,6 +379,48 @@ def test_operation_trace_rejects_entry_point_not_in_instrumented_preflight():
     )
 
     with pytest.raises(ValueError, match="unaudited entry points"):
+        validate_trace_entry_points(trace, eligibility)
+
+
+def test_submission_trace_rejects_arena_lifecycle_reclaim():
+    gate = load_frozen_gate()
+    row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
+    entry_points = {
+        "render": "unit.render",
+        "terminal_completion": "unit.finish",
+        "reclaim": "unit.reclaim",
+    }
+    eligibility = evaluate_lane_eligibility(
+        row=row,
+        lane="warp",
+        entry_point_audits=tuple(
+            EntryPointAudit(
+                operation=operation,
+                entry_point=entry_point,
+                instrumented=True,
+            )
+            for operation, entry_point in entry_points.items()
+        ),
+        asset_manifest_sha256=None,
+    )
+    trace = RuntimeOperationTraceEvidence(
+        schema_version="q54.p12.4.operation-trace.v3",
+        row_id=row["row_id"],
+        lane="warp",
+        boundary="R0",
+        records=tuple(
+            RuntimeOperationRecord(
+                sequence=index,
+                operation=operation,
+                entry_point=entry_points[operation],
+                capture_source="runtime_hook",
+                runtime_hook_id=f"entry_point:{entry_points[operation]}",
+            )
+            for index, operation in enumerate(("render", "terminal_completion", "reclaim"))
+        ),
+    )
+
+    with pytest.raises(ValueError, match="lifecycle-only"):
         validate_trace_entry_points(trace, eligibility)
 
 
@@ -407,7 +441,11 @@ def test_manual_instrumented_boolean_cannot_grant_lane_eligibility():
     )
 
     assert evidence.eligible is False
-    assert evidence.reason_codes == ("unverified_runtime_hook_plan:render",)
+    assert evidence.reason_codes == (
+        "missing_entry_point:reclaim",
+        "missing_entry_point:terminal_completion",
+        "unverified_runtime_hook_plan:render",
+    )
 
 
 def test_lane_cannot_forge_runtime_hook_trace_provenance():
@@ -589,9 +627,7 @@ class _OutOfOrderLane:
         )
 
     def bind_sample(self, *, row, prepared, readiness):
-        scene_storage = prepared_storage_signatures(
-            prepared, prepared.manifest.scene_array_names
-        )
+        scene_storage = prepared_storage_signatures(prepared, prepared.manifest.scene_array_names)
         transform_storage = prepared_transform_frame_signatures(prepared, 0)
         scene_outputs = tuple(
             _unit_storage(name=name, token=0x8000 + index * 0x10)
@@ -631,10 +667,7 @@ class _OutOfOrderLane:
             (
                 "scene_update",
                 "warp_local_scene_transform_and_aabb_out_v1",
-                tuple(
-                    runtime_by_name[name]
-                    for name in DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES
-                )
+                tuple(runtime_by_name[name] for name in DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES)
                 + transform_storage,
                 scene_outputs,
             ),
@@ -648,8 +681,7 @@ class _OutOfOrderLane:
                 "render",
                 "warp_bvh_direct_light",
                 tuple(
-                    (runtime_by_name | scene_by_name | acceleration_by_name)[name]
-                    for name in render_names
+                    (runtime_by_name | scene_by_name | acceleration_by_name)[name] for name in render_names
                 ),
                 (output,),
             ),
@@ -730,9 +762,11 @@ def _unit_storage(*, name: str, token: int) -> NativeStorageSignature:
 
 
 _UNIT_ENTRY_POINTS = {
+    "arena_acquire": "operator.mul",
     "scene_update": "json.dumps",
     "acceleration": "hashlib.sha256",
     "render": "math.isfinite",
+    "terminal_completion": "math.trunc",
     "reclaim": "time.perf_counter",
 }
 
@@ -767,9 +801,7 @@ def _prepared_input(*, case_id="asymmetric_synthetic_7x3_v1"):
         manifest=source.manifest,
         device_ordinal=0,
         arrays={
-            manifest.name: _FakeWarpArray(
-                0 if manifest.nbytes == 0 else 0x1000 + index * 0x100
-            )
+            manifest.name: _FakeWarpArray(0 if manifest.nbytes == 0 else 0x1000 + index * 0x100)
             for index, manifest in enumerate(source.manifest.arrays)
         },
         ready_event=object(),

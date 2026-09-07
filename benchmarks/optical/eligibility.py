@@ -19,7 +19,7 @@ from .timing import (
     RuntimeOperationTraceEvidence,
 )
 
-ELIGIBILITY_SCHEMA_VERSION = "q54.p12.4.lane-eligibility.v2"
+ELIGIBILITY_SCHEMA_VERSION = "q54.p12.4.lane-eligibility.v3"
 ENTRY_POINT_AUDIT_SCHEMA_VERSION = "q54.p12.4.entry-point-audit.v2"
 INPUT_CONTRACT_SCHEMA_VERSION = "q54.p12.4.input-contract.v2"
 
@@ -220,6 +220,7 @@ class LaneEligibilityEvidence:
     renderer_id: str
     acceleration_id: str
     required_operations: tuple[str, ...]
+    required_lifecycle_operations: tuple[str, ...]
     entry_point_audits: tuple[EntryPointAudit, ...]
     asset_manifest_sha256: str | None
     eligible: bool
@@ -237,6 +238,7 @@ class LaneEligibilityEvidence:
             "renderer_id",
             "acceleration_id",
             "required_operations",
+            "required_lifecycle_operations",
             "entry_point_audits",
             "asset_manifest_sha256",
             "eligible",
@@ -258,6 +260,7 @@ class LaneEligibilityEvidence:
             if not isinstance(payload.get(name), str) or not payload[name]:
                 raise ValueError(f"lane eligibility {name} must be non-empty")
         required = payload.get("required_operations")
+        lifecycle_required = payload.get("required_lifecycle_operations")
         audits = payload.get("entry_point_audits")
         reasons = payload.get("reason_codes")
         if not isinstance(required, Sequence) or isinstance(required, (str, bytes)):
@@ -267,6 +270,15 @@ class LaneEligibilityEvidence:
             operation not in RUNTIME_OPERATION_KINDS for operation in required_tuple
         ):
             raise ValueError("lane eligibility required_operations are invalid")
+        if not isinstance(lifecycle_required, Sequence) or isinstance(lifecycle_required, (str, bytes)):
+            raise ValueError("lane eligibility required_lifecycle_operations must be an array")
+        lifecycle_required_tuple = tuple(lifecycle_required)
+        if len(set(lifecycle_required_tuple)) != len(lifecycle_required_tuple) or any(
+            operation not in RUNTIME_OPERATION_KINDS for operation in lifecycle_required_tuple
+        ):
+            raise ValueError("lane eligibility required_lifecycle_operations are invalid")
+        if set(required_tuple).intersection(lifecycle_required_tuple):
+            raise ValueError("submission and lifecycle operation sets must be disjoint")
         if not isinstance(audits, Sequence) or isinstance(audits, (str, bytes)):
             raise ValueError("lane eligibility entry_point_audits must be an array")
         audit_tuple = tuple(EntryPointAudit.from_payload(item) for item in audits)
@@ -293,6 +305,7 @@ class LaneEligibilityEvidence:
             renderer_id=payload["renderer_id"],
             acceleration_id=payload["acceleration_id"],
             required_operations=required_tuple,
+            required_lifecycle_operations=lifecycle_required_tuple,
             entry_point_audits=audit_tuple,
             asset_manifest_sha256=asset_hash,
             eligible=eligible,
@@ -310,6 +323,7 @@ class LaneEligibilityEvidence:
             "renderer_id": self.renderer_id,
             "acceleration_id": self.acceleration_id,
             "required_operations": list(self.required_operations),
+            "required_lifecycle_operations": list(self.required_lifecycle_operations),
             "entry_point_audits": [audit.to_payload() for audit in self.entry_point_audits],
             "asset_manifest_sha256": self.asset_manifest_sha256,
             "eligible": self.eligible,
@@ -370,25 +384,32 @@ def verified_runtime_entry_point_audit(
 
 
 def required_runtime_operations(row: Mapping[str, Any]) -> tuple[str, ...]:
-    """Return the minimum high-level instrumented operations for one row."""
+    """Return only operations executed in the guarded submission interval."""
 
     boundary = row.get("boundary")
     operations: list[str]
     if boundary == "R0":
-        operations = ["render"]
+        operations = ["render", "terminal_completion"]
     elif boundary == "R1":
-        operations = ["scene_update", "acceleration", "render", "reclaim"]
+        operations = [
+            "arena_acquire",
+            "scene_update",
+            "acceleration",
+            "render",
+            "terminal_completion",
+        ]
     elif boundary == "R2":
-        operations = ["scene_update", "acceleration", "render"]
+        operations = ["arena_acquire", "scene_update", "acceleration", "render"]
         if row.get("payload") == "rgb8":
             operations.append("pack")
-        operations.extend(("delivery", "reclaim"))
+        operations.extend(("delivery", "terminal_completion"))
     elif boundary == "S":
         operations = [
             "physics_step",
             "publication",
             "stream_wait",
             "view_binding",
+            "arena_acquire",
             "scene_update",
             "consumer_completion",
             "acceleration",
@@ -396,10 +417,23 @@ def required_runtime_operations(row: Mapping[str, Any]) -> tuple[str, ...]:
         ]
         if row.get("payload") == "rgb8":
             operations.append("pack")
-        operations.extend(("delivery", "reclaim"))
+        operations.extend(("delivery", "terminal_completion"))
     else:
         raise ValueError(f"unsupported benchmark boundary {boundary!r}")
     return tuple(operations)
+
+
+def required_lifecycle_operations(row: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return source-audited lifecycle calls that occur outside submission.
+
+    Reclaim remains mandatory and source-bound, but it is deliberately absent
+    from :func:`required_runtime_operations`: actual reclaim evidence must come
+    from the C4 arena state machine during resolve/drain.
+    """
+
+    if row.get("boundary") not in {"R0", "R1", "R2", "S"}:
+        raise ValueError(f"unsupported benchmark boundary {row.get('boundary')!r}")
+    return ("reclaim",)
 
 
 def evaluate_lane_eligibility(
@@ -424,8 +458,10 @@ def evaluate_lane_eligibility(
         raise ValueError(f"unsupported acceleration class {acceleration_class!r}")
     audits = tuple(entry_point_audits)
     required = required_runtime_operations(row)
+    lifecycle_required = required_lifecycle_operations(row)
+    audited_required = required + lifecycle_required
     reasons: list[str] = []
-    for operation in required:
+    for operation in audited_required:
         matching = tuple(audit for audit in audits if audit.operation == operation)
         if not matching:
             reasons.append(f"missing_entry_point:{operation}")
@@ -464,6 +500,7 @@ def evaluate_lane_eligibility(
         renderer_id=str(binding["renderer_id"]),
         acceleration_id=str(acceleration_id),
         required_operations=required,
+        required_lifecycle_operations=lifecycle_required,
         entry_point_audits=audits,
         asset_manifest_sha256=asset_manifest_sha256,
         eligible=not reasons,
@@ -504,6 +541,16 @@ def validate_trace_entry_points(
     ]
     if unaudited:
         raise ValueError(f"operation trace contains unaudited entry points: {unaudited}")
+    lifecycle_leaks = [
+        (record.sequence, record.operation)
+        for record in evidence.records
+        if record.operation in eligibility.required_lifecycle_operations
+    ]
+    if lifecycle_leaks:
+        raise ValueError(
+            "submission operation trace contains lifecycle-only operations: "
+            f"{lifecycle_leaks}"
+        )
 
 
 def _sha256_text(value: object) -> bool:

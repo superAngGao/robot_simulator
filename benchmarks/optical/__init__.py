@@ -1,5 +1,6 @@
 """Durable optical benchmark contracts for the selected production backend."""
 
+from .arena import native_optical_arena_spec_from_frozen_row
 from .assets import (
     ASSET_MANIFEST_SCHEMA_VERSION,
     AssetManifestEvidence,
@@ -25,6 +26,7 @@ from .eligibility import (
     LaneEligibilityEvidence,
     LaneIneligibleError,
     evaluate_lane_eligibility,
+    required_lifecycle_operations,
     required_runtime_operations,
     source_manifest_entry_point_audit,
     validate_trace_entry_points,
@@ -230,6 +232,7 @@ __all__ = [
     "FORBIDDEN_TIMED_OPERATIONS",
     "LaneSampleRequest",
     "load_frozen_gate",
+    "native_optical_arena_spec_from_frozen_row",
     "native_timed_submission",
     "instrument_runtime_entry_points",
     "OPERATION_TRACE_SCHEMA_VERSION",
@@ -239,6 +242,7 @@ __all__ = [
     "dynamic_scene_update_input_storage",
     "ResolvedLaneSample",
     "record_runtime_operation",
+    "required_lifecycle_operations",
     "required_runtime_operations",
     "runtime_hook_registry_sha256",
     "source_manifest_entry_point_audit",

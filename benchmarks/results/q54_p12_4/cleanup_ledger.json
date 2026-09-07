@@ -315,6 +315,35 @@
       "must_resolve_by": "P12.4e"
     },
     {
+      "entry_id": "native_optical_output_arena",
+      "paths": [
+        "optics/native_arena.py",
+        "benchmarks/optical/arena.py",
+        "tests/unit/benchmarks/test_optical_benchmark_c4a.py",
+        "tests/unit/optics/test_native_optical_arena.py"
+      ],
+      "symbols": {
+        "optics/native_arena.py": [
+          "class NativeOpticalArenaSpec:",
+          "class NativeOpticalArena:",
+          "class C4PreparedSamplePlan:",
+          "class C4ActiveOutputLease:"
+        ],
+        "benchmarks/optical/arena.py": [
+          "def native_optical_arena_spec_from_frozen_row("
+        ]
+      },
+      "cuda_selected": {
+        "action": "collapse",
+        "acceptance": "retain one selected-backend arena, lifecycle evidence, and physics-to-image regression path; remove candidate-neutral comparison adapters"
+      },
+      "warp_selected": {
+        "action": "collapse",
+        "acceptance": "retain one selected-backend arena, lifecycle evidence, and physics-to-image regression path; remove candidate-neutral comparison adapters"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
       "entry_id": "exports_examples_tests_and_docs",
       "paths": [
         "optics/__init__.py",

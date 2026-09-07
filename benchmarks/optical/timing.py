@@ -9,12 +9,13 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 
-NATIVE_TIMING_CONTRACT_VERSION = "q54.p12.4.native-timing.v3"
-OPERATION_TRACE_SCHEMA_VERSION = "q54.p12.4.operation-trace.v2"
+NATIVE_TIMING_CONTRACT_VERSION = "q54.p12.4.native-timing.v4"
+OPERATION_TRACE_SCHEMA_VERSION = "q54.p12.4.operation-trace.v3"
 
 RUNTIME_OPERATION_KINDS = frozenset(
     {
         "acceleration",
+        "arena_acquire",
         "allocation",
         "consumer_completion",
         "delivery",
@@ -28,6 +29,7 @@ RUNTIME_OPERATION_KINDS = frozenset(
         "scene_update",
         "stream_wait",
         "synchronization",
+        "terminal_completion",
         "upload",
         "view_binding",
     }

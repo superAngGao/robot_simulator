@@ -12,6 +12,7 @@ from .eligibility import (
     LaneIneligibleError,
     assert_eligible_for_submission,
     evaluate_lane_eligibility,
+    required_lifecycle_operations,
     required_runtime_operations,
     validate_trace_entry_points,
 )
@@ -502,6 +503,7 @@ class SingleLaneSampleRunner:
             "renderer_id": binding["renderer_id"],
             "acceleration_id": binding["acceleration_by_class"][row["acceleration_class"]],
             "required_operations": required_runtime_operations(row),
+            "required_lifecycle_operations": required_lifecycle_operations(row),
         }
         for name, value in expected.items():
             if getattr(eligibility, name) != value:

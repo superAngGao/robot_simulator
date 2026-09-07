@@ -27,6 +27,11 @@ class _SourceCoverage:
 
 _SHARED_SOURCE_COVERAGE = (
     _SourceCoverage(
+        operation="arena_acquire",
+        entry_point="optics.native_arena.NativeOpticalArena.acquire",
+        source_symbols=("optics.native_arena.NativeOpticalArena.acquire",),
+    ),
+    _SourceCoverage(
         operation="delivery",
         entry_point="tools.optical_pipeline_lab.delivery.VideoDeliveryFacade.submit",
         source_symbols=(
@@ -38,10 +43,18 @@ _SHARED_SOURCE_COVERAGE = (
     ),
     _SourceCoverage(
         operation="reclaim",
-        entry_point="tools.optical_pipeline_lab.delivery.VideoDeliveryFacade.flush",
+        entry_point="optics.native_arena.C4ActiveOutputLease.reclaim",
         source_symbols=(
-            "tools.optical_pipeline_lab.delivery.VideoDeliveryFacade.flush",
-            "tools.optical_pipeline_lab.delivery.VideoDeliveryFacade._complete_job",
+            "optics.native_arena.C4ActiveOutputLease.reclaim",
+            "optics.native_arena.NativeOpticalArena._reclaim",
+        ),
+    ),
+    _SourceCoverage(
+        operation="terminal_completion",
+        entry_point="optics.native_arena.C4ActiveOutputLease.record_completion",
+        source_symbols=(
+            "optics.native_arena.C4ActiveOutputLease.record_completion",
+            "optics.native_arena.NativeOpticalArena._record_completion",
         ),
     ),
     _SourceCoverage(
