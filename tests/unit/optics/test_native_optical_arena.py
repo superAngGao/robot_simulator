@@ -399,6 +399,61 @@ def test_illegal_post_enqueue_transition_poisons_all_active_storage():
         arena.acquire(first_plan)
 
 
+def test_explicit_submitted_failure_retains_every_active_generation():
+    arena = _arena()
+    lease = arena.acquire(_plan(arena))
+    assert not isinstance(lease, NativeOpticalArenaBackpressure)
+    lease.begin_enqueue()
+
+    lease.mark_submitted_failure("injected terminal event failure")
+
+    assert arena.state == "POISONED"
+    assert lease.state == "RETAINED_POISONED"
+    assert arena.poison_reason == "injected terminal event failure"
+    lifecycle = arena.lifecycle_evidence()
+    assert lifecycle.transitions[-1].operation == "arena_poisoned"
+    assert lifecycle.poisoned_slot_count == 1
+
+
+def test_explicit_submitted_failure_rejects_pre_enqueue_or_empty_reason():
+    arena = _arena()
+    lease = arena.acquire(_plan(arena))
+    assert not isinstance(lease, NativeOpticalArenaBackpressure)
+    with pytest.raises(NativeOpticalArenaProtocolError, match="submitted generation"):
+        lease.mark_submitted_failure("too early")
+    lease.begin_enqueue()
+    with pytest.raises(NativeOpticalArenaProtocolError, match="non-empty"):
+        lease.mark_submitted_failure("")
+    assert arena.state == "OPEN"
+
+
+@pytest.mark.parametrize(
+    "source_state",
+    ["COMPLETION_RECORDED", "PAYLOAD_READY", "RECLAIMABLE"],
+)
+def test_explicit_submitted_failure_remains_fail_closed_after_event_record(
+    source_state,
+):
+    arena = _arena()
+    lease = arena.acquire(_plan(arena))
+    assert not isinstance(lease, NativeOpticalArenaBackpressure)
+    lease.begin_enqueue()
+    lease.record_completion()
+    if source_state in {"PAYLOAD_READY", "RECLAIMABLE"}:
+        lease.resolve_terminal_completion()
+    if source_state == "RECLAIMABLE":
+        lease.release_device_result()
+    assert lease.state == source_state
+
+    lease.mark_submitted_failure(f"injected {source_state} binding drift")
+
+    assert arena.state == "POISONED"
+    assert (
+        C4ArenaLifecycleEvidence.from_payload(arena.lifecycle_evidence().to_payload())
+        == arena.lifecycle_evidence()
+    )
+
+
 def test_normal_drain_requires_explicit_reclaim_and_close_is_idempotent():
     arena = _arena()
     lease = arena.acquire(_plan(arena))

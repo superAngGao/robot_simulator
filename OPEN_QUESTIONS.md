@@ -3025,3 +3025,22 @@ Suggested trigger:
 - Move the registration helper out of `physics_source.py` when a real lab
   runner or sensor runtime owns a physics engine step loop and needs to decide
   when consumers are registered/unregistered relative to publish policy setup.
+
+**Q54-OPEN — When may the C4 optical arena become result-capable?** (2026-09-08)
+
+C4b now supplies the CUDA R0/R1 and R2 `none/device_only` allocation and
+transaction graph. It remains deliberately non-result-capable. The following
+are still blocking activation conditions rather than optional cleanup:
+
+- C4c must provide the matched Warp caller-owned render/arena path;
+- C4d must close normal drain, poison, emergency synchronization, quarantine,
+  and C0 guardian ownership for the complete graph;
+- B3 must define and implement host pack/staging/D2H storage and external host
+  payload holds;
+- the joint C4/B3 review must replace the runner's C3-only rejection with live
+  arena-issued authority and version the activation gate;
+- only then may a3b produce R0-R2 result records, and a4 must still approve the
+  comparator before any replacement baseline is inspected.
+
+Until every condition is reviewed, `result_capable=False`, host-payload arena
+sealing, a3b submission, S shipping rows, and baseline artifacts remain closed.

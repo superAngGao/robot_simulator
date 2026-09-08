@@ -154,6 +154,30 @@ def test_transaction_orders_stages_and_finishes_once_on_explicit_stream():
         first.enqueue(transaction)
 
 
+def test_transaction_template_reuses_validation_but_not_generation_state():
+    context = _context()
+    output = torch.zeros((1,), dtype=torch.float32, device=context.device)
+    stage = _TensorStage(name="render", context=context, output=output, delta=1.0)
+    terminal = _initialized_event(context.stream)
+    template = context.prepare_transaction_template(
+        stages=(stage,),
+        completion_event=terminal,
+    )
+
+    first = template.activate()
+    second = template.activate()
+
+    assert first is not second
+    assert first._completion_event is terminal
+    assert second._completion_event is terminal
+    assert first.state == second.state == "validated_open"
+    with pytest.raises(AttributeError, match="immutable"):
+        template._completion_event = _initialized_event(context.stream)
+    object.__setattr__(template, "_stages", ())
+    with pytest.raises(CudaOpticalTimelineError, match="binding changed"):
+        template.activate()
+
+
 def test_transaction_protocol_errors_and_stage_failure_poison_slots():
     context = _context()
     output = torch.zeros((1,), dtype=torch.float32, device=context.device)

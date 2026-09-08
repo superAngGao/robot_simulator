@@ -183,6 +183,39 @@ class CudaDirectLightBuffers:
     shadow_max_stack_depth: object | None = None
     shadow_traversal_counters: tuple[object, ...] = ()
 
+    def tensor_items(self) -> tuple[tuple[str, object], ...]:
+        """Return every allocated output tensor in the frozen ABI order."""
+
+        values = (
+            ("origins", self.origins),
+            ("directions", self.directions),
+            ("hit_mask", self.hit_mask),
+            ("range_m", self.range_m),
+            ("position_world", self.position_world),
+            ("normal_world", self.normal_world),
+            ("numeric_instance_id", self.numeric_instance_id),
+            ("material_index", self.material_index),
+            ("bvh_stack_overflow_count", self.bvh_stack_overflow_count),
+            ("bvh_max_stack_depth", self.bvh_max_stack_depth),
+            ("rgb", self.rgb),
+            ("intensity", self.intensity),
+            ("shadow_stack_overflow_count", self.shadow_stack_overflow_count),
+            ("shadow_max_stack_depth", self.shadow_max_stack_depth),
+        )
+        counters = (
+            tuple(
+                (name, tensor)
+                for name, tensor in zip(
+                    _SHADOW_TRAVERSAL_COUNTER_CHANNELS,
+                    self.shadow_traversal_counters,
+                    strict=True,
+                )
+            )
+            if self.shadow_traversal_counters
+            else ()
+        )
+        return tuple((name, value) for name, value in values if value is not None) + counters
+
     def geometry_channels(self) -> dict[str, object]:
         return {
             "hit_mask": self.hit_mask,
@@ -234,24 +267,7 @@ class CudaDirectLightBuffers:
         return channels
 
     def resource_tuple(self) -> tuple[object, ...]:
-        values = (
-            self.origins,
-            self.directions,
-            self.hit_mask,
-            self.range_m,
-            self.position_world,
-            self.normal_world,
-            self.numeric_instance_id,
-            self.material_index,
-            self.bvh_stack_overflow_count,
-            self.bvh_max_stack_depth,
-            self.rgb,
-            self.intensity,
-            self.shadow_stack_overflow_count,
-            self.shadow_max_stack_depth,
-            *self.shadow_traversal_counters,
-        )
-        return tuple(value for value in values if value is not None)
+        return tuple(value for _, value in self.tensor_items())
 
 
 class CudaDirectLightNativeRenderer:

@@ -3131,3 +3131,40 @@ The cleanup ledger classifies cases, schema, native preparation, timing,
 single-lane execution, and artifacts as durable whichever backend wins. The
 future paired coordinator and losing renderer lane remain separate temporary
 surfaces that P12.4e must remove.
+
+## Session 2026-09-08 — Q54 P12.4 C4b CUDA Arena Ownership
+
+C4b turns the separately reviewed C2 render and C3 scene/LBVH stages into one
+reusable CUDA allocation graph without making the transaction itself
+resettable. The arena owns a validated template per slot/frame, but every
+prepared sample receives a fresh dormant single-use transaction. Only an
+arena-issued C4 lease can activate that sample for enqueue, and the same slot
+event cannot be submitted again until exact reclaim advances the generation.
+
+The resource manifest distinguishes physical allocations from logical tensor
+views. This matters for transform replay: multiple frame views intentionally
+share one underlying Torch allocation, so recording only the first view's
+shape would give a false ownership proof. Each physical record now carries all
+logical names, dtypes, shapes, strides, active byte offsets, and active byte
+ranges, while total bytes count the allocation once.
+
+C3 provenance is not accepted as three caller-supplied hashes. A benchmark-side
+adapter constructs the canonical C3 one-shot binding from the arena's actual
+stage objects and tensors. The arena canonicalizes it and checks row identity,
+operation and dispatch evidence, pointer, dtype, shape, active byte range, and
+owner identity before issuing a bounded provenance capability. Production
+`optics` code does not import the benchmark package; the dependency remains in
+the allowed benchmark-to-product direction.
+
+R0 retains the entire prepared packed-scene allocation set plus the entire
+derived fixed-fixture set, even though the render kernel consumes only a
+subset. That preserves the approved a2 provenance and upload ownership chain
+instead of silently redefining the fixed workload at the C4 boundary. R1 uses
+the dynamic CUDA rebuild class, while R2 keeps its separately frozen static
+class even though both currently select the same CUDA LBVH implementation.
+
+Device results are exposed through a generation-scoped view. Access requires
+terminal resolution and fails after release/reclaim. C4b intentionally does
+not add host staging, async readback, ordinary close/poison cleanup, C0 guardian
+handoff, result activation, or baseline production; those remain C4d/B3/joint
+review work.

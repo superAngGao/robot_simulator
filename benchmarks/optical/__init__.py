@@ -15,6 +15,7 @@ from .cases import (
     cases_by_id,
     get_case,
 )
+from .cuda_arena import build_cuda_c3_binding_from_arena_target
 from .eligibility import (
     CANONICAL_NATIVE_REPLAY_INPUT,
     ELIGIBILITY_SCHEMA_VERSION,
@@ -221,6 +222,7 @@ __all__ = [
     "entry_point_hook_id",
     "certify_native_readiness",
     "build_c3_one_shot_native_execution_binding",
+    "build_cuda_c3_binding_from_arena_target",
     "build_prepared_cuda_lbvh_rebuild_factory",
     "build_prepared_warp_bvh_refit_factory",
     "build_prepared_cuda_local_scene",

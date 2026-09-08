@@ -677,6 +677,11 @@ class C4ActiveOutputLease:
     def record_completion(self) -> None:
         self._arena._record_completion(self)
 
+    def mark_submitted_failure(self, reason: str) -> None:
+        """Retain every active resource after an unsafe submitted failure."""
+
+        self._arena._mark_submitted_failure(self, reason)
+
     def resolve_terminal_completion(self) -> None:
         self._arena._resolve_terminal_completion(self)
 
@@ -1091,6 +1096,30 @@ class NativeOpticalArena:
             slot.terminal_event_record_count = 1
             slot.state = "COMPLETION_RECORDED"
             self._record_transition("completion_recorded", slot=slot)
+
+    def _mark_submitted_failure(self, lease: C4ActiveOutputLease, reason: str) -> None:
+        with self._lock:
+            slot = self._slot_for_live_lease(lease)
+            if not isinstance(reason, str) or not reason:
+                raise NativeOpticalArenaProtocolError("submitted failure reason must be non-empty")
+            if not slot.first_enqueue_started or slot.state not in {
+                "ENQUEUING",
+                "COMPLETION_RECORDED",
+                "PAYLOAD_READY",
+                "RECLAIMABLE",
+            }:
+                raise NativeOpticalArenaProtocolError("only a submitted generation can poison the arena")
+            if self._state not in {"OPEN", "DRAINING"}:
+                raise NativeOpticalArenaPoisonedError(self._poison_reason or "arena is already poisoned")
+            self._poison_reason = reason
+            self._external_hold_count_at_poison = sum(
+                active_slot.external_hold_count for active_slot in self._slots
+            )
+            self._state = "POISONED"
+            for active_slot in self._slots:
+                if active_slot.state != "FREE":
+                    active_slot.state = "RETAINED_POISONED"
+            self._record_transition("arena_poisoned", slot=slot)
 
     def _resolve_terminal_completion(self, lease: C4ActiveOutputLease) -> None:
         with self._lock:

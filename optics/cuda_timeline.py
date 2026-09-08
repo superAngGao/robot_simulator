@@ -72,8 +72,23 @@ class CudaOpticalExecutionContext:
     ) -> "CudaOpticalTransaction":
         """Validate and freeze a complete ordered transaction before enqueue."""
 
+        return self.prepare_transaction_template(
+            stages=stages,
+            completion_event=completion_event,
+            diagnostic_events=diagnostic_events,
+        ).activate()
+
+    def prepare_transaction_template(
+        self,
+        *,
+        stages: Sequence[object],
+        completion_event: object,
+        diagnostic_events: Mapping[str, tuple[object, object]] | None = None,
+    ) -> "CudaOpticalTransactionTemplate":
+        """Fully validate an immutable stage/event graph for later activations."""
+
         self._validate_identity()
-        return CudaOpticalTransaction(
+        return CudaOpticalTransactionTemplate(
             context=self,
             stages=stages,
             completion_event=completion_event,
@@ -95,8 +110,24 @@ class CudaOpticalExecutionContext:
             raise CudaOpticalTimelineError("CUDA optical stream handle identity changed")
 
 
-class CudaOpticalTransaction:
-    """Single-use ordered enqueue state plus one owner-controlled finish."""
+class CudaOpticalTransactionTemplate:
+    """Reusable immutable validation result for single-use transactions.
+
+    The template owns no generation or slot policy.  C4 is responsible for
+    exposing activations only after an exact arena lease is acquired and for
+    preventing event reuse until that generation is reclaimed.
+    """
+
+    __slots__ = (
+        "_completion_event",
+        "_context",
+        "_diagnostic_events",
+        "_frozen_signature",
+        "_sealed",
+        "_stage_evidence",
+        "_stage_names",
+        "_stages",
+    )
 
     def __init__(
         self,
@@ -106,6 +137,7 @@ class CudaOpticalTransaction:
         completion_event: object,
         diagnostic_events: Mapping[str, tuple[object, object]] | None,
     ) -> None:
+        object.__setattr__(self, "_sealed", False)
         frozen_stages = tuple(stages)
         if not frozen_stages:
             raise ValueError("CUDA optical transaction requires at least one stage")
@@ -146,13 +178,93 @@ class CudaOpticalTransaction:
         if len(set(stage_names)) != len(stage_names):
             raise ValueError("CUDA optical transaction stage names must be unique")
 
-        self._context = context
-        self._stages = frozen_stages
-        self._stage_names = tuple(stage_names)
-        self._stage_evidence = tuple(stage_evidence)
-        self._completion_event = completion_event
-        self._diagnostic_events = tuple(frozen_diagnostics)
-        self._diagnostic_state = {name: 0 for name, _, _ in frozen_diagnostics}
+        object.__setattr__(self, "_context", context)
+        object.__setattr__(self, "_stages", frozen_stages)
+        object.__setattr__(self, "_stage_names", tuple(stage_names))
+        object.__setattr__(self, "_stage_evidence", tuple(stage_evidence))
+        object.__setattr__(self, "_completion_event", completion_event)
+        object.__setattr__(self, "_diagnostic_events", tuple(frozen_diagnostics))
+        object.__setattr__(self, "_frozen_signature", self._current_signature())
+        object.__setattr__(self, "_sealed", True)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_sealed", False):
+            raise AttributeError("CUDA optical transaction template is immutable")
+        object.__setattr__(self, name, value)
+
+    def __delattr__(self, name: str) -> None:
+        if getattr(self, "_sealed", False):
+            raise AttributeError("CUDA optical transaction template is immutable")
+        object.__delattr__(self, name)
+
+    @property
+    def context(self) -> CudaOpticalExecutionContext:
+        return self._context
+
+    @property
+    def stages(self) -> tuple[object, ...]:
+        return self._stages
+
+    @property
+    def stage_names(self) -> tuple[str, ...]:
+        return self._stage_names
+
+    @property
+    def stage_evidence(self) -> tuple[object, ...]:
+        return self._stage_evidence
+
+    @property
+    def completion_event(self) -> object:
+        return self._completion_event
+
+    @property
+    def diagnostic_events(self) -> tuple[tuple[str, object, object], ...]:
+        return self._diagnostic_events
+
+    def validate_bound(self) -> None:
+        """Recheck only identity/stability facts, without rebuilding evidence."""
+
+        self._context._validate_identity()
+        if self._current_signature() != self._frozen_signature:
+            raise CudaOpticalTimelineError("CUDA optical transaction template binding changed")
+        for index, stage in enumerate(self._stages):
+            stability_check = getattr(stage, "_assert_cuda_transaction_stage_stable", None)
+            if callable(stability_check):
+                stability_check(self._context)
+            if _stage_evidence(stage) != self._stage_evidence[index]:
+                raise CudaOpticalTimelineError("CUDA optical transaction stage evidence changed")
+
+    def activate(self) -> "CudaOpticalTransaction":
+        """Create fresh single-generation host state from this validated graph."""
+
+        self.validate_bound()
+        return CudaOpticalTransaction(_template=self)
+
+    def _current_signature(self) -> tuple[object, ...]:
+        return (
+            id(self._context),
+            self._context.device,
+            self._context.stream_handle,
+            id(self._context.stream),
+            tuple(id(stage) for stage in self._stages),
+            self._stage_names,
+            self._stage_evidence,
+            id(self._completion_event),
+            tuple((name, id(start), id(end)) for name, start, end in self._diagnostic_events),
+        )
+
+
+class CudaOpticalTransaction:
+    """Single-use ordered enqueue state plus one owner-controlled finish."""
+
+    def __init__(self, *, _template: CudaOpticalTransactionTemplate) -> None:
+        self._context = _template.context
+        self._stages = _template.stages
+        self._stage_names = _template.stage_names
+        self._stage_evidence = _template.stage_evidence
+        self._completion_event = _template.completion_event
+        self._diagnostic_events = _template.diagnostic_events
+        self._diagnostic_state = {name: 0 for name, _, _ in self._diagnostic_events}
         self._next_stage = 0
         self._active_stage: object | None = None
         self._state = "validated_open"

@@ -1018,6 +1018,20 @@ Next milestone:
 - [ ] P12.4a3 — implement real Warp/CUDA R0-R2 lanes and acceleration attribution
       on top of the a2 contracts; do not inspect replacement baselines until the
       a4 comparator-validity review approves the paired coordinator.
+- [x] P12.4 C0/C2/C3/C4a foundations — native CUDA publication lifecycle,
+      allocation-free C2 render transactions, exact C3 scene/LBVH stage graphs,
+      and the CPU-safe C4 arena state/evidence contract are implemented and
+      independently approved.
+- [x] P12.4 C4b — the CUDA candidate now has sealed R0/R1 and R2
+      `none/device_only` arenas with exact physical allocation/view manifests,
+      per-slot/frame transaction templates, arena-only generation activation,
+      a mechanically verified C3 binding adapter, one terminal event per slot,
+      and capability-scoped device-result access. This remains
+      non-result-capable.
+- [ ] P12.4 C4c/C4d/B3 — build the Warp native arena, finish joint
+      drain/poison/guardian ownership, and add reviewed host delivery storage.
+      The a3b/result/baseline gates stay closed until the joint activation
+      review.
 - [ ] Do not delete the Warp optical oracle until CUDA passes the retained
       capability, correctness, stability, absolute product-budget, and
       no-slower-than-Warp gates on matched workloads.

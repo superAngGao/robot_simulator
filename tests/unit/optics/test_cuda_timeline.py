@@ -10,12 +10,14 @@ from optics.cuda_timeline import (
     CudaOpticalExecutionContext,
     CudaOpticalTimelineError,
     CudaOpticalTransactionPoisonedError,
+    CudaOpticalTransactionTemplate,
 )
 
 
 def test_cuda_timeline_contract_imports_without_runtime_initialization():
     assert issubclass(CudaOpticalTransactionPoisonedError, CudaOpticalTimelineError)
     assert CudaOpticalCompletion.__dataclass_fields__["recorded"].default is True
+    assert CudaOpticalTransactionTemplate.__doc__
 
 
 def test_cuda_timeline_requires_torch_only_when_context_is_constructed(monkeypatch):
