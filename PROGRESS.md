@@ -1024,9 +1024,10 @@ Next milestone:
       independently approved.
 - [ ] P12.4 C4b — corrective implementation is ready for re-review. The CUDA
       candidate has sealed R0/R1 and R2 `none/device_only` arenas, controlled
-      transaction construction capabilities plus exact timeline-minted,
-      identity-registered per-acquire execution authorities bound to the live
-      lease/slot/generation, exact live a2 allocation/readiness plus
+      dormant-transaction construction plus single-use prepared-acquire
+      capabilities, and exact timeline-minted per-acquire execution authorities
+      with one-to-one lease/transaction/owner registration and frozen
+      slot/frame/event/C3 binding, exact live a2 allocation/readiness plus
       adapter-issued C3 receipt authority, and an O(1) measured acquire path. It
       remains non-result-capable until approval.
 - [ ] P12.4 C4c/C4d/B3 — build the Warp native arena, finish joint

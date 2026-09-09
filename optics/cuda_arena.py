@@ -469,6 +469,7 @@ class CudaPreparedArenaSample:
         "_active",
         "_control_plan",
         "_executable",
+        "_execution_capability",
         "_frozen_signature",
         "_provenance",
         "_sealed",
@@ -494,10 +495,19 @@ class CudaPreparedArenaSample:
             executable=executable,
             arena_acquire_authority=arena_acquire_authority,
         )
+        execution_capability = transaction._prepare_arena_execution_capability(
+            active_owner=active,
+            plan_binding_sha256=provenance.plan_binding_sha256,
+            ordered_runtime_stage_evidence_sha256=(provenance.ordered_runtime_stage_evidence_sha256),
+            c3_one_shot_binding_sha256=provenance.c3_one_shot_binding_sha256,
+            ordered_stage_evidence_sha256=provenance.ordered_stage_evidence_sha256,
+            dataflow_binding_sha256=provenance.dataflow_binding_sha256,
+        )
         object.__setattr__(self, "_control_plan", control_plan)
         object.__setattr__(self, "_target", target)
         object.__setattr__(self, "_provenance", provenance)
         object.__setattr__(self, "_executable", executable)
+        object.__setattr__(self, "_execution_capability", execution_capability)
         object.__setattr__(self, "_active", active)
         object.__setattr__(self, "_frozen_signature", self._current_signature())
         object.__setattr__(self, "_sealed", True)
@@ -532,6 +542,7 @@ class CudaPreparedArenaSample:
             self._target.evidence.sha256,
             self._provenance,
             id(self._executable),
+            id(self._execution_capability),
             id(self._active),
         )
 
@@ -546,6 +557,7 @@ class CudaPreparedArenaSample:
         target: CudaArenaPlanTarget,
         provenance: CudaArenaC3Provenance,
         executable: _CudaExecutableTarget,
+        execution_capability: object,
         active: "CudaActiveArenaSample",
         arena_acquire_authority: object,
     ) -> None:
@@ -555,6 +567,7 @@ class CudaPreparedArenaSample:
             or self._target is not target
             or self._provenance is not provenance
             or self._executable is not executable
+            or self._execution_capability is not execution_capability
             or self._active is not active
             or active._arena_acquire_authority is not arena_acquire_authority
         ):
@@ -666,10 +679,15 @@ class CudaActiveArenaSample:
             if self._state != "ENQUEUED" or lease.state != "ENQUEUING":
                 raise NativeOpticalArenaProtocolError("CUDA enqueue lifecycle commit is incomplete")
         except BaseException as exc:
-            _retain_or_cancel_enqueue_failure_without_masking(
+            cancelled = _retain_or_cancel_enqueue_failure_without_masking(
                 lease,
                 f"CUDA transaction stage failure: {exc}",
             )
+            if cancelled:
+                try:
+                    self._transaction._retire_cancelled_arena_execution_lease(lease)
+                except Exception:
+                    pass
             object.__setattr__(self, "_state", "POISONED")
             raise
 
@@ -749,7 +767,13 @@ class CudaActiveArenaSample:
         )
         return MappingProxyType(channels)
 
-    def _activate(self, lease: C4ActiveOutputLease, *, arena_acquire_authority: object) -> None:
+    def _activate(
+        self,
+        lease: C4ActiveOutputLease,
+        *,
+        execution_authority: object,
+        arena_acquire_authority: object,
+    ) -> None:
         self._require_state("DORMANT", operation="activation")
         if arena_acquire_authority is not self._arena_acquire_authority:
             raise NativeOpticalArenaProtocolError("CUDA arena acquire authority is invalid")
@@ -758,19 +782,7 @@ class CudaActiveArenaSample:
             or self._transaction.state != "validated_open"
         ):
             raise NativeOpticalArenaProtocolError("CUDA arena activation binding is invalid")
-        execution_authority = self._transaction._bind_arena_execution_lease(
-            self._executable.activation_capability,
-            lease,
-            active_owner=self,
-            expected_binding=(
-                ("slot_id", self._target.evidence.slot_id),
-                ("terminal_event_token", self._target.evidence.terminal_event_token),
-                ("transform_frame_index", self._target.evidence.transform_frame_index),
-                ("c3_one_shot_binding_sha256", self._provenance.c3_one_shot_binding_sha256),
-                ("ordered_stage_evidence_sha256", self._provenance.ordered_stage_evidence_sha256),
-                ("dataflow_binding_sha256", self._provenance.dataflow_binding_sha256),
-            ),
-        )
+        execution_authority._assert_registered(self._transaction)
         object.__setattr__(self, "_execution_authority", execution_authority)
         object.__setattr__(self, "_control_lease", lease)
         object.__setattr__(self, "_state", "ACQUIRED")
@@ -1017,6 +1029,7 @@ class CudaNativeOpticalArena:
             provenance,
             executable,
             prepared._active,
+            prepared._execution_capability,
         )
         return prepared
 
@@ -1037,13 +1050,37 @@ class CudaNativeOpticalArena:
             target=registered[1],
             provenance=registered[2],
             executable=registered[3],
+            execution_capability=registered[5],
             active=registered[4],
             arena_acquire_authority=self._acquire_authority,
         )
         result = self._control.acquire(prepared._control_plan)
         if isinstance(result, NativeOpticalArenaBackpressure):
             return result
-        prepared._active._activate(result, arena_acquire_authority=self._acquire_authority)
+        try:
+            execution_authority = prepared._active._transaction._mint_arena_execution_authority(
+                registered[5],
+                result,
+                active_owner=registered[4],
+            )
+            prepared._active._activate(
+                result,
+                execution_authority=execution_authority,
+                arena_acquire_authority=self._acquire_authority,
+            )
+        except BaseException:
+            if "execution_authority" in locals():
+                try:
+                    execution_authority.retire(
+                        expected_phase="ACQUIRED",
+                        terminal_phase="CANCELLED",
+                    )
+                except Exception:
+                    pass
+            if result.state == "LEASED":
+                result.cancel_before_enqueue()
+            self._prepared_registry.pop(prepared, None)
+            raise
         del self._prepared_registry[prepared]
         return prepared._active
 
@@ -1498,6 +1535,14 @@ def _seal_cuda_arena(
                 terminal_event_token=terminal_event_token,
                 diagnostic_phase_names=tuple(name for name, _, _ in template.diagnostic_events),
                 plan_binding_sha256=_canonical_sha256(plan_payload),
+            )
+            template._bind_arena_plan_identity(
+                activation_capability,
+                slot_id=evidence.slot_id,
+                terminal_event_token=evidence.terminal_event_token,
+                transform_frame_index=evidence.transform_frame_index,
+                plan_binding_sha256=evidence.plan_binding_sha256,
+                ordered_runtime_stage_evidence_sha256=(evidence.ordered_runtime_stage_evidence_sha256),
             )
             if spec.boundary == "R0":
                 render_stage = template.stages[0]
@@ -2212,10 +2257,11 @@ def _retain_failure_without_masking(lease: C4ActiveOutputLease, reason: str) -> 
 def _retain_or_cancel_enqueue_failure_without_masking(
     lease: C4ActiveOutputLease,
     reason: str,
-) -> None:
+) -> bool:
     try:
         if lease.state == "LEASED":
             lease.cancel_before_enqueue()
+            return True
         else:
             lease.mark_submitted_failure(reason)
     except Exception:
@@ -2223,6 +2269,7 @@ def _retain_or_cancel_enqueue_failure_without_masking(
         # after it, retain the generation through poison. Never replace the
         # original authority/stage failure with cleanup protocol details.
         pass
+    return False
 
 
 def _event_token(event: object, *, slot_id: int, name: str) -> str:

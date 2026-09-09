@@ -29,6 +29,7 @@ from benchmarks.optical.workloads import (
     build_canonical_transform_replay,
 )
 from optics.cuda_arena import (
+    CudaActiveArenaSample,
     CudaArenaC3Provenance,
     CudaNativeOpticalArena,
     CudaPreparedArenaSample,
@@ -525,6 +526,7 @@ def test_arena_controlled_template_and_transaction_cannot_bypass_c4_lease():
         )
     assert not hasattr(executable, "authorize")
     dormant = executable.activate()
+    assert not hasattr(dormant, "_bind_arena_execution_lease")
     with pytest.raises(CudaOpticalTimelineError, match="exact timeline-minted"):
         with dormant._authorize_arena_execution(
             executable.activation_capability,
@@ -560,6 +562,71 @@ def test_arena_controlled_template_and_transaction_cannot_bypass_c4_lease():
             operation="enqueue",
         ):
             raise AssertionError("cancelled authority authorized execution")
+
+
+def test_one_real_c4_lease_cannot_mint_authority_for_a_second_transaction():
+    arena = _dynamic_arena()
+    target0 = arena.plan_target(transform_frame_index=0)
+    active0 = arena.acquire(arena.prepare_sample(target=target0, provenance=_provenance(arena, target0)))
+    assert not isinstance(active0, NativeOpticalArenaBackpressure)
+
+    target1 = arena.plan_target(transform_frame_index=1)
+    prepared1 = arena.prepare_sample(target=target1, provenance=_provenance(arena, target1))
+    transaction1 = prepared1._active._transaction
+    with pytest.raises(NativeOpticalArenaProtocolError, match="already bound"):
+        transaction1._mint_arena_execution_authority(
+            prepared1._execution_capability,
+            active0._control_lease,
+            active_owner=prepared1._active,
+        )
+
+    assert active0.state == "ACQUIRED"
+    assert prepared1._active.state == "DORMANT"
+    lifecycle = arena.lifecycle_evidence()
+    assert lifecycle.slots[0].state == "LEASED"
+    assert lifecycle.terminal_event_record_count == 0
+    active0.cancel_before_enqueue()
+
+
+def test_prepared_execution_capability_rejects_duck_owner_and_empty_binding():
+    arena = _dynamic_arena()
+    target = arena.plan_target(transform_frame_index=0)
+    provenance = _provenance(arena, target)
+    transaction = arena._execution_for_target(target).activate()
+
+    class DuckOwner:
+        _transaction = transaction
+        _control_lease = None
+        _state = "DORMANT"
+
+    with pytest.raises(NativeOpticalArenaProtocolError, match="owner is invalid"):
+        transaction._prepare_arena_execution_capability(
+            active_owner=DuckOwner(),
+            plan_binding_sha256=provenance.plan_binding_sha256,
+            ordered_runtime_stage_evidence_sha256=(provenance.ordered_runtime_stage_evidence_sha256),
+            c3_one_shot_binding_sha256="",
+            ordered_stage_evidence_sha256=provenance.ordered_stage_evidence_sha256,
+            dataflow_binding_sha256=provenance.dataflow_binding_sha256,
+        )
+
+    exact_owner = CudaActiveArenaSample(
+        target=target,
+        provenance=provenance,
+        transaction=transaction,
+        executable=arena._execution_for_target(target),
+        arena_acquire_authority=arena._acquire_authority,
+    )
+    with pytest.raises(ValueError, match="lowercase SHA-256"):
+        transaction._prepare_arena_execution_capability(
+            active_owner=exact_owner,
+            plan_binding_sha256=provenance.plan_binding_sha256,
+            ordered_runtime_stage_evidence_sha256=(provenance.ordered_runtime_stage_evidence_sha256),
+            c3_one_shot_binding_sha256="",
+            ordered_stage_evidence_sha256=provenance.ordered_stage_evidence_sha256,
+            dataflow_binding_sha256=provenance.dataflow_binding_sha256,
+        )
+    assert transaction.state == "validated_open"
+    assert arena.lifecycle_evidence().slots[0].state == "FREE"
 
 
 def test_duck_typed_and_unregistered_live_authorities_cannot_execute():

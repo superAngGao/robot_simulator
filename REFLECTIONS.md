@@ -3217,3 +3217,23 @@ fails before `begin_enqueue`, no GPU command is in flight, so cancelling the
 lease and burning the generation is safe. Treating that case like a submitted
 failure would neither poison the control arena nor release the still-`LEASED`
 slot, creating a fail-closed-looking resource leak.
+
+Exact authority type and registry membership are necessary but not sufficient
+when the mint operation itself remains reusable. A real lease can still be
+misapplied if static construction authority may mint repeatedly or if the
+caller chooses an empty binding. The final C4b correction therefore makes
+execution authority a two-step linear capability: untimed preparation freezes
+one exact transaction/owner/binding, and successful measured acquire consumes
+that capability while registering the real lease exactly once.
+
+The transaction's slot, frame, and terminal-event identity must be sealed on
+the template before any dormant activation. C3 digests then extend that fixed
+identity during preparation; they do not replace it. This prevents two
+transactions that share shapes, stages, or even one slot event from exchanging
+leases. It also gives the mint API no generic binding collection to omit or
+rewrite.
+
+Finally, "owner looks active" is not an ownership proof. The timeline rejects
+duck-typed owners and retains the exact active object in both prepared and live
+registries. Authorization rechecks the same owner, transaction, authority, and
+lease identities on every enqueue and finish boundary.
