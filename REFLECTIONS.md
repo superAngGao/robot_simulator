@@ -3203,3 +3203,17 @@ records C4 completion immediately after the terminal event. This preserves the
 invariant even if internal objects are reached directly: there is no successful
 terminal submission whose lifecycle receipt still describes a free or
 completion-free slot.
+
+That coupling is still insufficient if the timeline authenticates its
+controller with module/name strings and callable discovery. Python objects can
+impersonate all three without owning any lifecycle state. The final boundary
+therefore uses a timeline-defined sealed exact type plus bidirectional identity
+registries tying authority, transaction, and the real `C4ActiveOutputLease`.
+The bind API accepts a lease, not a caller-constructed authority; the timeline
+mints the only registered authority itself.
+
+Pre-submit rejection also needs an explicit disposition. If authority identity
+fails before `begin_enqueue`, no GPU command is in flight, so cancelling the
+lease and burning the generation is safe. Treating that case like a submitted
+failure would neither poison the control arena nor release the still-`LEASED`
+slot, creating a fail-closed-looking resource leak.

@@ -47,6 +47,7 @@ from optics.cuda_timeline import (
     CudaOpticalTimelineError,
     CudaOpticalTransaction,
     CudaOpticalTransactionTemplate,
+    _CudaArenaLiveExecutionAuthority,
 )
 from optics.native_arena import (
     NATIVE_OPTICAL_ARENA_LAYOUT_SCHEMA_VERSION,
@@ -524,21 +525,18 @@ def test_arena_controlled_template_and_transaction_cannot_bypass_c4_lease():
         )
     assert not hasattr(executable, "authorize")
     dormant = executable.activate()
-    with pytest.raises(CudaOpticalTimelineError, match="live C4 lease"):
+    with pytest.raises(CudaOpticalTimelineError, match="exact timeline-minted"):
         with dormant._authorize_arena_execution(
             executable.activation_capability,
             operation="enqueue",
         ):
             raise AssertionError("static construction capability authorized execution")
     prepared = arena.prepare_sample(target=target, provenance=_provenance(arena, target))
-    with pytest.raises(NativeOpticalArenaProtocolError, match="transaction binding"):
-        dormant._bind_arena_execution_authority(
-            executable.activation_capability,
-            prepared._active._execution_authority,
-        )
+    assert not hasattr(dormant, "_bind_arena_execution_authority")
     with pytest.raises(CudaOpticalTimelineError, match="active arena lease"):
         executable.transaction_template.stages[0].enqueue(prepared._active._transaction)
-    with pytest.raises(NativeOpticalArenaProtocolError, match="lease binding"):
+    assert prepared._active._execution_authority is None
+    with pytest.raises(CudaOpticalTimelineError, match="exact timeline-minted"):
         with prepared._active._transaction._authorize_arena_execution(
             prepared._active._execution_authority,
             operation="enqueue",
@@ -562,6 +560,60 @@ def test_arena_controlled_template_and_transaction_cannot_bypass_c4_lease():
             operation="enqueue",
         ):
             raise AssertionError("cancelled authority authorized execution")
+
+
+def test_duck_typed_and_unregistered_live_authorities_cannot_execute():
+    arena = _dynamic_arena()
+    target = arena.plan_target(transform_frame_index=0)
+    executable = arena._execution_for_target(target)
+    transaction = executable.activate()
+
+    class ForgedAuthority:
+        def _begin(self, *args, **kwargs):
+            del args, kwargs
+
+        def _assert_execution(self, *args, **kwargs):
+            del args, kwargs
+
+        def _end(self, *args, **kwargs):
+            del args, kwargs
+
+    ForgedAuthority.__module__ = "optics.cuda_timeline"
+    ForgedAuthority.__name__ = "_CudaArenaLiveExecutionAuthority"
+    forged = ForgedAuthority()
+    with pytest.raises(CudaOpticalTimelineError, match="exact timeline-minted"):
+        with transaction._authorize_arena_execution(forged, operation="enqueue"):
+            for stage in executable.transaction_template.stages:
+                stage.enqueue(transaction)
+
+    unregistered_exact = object.__new__(_CudaArenaLiveExecutionAuthority)
+    with pytest.raises(CudaOpticalTimelineError, match="live C4 lease"):
+        with transaction._authorize_arena_execution(
+            unregistered_exact,
+            operation="enqueue",
+        ):
+            for stage in executable.transaction_template.stages:
+                stage.enqueue(transaction)
+    lifecycle = arena.lifecycle_evidence()
+    assert transaction.state == "validated_open"
+    assert lifecycle.slots[0].state == "FREE"
+    assert lifecycle.terminal_event_record_count == 0
+
+
+def test_replacing_registered_live_authority_fails_closed():
+    arena = _dynamic_arena()
+    target = arena.plan_target(transform_frame_index=0)
+    active = arena.acquire(arena.prepare_sample(target=target, provenance=_provenance(arena, target)))
+    assert not isinstance(active, NativeOpticalArenaBackpressure)
+    unregistered_exact = object.__new__(_CudaArenaLiveExecutionAuthority)
+    object.__setattr__(active, "_execution_authority", unregistered_exact)
+
+    with pytest.raises(CudaOpticalTimelineError, match="live C4 lease"):
+        active.enqueue()
+    assert active.state == "POISONED"
+    assert arena.state == "OPEN"
+    assert arena.lifecycle_evidence().slots[0].state == "FREE"
+    assert arena.lifecycle_evidence().terminal_event_record_count == 0
 
 
 def test_live_execution_authority_cannot_finish_without_c4_lifecycle_commit():

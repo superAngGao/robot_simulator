@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
+from .native_arena import C4ActiveOutputLease, NativeOpticalArenaProtocolError
+
 try:  # pragma: no cover - exercised on CUDA hosts.
     import torch
 except Exception:  # pragma: no cover - keeps CPU-only imports available.
@@ -31,10 +33,216 @@ _AUTHORIZED_CONTROLLED_TRANSACTIONS: weakref.WeakKeyDictionary[
     object, tuple[weakref.ReferenceType[object], str]
 ] = weakref.WeakKeyDictionary()
 _CONTROLLED_RESOURCE_CAPABILITIES: dict[int, weakref.ReferenceType[object]] = {}
+_MINTED_CUDA_ARENA_EXECUTION_AUTHORITIES: weakref.WeakKeyDictionary[object, tuple[object, object]] = (
+    weakref.WeakKeyDictionary()
+)
+_CUDA_ARENA_EXECUTION_AUTHORITY_KEY = object()
 
 
 class _CudaOpticalTransactionCapability:
     __slots__ = ("__weakref__",)
+
+
+class _CudaArenaLiveExecutionAuthority:
+    """Exact timeline-owned authority for one acquired C4 lease."""
+
+    __slots__ = (
+        "_active_owner",
+        "_evidence_sha256",
+        "_expected_binding",
+        "_frozen_signature",
+        "_generation",
+        "_lease",
+        "_phase",
+        "_sealed",
+        "_transaction",
+        "__weakref__",
+    )
+
+    def __init__(
+        self,
+        *,
+        transaction: "CudaOpticalTransaction",
+        lease: C4ActiveOutputLease,
+        active_owner: object,
+        expected_binding: tuple[tuple[str, object], ...],
+        _key: object,
+    ) -> None:
+        if _key is not _CUDA_ARENA_EXECUTION_AUTHORITY_KEY:
+            raise TypeError("CUDA arena execution authorities are timeline-minted")
+        if type(lease) is not C4ActiveOutputLease or lease.state != "LEASED":
+            raise NativeOpticalArenaProtocolError(
+                "CUDA execution authority requires an active leased C4 generation"
+            )
+        if (
+            getattr(active_owner, "_transaction", None) is not transaction
+            or getattr(active_owner, "_control_lease", object()) is not None
+            or getattr(active_owner, "_state", None) != "DORMANT"
+        ):
+            raise NativeOpticalArenaProtocolError("CUDA execution authority owner is invalid")
+        evidence = lease.evidence
+        if any(getattr(evidence, name, object()) != value for name, value in expected_binding):
+            raise NativeOpticalArenaProtocolError(
+                "CUDA execution authority lease does not match its sealed plan"
+            )
+        object.__setattr__(self, "_sealed", False)
+        object.__setattr__(self, "_transaction", transaction)
+        object.__setattr__(self, "_lease", lease)
+        object.__setattr__(self, "_active_owner", active_owner)
+        object.__setattr__(self, "_expected_binding", expected_binding)
+        object.__setattr__(self, "_generation", evidence.generation)
+        object.__setattr__(self, "_evidence_sha256", evidence.sha256)
+        object.__setattr__(self, "_phase", "ACQUIRED")
+        object.__setattr__(self, "_frozen_signature", self._static_signature())
+        object.__setattr__(self, "_sealed", True)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_sealed", False):
+            raise AttributeError("CUDA arena execution authority is immutable")
+        object.__setattr__(self, name, value)
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError("CUDA arena execution authority is immutable")
+
+    def _begin(self, transaction: "CudaOpticalTransaction", *, operation: str) -> None:
+        self._assert_registered(transaction)
+        lease = self._require_live_lease()
+        if operation == "enqueue":
+            if (
+                self._phase != "ACQUIRED"
+                or getattr(self._active_owner, "_state", None) != "ACQUIRED"
+                or lease.state != "LEASED"
+                or transaction.state != "validated_open"
+            ):
+                raise NativeOpticalArenaProtocolError("CUDA enqueue authority requires its acquired C4 lease")
+            lease.begin_enqueue()
+            if lease.state != "ENQUEUING":
+                raise NativeOpticalArenaProtocolError("CUDA C4 lease did not enter enqueue state")
+            object.__setattr__(self, "_phase", "ENQUEUE_AUTHORIZED")
+            return
+        if operation == "finish":
+            if (
+                self._phase != "ENQUEUED"
+                or getattr(self._active_owner, "_state", None) != "ENQUEUED"
+                or lease.state != "ENQUEUING"
+                or transaction.state != "enqueuing"
+            ):
+                raise NativeOpticalArenaProtocolError("CUDA finish authority requires its enqueued C4 lease")
+            object.__setattr__(self, "_phase", "FINISH_AUTHORIZED")
+            return
+        raise NativeOpticalArenaProtocolError("CUDA execution authority operation is invalid")
+
+    def _assert_execution(
+        self,
+        transaction: "CudaOpticalTransaction",
+        *,
+        operation: str,
+    ) -> None:
+        self._assert_registered(transaction)
+        lease = self._require_live_lease()
+        expected_phase = "ENQUEUE_AUTHORIZED" if operation == "enqueue" else "FINISH_AUTHORIZED"
+        expected_owner_state = "ACQUIRED" if operation == "enqueue" else "ENQUEUED"
+        if (
+            self._phase != expected_phase
+            or getattr(self._active_owner, "_state", None) != expected_owner_state
+            or lease.state != "ENQUEUING"
+        ):
+            raise NativeOpticalArenaProtocolError(
+                "CUDA transaction execution lost its live C4 lease authority"
+            )
+
+    def _end(
+        self,
+        transaction: "CudaOpticalTransaction",
+        *,
+        operation: str,
+        failure: BaseException | None,
+    ) -> None:
+        if failure is not None:
+            self._poison(f"CUDA {operation} execution failed: {failure}")
+            return
+        try:
+            self._assert_registered(transaction)
+            lease = self._require_live_lease()
+            if operation == "enqueue":
+                if (
+                    self._phase != "ENQUEUE_AUTHORIZED"
+                    or transaction.state != "enqueuing"
+                    or transaction._next_stage != len(transaction._stages)
+                    or lease.state != "ENQUEUING"
+                ):
+                    raise NativeOpticalArenaProtocolError(
+                        "CUDA enqueue did not complete the exact registered stage graph"
+                    )
+                object.__setattr__(self, "_phase", "ENQUEUED")
+                object.__setattr__(self._active_owner, "_state", "ENQUEUED")
+                return
+            if operation == "finish":
+                if self._phase != "FINISH_AUTHORIZED" or transaction.state != "finished":
+                    raise NativeOpticalArenaProtocolError(
+                        "CUDA finish did not record its exact terminal event"
+                    )
+                completion = transaction.completion
+                lease.record_completion()
+                object.__setattr__(self, "_phase", "COMPLETION_RECORDED")
+                object.__setattr__(self._active_owner, "_completion", completion)
+                object.__setattr__(self._active_owner, "_state", "COMPLETION_RECORDED")
+                return
+            raise NativeOpticalArenaProtocolError("CUDA execution authority operation is invalid")
+        except BaseException as exc:
+            self._poison(f"CUDA {operation} lifecycle commit failed: {exc}")
+            raise
+
+    def retire(self, *, expected_phase: str, terminal_phase: str) -> None:
+        self._assert_registered(self._transaction)
+        if self._phase != expected_phase:
+            raise NativeOpticalArenaProtocolError("CUDA execution authority retirement is out of order")
+        object.__setattr__(self, "_phase", terminal_phase)
+
+    def _assert_registered(self, transaction: "CudaOpticalTransaction") -> None:
+        registration = _MINTED_CUDA_ARENA_EXECUTION_AUTHORITIES.get(self)
+        if (
+            type(self) is not _CudaArenaLiveExecutionAuthority
+            or registration is None
+            or registration[0] is not transaction
+            or registration[1] is not self._lease
+            or transaction is not self._transaction
+            or getattr(self._active_owner, "_transaction", None) is not transaction
+            or self._static_signature() != self._frozen_signature
+        ):
+            raise NativeOpticalArenaProtocolError(
+                "CUDA execution authority is not the exact timeline-minted identity"
+            )
+
+    def _require_live_lease(self) -> C4ActiveOutputLease:
+        lease = self._lease
+        if (
+            type(lease) is not C4ActiveOutputLease
+            or lease is not getattr(self._active_owner, "_control_lease", None)
+            or lease.evidence.generation != self._generation
+            or lease.evidence.sha256 != self._evidence_sha256
+            or any(getattr(lease.evidence, name, object()) != value for name, value in self._expected_binding)
+        ):
+            raise NativeOpticalArenaProtocolError("CUDA live execution C4 lease binding changed")
+        return lease
+
+    def _poison(self, reason: str) -> None:
+        try:
+            self._lease.mark_submitted_failure(reason)
+        except Exception:
+            pass
+        object.__setattr__(self, "_phase", "POISONED")
+        object.__setattr__(self._active_owner, "_state", "POISONED")
+
+    def _static_signature(self) -> tuple[object, ...]:
+        return (
+            id(self._transaction),
+            id(self._lease),
+            id(self._active_owner),
+            self._expected_binding,
+            self._generation,
+            self._evidence_sha256,
+        )
 
 
 def _controlled_resource_capability(resource: object) -> object | None:
@@ -467,33 +675,35 @@ class CudaOpticalTransaction:
         self._state = "finished"
         return completion
 
-    def _bind_arena_execution_authority(
+    def _bind_arena_execution_lease(
         self,
         construction_capability: object,
-        execution_authority: object,
-    ) -> None:
+        lease: C4ActiveOutputLease,
+        *,
+        active_owner: object,
+        expected_binding: tuple[tuple[str, object], ...],
+    ) -> _CudaArenaLiveExecutionAuthority:
         required = _CONTROLLED_TRANSACTION_CAPABILITIES.get(self)
         if required is None or construction_capability is not required:
             raise CudaOpticalTimelineError("CUDA arena transaction construction capability is invalid")
         if self in _CONTROLLED_TRANSACTION_EXECUTION_AUTHORITIES:
             raise CudaOpticalTimelineError("CUDA arena execution authority is already bound")
-        authority_type = type(execution_authority)
-        if (
-            authority_type.__module__ != "optics.cuda_arena"
-            or authority_type.__name__ != "_CudaLiveExecutionAuthority"
+        if not isinstance(expected_binding, tuple) or any(
+            not isinstance(entry, tuple) or len(entry) != 2 or not isinstance(entry[0], str) or not entry[0]
+            for entry in expected_binding
         ):
-            raise CudaOpticalTimelineError("CUDA arena live execution authority type is invalid")
-        validator = getattr(execution_authority, "_assert_cuda_transaction_binding", None)
-        if not callable(validator):
-            raise CudaOpticalTimelineError("CUDA arena live execution authority is invalid")
-        validator(self)
-        try:
-            reference = weakref.ref(execution_authority)
-        except TypeError as exc:
-            raise CudaOpticalTimelineError(
-                "CUDA arena live execution authority must be identity-stable"
-            ) from exc
+            raise CudaOpticalTimelineError("CUDA arena execution binding is invalid")
+        execution_authority = _CudaArenaLiveExecutionAuthority(
+            transaction=self,
+            lease=lease,
+            active_owner=active_owner,
+            expected_binding=expected_binding,
+            _key=_CUDA_ARENA_EXECUTION_AUTHORITY_KEY,
+        )
+        _MINTED_CUDA_ARENA_EXECUTION_AUTHORITIES[execution_authority] = (self, lease)
+        reference = weakref.ref(execution_authority)
         _CONTROLLED_TRANSACTION_EXECUTION_AUTHORITIES[self] = reference
+        return execution_authority
 
     @contextmanager
     def _authorize_arena_execution(
@@ -504,29 +714,32 @@ class CudaOpticalTransaction:
     ) -> Iterator[None]:
         if operation not in {"enqueue", "finish"}:
             raise CudaOpticalTimelineError("CUDA arena execution operation is invalid")
+        if type(execution_authority) is not _CudaArenaLiveExecutionAuthority:
+            raise CudaOpticalTimelineError("CUDA arena execution requires an exact timeline-minted authority")
         reference = _CONTROLLED_TRANSACTION_EXECUTION_AUTHORITIES.get(self)
         if reference is None or reference() is not execution_authority:
             raise CudaOpticalTimelineError("controlled CUDA transaction requires its live C4 lease authority")
+        registration = _MINTED_CUDA_ARENA_EXECUTION_AUTHORITIES.get(execution_authority)
+        if registration is None or registration[0] is not self:
+            raise CudaOpticalTimelineError(
+                "CUDA arena execution authority is not registered for this transaction"
+            )
         if self in _AUTHORIZED_CONTROLLED_TRANSACTIONS:
             raise CudaOpticalTimelineError("CUDA arena execution authority is already active")
-        begin = getattr(execution_authority, "_begin_cuda_transaction_execution", None)
-        end = getattr(execution_authority, "_end_cuda_transaction_execution", None)
-        if not callable(begin) or not callable(end):
-            raise CudaOpticalTimelineError("CUDA arena live execution authority is invalid")
-        begin(self, operation=operation)
+        execution_authority._begin(self, operation=operation)
         active_reference = weakref.ref(execution_authority)
         _AUTHORIZED_CONTROLLED_TRANSACTIONS[self] = (active_reference, operation)
         try:
             yield
         except BaseException as exc:
             try:
-                end(self, operation=operation, failure=exc)
+                execution_authority._end(self, operation=operation, failure=exc)
             finally:
                 _AUTHORIZED_CONTROLLED_TRANSACTIONS.pop(self, None)
             raise
         else:
             try:
-                end(self, operation=operation, failure=None)
+                execution_authority._end(self, operation=operation, failure=None)
             finally:
                 _AUTHORIZED_CONTROLLED_TRANSACTIONS.pop(self, None)
 
@@ -542,10 +755,12 @@ class CudaOpticalTransaction:
         bound = _CONTROLLED_TRANSACTION_EXECUTION_AUTHORITIES.get(self)
         if execution_authority is None or bound is None or bound() is not execution_authority:
             raise CudaOpticalTimelineError("CUDA arena live execution authority expired")
-        validator = getattr(execution_authority, "_assert_cuda_transaction_execution", None)
-        if not callable(validator):
-            raise CudaOpticalTimelineError("CUDA arena live execution authority is invalid")
-        validator(self, operation=operation)
+        if type(execution_authority) is not _CudaArenaLiveExecutionAuthority:
+            raise CudaOpticalTimelineError("CUDA arena live execution authority type changed")
+        registration = _MINTED_CUDA_ARENA_EXECUTION_AUTHORITIES.get(execution_authority)
+        if registration is None or registration[0] is not self:
+            raise CudaOpticalTimelineError("CUDA arena live execution authority lost registration")
+        execution_authority._assert_execution(self, operation=operation)
 
     def _require_enqueueable(self, stage: object) -> None:
         if self._state == "finished":
