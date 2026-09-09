@@ -1022,18 +1022,20 @@ Next milestone:
       allocation-free C2 render transactions, exact C3 scene/LBVH stage graphs,
       and the CPU-safe C4 arena state/evidence contract are implemented and
       independently approved.
-- [ ] P12.4 C4b — corrective implementation is ready for re-review. The CUDA
-      candidate has sealed R0/R1 and R2 `none/device_only` arenas, controlled
-      dormant-transaction construction plus single-use prepared-acquire
-      capabilities, and exact timeline-minted per-acquire execution authorities
-      with one-to-one lease/transaction/owner registration and frozen
-      slot/frame/event/C3 binding, exact live a2 allocation/readiness plus
-      adapter-issued C3 receipt authority, and an O(1) measured acquire path. It
-      remains non-result-capable until approval.
-- [ ] P12.4 C4c/C4d/B3 — build the Warp native arena, finish joint
-      drain/poison/guardian ownership, and add reviewed host delivery storage.
-      The a3b/result/baseline gates stay closed until the joint activation
-      review.
+- [x] P12.4 C4b — CUDA R0/R1 and R2 `none/device_only` arenas are approved at
+      `c61c9e8`. Controlled dormant construction, exact live a2/C3 provenance,
+      single-use prepared-acquire authority, one-to-one lease/transaction/owner
+      registration, and O(1) measured acquire are closed. The implementation
+      remains non-result-capable pending the joint C4/B3 activation review.
+- [ ] P12.4 C4c — Warp native render/arena design v1 is ready for review. It
+      freezes caller-owned render buffers, deterministic per-generation reset,
+      pre-recorded fixed command variants, a single preallocated terminal Warp
+      event, C4b-strength single-use execution authority, exact a2/C3 storage
+      provenance, and R0/R1-refit/R2-static-CUDA-LBVH stage graphs. No C4c
+      implementation is authorized before review.
+- [ ] P12.4 C4d/B3 — finish joint drain/poison/guardian ownership and add
+      reviewed host delivery storage. The a3b/result/baseline gates stay closed
+      until the joint activation review.
 - [ ] Do not delete the Warp optical oracle until CUDA passes the retained
       capability, correctness, stability, absolute product-budget, and
       no-slower-than-Warp gates on matched workloads.

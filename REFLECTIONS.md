@@ -3237,3 +3237,47 @@ Finally, "owner looks active" is not an ownership proof. The timeline rejects
 duck-typed owners and retains the exact active object in both prepared and live
 registries. Authorization rechecks the same owner, transaction, authority, and
 lease identities on every enqueue and finish boundary.
+
+## Session 2026-09-09 — Q54 P12.4 C4c Warp Native Arena Design
+
+The C4b review sequence established a useful design rule for C4c: execution
+control must be designed around the real executable leaves, not around the
+visibility of an arena wrapper. A private template or command bundle is still
+an executable if a caller can reach its stage entry. The Warp plan therefore
+binds scene update, refit, static CUDA-LBVH, render commands, and terminal event
+to the same exact single-use lease authority before any of them may enqueue.
+
+The existing Warp executor is a correctness oracle, not a native benchmark
+lane. It allocates ray and result arrays per call, materializes FULL miss
+sentinels through NumPy, synchronizes between first-hit and shade, and aliases
+unused traversal diagnostics. Putting an arena around that call would preserve
+the very work and synchronization the native-ready boundary is meant to
+remove. C4c instead reuses the same kernel math through caller-owned buffers and
+pre-recorded command objects.
+
+Reusable output storage makes initialization part of the algorithm contract.
+The design gives first-hit the same deterministic per-ray miss initialization
+as the CUDA path and uses fixed recorded kernels to reset four primary or
+thirteen diagnostic scalars. Sentinel reuse tests, rather than fresh-allocation
+tests, prove that a later generation cannot inherit a prior frame's hit,
+geometry, or traversal counts.
+
+Warp's static lane legitimately uses a Torch view only inside the candidate's
+frozen CUDA-LBVH acceleration implementation. The view is created once before
+timing, shares the Warp allocation and native stream, remains in the candidate
+memory manifest, and is never a renderer-to-renderer bridge. The reusable
+runtime mechanism must move out of the benchmark package; row and receipt
+policy stay in the benchmark adapter so production code never imports the
+comparison framework.
+
+One source of render math is important for both correctness and cleanup. The
+blocking compatibility executor and the native command path may have different
+ownership APIs, but duplicating ray, intersection, shadow, or lighting logic
+would create two Warp renderers and weaken the oracle. The C4c design therefore
+permits a mechanical kernel move but not a fork of the math.
+
+The backend comparison still does not justify a permanent cross-backend arena
+abstraction. `NativeOpticalArena` is the durable control plane; Warp and CUDA
+retain explicit allocation, command, event, and transaction modules. After
+selection, the losing runtime data plane and paired infrastructure can be
+deleted without leaving dispatch layers or buffer unions in the product repo.
