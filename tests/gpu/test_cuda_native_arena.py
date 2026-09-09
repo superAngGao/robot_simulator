@@ -522,9 +522,28 @@ def test_arena_controlled_template_and_transaction_cannot_bypass_c4_lease():
             completion_event=executable.transaction_template.completion_event,
             diagnostic_events=None,
         )
+    assert not hasattr(executable, "authorize")
+    dormant = executable.activate()
+    with pytest.raises(CudaOpticalTimelineError, match="live C4 lease"):
+        with dormant._authorize_arena_execution(
+            executable.activation_capability,
+            operation="enqueue",
+        ):
+            raise AssertionError("static construction capability authorized execution")
     prepared = arena.prepare_sample(target=target, provenance=_provenance(arena, target))
+    with pytest.raises(NativeOpticalArenaProtocolError, match="transaction binding"):
+        dormant._bind_arena_execution_authority(
+            executable.activation_capability,
+            prepared._active._execution_authority,
+        )
     with pytest.raises(CudaOpticalTimelineError, match="active arena lease"):
         executable.transaction_template.stages[0].enqueue(prepared._active._transaction)
+    with pytest.raises(NativeOpticalArenaProtocolError, match="lease binding"):
+        with prepared._active._transaction._authorize_arena_execution(
+            prepared._active._execution_authority,
+            operation="enqueue",
+        ):
+            raise AssertionError("dormant authority authorized execution")
     lifecycle = arena.lifecycle_evidence()
     assert lifecycle.slots[0].state == "FREE"
     assert lifecycle.terminal_event_record_count == 0
@@ -534,7 +553,60 @@ def test_arena_controlled_template_and_transaction_cannot_bypass_c4_lease():
     with pytest.raises(CudaOpticalTimelineError, match="active arena lease"):
         executable.transaction_template.stages[0].enqueue(active._transaction)
     assert arena.lifecycle_evidence().terminal_event_record_count == 0
+    execution_authority = active._execution_authority
+    transaction = active._transaction
     active.cancel_before_enqueue()
+    with pytest.raises(NativeOpticalArenaProtocolError):
+        with transaction._authorize_arena_execution(
+            execution_authority,
+            operation="enqueue",
+        ):
+            raise AssertionError("cancelled authority authorized execution")
+
+
+def test_live_execution_authority_cannot_finish_without_c4_lifecycle_commit():
+    arena = _dynamic_arena()
+    target = arena.plan_target(transform_frame_index=0)
+    active = arena.acquire(arena.prepare_sample(target=target, provenance=_provenance(arena, target)))
+    assert not isinstance(active, NativeOpticalArenaBackpressure)
+    transaction = active._transaction
+    authority = active._execution_authority
+    executable = arena._execution_for_target(target)
+
+    with transaction._authorize_arena_execution(authority, operation="enqueue"):
+        for stage in executable.transaction_template.stages:
+            stage.enqueue(transaction)
+    assert active.state == "ENQUEUED"
+    assert active._control_lease.state == "ENQUEUING"
+
+    with transaction._authorize_arena_execution(authority, operation="finish"):
+        completion = transaction.finish()
+    assert active.state == "COMPLETION_RECORDED"
+    assert active.completion is completion
+    assert active._control_lease.state == "COMPLETION_RECORDED"
+    assert arena.lifecycle_evidence().terminal_event_record_count == 1
+
+    active.resolve()
+    active.release_device_result()
+    active.reclaim()
+    with pytest.raises(NativeOpticalArenaProtocolError):
+        with transaction._authorize_arena_execution(authority, operation="finish"):
+            raise AssertionError("reclaimed authority authorized execution")
+
+
+def test_poisoned_live_execution_authority_cannot_be_reused():
+    arena = _dynamic_arena()
+    target = arena.plan_target(transform_frame_index=0)
+    active = arena.acquire(arena.prepare_sample(target=target, provenance=_provenance(arena, target)))
+    assert not isinstance(active, NativeOpticalArenaBackpressure)
+    active.enqueue()
+    transaction = active._transaction
+    authority = active._execution_authority
+    active._control_lease.mark_submitted_failure("injected authority poison")
+
+    with pytest.raises(NativeOpticalArenaProtocolError):
+        with transaction._authorize_arena_execution(authority, operation="finish"):
+            raise AssertionError("poisoned authority authorized execution")
 
 
 @pytest.mark.parametrize("arena_factory", (_dynamic_arena, _fixed_arena))

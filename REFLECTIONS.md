@@ -3188,3 +3188,18 @@ that walks every sealed slot, frame, owner, and resource record can remain free
 of Torch allocations while still scaling with the workload. Full graph
 validation belongs in seal/prepare; acquire should consume only fixed identity
 records and the C4 slot/generation state transition.
+
+A follow-up review showed that an opaque token is not automatically a live
+capability. The first correction still let the private executable present its
+static template token as execution authority, so the token proved graph
+membership but not lease ownership. Construction and execution must use
+different authorities: the former may create dormant state, while the latter
+must be minted only after acquire and bind the transaction to the exact live
+lease, slot, generation, and lifecycle state.
+
+The stronger formulation couples authorization with lifecycle transitions.
+The live authority begins C4 enqueue before exposing stage execution and
+records C4 completion immediately after the terminal event. This preserves the
+invariant even if internal objects are reached directly: there is no successful
+terminal submission whose lifecycle receipt still describes a free or
+completion-free slot.
