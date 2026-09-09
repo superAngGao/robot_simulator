@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import weakref
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -19,6 +20,26 @@ class CudaOpticalTimelineError(RuntimeError):
 
 class CudaOpticalTransactionPoisonedError(CudaOpticalTimelineError):
     """Raised after an enqueued transaction loses safe reuse evidence."""
+
+
+_CONTROLLED_TEMPLATE_CAPABILITIES: weakref.WeakKeyDictionary[object, object] = weakref.WeakKeyDictionary()
+_CONTROLLED_TRANSACTION_CAPABILITIES: weakref.WeakKeyDictionary[object, object] = weakref.WeakKeyDictionary()
+_AUTHORIZED_CONTROLLED_TRANSACTIONS: weakref.WeakSet[object] = weakref.WeakSet()
+_CONTROLLED_RESOURCE_CAPABILITIES: dict[int, weakref.ReferenceType[object]] = {}
+
+
+class _CudaOpticalTransactionCapability:
+    __slots__ = ("__weakref__",)
+
+
+def _controlled_resource_capability(resource: object) -> object | None:
+    reference = _CONTROLLED_RESOURCE_CAPABILITIES.get(id(resource))
+    if reference is None:
+        return None
+    capability = reference()
+    if capability is None:
+        _CONTROLLED_RESOURCE_CAPABILITIES.pop(id(resource), None)
+    return capability
 
 
 @dataclass(frozen=True)
@@ -84,6 +105,7 @@ class CudaOpticalExecutionContext:
         stages: Sequence[object],
         completion_event: object,
         diagnostic_events: Mapping[str, tuple[object, object]] | None = None,
+        _activation_capability: object | None = None,
     ) -> "CudaOpticalTransactionTemplate":
         """Fully validate an immutable stage/event graph for later activations."""
 
@@ -93,7 +115,11 @@ class CudaOpticalExecutionContext:
             stages=stages,
             completion_event=completion_event,
             diagnostic_events=diagnostic_events,
+            _activation_capability=_activation_capability,
         )
+
+    def _new_controlled_transaction_capability(self) -> object:
+        return _CudaOpticalTransactionCapability()
 
     @contextmanager
     def activate(self) -> Iterator[None]:
@@ -127,6 +153,7 @@ class CudaOpticalTransactionTemplate:
         "_stage_evidence",
         "_stage_names",
         "_stages",
+        "__weakref__",
     )
 
     def __init__(
@@ -136,6 +163,7 @@ class CudaOpticalTransactionTemplate:
         stages: Sequence[object],
         completion_event: object,
         diagnostic_events: Mapping[str, tuple[object, object]] | None,
+        _activation_capability: object | None = None,
     ) -> None:
         object.__setattr__(self, "_sealed", False)
         frozen_stages = tuple(stages)
@@ -178,6 +206,22 @@ class CudaOpticalTransactionTemplate:
         if len(set(stage_names)) != len(stage_names):
             raise ValueError("CUDA optical transaction stage names must be unique")
 
+        controlled_resources = (
+            *frozen_stages,
+            completion_event,
+            *(event for _, start, end in frozen_diagnostics for event in (start, end)),
+        )
+        if _activation_capability is not None and not isinstance(
+            _activation_capability, _CudaOpticalTransactionCapability
+        ):
+            raise TypeError("controlled CUDA transaction capability is invalid")
+        for resource in controlled_resources:
+            registered = _controlled_resource_capability(resource)
+            if registered is not None and registered is not _activation_capability:
+                raise CudaOpticalTimelineError(
+                    "CUDA arena-controlled stage/event cannot be rebound to another template"
+                )
+
         object.__setattr__(self, "_context", context)
         object.__setattr__(self, "_stages", frozen_stages)
         object.__setattr__(self, "_stage_names", tuple(stage_names))
@@ -186,6 +230,11 @@ class CudaOpticalTransactionTemplate:
         object.__setattr__(self, "_diagnostic_events", tuple(frozen_diagnostics))
         object.__setattr__(self, "_frozen_signature", self._current_signature())
         object.__setattr__(self, "_sealed", True)
+        if _activation_capability is not None:
+            _CONTROLLED_TEMPLATE_CAPABILITIES[self] = _activation_capability
+            capability_ref = weakref.ref(_activation_capability)
+            for resource in controlled_resources:
+                _CONTROLLED_RESOURCE_CAPABILITIES[id(resource)] = capability_ref
 
     def __setattr__(self, name: str, value: object) -> None:
         if getattr(self, "_sealed", False):
@@ -237,8 +286,22 @@ class CudaOpticalTransactionTemplate:
     def activate(self) -> "CudaOpticalTransaction":
         """Create fresh single-generation host state from this validated graph."""
 
+        if self in _CONTROLLED_TEMPLATE_CAPABILITIES:
+            raise CudaOpticalTimelineError(
+                "controlled CUDA transaction template requires its arena-issued capability"
+            )
         self.validate_bound()
         return CudaOpticalTransaction(_template=self)
+
+    def _activate_with_capability(self, capability: object) -> "CudaOpticalTransaction":
+        required = _CONTROLLED_TEMPLATE_CAPABILITIES.get(self)
+        if required is None or capability is not required:
+            raise CudaOpticalTimelineError("controlled CUDA transaction activation capability is invalid")
+        self.validate_bound()
+        return CudaOpticalTransaction(
+            _template=self,
+            _construction_capability=required,
+        )
 
     def _current_signature(self) -> tuple[object, ...]:
         return (
@@ -257,7 +320,17 @@ class CudaOpticalTransactionTemplate:
 class CudaOpticalTransaction:
     """Single-use ordered enqueue state plus one owner-controlled finish."""
 
-    def __init__(self, *, _template: CudaOpticalTransactionTemplate) -> None:
+    def __init__(
+        self,
+        *,
+        _template: CudaOpticalTransactionTemplate,
+        _construction_capability: object | None = None,
+    ) -> None:
+        required = _CONTROLLED_TEMPLATE_CAPABILITIES.get(_template)
+        if required is not None and _construction_capability is not required:
+            raise CudaOpticalTimelineError(
+                "controlled CUDA transaction construction requires its arena-issued capability"
+            )
         self._context = _template.context
         self._stages = _template.stages
         self._stage_names = _template.stage_names
@@ -270,6 +343,8 @@ class CudaOpticalTransaction:
         self._state = "validated_open"
         self._poison_reason: str | None = None
         self._completion: CudaOpticalCompletion | None = None
+        if required is not None:
+            _CONTROLLED_TRANSACTION_CAPABILITIES[self] = required
 
     @property
     def state(self) -> str:
@@ -300,6 +375,7 @@ class CudaOpticalTransaction:
     def enqueue_stage(self, stage: object) -> Iterator[None]:
         """Enter the exact next registered stage on the selected CUDA stream."""
 
+        self._require_execution_authority()
         self._require_enqueueable(stage)
         stability_check = getattr(stage, "_assert_cuda_transaction_stage_stable", None)
         try:
@@ -348,6 +424,7 @@ class CudaOpticalTransaction:
     def finish(self) -> CudaOpticalCompletion:
         """Record the one optical terminal event after every registered stage."""
 
+        self._require_execution_authority()
         if self._state == "finished":
             raise CudaOpticalTimelineError("CUDA optical transaction is already finished")
         if self._state == "poisoned":
@@ -384,6 +461,25 @@ class CudaOpticalTransaction:
         self._completion = completion
         self._state = "finished"
         return completion
+
+    @contextmanager
+    def _authorize_arena_execution(self, capability: object) -> Iterator[None]:
+        required = _CONTROLLED_TRANSACTION_CAPABILITIES.get(self)
+        if required is None or capability is not required:
+            raise CudaOpticalTimelineError("CUDA arena execution capability is invalid")
+        if self in _AUTHORIZED_CONTROLLED_TRANSACTIONS:
+            raise CudaOpticalTimelineError("CUDA arena execution capability is already active")
+        _AUTHORIZED_CONTROLLED_TRANSACTIONS.add(self)
+        try:
+            yield
+        finally:
+            _AUTHORIZED_CONTROLLED_TRANSACTIONS.discard(self)
+
+    def _require_execution_authority(self) -> None:
+        if self in _CONTROLLED_TRANSACTION_CAPABILITIES and self not in _AUTHORIZED_CONTROLLED_TRANSACTIONS:
+            raise CudaOpticalTimelineError(
+                "controlled CUDA transaction execution requires its active arena lease"
+            )
 
     def _require_enqueueable(self, stage: object) -> None:
         if self._state == "finished":

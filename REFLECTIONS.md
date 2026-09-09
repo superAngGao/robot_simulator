@@ -3168,3 +3168,23 @@ terminal resolution and fails after release/reclaim. C4b intentionally does
 not add host staging, async readback, ordinary close/poison cleanup, C0 guardian
 handoff, result activation, or baseline production; those remain C4d/B3/joint
 review work.
+
+The first C4b review exposed three distinctions that an internally consistent
+arena graph did not yet prove. First, hiding an executable under an underscore
+is not authority: an arena-owned template, its stages, and its terminal event
+must all reject activation or execution unless a live C4 lease supplies the
+registered capability. Standalone C2 and arena-controlled C2 therefore need
+different activation policy even though they share the same transaction state
+machine.
+
+Second, matching hashes and storage signatures do not prove an allocation came
+from a2. The durable proof now combines exact live prepared/readiness identity,
+exact tensor or approved-view identity, an untimed content revalidation, and an
+adapter-issued receipt identity. Serialization can reproduce facts but cannot
+reproduce the authority showing who observed those facts.
+
+Third, "allocation-free" is weaker than "constant-time." A measured acquire
+that walks every sealed slot, frame, owner, and resource record can remain free
+of Torch allocations while still scaling with the workload. Full graph
+validation belongs in seal/prepare; acquire should consume only fixed identity
+records and the C4 slot/generation state transition.

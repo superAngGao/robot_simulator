@@ -274,21 +274,22 @@ class CudaArenaC3Provenance:
 
 @dataclass(frozen=True, slots=True)
 class CudaArenaPlanTarget:
-    """Inspectable, non-active slot/frame target used to build C3 provenance."""
+    """Non-executable slot/frame inspection used to build C3 provenance."""
 
     evidence: CudaArenaPlanEvidence
-    _transaction_template: CudaOpticalTransactionTemplate = field(repr=False)
     _render_buffers: CudaDirectLightBuffers = field(repr=False)
     slot_resources: tuple["CudaArenaResourceRecord", ...]
     _spec: NativeOpticalArenaSpec = field(repr=False)
     _runtime_scene_arrays: Mapping[str, object] = field(repr=False)
     _derived_fixture_arrays: Mapping[str, object] = field(repr=False)
+    _transform_arrays: Mapping[str, object] = field(repr=False)
+    _scene_output_arrays: Mapping[str, object] = field(repr=False)
+    _acceleration_output_arrays: Mapping[str, object] = field(repr=False)
+    _runtime_stage_evidence: tuple[object, ...] = field(repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.evidence, CudaArenaPlanEvidence):
             raise TypeError("CUDA arena target requires plan evidence")
-        if not isinstance(self._transaction_template, CudaOpticalTransactionTemplate):
-            raise TypeError("CUDA arena target requires a transaction template")
         if not isinstance(self._render_buffers, CudaDirectLightBuffers):
             raise TypeError("CUDA arena target requires render buffers")
         if not isinstance(self.slot_resources, tuple) or any(
@@ -301,6 +302,15 @@ class CudaArenaPlanTarget:
             raise TypeError("CUDA arena target runtime scene arrays are invalid")
         if not isinstance(self._derived_fixture_arrays, Mapping):
             raise TypeError("CUDA arena target derived fixture arrays are invalid")
+        for name in (
+            "_transform_arrays",
+            "_scene_output_arrays",
+            "_acceleration_output_arrays",
+        ):
+            if not isinstance(getattr(self, name), Mapping):
+                raise TypeError(f"CUDA arena target {name[1:]} are invalid")
+        if not isinstance(self._runtime_stage_evidence, tuple) or not self._runtime_stage_evidence:
+            raise TypeError("CUDA arena target runtime stage evidence is invalid")
         if self.evidence.arena_spec_sha256 != self._spec.sha256:
             raise ValueError("CUDA arena target specification digest is inconsistent")
 
@@ -314,7 +324,6 @@ class CudaArenaPlanTarget:
     ) -> CudaArenaC3Provenance:
         """Canonicalize and bind one real C3 receipt to this exact CUDA graph."""
 
-        self._transaction_template.validate_bound()
         canonical = _canonical_c3_binding(binding)
         _validate_c3_binding_identity(self, canonical)
         _validate_c3_binding_storage(self, canonical)
@@ -437,12 +446,32 @@ class CudaArenaResourceRecord:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class _CudaExecutableTarget:
+    """Arena-private executable graph; never exposed by a plan target."""
+
+    target: CudaArenaPlanTarget
+    transaction_template: CudaOpticalTransactionTemplate
+    activation_capability: object
+    render_stage: object
+
+    def activate(self) -> CudaOpticalTransaction:
+        return self.transaction_template._activate_with_capability(self.activation_capability)
+
+    def authorize(self, transaction: CudaOpticalTransaction):
+        return transaction._authorize_arena_execution(self.activation_capability)
+
+    def validate_bound(self) -> None:
+        self.transaction_template.validate_bound()
+
+
 class CudaPreparedArenaSample:
     """Untimed C4/C2 preparation; it cannot submit without arena acquire."""
 
     __slots__ = (
         "_active",
         "_control_plan",
+        "_executable",
         "_frozen_signature",
         "_provenance",
         "_sealed",
@@ -457,16 +486,21 @@ class CudaPreparedArenaSample:
         target: CudaArenaPlanTarget,
         provenance: CudaArenaC3Provenance,
         transaction: CudaOpticalTransaction,
+        executable: _CudaExecutableTarget,
+        arena_acquire_authority: object,
     ) -> None:
         object.__setattr__(self, "_sealed", False)
         active = CudaActiveArenaSample(
             target=target,
             provenance=provenance,
             transaction=transaction,
+            executable=executable,
+            arena_acquire_authority=arena_acquire_authority,
         )
         object.__setattr__(self, "_control_plan", control_plan)
         object.__setattr__(self, "_target", target)
         object.__setattr__(self, "_provenance", provenance)
+        object.__setattr__(self, "_executable", executable)
         object.__setattr__(self, "_active", active)
         object.__setattr__(self, "_frozen_signature", self._current_signature())
         object.__setattr__(self, "_sealed", True)
@@ -500,12 +534,34 @@ class CudaPreparedArenaSample:
             id(self._target),
             self._target.evidence.sha256,
             self._provenance,
+            id(self._executable),
             id(self._active),
         )
 
     def _validate_bound(self) -> None:
         if self._current_signature() != self._frozen_signature:
             raise NativeOpticalArenaProtocolError("CUDA prepared sample changed after seal")
+
+    def _validate_acquire_fast(
+        self,
+        *,
+        control_plan: C4PreparedSamplePlan,
+        target: CudaArenaPlanTarget,
+        provenance: CudaArenaC3Provenance,
+        executable: _CudaExecutableTarget,
+        active: "CudaActiveArenaSample",
+        arena_acquire_authority: object,
+    ) -> None:
+        if (
+            not self._sealed
+            or self._control_plan is not control_plan
+            or self._target is not target
+            or self._provenance is not provenance
+            or self._executable is not executable
+            or self._active is not active
+            or active._arena_acquire_authority is not arena_acquire_authority
+        ):
+            raise NativeOpticalArenaProtocolError("CUDA prepared sample binding changed")
 
 
 class CudaDeviceResultView(Mapping[str, object]):
@@ -530,9 +586,11 @@ class CudaActiveArenaSample:
     """Single-use C2 transaction coupled to an active C4 slot generation."""
 
     __slots__ = (
+        "_arena_acquire_authority",
         "_completion",
         "_control_lease",
         "_device_result_view",
+        "_executable",
         "_frozen_signature",
         "_provenance",
         "_sealed",
@@ -547,11 +605,15 @@ class CudaActiveArenaSample:
         target: CudaArenaPlanTarget,
         provenance: CudaArenaC3Provenance,
         transaction: CudaOpticalTransaction,
+        executable: _CudaExecutableTarget,
+        arena_acquire_authority: object,
     ) -> None:
         object.__setattr__(self, "_sealed", False)
         object.__setattr__(self, "_target", target)
         object.__setattr__(self, "_provenance", provenance)
         object.__setattr__(self, "_transaction", transaction)
+        object.__setattr__(self, "_executable", executable)
+        object.__setattr__(self, "_arena_acquire_authority", arena_acquire_authority)
         object.__setattr__(self, "_control_lease", None)
         object.__setattr__(self, "_completion", None)
         object.__setattr__(self, "_device_result_view", CudaDeviceResultView(self))
@@ -597,8 +659,9 @@ class CudaActiveArenaSample:
         self._assert_configuration_stable()
         lease.begin_enqueue()
         try:
-            for stage in self._target._transaction_template.stages:
-                stage.enqueue(self._transaction)
+            with self._executable.authorize(self._transaction):
+                for stage in self._executable.transaction_template.stages:
+                    stage.enqueue(self._transaction)
         except BaseException as exc:
             _retain_failure_without_masking(lease, f"CUDA transaction stage failure: {exc}")
             object.__setattr__(self, "_state", "POISONED")
@@ -610,7 +673,8 @@ class CudaActiveArenaSample:
         lease = self._require_lease()
         try:
             self._assert_configuration_stable()
-            completion = self._transaction.finish()
+            with self._executable.authorize(self._transaction):
+                completion = self._transaction.finish()
             lease.record_completion()
         except BaseException as exc:
             _retain_failure_without_masking(lease, f"CUDA terminal completion failure: {exc}")
@@ -663,17 +727,21 @@ class CudaActiveArenaSample:
                 "CUDA output channels require a resolved payload-ready generation"
             )
         self._assert_after_submission_stable(self._require_lease(), operation="output access")
-        render = self._target._transaction_template.stages[-1]
-        if isinstance(render, CudaDeviceOnlyDeliveryStage):
-            render = self._target._transaction_template.stages[-2]
+        render = self._executable.render_stage
         channels = render.output_channels(
             include_traversal_diagnostics=bool(render.buffers.shadow_traversal_counters)
         )
         return MappingProxyType(channels)
 
-    def _activate(self, lease: C4ActiveOutputLease) -> None:
+    def _activate(self, lease: C4ActiveOutputLease, *, arena_acquire_authority: object) -> None:
         self._require_state("DORMANT", operation="activation")
-        self._assert_configuration_stable()
+        if arena_acquire_authority is not self._arena_acquire_authority:
+            raise NativeOpticalArenaProtocolError("CUDA arena acquire authority is invalid")
+        if (
+            lease.evidence.slot_id != self._target.evidence.slot_id
+            or self._transaction.state != "validated_open"
+        ):
+            raise NativeOpticalArenaProtocolError("CUDA arena activation binding is invalid")
         object.__setattr__(self, "_control_lease", lease)
         object.__setattr__(self, "_state", "ACQUIRED")
 
@@ -683,10 +751,12 @@ class CudaActiveArenaSample:
             self._target.evidence.sha256,
             self._provenance,
             id(self._transaction),
+            id(self._executable),
+            id(self._executable.transaction_template),
+            id(self._executable.activation_capability),
             id(self._device_result_view),
-            id(self._target._transaction_template),
-            tuple(id(stage) for stage in self._target._transaction_template.stages),
-            id(self._target._transaction_template.completion_event),
+            tuple(id(stage) for stage in self._executable.transaction_template.stages),
+            id(self._executable.transaction_template.completion_event),
             id(self._transaction._context),
             tuple(id(stage) for stage in self._transaction._stages),
             id(self._transaction._completion_event),
@@ -732,6 +802,7 @@ class _CudaSlotGraph:
     diagnostic_events: Mapping[str, tuple[object, object]]
     resource_records: tuple[CudaArenaResourceRecord, ...]
     targets: Mapping[int | None, CudaArenaPlanTarget]
+    executables: Mapping[int | None, _CudaExecutableTarget]
     owners: tuple[object, ...]
 
 
@@ -739,10 +810,11 @@ class CudaNativeOpticalArena:
     """Sealed CUDA C4b arena with exact preflight and measured activation."""
 
     __slots__ = (
+        "_acquire_authority",
         "_c3_provenance_by_target",
         "_control",
         "_frozen_signature",
-        "_lightweight_signature",
+        "_execution_by_target_id",
         "_prepared_registry",
         "_sealed",
         "_session_resource_records",
@@ -761,12 +833,20 @@ class CudaNativeOpticalArena:
         object.__setattr__(self, "_sealed", False)
         object.__setattr__(self, "_control", control)
         object.__setattr__(self, "_slots", tuple(slots))
+        executions = {
+            id(executable.target): executable
+            for slot in self._slots
+            for executable in slot.executables.values()
+        }
+        if len(executions) != sum(len(slot.targets) for slot in self._slots):
+            raise ValueError("CUDA arena executable targets must be identity-unique")
+        object.__setattr__(self, "_execution_by_target_id", executions)
+        object.__setattr__(self, "_acquire_authority", object())
         object.__setattr__(self, "_session_owners", tuple(session_owners))
         object.__setattr__(self, "_session_resource_records", tuple(session_resource_records))
         object.__setattr__(self, "_prepared_registry", weakref.WeakKeyDictionary())
         object.__setattr__(self, "_c3_provenance_by_target", {})
         object.__setattr__(self, "_frozen_signature", self._configuration_signature())
-        object.__setattr__(self, "_lightweight_signature", self._configuration_identity())
         object.__setattr__(self, "_sealed", True)
 
     def __setattr__(self, name: str, value: object) -> None:
@@ -818,23 +898,40 @@ class CudaNativeOpticalArena:
         *,
         target: CudaArenaPlanTarget,
         binding: object,
+        prepared_input: object,
+        native_readiness: object,
     ) -> CudaArenaC3Provenance:
         """Issue one bounded C3 provenance capability for an arena-owned plan."""
 
         self._validate_configuration()
-        if not any(candidate is target for slot in self._slots for candidate in slot.targets.values()):
-            raise NativeOpticalArenaProtocolError("CUDA C3 target is not owned by this arena")
+        self._execution_for_target(target)
+        _validate_live_a2_binding(target, prepared_input, native_readiness)
+        _validate_c3_adapter_authority(
+            target,
+            binding,
+            prepared_input,
+            native_readiness,
+        )
         canonical = _canonical_c3_binding(binding)
         existing = self._c3_provenance_by_target.get(id(target))
         if existing is not None:
-            existing_binding_sha256, provenance = existing
-            if existing_binding_sha256 != canonical.sha256:
+            existing_binding_sha256, provenance, existing_prepared, existing_readiness = existing
+            if (
+                existing_binding_sha256 != canonical.sha256
+                or existing_prepared is not prepared_input
+                or existing_readiness is not native_readiness
+            ):
                 raise NativeOpticalArenaProtocolError(
-                    "CUDA arena plan target cannot be rebound to different C3 evidence"
+                    "CUDA arena plan target cannot be rebound to different C3/a2 evidence"
                 )
             return provenance
         provenance = target._bind_c3_provenance(canonical)
-        self._c3_provenance_by_target[id(target)] = (canonical.sha256, provenance)
+        self._c3_provenance_by_target[id(target)] = (
+            canonical.sha256,
+            provenance,
+            prepared_input,
+            native_readiness,
+        )
         return provenance
 
     def prepare_sample(
@@ -859,8 +956,9 @@ class CudaNativeOpticalArena:
                 "CUDA C3 provenance was not issued for this arena plan target"
             )
         _validate_c3_provenance(target, provenance)
-        target._transaction_template.validate_bound()
-        transaction = target._transaction_template.activate()
+        executable = self._execution_for_target(target)
+        executable.validate_bound()
+        transaction = executable.activate()
         control_plan = self._control.prepare_plan(
             transform_frame_index=target.evidence.transform_frame_index,
             c3_one_shot_binding_sha256=provenance.c3_one_shot_binding_sha256,
@@ -880,11 +978,14 @@ class CudaNativeOpticalArena:
             target=target,
             provenance=provenance,
             transaction=transaction,
+            executable=executable,
+            arena_acquire_authority=self._acquire_authority,
         )
         self._prepared_registry[prepared] = (
             control_plan,
             target,
             provenance,
+            executable,
             prepared._active,
         )
         return prepared
@@ -894,24 +995,25 @@ class CudaNativeOpticalArena:
     ) -> CudaActiveArenaSample | NativeOpticalArenaBackpressure:
         """Perform only C4 O(1) identity/state changes in the measured region."""
 
-        self._validate_configuration_lightweight()
         if not isinstance(prepared, CudaPreparedArenaSample):
             raise NativeOpticalArenaProtocolError("CUDA prepared sample is not arena-owned")
+        if not self._sealed:
+            raise NativeOpticalArenaProtocolError("CUDA arena seal is invalid")
         registered = self._prepared_registry.get(prepared)
         if registered is None:
             raise NativeOpticalArenaProtocolError("CUDA prepared sample is not arena-owned")
-        prepared._validate_bound()
-        if (
-            prepared._control_plan is not registered[0]
-            or prepared._target is not registered[1]
-            or prepared._provenance != registered[2]
-            or prepared._active is not registered[3]
-        ):
-            raise NativeOpticalArenaProtocolError("CUDA prepared sample binding changed")
+        prepared._validate_acquire_fast(
+            control_plan=registered[0],
+            target=registered[1],
+            provenance=registered[2],
+            executable=registered[3],
+            active=registered[4],
+            arena_acquire_authority=self._acquire_authority,
+        )
         result = self._control.acquire(prepared._control_plan)
         if isinstance(result, NativeOpticalArenaBackpressure):
             return result
-        prepared._active._activate(result)
+        prepared._active._activate(result, arena_acquire_authority=self._acquire_authority)
         del self._prepared_registry[prepared]
         return prepared._active
 
@@ -940,6 +1042,7 @@ class CudaNativeOpticalArena:
                     slot.slot_id,
                     id(slot.completion_event),
                     tuple((key, id(value)) for key, value in slot.targets.items()),
+                    tuple((key, id(value)) for key, value in slot.executables.items()),
                 )
                 for slot in self._slots
             ),
@@ -951,13 +1054,18 @@ class CudaNativeOpticalArena:
         if self._configuration_signature() != self._frozen_signature:
             raise NativeOpticalArenaProtocolError("CUDA arena resource graph changed after seal")
         for slot in self._slots:
-            for target in slot.targets.values():
-                target._transaction_template.validate_bound()
-                _validate_target_evidence(self.spec, slot, target)
+            if set(slot.targets) != set(slot.executables):
+                raise NativeOpticalArenaProtocolError("CUDA arena target/executable keys changed")
+            for key, target in slot.targets.items():
+                executable = slot.executables[key]
+                executable.validate_bound()
+                _validate_target_evidence(self.spec, slot, target, executable)
 
-    def _validate_configuration_lightweight(self) -> None:
-        if self._configuration_identity() != self._lightweight_signature:
-            raise NativeOpticalArenaProtocolError("CUDA arena resource graph changed after seal")
+    def _execution_for_target(self, target: CudaArenaPlanTarget) -> _CudaExecutableTarget:
+        executable = self._execution_by_target_id.get(id(target))
+        if executable is None or executable.target is not target:
+            raise NativeOpticalArenaProtocolError("CUDA C3 target is not owned by this arena")
+        return executable
 
 
 def build_cuda_dynamic_optical_arena(
@@ -1075,17 +1183,20 @@ def build_cuda_dynamic_optical_arena(
             boundary=spec.boundary,
             diagnostic=diagnostic,
         )
-        templates: dict[int | None, CudaOpticalTransactionTemplate] = {}
+        templates: dict[int | None, tuple[CudaOpticalTransactionTemplate, object]] = {}
+        activation_capability = context._new_controlled_transaction_capability()
         for frame_index, transform in enumerate(frozen_transforms):
             scene_stage = scene_factory.bind(transforms=transform, outputs=world)
             stages = (scene_stage, acceleration_stage, render_stage)
             if delivery_stage is not None:
                 stages += (delivery_stage,)
-            templates[frame_index] = context.prepare_transaction_template(
+            template = context.prepare_transaction_template(
                 stages=stages,
                 completion_event=completion,
                 diagnostic_events=diagnostic_events,
+                _activation_capability=activation_capability,
             )
+            templates[frame_index] = (template, activation_capability)
         slot_builds.append(
             {
                 "slot_id": slot_id,
@@ -1195,10 +1306,12 @@ def build_cuda_fixed_optical_arena(
             boundary="R0",
             diagnostic=diagnostic,
         )
+        activation_capability = context._new_controlled_transaction_capability()
         template = context.prepare_transaction_template(
             stages=(render_stage,),
             completion_event=completion,
             diagnostic_events=diagnostic_events,
+            _activation_capability=activation_capability,
         )
         slot_builds.append(
             {
@@ -1208,7 +1321,7 @@ def build_cuda_fixed_optical_arena(
                 "render": render_buffers,
                 "completion": completion,
                 "diagnostics": diagnostic_events,
-                "templates": {None: template},
+                "templates": {None: (template, activation_capability)},
                 "stage_owners": (render_stage,),
             }
         )
@@ -1327,7 +1440,9 @@ def _seal_cuda_arena(
         slot_manifests.append(manifest)
         slot_resource_records.append(records)
         targets: dict[int | None, CudaArenaPlanTarget] = {}
-        for frame_index, template in templates.items():
+        executables: dict[int | None, _CudaExecutableTarget] = {}
+        for frame_index, controlled_template in templates.items():
+            template, activation_capability = controlled_template
             runtime_sha256 = _runtime_stage_evidence_sha256(template)
             plan_payload = {
                 "schema_version": CUDA_NATIVE_ARENA_PLAN_SCHEMA_VERSION,
@@ -1354,14 +1469,45 @@ def _seal_cuda_arena(
                 diagnostic_phase_names=tuple(name for name, _, _ in template.diagnostic_events),
                 plan_binding_sha256=_canonical_sha256(plan_payload),
             )
-            targets[frame_index] = CudaArenaPlanTarget(
+            if spec.boundary == "R0":
+                render_stage = template.stages[0]
+                transform_arrays: dict[str, object] = {}
+                scene_output_arrays: dict[str, object] = {}
+                acceleration_output_arrays: dict[str, object] = {}
+            else:
+                scene_stage, acceleration_stage, render_stage = template.stages[:3]
+                transform_arrays = {
+                    "replay_x_world_R": scene_stage.transforms.x_world_R,
+                    "replay_x_world_r": scene_stage.transforms.x_world_r,
+                }
+                scene_output_arrays = dict(scene_stage.outputs.tensor_items())
+                acceleration_output_arrays = {
+                    "bvh_bounds_min": acceleration_stage.outputs.node_bounds_min,
+                    "bvh_bounds_max": acceleration_stage.outputs.node_bounds_max,
+                    "bvh_left": acceleration_stage.outputs.left,
+                    "bvh_right": acceleration_stage.outputs.right,
+                    "bvh_start": acceleration_stage.outputs.start,
+                    "bvh_count": acceleration_stage.outputs.count,
+                    "bvh_prim_ids": acceleration_stage.outputs.sorted_primitive_ids,
+                }
+            target = CudaArenaPlanTarget(
                 evidence=evidence,
-                _transaction_template=template,
                 _render_buffers=render,
                 slot_resources=tuple(records),
                 _spec=NativeOpticalArenaSpec.from_payload(spec.to_payload()),
                 _runtime_scene_arrays=MappingProxyType(dict(runtime_scene_arrays)),
                 _derived_fixture_arrays=MappingProxyType(dict(derived_fixture_arrays)),
+                _transform_arrays=MappingProxyType(transform_arrays),
+                _scene_output_arrays=MappingProxyType(scene_output_arrays),
+                _acceleration_output_arrays=MappingProxyType(acceleration_output_arrays),
+                _runtime_stage_evidence=tuple(template.stage_evidence),
+            )
+            targets[frame_index] = target
+            executables[frame_index] = _CudaExecutableTarget(
+                target=target,
+                transaction_template=template,
+                activation_capability=activation_capability,
+                render_stage=render_stage,
             )
         slot_graph = _CudaSlotGraph(
             slot_id=slot_id,
@@ -1372,7 +1518,8 @@ def _seal_cuda_arena(
             diagnostic_events=MappingProxyType(dict(diagnostics)),
             resource_records=tuple(records),
             targets=MappingProxyType(targets),
-            owners=tuple(build["stage_owners"]) + tuple(templates.values()),
+            executables=MappingProxyType(executables),
+            owners=tuple(build["stage_owners"]) + tuple(executables.values()),
         )
         finalized_slots.append(slot_graph)
         slot_owner_objects[slot_owner_token] = slot_graph
@@ -1560,13 +1707,14 @@ def _validate_target_evidence(
     spec: NativeOpticalArenaSpec,
     slot: _CudaSlotGraph,
     target: CudaArenaPlanTarget,
+    executable: _CudaExecutableTarget,
 ) -> None:
     evidence = target.evidence
     if target._spec.to_payload() != spec.to_payload():
         raise NativeOpticalArenaProtocolError("CUDA arena target specification changed")
     if target.slot_resources != slot.resource_records or target._render_buffers is not slot.render:
         raise NativeOpticalArenaProtocolError("CUDA arena target resource binding changed")
-    target._transaction_template.validate_bound()
+    executable.validate_bound()
     if evidence.schema_version != CUDA_NATIVE_ARENA_PLAN_SCHEMA_VERSION:
         raise NativeOpticalArenaProtocolError("CUDA arena plan schema changed")
     expected_stages = (
@@ -1587,11 +1735,11 @@ def _validate_target_evidence(
         raise NativeOpticalArenaProtocolError("CUDA arena plan specification digest changed")
     if (
         evidence.slot_id != slot.slot_id
-        or target._transaction_template.completion_event is not slot.completion_event
+        or executable.transaction_template.completion_event is not slot.completion_event
     ):
         raise NativeOpticalArenaProtocolError("CUDA arena plan slot/event binding changed")
     if evidence.ordered_runtime_stage_evidence_sha256 != _runtime_stage_evidence_sha256(
-        target._transaction_template
+        executable.transaction_template
     ):
         raise NativeOpticalArenaProtocolError("CUDA arena runtime stage evidence changed")
     payload = {
@@ -1630,6 +1778,116 @@ def _validate_c3_provenance(
         raise NativeOpticalArenaProtocolError("C3 provenance is not bound to this CUDA plan")
 
 
+def _validate_live_a2_binding(
+    target: CudaArenaPlanTarget,
+    prepared_input: object,
+    native_readiness: object,
+) -> None:
+    prepared_type = type(prepared_input)
+    readiness_type = type(native_readiness)
+    if (
+        prepared_type.__module__ != "benchmarks.optical.native"
+        or prepared_type.__name__ != "CudaPreparedNativeInput"
+        or readiness_type.__module__ != "benchmarks.optical.native"
+        or readiness_type.__name__ != "NativeReadinessEvidence"
+    ):
+        raise TypeError("CUDA arena requires the exact live a2 CUDA input/readiness types")
+    authority_check = getattr(prepared_input, "_assert_cuda_arena_a2_authority", None)
+    if not callable(authority_check):
+        raise TypeError("CUDA arena a2 input lacks live allocation authority")
+    authority_check(native_readiness)
+
+    spec = target._spec
+    manifest = prepared_input.manifest
+    expected = {
+        "device_ordinal": spec.device_ordinal,
+        "manifest_sha256": spec.native_input_manifest_sha256,
+        "readiness_sha256": spec.native_readiness_sha256,
+        "input_contract": spec.input_contract,
+        "scene_contract_sha256": spec.scene_contract_sha256,
+        "transform_replay_sha256": spec.transform_replay_sha256,
+        "transform_frame_count": spec.transform_frame_count,
+        "fixed_render_fixture_sha256": spec.fixed_render_fixture_sha256,
+    }
+    observed = {
+        "device_ordinal": prepared_input.device_ordinal,
+        "manifest_sha256": manifest.sha256,
+        "readiness_sha256": native_readiness.sha256,
+        "input_contract": manifest.input_contract,
+        "scene_contract_sha256": manifest.scene_contract_sha256,
+        "transform_replay_sha256": manifest.transform_replay_sha256,
+        "transform_frame_count": manifest.transform_frame_count,
+        "fixed_render_fixture_sha256": manifest.fixed_render_fixture_sha256,
+    }
+    if observed != expected:
+        raise NativeOpticalArenaProtocolError("CUDA arena a2 provenance does not match its plan")
+
+    arrays = prepared_input.arrays
+    if spec.boundary == "R0":
+        _require_exact_tensor_objects(
+            target._runtime_scene_arrays,
+            arrays,
+            tuple(manifest.scene_array_names),
+            label="R0 packed scene",
+        )
+        _require_exact_tensor_objects(
+            target._derived_fixture_arrays,
+            arrays,
+            tuple(manifest.fixed_render_fixture_arrays),
+            label="R0 fixed fixture",
+        )
+        if target._transform_arrays:
+            raise NativeOpticalArenaProtocolError("R0 CUDA arena cannot bind replay storage")
+        return
+
+    _require_exact_tensor_objects(
+        target._runtime_scene_arrays,
+        arrays,
+        tuple(manifest.scene_array_names),
+        label="dynamic packed scene",
+    )
+    frame_index = target.evidence.transform_frame_index
+    if frame_index is None:
+        raise NativeOpticalArenaProtocolError("dynamic CUDA arena lacks a replay frame")
+    for name in ("replay_x_world_R", "replay_x_world_r"):
+        if name not in arrays or name not in target._transform_arrays:
+            raise NativeOpticalArenaProtocolError("dynamic CUDA arena replay storage is incomplete")
+        expected_view = arrays[name][frame_index : frame_index + 1]
+        if _tensor_view_identity(target._transform_arrays[name]) != _tensor_view_identity(expected_view):
+            raise NativeOpticalArenaProtocolError(
+                f"CUDA arena replay storage {name!r} is not the approved a2 frame view"
+            )
+
+
+def _require_exact_tensor_objects(
+    actual: Mapping[str, object],
+    prepared: Mapping[str, object],
+    names: tuple[str, ...],
+    *,
+    label: str,
+) -> None:
+    if set(actual) != set(names):
+        raise NativeOpticalArenaProtocolError(f"CUDA arena {label} storage names are not exact")
+    for name in names:
+        if prepared.get(name) is not actual[name]:
+            raise NativeOpticalArenaProtocolError(
+                f"CUDA arena {label} storage {name!r} is not the exact a2 allocation"
+            )
+
+
+def _tensor_view_identity(tensor: object) -> tuple[object, ...]:
+    storage = tensor.untyped_storage()
+    return (
+        int(tensor.device.index),
+        str(tensor.dtype),
+        tuple(int(value) for value in tensor.shape),
+        tuple(int(value) for value in tensor.stride()),
+        int(storage.data_ptr()),
+        int(storage.nbytes()),
+        int(tensor.data_ptr()) - int(storage.data_ptr()) if storage.nbytes() else 0,
+    )
+
+
 def _canonical_c3_binding(binding: object) -> object:
     binding_type = type(binding)
     if (
@@ -1645,6 +1903,25 @@ def _canonical_c3_binding(binding: object) -> object:
     if canonical != binding:
         raise NativeOpticalArenaProtocolError("CUDA arena C3 binding is not canonical")
     return canonical
+
+
+def _validate_c3_adapter_authority(
+    target: CudaArenaPlanTarget,
+    binding: object,
+    prepared_input: object,
+    native_readiness: object,
+) -> None:
+    validator = getattr(binding, "_assert_cuda_arena_adapter_authority", None)
+    if not callable(validator):
+        raise NativeOpticalArenaProtocolError("CUDA arena C3 binding lacks adapter-issued authority")
+    try:
+        validator(
+            target=target,
+            prepared_input=prepared_input,
+            native_readiness=native_readiness,
+        )
+    except (TypeError, ValueError) as exc:
+        raise NativeOpticalArenaProtocolError(str(exc)) from exc
 
 
 def _validate_c3_binding_identity(target: CudaArenaPlanTarget, binding: object) -> None:
@@ -1674,40 +1951,30 @@ def _validate_c3_binding_identity(target: CudaArenaPlanTarget, binding: object) 
                 f"CUDA arena C3 binding {name} does not match its sealed plan"
             )
     stages = tuple(entry.evidence for entry in binding.ordered_stage_evidence)
-    runtime_stages = target._transaction_template.stages
+    runtime_evidence = target._runtime_stage_evidence
     if spec.boundary == "R0":
         expected_stage_names = ("render",)
-        runtime_stages = runtime_stages[:1]
+        runtime_evidence = runtime_evidence[:1]
     else:
         expected_stage_names = ("scene_update", "acceleration", "render")
-        runtime_stages = runtime_stages[:3]
+        runtime_evidence = runtime_evidence[:3]
     if tuple(entry.stage_name for entry in binding.ordered_stage_evidence) != expected_stage_names:
         raise NativeOpticalArenaProtocolError("CUDA arena C3 stage order is not exact")
     expected_operations = tuple(
-        spec.renderer_id
-        if index == len(runtime_stages) - 1
-        else getattr(_cuda_stage_evidence(stage), "operation_id", None)
-        for index, stage in enumerate(runtime_stages)
+        spec.renderer_id if index == len(runtime_evidence) - 1 else getattr(evidence, "operation_id", None)
+        for index, evidence in enumerate(runtime_evidence)
     )
     if tuple(stage.operation_id for stage in stages) != expected_operations:
         raise NativeOpticalArenaProtocolError("CUDA arena C3 operation identity drifted")
-    for stage, runtime in zip(stages, runtime_stages, strict=True):
-        runtime_evidence = _cuda_stage_evidence(runtime)
+    for stage, runtime_stage_evidence in zip(stages, runtime_evidence, strict=True):
         if stage.stage_name == "render":
-            expected_dispatch = _canonical_sha256(_plain_payload(runtime_evidence))
+            expected_dispatch = _canonical_sha256(_plain_payload(runtime_stage_evidence))
             if stage.output_profile != spec.output_profile or stage.shadows != spec.shadows:
                 raise NativeOpticalArenaProtocolError("CUDA arena C3 render identity drifted")
         else:
-            expected_dispatch = runtime_evidence.dispatch_plan_sha256
+            expected_dispatch = runtime_stage_evidence.dispatch_plan_sha256
         if stage.dispatch_plan_sha256 != expected_dispatch:
             raise NativeOpticalArenaProtocolError("CUDA arena C3 dispatch evidence drifted")
-
-
-def _cuda_stage_evidence(stage: object) -> object:
-    getter = getattr(stage, "_cuda_transaction_stage_evidence", None)
-    if not callable(getter):
-        raise NativeOpticalArenaProtocolError("CUDA arena stage lacks runtime evidence")
-    return getter()
 
 
 def _validate_c3_binding_storage(target: CudaArenaPlanTarget, binding: object) -> None:
@@ -1744,7 +2011,6 @@ def _c3_storage_map(
     spec = target._spec
     session_owner = spec.native_input_manifest_sha256
     slot_owner = target.evidence.slot_storage_manifest_sha256
-    stages = target._transaction_template.stages
     values: dict[str, tuple[object, str]] = {}
 
     def add(name: str, tensor: object, owner_token: str) -> None:
@@ -1761,24 +2027,14 @@ def _c3_storage_map(
         for name, tensor in target._derived_fixture_arrays.items():
             add(name, tensor, session_owner)
     else:
-        scene, acceleration, _render = stages[:3]
         for name, tensor in target._runtime_scene_arrays.items():
             add(name, tensor, session_owner)
-        add("replay_x_world_R", scene.transforms.x_world_R, session_owner)
-        add("replay_x_world_r", scene.transforms.x_world_r, session_owner)
-        for name, tensor in scene.outputs.tensor_items():
+        for name, tensor in target._transform_arrays.items():
+            add(name, tensor, session_owner)
+        for name, tensor in target._scene_output_arrays.items():
             add(name, tensor, slot_owner)
-        acceleration_names = {
-            "bvh_bounds_min": "node_bounds_min",
-            "bvh_bounds_max": "node_bounds_max",
-            "bvh_left": "left",
-            "bvh_right": "right",
-            "bvh_start": "start",
-            "bvh_count": "count",
-            "bvh_prim_ids": "sorted_primitive_ids",
-        }
-        for logical_name, attribute_name in acceleration_names.items():
-            add(logical_name, getattr(acceleration.outputs, attribute_name), slot_owner)
+        for name, tensor in target._acceleration_output_arrays.items():
+            add(name, tensor, slot_owner)
     for name, tensor in target._render_buffers.tensor_items():
         add(name, tensor, slot_owner)
     return values

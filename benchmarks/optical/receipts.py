@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import weakref
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
@@ -18,6 +19,64 @@ SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION = "q54.p12.4.shipping-publication-re
 NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION = "q54.p12.4.native-stage-evidence.v2"
 NATIVE_EXECUTION_BINDING_SCHEMA_VERSION = "q54.p12.4.c3-one-shot-binding.v5"
 DYNAMIC_DATAFLOW_CONTRACT_SCHEMA_VERSION = "q54.p12.4.dynamic-dataflow.v2"
+
+
+_CUDA_ARENA_C3_BINDING_AUTHORITIES: dict[
+    int,
+    tuple[weakref.ReferenceType[object], object, object, object],
+] = {}
+
+
+def _register_cuda_arena_c3_binding_authority(
+    binding: object,
+    *,
+    target: object,
+    prepared_input: object,
+    native_readiness: object,
+) -> None:
+    """Register one adapter-issued, identity-bound C3 arena receipt.
+
+    Canonical serialization proves the receipt's contents; this registry
+    separately proves that the CUDA arena adapter derived those contents from
+    the exact live a2 authorities and target allocations.
+    """
+
+    binding_id = id(binding)
+
+    def discard(reference: weakref.ReferenceType[object]) -> None:
+        current = _CUDA_ARENA_C3_BINDING_AUTHORITIES.get(binding_id)
+        if current is not None and current[0] is reference:
+            _CUDA_ARENA_C3_BINDING_AUTHORITIES.pop(binding_id, None)
+
+    reference = weakref.ref(binding, discard)
+    _CUDA_ARENA_C3_BINDING_AUTHORITIES[binding_id] = (
+        reference,
+        target,
+        prepared_input,
+        native_readiness,
+    )
+
+
+def _assert_cuda_arena_c3_binding_authority(
+    binding: object,
+    *,
+    target: object,
+    prepared_input: object,
+    native_readiness: object,
+) -> None:
+    authority = _CUDA_ARENA_C3_BINDING_AUTHORITIES.get(id(binding))
+    if (
+        authority is None
+        or authority[0]() is not binding
+        or authority[1] is not target
+        or authority[2] is not prepared_input
+        or authority[3] is not native_readiness
+    ):
+        raise ValueError(
+            "CUDA arena C3 binding was not issued by the canonical arena adapter "
+            "for these exact a2 authorities"
+        )
+
 
 # These names are the logical allocation ABI between C3 stages.  They mirror
 # DeviceOpticalSceneSnapshot, DeviceOpticalBvh, CudaFirstHitInputs, and
@@ -79,9 +138,7 @@ DYNAMIC_RENDER_SHADE_INPUT_NAMES = (
     "light_color_rgb",
 )
 
-_SUPPORTED_OUTPUT_PROFILES = frozenset(
-    {"direct_light_full", "rgb_preview", "render_only"}
-)
+_SUPPORTED_OUTPUT_PROFILES = frozenset({"direct_light_full", "rgb_preview", "render_only"})
 
 
 def _canonical_sha256(payload: object) -> str:
@@ -381,9 +438,7 @@ class C3OneShotNativeExecutionBindingEvidence:
             raise ValueError("native execution binding transform frame index is invalid")
         if (payload.get("transform_replay_sha256") is None) != (frame_index is None):
             raise ValueError("native execution binding replay hash/index must appear together")
-        runtime_scene_storage = _storage_sequence(
-            payload.get("runtime_scene_storage"), label="runtime scene"
-        )
+        runtime_scene_storage = _storage_sequence(payload.get("runtime_scene_storage"), label="runtime scene")
         if not runtime_scene_storage:
             raise ValueError("native execution binding runtime scene storage is empty")
         if payload.get("runtime_scene_storage_sha256") != canonical_storage_manifest_sha256(
@@ -399,9 +454,7 @@ class C3OneShotNativeExecutionBindingEvidence:
                 raise ValueError("native execution binding derived fixture storage digest is invalid")
         elif derived_storage_hash is not None:
             raise ValueError("empty derived fixture storage must not carry a digest")
-        if (payload.get("fixed_render_fixture_sha256") is None) != (
-            not derived_fixture_storage
-        ):
+        if (payload.get("fixed_render_fixture_sha256") is None) != (not derived_fixture_storage):
             raise ValueError("native execution binding fixed fixture storage is inconsistent")
         stages_payload = payload.get("ordered_stage_evidence")
         if not isinstance(stages_payload, Sequence) or isinstance(stages_payload, (str, bytes)):
@@ -429,8 +482,7 @@ class C3OneShotNativeExecutionBindingEvidence:
                 or evidence.input_contract != payload["input_contract"]
                 or evidence.transform_replay_sha256 != payload["transform_replay_sha256"]
                 or evidence.transform_frame_index != frame_index
-                or evidence.fixed_render_fixture_sha256
-                != payload["fixed_render_fixture_sha256"]
+                or evidence.fixed_render_fixture_sha256 != payload["fixed_render_fixture_sha256"]
             ):
                 raise ValueError("native stage evidence provenance does not match its binding")
             all_storage += evidence.input_storage + evidence.output_storage
@@ -448,8 +500,7 @@ class C3OneShotNativeExecutionBindingEvidence:
             ordered_stage_evidence=tuple(stages),
         )
         if any(
-            storage.backend != payload["lane"]
-            or storage.device_ordinal != all_storage[0].device_ordinal
+            storage.backend != payload["lane"] or storage.device_ordinal != all_storage[0].device_ordinal
             for storage in all_storage
         ):
             raise ValueError("native execution binding storage lane/device is inconsistent")
@@ -511,13 +562,25 @@ class C3OneShotNativeExecutionBindingEvidence:
             "fixed_render_fixture_sha256": self.fixed_render_fixture_sha256,
             "runtime_scene_storage": [value.to_payload() for value in self.runtime_scene_storage],
             "runtime_scene_storage_sha256": self.runtime_scene_storage_sha256,
-            "derived_fixture_storage": [
-                value.to_payload() for value in self.derived_fixture_storage
-            ],
+            "derived_fixture_storage": [value.to_payload() for value in self.derived_fixture_storage],
             "derived_fixture_storage_sha256": self.derived_fixture_storage_sha256,
             "ordered_stage_evidence": [value.to_payload() for value in self.ordered_stage_evidence],
             "dataflow_binding_sha256": self.dataflow_binding_sha256,
         }
+
+    def _assert_cuda_arena_adapter_authority(
+        self,
+        *,
+        target: object,
+        prepared_input: object,
+        native_readiness: object,
+    ) -> None:
+        _assert_cuda_arena_c3_binding_authority(
+            self,
+            target=target,
+            prepared_input=prepared_input,
+            native_readiness=native_readiness,
+        )
 
     @property
     def sha256(self) -> str:
@@ -767,9 +830,7 @@ def _validate_stage_dataflow(
             raise ValueError("R0 render operation does not match its lane renderer")
         if acceleration_class != "fixed_bvh_fixture":
             raise ValueError("R0 acceleration class must be fixed_bvh_fixture")
-        expected_acceleration_id = EXACT_LANE_BINDINGS[lane]["acceleration_by_class"][
-            acceleration_class
-        ]
+        expected_acceleration_id = EXACT_LANE_BINDINGS[lane]["acceleration_by_class"][acceleration_class]
         if acceleration_id != expected_acceleration_id:
             raise ValueError("R0 acceleration identity does not match its class")
         if render.output_profile != output_profile or render.shadows != shadows:
@@ -795,9 +856,7 @@ def _validate_stage_dataflow(
 
     scene, acceleration, render = evidence[:3]
     expected_lane_binding = EXACT_LANE_BINDINGS[lane]
-    expected_acceleration_id = expected_lane_binding["acceleration_by_class"].get(
-        acceleration_class
-    )
+    expected_acceleration_id = expected_lane_binding["acceleration_by_class"].get(acceleration_class)
     if expected_acceleration_id is None:
         raise ValueError("dynamic acceleration class is not defined for its lane")
     acceleration_contract = EXACT_ACCELERATION_CONTRACTS[lane][expected_acceleration_id]
@@ -833,11 +892,14 @@ def _validate_stage_dataflow(
         label="dynamic scene transform input",
         allow_other_names=True,
     )
-    expected_scene_input = _select_storage(
-        runtime_by_name,
-        DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES,
-        label="dynamic scene runtime input",
-    ) + expected_transform
+    expected_scene_input = (
+        _select_storage(
+            runtime_by_name,
+            DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES,
+            label="dynamic scene runtime input",
+        )
+        + expected_transform
+    )
     _require_exact_storage(
         scene.input_storage,
         expected_scene_input,
@@ -864,9 +926,7 @@ def _validate_stage_dataflow(
         DYNAMIC_ACCELERATION_OUTPUT_NAMES,
         label="dynamic acceleration output",
     )
-    acceleration_by_name = _storage_by_name(
-        acceleration.output_storage, label="dynamic acceleration output"
-    )
+    acceleration_by_name = _storage_by_name(acceleration.output_storage, label="dynamic acceleration output")
     render_names = (
         DYNAMIC_RENDER_WORLD_INPUT_NAMES
         + DYNAMIC_RENDER_METADATA_INPUT_NAMES
@@ -1009,9 +1069,7 @@ def canonical_dataflow_binding_sha256(
     return _canonical_sha256(
         {
             "runtime_scene_storage": [value.to_payload() for value in runtime_scene_storage],
-            "derived_fixture_storage": [
-                value.to_payload() for value in derived_fixture_storage
-            ],
+            "derived_fixture_storage": [value.to_payload() for value in derived_fixture_storage],
             "ordered_stage_evidence": [value.to_payload() for value in ordered_stage_evidence],
         }
     )

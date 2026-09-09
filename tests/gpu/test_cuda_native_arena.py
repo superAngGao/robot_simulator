@@ -1,12 +1,37 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 import torch
 
+from benchmarks.optical.cases import get_case
 from benchmarks.optical.cuda_arena import build_cuda_c3_binding_from_arena_target
+from benchmarks.optical.eligibility import (
+    CANONICAL_NATIVE_REPLAY_INPUT,
+    FIXED_NATIVE_SCENE_INPUT,
+)
+from benchmarks.optical.native import (
+    CanonicalNativeInput,
+    CudaPreparedNativeInput,
+    build_prepared_cuda_lbvh_rebuild_factory,
+    build_prepared_cuda_scene_update_factory,
+    build_prepared_cuda_transform_inputs,
+    certify_native_readiness,
+    prepare_cuda_native_input,
+    validate_prepared_native_input,
+    wrap_prepared_fixed_render_inputs,
+)
+from benchmarks.optical.receipts import C3OneShotNativeExecutionBindingEvidence
+from benchmarks.optical.workloads import (
+    build_canonical_fixed_fixture,
+    build_canonical_packed_scene,
+    build_canonical_transform_replay,
+)
 from optics.cuda_arena import (
     CudaArenaC3Provenance,
-    CudaDeviceOnlyDeliveryStage,
+    CudaNativeOpticalArena,
+    CudaPreparedArenaSample,
     build_cuda_dynamic_optical_arena,
     build_cuda_fixed_optical_arena,
     cuda_execution_stream_token,
@@ -17,13 +42,12 @@ from optics.cuda_direct_light import (
     CudaFirstHitInputs,
     CudaShadeInputs,
 )
-from optics.cuda_lbvh import CudaLbvhRebuildStageFactory
-from optics.cuda_scene import (
-    CudaSceneUpdateStageFactory,
-    build_cuda_optical_scene,
-    cuda_replay_transform_inputs,
+from optics.cuda_timeline import (
+    CudaOpticalExecutionContext,
+    CudaOpticalTimelineError,
+    CudaOpticalTransaction,
+    CudaOpticalTransactionTemplate,
 )
-from optics.cuda_timeline import CudaOpticalExecutionContext
 from optics.native_arena import (
     NATIVE_OPTICAL_ARENA_LAYOUT_SCHEMA_VERSION,
     NATIVE_OPTICAL_ARENA_SPEC_SCHEMA_VERSION,
@@ -31,13 +55,6 @@ from optics.native_arena import (
     NativeOpticalArenaProtocolError,
     NativeOpticalArenaSpec,
 )
-from optics.registry import (
-    OpticalInstanceSpec,
-    OpticalLightSpec,
-    OpticalMaterialSpec,
-    OpticalWorldRegistry,
-)
-from optics.scene_contract import PackedOpticalSceneHost
 
 pytestmark = pytest.mark.gpu
 
@@ -67,60 +84,38 @@ def _camera() -> CudaCameraParameters:
     )
 
 
-def _registry() -> OpticalWorldRegistry:
-    registry = OpticalWorldRegistry()
-    registry.add_material(OpticalMaterialSpec("mat", albedo_rgb=(0.4, 0.6, 0.8)))
-    registry.add_light(
-        OpticalLightSpec(
-            "sun",
-            "directional",
-            position_or_direction_world=(0.0, 0.0, -1.0),
-            intensity=1.0,
-        )
-    )
-    registry.add_triangle_mesh_geometry(
-        "triangle",
-        vertices_local=((-2.0, -2.0, 2.0), (2.0, -2.0, 2.0), (0.0, 2.0, 2.0)),
-        triangles=((0, 1, 2),),
-    )
-    registry.add_instance(
-        OpticalInstanceSpec(
-            "instance",
-            "triangle",
-            "mat",
-            body_index=0,
-            roles=frozenset({"rgb", "depth", "segmentation"}),
-        )
-    )
-    return registry
+_A2_AUTHORITIES: dict[int, tuple[CudaPreparedNativeInput, object]] = {}
 
 
 def _spec(
     context: CudaOpticalExecutionContext,
     *,
     boundary: str,
-    scene_sha256: str,
-    replay_sha256: str | None,
-    frame_count: int,
+    prepared: CudaPreparedNativeInput,
+    readiness: object,
+    primitive_count: int,
+    node_capacity: int,
     diagnostic: bool = False,
 ) -> NativeOpticalArenaSpec:
     dynamic = boundary != "R0"
+    manifest = prepared.manifest
+    case = get_case(manifest.case_id)
     return NativeOpticalArenaSpec(
         schema_version=NATIVE_OPTICAL_ARENA_SPEC_SCHEMA_VERSION,
         row_id=f"unit_{boundary.lower()}",
-        case_id="unit_cuda_arena",
-        case_sha256="1" * 64,
+        case_id=case.case_id,
+        case_sha256=case.sha256,
         boundary=boundary,
         lane="cuda",
         device_ordinal=int(context.device.index),
         execution_stream_token=cuda_execution_stream_token(context),
-        input_contract="canonical_native_replay_v1" if dynamic else "fixed_native_scene_v1",
-        native_input_manifest_sha256="2" * 64,
-        native_readiness_sha256="3" * 64,
-        scene_contract_sha256=scene_sha256,
-        transform_replay_sha256=replay_sha256 if dynamic else None,
-        transform_frame_count=frame_count if dynamic else 0,
-        fixed_render_fixture_sha256=None if dynamic else "4" * 64,
+        input_contract=manifest.input_contract,
+        native_input_manifest_sha256=manifest.sha256,
+        native_readiness_sha256=readiness.sha256,
+        scene_contract_sha256=manifest.scene_contract_sha256,
+        transform_replay_sha256=manifest.transform_replay_sha256 if dynamic else None,
+        transform_frame_count=manifest.transform_frame_count if dynamic else 0,
+        fixed_render_fixture_sha256=manifest.fixed_render_fixture_sha256,
         renderer_id="cuda_direct_light",
         acceleration_class=(
             "production_static"
@@ -131,8 +126,8 @@ def _spec(
         width=2,
         height=1,
         num_rays=2,
-        primitive_count=1,
-        node_capacity=1,
+        primitive_count=primitive_count,
+        node_capacity=node_capacity,
         output_profile="direct_light_full",
         shadows=False,
         diagnostic_mode="diagnostic_profiled" if diagnostic else "primary_unprofiled",
@@ -146,8 +141,18 @@ def _spec(
 
 
 def _provenance(arena, target):
-    binding = build_cuda_c3_binding_from_arena_target(target)
-    return arena.bind_c3_provenance(target=target, binding=binding)
+    prepared, readiness = _A2_AUTHORITIES[id(arena)]
+    binding = build_cuda_c3_binding_from_arena_target(
+        target,
+        prepared_input=prepared,
+        native_readiness=readiness,
+    )
+    return arena.bind_c3_provenance(
+        target=target,
+        binding=binding,
+        prepared_input=prepared,
+        native_readiness=readiness,
+    )
 
 
 def _dynamic_arena(
@@ -158,45 +163,36 @@ def _dynamic_arena(
 ):
     _require_cuda()
     context = _context(device)
-    packed = PackedOpticalSceneHost.from_registry(_registry(), scene_id="unit_cuda_arena")
-    local_scene = build_cuda_optical_scene(packed, device=context.device)
-    local_scene.ready_event.synchronize()
-    replay_sha256 = "5" * 64
-    rotations = torch.eye(3, dtype=torch.float32, device=context.device).reshape(1, 1, 3, 3)
-    rotations = rotations.repeat(2, 1, 1, 1).contiguous()
-    translations = torch.zeros((2, 1, 3), dtype=torch.float32, device=context.device)
-    translations[1, 0, 0] = 0.1
+    case_id = "synthetic_dynamic_rigid_960x640_v1"
+    packed = build_canonical_packed_scene(case_id)
+    replay = build_canonical_transform_replay(case_id)
+    source = CanonicalNativeInput.from_scene_contract(
+        packed,
+        input_contract=CANONICAL_NATIVE_REPLAY_INPUT,
+        replay=replay,
+    )
+    prepared = prepare_cuda_native_input(source, device=context.device)
+    validation = validate_prepared_native_input(source, prepared)
+    scene_factory = build_prepared_cuda_scene_update_factory(prepared, context=context)
+    lbvh_factory = build_prepared_cuda_lbvh_rebuild_factory(prepared, context=context)
     transforms = tuple(
-        cuda_replay_transform_inputs(
-            rotations,
-            translations,
-            frame_index=index,
-            input_contract="canonical_native_replay_v1",
-            transform_replay_sha256=replay_sha256,
-            resources=(rotations, translations),
-        )
-        for index in range(2)
+        build_prepared_cuda_transform_inputs(prepared, index)
+        for index in range(prepared.manifest.transform_frame_count)
     )
-    scene_factory = CudaSceneUpdateStageFactory.prepare(
-        context=context,
-        local_scene=local_scene,
-        native_input_manifest_sha256="2" * 64,
-        input_contract="canonical_native_replay_v1",
-    )
-    lbvh_factory = CudaLbvhRebuildStageFactory.prepare(
-        context=context,
-        primitive_count=1,
-        native_input_manifest_sha256="2" * 64,
-        scene_contract_sha256=packed.scene_contract_sha256,
-        input_contract="canonical_native_replay_v1",
+    readiness = certify_native_readiness(
+        prepared,
+        validation,
+        compile_complete=True,
+        warmup_frames_completed=0,
     )
     renderer = CudaDirectLightNativeRenderer.prepare(context)
     spec = _spec(
         context,
         boundary=boundary,
-        scene_sha256=packed.scene_contract_sha256,
-        replay_sha256=replay_sha256,
-        frame_count=2,
+        prepared=prepared,
+        readiness=readiness,
+        primitive_count=scene_factory.local_scene.num_triangles,
+        node_capacity=lbvh_factory.requirements.node_capacity,
         diagnostic=diagnostic,
     )
     arena = build_cuda_dynamic_optical_arena(
@@ -207,112 +203,100 @@ def _dynamic_arena(
         renderer=renderer,
         transforms=transforms,
         camera=_camera(),
-        sensor_role_mask=local_scene.role_to_mask["rgb"],
+        sensor_role_mask=scene_factory.local_scene.role_to_mask["rgb"],
         max_distance=10.0,
         ambient_rgb=(0.1, 0.1, 0.1),
         background_rgb=(0.0, 0.0, 0.0),
         shadow_bias=1.0e-6,
     )
+    _A2_AUTHORITIES[id(arena)] = (prepared, readiness)
     return arena
 
 
-def _fixed_inputs(device):
-    empty_f3 = torch.empty((0, 3), dtype=torch.float32, device=device)
-    empty_i32 = torch.empty((0,), dtype=torch.int32, device=device)
-    empty_i64 = torch.empty((0,), dtype=torch.int64, device=device)
-    triangle_v0 = torch.tensor([[-2.0, -2.0, 2.0]], dtype=torch.float32, device=device)
-    triangle_e1 = torch.tensor([[4.0, 0.0, 0.0]], dtype=torch.float32, device=device)
-    triangle_e2 = torch.tensor([[2.0, 4.0, 0.0]], dtype=torch.float32, device=device)
+def _fixed_inputs(prepared: CudaPreparedNativeInput, sensor_role_mask: int):
+    arrays = prepared.arrays
     first = CudaFirstHitInputs(
-        plane_normal_world=empty_f3,
-        plane_point_world=torch.empty_like(empty_f3),
-        plane_numeric_instance_id=empty_i32,
-        plane_source_order_key=empty_i64,
-        plane_role_mask=torch.empty_like(empty_i64),
-        plane_material_index=torch.empty_like(empty_i32),
-        num_planes=0,
-        triangle_v0_world=triangle_v0,
-        triangle_e1_world=triangle_e1,
-        triangle_e2_world=triangle_e2,
-        triangle_normal_world=torch.tensor([[0.0, 0.0, 1.0]], dtype=torch.float32, device=device),
-        triangle_numeric_instance_id=torch.tensor([1], dtype=torch.int32, device=device),
-        triangle_source_order_key=torch.tensor([0], dtype=torch.int64, device=device),
-        triangle_role_mask=torch.tensor([1], dtype=torch.int64, device=device),
-        triangle_material_index=torch.tensor([0], dtype=torch.int32, device=device),
-        bvh_bounds_min=torch.tensor([[-2.0, -2.0, 2.0]], dtype=torch.float32, device=device),
-        bvh_bounds_max=torch.tensor([[2.0, 2.0, 2.0]], dtype=torch.float32, device=device),
-        bvh_left=torch.tensor([-1], dtype=torch.int32, device=device),
-        bvh_right=torch.tensor([-1], dtype=torch.int32, device=device),
-        bvh_start=torch.tensor([0], dtype=torch.int32, device=device),
-        bvh_count=torch.tensor([1], dtype=torch.int32, device=device),
-        bvh_prim_ids=torch.tensor([0], dtype=torch.int32, device=device),
-        num_bvh_nodes=1,
-        sensor_role_mask=1,
+        plane_normal_world=arrays["plane_normal_world"],
+        plane_point_world=arrays["plane_point_world"],
+        plane_numeric_instance_id=arrays["plane_numeric_instance_id"],
+        plane_source_order_key=arrays["plane_source_order_key"],
+        plane_role_mask=arrays["plane_role_mask"],
+        plane_material_index=arrays["plane_material_index"],
+        num_planes=int(arrays["plane_normal_world"].shape[0]),
+        triangle_v0_world=arrays["triangle_v0_world"],
+        triangle_e1_world=arrays["triangle_e1_world"],
+        triangle_e2_world=arrays["triangle_e2_world"],
+        triangle_normal_world=arrays["triangle_normal_world"],
+        triangle_numeric_instance_id=arrays["triangle_numeric_instance_id"],
+        triangle_source_order_key=arrays["triangle_source_order_key"],
+        triangle_role_mask=arrays["triangle_role_mask"],
+        triangle_material_index=arrays["triangle_material_index"],
+        bvh_bounds_min=arrays["bvh_bounds_min"],
+        bvh_bounds_max=arrays["bvh_bounds_max"],
+        bvh_left=arrays["bvh_left"],
+        bvh_right=arrays["bvh_right"],
+        bvh_start=arrays["bvh_start"],
+        bvh_count=arrays["bvh_count"],
+        bvh_prim_ids=arrays["bvh_prim_ids"],
+        num_bvh_nodes=int(arrays["bvh_left"].shape[0]),
+        sensor_role_mask=sensor_role_mask,
         max_distance=10.0,
     )
     shade = CudaShadeInputs(
-        material_albedo_rgb=torch.tensor([[0.4, 0.6, 0.8]], dtype=torch.float32, device=device),
-        light_kind=torch.tensor([0], dtype=torch.int32, device=device),
-        light_position_or_direction_world=torch.tensor(
-            [[0.0, 0.0, -1.0]], dtype=torch.float32, device=device
-        ),
-        light_intensity=torch.tensor([1.0], dtype=torch.float32, device=device),
-        light_color_rgb=torch.tensor([[1.0, 1.0, 1.0]], dtype=torch.float32, device=device),
-        num_lights=1,
+        material_albedo_rgb=arrays["material_albedo_rgb"],
+        light_kind=arrays["light_kind"],
+        light_position_or_direction_world=arrays["light_position_or_direction_world"],
+        light_intensity=arrays["light_intensity"],
+        light_color_rgb=arrays["light_color_rgb"],
+        num_lights=int(arrays["light_kind"].shape[0]),
     )
     return first, shade
 
 
-def _fixed_contract_arrays(first, shade, device):
-    packed = PackedOpticalSceneHost.from_registry(_registry(), scene_id="unit_cuda_arena")
-    runtime_scene = {name: torch.tensor(value.copy(), device=device) for name, value in packed.arrays.items()}
-    runtime_scene.update(
-        {
-            name: value
-            for name, value in first.tensor_items()
-            if name
-            in {
-                "plane_numeric_instance_id",
-                "plane_source_order_key",
-                "plane_role_mask",
-                "plane_material_index",
-                "triangle_numeric_instance_id",
-                "triangle_source_order_key",
-                "triangle_role_mask",
-                "triangle_material_index",
-            }
-        }
+def _fixed_arena(*, device: str = "cuda:0"):
+    _require_cuda()
+    context = _context(device)
+    packed = build_canonical_packed_scene("asymmetric_synthetic_7x3_v1")
+    fixture = build_canonical_fixed_fixture(packed)
+    source = CanonicalNativeInput.from_scene_contract(
+        packed,
+        input_contract=FIXED_NATIVE_SCENE_INPUT,
+        fixed_fixture=fixture,
     )
-    runtime_scene.update(dict(shade.tensor_items()))
-    derived = {
-        name: value
-        for name, value in first.tensor_items()
-        if name
-        in {
-            "plane_normal_world",
-            "plane_point_world",
-            "triangle_v0_world",
-            "triangle_e1_world",
-            "triangle_e2_world",
-            "triangle_normal_world",
-            "bvh_bounds_min",
-            "bvh_bounds_max",
-            "bvh_left",
-            "bvh_right",
-            "bvh_start",
-            "bvh_count",
-            "bvh_prim_ids",
-        }
-    }
-    derived.update(
-        {
-            "triangle_aabb_min": first.bvh_bounds_min.clone(),
-            "triangle_aabb_max": first.bvh_bounds_max.clone(),
-            "bvh_node_depth": torch.tensor([0], dtype=torch.int32, device=device),
-            "bvh_level_ranges": torch.tensor([[0, 1]], dtype=torch.int32, device=device),
-        }
+    prepared = prepare_cuda_native_input(source, device=context.device)
+    validation = validate_prepared_native_input(source, prepared)
+    readiness = certify_native_readiness(
+        prepared,
+        validation,
+        compile_complete=True,
+        warmup_frames_completed=0,
     )
-    return runtime_scene, derived
+    fixed = wrap_prepared_fixed_render_inputs(prepared)
+    first, shade = _fixed_inputs(prepared, packed.role_to_mask["rgb"])
+    spec = _spec(
+        context,
+        boundary="R0",
+        prepared=prepared,
+        readiness=readiness,
+        primitive_count=int(first.triangle_v0_world.shape[0]),
+        node_capacity=first.num_bvh_nodes,
+    )
+    arena = build_cuda_fixed_optical_arena(
+        spec=spec,
+        context=context,
+        renderer=CudaDirectLightNativeRenderer.prepare(context),
+        first_hit_inputs=first,
+        shade_inputs=shade,
+        camera=_camera(),
+        ambient_rgb=(0.1, 0.1, 0.1),
+        background_rgb=(0.0, 0.0, 0.0),
+        shadow_bias=1.0e-6,
+        runtime_scene_arrays=fixed.scene_arrays,
+        derived_fixture_arrays=fixed.derived_fixture_arrays,
+        resource_owners=(prepared,),
+    )
+    _A2_AUTHORITIES[id(arena)] = (prepared, readiness)
+    return arena
 
 
 def test_cuda_r1_arena_reuses_one_event_only_after_exact_reclaim(monkeypatch):
@@ -377,7 +361,6 @@ def test_cuda_r2_device_only_registers_explicit_endpoint_before_finish():
         "cuda_direct_light_render",
         "cuda_device_only_delivery",
     )
-    assert isinstance(target._transaction_template.stages[-1], CudaDeviceOnlyDeliveryStage)
     active = arena.acquire(arena.prepare_sample(target=target, provenance=_provenance(arena, target)))
     assert not isinstance(active, NativeOpticalArenaBackpressure)
     active.enqueue()
@@ -422,30 +405,7 @@ def test_cuda_slot_manifest_exposes_exact_semantics_dtype_shape_and_events():
 
 
 def test_cuda_r0_arena_uses_render_only_template_and_rejects_foreign_target():
-    _require_cuda()
-    context = _context()
-    first, shade = _fixed_inputs(context.device)
-    runtime_scene, derived_fixture = _fixed_contract_arrays(first, shade, context.device)
-    spec = _spec(
-        context,
-        boundary="R0",
-        scene_sha256="6" * 64,
-        replay_sha256=None,
-        frame_count=0,
-    )
-    arena = build_cuda_fixed_optical_arena(
-        spec=spec,
-        context=context,
-        renderer=CudaDirectLightNativeRenderer.prepare(context),
-        first_hit_inputs=first,
-        shade_inputs=shade,
-        camera=_camera(),
-        ambient_rgb=(0.1, 0.1, 0.1),
-        background_rgb=(0.0, 0.0, 0.0),
-        shadow_bias=1.0e-6,
-        runtime_scene_arrays=runtime_scene,
-        derived_fixture_arrays=derived_fixture,
-    )
+    arena = _fixed_arena()
     target = arena.plan_target(transform_frame_index=None)
     assert target.evidence.stage_names == ("cuda_direct_light_render",)
     provenance = _provenance(arena, target)
@@ -488,7 +448,7 @@ def test_submitted_terminal_event_drift_poisons_instead_of_false_completion():
     target = arena.plan_target(transform_frame_index=0)
     active = arena.acquire(arena.prepare_sample(target=target, provenance=_provenance(arena, target)))
     assert not isinstance(active, NativeOpticalArenaBackpressure)
-    context = target._transaction_template.context
+    context = active._transaction._context
     with context.activate():
         wrong_event = torch.cuda.Event()
         wrong_event.record(context.stream)
@@ -528,9 +488,168 @@ def test_c3_provenance_requires_exact_arena_storage_and_cannot_be_forged():
 
     foreign_arena = _dynamic_arena()
     foreign_target = foreign_arena.plan_target(transform_frame_index=0)
-    foreign_binding = build_cuda_c3_binding_from_arena_target(foreign_target)
-    with pytest.raises(NativeOpticalArenaProtocolError, match="exact allocation"):
-        arena.bind_c3_provenance(target=target, binding=foreign_binding)
+    foreign_prepared, foreign_readiness = _A2_AUTHORITIES[id(foreign_arena)]
+    foreign_binding = build_cuda_c3_binding_from_arena_target(
+        foreign_target,
+        prepared_input=foreign_prepared,
+        native_readiness=foreign_readiness,
+    )
+    with pytest.raises(NativeOpticalArenaProtocolError, match="exact a2 allocation"):
+        arena.bind_c3_provenance(
+            target=target,
+            binding=foreign_binding,
+            prepared_input=foreign_prepared,
+            native_readiness=foreign_readiness,
+        )
+
+
+def test_arena_controlled_template_and_transaction_cannot_bypass_c4_lease():
+    arena = _dynamic_arena()
+    target = arena.plan_target(transform_frame_index=0)
+    executable = arena._execution_for_target(target)
+    assert not hasattr(target, "_transaction_template")
+    assert not hasattr(target, "stages")
+    assert not hasattr(target, "completion_event")
+
+    with pytest.raises(CudaOpticalTimelineError, match="arena-issued capability"):
+        executable.transaction_template.activate()
+    with pytest.raises(CudaOpticalTimelineError, match="arena-issued capability"):
+        CudaOpticalTransaction(_template=executable.transaction_template)
+    with pytest.raises(CudaOpticalTimelineError, match="cannot be rebound"):
+        CudaOpticalTransactionTemplate(
+            context=executable.transaction_template.context,
+            stages=executable.transaction_template.stages,
+            completion_event=executable.transaction_template.completion_event,
+            diagnostic_events=None,
+        )
+    prepared = arena.prepare_sample(target=target, provenance=_provenance(arena, target))
+    with pytest.raises(CudaOpticalTimelineError, match="active arena lease"):
+        executable.transaction_template.stages[0].enqueue(prepared._active._transaction)
+    lifecycle = arena.lifecycle_evidence()
+    assert lifecycle.slots[0].state == "FREE"
+    assert lifecycle.terminal_event_record_count == 0
+
+    active = arena.acquire(prepared)
+    assert not isinstance(active, NativeOpticalArenaBackpressure)
+    with pytest.raises(CudaOpticalTimelineError, match="active arena lease"):
+        executable.transaction_template.stages[0].enqueue(active._transaction)
+    assert arena.lifecycle_evidence().terminal_event_record_count == 0
+    active.cancel_before_enqueue()
+
+
+@pytest.mark.parametrize("arena_factory", (_dynamic_arena, _fixed_arena))
+def test_c3_adapter_rejects_same_content_reupload_instead_of_a2_allocation(arena_factory):
+    arena = arena_factory()
+    target = arena.plan_target(transform_frame_index=0 if arena.spec.boundary != "R0" else None)
+    prepared, _readiness = _A2_AUTHORITIES[id(arena)]
+    duplicate = prepare_cuda_native_input(prepared.source, device=f"cuda:{prepared.device_ordinal}")
+    duplicate_validation = validate_prepared_native_input(prepared.source, duplicate)
+    duplicate_readiness = certify_native_readiness(
+        duplicate,
+        duplicate_validation,
+        compile_complete=True,
+        warmup_frames_completed=0,
+    )
+
+    with pytest.raises(ValueError, match="exact a2 allocation"):
+        build_cuda_c3_binding_from_arena_target(
+            target,
+            prepared_input=duplicate,
+            native_readiness=duplicate_readiness,
+        )
+    valid_binding = build_cuda_c3_binding_from_arena_target(
+        target,
+        prepared_input=prepared,
+        native_readiness=_readiness,
+    )
+    with pytest.raises(NativeOpticalArenaProtocolError, match="exact a2 allocation"):
+        arena.bind_c3_provenance(
+            target=target,
+            binding=valid_binding,
+            prepared_input=duplicate,
+            native_readiness=duplicate_readiness,
+        )
+
+
+def test_c3_adapter_rejects_wrong_replay_view_and_uncertified_readiness():
+    arena = _dynamic_arena()
+    target = arena.plan_target(transform_frame_index=1)
+    prepared, readiness = _A2_AUTHORITIES[id(arena)]
+    duplicate = prepare_cuda_native_input(prepared.source, device=f"cuda:{prepared.device_ordinal}")
+    wrong_target = replace(
+        target,
+        _transform_arrays={
+            name: duplicate.arrays[name][1:2] for name in ("replay_x_world_R", "replay_x_world_r")
+        },
+    )
+    with pytest.raises(ValueError, match="approved a2 replay view"):
+        build_cuda_c3_binding_from_arena_target(
+            wrong_target,
+            prepared_input=prepared,
+            native_readiness=readiness,
+        )
+
+    with pytest.raises(ValueError, match="not issued by the canonical a2"):
+        build_cuda_c3_binding_from_arena_target(
+            target,
+            prepared_input=prepared,
+            native_readiness=replace(readiness),
+        )
+
+
+def test_c3_adapter_revalidates_a2_content_instead_of_trusting_correct_hashes():
+    arena = _dynamic_arena()
+    target = arena.plan_target(transform_frame_index=0)
+    prepared, readiness = _A2_AUTHORITIES[id(arena)]
+    tensor = prepared.arrays["material_albedo_rgb"]
+    original = tensor.clone()
+    tensor.add_(1.0)
+    try:
+        with pytest.raises(ValueError, match="values do not match logical source"):
+            build_cuda_c3_binding_from_arena_target(
+                target,
+                prepared_input=prepared,
+                native_readiness=readiness,
+            )
+    finally:
+        tensor.copy_(original)
+
+
+def test_c3_binding_serialization_cannot_forge_adapter_issuance():
+    arena = _dynamic_arena()
+    target = arena.plan_target(transform_frame_index=0)
+    prepared, readiness = _A2_AUTHORITIES[id(arena)]
+    issued = build_cuda_c3_binding_from_arena_target(
+        target,
+        prepared_input=prepared,
+        native_readiness=readiness,
+    )
+    copied = C3OneShotNativeExecutionBindingEvidence.from_payload(issued.to_payload())
+
+    with pytest.raises(NativeOpticalArenaProtocolError, match="not issued"):
+        arena.bind_c3_provenance(
+            target=target,
+            binding=copied,
+            prepared_input=prepared,
+            native_readiness=readiness,
+        )
+
+
+def test_measured_acquire_uses_only_constant_time_authority_checks(monkeypatch):
+    arena = _dynamic_arena()
+    target = arena.plan_target(transform_frame_index=0)
+    prepared = arena.prepare_sample(target=target, provenance=_provenance(arena, target))
+
+    def forbidden_graph_walk(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("measured acquire traversed the sealed resource graph")
+
+    monkeypatch.setattr(CudaNativeOpticalArena, "_validate_configuration", forbidden_graph_walk)
+    monkeypatch.setattr(CudaNativeOpticalArena, "_configuration_identity", forbidden_graph_walk)
+    monkeypatch.setattr(CudaPreparedArenaSample, "_validate_bound", forbidden_graph_walk)
+    active = arena.acquire(prepared)
+    assert not isinstance(active, NativeOpticalArenaBackpressure)
+    active.cancel_before_enqueue()
 
 
 def test_cuda_arena_restores_ambient_device_across_every_generation_transition():

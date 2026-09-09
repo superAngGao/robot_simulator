@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import weakref
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -28,6 +29,39 @@ NATIVE_INPUT_SCHEMA_VERSION = "q54.p12.4.native-input.v2"
 TRANSFORM_REPLAY_SCHEMA_VERSION = "q54.p12.4.transform-replay.v1"
 FIXED_RENDER_FIXTURE_SCHEMA_VERSION = "q54.p12.4.fixed-render-fixture.v1"
 NativeBackend = Literal["warp", "cuda"]
+
+_PREPARED_INPUT_AUTHORITIES: dict[
+    int, tuple[weakref.ReferenceType[object], weakref.ReferenceType[object]]
+] = {}
+_READINESS_AUTHORITIES: dict[int, tuple[weakref.ReferenceType[object], weakref.ReferenceType[object]]] = {}
+
+
+def _register_identity_authority(
+    registry: dict[int, tuple[weakref.ReferenceType[object], weakref.ReferenceType[object]]],
+    subject: object,
+    owner: object,
+) -> None:
+    key = id(subject)
+
+    def discard(reference: weakref.ReferenceType[object]) -> None:
+        current = registry.get(key)
+        if current is not None and current[0] is reference:
+            registry.pop(key, None)
+
+    registry[key] = (weakref.ref(subject, discard), weakref.ref(owner))
+
+
+def _require_identity_authority(
+    registry: dict[int, tuple[weakref.ReferenceType[object], weakref.ReferenceType[object]]],
+    subject: object,
+    owner: object,
+    *,
+    label: str,
+) -> None:
+    registered = registry.get(id(subject))
+    if registered is None or registered[0]() is not subject or registered[1]() is not owner:
+        raise ValueError(f"{label} was not issued by the canonical a2 preparation path")
+
 
 _REPLAY_SEMANTICS = MappingProxyType(
     {
@@ -211,12 +245,8 @@ class CanonicalTransformReplayHost:
             raise ValueError("replay frame count does not match the canonical case")
         rotation.setflags(write=False)
         translation.setflags(write=False)
-        arrays = MappingProxyType(
-            {"replay_x_world_R": rotation, "replay_x_world_r": translation}
-        )
-        transform_sequence = json.loads(
-            _canonical_json_bytes(case.transform_sequence).decode("utf-8")
-        )
+        arrays = MappingProxyType({"replay_x_world_R": rotation, "replay_x_world_r": translation})
+        transform_sequence = json.loads(_canonical_json_bytes(case.transform_sequence).decode("utf-8"))
         payload = {
             "schema_version": TRANSFORM_REPLAY_SCHEMA_VERSION,
             "case_id": case.case_id,
@@ -289,9 +319,7 @@ class CanonicalFixedRenderFixtureHost:
         transform_payload = {
             "fixed_transform_id": fixed_transform_id,
             "x_world_R": _array_manifest(rotation, name="x_world_R", semantic="fixed_transform.R"),
-            "x_world_r": _array_manifest(
-                translation, name="x_world_r", semantic="fixed_transform.r"
-            ),
+            "x_world_r": _array_manifest(translation, name="x_world_r", semantic="fixed_transform.r"),
         }
         fixed_transform_sha256 = _sha256_payload(transform_payload)
         fixture_payload = {
@@ -353,9 +381,7 @@ class CanonicalNativeInput:
         case = _validate_packed_scene_case(packed_scene)
         frozen_content = frozen_workload_content(case.case_id)
         if packed_scene.scene_contract_sha256 != frozen_content.scene_contract_sha256:
-            raise ValueError(
-                "packed scene content does not match the frozen canonical workload"
-            )
+            raise ValueError("packed scene content does not match the frozen canonical workload")
         if input_contract not in {
             FIXED_NATIVE_SCENE_INPUT,
             CANONICAL_NATIVE_REPLAY_INPUT,
@@ -382,12 +408,9 @@ class CanonicalNativeInput:
                 raise ValueError("fixed fixture case identity does not match the packed scene")
             if (
                 frozen_content.fixed_render_fixture_sha256 is None
-                or fixed_fixture.fixed_render_fixture_sha256
-                != frozen_content.fixed_render_fixture_sha256
+                or fixed_fixture.fixed_render_fixture_sha256 != frozen_content.fixed_render_fixture_sha256
             ):
-                raise ValueError(
-                    "fixed render fixture does not match the frozen canonical workload"
-                )
+                raise ValueError("fixed render fixture does not match the frozen canonical workload")
             _insert_disjoint_arrays(
                 arrays,
                 array_semantics,
@@ -407,12 +430,9 @@ class CanonicalNativeInput:
                 raise ValueError("transform replay case identity does not match the packed scene")
             if (
                 frozen_content.transform_replay_sha256 is None
-                or replay.transform_replay_sha256
-                != frozen_content.transform_replay_sha256
+                or replay.transform_replay_sha256 != frozen_content.transform_replay_sha256
             ):
-                raise ValueError(
-                    "transform replay does not match the frozen canonical workload"
-                )
+                raise ValueError("transform replay does not match the frozen canonical workload")
             _insert_disjoint_arrays(
                 arrays,
                 array_semantics,
@@ -586,6 +606,9 @@ class CudaPreparedNativeInput:
     def backend(self) -> NativeBackend:
         return "cuda"
 
+    def _assert_cuda_arena_a2_authority(self, readiness: object) -> None:
+        assert_cuda_arena_a2_authority(self, readiness)
+
 
 PreparedNativeInput = WarpPreparedNativeInput | CudaPreparedNativeInput
 
@@ -648,9 +671,7 @@ def wrap_prepared_fixed_render_inputs(
         backend=prepared.backend,
         prepared_owner=prepared,
         scene_arrays=MappingProxyType({name: prepared.arrays[name] for name in scene_names}),
-        derived_fixture_arrays=MappingProxyType(
-            {name: prepared.arrays[name] for name in fixture_names}
-        ),
+        derived_fixture_arrays=MappingProxyType({name: prepared.arrays[name] for name in fixture_names}),
         scene_contract_sha256=manifest.scene_contract_sha256,
         fixed_render_fixture_sha256=manifest.fixed_render_fixture_sha256,
     )
@@ -1089,6 +1110,54 @@ class NativeReadinessEvidence:
         return _sha256_payload(self.to_payload())
 
 
+def assert_cuda_arena_a2_authority(
+    prepared: PreparedNativeInput,
+    readiness: NativeReadinessEvidence,
+) -> None:
+    """Require the exact live a2 CUDA allocation/readiness authority pair."""
+
+    assert_outside_timed_boundary("CUDA arena a2 authority validation")
+    if type(prepared) is not CudaPreparedNativeInput:
+        raise TypeError("CUDA arena a2 authority requires CudaPreparedNativeInput")
+    _require_identity_authority(
+        _PREPARED_INPUT_AUTHORITIES,
+        prepared,
+        prepared.source,
+        label="CUDA prepared native input",
+    )
+    if prepared.source is None or prepared.manifest is not prepared.source.manifest:
+        raise ValueError("CUDA prepared native input lost its canonical source identity")
+    if type(readiness) is not NativeReadinessEvidence:
+        raise TypeError("CUDA arena a2 authority requires NativeReadinessEvidence")
+    _require_identity_authority(
+        _READINESS_AUTHORITIES,
+        readiness,
+        prepared,
+        label="CUDA native readiness",
+    )
+    canonical = NativeReadinessEvidence.from_payload(readiness.to_payload())
+    if canonical != readiness:
+        raise ValueError("CUDA native readiness evidence is not canonical")
+    manifest = prepared.manifest
+    expected = {
+        "backend": "cuda",
+        "device_ordinal": prepared.device_ordinal,
+        "manifest_sha256": manifest.sha256,
+        "content_sha256": manifest.content_sha256,
+        "topology_sha256": manifest.topology_sha256,
+        "input_contract": manifest.input_contract,
+        "scene_contract_schema_version": manifest.scene_contract_schema_version,
+        "scene_contract_sha256": manifest.scene_contract_sha256,
+        "scene_id": manifest.scene_id,
+        "transform_replay_sha256": manifest.transform_replay_sha256,
+        "transform_frame_count": manifest.transform_frame_count,
+        "fixed_render_fixture_sha256": manifest.fixed_render_fixture_sha256,
+    }
+    for name, value in expected.items():
+        if getattr(readiness, name) != value:
+            raise ValueError(f"CUDA native readiness {name} does not match its prepared input")
+
+
 def certify_native_readiness(
     prepared: PreparedNativeInput,
     validation: NativeInputValidationReport,
@@ -1127,7 +1196,7 @@ def certify_native_readiness(
         or warmup_frames_completed < 0
     ):
         raise ValueError("warmup_frames_completed must be a non-negative integer")
-    return NativeReadinessEvidence(
+    readiness = NativeReadinessEvidence(
         schema_version=NATIVE_INPUT_SCHEMA_VERSION,
         backend=prepared.backend,
         device_ordinal=prepared.device_ordinal,
@@ -1147,6 +1216,8 @@ def certify_native_readiness(
         compile_complete=True,
         warmup_frames_completed=warmup_frames_completed,
     )
+    _register_identity_authority(_READINESS_AUTHORITIES, readiness, prepared)
+    return readiness
 
 
 def prepare_warp_native_input(
@@ -1175,13 +1246,15 @@ def prepare_warp_native_input(
             )
         ready_event = stream.record_event()
         wp.synchronize_event(ready_event)
-    return WarpPreparedNativeInput(
+    result = WarpPreparedNativeInput(
         manifest=source.manifest,
         device_ordinal=int(target.ordinal),
         arrays=MappingProxyType(prepared),
         ready_event=ready_event,
         source=source,
     )
+    _register_identity_authority(_PREPARED_INPUT_AUTHORITIES, result, source)
+    return result
 
 
 def prepare_cuda_native_input(
@@ -1212,13 +1285,15 @@ def prepare_cuda_native_input(
         ready_event = torch.cuda.Event(enable_timing=False)
         ready_event.record(stream)
         ready_event.synchronize()
-    return CudaPreparedNativeInput(
+    result = CudaPreparedNativeInput(
         manifest=source.manifest,
         device_ordinal=int(ordinal),
         arrays=MappingProxyType(prepared),
         ready_event=ready_event,
         source=source,
     )
+    _register_identity_authority(_PREPARED_INPUT_AUTHORITIES, result, source)
+    return result
 
 
 def validate_prepared_native_input(
@@ -1348,9 +1423,7 @@ def _derive_fixed_fixture_arrays(
     x_world_r: np.ndarray,
 ) -> dict[str, np.ndarray]:
     packed = packed_scene.arrays
-    triangle_vertices = np.asarray(packed["triangle_vertices_local"], dtype=np.float32).reshape(
-        -1, 3, 3
-    )
+    triangle_vertices = np.asarray(packed["triangle_vertices_local"], dtype=np.float32).reshape(-1, 3, 3)
     triangle_instance = packed["triangle_instance_index"]
     triangle_v0 = np.empty((packed_scene.num_triangles, 3), dtype=np.float32)
     triangle_e1 = np.empty_like(triangle_v0)
@@ -1394,9 +1467,7 @@ def _derive_fixed_fixture_arrays(
         if norm <= 1.0e-8:
             raise ValueError("fixed fixture unexpectedly produced a degenerate plane normal")
         plane_normal[plane] = normal / norm
-        plane_point[plane] = (
-            R_world_geometry @ packed["plane_point_local"][plane] + r_world_geometry
-        )
+        plane_point[plane] = R_world_geometry @ packed["plane_point_local"][plane] + r_world_geometry
 
     host_bvh = build_host_median_bvh(
         triangle_aabb_min,
@@ -1465,10 +1536,7 @@ def _array_manifest_payload(
     arrays: Mapping[str, np.ndarray],
     semantics: Mapping[str, str],
 ) -> list[dict[str, object]]:
-    return [
-        _array_manifest(arrays[name], name=name, semantic=semantics[name])
-        for name in sorted(arrays)
-    ]
+    return [_array_manifest(arrays[name], name=name, semantic=semantics[name]) for name in sorted(arrays)]
 
 
 def _array_manifest(array: np.ndarray, *, name: str, semantic: str) -> dict[str, object]:

@@ -15,6 +15,13 @@ from typing import Any
 
 from optics.cuda_arena import CudaArenaPlanTarget
 
+from .native import (
+    CudaPreparedNativeInput,
+    NativeReadinessEvidence,
+    assert_cuda_arena_a2_authority,
+    prepared_storage_signatures,
+    validate_prepared_native_input,
+)
 from .receipts import (
     DYNAMIC_ACCELERATION_INPUT_NAMES,
     DYNAMIC_ACCELERATION_OUTPUT_NAMES,
@@ -26,31 +33,44 @@ from .receipts import (
     NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
     NativeStageEvidence,
     NativeStorageSignature,
+    _register_cuda_arena_c3_binding_authority,
     build_c3_one_shot_native_execution_binding,
 )
 
 
-def build_cuda_c3_binding_from_arena_target(target: CudaArenaPlanTarget):
-    """Build C3 evidence from the target's actual immutable CUDA allocations."""
+def build_cuda_c3_binding_from_arena_target(
+    target: CudaArenaPlanTarget,
+    *,
+    prepared_input: CudaPreparedNativeInput,
+    native_readiness: NativeReadinessEvidence,
+):
+    """Bind exact a2 allocations/readiness to one immutable C4 target."""
 
     if not isinstance(target, CudaArenaPlanTarget):
         raise TypeError("CUDA C3 arena adapter requires CudaArenaPlanTarget")
-    target._transaction_template.validate_bound()
+    assert_cuda_arena_a2_authority(prepared_input, native_readiness)
+    if prepared_input.source is None:
+        raise ValueError("CUDA C3 arena adapter requires the canonical a2 source owner")
+    validate_prepared_native_input(prepared_input.source, prepared_input)
+    _validate_target_a2_allocations(target, prepared_input)
     spec = target._spec
-    session_owner = spec.native_input_manifest_sha256
+    if (
+        prepared_input.manifest.sha256 != spec.native_input_manifest_sha256
+        or native_readiness.sha256 != spec.native_readiness_sha256
+    ):
+        raise ValueError("CUDA C3 arena a2 authority does not match the target specification")
     slot_owner = target.evidence.slot_storage_manifest_sha256
-    stages = target._transaction_template.stages
+    runtime_evidence = target._runtime_stage_evidence
 
     if spec.boundary == "R0":
-        render = stages[0]
-        render_evidence = render._cuda_transaction_stage_evidence()
-        runtime_scene = tuple(
-            _storage_signature(name, tensor, owner_token=session_owner)
-            for name, tensor in target._runtime_scene_arrays.items()
+        render_evidence = runtime_evidence[0]
+        runtime_scene = prepared_storage_signatures(
+            prepared_input,
+            tuple(target._runtime_scene_arrays),
         )
-        derived_fixture = tuple(
-            _storage_signature(name, tensor, owner_token=session_owner)
-            for name, tensor in target._derived_fixture_arrays.items()
+        derived_fixture = prepared_storage_signatures(
+            prepared_input,
+            tuple(target._derived_fixture_arrays),
         )
         stage_evidence = (
             _stage_evidence(
@@ -63,37 +83,27 @@ def build_cuda_c3_binding_from_arena_target(target: CudaArenaPlanTarget):
             ),
         )
     else:
-        scene, acceleration, render = stages[:3]
-        render_evidence = render._cuda_transaction_stage_evidence()
-        runtime_scene = tuple(
-            _storage_signature(name, tensor, owner_token=session_owner)
-            for name, tensor in target._runtime_scene_arrays.items()
+        scene_evidence, acceleration_evidence, render_evidence = runtime_evidence[:3]
+        runtime_scene = prepared_storage_signatures(
+            prepared_input,
+            tuple(target._runtime_scene_arrays),
         )
         runtime_by_name = {value.name: value for value in runtime_scene}
         transform_by_name = {
-            "replay_x_world_R": _storage_signature(
-                "replay_x_world_R", scene.transforms.x_world_R, owner_token=session_owner
-            ),
-            "replay_x_world_r": _storage_signature(
-                "replay_x_world_r", scene.transforms.x_world_r, owner_token=session_owner
-            ),
+            name: _storage_signature(
+                name,
+                target._transform_arrays[name],
+                owner_token=spec.native_input_manifest_sha256,
+            )
+            for name in DYNAMIC_TRANSFORM_INPUT_NAMES
         }
         scene_outputs = tuple(
             _storage_signature(name, tensor, owner_token=slot_owner)
-            for name, tensor in scene.outputs.tensor_items()
+            for name, tensor in target._scene_output_arrays.items()
         )
         scene_by_name = {value.name: value for value in scene_outputs}
-        acceleration_tensors = {
-            "bvh_bounds_min": acceleration.outputs.node_bounds_min,
-            "bvh_bounds_max": acceleration.outputs.node_bounds_max,
-            "bvh_left": acceleration.outputs.left,
-            "bvh_right": acceleration.outputs.right,
-            "bvh_start": acceleration.outputs.start,
-            "bvh_count": acceleration.outputs.count,
-            "bvh_prim_ids": acceleration.outputs.sorted_primitive_ids,
-        }
         acceleration_outputs = _ordered_signatures(
-            acceleration_tensors,
+            target._acceleration_output_arrays,
             DYNAMIC_ACCELERATION_OUTPUT_NAMES,
             slot_owner,
         )
@@ -113,19 +123,19 @@ def build_cuda_c3_binding_from_arena_target(target: CudaArenaPlanTarget):
         stage_evidence = (
             _stage_evidence(
                 name="scene_update",
-                operation_id=scene.evidence.operation_id,
+                operation_id=scene_evidence.operation_id,
                 target=target,
                 inputs=scene_inputs,
                 outputs=scene_outputs,
-                dispatch_plan_sha256=scene.evidence.dispatch_plan_sha256,
+                dispatch_plan_sha256=scene_evidence.dispatch_plan_sha256,
             ),
             _stage_evidence(
                 name="acceleration",
-                operation_id=acceleration.evidence.operation_id,
+                operation_id=acceleration_evidence.operation_id,
                 target=target,
                 inputs=acceleration_inputs,
                 outputs=acceleration_outputs,
-                dispatch_plan_sha256=acceleration.evidence.dispatch_plan_sha256,
+                dispatch_plan_sha256=acceleration_evidence.dispatch_plan_sha256,
             ),
             _stage_evidence(
                 name="render",
@@ -138,7 +148,7 @@ def build_cuda_c3_binding_from_arena_target(target: CudaArenaPlanTarget):
         )
         derived_fixture = ()
 
-    return build_c3_one_shot_native_execution_binding(
+    binding = build_c3_one_shot_native_execution_binding(
         row_id=spec.row_id,
         case_id=spec.case_id,
         case_sha256=spec.case_sha256,
@@ -160,6 +170,13 @@ def build_cuda_c3_binding_from_arena_target(target: CudaArenaPlanTarget):
         derived_fixture_storage=derived_fixture,
         stage_evidence=stage_evidence,
     )
+    _register_cuda_arena_c3_binding_authority(
+        binding,
+        target=target,
+        prepared_input=prepared_input,
+        native_readiness=native_readiness,
+    )
+    return binding
 
 
 def _stage_evidence(
@@ -187,6 +204,71 @@ def _stage_evidence(
         input_storage=inputs,
         output_storage=outputs,
         dispatch_plan_sha256=dispatch_plan_sha256,
+    )
+
+
+def _validate_target_a2_allocations(
+    target: CudaArenaPlanTarget,
+    prepared_input: CudaPreparedNativeInput,
+) -> None:
+    manifest = prepared_input.manifest
+    prepared = prepared_input.arrays
+    if target._spec.boundary == "R0":
+        _require_exact_objects(
+            target._runtime_scene_arrays,
+            prepared,
+            tuple(manifest.scene_array_names),
+            label="packed scene",
+        )
+        _require_exact_objects(
+            target._derived_fixture_arrays,
+            prepared,
+            tuple(manifest.fixed_render_fixture_arrays),
+            label="fixed fixture",
+        )
+        return
+
+    _require_exact_objects(
+        target._runtime_scene_arrays,
+        prepared,
+        tuple(manifest.scene_array_names),
+        label="packed scene",
+    )
+    frame_index = target.evidence.transform_frame_index
+    if frame_index is None:
+        raise ValueError("dynamic CUDA C3 target lacks a replay frame")
+    for name in DYNAMIC_TRANSFORM_INPUT_NAMES:
+        expected = prepared[name][frame_index : frame_index + 1]
+        actual = target._transform_arrays.get(name)
+        if actual is None or _tensor_identity(actual) != _tensor_identity(expected):
+            raise ValueError(f"CUDA C3 target {name!r} is not the approved a2 replay view")
+
+
+def _require_exact_objects(
+    actual: Mapping[str, object],
+    prepared: Mapping[str, object],
+    names: tuple[str, ...],
+    *,
+    label: str,
+) -> None:
+    if set(actual) != set(names):
+        raise ValueError(f"CUDA C3 target {label} allocation names are not exact")
+    for name in names:
+        if prepared.get(name) is not actual[name]:
+            raise ValueError(f"CUDA C3 target {label} {name!r} is not the exact a2 allocation")
+
+
+def _tensor_identity(tensor: Any) -> tuple[object, ...]:
+    storage = tensor.untyped_storage()
+    base = int(storage.data_ptr()) if storage.nbytes() else 0
+    return (
+        int(tensor.device.index),
+        str(tensor.dtype),
+        tuple(int(value) for value in tensor.shape),
+        tuple(int(value) for value in tensor.stride()),
+        base,
+        int(storage.nbytes()),
+        int(tensor.data_ptr()) - base if storage.nbytes() else 0,
     )
 
 
