@@ -1027,12 +1027,14 @@ Next milestone:
       single-use prepared-acquire authority, one-to-one lease/transaction/owner
       registration, and O(1) measured acquire are closed. The implementation
       remains non-result-capable pending the joint C4/B3 activation review.
-- [ ] P12.4 C4c — Warp native render/arena design v1 is ready for review. It
+- [ ] P12.4 C4c — Warp native render/arena design v2 is ready for re-review. It
       freezes caller-owned render buffers, deterministic per-generation reset,
-      pre-recorded fixed command variants, a single preallocated terminal Warp
-      event, C4b-strength single-use execution authority, exact a2/C3 storage
-      provenance, and R0/R1-refit/R2-static-CUDA-LBVH stage graphs. No C4c
-      implementation is authorized before review.
+      pre-recorded fixed command variants, production-gated raw Warp
+      launch/event leaves, completion-neutral fixed diagnostic event pairs, a
+      single terminal event, C4b-strength single-use execution authority, exact
+      a2/C3 storage provenance, and R0/R1/device-only-R2 stage graphs. The five
+      host-payload R2 rows remain seal-rejected until B3. No C4c implementation
+      is authorized before review.
 - [ ] P12.4 C4d/B3 — finish joint drain/poison/guardian ownership and add
       reviewed host delivery storage. The a3b/result/baseline gates stay closed
       until the joint activation review.

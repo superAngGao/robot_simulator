@@ -3281,3 +3281,25 @@ abstraction. `NativeOpticalArena` is the durable control plane; Warp and CUDA
 retain explicit allocation, command, event, and transaction modules. After
 selection, the losing runtime data plane and paired infrastructure can be
 deleted without leaving dispatch layers or buffer unions in the product repo.
+
+The first C4c design review exposed one more level in the authority chain.
+Protecting `bundle.enqueue()` is insufficient when the bundle retains an
+independently executable `wp.Launch`. The revised plan treats each raw launch,
+the bound CUDA-LBVH call, and every raw Warp event as a controlled resource.
+Arena objects carry opaque identities only; a production-owned class-entry
+gate performs an exact registry and live-scope check at the actual
+`Launch.launch` or `Stream.record_event` call. Standalone C3 commands remain
+uncontrolled but can never be promoted into an arena graph.
+
+Diagnostic events also need a positive contract, not an exception hidden by
+the phrase "no intermediate event." A diagnostic Warp transaction records
+three fixed start/end pairs around raygen, first-hit (including its reset), and
+shade (including its reset). They are completion-neutral and cannot create a
+ticket or advance resolve/reclaim. A primary transaction owns and records none
+of them; the terminal event remains exactly one in both modes.
+
+Finally, implementation matrices must distinguish positive capability from
+negative gating. C4c can positively construct only the current device-only R2
+row. The five host-payload R2 rows are required negative seal tests until B3
+defines their storage and lease graph. Calling all six a "full R2 matrix" at
+C4c would either weaken the B3 hard gate or overstate coverage.
