@@ -3303,3 +3303,18 @@ negative gating. C4c can positively construct only the current device-only R2
 row. The five host-payload R2 rows are required negative seal tests until B3
 defines their storage and lease graph. Calling all six a "full R2 matrix" at
 C4c would either weaken the B3 hard gate or overstate coverage.
+
+A class-entry gate installed during arena preparation is still too late. Warp
+physics and C3 may already have exposed the original unbound function or a
+bound method, and Python cannot revoke those references afterward. The revised
+C4c contract therefore makes the gate a process-start property: an isolated
+spawned worker bootstraps Warp before any consumer code, keeps the gate for the
+entire process, and rejects rather than upgrades any pre-imported process. The
+same first-load rule covers the CUDA-LBVH fixed-ABI callable used by Warp R2.
+
+Diagnostic parity must follow the measured transaction boundary, not merely
+the renderer shared by both boundaries. R0 needs the three renderer pairs;
+R1/R2 need two additional pairs around scene update and acceleration. Thus the
+correct symmetric contracts are six records for R0 and ten for R1/R2, while
+all diagnostic records remain completion-neutral and separate from the one
+terminal event.
