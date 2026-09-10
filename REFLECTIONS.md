@@ -3318,3 +3318,14 @@ R1/R2 need two additional pairs around scene update and acceleration. Thus the
 correct symmetric contracts are six records for R0 and ten for R1/R2, while
 all diagnostic records remain completion-neutral and separate from the one
 terminal event.
+
+Even a process-first Python wrapper is not a native executable capability when
+the runtime exposes lower CDLL functions and Python permits closure/default/
+global introspection. The honest boundary is a closed worker that runs only
+frozen product code and accepts a small canonical, non-object IPC protocol. In
+that model, C4 authority remains valuable for supported-path lifecycle safety,
+but it is not advertised as protection from arbitrary same-process Python.
+Negative tests attack the IPC and dispatcher boundary and require zero GPU
+submission, unchanged slot state, and no completion ticket; a differently
+modified worker must fail the code-manifest gate rather than be "contained" by
+a fictional private attribute.
