@@ -1027,15 +1027,18 @@ Next milestone:
       single-use prepared-acquire authority, one-to-one lease/transaction/owner
       registration, and O(1) measured acquire are closed. The implementation
       remains non-result-capable pending the joint C4/B3 activation review.
-- [ ] P12.4 C4c — Warp native render/arena design v4 is ready for re-review. It
+- [ ] P12.4 C4c — Warp native render/arena design v5 is ready for re-review. It
       freezes caller-owned render buffers, deterministic per-generation reset,
       pre-recorded fixed command variants, a closed trusted single-lane worker
       with strict non-object IPC, boundary-symmetric diagnostic phases (six
       records for R0, ten for R1/R2), a single terminal event, C4b-strength
       supported-path lifecycle authority, exact a2/C3 storage provenance, and
-      R0/R1/device-only-R2 stage graphs. The five host-payload R2 rows remain
-      seal-rejected until B3. No C4c implementation is authorized before
-      review.
+      R0/R1/device-only-R2 stage graphs. It now also makes every worker
+      one-session/one-exit and closes post-submit IPC loss with a sealed
+      whole-graph guardian plus a failure-only emergency-sync-or-quarantine
+      terminal path. The five host-payload R2 rows remain seal-rejected until
+      B3; normal drain/external-hold/joint shutdown remains C4d. No C4c
+      implementation is authorized before review.
 - [ ] P12.4 C4d/B3 — finish joint drain/poison/guardian ownership and add
       reviewed host delivery storage. The a3b/result/baseline gates stay closed
       until the joint activation review.

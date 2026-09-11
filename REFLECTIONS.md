@@ -3329,3 +3329,29 @@ Negative tests attack the IPC and dispatcher boundary and require zero GPU
 submission, unchanged slot state, and no completion ticket; a differently
 modified worker must fail the code-manifest gate rather than be "contained" by
 a fictional private attribute.
+
+The closed worker also turns transport liveness into resource ownership. A
+pending token is not a CUDA completion proof, and EOF cannot stand in for
+release: the peer may disappear after launches are enqueued but before it can
+resolve or release the slot. The submission latch must therefore be set before
+the first leaf that may enqueue work, not after a successful Python return.
+Before that latch, cancellation and a burned generation are sufficient. After
+it, every transport failure is a poison event and the worker becomes
+non-reusable even if the affected sample had already resolved.
+
+C4c needs only a narrow terminal mechanism because it deliberately has no host
+payload lease. A sealed guardian can retain the complete device/runtime object
+graph, attempt one failure-only device synchronization, and either release the
+whole graph before process exit or quarantine it until process teardown. This
+does not replace C4d: pinned host consumers, normal drain, depth-two pressure,
+physics publication, and joint shutdown still need the stronger external-hold
+protocol. Keeping that distinction explicit prevents an emergency path from
+quietly becoming the product lifecycle implementation.
+
+Normal close is a state transition, not a request to clean up whatever remains.
+It is legal only after all tokens are consumed, every completion is resolved,
+all holds are discharged, and every slot is reclaimed. Committing the final
+acknowledgement ends a one-shot worker. A failed acknowledgement before that
+commit is itself a transport fault and follows the same pre/post-submission
+classification, which closes the small but dangerous gap between "resources
+look idle" and "the peer knows the session ended."
