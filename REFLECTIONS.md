@@ -3355,3 +3355,21 @@ acknowledgement ends a one-shot worker. A failed acknowledgement before that
 commit is itself a transport fault and follows the same pre/post-submission
 classification, which closes the small but dangerous gap between "resources
 look idle" and "the peer knows the session ended."
+
+The next review found that a measured-sample latch alone is too late. The a2
+preparation path uploads each Warp/Torch array before it records and waits for
+the ready event; compile and warmup may enqueue later work as well. A failed
+`PREPARE_FROZEN_ROW` can therefore have zero measured samples but live GPU
+readers/writers. The worker must track a separate setup epoch: mark it dirty
+before any CUDA-capable operation and clear it only with an untimed final
+target-device synchronization after all setup work. The a2 ready-event wait
+remains a local readiness fact, not a proof for later warmup or other streams.
+
+Guardian ownership also has to precede the first upload. A convenience call
+that allocates and uploads in one expression can fail before returning the
+destination object; registering only after the call is too late. The C4c
+worker-facing a2 path therefore needs allocate/register/source-register/copy
+steps, with partial construction retained across every exception. If the setup
+quiescence proof is missing, the failure-only emergency sync/quarantine path
+applies even when no sample command has run. Zero sample counters must never be
+reported as zero whole-worker GPU activity.
