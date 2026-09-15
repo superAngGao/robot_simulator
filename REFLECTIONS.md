@@ -3373,3 +3373,20 @@ steps, with partial construction retained across every exception. If the setup
 quiescence proof is missing, the failure-only emergency sync/quarantine path
 applies even when no sample command has run. Zero sample counters must never be
 reported as zero whole-worker GPU activity.
+
+A device-quiescence proof is only as broad as the devices it covers. If setup
+targets `cuda:1` but a helper touches `cuda:0` before returning, synchronizing
+`cuda:1` says nothing about work or allocations on `cuda:0`. Device identity
+therefore has to be declared and recorded before each low-level CUDA operation,
+not reconstructed from an eventual return value. The setup epoch keeps a
+monotonic possible-dirty ordinal set and an irreversible unknown-scope marker;
+later observations cannot erase either history.
+
+C4c intentionally declines multi-device recovery. Iterating known devices
+would still be unsound when a failed opaque helper leaves its device unknown,
+and recovery calls can themselves create contexts or trigger cleanup. Exact
+target-only scope may use the single emergency target sync. A foreign ordinal
+or unknown scope instead retains the entire cross-device graph and exits the
+process without per-resource cleanup, leaving CUDA-context/OS teardown as the
+only release boundary. This is narrower and easier to validate than a partial
+best-effort drain.
