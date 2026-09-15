@@ -15,6 +15,11 @@ from .cases import (
     cases_by_id,
     get_case,
 )
+from .closed_worker import (
+    ClosedWorkerLaneProxy,
+    build_closed_worker_runtime_manifest,
+    write_closed_worker_runtime_manifest,
+)
 from .cuda_arena import build_cuda_c3_binding_from_arena_target
 from .eligibility import (
     CANONICAL_NATIVE_REPLAY_INPUT,
@@ -164,6 +169,7 @@ __all__ = [
     "ASSET_MANIFEST_SCHEMA_VERSION",
     "BOUNDARY_VERSIONS",
     "CASE_SCHEMA_VERSION",
+    "ClosedWorkerLaneProxy",
     "CLEANUP_SCHEMA_VERSION",
     "CANONICAL_NATIVE_REPLAY_INPUT",
     "ELIGIBILITY_SCHEMA_VERSION",
@@ -222,6 +228,7 @@ __all__ = [
     "entry_point_hook_id",
     "certify_native_readiness",
     "build_c3_one_shot_native_execution_binding",
+    "build_closed_worker_runtime_manifest",
     "build_cuda_c3_binding_from_arena_target",
     "build_prepared_cuda_lbvh_rebuild_factory",
     "build_prepared_warp_bvh_refit_factory",
@@ -249,6 +256,7 @@ __all__ = [
     "runtime_hook_registry_sha256",
     "source_manifest_entry_point_audit",
     "validate_trace_entry_points",
+    "write_closed_worker_runtime_manifest",
     "verified_runtime_entry_point_audit",
     "RUNTIME_OPERATION_KINDS",
     "RuntimeOperationTrace",

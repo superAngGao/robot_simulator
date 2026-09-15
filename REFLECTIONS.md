@@ -3390,3 +3390,27 @@ or unknown scope instead retains the entire cross-device graph and exits the
 process without per-resource cleanup, leaving CUDA-context/OS teardown as the
 only release boundary. This is narrower and easier to validate than a partial
 best-effort drain.
+
+C4c0 makes that rule executable without making a device query part of the
+proof. A device-scope descriptor is only immutable CPU metadata; the reviewed
+low-level call site records it before touching a runtime. Returned owners are
+adopted before their ordinal is checked, so a lying helper cannot lose the very
+foreign allocation that proves the contract breach. The dirty set grows
+monotonically, and an unknown bit never clears.
+
+The a2 convenience form also matters to failure safety. An allocation-plus-copy
+call is attractive in ordinary setup code, but it has no point where ownership
+can be registered between those two effects. The closed-worker path therefore
+uses a less concise sequence: host staging hold, destination allocation,
+immediate guardian adoption, and only then H2D copy. The ready-event wait is
+still not the final quiescence proof; one target-wide setup barrier follows all
+preparation and seals the evidence epoch.
+
+Finally, process isolation is useful only if its control plane is narrower than
+the Python process it replaced. The C4c0 worker starts under `-I -S`, validates
+the exact source list before extending `sys.path`, accepts canonical data rather
+than objects, and deliberately has no result-capable lane method. A tracked
+runtime contract carries exact liveness values while keeping them visibly
+separate from performance gates. This gives both candidate backends the same
+durable process boundary without committing the repository to a permanent
+dual-backend dispatcher.

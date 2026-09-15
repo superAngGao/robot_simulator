@@ -1027,8 +1027,16 @@ Next milestone:
       single-use prepared-acquire authority, one-to-one lease/transaction/owner
       registration, and O(1) measured acquire are closed. The implementation
       remains non-result-capable pending the joint C4/B3 activation review.
-- [ ] P12.4 C4c — Warp native render/arena design v7 is ready for re-review. It
-      freezes caller-owned render buffers, deterministic per-generation reset,
+- [ ] P12.4 C4c — Warp native render/arena design v7 is approved. C4c0 now
+      implements the stdlib-only closed worker/supervisor, strict canonical IPC,
+      frozen runtime/source/AST manifest, one-session/one-exit control state,
+      separate setup and measured-submission lifecycle, whole-graph guardian,
+      replayable termination evidence, and Warp/CUDA register-before-copy a2
+      preparation. The focused CPU contracts and real two-backend/two-device
+      setup-failure matrix pass. Product `PREPARE_FROZEN_ROW` GPU execution
+      remains explicitly disabled pending C4c0 implementation review.
+      The approved final C4c design freezes caller-owned render buffers,
+      deterministic per-generation reset,
       pre-recorded fixed command variants, a closed trusted single-lane worker
       with strict non-object IPC, boundary-symmetric diagnostic phases (six
       records for R0, ten for R1/R2), a single terminal event, C4b-strength
@@ -1044,10 +1052,9 @@ Next milestone:
       leaf. Only exact target-only scope may use a target sync; any foreign or
       unknown device scope goes directly to whole-process quarantine with no
       ordinary resource release.
-      C4c0 may not enable GPU preparation before both Warp/CUDA setup-failure
-      lifecycle tests pass. The five host-payload R2 rows remain seal-rejected
+      The five host-payload R2 rows remain seal-rejected
       until B3; normal drain/external-hold/joint shutdown remains C4d. No C4c
-      implementation is authorized before review.
+      sample execution, a3b result, or baseline path is activated.
 - [ ] P12.4 C4d/B3 — finish joint drain/poison/guardian ownership and add
       reviewed host delivery storage. The a3b/result/baseline gates stay closed
       until the joint activation review.

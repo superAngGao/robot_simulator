@@ -35,3 +35,4 @@ benchmarks/results/q54_p12_4/**
 !benchmarks/results/q54_p12_4/gate.json
 !benchmarks/results/q54_p12_4/architecture_inventory.json
 !benchmarks/results/q54_p12_4/cleanup_ledger.json
+!benchmarks/results/q54_p12_4/closed_worker_runtime_contract.json
