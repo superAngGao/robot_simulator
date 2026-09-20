@@ -1028,11 +1028,16 @@ Next milestone:
       registration, and O(1) measured acquire are closed. The implementation
       remains non-result-capable pending the joint C4/B3 activation review.
 - [ ] P12.4 C4c — Warp native render/arena design v7 is approved. C4c0 is
-      approved and sealed at `591ffc57`. C4c1 now has a bounded native Warp
-      render-ABI design request: one kernel source, caller-owned deterministic
-      buffers, four fixed shade ABIs, immutable recorded commands/evidence,
-      and oracle parity, with no transaction/event/arena/result authority.
-      C4c1 design is awaiting review; implementation has not started. C4c0
+      approved and sealed at `591ffc57`. C4c1 design v2 is awaiting review;
+      implementation has not started. It retains the bounded native Warp
+      render ABI—one kernel source, caller-owned deterministic buffers, four
+      fixed shade ABIs, and immutable recorded commands/evidence—but now moves
+      readiness into an exact CPU-safe production contract shared by Warp and
+      CUDA, confines every recorded-bundle execution to a supervised
+      sacrificial child with drain-or-quarantine ownership, and makes the CPU
+      canonical executor the primary numerical oracle. Public compatibility
+      executors share the kernel definitions but do not adopt the unfinished
+      multi-command bundle in C4c1. C4c0
       implements the stdlib-only closed worker/supervisor, strict canonical IPC,
       frozen runtime/source/AST manifest, one-session/one-exit control state,
       separate setup and measured-submission lifecycle, whole-graph guardian,
