@@ -1034,7 +1034,16 @@ Next milestone:
       replayable termination evidence, and Warp/CUDA register-before-copy a2
       preparation. The focused CPU contracts and real two-backend/two-device
       setup-failure matrix pass. Product `PREPARE_FROZEN_ROW` GPU execution
-      remains explicitly disabled pending C4c0 implementation review.
+      remains explicitly disabled pending C4c0 implementation review. The
+      first implementation review's two P1s are now closed: the worker-facing
+      prepared-input contract/authority moved out of the benchmark package,
+      a live repository import ledger rejects every non-allowlisted source,
+      and an abort-start/acknowledgement handshake proves the supervisor has
+      committed its watchdog deadline before any emergency sync. ACK timeout,
+      EOF, or a wrong byte quarantines without calling the sync leaf. Parent
+      waits no longer misuse the response-write timeout;
+      quarantine evidence is consumed by the worker loop and forces
+      process-terminal `os._exit` without ordinary owner finalization.
       The approved final C4c design freezes caller-owned render buffers,
       deterministic per-generation reset,
       pre-recorded fixed command variants, a closed trusted single-lane worker

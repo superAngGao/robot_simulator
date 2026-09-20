@@ -4,14 +4,23 @@ from __future__ import annotations
 
 import hashlib
 import json
-import weakref
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any
 
 import numpy as np
 
+from optical_worker.native_contract import (
+    CudaPreparedNativeInput,
+    NativeBackend,
+    PreparedNativeInput,
+    WarpPreparedNativeInput,
+    assert_cuda_prepared_authority,
+    register_native_readiness,
+    register_prepared_native_input,
+    warp_dtype_from_host_dtype,
+)
 from optics.device_bvh import build_host_median_bvh
 from optics.scene_contract import SCENE_CONTRACT_SCHEMA_VERSION, PackedOpticalSceneHost
 
@@ -28,39 +37,6 @@ from .workload_contract import frozen_workload_content
 NATIVE_INPUT_SCHEMA_VERSION = "q54.p12.4.native-input.v2"
 TRANSFORM_REPLAY_SCHEMA_VERSION = "q54.p12.4.transform-replay.v1"
 FIXED_RENDER_FIXTURE_SCHEMA_VERSION = "q54.p12.4.fixed-render-fixture.v1"
-NativeBackend = Literal["warp", "cuda"]
-
-_PREPARED_INPUT_AUTHORITIES: dict[
-    int, tuple[weakref.ReferenceType[object], weakref.ReferenceType[object]]
-] = {}
-_READINESS_AUTHORITIES: dict[int, tuple[weakref.ReferenceType[object], weakref.ReferenceType[object]]] = {}
-
-
-def _register_identity_authority(
-    registry: dict[int, tuple[weakref.ReferenceType[object], weakref.ReferenceType[object]]],
-    subject: object,
-    owner: object,
-) -> None:
-    key = id(subject)
-
-    def discard(reference: weakref.ReferenceType[object]) -> None:
-        current = registry.get(key)
-        if current is not None and current[0] is reference:
-            registry.pop(key, None)
-
-    registry[key] = (weakref.ref(subject, discard), weakref.ref(owner))
-
-
-def _require_identity_authority(
-    registry: dict[int, tuple[weakref.ReferenceType[object], weakref.ReferenceType[object]]],
-    subject: object,
-    owner: object,
-    *,
-    label: str,
-) -> None:
-    registered = registry.get(id(subject))
-    if registered is None or registered[0]() is not subject or registered[1]() is not owner:
-        raise ValueError(f"{label} was not issued by the canonical a2 preparation path")
 
 
 _REPLAY_SEMANTICS = MappingProxyType(
@@ -578,42 +554,6 @@ class CanonicalNativeInput:
 
 
 @dataclass(frozen=True)
-class WarpPreparedNativeInput:
-    """Warp-owned CUDA allocations at the native-ready boundary."""
-
-    manifest: NativeInputManifest
-    device_ordinal: int
-    arrays: Mapping[str, Any]
-    ready_event: Any
-    source: CanonicalNativeInput | None = None
-
-    @property
-    def backend(self) -> NativeBackend:
-        return "warp"
-
-
-@dataclass(frozen=True)
-class CudaPreparedNativeInput:
-    """Torch-owned CUDA allocations at the native-ready boundary."""
-
-    manifest: NativeInputManifest
-    device_ordinal: int
-    arrays: Mapping[str, Any]
-    ready_event: Any
-    source: CanonicalNativeInput | None = None
-
-    @property
-    def backend(self) -> NativeBackend:
-        return "cuda"
-
-    def _assert_cuda_arena_a2_authority(self, readiness: object) -> None:
-        assert_cuda_arena_a2_authority(self, readiness)
-
-
-PreparedNativeInput = WarpPreparedNativeInput | CudaPreparedNativeInput
-
-
-@dataclass(frozen=True)
 class PreparedOpticalLocalScene:
     """Allocation-free typed view of the exact a2 prepared scene arrays."""
 
@@ -1119,43 +1059,9 @@ def assert_cuda_arena_a2_authority(
     assert_outside_timed_boundary("CUDA arena a2 authority validation")
     if type(prepared) is not CudaPreparedNativeInput:
         raise TypeError("CUDA arena a2 authority requires CudaPreparedNativeInput")
-    _require_identity_authority(
-        _PREPARED_INPUT_AUTHORITIES,
-        prepared,
-        prepared.source,
-        label="CUDA prepared native input",
-    )
-    if prepared.source is None or prepared.manifest is not prepared.source.manifest:
-        raise ValueError("CUDA prepared native input lost its canonical source identity")
     if type(readiness) is not NativeReadinessEvidence:
         raise TypeError("CUDA arena a2 authority requires NativeReadinessEvidence")
-    _require_identity_authority(
-        _READINESS_AUTHORITIES,
-        readiness,
-        prepared,
-        label="CUDA native readiness",
-    )
-    canonical = NativeReadinessEvidence.from_payload(readiness.to_payload())
-    if canonical != readiness:
-        raise ValueError("CUDA native readiness evidence is not canonical")
-    manifest = prepared.manifest
-    expected = {
-        "backend": "cuda",
-        "device_ordinal": prepared.device_ordinal,
-        "manifest_sha256": manifest.sha256,
-        "content_sha256": manifest.content_sha256,
-        "topology_sha256": manifest.topology_sha256,
-        "input_contract": manifest.input_contract,
-        "scene_contract_schema_version": manifest.scene_contract_schema_version,
-        "scene_contract_sha256": manifest.scene_contract_sha256,
-        "scene_id": manifest.scene_id,
-        "transform_replay_sha256": manifest.transform_replay_sha256,
-        "transform_frame_count": manifest.transform_frame_count,
-        "fixed_render_fixture_sha256": manifest.fixed_render_fixture_sha256,
-    }
-    for name, value in expected.items():
-        if getattr(readiness, name) != value:
-            raise ValueError(f"CUDA native readiness {name} does not match its prepared input")
+    assert_cuda_prepared_authority(prepared, readiness)
 
 
 def certify_native_readiness(
@@ -1216,7 +1122,7 @@ def certify_native_readiness(
         compile_complete=True,
         warmup_frames_completed=warmup_frames_completed,
     )
-    _register_identity_authority(_READINESS_AUTHORITIES, readiness, prepared)
+    register_native_readiness(readiness, prepared)
     return readiness
 
 
@@ -1253,7 +1159,7 @@ def prepare_warp_native_input(
         ready_event=ready_event,
         source=source,
     )
-    _register_identity_authority(_PREPARED_INPUT_AUTHORITIES, result, source)
+    register_prepared_native_input(result, source)
     return result
 
 
@@ -1292,7 +1198,7 @@ def prepare_cuda_native_input(
         ready_event=ready_event,
         source=source,
     )
-    _register_identity_authority(_PREPARED_INPUT_AUTHORITIES, result, source)
+    register_prepared_native_input(result, source)
     return result
 
 
@@ -1558,24 +1464,7 @@ def _native_array_to_numpy(prepared: PreparedNativeInput, value: Any) -> np.ndar
 
 
 def _warp_dtype(wp: Any, dtype: np.dtype[Any]) -> Any:
-    mapping = {
-        np.dtype(np.bool_): wp.bool,
-        np.dtype(np.int8): wp.int8,
-        np.dtype(np.int16): wp.int16,
-        np.dtype(np.int32): wp.int32,
-        np.dtype(np.int64): wp.int64,
-        np.dtype(np.uint8): wp.uint8,
-        np.dtype(np.uint16): wp.uint16,
-        np.dtype(np.uint32): wp.uint32,
-        np.dtype(np.uint64): wp.uint64,
-        np.dtype(np.float16): wp.float16,
-        np.dtype(np.float32): wp.float32,
-        np.dtype(np.float64): wp.float64,
-    }
-    try:
-        return mapping[np.dtype(dtype)]
-    except KeyError as exc:
-        raise ValueError(f"unsupported Warp native input dtype {np.dtype(dtype)}") from exc
+    return warp_dtype_from_host_dtype(wp, np.dtype(dtype))
 
 
 def _sha256_text(value: object) -> bool:

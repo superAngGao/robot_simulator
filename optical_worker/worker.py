@@ -8,10 +8,12 @@ import secrets
 import select
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from .lifecycle import NativeWorkerSetupLifecycle, TransportTerminationEvidence
+from .manifest import validate_repository_import_ledger
+from .native_setup import NativeWorkerPreparationAborted
 from .protocol import (
     CLOSED_WORKER_EVIDENCE_VERSION,
     CLOSED_WORKER_PROTOCOL_VERSION,
@@ -21,6 +23,7 @@ from .protocol import (
     ClosedNativeLaneWorkerEvidence,
     ClosedWorkerProtocolError,
     ClosedWorkerRuntimeManifest,
+    canonical_sha256,
     decode_canonical_message,
     decode_frame_header,
     encode_framed_message,
@@ -31,7 +34,12 @@ from .protocol import (
 class ClosedWorkerSession:
     """One connection, one session, and at most one frozen-row preparation."""
 
-    def __init__(self, manifest: ClosedWorkerRuntimeManifest) -> None:
+    def __init__(
+        self,
+        manifest: ClosedWorkerRuntimeManifest,
+        *,
+        emergency_sync_notifier: Callable[[int], None],
+    ) -> None:
         self._manifest = manifest
         self._state = "EXPECT_HELLO"
         self._next_sequence = 0
@@ -40,6 +48,7 @@ class ClosedWorkerSession:
         self._worker_evidence: ClosedNativeLaneWorkerEvidence | None = None
         self._termination: TransportTerminationEvidence | None = None
         self._close_ack_sequence: int | None = None
+        self._emergency_sync_notifier = emergency_sync_notifier
 
     @property
     def terminal(self) -> bool:
@@ -55,6 +64,25 @@ class ClosedWorkerSession:
     @property
     def termination_evidence(self) -> TransportTerminationEvidence | None:
         return self._termination
+
+    def adopt_preparation_abort(self, aborted: NativeWorkerPreparationAborted) -> None:
+        evidence = TransportTerminationEvidence.from_payload(aborted.evidence.to_payload())
+        if (
+            self._lifecycle is None
+            or evidence != aborted.evidence
+            or evidence.session_identity != self._session_identity
+            or evidence.lane_id != self._manifest.lane_id
+            or evidence.target_device_ordinal != self._manifest.device_ordinal
+            or evidence.disposition
+            not in {
+                "aborted_synced_exit",
+                "quarantined_process_exit",
+                "multi_or_unknown_device_quarantine_exit",
+            }
+        ):
+            raise ClosedWorkerProtocolError("native preparation abort evidence is not session-bound")
+        self._termination = evidence
+        self._state = "TERMINATED"
 
     def handle(self, raw: object) -> dict[str, object]:
         request = validate_request(raw)
@@ -122,8 +150,10 @@ class ClosedWorkerSession:
         self._lifecycle = NativeWorkerSetupLifecycle(
             lane_id=self._manifest.lane_id,
             target_device_ordinal=self._manifest.device_ordinal,
+            emergency_sync_notifier=self._emergency_sync_notifier,
             session_identity=self._session_identity,
         )
+        repository_paths = validate_repository_import_ledger(self._manifest)
         executable_digest = hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest()
         evidence = ClosedNativeLaneWorkerEvidence(
             schema_version=CLOSED_WORKER_EVIDENCE_VERSION,
@@ -147,6 +177,8 @@ class ClosedWorkerSession:
             cuda_capable_module_names=tuple(
                 sorted(name for name in ("numpy", "torch", "warp") if name in sys.modules)
             ),
+            repository_module_paths=repository_paths,
+            repository_import_ledger_sha256=canonical_sha256(list(repository_paths)),
         )
         self._worker_evidence = evidence
         self._state = "EXPECT_OPEN"
@@ -268,9 +300,33 @@ def run_worker_loop(
     command_descriptor: int,
     liveness_descriptor: int,
     journal_descriptor: int,
+    abort_signal_descriptor: int,
+    abort_ack_descriptor: int,
     manifest: ClosedWorkerRuntimeManifest,
 ) -> int:
-    session = ClosedWorkerSession(manifest)
+    abort_signaled = False
+
+    def signal_abort_start(device_ordinal: int) -> None:
+        nonlocal abort_signaled
+        if abort_signaled or device_ordinal != manifest.device_ordinal:
+            raise ClosedWorkerProtocolError("abort-start signal is duplicated or targets another device")
+        if os.write(abort_signal_descriptor, b"A") != 1:
+            raise BrokenPipeError("abort-start signal was not delivered")
+        readable, _, _ = select.select(
+            [abort_ack_descriptor],
+            [],
+            [],
+            manifest.abort_watchdog_ms / 1000.0,
+        )
+        if abort_ack_descriptor not in readable:
+            raise TimeoutError("abort-watchdog acknowledgement timeout")
+        acknowledgement = os.read(abort_ack_descriptor, 2)
+        if acknowledgement != b"K":
+            raise BrokenPipeError("abort-watchdog acknowledgement is missing or invalid")
+        abort_signaled = True
+
+    validate_repository_import_ledger(manifest)
+    session = ClosedWorkerSession(manifest, emergency_sync_notifier=signal_abort_start)
     while True:
         sequence = 0
         try:
@@ -293,6 +349,7 @@ def run_worker_loop(
                 if isinstance(candidate, int) and not isinstance(candidate, bool) and candidate >= 0:
                     sequence = candidate
             response = session.handle(raw)
+            validate_repository_import_ledger(manifest)
             frame = encode_framed_message(response, max_bytes=MAX_RESPONSE_BYTES)
             _write_all(
                 command_descriptor,
@@ -303,6 +360,19 @@ def run_worker_loop(
             if session.terminal:
                 return 0
             continue
+        except NativeWorkerPreparationAborted as aborted:
+            session.adopt_preparation_abort(aborted)
+            _journal(
+                journal_descriptor,
+                {
+                    "kind": "native_preparation_aborted",
+                    "evidence": aborted.evidence.to_payload(),
+                    "evidence_sha256": aborted.evidence.sha256,
+                },
+            )
+            if session.hard_exit_required:
+                os._exit(74)
+            return 66
         except TimeoutError as exc:
             fault = "control_idle_timeout" if "idle" in str(exc) else "response_write_timeout"
         except EOFError:

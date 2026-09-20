@@ -5,6 +5,8 @@
 - Design authority: approved C4c design v7 at `79fa00c`
 - Scope: C4c0 only
 - Result/baseline authority: none
+- Review status: revised to close the import-ledger and acknowledged
+  abort-watchdog P1s
 
 ## Outcome
 
@@ -43,6 +45,15 @@ validates its own source digest before creating the worker, owns the worker
 liveness sentinel, and records a no-restart process disposition. It imports no
 benchmark, optical, Warp, Torch, or plugin module.
 
+The source allowlist is enforced twice. Static source digests and the AST
+policy validate what may be loaded; a live repository-module ledger then walks
+the worker's actual `sys.modules` origins and rejects every repository source
+outside that allowlist. The ledger paths and digest are part of HELLO evidence.
+Prepared-input wrappers, their identity authority, and the Warp dtype mapping
+now live in the CPU-safe allowlisted `optical_worker/native_contract.py`.
+`native_setup.py` does not import `benchmarks.optical` directly or through its
+package initializer.
+
 The parent proxy uses an inherited Unix socketpair and a separate parent-
 liveness pipe. The worker accepts only the eight operations frozen by design.
 Canonical JSON has fixed 64 KiB request, 4 MiB response, depth-eight,
@@ -58,7 +69,21 @@ The exact liveness values are versioned in
 - `abort_watchdog_ms = 30000`.
 
 They are transport liveness controls, not renderer budgets or backend
-selection thresholds. There are no code defaults or request overrides.
+selection thresholds. `response_write_timeout_ms` applies only while the worker
+writes a response; it is not a parent-side request/compile/warmup timeout. The
+parent waits without that socket timeout. Any parent-side wait or transport
+failure closes the liveness pipe and reaps the supervisor.
+
+The supervisor owns a one-shot abort-start pipe and a separate one-shot
+acknowledgement pipe. Before an emergency device synchronization, the lifecycle
+sends abort-start. The supervisor must first commit the 30-second deadline and
+only then return the exact acknowledgement byte. The worker records
+`abort_watchdog_armed` and calls the synchronization only after receiving that
+acknowledgement. An acknowledgement timeout, EOF, or malformed byte cannot
+enter CUDA synchronization; it quarantines the whole graph and terminates the
+worker. Thus a successful pipe write is not treated as proof that the watchdog
+event loop ran. A synchronization that blocks after acknowledgement is killed
+by the supervisor at process scope, even while the parent remains alive.
 
 Each worker accepts one HELLO, one OPEN, at most one future frozen-row prepare,
 and one terminal close. The close acknowledgement must be written before the
@@ -90,7 +115,9 @@ The terminal rule is exact:
 - current setup quiescence plus no measured submission: cancel and release,
   with no emergency sync;
 - dirty exact `{HELLO target}`, unknown false: exactly one target emergency
-  sync; success authorizes whole-graph release, failure quarantines;
+  sync, but only after the supervisor has acknowledged that its watchdog
+  deadline is armed; success authorizes whole-graph release, failure or missing
+  acknowledgement quarantines;
 - any foreign ordinal or unknown scope: no emergency sync of any device,
   append-only whole-graph quarantine, and process exit.
 
@@ -124,6 +151,12 @@ created/adopted before record or wait. The final setup target synchronization
 is distinct from the a2 ready-event wait and alone mints
 `SetupQuiescenceEvidence` after the complete graph is sealed.
 
+`NativeWorkerPreparationAborted` is consumed by the worker loop itself. Its
+termination evidence must bind the exact session/lane/device. Synced aborts may
+return normally because release was authorized; either quarantine disposition
+forces immediate `os._exit(74)`. Callers cannot catch the exception and resume
+the worker or run ordinary per-owner cleanup.
+
 ## Verification
 
 The focused CPU contract suite covers canonical codec/schema rejection,
@@ -146,15 +179,16 @@ The real GPU matrix runs both Warp and CUDA and covers:
 At implementation time:
 
 ```text
-ruff focused                         passed
-CPU closed-worker contracts         10 passed
-real Warp/CUDA setup fault matrix   10 passed
+ruff focused                                      passed
+all benchmark unit tests                          117 passed
+real GPU setup/native arena/command matrix         44 passed
+closed-worker launcher/supervisor/terminal tests    7 passed
 ```
 
-The clean-tree `-I -S` launcher/termination surface is covered by five
-additional cases
-that become runnable after this implementation is committed, because the
-production manifest correctly refuses a dirty repository.
+The clean-tree worker cases directly verify the live import ledger, a parent-
+alive permanently blocked emergency sync, and sync-failure quarantine without
+ordinary resource-owner finalization. The 44 GPU cases include the 10-case
+Warp/CUDA setup fault matrix and 34 retained native arena/command regressions.
 
 ## Gates intentionally unchanged
 

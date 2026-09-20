@@ -12,10 +12,10 @@ from types import MappingProxyType
 from typing import Final, Literal
 
 CLOSED_WORKER_PROTOCOL_VERSION: Final = "q54.p12.4.closed-worker-protocol.v1"
-CLOSED_WORKER_TRUST_MODEL_VERSION: Final = "q54.p12.4.closed-worker-trust-model.v1"
-CLOSED_WORKER_RUNTIME_MANIFEST_VERSION: Final = "q54.p12.4.closed-worker-runtime-manifest.v1"
-CLOSED_WORKER_EVIDENCE_VERSION: Final = "q54.p12.4.closed-worker-evidence.v1"
-CLOSED_WORKER_STATE_MACHINE_VERSION: Final = "q54.p12.4.closed-worker-state-machine.v1"
+CLOSED_WORKER_TRUST_MODEL_VERSION: Final = "q54.p12.4.closed-worker-trust-model.v2"
+CLOSED_WORKER_RUNTIME_MANIFEST_VERSION: Final = "q54.p12.4.closed-worker-runtime-manifest.v2"
+CLOSED_WORKER_EVIDENCE_VERSION: Final = "q54.p12.4.closed-worker-evidence.v2"
+CLOSED_WORKER_STATE_MACHINE_VERSION: Final = "q54.p12.4.closed-worker-state-machine.v2"
 
 MAX_REQUEST_BYTES: Final = 64 * 1024
 MAX_RESPONSE_BYTES: Final = 4 * 1024 * 1024
@@ -378,6 +378,8 @@ class ClosedNativeLaneWorkerEvidence:
     object_deserialization_enabled: bool
     gpu_preparation_enabled: bool
     cuda_capable_module_names: tuple[str, ...]
+    repository_module_paths: tuple[str, ...]
+    repository_import_ledger_sha256: str
 
     @classmethod
     def from_payload(cls, payload: object) -> "ClosedNativeLaneWorkerEvidence":
@@ -401,6 +403,8 @@ class ClosedNativeLaneWorkerEvidence:
             "object_deserialization_enabled",
             "gpu_preparation_enabled",
             "cuda_capable_module_names",
+            "repository_module_paths",
+            "repository_import_ledger_sha256",
         }
         if not isinstance(payload, Mapping) or set(payload) != fields:
             raise ClosedWorkerProtocolError("closed-worker evidence fields are invalid")
@@ -418,6 +422,7 @@ class ClosedNativeLaneWorkerEvidence:
             "gate_sha256",
             "workload_set_sha256",
             "interpreter_executable_sha256",
+            "repository_import_ledger_sha256",
         ):
             value = payload[name]
             if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
@@ -442,6 +447,17 @@ class ClosedNativeLaneWorkerEvidence:
         modules = payload["cuda_capable_module_names"]
         if not isinstance(modules, list) or modules:
             raise ClosedWorkerProtocolError("C4c0 worker imported CUDA-capable modules before activation")
+        repository_paths = payload["repository_module_paths"]
+        if (
+            not isinstance(repository_paths, list)
+            or repository_paths != sorted(set(repository_paths))
+            or any(
+                not isinstance(path, str) or _RELATIVE_PATH_RE.fullmatch(path) is None
+                for path in repository_paths
+            )
+            or canonical_sha256(repository_paths) != payload["repository_import_ledger_sha256"]
+        ):
+            raise ClosedWorkerProtocolError("closed-worker repository import ledger is invalid")
         return cls(
             schema_version=CLOSED_WORKER_EVIDENCE_VERSION,
             protocol_version=CLOSED_WORKER_PROTOCOL_VERSION,
@@ -462,6 +478,8 @@ class ClosedNativeLaneWorkerEvidence:
             object_deserialization_enabled=False,
             gpu_preparation_enabled=False,
             cuda_capable_module_names=(),
+            repository_module_paths=tuple(repository_paths),
+            repository_import_ledger_sha256=payload["repository_import_ledger_sha256"],
         )
 
     def to_payload(self) -> dict[str, object]:

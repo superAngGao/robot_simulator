@@ -65,6 +65,43 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def validate_repository_import_ledger(
+    manifest: ClosedWorkerRuntimeManifest,
+) -> tuple[str, ...]:
+    """Reject every loaded repository module outside the frozen source set."""
+
+    root = Path(manifest.repository_root).resolve()
+    allowed = {source.relative_path for source in manifest.source_digests}
+    loaded: set[str] = set()
+    for module in tuple(sys.modules.values()):
+        origin = getattr(module, "__file__", None)
+        if not isinstance(origin, str):
+            continue
+        candidate = Path(origin).resolve()
+        try:
+            relative = candidate.relative_to(root)
+        except ValueError:
+            continue
+        if candidate.suffix in {".pyc", ".pyo"}:
+            spec = getattr(module, "__spec__", None)
+            source_origin = getattr(spec, "origin", None)
+            if isinstance(source_origin, str):
+                candidate = Path(source_origin).resolve()
+                try:
+                    relative = candidate.relative_to(root)
+                except ValueError as exc:
+                    raise ClosedWorkerProtocolError(
+                        "repository bytecode module has no in-repository source"
+                    ) from exc
+        path = relative.as_posix()
+        if path not in allowed:
+            raise ClosedWorkerProtocolError(
+                f"worker loaded repository module outside source allowlist: {path!r}"
+            )
+        loaded.add(path)
+    return tuple(sorted(loaded))
+
+
 def validate_trusted_source_ast(path: Path) -> None:
     if path.suffix != ".py":
         raise ClosedWorkerProtocolError("trusted worker source must be a Python source file")
@@ -123,7 +160,7 @@ def validate_runtime_manifest_against_process(
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ClosedWorkerProtocolError("closed-worker runtime contract cannot be read") from exc
     expected_contract = {
-        "schema_version": "q54.p12.4.closed-worker-runtime-contract.v1",
+        "schema_version": "q54.p12.4.closed-worker-runtime-contract.v2",
         "protocol_version": CLOSED_WORKER_PROTOCOL_VERSION,
         "trust_model_version": CLOSED_WORKER_TRUST_MODEL_VERSION,
         "state_machine_version": CLOSED_WORKER_STATE_MACHINE_VERSION,

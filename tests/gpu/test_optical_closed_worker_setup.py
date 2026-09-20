@@ -54,6 +54,10 @@ def _enter(
     lifecycle.enter_device_leaf(permit)
 
 
+def _noop_abort_notifier(device_ordinal: int) -> None:
+    assert device_ordinal >= 0
+
+
 @pytest.mark.parametrize("lane", ["warp", "cuda"])
 def test_guarded_a2_register_before_copy_and_final_quiescence(lane):
     torch, wp = _require_both_backends()
@@ -64,6 +68,7 @@ def test_guarded_a2_register_before_copy_and_final_quiescence(lane):
     lifecycle = NativeWorkerSetupLifecycle(
         lane_id=lane,
         target_device_ordinal=target,
+        emergency_sync_notifier=_noop_abort_notifier,
         session_identity=f"{lane}-a2-success",
     )
     if lane == "cuda":
@@ -100,6 +105,7 @@ def test_real_a2_failure_retains_partial_graph_until_target_abort_sync(lane, fai
     lifecycle = NativeWorkerSetupLifecycle(
         lane_id=lane,
         target_device_ordinal=target,
+        emergency_sync_notifier=_noop_abort_notifier,
         session_identity=f"{lane}-{failure_point}",
     )
     sync_observations: list[tuple[int, int]] = []
@@ -185,7 +191,9 @@ import json, os
 from optical_worker.lifecycle import DeviceScopeDescriptor, NativeWorkerSetupLifecycle
 lane = {lane!r}
 lifecycle = NativeWorkerSetupLifecycle(
-    lane_id=lane, target_device_ordinal=1, session_identity=lane+'-foreign')
+    lane_id=lane, target_device_ordinal=1,
+    emergency_sync_notifier=lambda ordinal: None,
+    session_identity=lane+'-foreign')
 permit = lifecycle.begin_device_leaf(DeviceScopeDescriptor.exact_target(
     operation_id='lying_helper', leaf_kind='allocation', device_ordinal=1,
     scope_source='frozen_helper_contract', runtime_identity='fault_probe_v1'))
@@ -243,6 +251,7 @@ def test_real_warmup_interruption_retains_registered_operands_until_abort_sync(l
     lifecycle = NativeWorkerSetupLifecycle(
         lane_id=lane,
         target_device_ordinal=0,
+        emergency_sync_notifier=_noop_abort_notifier,
         session_identity=f"{lane}-warmup-failure",
     )
     if lane == "cuda":

@@ -17,6 +17,8 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, is_dataclass
 from types import MappingProxyType
 
+from optical_worker.native_contract import CudaPreparedNativeInput
+
 from .cuda_direct_light import (
     CudaCameraParameters,
     CudaDirectLightBuffers,
@@ -1858,11 +1860,9 @@ def _validate_live_a2_binding(
     prepared_input: object,
     native_readiness: object,
 ) -> None:
-    prepared_type = type(prepared_input)
     readiness_type = type(native_readiness)
     if (
-        prepared_type.__module__ != "benchmarks.optical.native"
-        or prepared_type.__name__ != "CudaPreparedNativeInput"
+        type(prepared_input) is not CudaPreparedNativeInput
         or readiness_type.__module__ != "benchmarks.optical.native"
         or readiness_type.__name__ != "NativeReadinessEvidence"
     ):

@@ -97,6 +97,24 @@ def main():
     supervisor_evidence_path = Path(sys.argv[5]).resolve()
     worker_script = Path(sys.argv[6]).resolve()
     manifest = _load_manifest(manifest_path)
+    expected_worker = (
+        Path(manifest.get("repository_root", "")) / manifest.get("worker_script_relative_path", "")
+    ).resolve()
+    expected_worker_digest = next(
+        (
+            item.get("sha256")
+            for item in manifest.get("source_digests", ())
+            if isinstance(item, dict)
+            and item.get("relative_path") == manifest.get("worker_script_relative_path")
+        ),
+        None,
+    )
+    if (
+        worker_script != expected_worker
+        or not worker_script.is_file()
+        or expected_worker_digest != _sha256(worker_script)
+    ):
+        return 65
     abort_watchdog_ms = manifest["abort_watchdog_ms"]
     if not isinstance(abort_watchdog_ms, int) or isinstance(abort_watchdog_ms, bool):
         return 65
@@ -107,6 +125,8 @@ def main():
         0o600,
     )
     worker_liveness_read, worker_liveness_write = os.pipe()
+    abort_signal_read, abort_signal_write = os.pipe()
+    abort_ack_read, abort_ack_write = os.pipe()
     process = subprocess.Popen(
         [
             sys.executable,
@@ -117,31 +137,77 @@ def main():
             str(command_descriptor),
             str(worker_liveness_read),
             str(journal_descriptor),
+            str(abort_signal_write),
+            str(abort_ack_read),
         ],
         close_fds=True,
-        pass_fds=(command_descriptor, worker_liveness_read, journal_descriptor),
+        pass_fds=(
+            command_descriptor,
+            worker_liveness_read,
+            journal_descriptor,
+            abort_signal_write,
+            abort_ack_read,
+        ),
         start_new_session=True,
     )
     os.close(command_descriptor)
     os.close(worker_liveness_read)
     os.close(journal_descriptor)
+    os.close(abort_signal_write)
+    os.close(abort_ack_read)
     parent_lost = False
     watchdog_killed = False
-    loss_deadline = None
+    abort_watchdog_started = False
+    abort_signal_valid = False
+    abort_signal_open = True
+    abort_ack_sent = False
+    abort_ack_open = True
+    watchdog_deadline = None
+    watchdog_reasons = []
     while process.poll() is None:
-        readable, _, _ = select.select([parent_liveness_descriptor], [], [], 0.05)
+        watched = [parent_liveness_descriptor]
+        if abort_signal_open:
+            watched.append(abort_signal_read)
+        readable, _, _ = select.select(watched, [], [], 0.05)
+        if abort_signal_read in readable and not abort_watchdog_started:
+            signal = os.read(abort_signal_read, 2)
+            if not signal:
+                abort_signal_open = False
+                os.close(abort_signal_read)
+            else:
+                abort_signal_open = False
+                os.close(abort_signal_read)
+                abort_watchdog_started = True
+                abort_signal_valid = signal == b"A"
+                watchdog_reasons.append("emergency_sync" if abort_signal_valid else "invalid_abort_signal")
+                watchdog_deadline = time.monotonic() + abort_watchdog_ms / 1000.0
+                if abort_signal_valid:
+                    try:
+                        abort_ack_sent = os.write(abort_ack_write, b"K") == 1
+                    except BrokenPipeError:
+                        abort_ack_sent = False
+                abort_ack_open = False
+                os.close(abort_ack_write)
         if parent_liveness_descriptor in readable and not parent_lost:
             os.read(parent_liveness_descriptor, 1)
             parent_lost = True
             os.close(worker_liveness_write)
-            loss_deadline = time.monotonic() + abort_watchdog_ms / 1000.0
-        if parent_lost and loss_deadline is not None and time.monotonic() >= loss_deadline:
+            watchdog_reasons.append("parent_lost")
+            parent_deadline = time.monotonic() + abort_watchdog_ms / 1000.0
+            watchdog_deadline = (
+                parent_deadline if watchdog_deadline is None else min(watchdog_deadline, parent_deadline)
+            )
+        if watchdog_deadline is not None and time.monotonic() >= watchdog_deadline:
             process.kill()
             watchdog_killed = True
             break
     return_code = process.wait()
     if not parent_lost:
         os.close(worker_liveness_write)
+    if abort_signal_open:
+        os.close(abort_signal_read)
+    if abort_ack_open:
+        os.close(abort_ack_write)
     _atomic_json(
         supervisor_evidence_path,
         {
@@ -149,6 +215,10 @@ def main():
             "worker_process_id": process.pid,
             "worker_return_code": return_code,
             "parent_lost": parent_lost,
+            "abort_watchdog_started": abort_watchdog_started,
+            "abort_signal_valid": abort_signal_valid,
+            "abort_ack_sent": abort_ack_sent,
+            "watchdog_reasons": watchdog_reasons,
             "watchdog_killed_worker": watchdog_killed,
             "no_restart": True,
         },

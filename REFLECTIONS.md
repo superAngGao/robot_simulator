@@ -3414,3 +3414,37 @@ runtime contract carries exact liveness values while keeping them visibly
 separate from performance gates. This gives both candidate backends the same
 durable process boundary without committing the repository to a permanent
 dual-backend dispatcher.
+
+A source allowlist is not closed merely because the directly imported file is
+listed. Python executes package initializers first, and one apparently narrow
+`from package import module` can load a large transitive graph. Closed-worker
+evidence therefore needs both a frozen source manifest and a live import
+ledger based on repository-relative module origins. Shared prepared-input
+types and identity registries belong in a CPU-safe production module; importing
+the benchmark package from a trusted data-plane leaf defeats the boundary even
+when every resulting object is otherwise correct.
+
+An emergency-sync timeout must begin at the synchronization attempt, not only
+after the parent disappears. Compilation or warmup may legitimately outlive a
+response-write budget, while a hung device synchronization must be bounded
+even with a healthy parent. Separate pipes encode those separate facts: the
+parent-liveness pipe handles ownership loss, and a one-shot worker-to-supervisor
+abort signal arms the emergency watchdog before the CUDA call. If that signal
+cannot be delivered, synchronization is not safe to start and the graph stays
+quarantined.
+
+A successful write to an abort pipe is not evidence that the receiving event
+loop has processed it. The supervisor can still hold the read descriptor while
+being stalled before it installs the deadline. Emergency synchronization
+therefore needs a two-way commit: the worker sends abort-start, the supervisor
+sets the deadline, and only then does it return a one-shot acknowledgement. The
+worker must not call the synchronization leaf before validating that ACK.
+Timeout, EOF, or a wrong acknowledgement is itself a process-terminal
+quarantine path; notably, the sync callable remains uninvoked.
+
+Quarantine also has to be a worker-loop terminal action rather than an
+exception convention. Returning evidence to arbitrary Python callers still
+allows stack unwinding and resource finalizers to run. The loop must validate
+the session-bound termination evidence and use immediate process exit for
+quarantine dispositions; only a successful emergency sync may authorize an
+ordinary interpreter exit and object cleanup.

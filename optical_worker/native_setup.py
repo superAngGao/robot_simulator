@@ -17,6 +17,12 @@ from .lifecycle import (
     SetupQuiescenceEvidence,
     TransportTerminationEvidence,
 )
+from .native_contract import (
+    CudaPreparedNativeInput,
+    WarpPreparedNativeInput,
+    register_prepared_native_input,
+    warp_dtype_from_host_dtype,
+)
 
 
 class NativeWorkerPreparationAborted(RuntimeError):
@@ -170,8 +176,6 @@ def prepare_cuda_native_input_for_closed_worker(
 
         import numpy as np
 
-        from benchmarks.optical import native as native_module
-
         prepared: dict[str, Any] = {}
         for manifest in source.manifest.arrays:
             value = source.arrays[manifest.name]
@@ -262,7 +266,7 @@ def prepare_cuda_native_input_for_closed_worker(
             ),
         )
         _torch_wait_event_host_exact(ready_event)
-        result = native_module.CudaPreparedNativeInput(
+        result = CudaPreparedNativeInput(
             manifest=source.manifest,
             device_ordinal=lifecycle.target_device_ordinal,
             arrays=MappingProxyType(prepared),
@@ -275,9 +279,7 @@ def prepare_cuda_native_input_for_closed_worker(
             role="cuda_a2_prepared_input",
             operation_id="cuda_a2_result",
         )
-        native_module._register_identity_authority(  # noqa: SLF001 - trusted worker boundary.
-            native_module._PREPARED_INPUT_AUTHORITIES, result, source
-        )
+        register_prepared_native_input(result, source)
         return result
     except BaseException as exc:
         if torch is None or target is None:
@@ -352,8 +354,6 @@ def prepare_warp_native_input_for_closed_worker(
 
         import numpy as np
 
-        from benchmarks.optical import native as native_module
-
         prepared: dict[str, Any] = {}
         with wp.ScopedDevice(target):
             for manifest in source.manifest.arrays:
@@ -366,7 +366,7 @@ def prepare_warp_native_input_for_closed_worker(
                 )
                 host_array = wp.array(
                     host,
-                    dtype=native_module._warp_dtype(wp, value.dtype),  # noqa: SLF001
+                    dtype=warp_dtype_from_host_dtype(wp, value.dtype),
                     device="cpu",
                     copy=False,
                 )
@@ -387,7 +387,7 @@ def prepare_warp_native_input_for_closed_worker(
                 destination = _warp_empty_exact(
                     wp,
                     shape=tuple(host.shape),
-                    dtype=native_module._warp_dtype(wp, value.dtype),  # noqa: SLF001
+                    dtype=warp_dtype_from_host_dtype(wp, value.dtype),
                     target=target,
                 )
                 lifecycle.adopt_returned_device_owner(
@@ -446,7 +446,7 @@ def prepare_warp_native_input_for_closed_worker(
                 ),
             )
             _warp_wait_event_host_exact(wp, ready_event)
-        result = native_module.WarpPreparedNativeInput(
+        result = WarpPreparedNativeInput(
             manifest=source.manifest,
             device_ordinal=lifecycle.target_device_ordinal,
             arrays=MappingProxyType(prepared),
@@ -459,9 +459,7 @@ def prepare_warp_native_input_for_closed_worker(
             role="warp_a2_prepared_input",
             operation_id="warp_a2_result",
         )
-        native_module._register_identity_authority(  # noqa: SLF001 - trusted worker boundary.
-            native_module._PREPARED_INPUT_AUTHORITIES, result, source
-        )
+        register_prepared_native_input(result, source)
         return result
     except BaseException as exc:
         if wp is None or target is None:

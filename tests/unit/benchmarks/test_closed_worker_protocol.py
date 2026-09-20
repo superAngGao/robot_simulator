@@ -5,7 +5,7 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
-from types import MappingProxyType
+from types import MappingProxyType, ModuleType
 
 import pytest
 
@@ -30,6 +30,10 @@ from optical_worker.worker import ClosedWorkerSession
 
 class _Owner:
     pass
+
+
+def _noop_abort_notifier(device_ordinal: int) -> None:
+    assert device_ordinal >= 0
 
 
 def _descriptor(target: int, operation: str = "test_allocation") -> DeviceScopeDescriptor:
@@ -99,9 +103,45 @@ def test_request_schema_rejects_dynamic_operations_handles_and_extra_fields():
             validate_request(changed)
 
 
+def test_repository_import_ledger_rejects_loaded_repo_module_outside_allowlist(
+    runtime_manifest,
+    monkeypatch,
+):
+    from optical_worker.manifest import validate_repository_import_ledger
+    from optical_worker.protocol import FrozenSourceDigest
+
+    root = Path(__file__).resolve().parents[3]
+    loaded_paths = set()
+    for module in tuple(sys.modules.values()):
+        origin = getattr(module, "__file__", None)
+        if not isinstance(origin, str):
+            continue
+        try:
+            loaded_paths.add(Path(origin).resolve().relative_to(root).as_posix())
+        except ValueError:
+            pass
+    fake_name = "unreviewed_repository_module_probe"
+    fake = ModuleType(fake_name)
+    fake.__file__ = str(root / "unreviewed_worker_probe.py")
+    monkeypatch.setitem(sys.modules, fake_name, fake)
+    manifest = replace(
+        runtime_manifest,
+        repository_root=str(root),
+        source_digests=tuple(
+            FrozenSourceDigest(relative_path=path, sha256="1" * 64) for path in sorted(loaded_paths)
+        ),
+    )
+    with pytest.raises(ClosedWorkerProtocolError, match="outside source allowlist"):
+        validate_repository_import_ledger(manifest)
+
+
 def test_target_only_dirty_failure_syncs_once_before_whole_graph_release():
+    calls: list[str] = []
     lifecycle = NativeWorkerSetupLifecycle(
-        lane_id="cuda", target_device_ordinal=1, session_identity="target-only"
+        lane_id="cuda",
+        target_device_ordinal=1,
+        emergency_sync_notifier=lambda ordinal: calls.append(f"watchdog:{ordinal}"),
+        session_identity="target-only",
     )
     _enter(lifecycle, _descriptor(1))
     owner = _Owner()
@@ -111,18 +151,17 @@ def test_target_only_dirty_failure_syncs_once_before_whole_graph_release():
         role="device_buffer",
         operation_id="test_allocation",
     )
-    calls: list[int] = []
 
     def synchronize() -> None:
         assert lifecycle.guardian.contains_exact_owner(owner)
-        calls.append(1)
+        calls.append("sync")
 
     evidence = lifecycle.terminate(
         fault="setup_failure",
         detection_phase="first_upload",
         emergency_target_synchronize=synchronize,
     )
-    assert calls == [1]
+    assert calls == ["watchdog:1", "sync"]
     assert evidence.disposition == "aborted_synced_exit"
     assert evidence.emergency_sync_attempted_ordinal == 1
     assert evidence.resource_release_authorized is True
@@ -131,7 +170,10 @@ def test_target_only_dirty_failure_syncs_once_before_whole_graph_release():
 
 def test_low_level_leaf_requires_the_exact_single_use_pre_leaf_permit():
     lifecycle = NativeWorkerSetupLifecycle(
-        lane_id="cuda", target_device_ordinal=0, session_identity="leaf-permit"
+        lane_id="cuda",
+        target_device_ordinal=0,
+        emergency_sync_notifier=_noop_abort_notifier,
+        session_identity="leaf-permit",
     )
     permit = lifecycle.begin_device_leaf(_descriptor(0))
     with pytest.raises(WorkerSetupProtocolError, match="previous setup leaf"):
@@ -143,9 +185,41 @@ def test_low_level_leaf_requires_the_exact_single_use_pre_leaf_permit():
         lifecycle.enter_device_leaf(permit)
 
 
+def test_watchdog_arm_failure_quarantines_without_entering_emergency_sync():
+    def fail_notifier(device_ordinal: int) -> None:
+        raise BrokenPipeError(f"supervisor pipe closed for cuda:{device_ordinal}")
+
+    lifecycle = NativeWorkerSetupLifecycle(
+        lane_id="cuda",
+        target_device_ordinal=0,
+        emergency_sync_notifier=fail_notifier,
+        session_identity="watchdog-arm-failure",
+    )
+    _enter(lifecycle, _descriptor(0))
+    owner = _Owner()
+    lifecycle.adopt_returned_device_owner(
+        owner,
+        actual_device_ordinal=0,
+        role="device_buffer",
+        operation_id="test_allocation",
+    )
+    evidence = lifecycle.terminate(
+        fault="setup_failure",
+        detection_phase="upload",
+        emergency_target_synchronize=lambda: pytest.fail("sync must not start without watchdog"),
+    )
+    assert evidence.disposition == "quarantined_process_exit"
+    assert evidence.emergency_sync_attempt_count == 0
+    assert evidence.emergency_sync_outcome == "watchdog_arm_failed"
+    assert lifecycle.guardian.contains_exact_owner(owner)
+
+
 def test_foreign_returned_owner_is_adopted_then_forces_no_sync_quarantine():
     lifecycle = NativeWorkerSetupLifecycle(
-        lane_id="warp", target_device_ordinal=1, session_identity="foreign-owner"
+        lane_id="warp",
+        target_device_ordinal=1,
+        emergency_sync_notifier=_noop_abort_notifier,
+        session_identity="foreign-owner",
     )
     _enter(lifecycle, _descriptor(1))
     owner = _Owner()
@@ -172,7 +246,10 @@ def test_foreign_returned_owner_is_adopted_then_forces_no_sync_quarantine():
 
 def test_unknown_scope_is_irreversible_and_cannot_become_aborted_synced():
     lifecycle = NativeWorkerSetupLifecycle(
-        lane_id="cuda", target_device_ordinal=2, session_identity="unknown-scope"
+        lane_id="cuda",
+        target_device_ordinal=2,
+        emergency_sync_notifier=_noop_abort_notifier,
+        session_identity="unknown-scope",
     )
     unknown = DeviceScopeDescriptor.unknown(
         operation_id="opaque_helper",
@@ -194,7 +271,10 @@ def test_unknown_scope_is_irreversible_and_cannot_become_aborted_synced():
 
 def test_quiescence_requires_seal_exact_target_and_supports_clean_cancel():
     lifecycle = NativeWorkerSetupLifecycle(
-        lane_id="cuda", target_device_ordinal=0, session_identity="quiescent"
+        lane_id="cuda",
+        target_device_ordinal=0,
+        emergency_sync_notifier=_noop_abort_notifier,
+        session_identity="quiescent",
     )
     _enter(lifecycle, _descriptor(0))
     _enter(
@@ -224,7 +304,12 @@ def test_quiescence_requires_seal_exact_target_and_supports_clean_cancel():
 
 
 def test_termination_validator_replays_summary_and_rejects_public_rehash_forgery():
-    lifecycle = NativeWorkerSetupLifecycle(lane_id="cuda", target_device_ordinal=0, session_identity="replay")
+    lifecycle = NativeWorkerSetupLifecycle(
+        lane_id="cuda",
+        target_device_ordinal=0,
+        emergency_sync_notifier=_noop_abort_notifier,
+        session_identity="replay",
+    )
     _enter(lifecycle, _descriptor(0))
     evidence = lifecycle.terminate(
         fault="setup_failure",
@@ -250,7 +335,10 @@ def test_termination_validator_replays_summary_and_rejects_public_rehash_forgery
 
 
 def test_closed_worker_session_keeps_gpu_prepare_and_result_exit_closed(runtime_manifest):
-    session = ClosedWorkerSession(runtime_manifest)
+    session = ClosedWorkerSession(
+        runtime_manifest,
+        emergency_sync_notifier=_noop_abort_notifier,
+    )
     hello = session.handle(
         {
             "protocol_version": CLOSED_WORKER_PROTOCOL_VERSION,
@@ -296,7 +384,7 @@ def test_closed_worker_session_keeps_gpu_prepare_and_result_exit_closed(runtime_
 
 
 @pytest.fixture
-def runtime_manifest():
+def runtime_manifest(tmp_path):
     from optical_worker.manifest import AST_POLICY_SHA256, current_environment_identity
     from optical_worker.protocol import (
         CLOSED_WORKER_RUNTIME_MANIFEST_VERSION,
@@ -319,7 +407,7 @@ def runtime_manifest():
         "environment": environment,
         "environment_sha256": canonical_sha256(environment),
         "site_package_paths": [],
-        "repository_root": str(Path.cwd()),
+        "repository_root": str(tmp_path),
         "repository_revision": "f" * 40,
         "repository_clean": True,
         "worker_script_relative_path": "tools/optical_closed_worker.py",

@@ -71,7 +71,7 @@ def _load_runtime_contract(root: Path) -> dict[str, object]:
     if not isinstance(payload, dict) or set(payload) != expected_fields:
         raise ClosedWorkerProtocolError("closed-worker runtime contract fields are invalid")
     expected = {
-        "schema_version": "q54.p12.4.closed-worker-runtime-contract.v1",
+        "schema_version": "q54.p12.4.closed-worker-runtime-contract.v2",
         "protocol_version": CLOSED_WORKER_PROTOCOL_VERSION,
         "trust_model_version": CLOSED_WORKER_TRUST_MODEL_VERSION,
         "state_machine_version": CLOSED_WORKER_STATE_MACHINE_VERSION,
@@ -263,15 +263,19 @@ class ClosedWorkerLaneProxy:
             },
             max_bytes=MAX_REQUEST_BYTES,
         )
-        self._socket.settimeout(self._manifest.response_write_timeout_ms / 1000.0)
-        self._socket.sendall(frame)
-        header = self._recv_exact(4)
-        size = decode_frame_header(header, max_bytes=MAX_RESPONSE_BYTES)
-        response = decode_canonical_message(self._recv_exact(size), max_bytes=MAX_RESPONSE_BYTES)
-        canonical = validate_response_envelope(response)
-        if canonical["sequence"] != sequence:
-            raise ClosedWorkerProtocolError("worker response sequence mismatch")
-        return canonical
+        try:
+            self._socket.settimeout(None)
+            self._socket.sendall(frame)
+            header = self._recv_exact(4)
+            size = decode_frame_header(header, max_bytes=MAX_RESPONSE_BYTES)
+            response = decode_canonical_message(self._recv_exact(size), max_bytes=MAX_RESPONSE_BYTES)
+            canonical = validate_response_envelope(response)
+            if canonical["sequence"] != sequence:
+                raise ClosedWorkerProtocolError("worker response sequence mismatch")
+            return canonical
+        except BaseException:
+            self._close_and_reap_after_request_failure()
+            raise
 
     def hello_and_open(self) -> tuple[dict[str, object], dict[str, object]]:
         hello = self.request(
@@ -288,6 +292,9 @@ class ClosedWorkerLaneProxy:
             or worker_evidence.runtime_manifest_sha256 != self._manifest.sha256
             or worker_evidence.lane_id != self._manifest.lane_id
             or worker_evidence.device_ordinal != self._manifest.device_ordinal
+            or not set(worker_evidence.repository_module_paths).issubset(
+                {source.relative_path for source in self._manifest.source_digests}
+            )
         ):
             raise ClosedWorkerProtocolError("live worker evidence does not bind the runtime manifest")
         opened = self.request(
@@ -314,6 +321,15 @@ class ClosedWorkerLaneProxy:
 
     def wait_supervisor(self, *, timeout_seconds: float = 10.0) -> int:
         return self._supervisor.wait(timeout=timeout_seconds)
+
+    def _close_and_reap_after_request_failure(self) -> None:
+        self.close_transport()
+        timeout = self._manifest.abort_watchdog_ms / 1000.0 + 10.0
+        try:
+            self._supervisor.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self._supervisor.kill()
+            self._supervisor.wait()
 
     def _recv_exact(self, size: int) -> bytes:
         chunks: list[bytes] = []

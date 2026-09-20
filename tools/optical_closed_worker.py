@@ -13,6 +13,7 @@ _REQUIRED_C4C0_SOURCE_PATHS = (
     "optical_worker/__init__.py",
     "optical_worker/lifecycle.py",
     "optical_worker/manifest.py",
+    "optical_worker/native_contract.py",
     "optical_worker/native_setup.py",
     "optical_worker/protocol.py",
     "optical_worker/worker.py",
@@ -93,7 +94,7 @@ def _load_and_prevalidate_manifest(path):
 
 
 def main():
-    if len(sys.argv) != 5:
+    if len(sys.argv) != 7:
         return 64
     if not sys.flags.isolated or not sys.flags.no_site:
         return 65
@@ -101,6 +102,8 @@ def main():
     command_descriptor = int(sys.argv[2], 10)
     liveness_descriptor = int(sys.argv[3], 10)
     journal_descriptor = int(sys.argv[4], 10)
+    abort_signal_descriptor = int(sys.argv[5], 10)
+    abort_ack_descriptor = int(sys.argv[6], 10)
     payload, root = _load_and_prevalidate_manifest(manifest_path)
     sys.dont_write_bytecode = True
     stdlib_paths = tuple(sys.path)
@@ -116,6 +119,8 @@ def main():
         command_descriptor=command_descriptor,
         liveness_descriptor=liveness_descriptor,
         journal_descriptor=journal_descriptor,
+        abort_signal_descriptor=abort_signal_descriptor,
+        abort_ack_descriptor=abort_ack_descriptor,
         manifest=manifest,
     )
 

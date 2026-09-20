@@ -20,8 +20,8 @@ from typing import Final, Literal
 DEVICE_SCOPE_SCHEMA_VERSION: Final = "q54.p12.4.closed-worker-device-scope.v1"
 SETUP_QUIESCENCE_SCHEMA_VERSION: Final = "q54.p12.4.setup-quiescence.v1"
 GUARDIAN_COVERAGE_SCHEMA_VERSION: Final = "q54.p12.4.worker-guardian-coverage.v1"
-TRANSPORT_TERMINATION_SCHEMA_VERSION: Final = "q54.p12.4.transport-termination.v1"
-SETUP_LIFECYCLE_VERSION: Final = "q54.p12.4.setup-lifecycle.v1"
+TRANSPORT_TERMINATION_SCHEMA_VERSION: Final = "q54.p12.4.transport-termination.v2"
+SETUP_LIFECYCLE_VERSION: Final = "q54.p12.4.setup-lifecycle.v2"
 
 UNKNOWN_DEVICE_OWNER: Final = "UNKNOWN_DEVICE_OWNER"
 HOST_OWNER: Final = "HOST_OWNER"
@@ -437,6 +437,7 @@ class NativeWorkerSetupLifecycle:
     __slots__ = (
         "_current_operation_id",
         "_epoch",
+        "_emergency_sync_notifier",
         "_guardian",
         "_guardian_authority",
         "_lane_id",
@@ -461,6 +462,7 @@ class NativeWorkerSetupLifecycle:
         *,
         lane_id: str,
         target_device_ordinal: int,
+        emergency_sync_notifier: Callable[[int], None],
         session_identity: str | None = None,
     ) -> None:
         if lane_id not in {"warp", "cuda"}:
@@ -471,11 +473,14 @@ class NativeWorkerSetupLifecycle:
             or not 0 <= target_device_ordinal <= 1023
         ):
             raise WorkerSetupProtocolError("setup target device ordinal is invalid")
+        if not callable(emergency_sync_notifier):
+            raise WorkerSetupProtocolError("emergency-sync notifier must be callable")
         self._session_identity = session_identity or f"worker-{secrets.token_hex(16)}"
         if not _valid_identifier(self._session_identity):
             raise WorkerSetupProtocolError("setup session identity is invalid")
         self._lane_id = lane_id
         self._target = target_device_ordinal
+        self._emergency_sync_notifier = emergency_sync_notifier
         self._guardian = NativeWorkerResourceGuardian(session_identity=self._session_identity)
         self._guardian_authority = self._guardian._control_authority()
         self._lock = threading.RLock()
@@ -798,16 +803,14 @@ class NativeWorkerSetupLifecycle:
                         raise WorkerSetupProtocolError(
                             "target-only dirty termination requires the exact emergency sync"
                         )
-                    emergency_attempt_count = 1
                     emergency_attempted_ordinal = self._target
-                    self._append("emergency_sync_started", {"device_ordinal": self._target})
                     try:
-                        emergency_target_synchronize()
+                        self._emergency_sync_notifier(self._target)
                     except BaseException as exc:
-                        emergency_outcome = "failed"
-                        per_device[str(self._target)] = "emergency_sync_failed"
+                        emergency_outcome = "watchdog_arm_failed"
+                        per_device[str(self._target)] = "watchdog_arm_failed"
                         self._append(
-                            "emergency_sync_failed",
+                            "abort_watchdog_arm_failed",
                             {"device_ordinal": self._target, "exception_type": type(exc).__name__},
                         )
                         self._guardian.transfer_to_quarantine(self._guardian_authority)
@@ -818,19 +821,42 @@ class NativeWorkerSetupLifecycle:
                         disposition = "quarantined_process_exit"
                         self._state = "QUARANTINED_UNTIL_PROCESS_EXIT"
                     else:
-                        emergency_outcome = "succeeded"
-                        self._proven_quiescent.add(self._target)
-                        per_device[str(self._target)] = "emergency_sync_succeeded"
-                        self._append("emergency_sync_succeeded", {"device_ordinal": self._target})
-                        self._guardian.authorize_release(self._guardian_authority)
-                        self._append("resource_release_authorized", {"reason": "emergency_sync"})
-                        release_authorized = True
-                        ordinary_cleanup_started = True
-                        self._append("ordinary_cleanup_started", {})
-                        self._guardian.release_whole_graph(self._guardian_authority)
-                        self._append("guardian_released", {})
-                        disposition = "aborted_synced_exit"
-                        self._state = "ABORTED_SYNCED"
+                        self._append("abort_watchdog_armed", {"device_ordinal": self._target})
+                        emergency_attempt_count = 1
+                        self._append("emergency_sync_started", {"device_ordinal": self._target})
+                        try:
+                            emergency_target_synchronize()
+                        except BaseException as exc:
+                            emergency_outcome = "failed"
+                            per_device[str(self._target)] = "emergency_sync_failed"
+                            self._append(
+                                "emergency_sync_failed",
+                                {
+                                    "device_ordinal": self._target,
+                                    "exception_type": type(exc).__name__,
+                                },
+                            )
+                            self._guardian.transfer_to_quarantine(self._guardian_authority)
+                            self._append(
+                                "guardian_quarantine_transferred",
+                                {"coverage_sha256": self._guardian.coverage_sha256},
+                            )
+                            disposition = "quarantined_process_exit"
+                            self._state = "QUARANTINED_UNTIL_PROCESS_EXIT"
+                        else:
+                            emergency_outcome = "succeeded"
+                            self._proven_quiescent.add(self._target)
+                            per_device[str(self._target)] = "emergency_sync_succeeded"
+                            self._append("emergency_sync_succeeded", {"device_ordinal": self._target})
+                            self._guardian.authorize_release(self._guardian_authority)
+                            self._append("resource_release_authorized", {"reason": "emergency_sync"})
+                            release_authorized = True
+                            ordinary_cleanup_started = True
+                            self._append("ordinary_cleanup_started", {})
+                            self._guardian.release_whole_graph(self._guardian_authority)
+                            self._append("guardian_released", {})
+                            disposition = "aborted_synced_exit"
+                            self._state = "ABORTED_SYNCED"
                 else:
                     for ordinal in sorted(uncovered):
                         per_device[str(ordinal)] = "process_teardown_only"
@@ -1178,6 +1204,8 @@ def validate_transport_termination_evidence(evidence: TransportTerminationEviden
     emergency_started = 0
     emergency_succeeded = 0
     emergency_failed = 0
+    watchdog_armed = 0
+    watchdog_arm_failed = 0
     release_authorized = False
     cleanup_started = False
     terminated_disposition: str | None = None
@@ -1261,6 +1289,10 @@ def validate_transport_termination_evidence(evidence: TransportTerminationEviden
             if sample_latched:
                 raise WorkerSetupProtocolError("termination sample latch is not monotonic")
             sample_latched = True
+        elif item.operation == "abort_watchdog_armed":
+            watchdog_armed += 1
+        elif item.operation == "abort_watchdog_arm_failed":
+            watchdog_arm_failed += 1
         elif item.operation == "emergency_sync_started":
             emergency_started += 1
         elif item.operation == "emergency_sync_succeeded":
@@ -1296,10 +1328,14 @@ def validate_transport_termination_evidence(evidence: TransportTerminationEviden
         raise WorkerSetupProtocolError("termination disposition does not replay")
     if emergency_started != evidence.emergency_sync_attempt_count or emergency_started > 1:
         raise WorkerSetupProtocolError("termination emergency-sync count does not replay")
+    if watchdog_armed != emergency_started or watchdog_armed + watchdog_arm_failed > 1:
+        raise WorkerSetupProtocolError("termination abort-watchdog state does not replay")
     if emergency_succeeded and emergency_failed:
         raise WorkerSetupProtocolError("termination emergency sync has conflicting outcomes")
     expected_outcome = "not_attempted"
-    if emergency_succeeded:
+    if watchdog_arm_failed:
+        expected_outcome = "watchdog_arm_failed"
+    elif emergency_succeeded:
         expected_outcome = "succeeded"
     elif emergency_failed:
         expected_outcome = "failed"
@@ -1335,7 +1371,7 @@ def validate_transport_termination_evidence(evidence: TransportTerminationEviden
     elif evidence.disposition == "quarantined_process_exit":
         if (
             evidence.final_state != "QUARANTINED_UNTIL_PROCESS_EXIT"
-            or evidence.emergency_sync_outcome != "failed"
+            or evidence.emergency_sync_outcome not in {"failed", "watchdog_arm_failed"}
             or evidence.guardian_state != "TRANSFERRED_TO_QUARANTINE"
             or evidence.resource_release_authorized
         ):
