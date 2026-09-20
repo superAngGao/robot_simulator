@@ -1027,7 +1027,12 @@ Next milestone:
       single-use prepared-acquire authority, one-to-one lease/transaction/owner
       registration, and O(1) measured acquire are closed. The implementation
       remains non-result-capable pending the joint C4/B3 activation review.
-- [ ] P12.4 C4c — Warp native render/arena design v7 is approved. C4c0 now
+- [ ] P12.4 C4c — Warp native render/arena design v7 is approved. C4c0 is
+      approved and sealed at `591ffc57`. C4c1 now has a bounded native Warp
+      render-ABI design request: one kernel source, caller-owned deterministic
+      buffers, four fixed shade ABIs, immutable recorded commands/evidence,
+      and oracle parity, with no transaction/event/arena/result authority.
+      C4c1 design is awaiting review; implementation has not started. C4c0
       implements the stdlib-only closed worker/supervisor, strict canonical IPC,
       frozen runtime/source/AST manifest, one-session/one-exit control state,
       separate setup and measured-submission lifecycle, whole-graph guardian,
