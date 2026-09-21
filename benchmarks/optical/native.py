@@ -12,8 +12,10 @@ from typing import Any
 import numpy as np
 
 from optical_worker.native_contract import (
+    NATIVE_INPUT_SCHEMA_VERSION,
     CudaPreparedNativeInput,
     NativeBackend,
+    NativeReadinessEvidence,
     PreparedNativeInput,
     WarpPreparedNativeInput,
     assert_cuda_prepared_authority,
@@ -34,7 +36,6 @@ from .receipts import NativeStorageSignature
 from .timing import assert_operation_allowed, assert_outside_timed_boundary
 from .workload_contract import frozen_workload_content
 
-NATIVE_INPUT_SCHEMA_VERSION = "q54.p12.4.native-input.v2"
 TRANSFORM_REPLAY_SCHEMA_VERSION = "q54.p12.4.transform-replay.v1"
 FIXED_RENDER_FIXTURE_SCHEMA_VERSION = "q54.p12.4.fixed-render-fixture.v1"
 
@@ -913,141 +914,6 @@ class NativeInputValidationReport:
     transform_replay_sha256: str | None
     transform_frame_count: int
     fixed_render_fixture_sha256: str | None
-
-
-@dataclass(frozen=True)
-class NativeReadinessEvidence:
-    """Lane evidence that preparation, validation, compilation, and warmup ended."""
-
-    schema_version: str
-    backend: NativeBackend
-    device_ordinal: int
-    manifest_sha256: str
-    content_sha256: str
-    topology_sha256: str
-    input_contract: str | None
-    scene_contract_schema_version: str | None
-    scene_contract_sha256: str | None
-    scene_id: str | None
-    transform_replay_sha256: str | None
-    transform_frame_count: int
-    fixed_render_fixture_sha256: str | None
-    producer_ready_event_complete: bool
-    direct_validation_complete: bool
-    allocation_complete: bool
-    compile_complete: bool
-    warmup_frames_completed: int
-
-    @classmethod
-    def from_payload(cls, payload: object) -> "NativeReadinessEvidence":
-        expected_fields = {
-            "schema_version",
-            "backend",
-            "device_ordinal",
-            "manifest_sha256",
-            "content_sha256",
-            "topology_sha256",
-            "input_contract",
-            "scene_contract_schema_version",
-            "scene_contract_sha256",
-            "scene_id",
-            "transform_replay_sha256",
-            "transform_frame_count",
-            "fixed_render_fixture_sha256",
-            "producer_ready_event_complete",
-            "direct_validation_complete",
-            "allocation_complete",
-            "compile_complete",
-            "warmup_frames_completed",
-        }
-        if not isinstance(payload, Mapping) or set(payload) != expected_fields:
-            raise ValueError("native readiness evidence fields are invalid")
-        backend = payload.get("backend")
-        if backend not in {"warp", "cuda"}:
-            raise ValueError("native readiness backend is invalid")
-        for field in (
-            "producer_ready_event_complete",
-            "direct_validation_complete",
-            "allocation_complete",
-            "compile_complete",
-        ):
-            if payload.get(field) is not True:
-                raise ValueError(f"native readiness {field} must be true")
-        for field in ("device_ordinal", "warmup_frames_completed", "transform_frame_count"):
-            value = payload.get(field)
-            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                raise ValueError(f"native readiness {field} must be a non-negative integer")
-        for field in ("manifest_sha256", "content_sha256", "topology_sha256"):
-            value = payload.get(field)
-            if not _sha256_text(value):
-                raise ValueError(f"native readiness {field} must be a lowercase SHA-256 digest")
-        for field in (
-            "scene_contract_sha256",
-            "transform_replay_sha256",
-            "fixed_render_fixture_sha256",
-        ):
-            value = payload.get(field)
-            if value is not None and not _sha256_text(value):
-                raise ValueError(f"native readiness {field} must be null or a SHA-256 digest")
-        for field in ("input_contract", "scene_contract_schema_version", "scene_id"):
-            value = payload.get(field)
-            if value is not None and (not isinstance(value, str) or not value):
-                raise ValueError(f"native readiness {field} must be null or non-empty")
-        if (payload.get("scene_contract_sha256") is None) != (payload.get("input_contract") is None):
-            raise ValueError("native readiness result-capable provenance is incomplete")
-        if payload.get("scene_contract_sha256") is not None and (
-            payload.get("scene_contract_schema_version") != SCENE_CONTRACT_SCHEMA_VERSION
-            or not payload.get("scene_id")
-        ):
-            raise ValueError("native readiness scene provenance is incomplete")
-        if payload.get("schema_version") != NATIVE_INPUT_SCHEMA_VERSION:
-            raise ValueError("native readiness schema version is invalid")
-        return cls(
-            schema_version=NATIVE_INPUT_SCHEMA_VERSION,
-            backend=backend,
-            device_ordinal=payload["device_ordinal"],
-            manifest_sha256=payload["manifest_sha256"],
-            content_sha256=payload["content_sha256"],
-            topology_sha256=payload["topology_sha256"],
-            input_contract=payload["input_contract"],
-            scene_contract_schema_version=payload["scene_contract_schema_version"],
-            scene_contract_sha256=payload["scene_contract_sha256"],
-            scene_id=payload["scene_id"],
-            transform_replay_sha256=payload["transform_replay_sha256"],
-            transform_frame_count=payload["transform_frame_count"],
-            fixed_render_fixture_sha256=payload["fixed_render_fixture_sha256"],
-            producer_ready_event_complete=True,
-            direct_validation_complete=True,
-            allocation_complete=True,
-            compile_complete=True,
-            warmup_frames_completed=payload["warmup_frames_completed"],
-        )
-
-    def to_payload(self) -> dict[str, object]:
-        return {
-            "schema_version": self.schema_version,
-            "backend": self.backend,
-            "device_ordinal": self.device_ordinal,
-            "manifest_sha256": self.manifest_sha256,
-            "content_sha256": self.content_sha256,
-            "topology_sha256": self.topology_sha256,
-            "input_contract": self.input_contract,
-            "scene_contract_schema_version": self.scene_contract_schema_version,
-            "scene_contract_sha256": self.scene_contract_sha256,
-            "scene_id": self.scene_id,
-            "transform_replay_sha256": self.transform_replay_sha256,
-            "transform_frame_count": self.transform_frame_count,
-            "fixed_render_fixture_sha256": self.fixed_render_fixture_sha256,
-            "producer_ready_event_complete": self.producer_ready_event_complete,
-            "direct_validation_complete": self.direct_validation_complete,
-            "allocation_complete": self.allocation_complete,
-            "compile_complete": self.compile_complete,
-            "warmup_frames_completed": self.warmup_frames_completed,
-        }
-
-    @property
-    def sha256(self) -> str:
-        return _sha256_payload(self.to_payload())
 
 
 def assert_cuda_arena_a2_authority(

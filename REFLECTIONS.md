@@ -3448,3 +3448,14 @@ allows stack unwinding and resource finalizers to run. The loop must validate
 the session-bound termination evidence and use immediate process exit for
 quarantine dispositions; only a successful emergency sync may authorize an
 ordinary interpreter exit and object cleanup.
+
+The C4c1a readiness type belongs next to the CPU-safe prepared-input identity
+registry, not in benchmark code. This mirrors the existing C4b split between a
+frozen model and its runtime-owned data: the canonical evidence parser verifies
+payload facts, while a one-shot registry proves the exact live prepared input,
+array objects, and ready event. Neither a copied dataclass nor a recomputed
+hash can replace that identity proof. Warp and CUDA use the same validator
+structure; the benchmark package only re-exports the production class. Moving
+the validator into the benchmark package would reintroduce a reverse product
+dependency, while module-name/duck-type checks could be forged or drift after
+refactoring.

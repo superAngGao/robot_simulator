@@ -1028,8 +1028,9 @@ Next milestone:
       registration, and O(1) measured acquire are closed. The implementation
       remains non-result-capable pending the joint C4/B3 activation review.
 - [ ] P12.4 C4c — Warp native render/arena design v7 is approved. C4c0 is
-      approved and sealed at `591ffc57`. C4c1 design v3 is awaiting review;
-      implementation has not started. It retains the bounded native Warp
+      approved and sealed at `591ffc57`. C4c1 design v3 was approved at
+      `2521e64`. C4c1a exact readiness authority is implemented and awaiting
+      review; C4c1b/c remain unimplemented. The design retains the bounded native Warp
       render ABI—one kernel source, caller-owned deterministic buffers, four
       fixed shade ABIs, and immutable recorded commands/evidence—but now moves
       readiness into an exact CPU-safe production contract shared by Warp and

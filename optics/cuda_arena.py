@@ -17,7 +17,11 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, is_dataclass
 from types import MappingProxyType
 
-from optical_worker.native_contract import CudaPreparedNativeInput
+from optical_worker.native_contract import (
+    CudaPreparedNativeInput,
+    NativeReadinessEvidence,
+    assert_cuda_prepared_authority,
+)
 
 from .cuda_direct_light import (
     CudaCameraParameters,
@@ -1860,17 +1864,12 @@ def _validate_live_a2_binding(
     prepared_input: object,
     native_readiness: object,
 ) -> None:
-    readiness_type = type(native_readiness)
     if (
         type(prepared_input) is not CudaPreparedNativeInput
-        or readiness_type.__module__ != "benchmarks.optical.native"
-        or readiness_type.__name__ != "NativeReadinessEvidence"
+        or type(native_readiness) is not NativeReadinessEvidence
     ):
         raise TypeError("CUDA arena requires the exact live a2 CUDA input/readiness types")
-    authority_check = getattr(prepared_input, "_assert_cuda_arena_a2_authority", None)
-    if not callable(authority_check):
-        raise TypeError("CUDA arena a2 input lacks live allocation authority")
-    authority_check(native_readiness)
+    assert_cuda_prepared_authority(prepared_input, native_readiness)
 
     spec = target._spec
     manifest = prepared_input.manifest
