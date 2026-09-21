@@ -29,8 +29,9 @@ result, or baseline was enabled.
 - benchmark unit tests excluding clean-tree-only worker integration: 116
   passed;
 - Ruff on changed Python files: passed;
-- clean-tree-only worker tests must be rerun after this commit, because their
-  manifest constructor intentionally rejects an uncommitted worktree.
+- clean-tree-only worker and setup tests after commit: 18 passed;
+- full `tests/ -m "not slow"` after the correction: 1821 passed, 39 skipped,
+  117 deselected, one pre-existing pytest deprecation warning (356.42 s).
 
 Tests reject copied and subclassed readiness, a same-name forged class,
 cross-backend pairing, copied prepared wrappers, replaced storage/ready event,
@@ -41,8 +42,8 @@ They were caused by placing the prepared-input registration requirement in
 readiness registration. The corrected implementation permits a test wrapper's
 readiness to be registered, but Warp/CUDA consumer validators still reject
 that wrapper because it lacks a2 allocation authority. The previously failing
-a3a/core modules and exact-authority tests then passed (51 passed). The full
-non-slow suite must be rerun after this correction.
+a3a/core modules and exact-authority tests then passed (53 passed). The full
+non-slow suite was rerun and passed after this correction.
 
 ## 关键思考
 
