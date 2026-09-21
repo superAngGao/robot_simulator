@@ -142,3 +142,16 @@ def test_registration_cannot_rebaseline_a_mutated_input(backend):
         register_prepared_native_input(prepared, prepared.source)
     with pytest.raises(ValueError, match="registered twice"):
         register_native_readiness(readiness, prepared)
+
+
+@pytest.mark.parametrize(
+    ("backend", "check"),
+    (("warp", assert_warp_prepared_authority), ("cuda", assert_cuda_prepared_authority)),
+)
+def test_readiness_registration_does_not_certify_unregistered_test_input(backend, check):
+    prepared, readiness = _pair(backend)
+    unregistered_prepared = replace(prepared)
+    unregistered_readiness = replace(readiness)
+    register_native_readiness(unregistered_readiness, unregistered_prepared)
+    with pytest.raises(ValueError, match="canonical a2 preparation"):
+        check(unregistered_prepared, unregistered_readiness)

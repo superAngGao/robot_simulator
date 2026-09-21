@@ -3459,3 +3459,10 @@ structure; the benchmark package only re-exports the production class. Moving
 the validator into the benchmark package would reintroduce a reverse product
 dependency, while module-name/duck-type checks could be forged or drift after
 refactoring.
+
+Readiness registration by itself must not become allocation-use authority.
+Pure CPU runner tests construct exact prepared wrappers to test early rejection
+paths without doing GPU preparation. Their readiness can be registered so the
+record format remains canonical, but the Warp/CUDA consumer validator still
+requires the independent prepared-input registration and exact storage/event
+snapshot before any executable binding is accepted.

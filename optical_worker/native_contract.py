@@ -217,10 +217,6 @@ def register_native_readiness(subject: object, prepared: object) -> None:
         raise TypeError("native readiness registration requires the exact production type")
     if type(prepared) not in {WarpPreparedNativeInput, CudaPreparedNativeInput}:
         raise TypeError("native readiness registration requires an exact prepared input")
-    _require_identity_authority(
-        _PREPARED_AUTHORITIES, prepared, prepared.source,
-        label="native prepared input",
-    )
     _register_identity_authority(_READINESS_AUTHORITIES, subject, prepared)
 
 

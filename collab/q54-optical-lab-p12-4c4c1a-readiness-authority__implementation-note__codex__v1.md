@@ -36,6 +36,14 @@ Tests reject copied and subclassed readiness, a same-name forged class,
 cross-backend pairing, copied prepared wrappers, replaced storage/ready event,
 and attempted authority re-registration.
 
+Post-commit full-suite validation first found 12 CPU runner-test regressions.
+They were caused by placing the prepared-input registration requirement in
+readiness registration. The corrected implementation permits a test wrapper's
+readiness to be registered, but Warp/CUDA consumer validators still reject
+that wrapper because it lacks a2 allocation authority. The previously failing
+a3a/core modules and exact-authority tests then passed (51 passed). The full
+non-slow suite must be rerun after this correction.
+
 ## 关键思考
 
 The parser and registry solve different problems. A strict JSON round-trip
@@ -49,6 +57,13 @@ reported seven failures because its runtime manifest deliberately requires a
 clean Git tree. Those are test precondition failures, not behavior regressions;
 the test group will be rerun after committing this slice. This is also why no
 manifest-cleanliness bypass was added to the tests or production code.
+
+The later regression exposed a second boundary distinction: readiness
+registration describes an evidence owner, whereas allocation-use authority
+is a separate consumer-side proof. Enforcing both at registration made
+unrelated fail-closed runner tests unable to reach their intended check.
+Moving only that precondition back to the consumer validator preserved the
+security property without special-casing tests.
 
 ## Next review boundary
 
