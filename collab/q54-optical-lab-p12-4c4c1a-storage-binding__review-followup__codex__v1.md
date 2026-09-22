@@ -38,9 +38,10 @@ provenance. No physical-signature traversal was added to measured `acquire()`.
   acquire or enqueue; terminal event count stays zero.
 - CPU unit tests cover the same-object pointer drift for both backends.
 
-Focused CUDA arena/native/unit suite: 38 passed. Ruff on changed Python
-files: passed. C4c0 and full non-slow regression results are recorded after
-the clean-tree run.
+Focused CUDA arena/native/unit suite: 38 passed. Benchmark unit plus C4c0
+setup: 130 passed. Clean-tree C4c0 worker/setup: 18 passed. Full non-slow
+suite: 1824 passed, 39 skipped, 117 deselected, one pre-existing pytest
+fixture deprecation warning (641.18 s). Ruff on changed Python files: passed.
 
 ## 关键思考
 
