@@ -806,6 +806,28 @@ def test_c3_adapter_revalidates_a2_content_instead_of_trusting_correct_hashes():
         tensor.copy_(original)
 
 
+def test_c3_adapter_rejects_same_a2_tensor_rebound_before_first_enqueue():
+    arena = _dynamic_arena()
+    target = arena.plan_target(transform_frame_index=0)
+    prepared, readiness = _A2_AUTHORITIES[id(arena)]
+    tensor = prepared.arrays["material_albedo_rgb"]
+    original_storage = tensor.untyped_storage()
+    original_pointer = tensor.data_ptr()
+    replacement = torch.empty_like(tensor)
+    try:
+        tensor.set_(replacement)
+        assert tensor.data_ptr() != original_pointer
+        with pytest.raises(ValueError, match="physical allocation"):
+            build_cuda_c3_binding_from_arena_target(
+                target,
+                prepared_input=prepared,
+                native_readiness=readiness,
+            )
+        assert arena.lifecycle_evidence().terminal_event_record_count == 0
+    finally:
+        tensor.set_(original_storage, 0, tensor.shape, tensor.stride())
+
+
 def test_c3_binding_serialization_cannot_forge_adapter_issuance():
     arena = _dynamic_arena()
     target = arena.plan_target(transform_frame_index=0)

@@ -30,6 +30,74 @@ class _Manifest:
     transform_replay_sha256: str | None = None
     transform_frame_count: int = 0
     fixed_render_fixture_sha256: str | None = None
+    arrays: tuple[object, ...] = ()
+
+
+@dataclass(frozen=True)
+class _ArrayManifest:
+    name: str = "scene"
+    shape: tuple[int, ...] = (2,)
+    nbytes: int = 8
+
+
+@dataclass(frozen=True)
+class _Device:
+    ordinal: int = 1
+    index: int = 1
+    type: str = "cuda"
+    is_cuda: bool = True
+
+
+class _CudaStorage:
+    _cdata = 123
+
+    def __init__(self):
+        self.ptr = 1000
+
+    def nbytes(self):
+        return 8
+
+    def data_ptr(self):
+        return self.ptr
+
+
+class _CudaArray:
+    device = _Device()
+    dtype = "torch.float32"
+    shape = (2,)
+
+    def __init__(self):
+        self.storage = _CudaStorage()
+
+    def untyped_storage(self):
+        return self.storage
+
+    def data_ptr(self):
+        return self.storage.ptr
+
+    def numel(self):
+        return 2
+
+    def element_size(self):
+        return 4
+
+    def stride(self):
+        return (1,)
+
+    def is_contiguous(self):
+        return True
+
+
+class _WarpArray:
+    device = _Device()
+    dtype = "warp.float32"
+    shape = (2,)
+    strides = (4,)
+    capacity = 8
+    is_contiguous = True
+
+    def __init__(self):
+        self.ptr = 1000
 
 
 @dataclass
@@ -38,9 +106,10 @@ class _Source:
 
 
 def _pair(backend: str):
-    source = _Source(_Manifest())
+    source = _Source(_Manifest(arrays=(_ArrayManifest(),)))
     prepared_type = WarpPreparedNativeInput if backend == "warp" else CudaPreparedNativeInput
-    prepared = prepared_type(source.manifest, 1, {"scene": object()}, object(), source)
+    array = _WarpArray() if backend == "warp" else _CudaArray()
+    prepared = prepared_type(source.manifest, 1, {"scene": array}, object(), source)
     readiness = NativeReadinessEvidence(
         schema_version=NATIVE_INPUT_SCHEMA_VERSION,
         backend=backend,
@@ -126,6 +195,15 @@ def test_replacing_registered_storage_or_event_is_rejected(backend, check):
     prepared, readiness = _pair(backend)
     prepared.arrays["scene"] = object()
     with pytest.raises(ValueError, match="storage"):
+        check(prepared, readiness)
+
+    prepared, readiness = _pair(backend)
+    array = prepared.arrays["scene"]
+    if backend == "warp":
+        array.ptr = 2000
+    else:
+        array.storage.ptr = 2000
+    with pytest.raises(ValueError, match="physical allocation"):
         check(prepared, readiness)
 
     prepared, readiness = _pair(backend)

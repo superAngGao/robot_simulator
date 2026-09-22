@@ -148,10 +148,94 @@ class NativeReadinessEvidence:
         ).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
 
+
+@dataclass(frozen=True)
+class _PhysicalStorageSignature:
+    """Untimed snapshot of a live allocation, not a caller-supplied digest."""
+
+    device_ordinal: int
+    base_pointer: int
+    storage_identity: int
+    storage_nbytes: int
+    active_start: int
+    active_count: int
+    dtype: str
+    shape: tuple[int, ...]
+    strides: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class _RegisteredArray:
+    name: str
+    array: object
+    signature: _PhysicalStorageSignature
+    storage_owner: object | None
+
+
+def _physical_storage_signature(
+    backend: NativeBackend, value: object, device_ordinal: int,
+) -> tuple[_PhysicalStorageSignature, object | None]:
+    """Inspect the backend's physical storage only during untimed setup/preflight."""
+
+    device = value.device
+    if backend == "cuda":
+        if device.type != "cuda" or device.index is None:
+            raise ValueError("prepared Torch input requires an indexed CUDA device")
+        storage = value.untyped_storage()
+        storage_nbytes = int(storage.nbytes())
+        base_pointer = int(storage.data_ptr()) if storage_nbytes else 0
+        active_pointer = int(value.data_ptr()) if storage_nbytes else 0
+        active_start = active_pointer - base_pointer
+        active_count = int(value.numel()) * int(value.element_size())
+        storage_identity = int(storage._cdata)
+        strides = tuple(int(item) for item in value.stride())
+        contiguous = bool(value.is_contiguous())
+        owner = storage
+        ordinal = int(device.index)
+    else:
+        if not device.is_cuda:
+            raise ValueError("prepared Warp input requires a CUDA device")
+        base_pointer = int(value.ptr or 0)
+        storage_nbytes = int(value.capacity)
+        active_start = 0
+        active_count = storage_nbytes
+        storage_identity = base_pointer
+        strides = tuple(int(item) for item in value.strides)
+        contiguous = bool(value.is_contiguous)
+        owner = None
+        ordinal = int(device.ordinal)
+    shape = tuple(int(item) for item in value.shape)
+    if (
+        ordinal != device_ordinal
+        or not contiguous
+        or storage_nbytes < 0
+        or active_start < 0
+        or active_count < 0
+        or active_start + active_count > storage_nbytes
+        or (storage_nbytes > 0 and base_pointer <= 0)
+        or (storage_nbytes > 0 and storage_identity <= 0)
+    ):
+        raise ValueError("prepared native array has invalid physical CUDA storage")
+    return (
+        _PhysicalStorageSignature(
+            device_ordinal=ordinal,
+            base_pointer=base_pointer,
+            storage_identity=storage_identity,
+            storage_nbytes=storage_nbytes,
+            active_start=active_start,
+            active_count=active_count,
+            dtype=str(value.dtype),
+            shape=shape,
+            strides=strides,
+        ),
+        owner,
+    )
+
+
 _PREPARED_AUTHORITIES: dict[int, tuple[weakref.ReferenceType[object], weakref.ReferenceType[object]]] = {}
 _READINESS_AUTHORITIES: dict[int, tuple[weakref.ReferenceType[object], weakref.ReferenceType[object]]] = {}
 _PREPARED_STORAGE: dict[
-    int, tuple[weakref.ReferenceType[object], object, object, tuple[tuple[str, object], ...]]
+    int, tuple[weakref.ReferenceType[object], object, object, tuple[_RegisteredArray, ...]]
 ] = {}
 
 
@@ -190,13 +274,30 @@ def register_prepared_native_input(subject: object, source: object) -> None:
 
     if type(subject) not in {WarpPreparedNativeInput, CudaPreparedNativeInput}:
         raise TypeError("native prepared-input registration requires an exact production type")
+    existing = _PREPARED_AUTHORITIES.get(id(subject))
+    if existing is not None and existing[0]() is subject:
+        raise ValueError("native identity authority cannot be registered twice")
     if subject.source is not source or subject.manifest is not source.manifest:
         raise ValueError("native prepared input does not own its exact canonical source")
     if not isinstance(subject.arrays, Mapping):
         raise TypeError("native prepared arrays must be a mapping")
-    arrays = tuple(sorted(subject.arrays.items()))
-    if any(not isinstance(name, str) for name, _ in arrays):
+    if any(not isinstance(name, str) for name in subject.arrays):
         raise TypeError("native prepared array names must be strings")
+    manifest_arrays = {entry.name: entry for entry in subject.manifest.arrays}
+    if set(subject.arrays) != set(manifest_arrays):
+        raise ValueError("native prepared arrays do not match the canonical manifest")
+    arrays = []
+    for name in sorted(subject.arrays):
+        value = subject.arrays[name]
+        signature, owner = _physical_storage_signature(
+            subject.backend, value, subject.device_ordinal,
+        )
+        if (
+            signature.shape != tuple(manifest_arrays[name].shape)
+            or signature.active_count != int(manifest_arrays[name].nbytes)
+        ):
+            raise ValueError(f"native prepared array {name!r} does not match its manifest extent")
+        arrays.append(_RegisteredArray(name, value, signature, owner))
     _register_identity_authority(_PREPARED_AUTHORITIES, subject, source)
     key = id(subject)
 
@@ -206,7 +307,7 @@ def register_prepared_native_input(subject: object, source: object) -> None:
             _PREPARED_STORAGE.pop(key, None)
 
     _PREPARED_STORAGE[key] = (
-        weakref.ref(subject, discard), subject.arrays, subject.ready_event, arrays,
+        weakref.ref(subject, discard), subject.arrays, subject.ready_event, tuple(arrays),
     )
 
 
@@ -245,10 +346,18 @@ def _assert_prepared_authority(
         or registered_storage[0]() is not prepared
         or registered_storage[1] is not prepared.arrays
         or registered_storage[2] is not prepared.ready_event
-        or tuple(sorted(prepared.arrays)) != tuple(name for name, _ in registered_storage[3])
-        or any(prepared.arrays[name] is not array for name, array in registered_storage[3])
+        or tuple(sorted(prepared.arrays)) != tuple(entry.name for entry in registered_storage[3])
+        or any(prepared.arrays[entry.name] is not entry.array for entry in registered_storage[3])
     ):
         raise ValueError(f"{backend} prepared native storage lost its registered object identities")
+    for entry in registered_storage[3]:
+        current, _ = _physical_storage_signature(
+            backend, entry.array, prepared.device_ordinal,
+        )
+        if current != entry.signature:
+            raise ValueError(
+                f"{backend} prepared native storage {entry.name!r} changed its physical allocation"
+            )
     _require_identity_authority(
         _READINESS_AUTHORITIES,
         readiness,

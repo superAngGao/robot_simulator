@@ -18,8 +18,58 @@ from benchmarks.optical.workloads import (
     build_canonical_fixed_fixture,
     build_canonical_packed_scene,
 )
+from optical_worker.native_contract import (
+    assert_cuda_prepared_authority,
+    assert_warp_prepared_authority,
+)
 
 pytestmark = pytest.mark.gpu
+
+
+def test_cuda_readiness_rejects_same_tensor_rebound_to_another_storage():
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    source = _source()
+    prepared = prepare_cuda_native_input(source, device="cuda:0")
+    report = validate_prepared_native_input(source, prepared)
+    readiness = certify_native_readiness(
+        prepared, report, compile_complete=True, warmup_frames_completed=1,
+    )
+    assert_cuda_prepared_authority(prepared, readiness)
+
+    tensor = prepared.arrays["triangle_v0"]
+    old_pointer = tensor.data_ptr()
+    replacement = torch.empty_like(tensor)
+    tensor.set_(replacement)
+    assert tensor.data_ptr() != old_pointer
+    with pytest.raises(ValueError, match="physical allocation"):
+        assert_cuda_prepared_authority(prepared, readiness)
+
+
+def test_warp_readiness_rejects_same_array_pointer_drift():
+    wp = pytest.importorskip("warp")
+    if wp.get_cuda_device_count() == 0:
+        pytest.skip("CUDA is required")
+    source = _source()
+    prepared = prepare_warp_native_input(source, device="cuda:0")
+    report = validate_prepared_native_input(source, prepared)
+    readiness = certify_native_readiness(
+        prepared, report, compile_complete=True, warmup_frames_completed=1,
+    )
+    assert_warp_prepared_authority(prepared, readiness)
+
+    array = prepared.arrays["triangle_v0"]
+    replacement = wp.empty(array.shape, dtype=array.dtype, device=array.device)
+    old_pointer = int(array.ptr)
+    try:
+        array.ptr = replacement.ptr
+        assert int(array.ptr) != old_pointer
+        with pytest.raises(ValueError, match="physical allocation"):
+            assert_warp_prepared_authority(prepared, readiness)
+    finally:
+        array.ptr = old_pointer
+    assert_warp_prepared_authority(prepared, readiness)
 
 
 def test_warp_and_cuda_native_inputs_are_direct_independent_and_value_equal(monkeypatch):

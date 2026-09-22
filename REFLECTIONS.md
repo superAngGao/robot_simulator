@@ -3466,3 +3466,13 @@ paths without doing GPU preparation. Their readiness can be registered so the
 record format remains canonical, but the Warp/CUDA consumer validator still
 requires the independent prepared-input registration and exact storage/event
 snapshot before any executable binding is accepted.
+
+The C4c1a review exposed a distinction inside that snapshot: Python object
+identity is not physical allocation identity. Torch `Tensor.set_()` can retain
+the exact tensor object while replacing its storage, and a Warp array's pointer
+can drift without replacing the array object. The untimed a2 authority check
+therefore snapshots and re-reads base pointer, storage identity/capacity,
+active byte interval, indexed device, dtype, shape, and strides. Holding the
+original Torch storage owner also prevents allocator pointer reuse from making
+a rebinding appear identical. This full inspection stays in preflight; C4
+measured acquire continues to use its fixed-cost lease checks.
