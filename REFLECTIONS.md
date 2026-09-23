@@ -3476,3 +3476,12 @@ active byte interval, indexed device, dtype, shape, and strides. Holding the
 original Torch storage owner also prevents allocator pointer reuse from making
 a rebinding appear identical. This full inspection stays in preflight; C4
 measured acquire continues to use its fixed-cost lease checks.
+
+C4c1b's Warp render kernel migration follows the existing C3 command-bundle
+pattern: kernel definitions are production-owned and compatibility executors
+refer to those exact objects, while binding and execution policy remain separate.
+Moving the existing kernels together preserves their Warp device-function
+dependencies without changing their equations. A source-ownership test guards
+against accidentally adding a second definition in the compatibility module.
+This extraction alone does not confer caller-owned storage, recorded-command
+lifetime, or result capability; those require their own reviewed implementation.

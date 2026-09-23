@@ -1030,8 +1030,10 @@ Next milestone:
 - [ ] P12.4 C4c — Warp native render/arena design v7 is approved. C4c0 is
       approved and sealed at `591ffc57`. C4c1 design v3 was approved at
       `2521e64`. C4c1a exact readiness authority is implemented; its review P1
-      on same-object CUDA storage rebinding has a physical-signature fix awaiting
-      review. C4c1b/c remain unimplemented. The design retains the bounded native Warp
+      on same-object CUDA storage rebinding has been approved at `2b41068`.
+      C4c1b has begun with a bounded single-source kernel extraction; its
+      caller-owned ABI, fixed shade entries, and recorded bundle remain closed.
+      C4c1c remains unimplemented. The design retains the bounded native Warp
       render ABI—one kernel source, caller-owned deterministic buffers, four
       fixed shade ABIs, and immutable recorded commands/evidence—but now moves
       readiness into an exact CPU-safe production contract shared by Warp and
