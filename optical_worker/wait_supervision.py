@@ -292,16 +292,23 @@ class GuardSupervisorCore:
         self._configuration = GuardConfiguration.from_payload(configuration.to_payload())
         self._clock = clock
         self._thread = threading.current_thread()
-        self._state = _State()
-        self._trace: list[dict] = []
-        self._last_ns = bounded_integer(clock())
-        self._last_observed_ns = self._last_ns
+        self._records: dict[int, tuple[_State, dict]] = {}
+        self._initial_ns = bounded_integer(clock())
+        self._last_observed_ns = self._initial_ns
         self._reading_clock = False
         self._operation_active = False
         self._reentry_latched = False
-        self._reentry_reason: str | None = None
-        self._reentry_in_clock = False
         self._append("initialized", {}, self._last_ns)
+
+    @property
+    def _state(self) -> _State:
+        count = len(self._records)
+        return self._records[count - 1][0] if count else _State()
+
+    @property
+    def _last_ns(self) -> int:
+        count = len(self._records)
+        return self._records[count - 1][1]["at_ns"] if count else self._initial_ns
 
     @property
     def configuration(self) -> GuardConfiguration:
@@ -329,58 +336,53 @@ class GuardSupervisorCore:
         _require(threading.current_thread() is self._thread, "supervisor core belongs to another thread")
 
     def _invoke(self, operation, *args, **kwargs):
-        """Serialize public mutations, including same-thread asynchronous entry.
+        """Reject nested normal work, immediately committing terminal custody.
 
-        Nested calls never commit. Their sticky invalidation is handled before
-        the outer call can return a response or successful write commitment.
-        Only tentative CPU trace/state is discarded; no I/O or resource action
-        is performed inside this core. The pre-call deadline remains the anchor.
+        Each append has one commit point: an exact builtin dictionary insertion
+        under an integer sequence key. Nested termination wins that key over a
+        stale outer transition. There is no deferred rollback/finalizer safety.
         """
         self._check_thread()
         if self._operation_active:
-            if not self._reentry_latched:
-                self._reentry_reason = (
-                    args[0]
-                    if operation.__name__ == "_fault"
-                    and args
-                    and type(args[0]) is str
-                    and args[0] in TERMINAL_REASONS
-                    else "request_out_of_order"
-                )
             self._reentry_latched = True
-            self._reentry_in_clock = self._reentry_in_clock or self._reading_clock
+            reason = (
+                args[0]
+                if operation.__name__ == "_fault"
+                and args
+                and type(args[0]) is str
+                and args[0] in TERMINAL_REASONS
+                else "request_out_of_order"
+            )
+            self._terminate_reentry(reason)
             raise GuardProtocolError("reentrant supervisor operation")
         self._reentry_latched = False
-        self._reentry_reason = None
-        self._reentry_in_clock = False
         self._operation_active = True
-        snapshot = self._state, len(self._trace), self._last_ns
         try:
             return operation(*args, **kwargs)
         finally:
             try:
                 if self._reentry_latched:
-                    self._state, size, self._last_ns = snapshot
-                    del self._trace[size:]
-                    now = self._last_observed_ns
-                    if self.state not in {"TERMINATING", "EXITED"}:
-                        try:
-                            self._append("terminal_entered", {"reason": self._reentry_reason}, now)
-                        except GuardProtocolError:
-                            self._reject_clock("deadline_overflow")
-                    if self._reentry_in_clock:
-                        self._reject_clock("out_of_domain")
-                    earliest = self._state.earliest()
-                    if (
-                        self.state != "EXITED"
-                        and not self._state.deadline_expired
-                        and earliest is not None
-                        and now >= earliest[0]
-                    ):
-                        self._append("deadline_expired", {"source": earliest[1]}, now)
                     raise GuardProtocolError("reentrant supervisor operation invalidated outer transition")
             finally:
                 self._operation_active = False
+
+    def _terminate_reentry(self, reason: str) -> None:
+        now = self._last_observed_ns
+        if self.state not in {"TERMINATING", "EXITED"}:
+            try:
+                self._append("terminal_entered", {"reason": reason}, now)
+            except GuardProtocolError:
+                self._reject_clock("deadline_overflow")
+        if self._reading_clock:
+            self._reject_clock("out_of_domain")
+        first = self._state.earliest()
+        if (
+            self.state != "EXITED"
+            and not self._state.deadline_expired
+            and first is not None
+            and now >= first[0]
+        ):
+            self._append("deadline_expired", {"source": first[1]}, now)
 
     def tick(self) -> None:
         return self._invoke(self._tick)
@@ -407,13 +409,15 @@ class GuardSupervisorCore:
         return self._invoke(self._evidence, require_final=require_final)
 
     def _append(self, operation: str, details: dict, now: int) -> None:
-        event = {"index": len(self._trace), "at_ns": now, "operation": operation, "details": details}
+        index = len(self._records)
+        previous = self._records[index - 1] if index else (_State(), {"at_ns": self._initial_ns})
+        event = {"index": index, "at_ns": now, "operation": operation, "details": details}
         updated = _transition(
-            self._state, event, self.configuration, expected_index=len(self._trace), last_ns=self._last_ns
+            previous[0], event, self.configuration, expected_index=index, last_ns=previous[1]["at_ns"]
         )
-        self._trace.append(event)
-        self._state = updated
-        self._last_ns = now
+        record = (updated, event)
+        committed = self._records.setdefault(index, record)
+        _require(committed is record, "reentrant transition already committed this sequence")
 
     def _reject_clock(self, reason: str) -> int:
         if self.state != "EXITED" and not self._state.clock_rejected:
@@ -529,12 +533,13 @@ class GuardSupervisorCore:
 
     def _evidence(self, *, require_final: bool = False) -> GuardSupervisorEvidence:
         self._check_thread()
+        records = tuple(self._records.values())
         return GuardSupervisorEvidence.from_payload(
             {
                 "schema_version": WAIT_EVIDENCE_VERSION,
                 "configuration": self.configuration.to_payload(),
-                "trace": list(self._trace),
-                "summary": self._state.summary(),
+                "trace": [record[1] for record in records],
+                "summary": records[-1][0].summary(),
             },
             require_final=require_final,
         )

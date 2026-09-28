@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import dis
 import inspect
 import json
 import select
@@ -583,7 +584,9 @@ def test_signal_reentry_at_transition_commit_is_sticky_and_replayable(boundary, 
                             )
     prior_deadline = core.effective_deadline_ns
     source, start = inspect.getsourcelines(GuardSupervisorCore._append)
-    line = start + next(index for index, text in enumerate(source) if "self._trace.append(event)" in text)
+    line = start + next(
+        index for index, text in enumerate(source) if "self._records.setdefault(index, record)" in text
+    )
     injected = []
 
     def on_signal(*unused):
@@ -675,3 +678,71 @@ def test_swallowed_transport_reentry_prevents_pending_ack_output():
     finally:
         left.close()
         right.close()
+
+
+def test_reentry_at_each_disarm_commit_and_finalizer_line_never_loses_terminal_state():
+    """CPU publication/return-window regression, not just one earlier line."""
+    functions = (
+        GuardSupervisorCore._invoke,
+        GuardSupervisorCore._append,
+        GuardSupervisorCore._acknowledge_written,
+        GuardSupervisorCore._now,
+        GuardSupervisorCore._state.fget,
+    )
+    checked = set()
+    for function in functions:
+        for line in {line for _, line in dis.findlinestarts(function.__code__)}:
+            settings, _, core = setup_core()
+            arm(settings, core)
+            response = core.accept(settings.message("COMPLETE", 0, "setup"))
+            injected = []
+
+            def on_signal(*unused):
+                injected.append(True)
+                try:
+                    core.fault("parent_lost")
+                except GuardProtocolError:
+                    pass  # the exact missed-finalizer counterexample
+
+            def schedule(frame, event, arg):
+                if event == "line" and frame.f_code is function.__code__ and frame.f_lineno == line:
+                    sys.settrace(None)
+                    if hasattr(signal, "SIGUSR1"):
+                        signal.raise_signal(signal.SIGUSR1)
+                    else:
+                        on_signal()
+                return schedule
+
+            previous = sys.gettrace()
+            handler = signal.signal(signal.SIGUSR1, on_signal) if hasattr(signal, "SIGUSR1") else None
+            sys.settrace(schedule)
+            try:
+                try:
+                    core.acknowledge_written(response)
+                except GuardProtocolError:
+                    pass
+            finally:
+                sys.settrace(previous)
+                if handler is not None:
+                    signal.signal(signal.SIGUSR1, handler)
+            if not injected:
+                continue  # branches not reached by a normal DISARMED commit
+            checked.add((function.__name__, line))
+            assert injected == [True]
+            assert core.state == "TERMINATING", (function.__name__, line, core.state)
+            assert core.pending_response is None and core.effective_deadline_ns is not None
+            result = core.evidence().to_payload()
+            assert result["summary"]["terminal_reason"] == "parent_lost"
+            # Before the single commit point the old guard survives; after it,
+            # DISARMED legitimately completed, then parent loss creates a new
+            # terminal grace deadline. Neither ordering can end IDLE.
+            assert result["summary"]["normal_complete_count"] in (0, 1)
+    finalizer, start = inspect.getsourcelines(GuardSupervisorCore._invoke)
+    release_line = start + next(
+        i for i, value in enumerate(finalizer) if "self._operation_active = False" in value
+    )
+    assert ("_invoke", release_line) in checked
+    assert {name for name, _ in checked} == {function.__name__ for function in functions}
+    source, start = inspect.getsourcelines(GuardSupervisorCore._append)
+    commit_line = start + next(i for i, value in enumerate(source) if "self._records.setdefault" in value)
+    assert ("_append", commit_line) in checked
