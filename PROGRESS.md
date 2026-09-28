@@ -1050,8 +1050,15 @@ Next milestone:
       stream/device restoration and terminal fault ownership are covered.
       Author clean-checkout evidence separately records 239 passes. The
       acceptance-closure design at `c747fb6` remains unchanged (review archived
-      in `95e1c9f`). This approves only C4c1c; C4c2-c4, C4d/B3, product GPU
-      preparation, a3b and result/baseline outlets remain closed. The design
+      in `95e1c9f`). C4c2a bounded production-contract extraction is separately
+      independently approved at `67b401878bb92371590885af7835be36430d3009`
+      (`c4c2a-native-contract-extraction` code-review v1). Independent verification
+      records 412 passes with no skips and all five frozen content contracts;
+      author regression separately records 765 passes, including the complete
+      135-case supervised suite. This extraction does not approve C4c2 runtime
+      integration: its separate design remains required. C4c2 runtime, C4c3-c4,
+      C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
+      closed. The design
       retains the bounded native Warp
       render ABI—one kernel source, caller-owned deterministic buffers, four
       fixed shade ABIs, and immutable recorded commands/evidence—but now moves
