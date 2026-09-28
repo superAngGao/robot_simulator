@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+from inspect import getattr_static
 from unittest.mock import patch
 
 from benchmarks.optical.instrumentation import FORBIDDEN_RUNTIME_HOOKS, _resolve_owner
@@ -22,9 +23,16 @@ _EXTRA_TARGETS = (
     "warp.load_module",
     "warp._src.context.Module.load",
     "warp.Event.__init__",
+    "warp.Event.__new__",
     "warp.Event.is_complete",
     "warp.Event.ipc_handle",
     "warp.Stream.is_complete",
+    "warp.Stream.__new__",
+    "warp.Stream.__init__",
+    "warp.Stream.is_capturing",
+    "warp.Stream.priority",
+    "warp.Stream.cached_event",
+    "warp.event_from_ipc_handle",
     "warp.get_event_elapsed_time",
     "warp.record_event",
     "warp.wait_event",
@@ -33,10 +41,15 @@ _EXTRA_TARGETS = (
     "warp.Stream.wait_event",
     "warp.Stream.wait_stream",
     "torch.cuda.Event.query",
+    "torch.cuda.Event.__new__",
+    "torch.cuda.Event.from_ipc_handle",
+    "torch.cuda.Event.wait",
     "torch.cuda.Event.elapsed_time",
     "torch.cuda.Event.record",
     "torch.cuda.Event.ipc_handle",
     "torch.cuda.Stream.query",
+    "torch.cuda.Stream.__new__",
+    "torch.cuda.ExternalStream.__new__",
     "torch.cuda.Stream.record_event",
     "torch.cuda.Stream.wait_event",
     "torch.cuda.Stream.wait_stream",
@@ -50,14 +63,38 @@ _NATIVE_QUERY_ENTRIES = (
 )
 
 
+def validate_event_surface(families, targets):
+    """Fail closed on a new public operation in the installed wrapper classes.
+
+    This is setup-time coverage validation, not runtime evidence. Private/native
+    superclass APIs and arbitrary cached callables are not a claimed sandbox.
+    Inherited public wrappers are covered through their declaring class.
+    """
+    surface = []
+    for prefix, owner in families:
+        for name, descriptor in vars(owner).items():
+            if name.startswith("_") and name not in ("__new__", "__init__"):
+                continue
+            if isinstance(descriptor, type):  # e.g. Warp Event.Flags is metadata.
+                continue
+            if not (callable(descriptor) or type(descriptor) in (property, classmethod, staticmethod)):
+                continue
+            target = f"{prefix}.{name}"
+            if target not in targets:
+                raise RecordedLeafContamination(f"uncovered installed event/stream operation: {target}")
+            surface.append(target)
+    return tuple(sorted(surface))
+
+
 class RecordedLeafAudit:
-    def __init__(self, wp, *, commands, stream, sample_array, event, fault):
+    def __init__(self, wp, *, commands, stream, sample_array, event, fault, event_controls=None):
         self.wp = wp
         self.commands = commands
         self.stream = stream
         self.sample_array = sample_array
         self.event = event
         self.fault = fault
+        self.event_controls = event_controls
         self._active = None
         self.entry_calls = 0
         self.native_launches = 0
@@ -79,13 +116,30 @@ class RecordedLeafAudit:
             key = (id(owner), attribute)
             if key not in seen:
                 seen.add(key)
-                original = getattr(owner, attribute)
-                if not callable(original) and not (type(original) is property and callable(original.fget)):
+                original = getattr_static(owner, attribute)
+                callable_part = (
+                    original.__func__ if type(original) in (classmethod, staticmethod) else original
+                )
+                if not callable(callable_part) and not (
+                    type(original) is property and callable(original.fget)
+                ):
                     raise TypeError(
                         f"required audit entry is neither callable nor a readable property: {target}"
                     )
                 resolved.append((target, owner, attribute, original))
         self._resolved = tuple(resolved)
+        import torch
+
+        self.event_surface = validate_event_surface(
+            (
+                ("warp.Event", wp.Event),
+                ("warp.Stream", wp.Stream),
+                ("torch.cuda.Event", torch.cuda.Event),
+                ("torch.cuda.Stream", torch.cuda.Stream),
+                ("torch.cuda.ExternalStream", torch.cuda.ExternalStream),
+            ),
+            {target for target, *_ in self._resolved},
+        )
         self._native_arguments = tuple(
             (
                 command.device.context,
@@ -134,6 +188,10 @@ class RecordedLeafAudit:
         return query
 
     def _replacement(self, target, original):
+        if type(original) in (classmethod, staticmethod):
+            # Preserve binding and the exact original descriptor on restoration.
+            # getattr() would manufacture a new bound method for classmethods.
+            return type(original)(self._forbidden(target, original.__func__))
         if type(original) is property:
             # Patch the descriptor without reading it on an instance. Property
             # polling must fail before its installed native query is entered.
@@ -179,6 +237,37 @@ class RecordedLeafAudit:
             _ = stream.is_complete
         elif self.fault == "audit_event_elapsed":
             wp.get_event_elapsed_time(self.event, self.event, synchronize=False)
+        elif self.fault == "audit_warp_event_import":
+            wp.event_from_ipc_handle(self.event_controls["warp_ipc"], device=stream.device)
+        elif self.fault == "audit_warp_event_create":
+            wp.Event(device=stream.device)
+        elif self.fault == "audit_warp_stream_create":
+            wp.Stream(device=stream.device)
+        elif self.fault.startswith("audit_torch_"):
+            controls = self.event_controls
+            torch, event, target_stream = controls["torch"], controls["event"], controls["stream"]
+            if self.fault == "audit_torch_event_wait":
+                event.wait(target_stream)
+            elif self.fault == "audit_torch_event_create":
+                torch.cuda.Event()
+            elif self.fault == "audit_torch_event_import":
+                torch.cuda.Event.from_ipc_handle(stream.device.ordinal, controls["torch_ipc"])
+            elif self.fault == "audit_torch_event_record":
+                event.record(target_stream)
+            elif self.fault == "audit_torch_event_query":
+                event.query()
+            elif self.fault == "audit_torch_event_elapsed":
+                event.elapsed_time(event)
+            elif self.fault == "audit_torch_event_sync":
+                event.synchronize()
+            elif self.fault == "audit_torch_event_export":
+                event.ipc_handle()
+            elif self.fault == "audit_torch_stream_create":
+                torch.cuda.Stream(device=stream.device.ordinal)
+            elif self.fault == "audit_torch_external_stream_create":
+                torch.cuda.ExternalStream(stream.cuda_stream, device=stream.device.ordinal)
+            else:
+                raise AssertionError("unregistered fixed Torch audit control")
         elif self.fault == "audit_sync":
             wp.synchronize_device(stream.device)
         return self._original_launch(command, stream=stream)
@@ -191,7 +280,7 @@ class RecordedLeafAudit:
         try:
             with ExitStack() as stack:
                 for target, owner, attribute, original in self._resolved:
-                    if getattr(owner, attribute) is not original:
+                    if getattr_static(owner, attribute) is not original:
                         raise RecordedLeafContamination("hook entry changed before installation")
                     stack.enter_context(patch.object(owner, attribute, self._replacement(target, original)))
                 # A function is needed here: Python must still bind the Launch
@@ -222,7 +311,7 @@ class RecordedLeafAudit:
             for name, original in self._query_originals:
                 assert getattr(self._core, name) is original
             for _, owner, attribute, original in self._resolved:
-                assert getattr(owner, attribute) is original
+                assert getattr_static(owner, attribute) is original
             self.restoration_checks += 1
 
     def evidence(self):
@@ -234,4 +323,5 @@ class RecordedLeafAudit:
             rejected=list(self.rejected),
             restoration_checks=self.restoration_checks,
             registered_targets=[target for target, *_ in self._resolved],
+            event_surface=list(self.event_surface),
         )

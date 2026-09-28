@@ -243,8 +243,65 @@ def main():
                 if value.size:
                     assert first_gpu_results[name].ptr != value.ptr
         audit_event = driver.leaf(
-            "audit_event", lambda: wp.Event(device=driver.target), produces_owner=True, kind="event_create"
+            "audit_event",
+            lambda: wp.Event(
+                device=driver.target, interprocess=payload["fault"] == "audit_warp_event_import"
+            ),
+            produces_owner=True,
+            kind="event_create",
         )
+        event_controls = driver.host({}, "audit_event_controls")
+        if payload["fault"] == "audit_warp_event_import":
+            event_controls["warp_ipc"] = driver.leaf(
+                "audit_warp_ipc", audit_event.ipc_handle, produces_owner=True, kind="event_create"
+            )
+        if payload["fault"].startswith("audit_torch_"):
+            torch = driver.leaf(
+                "audit_torch_import",
+                lambda: __import__("torch"),
+                produces_owner=True,
+                kind="runtime_import_or_init",
+            )
+            event_controls["torch"] = torch
+            event_controls["stream"] = driver.leaf(
+                "audit_torch_stream",
+                lambda: torch.cuda.ExternalStream(driver.stream.cuda_stream, device=driver.ordinal),
+                produces_owner=True,
+            )
+            event_controls["event"] = driver.leaf(
+                "audit_torch_event",
+                lambda: torch.cuda.Event(
+                    interprocess=payload["fault"] in ("audit_torch_event_import", "audit_torch_event_export"),
+                    enable_timing=payload["fault"] == "audit_torch_event_elapsed",
+                ),
+                produces_owner=True,
+                kind="event_create",
+            )
+            # Both the owning Warp stream and the Torch view/event are adopted
+            # before this GPU leaf. Setup S proves quiescence before execution.
+            driver.leaf(
+                "audit_torch_event_record",
+                lambda: event_controls["event"].record(event_controls["stream"]),
+                kind="event_record",
+            )
+            if payload["fault"] == "audit_torch_event_import":
+                event_controls["torch_ipc"] = driver.leaf(
+                    "audit_torch_ipc",
+                    event_controls["event"].ipc_handle,
+                    produces_owner=True,
+                    kind="event_create",
+                )
+            if (
+                event_controls["stream"].cuda_stream != driver.stream.cuda_stream
+                or event_controls["stream"].device.index != driver.ordinal
+                or event_controls["event"].device.index != driver.ordinal
+            ):
+                guardian.quarantine("audit_control_device_or_stream_drift")
+                journal("audit_control_quarantined", evidence=guardian.snapshot())
+                os._exit(74)
+        for owner in event_controls.values():
+            assert guardian._guardian.contains_exact_owner(owner)
+        journal("audit_event_controls_registered", names=sorted(event_controls), target=driver.ordinal)
         audit = driver.leaf(
             "prepare_leaf_audit",
             lambda: RecordedLeafAudit(
@@ -254,6 +311,7 @@ def main():
                 sample_array=case.buffers.hit_mask,
                 event=audit_event,
                 fault=payload["fault"],
+                event_controls=event_controls,
             ),
             produces_owner=True,
             kind="runtime_import_or_init",
