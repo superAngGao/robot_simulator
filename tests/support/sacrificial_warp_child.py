@@ -371,7 +371,7 @@ def main():
                 np.testing.assert_array_equal(first_host_results[name], host_results[name])
         assert audit.native_launches == len(frozen_commands) * payload["repetitions"]
         assert audit.entry_calls == audit.native_launches == audit.restoration_checks
-        assert audit.native_events == 0 and not audit.rejected
+        assert audit.native_events == audit.native_queries == 0 and not audit.rejected
         observations = (host_results,) if payload["repetitions"] == 1 else (first_host_results, host_results)
         for host_results in observations:
             for name in (

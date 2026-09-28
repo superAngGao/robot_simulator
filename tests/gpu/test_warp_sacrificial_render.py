@@ -157,7 +157,7 @@ def test_exact_recorded_bundle_reused_with_two_complete_sentinels(
         == audit["restoration_checks"]
         == (10 if resident_rays is None else 4)
     )
-    assert audit["native_events"] == 0 and audit["rejected"] == []
+    assert audit["native_events"] == audit["native_queries"] == 0 and audit["rejected"] == []
     assert not inspected["target_current_is_execution_stream"]
     assert inspected["ambient_stream_initialized"]
     evidence = next(item for item in journal if item["operation"] == "released")["evidence"]
@@ -178,6 +178,9 @@ def test_exact_recorded_bundle_reused_with_two_complete_sentinels(
         ("audit_dlpack", "torch.utils.dlpack.to_dlpack"),
         ("audit_module", "warp.load_module"),
         ("audit_event", "warp.Stream.record_event"),
+        ("audit_event_query", "warp.Event.is_complete"),
+        ("audit_stream_query", "warp.Stream.is_complete"),
+        ("audit_event_elapsed", "warp.get_event_elapsed_time"),
         ("audit_sync", "warp.synchronize_device"),
     ],
 )
@@ -187,7 +190,7 @@ def test_real_recorded_leaf_rejects_forbidden_runtime_before_native_submit(tmp_p
     audit = next(item for item in journal if item["operation"] == "recorded_leaf_audit")["evidence"]
     assert audit["rejected"] == [target_name]
     assert audit["entry_calls"] == audit["restoration_checks"] == 1
-    assert audit["native_launches"] == audit["native_events"] == 0
+    assert audit["native_launches"] == audit["native_events"] == audit["native_queries"] == 0
     operations = [item["operation"] for item in journal]
     assert operations.count("emergency_sync_entered") == 1
     assert "execution_context_checked" in operations

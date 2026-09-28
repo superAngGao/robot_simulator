@@ -22,23 +22,32 @@ _EXTRA_TARGETS = (
     "warp.load_module",
     "warp._src.context.Module.load",
     "warp.Event.__init__",
+    "warp.Event.is_complete",
+    "warp.Event.ipc_handle",
+    "warp.Stream.is_complete",
+    "warp.get_event_elapsed_time",
+    "warp.record_event",
+    "warp.wait_event",
+    "warp.wait_stream",
     "warp.Stream.record_event",
     "warp.Stream.wait_event",
     "warp.Stream.wait_stream",
+    "torch.cuda.Event.query",
+    "torch.cuda.Event.elapsed_time",
+    "torch.cuda.Event.record",
+    "torch.cuda.Event.ipc_handle",
+    "torch.cuda.Stream.query",
+    "torch.cuda.Stream.record_event",
+    "torch.cuda.Stream.wait_event",
+    "torch.cuda.Stream.wait_stream",
     "warp.launch",
 )
 
-FAULT_TARGETS = {
-    "audit_allocation": "warp.empty",
-    "audit_copy": "warp.copy",
-    "audit_materialization": "warp.array.numpy",
-    "audit_numpy": "numpy.asarray",
-    "audit_bridge": "warp.to_torch",
-    "audit_dlpack": "torch.utils.dlpack.to_dlpack",
-    "audit_module": "warp.load_module",
-    "audit_event": "warp.Stream.record_event",
-    "audit_sync": "warp.synchronize_device",
-}
+_NATIVE_QUERY_ENTRIES = (
+    "wp_cuda_event_query",
+    "wp_cuda_stream_query",
+    "wp_cuda_event_elapsed_time",
+)
 
 
 class RecordedLeafAudit:
@@ -53,12 +62,14 @@ class RecordedLeafAudit:
         self.entry_calls = 0
         self.native_launches = 0
         self.native_events = 0
+        self.native_queries = 0
         self.rejected = []
         self.restoration_checks = 0
         self._original_launch = wp.Launch.launch
         self._core = wp._src.context.runtime.core
         self._original_native = self._core.wp_cuda_launch_kernel
         self._original_event = self._core.wp_cuda_event_record
+        self._query_originals = tuple((name, getattr(self._core, name)) for name in _NATIVE_QUERY_ENTRIES)
         targets = tuple(spec.target for spec in FORBIDDEN_RUNTIME_HOOKS if not spec.entry_point_prefixes)
         targets += _EXTRA_TARGETS
         resolved = []
@@ -69,8 +80,10 @@ class RecordedLeafAudit:
             if key not in seen:
                 seen.add(key)
                 original = getattr(owner, attribute)
-                if not callable(original):
-                    raise TypeError(f"required audit entry is not callable: {target}")
+                if not callable(original) and not (type(original) is property and callable(original.fget)):
+                    raise TypeError(
+                        f"required audit entry is neither callable nor a readable property: {target}"
+                    )
                 resolved.append((target, owner, attribute, original))
         self._resolved = tuple(resolved)
         self._native_arguments = tuple(
@@ -113,6 +126,22 @@ class RecordedLeafAudit:
         self.native_launches += 1
         return self._original_native(*args)
 
+    def _native_query(self, name):
+        def query(*args, **kwargs):
+            self.native_queries += 1
+            self._deny(f"warp.runtime.core.{name}")
+
+        return query
+
+    def _replacement(self, target, original):
+        if type(original) is property:
+            # Patch the descriptor without reading it on an instance. Property
+            # polling must fail before its installed native query is entered.
+            return property(
+                self._forbidden(target, original.fget), original.fset, original.fdel, original.__doc__
+            )
+        return self._forbidden(target, original)
+
     def _event_record(self, *args):
         self.native_events += 1
         self._deny("warp.runtime.core.wp_cuda_event_record")
@@ -144,6 +173,12 @@ class RecordedLeafAudit:
             wp.load_module(module="optics.warp_native_render", device=stream.device)
         elif self.fault == "audit_event":
             stream.record_event(self.event)
+        elif self.fault == "audit_event_query":
+            _ = self.event.is_complete
+        elif self.fault == "audit_stream_query":
+            _ = stream.is_complete
+        elif self.fault == "audit_event_elapsed":
+            wp.get_event_elapsed_time(self.event, self.event, synchronize=False)
         elif self.fault == "audit_sync":
             wp.synchronize_device(stream.device)
         return self._original_launch(command, stream=stream)
@@ -158,7 +193,7 @@ class RecordedLeafAudit:
                 for target, owner, attribute, original in self._resolved:
                     if getattr(owner, attribute) is not original:
                         raise RecordedLeafContamination("hook entry changed before installation")
-                    stack.enter_context(patch.object(owner, attribute, self._forbidden(target, original)))
+                    stack.enter_context(patch.object(owner, attribute, self._replacement(target, original)))
                 # A function is needed here: Python must still bind the Launch
                 # instance, not the audit object's bound method.
                 audit = self
@@ -169,6 +204,10 @@ class RecordedLeafAudit:
                 stack.enter_context(patch.object(self.wp.Launch, "launch", launch))
                 stack.enter_context(patch.object(self._core, "wp_cuda_launch_kernel", self._native))
                 stack.enter_context(patch.object(self._core, "wp_cuda_event_record", self._event_record))
+                for name, original in self._query_originals:
+                    if getattr(self._core, name) is not original:
+                        raise RecordedLeafContamination("native query changed before installation")
+                    stack.enter_context(patch.object(self._core, name, self._native_query(name)))
                 self._active = index
                 try:
                     command.launch(stream=self.stream)
@@ -180,6 +219,8 @@ class RecordedLeafAudit:
             assert self.wp.Launch.launch is self._original_launch
             assert self._core.wp_cuda_launch_kernel is self._original_native
             assert self._core.wp_cuda_event_record is self._original_event
+            for name, original in self._query_originals:
+                assert getattr(self._core, name) is original
             for _, owner, attribute, original in self._resolved:
                 assert getattr(owner, attribute) is original
             self.restoration_checks += 1
@@ -189,6 +230,7 @@ class RecordedLeafAudit:
             entry_calls=self.entry_calls,
             native_launches=self.native_launches,
             native_events=self.native_events,
+            native_queries=self.native_queries,
             rejected=list(self.rejected),
             restoration_checks=self.restoration_checks,
             registered_targets=[target for target, *_ in self._resolved],
