@@ -4,6 +4,29 @@
   "must_complete": true,
   "entries": [
     {
+      "entry_id": "shared_guarded_wait_safety_core",
+      "paths": [
+        "optical_worker/wait_protocol.py",
+        "optical_worker/wait_supervision.py",
+        "tests/support/guarded_wait_process.py",
+        "tests/unit/optics/test_guarded_wait_core.py",
+        "tests/unit/optics/test_guarded_wait_process.py"
+      ],
+      "symbols": {
+        "optical_worker/wait_protocol.py": ["class GuardWaitClient:"],
+        "optical_worker/wait_supervision.py": ["class GuardSupervisorCore:"]
+      },
+      "cuda_selected": {
+        "action": "collapse",
+        "acceptance": "shared CPU safety infrastructure pending separately reviewed production adoption; retain for the selected worker and protocol regression only, otherwise remove if no selected production/test consumer remains; never retain a paired selector"
+      },
+      "warp_selected": {
+        "action": "collapse",
+        "acceptance": "shared CPU safety infrastructure pending separately reviewed production adoption; retain for the selected worker and protocol regression only, otherwise remove if no selected production/test consumer remains; never retain a paired selector"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
       "entry_id": "logical_optical_scene_contract",
       "paths": [
         "optics/scene_contract.py",

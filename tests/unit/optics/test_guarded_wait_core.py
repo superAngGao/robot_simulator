@@ -1,0 +1,502 @@
+from __future__ import annotations
+
+import copy
+import json
+import select
+import socket
+import subprocess
+import sys
+import threading
+
+import pytest
+
+from optical_worker.protocol import canonical_json_bytes, encode_framed_message
+from optical_worker.wait_protocol import (
+    I64_MAX,
+    MAX_BODY_BYTES,
+    MAX_GUARDS,
+    MAX_SEQUENCE,
+    GuardConfiguration,
+    GuardFrameDecoder,
+    GuardProtocolError,
+    GuardWaitClient,
+    GuardWaitTicket,
+    bounded_integer,
+    checked_add,
+    next_sequence,
+    validate_message,
+)
+from optical_worker.wait_supervision import (
+    GuardSupervisorCore,
+    GuardSupervisorEvidence,
+    GuardSupervisorTransport,
+)
+
+
+def config(**kwargs):
+    return GuardConfiguration(
+        **(dict(session="a" * 32, device_ordinal=1, ack_timeout_ms=5, operation_timeout_ms=20) | kwargs)
+    )
+
+
+def setup_core():
+    now = [100]
+    settings = config()
+    return settings, now, GuardSupervisorCore(settings, clock=lambda: now[0])
+
+
+def arm(settings, core, sequence=0, role="setup"):
+    reply = core.accept(settings.message("ARM", sequence, role))
+    assert core.state == "ARM_ACK_PENDING"
+    core.acknowledge_written(reply)
+
+
+def complete(settings, core, sequence=0, role="setup"):
+    reply = core.accept(settings.message("COMPLETE", sequence, role))
+    assert core.state == "DISARM_ACK_PENDING"
+    core.acknowledge_written(reply)
+
+
+def test_normal_snapshot_golden_and_final_evidence():
+    c, _, s = setup_core()
+    arm(c, s)
+    pending = s.accept(c.message("COMPLETE", 0, "setup"))
+    assert s.evidence().to_payload()["summary"] == {
+        "state": "DISARM_ACK_PENDING",
+        "next_sequence": 1,
+        "active_wait": {"sequence": 0, "role": "setup"},
+        "pending_ack": {"operation": "DISARMED", "sequence": 0, "role": "setup", "deadline_ns": 5000100},
+        "operation_deadline_ns": 20000100,
+        "terminal_deadline_ns": None,
+        "effective_deadline_ns": 5000100,
+        "terminal_reason": None,
+        "arm_count": 1,
+        "normal_complete_count": 0,
+        "deadline_expired": False,
+        "kill_requested": False,
+        "kill_error_kind": None,
+        "observed_returncode": None,
+        "complete": False,
+    }
+    with pytest.raises(GuardProtocolError, match="snapshot"):
+        s.evidence(require_final=True)
+    s.acknowledge_written(pending)
+    arm(c, s, 1, "resolve")
+    complete(c, s, 1, "resolve")
+    arm(c, s, 2, "emergency")
+    assert s.state == "ARMED_TERMINAL"
+    s.observe_exit(0)
+    payload = s.evidence(require_final=True).to_payload()
+    assert payload["summary"]["arm_count"] == 3
+    assert payload["summary"]["normal_complete_count"] == 2
+    assert GuardSupervisorEvidence.from_payload(payload, require_final=True).to_payload() == payload
+
+
+@pytest.mark.parametrize(
+    "field", ["protocol_version", "session", "device_ordinal", "role", "operation", "extra"]
+)
+def test_wire_identity_extra_fields_fail_closed(field):
+    c, _, s = setup_core()
+    message = c.message("ARM", 0, "setup")
+    message[field] = "wrong"
+    with pytest.raises((GuardProtocolError, TypeError)):
+        s.accept(message)
+    assert s.state == "TERMINATING"
+    assert s.pending_response is None
+    assert s.evidence().to_payload()["summary"]["arm_count"] == 0
+
+
+@pytest.mark.parametrize("bad", [True, -1, MAX_SEQUENCE + 1, float("inf"), 0.0, None])
+def test_sequence_domain(bad):
+    c = config()
+    message = c.message("ARM", 0, "setup")
+    message["sequence"] = bad
+    with pytest.raises(GuardProtocolError):
+        validate_message(message, c)
+
+
+def test_capacity_arithmetic_and_first_illegal_values():
+    assert MAX_GUARDS == 2305843009213693949
+    assert MAX_SEQUENCE == 2305843009213693948
+    assert 1 + 4 * MAX_GUARDS + 6 == 9223372036854775803
+    for value in [MAX_SEQUENCE, MAX_GUARDS, 4 * MAX_GUARDS + 6, I64_MAX]:
+        assert bounded_integer(value) == value
+        assert canonical_json_bytes({"value": value})
+    assert next_sequence(MAX_SEQUENCE) is None
+    assert next_sequence(MAX_SEQUENCE - 1) == MAX_SEQUENCE
+    with pytest.raises(GuardProtocolError):
+        next_sequence(MAX_SEQUENCE + 1)
+    for limit in [MAX_SEQUENCE, MAX_GUARDS, I64_MAX]:
+        assert checked_add(limit - 1, 1, limit) == limit
+        with pytest.raises(GuardProtocolError):
+            checked_add(limit, 1, limit)
+    budget = (2**31 - 1) * 1_000_000
+    assert checked_add(I64_MAX - budget, budget) == I64_MAX
+    with pytest.raises(GuardProtocolError):
+        checked_add(I64_MAX - budget + 1, budget)
+
+
+@pytest.mark.parametrize("field", ["device_ordinal", "ack_timeout_ms", "operation_timeout_ms"])
+@pytest.mark.parametrize("value", [True, -1, 2**31, None, 1.0])
+def test_configuration_boundaries(field, value):
+    data = config().to_payload()
+    data[field] = value
+    with pytest.raises(GuardProtocolError):
+        GuardConfiguration.from_payload(data)
+
+
+def test_codec_fragmentation_duplicate_keys_and_limits():
+    message = config().message("ARM", MAX_SEQUENCE, "emergency")
+    frame = encode_framed_message(message, max_bytes=MAX_BODY_BYTES)
+    for split in range(1, len(frame)):
+        parser = GuardFrameDecoder()
+        assert parser.feed(frame[:split]) is None
+        assert parser.feed(frame[split:]) == message
+    for invalid in [b"", b"\0\0\0\0", (1025).to_bytes(4, "big"), frame + frame]:
+        with pytest.raises(Exception):
+            GuardFrameDecoder().feed(invalid)
+    duplicate = b'{"operation":"ARM","operation":"ARM"}'
+    with pytest.raises(Exception, match="duplicate"):
+        GuardFrameDecoder().feed(len(duplicate).to_bytes(4, "big") + duplicate)
+
+
+@pytest.mark.parametrize("role", ["setup", "resolve"])
+def test_stalled_disarm_keeps_watchdog_and_parent_loss_cannot_clear(role):
+    c, now, s = setup_core()
+    arm(c, s, role=role)
+    now[0] += 19_000_000
+    reply = s.accept(c.message("COMPLETE", 0, role))
+    assert s.effective_deadline_ns == 20000100
+    s.fault("parent_lost")
+    assert s.effective_deadline_ns == 20000100
+    with pytest.raises(GuardProtocolError):
+        s.acknowledge_written(reply)
+    before = len(s.evidence().to_payload()["trace"])
+    s.fault("input_eof")
+    assert len(s.evidence().to_payload()["trace"]) == before
+    now[0] = 20000100
+    s.tick()
+    assert s.kill_required
+    s.record_kill_request()
+    s.record_kill_failure("permission_denied")
+    assert not s.kill_required and s.state == "TERMINATING"
+    with pytest.raises(GuardProtocolError):
+        s.evidence(require_final=True)
+    s.observe_exit(-9)
+    result = s.evidence(require_final=True).to_payload()["summary"]
+    assert result["terminal_reason"] == "parent_lost"
+    assert result["normal_complete_count"] == 0
+    assert result["kill_error_kind"] == "permission_denied"
+
+
+def test_disarm_ack_earlier_deadline_expires_at_equality():
+    c, now, s = setup_core()
+    arm(c, s)
+    reply = s.accept(c.message("COMPLETE", 0, "setup"))
+    now[0] = 5000100
+    with pytest.raises(GuardProtocolError):
+        s.acknowledge_written(reply)
+    trace = s.evidence().to_payload()["trace"]
+    assert trace[-1]["operation"] == "deadline_expired"
+    assert trace[-1]["details"] == {"source": "ack"}
+    assert s.pending_response is None and s.kill_required
+
+
+@pytest.mark.parametrize("fault", ["duplicate_arm", "emergency_complete", "wrong_role", "early_complete"])
+def test_ordering_errors_cannot_commit_completion(fault):
+    c, _, s = setup_core()
+    if fault != "early_complete":
+        arm(c, s, role="emergency" if fault == "emergency_complete" else "setup")
+    message = c.message(
+        "ARM" if fault == "duplicate_arm" else "COMPLETE", 0, "resolve" if fault == "wrong_role" else "setup"
+    )
+    with pytest.raises(GuardProtocolError):
+        s.accept(message)
+    assert s.state == "TERMINATING"
+    assert s.evidence().to_payload()["summary"]["normal_complete_count"] == 0
+
+
+@pytest.mark.parametrize("bad_clock", [True, -1, I64_MAX + 1, 50, float("nan")])
+def test_bad_clock_single_use_and_immediate_kill(bad_clock):
+    _, now, s = setup_core()
+    now[0] = 200
+    s.tick()  # successful observation without a trace transition
+    now[0] = bad_clock
+    for _ in range(4):
+        s.tick()
+    assert s.kill_required
+    payload = s.evidence().to_payload()
+    assert [x["operation"] for x in payload["trace"]] == ["initialized", "clock_rejected", "deadline_expired"]
+    assert payload["trace"][1]["at_ns"] == 200
+
+
+def test_deadline_overflow_rejects_before_ack():
+    c, now, s = setup_core()
+    now[0] = I64_MAX
+    with pytest.raises(GuardProtocolError):
+        s.accept(c.message("ARM", 0, "setup"))
+    assert s.pending_response is None and s.kill_required
+    assert s.evidence().to_payload()["summary"]["arm_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "mutation", ["operation", "count", "index", "drop_ack", "duplicate", "time", "exit", "bool_count"]
+)
+def test_evidence_replay_not_self_hash_acceptance(mutation):
+    c, _, s = setup_core()
+    arm(c, s)
+    complete(c, s)
+    s.observe_exit(0)
+    value = s.evidence().to_payload()
+    if mutation == "operation":
+        value["trace"][1]["operation"] = "invented"
+    elif mutation == "count":
+        value["summary"]["arm_count"] = 77
+    elif mutation == "bool_count":
+        value["summary"]["arm_count"] = True
+    elif mutation == "index":
+        value["trace"][1]["index"] = 2
+    elif mutation == "drop_ack":
+        del value["trace"][2]
+    elif mutation == "duplicate":
+        value["trace"].insert(2, copy.deepcopy(value["trace"][1]))
+    elif mutation == "time":
+        value["trace"][2]["at_ns"] = 99
+    else:
+        value["summary"]["observed_returncode"] = -9
+    if mutation in {"drop_ack", "duplicate"}:
+        for index, event in enumerate(value["trace"]):
+            event["index"] = index
+    canonical_json_bytes(value)  # re-encoding valid JSON cannot repair state flow
+    with pytest.raises(GuardProtocolError):
+        GuardSupervisorEvidence.from_payload(value)
+
+
+def test_buffered_request_before_ack_write_poison_and_no_response():
+    c, _, s = setup_core()
+    left, right = socket.socketpair()
+    try:
+        transport = GuardSupervisorTransport(right, s)
+        for sequence in (0, 1):
+            left.sendall(encode_framed_message(c.message("ARM", sequence, "setup"), max_bytes=1024))
+            if sequence == 0:
+                transport.service(readable=True, writable=False)
+            else:
+                with pytest.raises(GuardProtocolError):
+                    transport.service(readable=True, writable=True)
+        assert s.state == "TERMINATING" and not transport.wants_write
+        left.setblocking(False)
+        with pytest.raises(BlockingIOError):
+            left.recv(1024)
+    finally:
+        left.close()
+        right.close()
+
+
+def test_thread_identity_and_client_forgery_reject_without_wire_write():
+    c, _, s = setup_core()
+    left, right = socket.socketpair()
+    try:
+        client = GuardWaitClient(left, c)
+        errors = []
+
+        def foreign_thread():
+            for call in (s.tick, lambda: client.arm("setup")):
+                try:
+                    call()
+                except GuardProtocolError as error:
+                    errors.append(str(error))
+
+        t = threading.Thread(target=foreign_thread)
+        t.start()
+        t.join()
+        assert len(errors) == 2 and s.state == "IDLE" and client.state == "IDLE"
+        with pytest.raises(GuardProtocolError):
+            client.complete(GuardWaitTicket(c.session, c.device_ordinal, "setup", 0))
+        assert client.state == "FAILED"
+        right.setblocking(False)
+        with pytest.raises(BlockingIOError):
+            right.recv(1024)
+    finally:
+        left.close()
+        right.close()
+
+
+def test_cold_import_has_no_runtime_or_harness_dependency():
+    script = """
+import builtins,json,sys
+original=builtins.__import__
+attempts=[]
+def checked(name,*args,**kwargs):
+    if name.split('.')[0] in {'torch','warp','numpy','benchmarks','tests','tools','examples'}:
+        attempts.append(name)
+        raise ImportError(name)
+    return original(name,*args,**kwargs)
+builtins.__import__=checked
+import optical_worker.wait_protocol,optical_worker.wait_supervision
+print(json.dumps(attempts))
+"""
+    result = subprocess.run([sys.executable, "-B", "-c", script], capture_output=True, text=True, check=True)
+    assert json.loads(result.stdout) == []
+
+
+@pytest.fixture
+def connected_client():
+    settings = config(ack_timeout_ms=1000, operation_timeout_ms=3000)
+    left, right = socket.socketpair()
+    stop, started = threading.Event(), threading.Event()
+    reports = []
+
+    def serve():
+        core = GuardSupervisorCore(settings)
+        transport = GuardSupervisorTransport(right, core)
+        started.set()
+        try:
+            while not stop.is_set():
+                read, write, _ = select.select([right], [right] if transport.wants_write else [], [], 0.01)
+                transport.service(readable=bool(read), writable=bool(write))
+        finally:
+            reports.append(core.evidence().to_payload())
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    assert started.wait(2)
+    try:
+        yield GuardWaitClient(left, settings), reports
+    finally:
+        stop.set()
+        thread.join(2)
+        left.close()
+        right.close()
+        assert not thread.is_alive()
+
+
+def test_real_client_repeated_exact_tickets_and_readonly_configuration(connected_client):
+    client, _ = connected_client
+    for index, role in enumerate(["setup", "resolve", "setup"]):
+        ticket = client.arm(role)
+        assert ticket.sequence == index and client.state == "ARMED"
+        client.complete(ticket)
+        assert client.state == "IDLE"
+    for obj in (client, GuardSupervisorCore(config())):
+        with pytest.raises(AttributeError):
+            obj.configuration = config(session="b" * 32)
+
+
+@pytest.mark.parametrize("fault", ["copy", "reconstructed", "foreign", "retired", "nested", "emergency"])
+def test_live_ticket_misuse_is_sticky_before_wire(connected_client, fault):
+    client, _ = connected_client
+    ticket = client.arm("emergency" if fault == "emergency" else "setup")
+    if fault == "copy":
+        ticket = copy.copy(ticket)
+    elif fault in {"reconstructed", "foreign"}:
+        ticket = GuardWaitTicket(ticket.session, ticket.device_ordinal, ticket.role, ticket.sequence)
+    elif fault == "retired":
+        client.complete(ticket)
+        client.arm("resolve")
+    with pytest.raises(GuardProtocolError):
+        client.arm("resolve") if fault == "nested" else client.complete(ticket)
+    assert client.state == "FAILED"
+    with pytest.raises(GuardProtocolError):
+        client.arm("emergency")
+    assert client.state == "FAILED"
+
+
+def test_swallowed_nested_failure_cannot_reopen_client(monkeypatch):
+    left, right = socket.socketpair()
+    try:
+        client = GuardWaitClient(left, config())
+
+        def nested(*unused):
+            with pytest.raises(GuardProtocolError):
+                client.arm("resolve")
+
+        monkeypatch.setattr(client, "_exchange", nested)
+        with pytest.raises(GuardProtocolError, match="nested failure"):
+            client.arm("setup")
+        assert client.state == "FAILED"
+    finally:
+        left.close()
+        right.close()
+
+
+def test_clock_reentrancy_is_terminal_without_ack():
+    core = None
+
+    def clock():
+        if core is not None:
+            core.tick()
+        return 100
+
+    core = GuardSupervisorCore(config(), clock=clock)
+    core.tick()
+    assert core.state == "TERMINATING" and core.kill_required
+    assert core.pending_response is None
+
+
+def test_partial_eof_at_every_frame_prefix_is_terminal():
+    message = encode_framed_message(config().message("ARM", 0, "setup"), max_bytes=MAX_BODY_BYTES)
+    for prefix in range(len(message)):
+        c, _, core = setup_core()
+        left, right = socket.socketpair()
+        try:
+            transport = GuardSupervisorTransport(right, core)
+            if prefix:
+                left.sendall(message[:prefix])
+                transport.service(readable=True, writable=False)
+            left.shutdown(socket.SHUT_WR)
+            for _ in range(3):
+                assert select.select([right], [], [], 1)[0]
+                transport.service(readable=True, writable=True)
+                if core.state == "TERMINATING":
+                    break
+            assert core.state == "TERMINATING"
+            assert core.pending_response is None
+            assert core.evidence().to_payload()["summary"]["arm_count"] == 0
+        finally:
+            left.close()
+            right.close()
+
+
+@pytest.mark.parametrize("event_index", range(6))
+def test_each_success_transition_rejects_duplication(event_index):
+    settings, _, core = setup_core()
+    arm(settings, core)
+    complete(settings, core)
+    core.observe_exit(0)
+    payload = core.evidence().to_payload()
+    payload["trace"].insert(event_index, copy.deepcopy(payload["trace"][event_index]))
+    for index, event in enumerate(payload["trace"]):
+        event["index"] = index
+    with pytest.raises(GuardProtocolError):
+        GuardSupervisorEvidence.from_payload(payload)
+
+
+def test_each_summary_field_is_derived_not_accepted():
+    settings, _, core = setup_core()
+    arm(settings, core)
+    for name in core.evidence().to_payload()["summary"]:
+        payload = core.evidence().to_payload()
+        payload["summary"][name] = {"invented": True}
+        with pytest.raises(GuardProtocolError):
+            GuardSupervisorEvidence.from_payload(payload)
+
+
+def test_pending_ack_send_failure_keeps_original_guard():
+    settings, _, core = setup_core()
+    left, right = socket.socketpair()
+    try:
+        transport = GuardSupervisorTransport(right, core)
+        core.accept(settings.message("ARM", 0, "setup"))
+        deadline = core.effective_deadline_ns
+        # Exact real socket, OS error at the actual transport send entry.
+        right.shutdown(socket.SHUT_WR)
+        with pytest.raises(OSError):
+            transport.service(readable=False, writable=True)
+        assert core.state == "TERMINATING"
+        assert core.effective_deadline_ns == deadline
+        assert core.pending_response is None and not transport.wants_write
+        assert core.evidence().to_payload()["summary"]["terminal_reason"] == "ack_write_failed"
+    finally:
+        left.close()
+        right.close()
