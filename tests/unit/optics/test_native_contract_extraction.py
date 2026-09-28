@@ -120,7 +120,8 @@ if mode == 'calibrate':
     assert attempts == ['torch', 'benchmarks.optical']
 elif mode == 'host':
     import numpy as np
-    from optics.registry import OpticalWorldRegistry, OpticalMaterialSpec, OpticalLightSpec, OpticalInstanceSpec
+    from optics.registry import (OpticalWorldRegistry, OpticalMaterialSpec,
+                                 OpticalLightSpec, OpticalInstanceSpec)
     from optics.scene_contract import PackedOpticalSceneHost
     from physics.spatial import SpatialTransform
     from optical_worker.native_input import CanonicalFixedRenderFixtureHost, CanonicalNativeInput
@@ -152,7 +153,8 @@ elif mode == 'host':
     assert native.manifest.result_capable
     replay = CanonicalTransformReplayHost.from_arrays(case_id=data['replay_case'],
         x_world_R=data['replay_R'], x_world_r=data['replay_r'])
-    assert replay.transform_replay_sha256 == frozen_workload_content(data['replay_case']).transform_replay_sha256
+    expected_replay = frozen_workload_content(data['replay_case']).transform_replay_sha256
+    assert replay.transform_replay_sha256 == expected_replay
 else:
     importlib.import_module(mode)
 if mode != 'calibrate':
