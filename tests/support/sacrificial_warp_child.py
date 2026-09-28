@@ -245,7 +245,8 @@ def main():
         audit_event = driver.leaf(
             "audit_event",
             lambda: wp.Event(
-                device=driver.target, interprocess=payload["fault"] == "audit_warp_event_import"
+                device=driver.target,
+                interprocess=payload["fault"] in ("audit_warp_event_import", "audit_generic_event_import"),
             ),
             produces_owner=True,
             kind="event_create",
@@ -255,7 +256,8 @@ def main():
             event_controls["warp_ipc"] = driver.leaf(
                 "audit_warp_ipc", audit_event.ipc_handle, produces_owner=True, kind="event_create"
             )
-        if payload["fault"].startswith("audit_torch_"):
+        generic_control = payload["fault"].startswith("audit_generic_")
+        if payload["fault"].startswith("audit_torch_") or generic_control:
             torch = driver.leaf(
                 "audit_torch_import",
                 lambda: __import__("torch"),
@@ -265,40 +267,65 @@ def main():
             event_controls["torch"] = torch
             event_controls["stream"] = driver.leaf(
                 "audit_torch_stream",
-                lambda: torch.cuda.ExternalStream(driver.stream.cuda_stream, device=driver.ordinal),
+                lambda: (
+                    torch.Stream(device=f"cuda:{driver.ordinal}")
+                    if generic_control
+                    else torch.cuda.ExternalStream(driver.stream.cuda_stream, device=driver.ordinal)
+                ),
                 produces_owner=True,
             )
             event_controls["event"] = driver.leaf(
                 "audit_torch_event",
-                lambda: torch.cuda.Event(
-                    interprocess=payload["fault"] in ("audit_torch_event_import", "audit_torch_event_export"),
-                    enable_timing=payload["fault"] == "audit_torch_event_elapsed",
+                lambda: (
+                    torch.Event(
+                        device=f"cuda:{driver.ordinal}",
+                        interprocess=payload["fault"]
+                        in ("audit_generic_event_import", "audit_generic_event_export"),
+                        enable_timing=payload["fault"] == "audit_generic_event_elapsed",
+                    )
+                    if generic_control
+                    else torch.cuda.Event(
+                        interprocess=payload["fault"]
+                        in ("audit_torch_event_import", "audit_torch_event_export"),
+                        enable_timing=payload["fault"] == "audit_torch_event_elapsed",
+                    )
                 ),
                 produces_owner=True,
                 kind="event_create",
             )
-            # Both the owning Warp stream and the Torch view/event are adopted
-            # before this GPU leaf. Setup S proves quiescence before execution.
+            # Both stream and event are adopted before recording. The CUDA
+            # wrapper uses a retained Warp stream view; generic Torch has its
+            # own explicitly target-owned stream. S quiesces the target graph.
             driver.leaf(
                 "audit_torch_event_record",
                 lambda: event_controls["event"].record(event_controls["stream"]),
                 kind="event_record",
             )
-            if payload["fault"] == "audit_torch_event_import":
+            if payload["fault"] in ("audit_torch_event_import", "audit_generic_event_import"):
                 event_controls["torch_ipc"] = driver.leaf(
                     "audit_torch_ipc",
-                    event_controls["event"].ipc_handle,
+                    # Torch 2.9 generic Event.ipc_handle is a public stub that
+                    # raises NotImplementedError. Supply a genuine CUDA IPC
+                    # handle from the already-owned target Warp event instead;
+                    # this tests rejection, not generic IPC functionality.
+                    audit_event.ipc_handle if generic_control else event_controls["event"].ipc_handle,
                     produces_owner=True,
                     kind="event_create",
                 )
             if (
-                event_controls["stream"].cuda_stream != driver.stream.cuda_stream
+                (not generic_control and event_controls["stream"].cuda_stream != driver.stream.cuda_stream)
                 or event_controls["stream"].device.index != driver.ordinal
                 or event_controls["event"].device.index != driver.ordinal
             ):
                 guardian.quarantine("audit_control_device_or_stream_drift")
                 journal("audit_control_quarantined", evidence=guardian.snapshot())
                 os._exit(74)
+            if payload["fault"] == "audit_generic_event_cached_create":
+                event_controls["event_type"] = driver.host(torch.Event, "generic_constructor_alias")
+            if payload["fault"] == "audit_generic_event_cached_query":
+                event_controls["cached_query"] = driver.host(
+                    event_controls["event"].query, "generic_cached_native_method"
+                )
         for owner in event_controls.values():
             assert guardian._guardian.contains_exact_owner(owner)
         journal("audit_event_controls_registered", names=sorted(event_controls), target=driver.ordinal)
@@ -430,6 +457,7 @@ def main():
         assert audit.native_launches == len(frozen_commands) * payload["repetitions"]
         assert audit.entry_calls == audit.native_launches == audit.restoration_checks
         assert audit.native_events == audit.native_queries == 0 and not audit.rejected
+        assert audit.native_event_guard.calls == 0
         observations = (host_results,) if payload["repetitions"] == 1 else (first_host_results, host_results)
         for host_results in observations:
             for name in (

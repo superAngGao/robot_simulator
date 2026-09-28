@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from contextlib import ExitStack
+import sys
+from contextlib import ExitStack, contextmanager
 from inspect import getattr_static
+from types import BuiltinFunctionType, ClassMethodDescriptorType, MethodDescriptorType, WrapperDescriptorType
 from unittest.mock import patch
 
 from benchmarks.optical.instrumentation import FORBIDDEN_RUNTIME_HOOKS, _resolve_owner
@@ -11,6 +13,114 @@ from benchmarks.optical.instrumentation import FORBIDDEN_RUNTIME_HOOKS, _resolve
 
 class RecordedLeafContamination(RuntimeError):
     pass
+
+
+class NativeEventCallGuard:
+    """Observe Python CALL dispatch to immutable runtime types, before C entry.
+
+    This uses the pinned CPython >=3.12 monitoring API, not mutable C-type
+    attributes or a constructor-only proxy. It covers aliases and existing
+    native receivers; it does not interpose arbitrary calls inside native code.
+    """
+
+    def __init__(self, families, *, active, deny, python_constructors=()):
+        self.families = tuple(families)
+        self.active = active
+        self.deny = deny
+        self.python_constructors = tuple(python_constructors)
+        self.calls = 0
+        self.restoration_checks = 0
+        self._tool = None
+        self._callback = self._observe
+        descriptors = []
+        for prefix, owner in self.families:
+            for name, value in vars(owner).items():
+                if not name.startswith("_") and callable(value):
+                    descriptors.append((prefix, owner, name, value))
+        self.descriptors = tuple(descriptors)
+        self.targets = tuple(
+            sorted(
+                [prefix for prefix, _ in self.families]
+                + [f"{prefix}.{name}" for prefix, _, name, _ in self.descriptors]
+            )
+        )
+        if not hasattr(sys, "monitoring"):
+            raise RecordedLeafContamination("CPython native CALL observation unavailable")
+
+    def _observe(self, code, offset, callee, arg0):
+        if not self.active():
+            return
+        target = None
+        if isinstance(callee, type):
+            # These exact wrapper classes already have frozen __new__ hooks.
+            # Do not mislabel their public constructor as the generic base.
+            # An arbitrary subclass or same-named type does not gain this rule.
+            if any(callee is owner for owner in self.python_constructors):
+                return
+            for prefix, owner in self.families:
+                if issubclass(callee, owner):
+                    target = prefix
+                    break
+        elif type(callee) in (
+            BuiltinFunctionType,
+            MethodDescriptorType,
+            ClassMethodDescriptorType,
+            WrapperDescriptorType,
+        ):
+            receiver = getattr(callee, "__self__", None)
+            name = getattr(callee, "__name__", None)
+            for prefix, owner, method, descriptor in self.descriptors:
+                if callee is descriptor or (
+                    name == method
+                    and (
+                        isinstance(receiver, owner)
+                        or (isinstance(receiver, type) and issubclass(receiver, owner))
+                    )
+                ):
+                    target = f"{prefix}.{method}"
+                    break
+        if target is not None:
+            self.calls += 1
+            self.deny(target)
+
+    @contextmanager
+    def installed(self):
+        if self._tool is not None:
+            raise RecordedLeafContamination("nested native CALL monitor")
+        monitoring = sys.monitoring
+        tool = next(
+            (
+                item
+                for item in range(5, -1, -1)
+                if monitoring.get_tool(item) is None and monitoring.get_events(item) == 0
+            ),
+            None,
+        )
+        if tool is None:
+            raise RecordedLeafContamination("no unused native CALL monitoring slot")
+        monitoring.use_tool_id(tool, "c4_recorded_event_guard")
+        self._tool = tool
+        previous = None
+        registered = False
+        try:
+            previous = monitoring.register_callback(tool, monitoring.events.CALL, self._callback)
+            registered = True
+            monitoring.set_events(tool, monitoring.events.CALL)
+            yield
+        finally:
+            removed = None
+            try:
+                monitoring.set_events(tool, 0)
+            finally:
+                try:
+                    if registered:
+                        removed = monitoring.register_callback(tool, monitoring.events.CALL, previous)
+                finally:
+                    monitoring.free_tool_id(tool)
+                    self._tool = None
+            assert not registered or removed is self._callback
+            assert monitoring.get_tool(tool) is None and monitoring.get_events(tool) == 0
+            self.restoration_checks += 1
 
 
 # These additions are specific to a render-only recorded leaf. Later C4 may
@@ -130,6 +240,15 @@ class RecordedLeafAudit:
         self._resolved = tuple(resolved)
         import torch
 
+        self.native_event_guard = NativeEventCallGuard(
+            (("torch.Event", torch.Event), ("torch.Stream", torch.Stream)),
+            active=lambda: self._active is not None,
+            deny=self._deny,
+            python_constructors=(torch.cuda.Event, torch.cuda.Stream, torch.cuda.ExternalStream),
+        )
+        for constructor in self.native_event_guard.python_constructors:
+            if not any(owner is constructor and name == "__new__" for _, owner, name, _ in self._resolved):
+                raise RecordedLeafContamination("delegated constructor lacks its exact Python hook")
         self.event_surface = validate_event_surface(
             (
                 ("warp.Event", wp.Event),
@@ -243,6 +362,43 @@ class RecordedLeafAudit:
             wp.Event(device=stream.device)
         elif self.fault == "audit_warp_stream_create":
             wp.Stream(device=stream.device)
+        elif self.fault.startswith("audit_generic_"):
+            controls = self.event_controls
+            torch, event, target_stream = controls["torch"], controls["event"], controls["stream"]
+            if self.fault == "audit_generic_event_create":
+                torch.Event(device=f"cuda:{stream.device.ordinal}")
+            elif self.fault == "audit_generic_event_cached_create":
+                controls["event_type"](device=f"cuda:{stream.device.ordinal}")
+            elif self.fault == "audit_generic_event_cached_query":
+                controls["cached_query"]()
+            elif self.fault == "audit_generic_stream_create":
+                torch.Stream(device=f"cuda:{stream.device.ordinal}")
+            elif self.fault == "audit_generic_event_import":
+                torch.Event.from_ipc_handle(f"cuda:{stream.device.ordinal}", controls["torch_ipc"])
+            elif self.fault == "audit_generic_event_record":
+                event.record(target_stream)
+            elif self.fault == "audit_generic_event_wait":
+                event.wait(target_stream)
+            elif self.fault == "audit_generic_event_query":
+                event.query()
+            elif self.fault == "audit_generic_event_elapsed":
+                event.elapsed_time(event)
+            elif self.fault == "audit_generic_event_sync":
+                event.synchronize()
+            elif self.fault == "audit_generic_event_export":
+                event.ipc_handle()
+            elif self.fault == "audit_generic_stream_query":
+                target_stream.query()
+            elif self.fault == "audit_generic_stream_sync":
+                target_stream.synchronize()
+            elif self.fault == "audit_generic_stream_wait_event":
+                target_stream.wait_event(event)
+            elif self.fault == "audit_generic_stream_wait_stream":
+                target_stream.wait_stream(target_stream)
+            elif self.fault == "audit_generic_stream_record_event":
+                target_stream.record_event(event)
+            else:
+                raise AssertionError("unregistered fixed generic Torch control")
         elif self.fault.startswith("audit_torch_"):
             controls = self.event_controls
             torch, event, target_stream = controls["torch"], controls["event"], controls["stream"]
@@ -279,6 +435,7 @@ class RecordedLeafAudit:
         original_count = self.native_launches
         try:
             with ExitStack() as stack:
+                stack.enter_context(self.native_event_guard.installed())
                 for target, owner, attribute, original in self._resolved:
                     if getattr_static(owner, attribute) is not original:
                         raise RecordedLeafContamination("hook entry changed before installation")
@@ -324,4 +481,7 @@ class RecordedLeafAudit:
             restoration_checks=self.restoration_checks,
             registered_targets=[target for target, *_ in self._resolved],
             event_surface=list(self.event_surface),
+            native_event_call_attempts=self.native_event_guard.calls,
+            native_call_restoration_checks=self.native_event_guard.restoration_checks,
+            native_event_targets=list(self.native_event_guard.targets),
         )

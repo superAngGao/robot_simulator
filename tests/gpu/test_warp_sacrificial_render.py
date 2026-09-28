@@ -194,6 +194,22 @@ def test_exact_recorded_bundle_reused_with_two_complete_sentinels(
         ("audit_torch_event_export", "torch.cuda.Event.ipc_handle"),
         ("audit_torch_stream_create", "torch.cuda.Stream.__new__"),
         ("audit_torch_external_stream_create", "torch.cuda.ExternalStream.__new__"),
+        ("audit_generic_event_create", "torch.Event"),
+        ("audit_generic_event_cached_create", "torch.Event"),
+        ("audit_generic_event_cached_query", "torch.Event.query"),
+        ("audit_generic_stream_create", "torch.Stream"),
+        ("audit_generic_event_import", "torch.Event.from_ipc_handle"),
+        ("audit_generic_event_record", "torch.Event.record"),
+        ("audit_generic_event_wait", "torch.Event.wait"),
+        ("audit_generic_event_query", "torch.Event.query"),
+        ("audit_generic_event_elapsed", "torch.Event.elapsed_time"),
+        ("audit_generic_event_sync", "torch.Event.synchronize"),
+        ("audit_generic_event_export", "torch.Event.ipc_handle"),
+        ("audit_generic_stream_query", "torch.Stream.query"),
+        ("audit_generic_stream_sync", "torch.Stream.synchronize"),
+        ("audit_generic_stream_wait_event", "torch.Stream.wait_event"),
+        ("audit_generic_stream_wait_stream", "torch.Stream.wait_stream"),
+        ("audit_generic_stream_record_event", "torch.Stream.record_event"),
         ("audit_sync", "warp.synchronize_device"),
     ],
 )
@@ -204,24 +220,31 @@ def test_real_recorded_leaf_rejects_forbidden_runtime_before_native_submit(tmp_p
     assert audit["rejected"] == [target_name]
     assert audit["entry_calls"] == audit["restoration_checks"] == 1
     assert audit["native_launches"] == audit["native_events"] == audit["native_queries"] == 0
+    assert audit["native_event_call_attempts"] == int(fault.startswith("audit_generic_"))
+    assert audit["native_call_restoration_checks"] == 1
     operations = [item["operation"] for item in journal]
     assert operations.count("emergency_sync_entered") == 1
     assert "execution_context_checked" in operations
     assert "result_inspected" not in operations
-    if fault.startswith("audit_torch_"):
+    if fault.startswith(("audit_torch_", "audit_generic_")):
         custody = next(item for item in journal if item["operation"] == "audit_event_controls_registered")
         assert {"torch", "event", "stream"}.issubset(custody["names"])
         assert custody["target"] == 0
     assert_no_early_destruction(journal)
 
 
-def test_torch_wait_negative_uses_explicit_second_device_stream(tmp_path):
-    supervisor, journal = run_case(tmp_path, target=1, fault="audit_torch_event_wait")
+@pytest.mark.parametrize("family", ["cuda", "generic"])
+def test_torch_wait_negative_uses_explicit_second_device_stream(tmp_path, family):
+    fault = "audit_torch_event_wait" if family == "cuda" else "audit_generic_event_wait"
+    target_name = "torch.cuda.Event.wait" if family == "cuda" else "torch.Event.wait"
+    supervisor, journal = run_case(tmp_path, target=1, fault=fault)
     assert supervisor["worker_return_code"] == 74, (supervisor, journal)
     audit = next(item for item in journal if item["operation"] == "recorded_leaf_audit")["evidence"]
-    assert audit["rejected"] == ["torch.cuda.Event.wait"]
+    assert audit["rejected"] == [target_name]
     assert audit["native_launches"] == audit["native_events"] == audit["native_queries"] == 0
     assert audit["restoration_checks"] == 1
+    assert audit["native_event_call_attempts"] == int(family == "generic")
+    assert audit["native_call_restoration_checks"] == 1
     custody = next(item for item in journal if item["operation"] == "audit_event_controls_registered")
     assert custody["target"] == 1 and custody["names"] == ["event", "stream", "torch"]
     operations = [item["operation"] for item in journal]
