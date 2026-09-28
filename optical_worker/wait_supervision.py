@@ -297,6 +297,10 @@ class GuardSupervisorCore:
         self._last_ns = bounded_integer(clock())
         self._last_observed_ns = self._last_ns
         self._reading_clock = False
+        self._operation_active = False
+        self._reentry_latched = False
+        self._reentry_reason: str | None = None
+        self._reentry_in_clock = False
         self._append("initialized", {}, self._last_ns)
 
     @property
@@ -323,6 +327,84 @@ class GuardSupervisorCore:
 
     def _check_thread(self) -> None:
         _require(threading.current_thread() is self._thread, "supervisor core belongs to another thread")
+
+    def _invoke(self, operation, *args, **kwargs):
+        """Serialize public mutations, including same-thread asynchronous entry.
+
+        Nested calls never commit. Their sticky invalidation is handled before
+        the outer call can return a response or successful write commitment.
+        Only tentative CPU trace/state is discarded; no I/O or resource action
+        is performed inside this core. The pre-call deadline remains the anchor.
+        """
+        self._check_thread()
+        if self._operation_active:
+            if not self._reentry_latched:
+                self._reentry_reason = (
+                    args[0]
+                    if operation.__name__ == "_fault"
+                    and args
+                    and type(args[0]) is str
+                    and args[0] in TERMINAL_REASONS
+                    else "request_out_of_order"
+                )
+            self._reentry_latched = True
+            self._reentry_in_clock = self._reentry_in_clock or self._reading_clock
+            raise GuardProtocolError("reentrant supervisor operation")
+        self._reentry_latched = False
+        self._reentry_reason = None
+        self._reentry_in_clock = False
+        self._operation_active = True
+        snapshot = self._state, len(self._trace), self._last_ns
+        try:
+            return operation(*args, **kwargs)
+        finally:
+            try:
+                if self._reentry_latched:
+                    self._state, size, self._last_ns = snapshot
+                    del self._trace[size:]
+                    now = self._last_observed_ns
+                    if self.state not in {"TERMINATING", "EXITED"}:
+                        try:
+                            self._append("terminal_entered", {"reason": self._reentry_reason}, now)
+                        except GuardProtocolError:
+                            self._reject_clock("deadline_overflow")
+                    if self._reentry_in_clock:
+                        self._reject_clock("out_of_domain")
+                    earliest = self._state.earliest()
+                    if (
+                        self.state != "EXITED"
+                        and not self._state.deadline_expired
+                        and earliest is not None
+                        and now >= earliest[0]
+                    ):
+                        self._append("deadline_expired", {"source": earliest[1]}, now)
+                    raise GuardProtocolError("reentrant supervisor operation invalidated outer transition")
+            finally:
+                self._operation_active = False
+
+    def tick(self) -> None:
+        return self._invoke(self._tick)
+
+    def fault(self, reason: str) -> None:
+        return self._invoke(self._fault, reason)
+
+    def accept(self, raw: object) -> dict:
+        return self._invoke(self._accept, raw)
+
+    def acknowledge_written(self, response: object) -> None:
+        return self._invoke(self._acknowledge_written, response)
+
+    def record_kill_request(self) -> None:
+        return self._invoke(self._record_kill_request)
+
+    def record_kill_failure(self, error_kind: str) -> None:
+        return self._invoke(self._record_kill_failure, error_kind)
+
+    def observe_exit(self, returncode: int) -> None:
+        return self._invoke(self._observe_exit, returncode)
+
+    def evidence(self, *, require_final: bool = False) -> GuardSupervisorEvidence:
+        return self._invoke(self._evidence, require_final=require_final)
 
     def _append(self, operation: str, details: dict, now: int) -> None:
         event = {"index": len(self._trace), "at_ns": now, "operation": operation, "details": details}
@@ -353,7 +435,7 @@ class GuardSupervisorCore:
         self._last_observed_ns = now
         return now
 
-    def tick(self) -> None:
+    def _tick(self) -> None:
         self._check_thread()
         if self.state == "EXITED":
             return
@@ -362,41 +444,41 @@ class GuardSupervisorCore:
         if not self._state.deadline_expired and first is not None and now >= first[0]:
             self._append("deadline_expired", {"source": first[1]}, now)
 
-    def fault(self, reason: str) -> None:
+    def _fault(self, reason: str) -> None:
         self._check_thread()
         _enum(reason, TERMINAL_REASONS)
-        self.tick()
+        self._tick()
         if self.state in {"TERMINATING", "EXITED"}:
             return
         now = self._now()
         if self.state == "TERMINATING":
-            self.tick()
+            self._tick()
             return
         try:
             self._append("terminal_entered", {"reason": reason}, now)
         except GuardProtocolError:
             self._reject_clock("deadline_overflow")
-            self.tick()
+            self._tick()
 
-    def accept(self, raw: object) -> dict:
+    def _accept(self, raw: object) -> dict:
         self._check_thread()
-        self.tick()
+        self._tick()
         _require(self.state not in {"TERMINATING", "EXITED"}, "supervisor is terminal")
         try:
             message = validate_message(raw, self.configuration)
         except BaseException:
-            self.fault("invalid_message")
+            self._fault("invalid_message")
             raise
         if message["operation"] == "ARM" and self._state.next_sequence is None:
-            self.fault("sequence_exhausted")
+            self._fault("sequence_exhausted")
             raise GuardProtocolError("guard sequence exhausted")
         operation = {"ARM": "arm_committed", "COMPLETE": "normal_complete_received"}.get(message["operation"])
         if operation is None:
-            self.fault("request_out_of_order")
+            self._fault("request_out_of_order")
             raise GuardProtocolError("supervisor accepts requests only")
         now = self._now()
         if self.state == "TERMINATING":
-            self.tick()
+            self._tick()
             raise GuardProtocolError("clock rejected before request")
         try:
             # Precheck deadline arithmetic separately to distinguish ordering errors.
@@ -405,19 +487,19 @@ class GuardSupervisorCore:
                 checked_add(now, self.configuration.operation_timeout_ms * 1_000_000)
         except GuardProtocolError:
             self._reject_clock("deadline_overflow")
-            self.tick()
+            self._tick()
             raise
         try:
             self._append(operation, {"sequence": message["sequence"], "role": message["role"]}, now)
         except GuardProtocolError:
-            self.fault("request_out_of_order")
+            self._fault("request_out_of_order")
             raise
         assert self.pending_response is not None
         return self.pending_response
 
-    def acknowledge_written(self, response: object) -> None:
+    def _acknowledge_written(self, response: object) -> None:
         self._check_thread()
-        self.tick()
+        self._tick()
         try:
             observed = validate_message(response, self.configuration)
             _require(
@@ -429,23 +511,23 @@ class GuardSupervisorCore:
                 "ack_written", {name: observed[name] for name in ("operation", "sequence", "role")}, now
             )
         except BaseException:
-            self.fault("ack_write_failed")
+            self._fault("ack_write_failed")
             raise
 
-    def record_kill_request(self) -> None:
+    def _record_kill_request(self) -> None:
         self._check_thread()
-        self.tick()
+        self._tick()
         self._append("kill_requested", {}, self._now())
 
-    def record_kill_failure(self, error_kind: str) -> None:
+    def _record_kill_failure(self, error_kind: str) -> None:
         self._check_thread()
         self._append("kill_failed", {"error_kind": error_kind}, self._now())
 
-    def observe_exit(self, returncode: int) -> None:
+    def _observe_exit(self, returncode: int) -> None:
         self._check_thread()
         self._append("process_exited", {"returncode": returncode}, self._now())
 
-    def evidence(self, *, require_final: bool = False) -> GuardSupervisorEvidence:
+    def _evidence(self, *, require_final: bool = False) -> GuardSupervisorEvidence:
         self._check_thread()
         return GuardSupervisorEvidence.from_payload(
             {
@@ -476,12 +558,24 @@ class GuardSupervisorTransport:
         self._response: dict | None = None
         self._output = b""
         self._offset = 0
+        self._servicing = False
 
     @property
     def wants_write(self) -> bool:
         return self.core.pending_response is not None
 
     def service(self, *, readable: bool, writable: bool) -> None:
+        self.core._check_thread()
+        if self._servicing:
+            self.core.fault("request_out_of_order")
+            raise GuardProtocolError("reentrant supervisor transport service")
+        self._servicing = True
+        try:
+            return self._service(readable=readable, writable=writable)
+        finally:
+            self._servicing = False
+
+    def _service(self, *, readable: bool, writable: bool) -> None:
         self.core._check_thread()
         self.core.tick()
         try:

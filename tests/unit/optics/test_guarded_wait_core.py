@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import select
+import signal
 import socket
 import subprocess
 import sys
 import threading
+from functools import partial
 
 import pytest
 
@@ -429,7 +432,8 @@ def test_clock_reentrancy_is_terminal_without_ack():
         return 100
 
     core = GuardSupervisorCore(config(), clock=clock)
-    core.tick()
+    with pytest.raises(GuardProtocolError, match="reentrant"):
+        core.tick()
     assert core.state == "TERMINATING" and core.kill_required
     assert core.pending_response is None
 
@@ -497,6 +501,177 @@ def test_pending_ack_send_failure_keeps_original_guard():
         assert core.effective_deadline_ns == deadline
         assert core.pending_response is None and not transport.wants_write
         assert core.evidence().to_payload()["summary"]["terminal_reason"] == "ack_write_failed"
+    finally:
+        left.close()
+        right.close()
+
+
+def test_swallowed_clock_reentry_cannot_return_arm_or_write_ack():
+    settings = config()
+    core = None
+    nested = []
+
+    def clock():
+        if core is not None:
+            try:
+                core.accept(settings.message("ARM", 0, "resolve"))
+            except GuardProtocolError as error:
+                nested.append(str(error))
+        return 100
+
+    core = GuardSupervisorCore(settings, clock=clock)
+    with pytest.raises(GuardProtocolError, match="reentrant"):
+        core.accept(settings.message("ARM", 0, "setup"))
+    assert nested
+    assert core.state == "TERMINATING" and core.kill_required
+    assert core.pending_response is None
+    evidence = core.evidence().to_payload()
+    assert evidence["summary"]["arm_count"] == 0
+    assert not any(event["operation"] == "ack_written" for event in evidence["trace"])
+
+
+@pytest.mark.parametrize("swallow", [False, True])
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "arm",
+        "arm_ack",
+        "complete",
+        "disarm_ack",
+        "terminal",
+        "expiry",
+        "kill",
+        "kill_failure",
+        "exit",
+    ],
+)
+def test_signal_reentry_at_transition_commit_is_sticky_and_replayable(boundary, swallow):
+    settings, now, core = setup_core()
+    if boundary == "arm":
+        operation = "arm_committed"
+        outer = partial(core.accept, settings.message("ARM", 0, "setup"))
+    else:
+        pending = core.accept(settings.message("ARM", 0, "setup"))
+        if boundary == "arm_ack":
+            operation, outer = "ack_written", lambda: core.acknowledge_written(pending)
+        else:
+            core.acknowledge_written(pending)
+            if boundary == "complete":
+                operation = "normal_complete_received"
+                outer = partial(core.accept, settings.message("COMPLETE", 0, "setup"))
+            else:
+                pending = core.accept(settings.message("COMPLETE", 0, "setup"))
+                if boundary == "disarm_ack":
+                    operation, outer = "ack_written", lambda: core.acknowledge_written(pending)
+                elif boundary == "terminal":
+                    operation, outer = "terminal_entered", lambda: core.fault("input_eof")
+                elif boundary == "exit":
+                    operation, outer = "process_exited", lambda: core.observe_exit(0)
+                else:
+                    now[0] = core.effective_deadline_ns
+                    if boundary == "expiry":
+                        operation, outer = "deadline_expired", core.tick
+                    else:
+                        core.tick()
+                        if boundary == "kill":
+                            operation, outer = "kill_requested", core.record_kill_request
+                        else:
+                            core.record_kill_request()
+                            operation, outer = (
+                                "kill_failed",
+                                lambda: core.record_kill_failure("permission_denied"),
+                            )
+    prior_deadline = core.effective_deadline_ns
+    source, start = inspect.getsourcelines(GuardSupervisorCore._append)
+    line = start + next(index for index, text in enumerate(source) if "self._trace.append(event)" in text)
+    injected = []
+
+    def on_signal(*unused):
+        injected.append(True)
+        try:
+            core.fault("parent_lost")
+        except GuardProtocolError:
+            if not swallow:
+                raise
+
+    def schedule(frame, event, arg):
+        if (
+            event == "line"
+            and frame.f_code is GuardSupervisorCore._append.__code__
+            and frame.f_locals.get("operation") == operation
+            and frame.f_lineno == line
+        ):
+            sys.settrace(None)
+            if hasattr(signal, "SIGUSR1"):
+                signal.raise_signal(signal.SIGUSR1)
+            else:
+                on_signal()
+        return schedule
+
+    previous_trace = sys.gettrace()
+    previous_handler = signal.signal(signal.SIGUSR1, on_signal) if hasattr(signal, "SIGUSR1") else None
+    sys.settrace(schedule)
+    try:
+        with pytest.raises(GuardProtocolError, match="reentrant"):
+            outer()
+    finally:
+        sys.settrace(previous_trace)
+        if previous_handler is not None:
+            signal.signal(signal.SIGUSR1, previous_handler)
+    assert injected == [True]
+    assert core.state == "TERMINATING" and core.pending_response is None
+    if prior_deadline is not None:
+        assert core.effective_deadline_ns <= prior_deadline
+    snapshot = core.evidence().to_payload()
+    assert snapshot["summary"]["normal_complete_count"] == 0
+    assert snapshot["summary"]["terminal_reason"] in {"parent_lost", "deadline_expired"}
+    assert snapshot["summary"]["observed_returncode"] is None
+    with pytest.raises(GuardProtocolError):
+        core.accept(settings.message("ARM", 1, "resolve"))
+    now[0] = core.effective_deadline_ns
+    core.tick()
+    if core.kill_required:
+        core.record_kill_request()
+    core.observe_exit(-9)
+    assert core.evidence(require_final=True).to_payload()["summary"]["complete"]
+
+
+def test_swallowed_transport_reentry_prevents_pending_ack_output():
+    settings, _, core = setup_core()
+    left, right = socket.socketpair()
+    try:
+        transport = GuardSupervisorTransport(right, core)
+        core.accept(settings.message("ARM", 0, "setup"))
+        deadline = core.effective_deadline_ns
+        source, start = inspect.getsourcelines(GuardSupervisorTransport._service)
+        line = start + next(i for i, text in enumerate(source) if "self.core.tick()" in text)
+        injected = []
+
+        def schedule(frame, event, arg):
+            if (
+                event == "line"
+                and frame.f_code is GuardSupervisorTransport._service.__code__
+                and frame.f_lineno == line
+            ):
+                sys.settrace(None)
+                with pytest.raises(GuardProtocolError, match="reentrant"):
+                    transport.service(readable=False, writable=True)
+                injected.append(True)
+            return schedule
+
+        previous = sys.gettrace()
+        sys.settrace(schedule)
+        try:
+            transport.service(readable=False, writable=True)
+        finally:
+            sys.settrace(previous)
+        assert injected == [True]
+        assert core.state == "TERMINATING" and core.pending_response is None
+        assert core.effective_deadline_ns == deadline
+        left.setblocking(False)
+        with pytest.raises(BlockingIOError):
+            left.recv(1024)
+        core.evidence()
     finally:
         left.close()
         right.close()
