@@ -6,6 +6,11 @@ caller-owned recorded-command ABI will also bind them here.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from math import prod
+
+from .output_contract import SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES
+
 try:  # pragma: no cover - exercised in GPU environments.
     import warp as wp
 
@@ -19,6 +24,238 @@ _DIR_EPS = 1.0e-8
 _T_EPS = 1.0e-5
 _ATTENUATION_EPS = 1.0e-12
 _MAX_BVH_STACK = 32
+
+
+# Ordered physical render ABI. Profiles filter channels, not this storage graph.
+# (semantic, scalar dtype name, per-ray flag, trailing or scalar shape)
+WARP_DIRECT_LIGHT_BUFFER_SPECS = (
+    ("origins", "float32", True, (3,)),
+    ("directions", "float32", True, (3,)),
+    ("hit_mask", "int32", True, ()),
+    ("range_m", "float32", True, ()),
+    ("position_world", "float32", True, (3,)),
+    ("normal_world", "float32", True, (3,)),
+    ("numeric_instance_id", "int32", True, ()),
+    ("material_index", "int32", True, ()),
+    ("bvh_stack_overflow_count", "int32", False, (1,)),
+    ("bvh_max_stack_depth", "int32", False, (1,)),
+    ("rgb", "float32", True, (3,)),
+    ("intensity", "float32", True, ()),
+    ("shadow_stack_overflow_count", "int32", False, (1,)),
+    ("shadow_max_stack_depth", "int32", False, (1,)),
+)
+
+
+def warp_direct_light_buffer_layout(
+    num_rays: int,
+    *,
+    traversal_diagnostics: bool,
+) -> tuple[tuple[str, str, tuple[int, ...]], ...]:
+    """CPU-only ABI metadata; no initialization, allocation, or device lookup."""
+    if type(num_rays) is not int or num_rays < 0:
+        raise ValueError("num_rays must be a nonnegative Python integer")
+    if type(traversal_diagnostics) is not bool:
+        raise TypeError("traversal_diagnostics must be a bool")
+    result = tuple(
+        (name, dtype, (num_rays, *shape) if per_ray else shape)
+        for name, dtype, per_ray, shape in WARP_DIRECT_LIGHT_BUFFER_SPECS
+    )
+    if traversal_diagnostics:
+        result += tuple((name, "int32", (1,)) for name in SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES)
+    return result
+
+
+def _render_array_snapshot(value: object, *, name: str, device: object) -> tuple:
+    """Untimed physical inspection. This is not a provenance/lease authority.
+
+    Native outputs must be Warp allocations or Warp slices/reshapes retaining
+    them. Foreign interop views remain the responsibility of the input binding,
+    not an alternate mutable-output allocator in this slice.
+    """
+    if type(value) is not wp.array:
+        raise TypeError(f"{name}: expected an exact Warp array")
+    if value.device is not device or not value.device.is_cuda:
+        raise ValueError(f"{name}: requires the same indexed CUDA device")
+    if not value.is_contiguous:
+        raise ValueError(f"{name}: requires contiguous storage")
+    shape, strides = tuple(value.shape), tuple(value.strides)
+    # Contiguity flags are mutable; independently recompute the scalar layout.
+    expected_strides = []
+    stride = wp.types.type_size_in_bytes(value.dtype)
+    for size in reversed(shape):
+        if type(size) is not int or size < 0:
+            raise ValueError(f"{name}: invalid shape")
+        expected_strides.append(stride)
+        stride *= size
+    if strides != tuple(reversed(expected_strides)) or value.ndim != len(shape):
+        raise ValueError(f"{name}: inconsistent contiguous strides/rank")
+    active_bytes = prod(shape) * wp.types.type_size_in_bytes(value.dtype)
+    if value.size != prod(shape) or value.capacity < active_bytes:
+        raise ValueError(f"{name}: invalid storage size/capacity")
+    pointer = int(value.ptr or 0)
+    if active_bytes and pointer <= 0:
+        raise ValueError(f"{name}: null active storage")
+    chain = []
+    seen = set()
+    current = value
+    while True:
+        if id(current) in seen:
+            raise ValueError(f"{name}: cyclic storage owner chain")
+        seen.add(id(current))
+        if type(current) is not wp.array or current.device is not device:
+            raise ValueError(f"{name}: output must retain a native Warp allocation")
+        chain.append((current, int(current.ptr or 0), int(current.capacity), current._ref, current.deleter))
+        if current._ref is None:
+            break
+        current = current._ref
+    base_pointer, capacity = int(current.ptr or 0), int(current.capacity)
+    if capacity < 0 or (capacity and (base_pointer <= 0 or current.deleter is None)):
+        raise ValueError(f"{name}: allocation has no retained owning root")
+    if active_bytes and not (base_pointer <= pointer and pointer + active_bytes <= base_pointer + capacity):
+        raise ValueError(f"{name}: active interval escapes retained allocation")
+    return (
+        value,
+        device,
+        value.dtype,
+        shape,
+        strides,
+        pointer,
+        active_bytes,
+        int(value.capacity),
+        tuple(chain),
+    )
+
+
+def _render_snapshot_key(snapshot: tuple) -> tuple:
+    value, device, dtype, shape, strides, pointer, size, capacity, chain = snapshot
+    return (
+        id(value),
+        id(device),
+        dtype,
+        shape,
+        strides,
+        pointer,
+        size,
+        capacity,
+        tuple((id(owner), ptr, cap, id(ref), id(deleter)) for owner, ptr, cap, ref, deleter in chain),
+    )
+
+
+@dataclass(frozen=True, eq=False, slots=True)
+class WarpDirectLightBuffers:
+    """Caller-owned native output graph, frozen during untimed preparation.
+
+    Construction neither initializes values nor submits work. No profile can
+    omit physical buffers. This object grants no recorded-execution, arena,
+    readiness, result, or resource-release authority. The future factory must
+    call validate_bound with its additional scene/BVH inputs before recording.
+    Ray storage is already included here, including for device-ray bindings.
+    """
+
+    num_rays: int
+    origins: object
+    directions: object
+    hit_mask: object
+    range_m: object
+    position_world: object
+    normal_world: object
+    numeric_instance_id: object
+    material_index: object
+    bvh_stack_overflow_count: object
+    bvh_max_stack_depth: object
+    rgb: object
+    intensity: object
+    shadow_stack_overflow_count: object
+    shadow_max_stack_depth: object
+    traversal_diagnostics: bool = False
+    traversal_counters: tuple[object, ...] = ()
+    _snapshots: tuple = field(init=False, repr=False)
+    _signature: tuple = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if hasattr(self, "_signature"):
+            raise RuntimeError("render storage baseline cannot be rebuilt")
+        if not _HAS_WARP:
+            raise RuntimeError("Warp is required for native render storage")
+        snapshots = self._inspect()
+        object.__setattr__(self, "_snapshots", snapshots)
+        object.__setattr__(self, "_signature", self._key(snapshots))
+
+    @property
+    def arrays(self) -> tuple[tuple[str, object], ...]:
+        primary = tuple((name, getattr(self, name)) for name, *_ in WARP_DIRECT_LIGHT_BUFFER_SPECS)
+        return primary + tuple(zip(SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES, self.traversal_counters))
+
+    @property
+    def device(self) -> object:
+        return self.origins.device
+
+    def _inspect(self) -> tuple:
+        layout = warp_direct_light_buffer_layout(
+            self.num_rays,
+            traversal_diagnostics=self.traversal_diagnostics,
+        )
+        expected_counters = (
+            len(SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES) if self.traversal_diagnostics else 0
+        )
+        if type(self.traversal_counters) is not tuple or len(self.traversal_counters) != expected_counters:
+            raise ValueError("traversal counters must be an exact tuple matching diagnostics mode")
+        if type(self.origins) is not wp.array or not self.origins.device.is_cuda:
+            raise ValueError("origins must be a native Warp array on an indexed CUDA device")
+        snapshots = []
+        seen_objects = set()
+        for (name, dtype, shape), (actual_name, value) in zip(layout, self.arrays, strict=True):
+            if name != actual_name or type(value) is not wp.array:
+                raise TypeError(f"{name}: expected an exact Warp array")
+            if value.dtype is not getattr(wp, dtype) or tuple(value.shape) != shape:
+                raise ValueError(f"{name}: dtype/shape does not match render ABI")
+            if id(value) in seen_objects:
+                raise ValueError(f"{name}: independent array objects are required")
+            seen_objects.add(id(value))
+            snapshot = _render_array_snapshot(value, name=name, device=self.device)
+            for other_name, other in snapshots:
+                if _render_intervals_overlap(snapshot, other):
+                    raise ValueError(f"{name}: output overlaps {other_name}")
+            snapshots.append((name, snapshot))
+        return tuple(snapshots)
+
+    def _key(self, snapshots: tuple) -> tuple:
+        return (
+            self.num_rays,
+            self.traversal_diagnostics,
+            id(self.traversal_counters),
+            tuple((name, _render_snapshot_key(value)) for name, value in snapshots),
+        )
+
+    def validate_bound(self, *, read_only_inputs: tuple[tuple[str, object], ...] = ()) -> None:
+        """Full, untimed revalidation; never used by measured acquire."""
+        snapshots = self._inspect()
+        if self._key(snapshots) != self._signature:
+            raise ValueError("frozen render storage binding changed")
+        # _snapshots itself retains owners; detect replacing that retention graph.
+        if tuple((n, _render_snapshot_key(s)) for n, s in self._snapshots) != self._signature[-1]:
+            raise ValueError("frozen render storage retention changed")
+        if type(read_only_inputs) is not tuple:
+            raise TypeError("read_only_inputs must be a frozen tuple")
+        for name, value in read_only_inputs:
+            if type(value) is not wp.array or value.device is not self.device or not value.is_contiguous:
+                raise ValueError(f"{name}: invalid read-only Warp input")
+            size = prod(value.shape) * wp.types.type_size_in_bytes(value.dtype)
+            start = int(value.ptr or 0)
+            if size < 0 or value.capacity < size or (size and start <= 0):
+                raise ValueError(f"{name}: invalid read-only input interval")
+            for output_name, snapshot in snapshots:
+                end = start + size
+                output_start, output_size = snapshot[5:7]
+                if size and output_size and start < output_start + output_size and output_start < end:
+                    raise ValueError(f"{output_name}: output overlaps input {name}")
+
+
+def _render_intervals_overlap(first: tuple, second: tuple) -> bool:
+    start, size = first[5:7]
+    other_start, other_size = second[5:7]
+    return bool(size and other_size and start < other_start + other_size and other_start < start + size)
+
 
 if _HAS_WARP:
 

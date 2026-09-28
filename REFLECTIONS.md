@@ -3485,3 +3485,13 @@ dependencies without changing their equations. A source-ownership test guards
 against accidentally adding a second definition in the compatibility module.
 This extraction alone does not confer caller-owned storage, recorded-command
 lifetime, or result capability; those require their own reviewed implementation.
+
+C4c1b2's first checkpoint adds only the caller-owned buffer storage contract.
+Following the static-model/mutable-data separation recorded in REFERENCES.md
+(Pinocchio Model/Data) and the approved C4c1 design, this wrapper does not own
+execution or lease policy. Shape-derived active intervals allow disjoint Warp
+slices of one retained root, while complete untimed storage snapshots detect
+same-object pointer/stride/capacity drift. The a2 identity registry is not
+reused as a claim that arbitrary caller-owned outputs are canonical inputs.
+Reset/shade commands and the recorded factory remain separate b2 work; their
+execution must wait for the approved C4c1c containment harness.

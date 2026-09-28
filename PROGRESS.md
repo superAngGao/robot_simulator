@@ -1031,8 +1031,12 @@ Next milestone:
       approved and sealed at `591ffc57`. C4c1 design v3 was approved at
       `2521e64`. C4c1a exact readiness authority is implemented; its review P1
       on same-object CUDA storage rebinding has been approved at `2b41068`.
-      C4c1b has begun with a bounded single-source kernel extraction; its
-      caller-owned ABI, fixed shade entries, and recorded bundle remain closed.
+      C4c1b1 single-source extraction is owner-approved at `00f1790 + f771e61`;
+      the isolated 101 recovery records that the original Git objects remain
+      unavailable while 183 is unreachable. C4c1b2's storage-only checkpoint
+      adds caller-owned physical buffer validation (independent review pending).
+      Reset/shade ABIs, factory/evidence, and recorded bundle remain pending;
+      no native execution or result outlet is opened by the storage contract.
       C4c1c remains unimplemented. The design retains the bounded native Warp
       render ABI—one kernel source, caller-owned deterministic buffers, four
       fixed shade ABIs, and immutable recorded commands/evidence—but now moves

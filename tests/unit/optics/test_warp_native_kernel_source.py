@@ -8,6 +8,9 @@ from pathlib import Path
 from optics import warp_execution, warp_native_render
 
 _SHARED_ENTRIES = (
+    "_brute_force_first_hit_kernel",
+    "_device_scene_first_hit_kernel",
+    "_device_scene_first_hit_aabb_kernel",
     "_pinhole_camera_raygen_kernel",
     "_init_bvh_hit_mask_kernel",
     "_device_scene_bvh_first_hit_kernel",
