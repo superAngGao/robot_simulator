@@ -289,9 +289,8 @@ def test_buffered_request_before_ack_write_poison_and_no_response():
                 with pytest.raises(GuardProtocolError):
                     transport.service(readable=True, writable=True)
         assert s.state == "TERMINATING" and not transport.wants_write
-        left.setblocking(False)
-        with pytest.raises(BlockingIOError):
-            left.recv(1024)
+        left.settimeout(1)
+        assert left.recv(1024) == b""
     finally:
         left.close()
         right.close()
@@ -671,9 +670,8 @@ def test_swallowed_transport_reentry_prevents_pending_ack_output():
         assert injected == [True]
         assert core.state == "TERMINATING" and core.pending_response is None
         assert core.effective_deadline_ns == deadline
-        left.setblocking(False)
-        with pytest.raises(BlockingIOError):
-            left.recv(1024)
+        left.settimeout(1)
+        assert left.recv(1024) == b""
         core.evidence()
     finally:
         left.close()
@@ -746,3 +744,176 @@ def test_reentry_at_each_disarm_commit_and_finalizer_line_never_loses_terminal_s
     source, start = inspect.getsourcelines(GuardSupervisorCore._append)
     commit_line = start + next(i for i, value in enumerate(source) if "self._records.setdefault" in value)
     assert ("_append", commit_line) in checked
+
+
+@pytest.mark.parametrize("phase", ["arm", "complete"])
+@pytest.mark.parametrize("boundary", ["publication", "finalizer"])
+@pytest.mark.parametrize("action", ["nested", "fail", "close"])
+def test_client_failure_cannot_be_overwritten_after_exchange(connected_client, phase, boundary, action):
+    client, _ = connected_client
+    ticket = client.arm("setup") if phase == "complete" else None
+    method = GuardWaitClient._commit if boundary == "publication" else getattr(GuardWaitClient, phase)
+    source, start = inspect.getsourcelines(method)
+    marker = "self._states.setdefault" if boundary == "publication" else "self._operation_active = False"
+    line = start + next(i for i, text in enumerate(source) if marker in text)
+    injected = []
+
+    def on_signal(*unused):
+        try:
+            if action == "nested":
+                client.arm("resolve")
+            elif action == "fail":
+                client.fail()
+            else:
+                client.close()
+        except GuardProtocolError:
+            pass
+        injected.append(client.state)
+
+    def schedule(frame, event, arg):
+        if event == "line" and frame.f_code is method.__code__ and frame.f_lineno == line:
+            if boundary == "publication" and frame.f_locals["record"][0] != (
+                "ARMED" if phase == "arm" else "IDLE"
+            ):
+                return schedule
+            sys.settrace(None)
+            signal.raise_signal(signal.SIGUSR1) if hasattr(signal, "SIGUSR1") else on_signal()
+        return schedule
+
+    previous = sys.gettrace()
+    handler = signal.signal(signal.SIGUSR1, on_signal) if hasattr(signal, "SIGUSR1") else None
+    returned = None
+    sys.settrace(schedule)
+    try:
+        try:
+            returned = client.arm("setup") if phase == "arm" else client.complete(ticket)
+        except GuardProtocolError:
+            pass
+    finally:
+        sys.settrace(previous)
+        if handler is not None:
+            signal.signal(signal.SIGUSR1, handler)
+    assert injected == ["FAILED"] and client.state == "FAILED"
+    if boundary == "publication":
+        assert returned is None  # failure won before ticket publication
+    if returned is not None:
+        # Publication may win first; a later failure retires that ticket and
+        # cannot make it usable by any subsequent protocol operation.
+        with pytest.raises(GuardProtocolError):
+            client.complete(returned)
+    with pytest.raises(GuardProtocolError):
+        client.arm("resolve")
+    assert client.state == "FAILED"
+
+
+@pytest.mark.parametrize("operation", ["ARMED", "DISARMED"])
+@pytest.mark.parametrize("fault", ["nested_transport", "parent_lost"])
+def test_terminal_kernel_write_fence_at_actual_send(operation, fault):
+    settings, _, core = setup_core()
+    left, right = socket.socketpair()
+    try:
+        transport = GuardSupervisorTransport(right, core)
+        response = core.accept(settings.message("ARM", 0, "setup"))
+        if operation == "DISARMED":
+            core.acknowledge_written(response)
+            core.accept(settings.message("COMPLETE", 0, "setup"))
+        deadline = core.effective_deadline_ns
+        source, start = inspect.getsourcelines(GuardSupervisorTransport._service)
+        line = start + next(i for i, text in enumerate(source) if "sent = self.channel.send(" in text)
+        injected = []
+
+        def on_signal(*unused):
+            try:
+                if fault == "parent_lost":
+                    core.fault("parent_lost")
+                else:
+                    transport.service(readable=False, writable=True)
+            except GuardProtocolError:
+                pass
+            injected.append(core.state)
+
+        def schedule(frame, event, arg):
+            if (
+                event == "line"
+                and frame.f_code is GuardSupervisorTransport._service.__code__
+                and frame.f_lineno == line
+            ):
+                sys.settrace(None)
+                signal.raise_signal(signal.SIGUSR1) if hasattr(signal, "SIGUSR1") else on_signal()
+            return schedule
+
+        previous = sys.gettrace()
+        handler = signal.signal(signal.SIGUSR1, on_signal) if hasattr(signal, "SIGUSR1") else None
+        sys.settrace(schedule)
+        try:
+            with pytest.raises(OSError):
+                transport.service(readable=False, writable=True)
+        finally:
+            sys.settrace(previous)
+            if handler is not None:
+                signal.signal(signal.SIGUSR1, handler)
+        left.settimeout(1)
+        assert left.recv(1028) == b""  # real peer, zero bytes then EOF
+        assert injected == ["TERMINATING"]
+        assert core.effective_deadline_ns == deadline
+        result = core.evidence().to_payload()
+        assert result["summary"]["normal_complete_count"] == 0
+        assert [
+            event["details"]["operation"] for event in result["trace"] if event["operation"] == "ack_written"
+        ] == ([] if operation == "ARMED" else ["ARMED"])
+    finally:
+        left.close()
+        right.close()
+
+
+@pytest.mark.parametrize("operation", ["ARMED", "DISARMED"])
+def test_already_written_prefix_survives_but_no_continuation_after_terminal(operation):
+    settings, _, core = setup_core()
+    left, right = socket.socketpair()
+    try:
+        transport = GuardSupervisorTransport(right, core)
+        response = core.accept(settings.message("ARM", 0, "setup"))
+        if operation == "DISARMED":
+            core.acknowledge_written(response)
+            response = core.accept(settings.message("COMPLETE", 0, "setup"))
+
+        class OneByteWrite:
+            # A fault-injection proxy around the real socket send, not evidence
+            # that tiny frames naturally short-write on this OS. Real blocked
+            # socket writes are covered by the process harness separately.
+            def send(self, value):
+                return right.send(value[:1])
+
+        transport.channel = OneByteWrite()
+        transport.service(readable=False, writable=True)
+        assert core.pending_response == response
+        original = core.effective_deadline_ns
+        core.fault("parent_lost")
+        transport.service(readable=False, writable=True)
+        left.settimeout(1)
+        expected = encode_framed_message(response, max_bytes=MAX_BODY_BYTES)
+        assert left.recv(1028) == expected[:1]
+        assert left.recv(1028) == b""
+        assert core.effective_deadline_ns == original
+        result = core.evidence().to_payload()
+        assert result["summary"]["normal_complete_count"] == 0
+        assert transport._output == b""
+    finally:
+        left.close()
+        right.close()
+
+
+def test_output_fence_binding_is_single_use_before_any_transition():
+    settings, _, core = setup_core()
+    left, right = socket.socketpair()
+    try:
+        GuardSupervisorTransport(right, core)
+        with pytest.raises(GuardProtocolError, match="binds once"):
+            GuardSupervisorTransport(right, core)
+        late = GuardSupervisorCore(settings)
+        late.accept(settings.message("ARM", 0, "setup"))
+        with pytest.raises(GuardProtocolError, match="binds once"):
+            GuardSupervisorTransport(right, late)
+    finally:
+        left.close()
+        right.close()

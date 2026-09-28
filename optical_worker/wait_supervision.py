@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -298,6 +299,7 @@ class GuardSupervisorCore:
         self._reading_clock = False
         self._operation_active = False
         self._reentry_latched = False
+        self._output_channel: socket.socket | None = None
         self._append("initialized", {}, self._last_ns)
 
     @property
@@ -334,6 +336,28 @@ class GuardSupervisorCore:
 
     def _check_thread(self) -> None:
         _require(threading.current_thread() is self._thread, "supervisor core belongs to another thread")
+
+    def _bind_output_channel(self, channel: socket.socket) -> None:
+        self._check_thread()
+        _require(type(channel) is socket.socket, "exact output channel required")
+        _require(
+            self._output_channel is None and len(self._records) == 1 and self.state == "IDLE",
+            "output channel binds once before any protocol operation",
+        )
+        self._output_channel = channel
+
+    def _fence_output(self) -> None:
+        """The kernel write endpoint is irreversible, unlike a Python check.
+
+        Already accepted bytes cannot be recalled. A suspended pre-send Python
+        frame cannot initiate a later write after this fence has completed.
+        Close on shutdown failure; terminal custody/deadlines are not released.
+        """
+        if self._output_channel is not None:
+            try:
+                self._output_channel.shutdown(socket.SHUT_WR)
+            except OSError:
+                self._output_channel.close()
 
     def _invoke(self, operation, *args, **kwargs):
         """Reject nested normal work, immediately committing terminal custody.
@@ -418,6 +442,8 @@ class GuardSupervisorCore:
         record = (updated, event)
         committed = self._records.setdefault(index, record)
         _require(committed is record, "reentrant transition already committed this sequence")
+        if updated.state == "TERMINATING":
+            self._fence_output()
 
     def _reject_clock(self, reason: str) -> int:
         if self.state != "EXITED" and not self._state.clock_rejected:
@@ -549,13 +575,12 @@ class GuardSupervisorTransport:
     """One nonblocking socket and bounded input/output; process loop stays outside."""
 
     def __init__(self, channel, core: GuardSupervisorCore) -> None:
-        import socket
-
         _require(
             type(channel) is socket.socket and type(core) is GuardSupervisorCore,
             "exact private socket and supervisor core required",
         )
         core._check_thread()
+        core._bind_output_channel(channel)
         self.channel = channel
         self.core = core
         channel.setblocking(False)

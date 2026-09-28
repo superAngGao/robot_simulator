@@ -190,9 +190,8 @@ class GuardWaitClient:
         self._channel = channel
         self._channel.setblocking(False)
         self._thread = threading.current_thread()
-        self._state = "IDLE"
-        self._sequence: int | None = 0
-        self._active: GuardWaitTicket | None = None
+        self._states: dict[int, tuple[str, GuardWaitTicket | None, int | None]] = {0: ("IDLE", None, 0)}
+        self._operation_active = False
         self._last_clock_ns: int | None = None
 
     @property
@@ -201,7 +200,24 @@ class GuardWaitClient:
 
     @property
     def state(self) -> str:
-        return self._state
+        return self._snapshot()[1][0]
+
+    def _snapshot(self):
+        index = len(self._states) - 1
+        return index, self._states[index]
+
+    def _commit(self, index: int, record: tuple) -> int:
+        committed = self._states.setdefault(index + 1, record)
+        if committed is not record:
+            raise GuardProtocolError("nested failure invalidated pending client transition")
+        return index + 1
+
+    def _enter_operation(self) -> None:
+        self._check_thread()
+        if self._operation_active:
+            self.fail()
+            raise GuardProtocolError("nested client operation")
+        self._operation_active = True
 
     def _check_thread(self) -> None:
         if threading.current_thread() is not self._thread:
@@ -209,52 +225,64 @@ class GuardWaitClient:
 
     def fail(self) -> None:
         self._check_thread()
-        self._state = "FAILED"
+        while True:
+            index, record = self._snapshot()
+            if record[0] == "FAILED":
+                return
+            failure = ("FAILED", None, record[2])
+            if self._states.setdefault(index + 1, failure) is failure:
+                return
 
     def close(self) -> None:
         self.fail()
         self._channel.close()
 
     def arm(self, role: str) -> GuardWaitTicket:
-        self._check_thread()
+        self._enter_operation()
         try:
-            if self._state != "IDLE" or self._sequence is None:
+            index, current = self._snapshot()
+            sequence = current[2]
+            if current[0] != "IDLE" or sequence is None:
                 raise GuardProtocolError("guard is not idle or sequence is exhausted")
-            request = self.configuration.message("ARM", self._sequence, role)
-            self._state = "ARM_PENDING"
+            request = self.configuration.message("ARM", sequence, role)
+            pending = self._commit(index, ("ARM_PENDING", None, sequence))
             self._exchange(request, "ARMED")
-            if self._state != "ARM_PENDING":
+            if self.state != "ARM_PENDING":
                 raise GuardProtocolError("nested failure invalidated pending ARM")
             ticket = GuardWaitTicket(
-                self.configuration.session, self.configuration.device_ordinal, role, self._sequence
+                self.configuration.session, self.configuration.device_ordinal, role, sequence
             )
-            self._active = ticket
-            self._sequence = next_sequence(self._sequence)
-            self._state = "ARMED"
+            self._commit(pending, ("ARMED", ticket, next_sequence(sequence)))
+            if self.state != "ARMED":
+                raise GuardProtocolError("ARM ticket already retired by failure")
             return ticket
         except BaseException:
             self.fail()
             raise
+        finally:
+            self._operation_active = False
 
     def complete(self, ticket: GuardWaitTicket) -> None:
-        self._check_thread()
+        self._enter_operation()
         try:
+            index, current = self._snapshot()
             if (
-                self._state != "ARMED"
-                or ticket is not self._active
+                current[0] != "ARMED"
+                or ticket is not current[1]
                 or type(ticket) is not GuardWaitTicket
                 or ticket.role == "emergency"
             ):
                 raise GuardProtocolError("only the exact live normal ticket may complete")
-            self._state = "COMPLETE_PENDING"
+            pending = self._commit(index, ("COMPLETE_PENDING", ticket, current[2]))
             self._exchange(self.configuration.message("COMPLETE", ticket.sequence, ticket.role), "DISARMED")
-            if self._state != "COMPLETE_PENDING":
+            if self.state != "COMPLETE_PENDING":
                 raise GuardProtocolError("nested failure invalidated pending COMPLETE")
-            self._active = None
-            self._state = "IDLE"
+            self._commit(pending, ("IDLE", None, current[2]))
         except BaseException:
             self.fail()
             raise
+        finally:
+            self._operation_active = False
 
     def _exchange(self, request: dict, response_operation: str) -> None:
         deadline = checked_add(self._clock_now(), self.configuration.ack_timeout_ms * 1_000_000)
@@ -287,6 +315,8 @@ class GuardWaitClient:
                 return
 
     def _wait(self, deadline: int, *, write: bool) -> None:
+        if self.state == "FAILED":
+            raise GuardProtocolError("failed client cannot continue an exchange")
         remaining = deadline - self._clock_now()
         if remaining <= 0:
             raise GuardProtocolError("guard ACK timeout")
