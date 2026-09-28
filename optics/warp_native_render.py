@@ -2494,6 +2494,8 @@ def _render_factory_facts(factory) -> tuple:
         raise ValueError("render factory requires an exact stream on its indexed device")
     if type(factory.stream.cuda_stream) is not int or factory.stream.cuda_stream <= 0:
         raise ValueError("render factory requires a strongly owned nondefault CUDA stream")
+    if factory.stream.owner is not True:
+        raise ValueError("render factory requires a Warp-owned stream, not a borrowed handle")
     manifest = prepared.manifest
     if manifest.input_contract not in ("fixed_native_scene_v1", "canonical_native_replay_v1"):
         raise ValueError("render factory accepts only fixed or native replay input")
@@ -2525,6 +2527,7 @@ def _render_factory_facts(factory) -> tuple:
         id(factory.device),
         id(factory.stream),
         int(factory.stream.cuda_stream),
+        factory.stream.owner,
         manifest.sha256,
         factory.readiness.sha256,
         tuple(

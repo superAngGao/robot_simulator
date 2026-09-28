@@ -385,3 +385,56 @@ def test_runtime_kernel_replacement_is_not_hidden_by_unchanged_source_file(wp, m
     monkeypatch.setattr(wp, "launch", _no_execution)
     with pytest.raises(ValueError, match="changed"):
         _seal(setup, buffers)
+
+
+def test_borrowed_stream_rejected_before_load_or_recording(wp, monkeypatch):
+    setup = _setup(wp)
+    borrowed = wp.Stream(device=setup.scene.device, cuda_stream=setup.stream.cuda_stream)
+    assert borrowed.owner is False
+    monkeypatch.setattr(wp, "load_module", _no_execution)
+    monkeypatch.setattr(wp, "launch", _no_execution)
+    monkeypatch.setattr(wp.Launch, "launch", _no_execution)
+    with pytest.raises(ValueError, match="Warp-owned stream"):
+        WarpDirectLightRenderCommandFactory.prepare(
+            prepared_input=setup.prepared,
+            readiness=setup.readiness,
+            local_scene=setup.scene,
+            device=setup.scene.device,
+            stream=borrowed,
+        )
+
+
+def test_same_stream_ownership_drift_rejected_without_launch(wp, monkeypatch):
+    setup = _setup(wp)
+    buffers = _buffers(wp, setup)
+    monkeypatch.setattr(wp.Launch, "launch", _no_execution)
+    bundle = _seal(setup, buffers)
+    bundle.validate_bound()
+    assert setup.stream.owner is True
+    try:
+        setup.stream.owner = False
+        with pytest.raises(ValueError, match="Warp-owned stream"):
+            bundle.validate_bound()
+        monkeypatch.setattr(wp, "launch", _no_execution)
+        with pytest.raises(ValueError, match="Warp-owned stream"):
+            _seal(setup, buffers)
+    finally:
+        # Restore actual ownership so the real CUDA stream remains normally managed.
+        setup.stream.owner = True
+
+
+def test_raising_recording_restores_nondefault_ambient_stream_and_device(wp, monkeypatch):
+    if wp.get_cuda_device_count() < 2:
+        pytest.skip("two real devices required")
+    setup = _setup(wp, device="cuda:1")
+    buffers = _buffers(wp, setup)
+    ambient = wp.Stream(device="cuda:0")
+    target_ambient = wp.Stream(device="cuda:1")
+    monkeypatch.setattr(wp, "launch", _no_execution)
+    with wp.ScopedStream(target_ambient), wp.ScopedStream(ambient):
+        before = wp.get_device()
+        with pytest.raises(AssertionError, match="cannot execute"):
+            _seal(setup, buffers)
+        assert wp.get_device() is before
+        assert wp.get_stream("cuda:0") is ambient
+        assert wp.get_stream("cuda:1") is target_ambient
