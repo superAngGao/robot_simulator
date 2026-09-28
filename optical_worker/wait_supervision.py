@@ -439,11 +439,13 @@ class GuardSupervisorCore:
         updated = _transition(
             previous[0], event, self.configuration, expected_index=index, last_ns=previous[1]["at_ns"]
         )
+        # A terminal record is a claim that normal output is already disabled.
+        # Never publish it and defer that prerequisite to interruptible cleanup.
+        if updated.state == "TERMINATING":
+            self._fence_output()
         record = (updated, event)
         committed = self._records.setdefault(index, record)
         _require(committed is record, "reentrant transition already committed this sequence")
-        if updated.state == "TERMINATING":
-            self._fence_output()
 
     def _reject_clock(self, reason: str) -> int:
         if self.state != "EXITED" and not self._state.clock_rejected:

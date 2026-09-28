@@ -917,3 +917,90 @@ def test_output_fence_binding_is_single_use_before_any_transition():
     finally:
         left.close()
         right.close()
+
+
+@pytest.mark.parametrize("operation", ["ARMED", "DISARMED"])
+@pytest.mark.parametrize(
+    "marker",
+    [
+        'if updated.state == "TERMINATING":',
+        "self._fence_output()",
+        "committed = self._records.setdefault",
+        "_require(committed is record",
+    ],
+)
+def test_second_signal_cannot_publish_terminal_before_write_fence(operation, marker):
+    settings, now, core = setup_core()
+    left, right = socket.socketpair()
+    try:
+        transport = GuardSupervisorTransport(right, core)
+        response = core.accept(settings.message("ARM", 0, "setup"))
+        if operation == "DISARMED":
+            core.acknowledge_written(response)
+            core.accept(settings.message("COMPLETE", 0, "setup"))
+        deadline = core.effective_deadline_ns
+        source, start = inspect.getsourcelines(GuardSupervisorTransport._service)
+        send_line = start + next(i for i, value in enumerate(source) if "sent = self.channel.send(" in value)
+        source, start = inspect.getsourcelines(GuardSupervisorCore._append)
+        fence_line = start + next(i for i, value in enumerate(source) if marker in value)
+        injected = [False, False]
+
+        def second(*unused):
+            core.tick()  # propagate the rejected nested call to the first handler
+
+        def first(*unused):
+            now[0] = deadline
+            try:
+                core.tick()
+            except GuardProtocolError:
+                pass
+
+        sig1, sig2 = getattr(signal, "SIGUSR1", None), getattr(signal, "SIGUSR2", None)
+        old1 = signal.signal(sig1, first) if sig1 is not None else None
+        old2 = signal.signal(sig2, second) if sig2 is not None else None
+
+        def schedule(frame, event, arg):
+            if event != "line":
+                return schedule
+            if (
+                frame.f_code is GuardSupervisorTransport._service.__code__
+                and frame.f_lineno == send_line
+                and not injected[0]
+            ):
+                injected[0] = True
+                if sig1 is not None:
+                    sys.call_tracing(signal.raise_signal, (sig1,))
+                else:
+                    sys.call_tracing(first, ())
+            elif (
+                frame.f_code is GuardSupervisorCore._append.__code__
+                and frame.f_lineno == fence_line
+                and frame.f_locals.get("operation") == "deadline_expired"
+                and not injected[1]
+            ):
+                injected[1] = True
+                sys.settrace(None)
+                signal.raise_signal(sig2) if sig2 is not None else second()
+            return schedule
+
+        previous = sys.gettrace()
+        sys.settrace(schedule)
+        try:
+            with pytest.raises((OSError, GuardProtocolError)):
+                transport.service(readable=False, writable=True)
+        finally:
+            sys.settrace(previous)
+            if sig1 is not None:
+                signal.signal(sig1, old1)
+                signal.signal(sig2, old2)
+        assert injected == [True, True]
+        left.settimeout(1)
+        assert left.recv(1028) == b""
+        assert core.state == "TERMINATING" and core.kill_required
+        result = core.evidence().to_payload()
+        assert result["summary"]["normal_complete_count"] == 0
+        assert result["summary"]["effective_deadline_ns"] == deadline
+        assert len([event for event in result["trace"] if event["operation"] == "deadline_expired"]) == 1
+    finally:
+        left.close()
+        right.close()
