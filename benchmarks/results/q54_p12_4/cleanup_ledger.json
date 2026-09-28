@@ -4,6 +4,28 @@
   "must_complete": true,
   "entries": [
     {
+      "entry_id": "canonical_resolved_camera_contract",
+      "paths": [
+        "optical_worker/camera_contract.py",
+        "tests/unit/optics/test_resolved_camera_contract.py"
+      ],
+      "symbols": {
+        "optical_worker/camera_contract.py": [
+          "class ResolvedPinholeCameraContract:",
+          "def resolve_frozen_camera_contract("
+        ]
+      },
+      "cuda_selected": {
+        "action": "retain",
+        "acceptance": "one durable canonical camera definition for selected-backend regression; runtime adoption requires separate reviewed exact scalar/provenance binding; remove if no selected runtime or regression consumer remains"
+      },
+      "warp_selected": {
+        "action": "retain",
+        "acceptance": "one durable canonical camera definition for selected-backend regression; runtime adoption requires separate reviewed exact scalar/provenance binding; remove if no selected runtime or regression consumer remains"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
       "entry_id": "shared_guarded_wait_safety_core",
       "paths": [
         "optical_worker/wait_protocol.py",
