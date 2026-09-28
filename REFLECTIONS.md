@@ -3495,3 +3495,13 @@ same-object pointer/stride/capacity drift. The a2 identity registry is not
 reused as a claim that arbitrary caller-owned outputs are canonical inputs.
 Reset/shade commands and the recorded factory remain separate b2 work; their
 execution must wait for the approved C4c1c containment harness.
+
+The next C4c1b2 checkpoint removes optional diagnostic arrays from the actual
+disabled shade ABI, rather than aliasing primary counters as dummy arguments.
+Four thin kernels share light and traversal device functions; compatibility
+selects those exact kernels without becoming a recorded-bundle driver. A physical
+output sentinel test catches miss channels left unwritten even when normal
+fresh allocations or profile filtering would conceal them. Independent CPU
+output comparison is still required because compatibility and future recorded
+commands intentionally share their mathematics. This kernel checkpoint does
+not prove recorded execution lifetime or C4 arena integration.

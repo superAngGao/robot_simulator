@@ -14,7 +14,7 @@ _SHARED_ENTRIES = (
     "_pinhole_camera_raygen_kernel",
     "_init_bvh_hit_mask_kernel",
     "_device_scene_bvh_first_hit_kernel",
-    "_device_scene_direct_light_kernel",
+    "warp_direct_light_shade_entry",
 )
 
 
@@ -38,3 +38,8 @@ def test_legacy_executor_does_not_define_a_second_kernel_source() -> None:
     for name in _SHARED_ENTRIES:
         assert name not in old_definitions
         assert name in native_definitions
+
+
+def test_runtime_flag_shade_entry_is_removed_not_retained_as_a_second_source():
+    assert "_device_scene_direct_light_kernel" not in _defined_functions(warp_native_render)
+    assert not hasattr(warp_execution, "_device_scene_direct_light_kernel")

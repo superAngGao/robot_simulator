@@ -18,11 +18,11 @@ from .scene import OpticalSceneSnapshot
 from .warp_native_render import (
     _brute_force_first_hit_kernel,
     _device_scene_bvh_first_hit_kernel,
-    _device_scene_direct_light_kernel,
     _device_scene_first_hit_aabb_kernel,
     _device_scene_first_hit_kernel,
     _init_bvh_hit_mask_kernel,
     _pinhole_camera_raygen_kernel,
+    warp_direct_light_shade_entry,
 )
 
 try:  # pragma: no cover - exercised in GPU environments.
@@ -851,73 +851,73 @@ class GpuDeviceBvhDirectLightOpticalExecutor:
             start = time.perf_counter()
             shadow_stack_overflow_count = wp.zeros(1, dtype=wp.int32, device=self.device)
             shadow_max_stack_depth = wp.zeros(1, dtype=wp.int32, device=self.device)
-            shadow_traversal_stats_enabled = int(render_profile is not None)
             shadow_traversal_counters = (
                 {
                     name: wp.zeros(1, dtype=wp.int32, device=self.device)
                     for name in _SHADOW_TRAVERSAL_COUNTER_CHANNELS
                 }
                 if render_profile is not None
-                else {name: shadow_stack_overflow_count for name in _SHADOW_TRAVERSAL_COUNTER_CHANNELS}
+                else {}
             )
             _add_profile_ms(render_profile, "shade_alloc_diagnostics_ms", start)
             _add_profile_ms(render_profile, "shade_output_alloc_ms", output_alloc_start)
             start = time.perf_counter()
+            shade_kernel, shade_argument_names = warp_direct_light_shade_entry(
+                shadows=self.shadows,
+                traversal_diagnostics=render_profile is not None,
+            )
+            shade_values = {
+                "hit_mask": geometry.channels["hit_mask"],
+                "position_world": geometry.channels["position_world"],
+                "normal_world": geometry.channels["normal_world"],
+                "material_index": geometry.channels["material_index"],
+                "material_albedo_rgb": scene.material_albedo_rgb,
+                "light_kind": scene.light_kind,
+                "light_position_or_direction_world": scene.light_position_or_direction_world,
+                "light_intensity": scene.light_intensity,
+                "light_color_rgb": scene.light_color_rgb,
+                "num_lights": int(scene.num_lights),
+                "ambient_r": float(self.ambient_rgb[0]),
+                "ambient_g": float(self.ambient_rgb[1]),
+                "ambient_b": float(self.ambient_rgb[2]),
+                "background_r": float(self.background_rgb[0]),
+                "background_g": float(self.background_rgb[1]),
+                "background_b": float(self.background_rgb[2]),
+                "rgb": rgb,
+                "intensity": intensity,
+                "shadow_stack_overflow_count": shadow_stack_overflow_count,
+                "shadow_max_stack_depth": shadow_max_stack_depth,
+            }
+            if self.shadows:
+                shade_values.update(
+                    {
+                        "plane_normals": snapshot.plane_normal_world,
+                        "plane_points": snapshot.plane_point_world,
+                        "plane_role_masks": scene.plane_role_mask,
+                        "num_planes": int(scene.num_planes),
+                        "triangle_v0": snapshot.triangle_v0_world,
+                        "triangle_e1": snapshot.triangle_e1_world,
+                        "triangle_e2": snapshot.triangle_e2_world,
+                        "triangle_normal": snapshot.triangle_normal_world,
+                        "triangle_role_masks": scene.triangle_role_mask,
+                        "bvh_bounds_min": bvh.bounds_min,
+                        "bvh_bounds_max": bvh.bounds_max,
+                        "bvh_left": bvh.left,
+                        "bvh_right": bvh.right,
+                        "bvh_start": bvh.start,
+                        "bvh_count": bvh.count,
+                        "bvh_prim_ids": bvh.prim_ids,
+                        "num_bvh_nodes": int(bvh.num_nodes),
+                        "sensor_role_mask": np.int64(scene.role_table.mask_for(sensor_role)),
+                        "shadow_bias": float(self.shadow_bias),
+                    }
+                )
+            if render_profile is not None:
+                shade_values.update(shadow_traversal_counters)
             wp.launch(
-                _device_scene_direct_light_kernel,
+                shade_kernel,
                 dim=num_rays,
-                inputs=[
-                    geometry.channels["hit_mask"],
-                    geometry.channels["position_world"],
-                    geometry.channels["normal_world"],
-                    geometry.channels["material_index"],
-                    scene.material_albedo_rgb,
-                    snapshot.plane_normal_world,
-                    snapshot.plane_point_world,
-                    scene.plane_role_mask,
-                    int(scene.num_planes),
-                    snapshot.triangle_v0_world,
-                    snapshot.triangle_e1_world,
-                    snapshot.triangle_e2_world,
-                    snapshot.triangle_normal_world,
-                    scene.triangle_role_mask,
-                    bvh.bounds_min,
-                    bvh.bounds_max,
-                    bvh.left,
-                    bvh.right,
-                    bvh.start,
-                    bvh.count,
-                    bvh.prim_ids,
-                    int(bvh.num_nodes),
-                    scene.light_kind,
-                    scene.light_position_or_direction_world,
-                    scene.light_intensity,
-                    scene.light_color_rgb,
-                    int(scene.num_lights),
-                    np.int64(scene.role_table.mask_for(sensor_role)),
-                    int(self.shadows),
-                    float(self.shadow_bias),
-                    float(self.ambient_rgb[0]),
-                    float(self.ambient_rgb[1]),
-                    float(self.ambient_rgb[2]),
-                    float(self.background_rgb[0]),
-                    float(self.background_rgb[1]),
-                    float(self.background_rgb[2]),
-                    rgb,
-                    intensity,
-                    shadow_stack_overflow_count,
-                    shadow_max_stack_depth,
-                    shadow_traversal_stats_enabled,
-                    shadow_traversal_counters["shadow_traversal_ray_count"],
-                    shadow_traversal_counters["shadow_traversal_directional_ray_count"],
-                    shadow_traversal_counters["shadow_traversal_point_ray_count"],
-                    shadow_traversal_counters["shadow_traversal_occluded_count"],
-                    shadow_traversal_counters["shadow_traversal_unoccluded_count"],
-                    shadow_traversal_counters["shadow_traversal_node_visit_count"],
-                    shadow_traversal_counters["shadow_traversal_leaf_visit_count"],
-                    shadow_traversal_counters["shadow_traversal_triangle_test_count"],
-                    shadow_traversal_counters["shadow_traversal_plane_test_count"],
-                ],
+                inputs=tuple(shade_values[name] for name in shade_argument_names),
                 device=self.device,
                 stream=self.stream,
             )

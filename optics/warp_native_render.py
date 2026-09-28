@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from math import prod
+from types import MappingProxyType
 
 from .output_contract import SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES
 
@@ -953,6 +954,18 @@ if _HAS_WARP:
         bvh_max_stack_depth: wp.array(dtype=wp.int32),
     ):
         ray = wp.tid()
+        # Every reuse and profile has identical miss defaults, independent of
+        # allocator contents or a compatibility caller's host initialization.
+        hit_mask[ray] = wp.int32(0)
+        range_m[ray] = wp.float32(wp.inf)
+        position_world[ray, 0] = wp.float32(wp.nan)
+        position_world[ray, 1] = wp.float32(wp.nan)
+        position_world[ray, 2] = wp.float32(wp.nan)
+        normal_world[ray, 0] = wp.float32(wp.nan)
+        normal_world[ray, 1] = wp.float32(wp.nan)
+        normal_world[ray, 2] = wp.float32(wp.nan)
+        numeric_instance_id[ray] = wp.int32(0)
+        material_index[ray] = wp.int32(0)
         ox = origins[ray, 0]
         oy = origins[ray, 1]
         oz = origins[ray, 2]
@@ -1151,6 +1164,44 @@ if _HAS_WARP:
             numeric_instance_id[ray] = best_id
             material_index[ray] = best_material_index
 
+    @wp.struct
+    class _ShadowTrace:
+        occluded: wp.int32
+        overflow: wp.int32
+        max_depth: wp.int32
+        nodes: wp.int32
+        leaves: wp.int32
+        triangles: wp.int32
+        planes: wp.int32
+
+    @wp.struct
+    class _ShadowTotals:
+        overflow: wp.int32
+        max_depth: wp.int32
+        rays: wp.int32
+        directional: wp.int32
+        point: wp.int32
+        occluded: wp.int32
+        unoccluded: wp.int32
+        nodes: wp.int32
+        leaves: wp.int32
+        triangles: wp.int32
+        planes: wp.int32
+
+    @wp.struct
+    class _DirectLightSurface:
+        albedo: wp.vec3
+        position: wp.vec3
+        normal: wp.vec3
+        color: wp.vec3
+
+    @wp.struct
+    class _DirectLightSample:
+        direction: wp.vec3
+        attenuation: wp.float32
+        cosine: wp.float32
+        shadow_limit: wp.float32
+
     @wp.func
     def _is_occluded_for_ray(
         ox: float,
@@ -1178,19 +1229,11 @@ if _HAS_WARP:
         bvh_prim_ids: wp.array(dtype=wp.int32),
         num_bvh_nodes: int,
         sensor_role_mask: wp.int64,
-        shadow_stack_overflow_count: wp.array(dtype=wp.int32),
-        shadow_max_stack_depth: wp.array(dtype=wp.int32),
-        shadow_traversal_stats_enabled: int,
-        shadow_traversal_occluded_count: wp.array(dtype=wp.int32),
-        shadow_traversal_unoccluded_count: wp.array(dtype=wp.int32),
-        shadow_traversal_node_visit_count: wp.array(dtype=wp.int32),
-        shadow_traversal_leaf_visit_count: wp.array(dtype=wp.int32),
-        shadow_traversal_triangle_test_count: wp.array(dtype=wp.int32),
-        shadow_traversal_plane_test_count: wp.array(dtype=wp.int32),
     ):
+        trace = _ShadowTrace()
         occluded = bool(False)
         if max_distance <= 0.0:
-            return occluded
+            return trace
 
         stack = wp.zeros(shape=_MAX_BVH_STACK, dtype=wp.int32)
         stack_size = wp.int32(0)
@@ -1272,7 +1315,7 @@ if _HAS_WARP:
                             stack[stack_size] = right
                             stack_size = stack_size + wp.int32(1)
                         else:
-                            wp.atomic_add(shadow_stack_overflow_count, 0, wp.int32(1))
+                            trace.overflow = trace.overflow + wp.int32(1)
                 if left >= 0:
                     left_hit, _left_t, _left_exit_t = _intersect_aabb_for_ray_with_interval(
                         ox,
@@ -1294,11 +1337,11 @@ if _HAS_WARP:
                             stack[stack_size] = left
                             stack_size = stack_size + wp.int32(1)
                         else:
-                            wp.atomic_add(shadow_stack_overflow_count, 0, wp.int32(1))
+                            trace.overflow = trace.overflow + wp.int32(1)
                 if stack_size > local_max_stack:
                     local_max_stack = stack_size
 
-        wp.atomic_max(shadow_max_stack_depth, 0, local_max_stack)
+        trace.max_depth = local_max_stack
 
         for plane_idx in range(num_planes):
             if not occluded and (plane_role_masks[plane_idx] & sensor_role_mask) != wp.int64(0):
@@ -1316,20 +1359,388 @@ if _HAS_WARP:
                     if t >= 0.0 and t <= max_distance:
                         occluded = True
 
-        if shadow_traversal_stats_enabled != 0:
-            if occluded:
-                wp.atomic_add(shadow_traversal_occluded_count, 0, wp.int32(1))
-            else:
-                wp.atomic_add(shadow_traversal_unoccluded_count, 0, wp.int32(1))
-            wp.atomic_add(shadow_traversal_node_visit_count, 0, local_node_visit_count)
-            wp.atomic_add(shadow_traversal_leaf_visit_count, 0, local_leaf_visit_count)
-            wp.atomic_add(shadow_traversal_triangle_test_count, 0, local_triangle_test_count)
-            wp.atomic_add(shadow_traversal_plane_test_count, 0, local_plane_test_count)
+        trace.occluded = wp.int32(occluded)
+        trace.nodes = local_node_visit_count
+        trace.leaves = local_leaf_visit_count
+        trace.triangles = local_triangle_test_count
+        trace.planes = local_plane_test_count
+        return trace
 
-        return occluded
+    @wp.func
+    def _direct_light_begin(
+        ray: int,
+        hit_mask: wp.array(dtype=wp.int32),
+        position_world: wp.array2d(dtype=wp.float32),
+        normal_world: wp.array2d(dtype=wp.float32),
+        material_index: wp.array(dtype=wp.int32),
+        material_albedo_rgb: wp.array2d(dtype=wp.float32),
+        ambient_r: float,
+        ambient_g: float,
+        ambient_b: float,
+        background_r: float,
+        background_g: float,
+        background_b: float,
+    ):
+        surface = _DirectLightSurface()
+        surface.color = wp.vec3(background_r, background_g, background_b)
+        if hit_mask[ray] != wp.int32(0):
+            mat = material_index[ray]
+            surface.albedo = wp.vec3(
+                material_albedo_rgb[mat, 0],
+                material_albedo_rgb[mat, 1],
+                material_albedo_rgb[mat, 2],
+            )
+            surface.position = wp.vec3(position_world[ray, 0], position_world[ray, 1], position_world[ray, 2])
+            surface.normal = wp.vec3(normal_world[ray, 0], normal_world[ray, 1], normal_world[ray, 2])
+            surface.color = wp.vec3(
+                wp.float32(ambient_r) * surface.albedo[0],
+                wp.float32(ambient_g) * surface.albedo[1],
+                wp.float32(ambient_b) * surface.albedo[2],
+            )
+        return surface
+
+    @wp.func
+    def _direct_light_sample(
+        surface: _DirectLightSurface,
+        light_idx: int,
+        light_kind: wp.array(dtype=wp.int32),
+        light_position_or_direction_world: wp.array2d(dtype=wp.float32),
+        shadow_bias: float,
+    ):
+        sample = _DirectLightSample()
+        lx = light_position_or_direction_world[light_idx, 0]
+        ly = light_position_or_direction_world[light_idx, 1]
+        lz = light_position_or_direction_world[light_idx, 2]
+        attenuation = wp.float32(1.0)
+        sample.shadow_limit = wp.float32(3.4028234663852886e38)
+        if light_kind[light_idx] == wp.int32(1):
+            lx = lx - surface.position[0]
+            ly = ly - surface.position[1]
+            lz = lz - surface.position[2]
+            distance_sq = lx * lx + ly * ly + lz * lz
+            distance = wp.sqrt(distance_sq)
+            sample.shadow_limit = distance - wp.float32(shadow_bias)
+            if distance > _DIR_EPS:
+                inv_distance = 1.0 / distance
+                lx = lx * inv_distance
+                ly = ly * inv_distance
+                lz = lz * inv_distance
+                attenuation = 1.0 / wp.max(distance_sq, _ATTENUATION_EPS)
+            else:
+                attenuation = wp.float32(0.0)
+        else:
+            light_norm = wp.sqrt(lx * lx + ly * ly + lz * lz)
+            if light_norm > _DIR_EPS:
+                inv_light_norm = 1.0 / light_norm
+                lx = lx * inv_light_norm
+                ly = ly * inv_light_norm
+                lz = lz * inv_light_norm
+            else:
+                attenuation = wp.float32(0.0)
+        sample.direction = wp.vec3(lx, ly, lz)
+        sample.attenuation = attenuation
+        sample.cosine = surface.normal[0] * lx + surface.normal[1] * ly + surface.normal[2] * lz
+        return sample
+
+    @wp.func
+    def _direct_light_accumulate(
+        color: wp.vec3,
+        albedo: wp.vec3,
+        sample: _DirectLightSample,
+        light_idx: int,
+        light_intensity: wp.array(dtype=wp.float32),
+        light_color_rgb: wp.array2d(dtype=wp.float32),
+    ):
+        scale = light_intensity[light_idx] * sample.attenuation * sample.cosine
+        return wp.vec3(
+            color[0] + albedo[0] * light_color_rgb[light_idx, 0] * scale,
+            color[1] + albedo[1] * light_color_rgb[light_idx, 1] * scale,
+            color[2] + albedo[2] * light_color_rgb[light_idx, 2] * scale,
+        )
+
+    @wp.func
+    def _direct_light_write(
+        ray: int,
+        color: wp.vec3,
+        hit_mask: wp.array(dtype=wp.int32),
+        rgb: wp.array2d(dtype=wp.float32),
+        intensity: wp.array(dtype=wp.float32),
+    ):
+        rgb[ray, 0] = color[0]
+        rgb[ray, 1] = color[1]
+        rgb[ray, 2] = color[2]
+        if hit_mask[ray] != wp.int32(0):
+            intensity[ray] = color[0] * 0.2126 + color[1] * 0.7152 + color[2] * 0.0722
+        else:
+            intensity[ray] = wp.float32(0.0)
+
+    @wp.func
+    def _shade_unshadowed_ray(
+        ray: int,
+        hit_mask: wp.array(dtype=wp.int32),
+        position_world: wp.array2d(dtype=wp.float32),
+        normal_world: wp.array2d(dtype=wp.float32),
+        material_index: wp.array(dtype=wp.int32),
+        material_albedo_rgb: wp.array2d(dtype=wp.float32),
+        light_kind: wp.array(dtype=wp.int32),
+        light_position_or_direction_world: wp.array2d(dtype=wp.float32),
+        light_intensity: wp.array(dtype=wp.float32),
+        light_color_rgb: wp.array2d(dtype=wp.float32),
+        num_lights: int,
+        ambient_r: float,
+        ambient_g: float,
+        ambient_b: float,
+        background_r: float,
+        background_g: float,
+        background_b: float,
+    ):
+        surface = _direct_light_begin(
+            ray,
+            hit_mask,
+            position_world,
+            normal_world,
+            material_index,
+            material_albedo_rgb,
+            ambient_r,
+            ambient_g,
+            ambient_b,
+            background_r,
+            background_g,
+            background_b,
+        )
+        color = surface.color
+        if hit_mask[ray] != wp.int32(0):
+            for light_idx in range(num_lights):
+                sample = _direct_light_sample(
+                    surface, light_idx, light_kind, light_position_or_direction_world, 0.0
+                )
+                if sample.cosine > 0.0 and sample.attenuation > 0.0:
+                    color = _direct_light_accumulate(
+                        color,
+                        surface.albedo,
+                        sample,
+                        light_idx,
+                        light_intensity,
+                        light_color_rgb,
+                    )
+        return color
+
+    @wp.func
+    def _shade_shadowed_ray(
+        ray: int,
+        hit_mask: wp.array(dtype=wp.int32),
+        position_world: wp.array2d(dtype=wp.float32),
+        normal_world: wp.array2d(dtype=wp.float32),
+        material_index: wp.array(dtype=wp.int32),
+        material_albedo_rgb: wp.array2d(dtype=wp.float32),
+        light_kind: wp.array(dtype=wp.int32),
+        light_position_or_direction_world: wp.array2d(dtype=wp.float32),
+        light_intensity: wp.array(dtype=wp.float32),
+        light_color_rgb: wp.array2d(dtype=wp.float32),
+        num_lights: int,
+        ambient_r: float,
+        ambient_g: float,
+        ambient_b: float,
+        background_r: float,
+        background_g: float,
+        background_b: float,
+        plane_normals: wp.array2d(dtype=wp.float32),
+        plane_points: wp.array2d(dtype=wp.float32),
+        plane_role_masks: wp.array(dtype=wp.int64),
+        num_planes: int,
+        triangle_v0: wp.array2d(dtype=wp.float32),
+        triangle_e1: wp.array2d(dtype=wp.float32),
+        triangle_e2: wp.array2d(dtype=wp.float32),
+        triangle_normal: wp.array2d(dtype=wp.float32),
+        triangle_role_masks: wp.array(dtype=wp.int64),
+        bvh_bounds_min: wp.array2d(dtype=wp.float32),
+        bvh_bounds_max: wp.array2d(dtype=wp.float32),
+        bvh_left: wp.array(dtype=wp.int32),
+        bvh_right: wp.array(dtype=wp.int32),
+        bvh_start: wp.array(dtype=wp.int32),
+        bvh_count: wp.array(dtype=wp.int32),
+        bvh_prim_ids: wp.array(dtype=wp.int32),
+        num_bvh_nodes: int,
+        sensor_role_mask: wp.int64,
+        shadow_bias: float,
+    ):
+        surface = _direct_light_begin(
+            ray,
+            hit_mask,
+            position_world,
+            normal_world,
+            material_index,
+            material_albedo_rgb,
+            ambient_r,
+            ambient_g,
+            ambient_b,
+            background_r,
+            background_g,
+            background_b,
+        )
+        color = surface.color
+        totals = _ShadowTotals()
+        if hit_mask[ray] != wp.int32(0):
+            for light_idx in range(num_lights):
+                sample = _direct_light_sample(
+                    surface, light_idx, light_kind, light_position_or_direction_world, shadow_bias
+                )
+                if sample.cosine > 0.0 and sample.attenuation > 0.0:
+                    visible = bool(True)
+                    if sample.shadow_limit > 0.0:
+                        trace = _is_occluded_for_ray(
+                            surface.position[0] + surface.normal[0] * wp.float32(shadow_bias),
+                            surface.position[1] + surface.normal[1] * wp.float32(shadow_bias),
+                            surface.position[2] + surface.normal[2] * wp.float32(shadow_bias),
+                            sample.direction[0],
+                            sample.direction[1],
+                            sample.direction[2],
+                            sample.shadow_limit,
+                            plane_normals,
+                            plane_points,
+                            plane_role_masks,
+                            num_planes,
+                            triangle_v0,
+                            triangle_e1,
+                            triangle_e2,
+                            triangle_normal,
+                            triangle_role_masks,
+                            bvh_bounds_min,
+                            bvh_bounds_max,
+                            bvh_left,
+                            bvh_right,
+                            bvh_start,
+                            bvh_count,
+                            bvh_prim_ids,
+                            num_bvh_nodes,
+                            sensor_role_mask,
+                        )
+                        visible = trace.occluded == wp.int32(0)
+                        totals.rays = totals.rays + wp.int32(1)
+                        if light_kind[light_idx] == wp.int32(1):
+                            totals.point = totals.point + wp.int32(1)
+                        else:
+                            totals.directional = totals.directional + wp.int32(1)
+                        totals.occluded = totals.occluded + trace.occluded
+                        totals.unoccluded = totals.unoccluded + wp.int32(visible)
+                        totals.overflow = totals.overflow + trace.overflow
+                        totals.max_depth = wp.max(totals.max_depth, trace.max_depth)
+                        totals.nodes = totals.nodes + trace.nodes
+                        totals.leaves = totals.leaves + trace.leaves
+                        totals.triangles = totals.triangles + trace.triangles
+                        totals.planes = totals.planes + trace.planes
+                    if visible:
+                        color = _direct_light_accumulate(
+                            color,
+                            surface.albedo,
+                            sample,
+                            light_idx,
+                            light_intensity,
+                            light_color_rgb,
+                        )
+        return color, totals
 
     @wp.kernel
-    def _device_scene_direct_light_kernel(
+    def warp_direct_light_no_shadow_primary_v1(
+        hit_mask: wp.array(dtype=wp.int32),
+        position_world: wp.array2d(dtype=wp.float32),
+        normal_world: wp.array2d(dtype=wp.float32),
+        material_index: wp.array(dtype=wp.int32),
+        material_albedo_rgb: wp.array2d(dtype=wp.float32),
+        light_kind: wp.array(dtype=wp.int32),
+        light_position_or_direction_world: wp.array2d(dtype=wp.float32),
+        light_intensity: wp.array(dtype=wp.float32),
+        light_color_rgb: wp.array2d(dtype=wp.float32),
+        num_lights: int,
+        ambient_r: float,
+        ambient_g: float,
+        ambient_b: float,
+        background_r: float,
+        background_g: float,
+        background_b: float,
+        rgb: wp.array2d(dtype=wp.float32),
+        intensity: wp.array(dtype=wp.float32),
+        shadow_stack_overflow_count: wp.array(dtype=wp.int32),
+        shadow_max_stack_depth: wp.array(dtype=wp.int32),
+    ):
+        ray = wp.tid()
+        color = _shade_unshadowed_ray(
+            ray,
+            hit_mask,
+            position_world,
+            normal_world,
+            material_index,
+            material_albedo_rgb,
+            light_kind,
+            light_position_or_direction_world,
+            light_intensity,
+            light_color_rgb,
+            num_lights,
+            ambient_r,
+            ambient_g,
+            ambient_b,
+            background_r,
+            background_g,
+            background_b,
+        )
+        _direct_light_write(ray, color, hit_mask, rgb, intensity)
+
+    @wp.kernel
+    def warp_direct_light_no_shadow_diagnostics_v1(
+        hit_mask: wp.array(dtype=wp.int32),
+        position_world: wp.array2d(dtype=wp.float32),
+        normal_world: wp.array2d(dtype=wp.float32),
+        material_index: wp.array(dtype=wp.int32),
+        material_albedo_rgb: wp.array2d(dtype=wp.float32),
+        light_kind: wp.array(dtype=wp.int32),
+        light_position_or_direction_world: wp.array2d(dtype=wp.float32),
+        light_intensity: wp.array(dtype=wp.float32),
+        light_color_rgb: wp.array2d(dtype=wp.float32),
+        num_lights: int,
+        ambient_r: float,
+        ambient_g: float,
+        ambient_b: float,
+        background_r: float,
+        background_g: float,
+        background_b: float,
+        rgb: wp.array2d(dtype=wp.float32),
+        intensity: wp.array(dtype=wp.float32),
+        shadow_stack_overflow_count: wp.array(dtype=wp.int32),
+        shadow_max_stack_depth: wp.array(dtype=wp.int32),
+        shadow_traversal_ray_count: wp.array(dtype=wp.int32),
+        shadow_traversal_directional_ray_count: wp.array(dtype=wp.int32),
+        shadow_traversal_point_ray_count: wp.array(dtype=wp.int32),
+        shadow_traversal_occluded_count: wp.array(dtype=wp.int32),
+        shadow_traversal_unoccluded_count: wp.array(dtype=wp.int32),
+        shadow_traversal_node_visit_count: wp.array(dtype=wp.int32),
+        shadow_traversal_leaf_visit_count: wp.array(dtype=wp.int32),
+        shadow_traversal_triangle_test_count: wp.array(dtype=wp.int32),
+        shadow_traversal_plane_test_count: wp.array(dtype=wp.int32),
+    ):
+        ray = wp.tid()
+        color = _shade_unshadowed_ray(
+            ray,
+            hit_mask,
+            position_world,
+            normal_world,
+            material_index,
+            material_albedo_rgb,
+            light_kind,
+            light_position_or_direction_world,
+            light_intensity,
+            light_color_rgb,
+            num_lights,
+            ambient_r,
+            ambient_g,
+            ambient_b,
+            background_r,
+            background_g,
+            background_b,
+        )
+        _direct_light_write(ray, color, hit_mask, rgb, intensity)
+
+    @wp.kernel
+    def warp_direct_light_with_shadows_primary_v1(
         hit_mask: wp.array(dtype=wp.int32),
         position_world: wp.array2d(dtype=wp.float32),
         normal_world: wp.array2d(dtype=wp.float32),
@@ -1352,13 +1763,12 @@ if _HAS_WARP:
         bvh_count: wp.array(dtype=wp.int32),
         bvh_prim_ids: wp.array(dtype=wp.int32),
         num_bvh_nodes: int,
+        sensor_role_mask: wp.int64,
         light_kind: wp.array(dtype=wp.int32),
         light_position_or_direction_world: wp.array2d(dtype=wp.float32),
         light_intensity: wp.array(dtype=wp.float32),
         light_color_rgb: wp.array2d(dtype=wp.float32),
         num_lights: int,
-        sensor_role_mask: wp.int64,
-        shadows: int,
         shadow_bias: float,
         ambient_r: float,
         ambient_g: float,
@@ -1370,7 +1780,91 @@ if _HAS_WARP:
         intensity: wp.array(dtype=wp.float32),
         shadow_stack_overflow_count: wp.array(dtype=wp.int32),
         shadow_max_stack_depth: wp.array(dtype=wp.int32),
-        shadow_traversal_stats_enabled: int,
+    ):
+        ray = wp.tid()
+        color, totals = _shade_shadowed_ray(
+            ray,
+            hit_mask,
+            position_world,
+            normal_world,
+            material_index,
+            material_albedo_rgb,
+            light_kind,
+            light_position_or_direction_world,
+            light_intensity,
+            light_color_rgb,
+            num_lights,
+            ambient_r,
+            ambient_g,
+            ambient_b,
+            background_r,
+            background_g,
+            background_b,
+            plane_normals,
+            plane_points,
+            plane_role_masks,
+            num_planes,
+            triangle_v0,
+            triangle_e1,
+            triangle_e2,
+            triangle_normal,
+            triangle_role_masks,
+            bvh_bounds_min,
+            bvh_bounds_max,
+            bvh_left,
+            bvh_right,
+            bvh_start,
+            bvh_count,
+            bvh_prim_ids,
+            num_bvh_nodes,
+            sensor_role_mask,
+            shadow_bias,
+        )
+        wp.atomic_add(shadow_stack_overflow_count, 0, totals.overflow)
+        wp.atomic_max(shadow_max_stack_depth, 0, totals.max_depth)
+        _direct_light_write(ray, color, hit_mask, rgb, intensity)
+
+    @wp.kernel
+    def warp_direct_light_with_shadows_diagnostics_v1(
+        hit_mask: wp.array(dtype=wp.int32),
+        position_world: wp.array2d(dtype=wp.float32),
+        normal_world: wp.array2d(dtype=wp.float32),
+        material_index: wp.array(dtype=wp.int32),
+        material_albedo_rgb: wp.array2d(dtype=wp.float32),
+        plane_normals: wp.array2d(dtype=wp.float32),
+        plane_points: wp.array2d(dtype=wp.float32),
+        plane_role_masks: wp.array(dtype=wp.int64),
+        num_planes: int,
+        triangle_v0: wp.array2d(dtype=wp.float32),
+        triangle_e1: wp.array2d(dtype=wp.float32),
+        triangle_e2: wp.array2d(dtype=wp.float32),
+        triangle_normal: wp.array2d(dtype=wp.float32),
+        triangle_role_masks: wp.array(dtype=wp.int64),
+        bvh_bounds_min: wp.array2d(dtype=wp.float32),
+        bvh_bounds_max: wp.array2d(dtype=wp.float32),
+        bvh_left: wp.array(dtype=wp.int32),
+        bvh_right: wp.array(dtype=wp.int32),
+        bvh_start: wp.array(dtype=wp.int32),
+        bvh_count: wp.array(dtype=wp.int32),
+        bvh_prim_ids: wp.array(dtype=wp.int32),
+        num_bvh_nodes: int,
+        sensor_role_mask: wp.int64,
+        light_kind: wp.array(dtype=wp.int32),
+        light_position_or_direction_world: wp.array2d(dtype=wp.float32),
+        light_intensity: wp.array(dtype=wp.float32),
+        light_color_rgb: wp.array2d(dtype=wp.float32),
+        num_lights: int,
+        shadow_bias: float,
+        ambient_r: float,
+        ambient_g: float,
+        ambient_b: float,
+        background_r: float,
+        background_g: float,
+        background_b: float,
+        rgb: wp.array2d(dtype=wp.float32),
+        intensity: wp.array(dtype=wp.float32),
+        shadow_stack_overflow_count: wp.array(dtype=wp.int32),
+        shadow_max_stack_depth: wp.array(dtype=wp.int32),
         shadow_traversal_ray_count: wp.array(dtype=wp.int32),
         shadow_traversal_directional_ray_count: wp.array(dtype=wp.int32),
         shadow_traversal_point_ray_count: wp.array(dtype=wp.int32),
@@ -1382,137 +1876,98 @@ if _HAS_WARP:
         shadow_traversal_plane_test_count: wp.array(dtype=wp.int32),
     ):
         ray = wp.tid()
-        out_r = wp.float32(background_r)
-        out_g = wp.float32(background_g)
-        out_b = wp.float32(background_b)
+        color, totals = _shade_shadowed_ray(
+            ray,
+            hit_mask,
+            position_world,
+            normal_world,
+            material_index,
+            material_albedo_rgb,
+            light_kind,
+            light_position_or_direction_world,
+            light_intensity,
+            light_color_rgb,
+            num_lights,
+            ambient_r,
+            ambient_g,
+            ambient_b,
+            background_r,
+            background_g,
+            background_b,
+            plane_normals,
+            plane_points,
+            plane_role_masks,
+            num_planes,
+            triangle_v0,
+            triangle_e1,
+            triangle_e2,
+            triangle_normal,
+            triangle_role_masks,
+            bvh_bounds_min,
+            bvh_bounds_max,
+            bvh_left,
+            bvh_right,
+            bvh_start,
+            bvh_count,
+            bvh_prim_ids,
+            num_bvh_nodes,
+            sensor_role_mask,
+            shadow_bias,
+        )
+        wp.atomic_add(shadow_stack_overflow_count, 0, totals.overflow)
+        wp.atomic_max(shadow_max_stack_depth, 0, totals.max_depth)
+        wp.atomic_add(shadow_traversal_ray_count, 0, totals.rays)
+        wp.atomic_add(shadow_traversal_directional_ray_count, 0, totals.directional)
+        wp.atomic_add(shadow_traversal_point_ray_count, 0, totals.point)
+        wp.atomic_add(shadow_traversal_occluded_count, 0, totals.occluded)
+        wp.atomic_add(shadow_traversal_unoccluded_count, 0, totals.unoccluded)
+        wp.atomic_add(shadow_traversal_node_visit_count, 0, totals.nodes)
+        wp.atomic_add(shadow_traversal_leaf_visit_count, 0, totals.leaves)
+        wp.atomic_add(shadow_traversal_triangle_test_count, 0, totals.triangles)
+        wp.atomic_add(shadow_traversal_plane_test_count, 0, totals.planes)
+        _direct_light_write(ray, color, hit_mask, rgb, intensity)
 
-        if hit_mask[ray] != wp.int32(0):
-            mat = material_index[ray]
-            albedo_r = material_albedo_rgb[mat, 0]
-            albedo_g = material_albedo_rgb[mat, 1]
-            albedo_b = material_albedo_rgb[mat, 2]
-            out_r = wp.float32(ambient_r) * albedo_r
-            out_g = wp.float32(ambient_g) * albedo_g
-            out_b = wp.float32(ambient_b) * albedo_b
+    @wp.kernel
+    def _reset_bvh_primary_counters_kernel(
+        bvh_stack_overflow_count: wp.array(dtype=wp.int32),
+        bvh_max_stack_depth: wp.array(dtype=wp.int32),
+    ):
+        bvh_stack_overflow_count[0] = wp.int32(0)
+        bvh_max_stack_depth[0] = wp.int32(0)
 
-            px = position_world[ray, 0]
-            py = position_world[ray, 1]
-            pz = position_world[ray, 2]
-            nx = normal_world[ray, 0]
-            ny = normal_world[ray, 1]
-            nz = normal_world[ray, 2]
+    @wp.kernel
+    def _reset_shadow_primary_counters_kernel(
+        shadow_stack_overflow_count: wp.array(dtype=wp.int32),
+        shadow_max_stack_depth: wp.array(dtype=wp.int32),
+    ):
+        shadow_stack_overflow_count[0] = wp.int32(0)
+        shadow_max_stack_depth[0] = wp.int32(0)
 
-            for light_idx in range(num_lights):
-                lx = light_position_or_direction_world[light_idx, 0]
-                ly = light_position_or_direction_world[light_idx, 1]
-                lz = light_position_or_direction_world[light_idx, 2]
-                attenuation = wp.float32(1.0)
-                if light_kind[light_idx] == wp.int32(1):
-                    lx = lx - px
-                    ly = ly - py
-                    lz = lz - pz
-                    distance_sq = lx * lx + ly * ly + lz * lz
-                    distance = wp.sqrt(distance_sq)
-                    if distance > _DIR_EPS:
-                        inv_distance = 1.0 / distance
-                        lx = lx * inv_distance
-                        ly = ly * inv_distance
-                        lz = lz * inv_distance
-                        attenuation = 1.0 / wp.max(distance_sq, _ATTENUATION_EPS)
-                    else:
-                        attenuation = wp.float32(0.0)
-                else:
-                    light_norm = wp.sqrt(lx * lx + ly * ly + lz * lz)
-                    if light_norm > _DIR_EPS:
-                        inv_light_norm = 1.0 / light_norm
-                        lx = lx * inv_light_norm
-                        ly = ly * inv_light_norm
-                        lz = lz * inv_light_norm
-                    else:
-                        attenuation = wp.float32(0.0)
-
-                n_dot_l = nx * lx + ny * ly + nz * lz
-                if n_dot_l > 0.0 and attenuation > 0.0:
-                    visible_to_light = bool(True)
-                    if shadows != 0:
-                        shadow_max_distance = wp.float32(3.4028234663852886e38)
-                        if light_kind[light_idx] == wp.int32(1):
-                            light_distance = wp.sqrt(
-                                (light_position_or_direction_world[light_idx, 0] - px)
-                                * (light_position_or_direction_world[light_idx, 0] - px)
-                                + (light_position_or_direction_world[light_idx, 1] - py)
-                                * (light_position_or_direction_world[light_idx, 1] - py)
-                                + (light_position_or_direction_world[light_idx, 2] - pz)
-                                * (light_position_or_direction_world[light_idx, 2] - pz)
-                            )
-                            shadow_max_distance = light_distance - wp.float32(shadow_bias)
-                        if shadow_max_distance > 0.0:
-                            shadow_ox = px + nx * wp.float32(shadow_bias)
-                            shadow_oy = py + ny * wp.float32(shadow_bias)
-                            shadow_oz = pz + nz * wp.float32(shadow_bias)
-                            if shadow_traversal_stats_enabled != 0:
-                                wp.atomic_add(shadow_traversal_ray_count, 0, wp.int32(1))
-                                if light_kind[light_idx] == wp.int32(1):
-                                    wp.atomic_add(
-                                        shadow_traversal_point_ray_count,
-                                        0,
-                                        wp.int32(1),
-                                    )
-                                else:
-                                    wp.atomic_add(
-                                        shadow_traversal_directional_ray_count,
-                                        0,
-                                        wp.int32(1),
-                                    )
-                            visible_to_light = not _is_occluded_for_ray(
-                                shadow_ox,
-                                shadow_oy,
-                                shadow_oz,
-                                lx,
-                                ly,
-                                lz,
-                                shadow_max_distance,
-                                plane_normals,
-                                plane_points,
-                                plane_role_masks,
-                                num_planes,
-                                triangle_v0,
-                                triangle_e1,
-                                triangle_e2,
-                                triangle_normal,
-                                triangle_role_masks,
-                                bvh_bounds_min,
-                                bvh_bounds_max,
-                                bvh_left,
-                                bvh_right,
-                                bvh_start,
-                                bvh_count,
-                                bvh_prim_ids,
-                                num_bvh_nodes,
-                                sensor_role_mask,
-                                shadow_stack_overflow_count,
-                                shadow_max_stack_depth,
-                                shadow_traversal_stats_enabled,
-                                shadow_traversal_occluded_count,
-                                shadow_traversal_unoccluded_count,
-                                shadow_traversal_node_visit_count,
-                                shadow_traversal_leaf_visit_count,
-                                shadow_traversal_triangle_test_count,
-                                shadow_traversal_plane_test_count,
-                            )
-                    if visible_to_light:
-                        scale = light_intensity[light_idx] * attenuation * n_dot_l
-                        out_r = out_r + albedo_r * light_color_rgb[light_idx, 0] * scale
-                        out_g = out_g + albedo_g * light_color_rgb[light_idx, 1] * scale
-                        out_b = out_b + albedo_b * light_color_rgb[light_idx, 2] * scale
-
-        rgb[ray, 0] = out_r
-        rgb[ray, 1] = out_g
-        rgb[ray, 2] = out_b
-        if hit_mask[ray] != wp.int32(0):
-            intensity[ray] = out_r * 0.2126 + out_g * 0.7152 + out_b * 0.0722
-        else:
-            intensity[ray] = wp.float32(0.0)
+    @wp.kernel
+    def _reset_shadow_diagnostic_counters_kernel(
+        shadow_stack_overflow_count: wp.array(dtype=wp.int32),
+        shadow_max_stack_depth: wp.array(dtype=wp.int32),
+        shadow_traversal_ray_count: wp.array(dtype=wp.int32),
+        shadow_traversal_directional_ray_count: wp.array(dtype=wp.int32),
+        shadow_traversal_point_ray_count: wp.array(dtype=wp.int32),
+        shadow_traversal_occluded_count: wp.array(dtype=wp.int32),
+        shadow_traversal_unoccluded_count: wp.array(dtype=wp.int32),
+        shadow_traversal_node_visit_count: wp.array(dtype=wp.int32),
+        shadow_traversal_leaf_visit_count: wp.array(dtype=wp.int32),
+        shadow_traversal_triangle_test_count: wp.array(dtype=wp.int32),
+        shadow_traversal_plane_test_count: wp.array(dtype=wp.int32),
+    ):
+        shadow_stack_overflow_count[0] = wp.int32(0)
+        shadow_max_stack_depth[0] = wp.int32(0)
+        shadow_traversal_ray_count[0] = wp.int32(0)
+        shadow_traversal_directional_ray_count[0] = wp.int32(0)
+        shadow_traversal_point_ray_count[0] = wp.int32(0)
+        shadow_traversal_occluded_count[0] = wp.int32(0)
+        shadow_traversal_unoccluded_count[0] = wp.int32(0)
+        shadow_traversal_node_visit_count[0] = wp.int32(0)
+        shadow_traversal_leaf_visit_count[0] = wp.int32(0)
+        shadow_traversal_triangle_test_count[0] = wp.int32(0)
+        shadow_traversal_plane_test_count[0] = wp.int32(0)
 
 else:
 
@@ -1534,5 +1989,123 @@ else:
     def _device_scene_bvh_first_hit_kernel(*args, **kwargs):  # pragma: no cover
         raise ImportError("GpuDeviceBvhOpticalExecutor requires the optional warp package")
 
-    def _device_scene_direct_light_kernel(*args, **kwargs):  # pragma: no cover
-        raise ImportError("GpuDeviceBvhDirectLightOpticalExecutor requires the optional warp package")
+    def warp_direct_light_no_shadow_primary_v1(*args, **kwargs):  # pragma: no cover
+        raise ImportError("Warp optical shading requires the optional warp package")
+
+    def warp_direct_light_no_shadow_diagnostics_v1(*args, **kwargs):  # pragma: no cover
+        raise ImportError("Warp optical shading requires the optional warp package")
+
+    def warp_direct_light_with_shadows_primary_v1(*args, **kwargs):  # pragma: no cover
+        raise ImportError("Warp optical shading requires the optional warp package")
+
+    def warp_direct_light_with_shadows_diagnostics_v1(*args, **kwargs):  # pragma: no cover
+        raise ImportError("Warp optical shading requires the optional warp package")
+
+    def _reset_bvh_primary_counters_kernel(*args, **kwargs):  # pragma: no cover
+        raise ImportError("Warp optical reset requires the optional warp package")
+
+    def _reset_shadow_primary_counters_kernel(*args, **kwargs):  # pragma: no cover
+        raise ImportError("Warp optical reset requires the optional warp package")
+
+    def _reset_shadow_diagnostic_counters_kernel(*args, **kwargs):  # pragma: no cover
+        raise ImportError("Warp optical reset requires the optional warp package")
+
+
+# Stable argument semantics used by preparation and compatibility. Tests bind
+# these ordered declarations directly to the four actual kernel signatures.
+_WARP_SHADE_SURFACE_ARGUMENTS = (
+    "hit_mask",
+    "position_world",
+    "normal_world",
+    "material_index",
+    "material_albedo_rgb",
+)
+_WARP_SHADE_LIGHT_ARGUMENTS = (
+    "light_kind",
+    "light_position_or_direction_world",
+    "light_intensity",
+    "light_color_rgb",
+    "num_lights",
+)
+_WARP_SHADE_COLOR_ARGUMENTS = (
+    "ambient_r",
+    "ambient_g",
+    "ambient_b",
+    "background_r",
+    "background_g",
+    "background_b",
+)
+_WARP_SHADE_OUTPUT_ARGUMENTS = (
+    "rgb",
+    "intensity",
+    "shadow_stack_overflow_count",
+    "shadow_max_stack_depth",
+)
+_WARP_SHADE_GEOMETRY_ARGUMENTS = (
+    "plane_normals",
+    "plane_points",
+    "plane_role_masks",
+    "num_planes",
+    "triangle_v0",
+    "triangle_e1",
+    "triangle_e2",
+    "triangle_normal",
+    "triangle_role_masks",
+    "bvh_bounds_min",
+    "bvh_bounds_max",
+    "bvh_left",
+    "bvh_right",
+    "bvh_start",
+    "bvh_count",
+    "bvh_prim_ids",
+    "num_bvh_nodes",
+    "sensor_role_mask",
+)
+
+WARP_DIRECT_LIGHT_SHADE_ABIS = MappingProxyType(
+    {
+        (False, False): (
+            warp_direct_light_no_shadow_primary_v1,
+            _WARP_SHADE_SURFACE_ARGUMENTS
+            + _WARP_SHADE_LIGHT_ARGUMENTS
+            + _WARP_SHADE_COLOR_ARGUMENTS
+            + _WARP_SHADE_OUTPUT_ARGUMENTS,
+        ),
+        (False, True): (
+            warp_direct_light_no_shadow_diagnostics_v1,
+            _WARP_SHADE_SURFACE_ARGUMENTS
+            + _WARP_SHADE_LIGHT_ARGUMENTS
+            + _WARP_SHADE_COLOR_ARGUMENTS
+            + _WARP_SHADE_OUTPUT_ARGUMENTS
+            + SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES,
+        ),
+        (True, False): (
+            warp_direct_light_with_shadows_primary_v1,
+            _WARP_SHADE_SURFACE_ARGUMENTS
+            + _WARP_SHADE_GEOMETRY_ARGUMENTS
+            + _WARP_SHADE_LIGHT_ARGUMENTS
+            + ("shadow_bias",)
+            + _WARP_SHADE_COLOR_ARGUMENTS
+            + _WARP_SHADE_OUTPUT_ARGUMENTS,
+        ),
+        (True, True): (
+            warp_direct_light_with_shadows_diagnostics_v1,
+            _WARP_SHADE_SURFACE_ARGUMENTS
+            + _WARP_SHADE_GEOMETRY_ARGUMENTS
+            + _WARP_SHADE_LIGHT_ARGUMENTS
+            + ("shadow_bias",)
+            + _WARP_SHADE_COLOR_ARGUMENTS
+            + _WARP_SHADE_OUTPUT_ARGUMENTS
+            + SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES,
+        ),
+    }
+)
+
+
+def warp_direct_light_shade_entry(*, shadows: bool, traversal_diagnostics: bool) -> tuple:
+    """Select a fixed ABI during preparation, never during a native enqueue."""
+    if type(shadows) is not bool or type(traversal_diagnostics) is not bool:
+        raise TypeError("shade modes must be exact bools")
+    if not _HAS_WARP:
+        raise RuntimeError("Warp is required for native optical shading")
+    return WARP_DIRECT_LIGHT_SHADE_ABIS[shadows, traversal_diagnostics]

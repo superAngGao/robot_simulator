@@ -3580,3 +3580,149 @@ def test_execute_optical_on_gpu_published_frame_rejects_timeline_mismatch():
             frame=frame,
             stream=wp.Stream(device=engine._device),
         )
+
+
+@pytest.mark.parametrize("shadows", [False, True])
+@pytest.mark.parametrize("diagnostics", [False, True])
+@pytest.mark.parametrize("profile", ["direct_light_full", "rgb_preview", "render_only"])
+def test_fixed_warp_shade_abi_profiles_use_cpu_oracle_and_initialized_geometry(
+    monkeypatch,
+    shadows,
+    diagnostics,
+    profile,
+):
+    from optics import warp_native_render as native
+    from optics.output_contract import SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES as overlay_names
+
+    engine = _make_engine()
+    consumer = _consumer()
+    engine.register_consumer(consumer)
+    engine.step()
+    frame = engine.latest_published_frame()
+    registry = _shadowed_floor_registry()
+    registry.add_light(
+        OpticalLightSpec(
+            "abi_point",
+            kind="point",
+            position_or_direction_world=[2.0, -1.0, 3.0],
+            intensity=3.0,
+            color_rgb=(0.2, 0.6, 0.4),
+        )
+    )
+    spec = OpticalRaySensorSpec(
+        frame_id=frame.frame_id,
+        sim_time=frame.sim_time,
+        env_idx=0,
+        sensor_id="fixed_abi",
+        max_distance=10.0,
+        sensor_role="rgb",
+        origins_world=[[0.0, 0.0, 2.0], [-0.7, 0.2, 2.0], [0.0, 0.0, 1.0], [2.0, 2.0, 2.0]],
+        directions_world=[[0.0, 0.0, -1.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+    )
+    host_scene = OpticalSceneCache(registry).snapshot_from_frame_inputs(
+        OpticalFrameInputs.from_published_frame(_cpu_frame_like(frame)),
+        acceleration="cpu_bvh",
+    )
+    options = dict(shadows=shadows, ambient_rgb=(0.1, 0.2, 0.3), background_rgb=(0.02, 0.03, 0.07))
+    cpu = CpuDirectLightOpticalExecutor(**options).execute(host_scene, spec)
+    stream = wp.Stream(device=engine._device)
+    borrowed = engine.borrow_device_frame(consumer.consumer_id, frame.frame_id, stream=stream)
+    cache = DeviceOpticalSceneCache(registry, device=engine._device, stream=stream)
+    snapshot = cache.snapshot_from_gpu_frame(borrowed, env_idx=0, stream=stream, include_aabb=True)
+    bvh = build_device_bvh_from_snapshot(snapshot, device=engine._device, stream=stream)
+    executor = GpuDeviceBvhDirectLightOpticalExecutor(device=engine._device, stream=stream, **options)
+    selected_kernel, selected_names = native.warp_direct_light_shade_entry(
+        shadows=shadows,
+        traversal_diagnostics=diagnostics,
+    )
+    original_launch = wp.launch
+    actual_shade = []
+    geometry_outputs = []
+
+    def observed_launch(kernel, *args, **kwargs):
+        assert not kwargs.get("record_cmd", False)  # Compatibility, never the unfinished recorded bundle.
+        if kernel is native._device_scene_bvh_first_hit_kernel:
+            outputs = kwargs["inputs"][-8:-2]
+            for array in outputs:
+                array.fill_(77)  # Defeat both fresh allocation and legacy host default initialization.
+            geometry_outputs.append(outputs)
+        if kernel is selected_kernel:
+            actual_shade.append(dict(zip(selected_names, kwargs["inputs"], strict=True)))
+        return original_launch(kernel, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(wp, "launch", observed_launch)
+        result = executor.execute(
+            snapshot,
+            bvh,
+            spec,
+            output_profile=profile,
+            render_profile=[] if diagnostics else None,
+        )
+    done = engine.complete_device_consumer(consumer.consumer_id, frame.frame_id, stream=stream)
+    wp.synchronize_event(done)
+    assert len(actual_shade) == len(geometry_outputs) == 1
+    bound = actual_shade[0]
+    assert set(overlay_names).intersection(bound) == (set(overlay_names) if diagnostics else set())
+    primary = [bound["shadow_stack_overflow_count"], bound["shadow_max_stack_depth"]]
+    counters = primary + [bound[name] for name in overlay_names if diagnostics]
+    assert len({array.ptr for array in counters}) == len(counters)
+    assert tuple(name for name in bound if name in overlay_names) == (overlay_names if diagnostics else ())
+
+    # Inspect the actual physical outputs even for a profile which filters them.
+    geometry_names = (
+        "hit_mask",
+        "range_m",
+        "position_world",
+        "normal_world",
+        "numeric_instance_id",
+        "material_index",
+    )
+    for name, array in zip(geometry_names, geometry_outputs[0], strict=True):
+        observed = array.numpy()
+        expected = cpu.channel(name)
+        if name in ("hit_mask", "numeric_instance_id", "material_index"):
+            np.testing.assert_array_equal(observed, expected)
+        else:
+            np.testing.assert_allclose(observed, expected, atol=1e-5, rtol=1e-5, equal_nan=True)
+    np.testing.assert_allclose(bound["rgb"].numpy(), cpu.channel("rgb"), atol=1e-5, rtol=1e-5)
+    np.testing.assert_allclose(bound["intensity"].numpy(), cpu.channel("intensity"), atol=1e-5, rtol=1e-5)
+    expected_channels = set(OpticalOutputProfile(profile).guaranteed_channels)
+    assert set(result.channels) == expected_channels | (set(overlay_names) if diagnostics else set())
+    for array in counters:
+        assert tuple(array.shape) == (1,) and array.dtype is wp.int32
+        assert int(array.numpy()[0]) >= 0
+        if not shadows:
+            np.testing.assert_array_equal(array.numpy(), [0])
+    np.testing.assert_array_equal(primary[0].numpy(), [0])
+    if diagnostics:
+        counts = {name: int(bound[name].numpy()[0]) for name in overlay_names}
+        assert counts[overlay_names[0]] == counts[overlay_names[1]] + counts[overlay_names[2]]
+        assert counts[overlay_names[0]] == counts[overlay_names[3]] + counts[overlay_names[4]]
+        if shadows:
+            assert counts[overlay_names[1]] > 0 and counts[overlay_names[2]] > 0
+
+
+@pytest.mark.parametrize(
+    "entry_name,count",
+    [
+        ("_reset_bvh_primary_counters_kernel", 2),
+        ("_reset_shadow_primary_counters_kernel", 2),
+        ("_reset_shadow_diagnostic_counters_kernel", 11),
+    ],
+)
+def test_fixed_warp_scalar_reset_kernels_overwrite_sentinels(entry_name, count):
+    from optics import warp_native_render as native
+
+    device = wp.get_device("cuda:0")
+    stream = wp.Stream(device=device)
+    # Individual scalar kernels only: no recorded bundle, transaction or C4 authority.
+    arrays = tuple(wp.empty(1, dtype=wp.int32, device=device) for _ in range(count))
+    for sentinel in (77, -123):
+        with wp.ScopedStream(stream):
+            for array in arrays:
+                array.fill_(sentinel)
+            wp.launch(getattr(native, entry_name), dim=1, inputs=arrays, device=device, stream=stream)
+        wp.synchronize_stream(stream)
+        for array in arrays:
+            np.testing.assert_array_equal(array.numpy(), [0])
