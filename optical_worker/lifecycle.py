@@ -60,6 +60,7 @@ _LEAF_KINDS = frozenset(
         "runtime_import_or_init",
         "allocation",
         "host_to_device_copy",
+        "device_to_host_copy",
         "compile_or_jit",
         "event_create",
         "event_record",

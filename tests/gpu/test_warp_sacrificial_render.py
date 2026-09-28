@@ -260,3 +260,29 @@ def test_post_submit_journal_failure_is_hard_exit_not_python_unwind(tmp_path, fa
     assert "release_begin" not in operations
     assert "allocation_owner_finalized" not in operations
     assert "Traceback" not in supervisor["stderr"]
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "readback_storage_failure",
+        "readback_transfer_failure",
+        "readback_before_copy_failure",
+        "readback_submit_then_raise",
+        "readback_return_failure",
+    ],
+)
+def test_input_readback_resources_remain_in_guardian_across_failures(tmp_path, fault):
+    supervisor, journal = run_case(tmp_path, fault=fault)
+    operations = [item["operation"] for item in journal]
+    assert supervisor["worker_return_code"] == 74, (supervisor, journal)
+    assert "launch_latched" not in operations
+    assert "result_inspected" not in operations
+    assert operations.count("emergency_sync_entered") == 1
+    disposition = next(item for item in journal if item["operation"] == "failure_disposition")
+    records = disposition["evidence"]["guardian"]["records"]
+    assert any(record["role"] == "input_readback_storage" for record in records)
+    if fault != "readback_storage_failure":
+        assert any(record["role"] == "input_readback_view" for record in records)
+    assert "failure_release_authorized" in operations
+    assert_no_early_destruction(journal)

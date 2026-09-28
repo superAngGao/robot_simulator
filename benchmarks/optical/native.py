@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
@@ -1076,14 +1076,38 @@ def validate_prepared_native_input(
 
     assert_outside_timed_boundary("native input parity validation")
     assert_operation_allowed("host_materialization")
+    return _validate_native_input_host_observations(
+        source,
+        prepared,
+        (
+            (manifest.name, _native_array_to_numpy(prepared, prepared.arrays[manifest.name]))
+            for manifest in source.manifest.arrays
+        ),
+    )
+
+
+def _validate_native_input_host_observations(
+    source: CanonicalNativeInput,
+    prepared: PreparedNativeInput,
+    observations: Iterable[tuple[str, np.ndarray]],
+) -> NativeInputValidationReport:
+    """Shared CPU comparison over ordered, already-ready host observations.
+
+    This function neither performs readback nor certifies its ownership. The
+    ordinary a2 validator supplies its runtime materializer above; the fixed
+    supervised test driver supplies explicitly adopted, synchronized buffers.
+    No observations or callbacks cross the closed worker IPC protocol.
+    """
+    assert_outside_timed_boundary("native input host observation validation")
     if prepared.manifest.sha256 != source.manifest.sha256:
         raise ValueError("prepared native input manifest does not match its logical source")
     expected_names = tuple(manifest.name for manifest in source.manifest.arrays)
     if set(prepared.arrays) != set(expected_names):
         raise ValueError("prepared native input arrays do not match the source manifest")
 
-    for manifest in source.manifest.arrays:
-        actual = _native_array_to_numpy(prepared, prepared.arrays[manifest.name])
+    for manifest, (name, actual) in zip(source.manifest.arrays, observations, strict=True):
+        if name != manifest.name:
+            raise ValueError("native host observations must exactly follow the manifest order")
         expected = source.arrays[manifest.name]
         if actual.dtype.str != manifest.dtype:
             raise ValueError(f"native input {manifest.name!r} dtype does not match manifest")

@@ -30,11 +30,17 @@ class FixedWarpSetup:
         self.uploads = 0
         self.records = 0
         self.owner_refs = []
+        self.np = None
+        self._watched_ids = set()
 
     def watch_owner(self, owner, label):
         # Observes the actual allocation owner, not a surrogate lifecycle flag.
         # The callback does not own the allocation or perform CUDA cleanup.
-        if self.wp is not None and type(owner) is self.wp.array:
+        supported = (self.wp is not None and type(owner) is self.wp.array) or (
+            self.np is not None and type(owner) is self.np.ndarray
+        )
+        if supported and id(owner) not in self._watched_ids:
+            self._watched_ids.add(id(owner))
             finalizer = weakref.finalize(owner, self.journal, "allocation_owner_finalized", label=label)
             finalizer.atexit = False  # Only actual collection, not interpreter-exit notifications.
             self.owner_refs.append((label, weakref.ref(owner)))
@@ -121,7 +127,35 @@ class FixedWarpSetup:
 
     def host(self, owner, role="host_setup"):
         self.guardian.adopt_host(owner, role=role)
+        self.watch_owner(owner, role)
         return owner
+
+    def readback_input(self, value, manifest):
+        # No .numpy()/to()/clone(): each physical destination and CPU view is
+        # retained before copy, and before the next array's GPU leaf.
+        host = self.np.empty(manifest.shape, dtype=self.np.dtype(manifest.dtype))
+        self.host(host, "input_readback_storage")
+        if self.fault == "readback_storage_failure":
+            raise RuntimeError("fixed failure after readback host storage adoption")
+        view = self.wp.array(host, dtype=value.dtype, device="cpu", copy=False)
+        self.host(view, "input_readback_view")
+        if self.fault == "readback_transfer_failure":
+            raise RuntimeError("fixed failure after readback view transfer, before GPU copy")
+        assert self.guardian._guardian.contains_exact_owner(host)
+        assert self.guardian._guardian.contains_exact_owner(view)
+        self.journal("input_readback_custody", name=manifest.name)
+        if self.fault == "readback_before_copy_failure":
+            self.exit_failure("readback_before_copy_failure")
+
+        def copy():
+            self.wp.copy(view, value, stream=self.stream)
+            if self.fault == "readback_submit_then_raise":
+                raise RuntimeError("fixed input readback copy submitted then raised")
+
+        self.leaf(f"readback_{manifest.name}", copy, kind="device_to_host_copy")
+        if self.fault == "readback_return_failure":
+            raise RuntimeError("fixed failure after registered readback copy, before host return")
+        return host
 
     def setup_wait(self, operation, wait):
         # Intermediate upload/validation waits also require ACK; final seal uses
@@ -233,6 +267,7 @@ def build_case(driver: FixedWarpSetup, *, profile, shadows, diagnostics, residen
         "render_module_imports", imports, produces_owner=True, kind="runtime_import_or_init"
     )
     np, a2, workloads, native = modules.np, modules.native_input, modules.workloads, modules.native_render
+    driver.np = np
     from optical_worker.native_contract import (
         WarpPreparedNativeInput,
         register_prepared_native_input,
@@ -275,11 +310,12 @@ def build_case(driver: FixedWarpSetup, *, profile, shadows, diagnostics, residen
         )
     )
     register_prepared_native_input(prepared, source)
-    validation_box = []
-    driver.setup_wait(
-        "input_validation", lambda: validation_box.append(a2.validate_prepared_native_input(source, prepared))
+    observations = tuple(
+        (manifest.name, driver.readback_input(arrays[manifest.name], manifest))
+        for manifest in source.manifest.arrays
     )
-    validation = driver.host(validation_box[0])
+    driver.setup_wait("input_validation_ready", lambda: wp.synchronize_stream(stream))
+    validation = driver.host(a2._validate_native_input_host_observations(source, prepared, observations))
     module_owner = driver.host(wp.get_module(native.__name__), "warp_module")
     driver.host(native._render_kernel_owners(), "kernel_owners")
 

@@ -13,6 +13,11 @@ from pathlib import Path
 def main():
     if os.name != "posix" or not sys.flags.isolated or not sys.flags.no_site or len(sys.argv) != 4:
         return 64
+    # No repository helper may bootstrap from a previous timestamp cache.
+    bootstrap_cache = Path(sys.argv[2]).resolve() / "supervisor-source-cache"
+    bootstrap_cache.mkdir(exist_ok=False)
+    sys.pycache_prefix = str(bootstrap_cache)
+    sys.dont_write_bytecode = True
     root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(root))
     from tests.support.sacrificial_sources import RepositoryImportLedger, canonical_bytes
@@ -65,6 +70,11 @@ def main():
             "normal",
             "runtime_import_failure",
             "allocation_return_failure",
+            "readback_storage_failure",
+            "readback_transfer_failure",
+            "readback_before_copy_failure",
+            "readback_submit_then_raise",
+            "readback_return_failure",
             "first_upload_failure",
             "compile_failure",
             "record_failure",

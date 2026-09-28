@@ -146,6 +146,11 @@ class RepositoryImportLedger:
         spec = importlib.machinery.PathFinder.find_spec(fullname, path, target)
         if spec is not None:
             self._check(spec.origin)
+            if spec.origin and Path(spec.origin).resolve().is_relative_to(self.root):
+                origin = Path(spec.origin).resolve()
+                spec.loader = VerifiedRepositorySourceLoader(
+                    fullname, str(origin), self._digests[origin.relative_to(self.root).as_posix()]
+                )
         return spec
 
     def verify(self):
@@ -169,3 +174,21 @@ class RepositoryImportLedger:
     def install(self):
         self.verify()
         sys.meta_path.insert(0, self)
+
+
+class VerifiedRepositorySourceLoader(importlib.machinery.SourceFileLoader):
+    """Compile the verified bytes, never timestamp/hash bytecode caches."""
+
+    def __init__(self, fullname, path, expected_sha256):
+        super().__init__(fullname, path)
+        self._expected_sha256 = expected_sha256
+
+    def get_code(self, fullname):
+        if fullname != self.name:
+            raise RuntimeError("repository source loader module identity changed")
+        source = self.get_data(self.path)
+        if hashlib.sha256(source).hexdigest() != self._expected_sha256:
+            raise RuntimeError("repository source changed before compilation")
+        # SourceFileLoader.get_code() would consult .pyc first. Deliberately use
+        # only the checked byte buffer for both ordinary modules and packages.
+        return self.source_to_code(source, self.path)

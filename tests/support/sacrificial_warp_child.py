@@ -27,6 +27,11 @@ def main():
             or hashlib.sha256(path.read_bytes()).hexdigest() != item["sha256"]
         ):
             return 65
+    # Before the first repository import (including the loader itself), use a
+    # fresh empty cache namespace. -B alone would still read existing .pyc.
+    bootstrap_cache = Path(sys.argv[1]).resolve().parent / "child-source-cache"
+    bootstrap_cache.mkdir(exist_ok=False)
+    sys.pycache_prefix = str(bootstrap_cache)
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(root))
     from tests.support.sacrificial_lifecycle import SacrificialRenderGuardian, State
