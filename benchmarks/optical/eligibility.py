@@ -8,6 +8,28 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from optical_worker.lane_contract import (
+    CANONICAL_NATIVE_REPLAY_INPUT as CANONICAL_NATIVE_REPLAY_INPUT,
+)
+from optical_worker.lane_contract import (
+    EXACT_ACCELERATION_CONTRACTS as EXACT_ACCELERATION_CONTRACTS,
+)
+from optical_worker.lane_contract import (
+    EXACT_LANE_BINDINGS as EXACT_LANE_BINDINGS,
+)
+from optical_worker.lane_contract import (
+    FIXED_NATIVE_SCENE_INPUT as FIXED_NATIVE_SCENE_INPUT,
+)
+from optical_worker.lane_contract import (
+    GPU_ENGINE_PUBLISHED_FRAME_INPUT as GPU_ENGINE_PUBLISHED_FRAME_INPUT,
+)
+from optical_worker.lane_contract import (
+    INPUT_CONTRACT_BY_BOUNDARY as INPUT_CONTRACT_BY_BOUNDARY,
+)
+from optical_worker.lane_contract import (
+    INPUT_CONTRACT_SCHEMA_VERSION as INPUT_CONTRACT_SCHEMA_VERSION,
+)
+
 from .instrumentation import (
     declared_runtime_hook_plan,
     resolve_runtime_hook_plan,
@@ -21,81 +43,6 @@ from .timing import (
 
 ELIGIBILITY_SCHEMA_VERSION = "q54.p12.4.lane-eligibility.v3"
 ENTRY_POINT_AUDIT_SCHEMA_VERSION = "q54.p12.4.entry-point-audit.v2"
-INPUT_CONTRACT_SCHEMA_VERSION = "q54.p12.4.input-contract.v2"
-
-FIXED_NATIVE_SCENE_INPUT = "fixed_native_scene_v1"
-CANONICAL_NATIVE_REPLAY_INPUT = "canonical_native_replay_v1"
-GPU_ENGINE_PUBLISHED_FRAME_INPUT = "gpu_engine_published_frame_v1"
-
-INPUT_CONTRACT_BY_BOUNDARY = {
-    "R0": FIXED_NATIVE_SCENE_INPUT,
-    "R1": CANONICAL_NATIVE_REPLAY_INPUT,
-    "R2": CANONICAL_NATIVE_REPLAY_INPUT,
-    "S": GPU_ENGINE_PUBLISHED_FRAME_INPUT,
-}
-
-EXACT_LANE_BINDINGS = {
-    "warp": {
-        "renderer_id": "warp_bvh_direct_light",
-        "acceleration_by_class": {
-            "fixed_bvh_fixture": "fixed_bvh_fixture",
-            "production_static": "cuda_morton_karras_lbvh_rebuild_v1",
-            "production_dynamic": "cpu_median_leaf4_topology_warp_refit_v1",
-            "production_physics": "cpu_median_leaf4_topology_warp_refit_v1",
-        },
-    },
-    "cuda": {
-        "renderer_id": "cuda_direct_light",
-        "acceleration_by_class": {
-            "fixed_bvh_fixture": "fixed_bvh_fixture",
-            "production_static": "cuda_morton_karras_lbvh_rebuild_v1",
-            "production_dynamic": "cuda_morton_karras_lbvh_rebuild_v1",
-            "production_physics": "cuda_morton_karras_lbvh_rebuild_v1",
-        },
-    },
-}
-
-EXACT_ACCELERATION_CONTRACTS = {
-    "warp": {
-        "fixed_bvh_fixture": {
-            "topology_origin": "cpu_median_longest_axis_leaf4_source_order_v1",
-            "topology_lifetime": "prepared_input_immutable_v1",
-            "timed_scene_update_operation": "none",
-            "timed_acceleration_operation": "none",
-            "operation_classification": "none",
-        },
-        "cpu_median_leaf4_topology_warp_refit_v1": {
-            "topology_origin": "cpu_median_longest_axis_leaf4_source_order_v1",
-            "topology_lifetime": "prepared_lane_session_immutable_v1",
-            "timed_scene_update_operation": "warp_local_scene_transform_and_aabb_out_v1",
-            "timed_acceleration_operation": "warp_bvh_leaf_internal_refit_out_v1",
-            "operation_classification": "refit",
-        },
-        "cuda_morton_karras_lbvh_rebuild_v1": {
-            "topology_origin": "cuda_morton30_karras_source_index_tiebreak_v1",
-            "topology_lifetime": "transaction_output_arena_lease_v1",
-            "timed_scene_update_operation": "warp_local_scene_transform_and_aabb_out_v1",
-            "timed_acceleration_operation": ("cuda_lbvh_scene_bounds_morton_sort_topology_bounds_out_v1"),
-            "operation_classification": "rebuild",
-        },
-    },
-    "cuda": {
-        "fixed_bvh_fixture": {
-            "topology_origin": "cpu_median_longest_axis_leaf4_source_order_v1",
-            "topology_lifetime": "prepared_input_immutable_v1",
-            "timed_scene_update_operation": "none",
-            "timed_acceleration_operation": "none",
-            "operation_classification": "none",
-        },
-        "cuda_morton_karras_lbvh_rebuild_v1": {
-            "topology_origin": "cuda_morton30_karras_source_index_tiebreak_v1",
-            "topology_lifetime": "transaction_output_arena_lease_v1",
-            "timed_scene_update_operation": "torch_cuda_local_scene_transform_and_aabb_out_v1",
-            "timed_acceleration_operation": ("cuda_lbvh_scene_bounds_morton_sort_topology_bounds_out_v1"),
-            "operation_classification": "rebuild",
-        },
-    },
-}
 
 
 def _canonical_sha256(payload: object) -> str:
@@ -547,10 +494,7 @@ def validate_trace_entry_points(
         if record.operation in eligibility.required_lifecycle_operations
     ]
     if lifecycle_leaks:
-        raise ValueError(
-            "submission operation trace contains lifecycle-only operations: "
-            f"{lifecycle_leaks}"
-        )
+        raise ValueError(f"submission operation trace contains lifecycle-only operations: {lifecycle_leaks}")
 
 
 def _sha256_text(value: object) -> bool:

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from contextlib import nullcontext
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -12,6 +10,7 @@ import numpy as np
 
 from physics.publish import GpuPublishedFrame
 
+from .host_bvh import _canonical_sha256 as _canonical_sha256
 from .registry import OpticalWorldRegistry
 from .scene_contract import PackedOpticalSceneHost
 
@@ -597,8 +596,7 @@ class WarpSceneUpdateCommandFactory:
         ):
             raise ValueError("Warp scene factory storage drifted after construction")
         if (
-            self.native_input_manifest_sha256
-            != self._frozen_native_input_manifest_sha256
+            self.native_input_manifest_sha256 != self._frozen_native_input_manifest_sha256
             or self.input_contract != self._frozen_input_contract
         ):
             raise ValueError("Warp scene factory provenance drifted after construction")
@@ -607,9 +605,7 @@ class WarpSceneUpdateCommandFactory:
 def _warp_scene_dispatch_plan(scene: DeviceOpticalScene) -> list[dict[str, object]]:
     dispatches: list[dict[str, object]] = []
     if scene.num_triangles > 0:
-        dispatches.append(
-            {"kernel": "update_triangles_derived_aabb_world", "dim": scene.num_triangles}
-        )
+        dispatches.append({"kernel": "update_triangles_derived_aabb_world", "dim": scene.num_triangles})
     if scene.num_planes > 0:
         dispatches.append({"kernel": "update_planes_world", "dim": scene.num_planes})
     return dispatches
@@ -631,30 +627,16 @@ def allocate_warp_world_scene_buffers(
         _validate_warp_stream(stream, device=scene.device)
     with _scoped_stream(stream):
         arrays = {
-            "triangle_v0_world": wp.empty(
-                (scene.num_triangles, 3), dtype=wp.float32, device=scene.device
-            ),
-            "triangle_e1_world": wp.empty(
-                (scene.num_triangles, 3), dtype=wp.float32, device=scene.device
-            ),
-            "triangle_e2_world": wp.empty(
-                (scene.num_triangles, 3), dtype=wp.float32, device=scene.device
-            ),
+            "triangle_v0_world": wp.empty((scene.num_triangles, 3), dtype=wp.float32, device=scene.device),
+            "triangle_e1_world": wp.empty((scene.num_triangles, 3), dtype=wp.float32, device=scene.device),
+            "triangle_e2_world": wp.empty((scene.num_triangles, 3), dtype=wp.float32, device=scene.device),
             "triangle_normal_world": wp.empty(
                 (scene.num_triangles, 3), dtype=wp.float32, device=scene.device
             ),
-            "plane_normal_world": wp.empty(
-                (scene.num_planes, 3), dtype=wp.float32, device=scene.device
-            ),
-            "plane_point_world": wp.empty(
-                (scene.num_planes, 3), dtype=wp.float32, device=scene.device
-            ),
-            "triangle_aabb_min": wp.empty(
-                (scene.num_triangles, 3), dtype=wp.float32, device=scene.device
-            ),
-            "triangle_aabb_max": wp.empty(
-                (scene.num_triangles, 3), dtype=wp.float32, device=scene.device
-            ),
+            "plane_normal_world": wp.empty((scene.num_planes, 3), dtype=wp.float32, device=scene.device),
+            "plane_point_world": wp.empty((scene.num_planes, 3), dtype=wp.float32, device=scene.device),
+            "triangle_aabb_min": wp.empty((scene.num_triangles, 3), dtype=wp.float32, device=scene.device),
+            "triangle_aabb_max": wp.empty((scene.num_triangles, 3), dtype=wp.float32, device=scene.device),
         }
     return WarpWorldSceneBuffers(
         device=scene.device,
@@ -867,9 +849,7 @@ def _validate_disjoint_warp_storage(
 ) -> None:
     seen_outputs: list[tuple[str, int, int]] = []
     input_ranges = tuple(
-        (name, int(value.ptr or 0), int(value.capacity))
-        for name, value in inputs
-        if int(value.capacity) > 0
+        (name, int(value.ptr or 0), int(value.capacity)) for name, value in inputs if int(value.capacity) > 0
     )
     for name, value in outputs:
         start = int(value.ptr or 0)
@@ -901,17 +881,6 @@ def _warp_storage_manifest_sha256(values: tuple[tuple[str, object], ...]) -> str
             for name, value in values
         ]
     )
-
-
-def _canonical_sha256(value: object) -> str:
-    encoded = json.dumps(
-        value,
-        allow_nan=False,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def _sha256_text(value: object) -> bool:

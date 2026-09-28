@@ -32,10 +32,16 @@ benchmarks/optical/timing.py
 benchmarks/optical/workload_contract.py
 benchmarks/optical/workloads.py
 optical_worker/__init__.py
+optical_worker/cases.py
+optical_worker/lane_contract.py
 optical_worker/lifecycle.py
 optical_worker/manifest.py
 optical_worker/native_contract.py
+optical_worker/native_input.py
+optical_worker/provenance.py
 optical_worker/protocol.py
+optical_worker/timing.py
+optical_worker/workload_contract.py
 optics/__init__.py
 optics/_cuda_lbvh_source.py
 optics/builder.py
@@ -50,6 +56,7 @@ optics/device_channel.py
 optics/device_scene.py
 optics/execution.py
 optics/gpu_runtime.py
+optics/host_bvh.py
 optics/native_arena.py
 optics/output_contract.py
 optics/registry.py

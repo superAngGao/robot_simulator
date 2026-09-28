@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from benchmarks.optical import native
+from optical_worker import native_input as native
 
 
 def inputs():

@@ -1963,17 +1963,13 @@ def _tensor_view_identity(tensor: object) -> tuple[object, ...]:
 
 
 def _canonical_c3_binding(binding: object) -> object:
-    binding_type = type(binding)
-    if (
-        binding_type.__module__ != "benchmarks.optical.receipts"
-        or binding_type.__name__ != "C3OneShotNativeExecutionBindingEvidence"
-    ):
+    from optical_worker.provenance import C3OneShotNativeExecutionBindingEvidence
+
+    if type(binding) is not C3OneShotNativeExecutionBindingEvidence:
         raise TypeError("CUDA arena requires canonical C3 one-shot binding evidence")
-    to_payload = getattr(binding, "to_payload", None)
-    from_payload = getattr(binding_type, "from_payload", None)
-    if not callable(to_payload) or not callable(from_payload):
-        raise TypeError("CUDA arena C3 binding lacks canonical serialization")
-    canonical = from_payload(to_payload())
+    canonical = C3OneShotNativeExecutionBindingEvidence.from_payload(
+        C3OneShotNativeExecutionBindingEvidence.to_payload(binding)
+    )
     if canonical != binding:
         raise NativeOpticalArenaProtocolError("CUDA arena C3 binding is not canonical")
     return canonical
@@ -1985,11 +1981,11 @@ def _validate_c3_adapter_authority(
     prepared_input: object,
     native_readiness: object,
 ) -> None:
-    validator = getattr(binding, "_assert_cuda_arena_adapter_authority", None)
-    if not callable(validator):
-        raise NativeOpticalArenaProtocolError("CUDA arena C3 binding lacks adapter-issued authority")
+    from optical_worker.provenance import _assert_cuda_arena_c3_binding_authority
+
     try:
-        validator(
+        _assert_cuda_arena_c3_binding_authority(
+            binding,
             target=target,
             prepared_input=prepared_input,
             native_readiness=native_readiness,

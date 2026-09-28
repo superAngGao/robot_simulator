@@ -848,6 +848,34 @@ def test_c3_binding_serialization_cannot_forge_adapter_issuance():
         )
 
 
+def test_c3_moved_registry_ignores_injected_authority_method():
+    from optical_worker.provenance import C3OneShotNativeExecutionBindingEvidence as ProductionBinding
+
+    arena = _dynamic_arena()
+    target = arena.plan_target(transform_frame_index=0)
+    prepared, readiness = _A2_AUTHORITIES[id(arena)]
+    binding = build_cuda_c3_binding_from_arena_target(
+        target, prepared_input=prepared, native_readiness=readiness
+    )
+    assert type(binding) is ProductionBinding is C3OneShotNativeExecutionBindingEvidence
+    calls = []
+    forged = replace(binding)
+    object.__setattr__(forged, "_assert_cuda_arena_adapter_authority", lambda **kw: calls.append(kw))
+    with pytest.raises(NativeOpticalArenaProtocolError, match="canonical arena adapter"):
+        arena.bind_c3_provenance(
+            target=target, binding=forged, prepared_input=prepared, native_readiness=readiness
+        )
+    assert not calls
+    object.__setattr__(binding, "_assert_cuda_arena_adapter_authority", lambda **kw: calls.append(kw))
+    arena.bind_c3_provenance(
+        target=target, binding=binding, prepared_input=prepared, native_readiness=readiness
+    )
+    assert not calls
+    assert arena.lifecycle_evidence().terminal_event_record_count == 0
+    arena.begin_drain()
+    arena.close()
+
+
 def test_measured_acquire_uses_only_constant_time_authority_checks(monkeypatch):
     arena = _dynamic_arena()
     target = arena.plan_target(transform_frame_index=0)

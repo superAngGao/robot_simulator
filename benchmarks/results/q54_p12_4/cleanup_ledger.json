@@ -79,7 +79,7 @@
         "optics/device_scene.py",
         "optics/device_bvh.py",
         "optics/device.py",
-        "benchmarks/optical/native.py",
+        "optical_worker/native_input.py",
         "tests/gpu/test_optical_benchmark_native.py",
         "tests/gpu/test_optical_warp_native_commands.py"
       ],
@@ -92,10 +92,9 @@
         ],
         "optics/device_bvh.py": [
           "class WarpBvhRefitCommandFactory:",
-          "class WarpBvhRefitCommandBundle:",
-          "def build_host_median_bvh("
+          "class WarpBvhRefitCommandBundle:"
         ],
-        "benchmarks/optical/native.py": [
+        "optical_worker/native_input.py": [
           "def build_prepared_warp_local_scene(",
           "def build_prepared_warp_scene_update_factory(",
           "def build_prepared_warp_bvh_refit_factory("
@@ -115,7 +114,7 @@
       "entry_id": "cuda_native_scene_data_plane",
       "paths": [
         "optics/cuda_scene.py",
-        "benchmarks/optical/native.py",
+        "optical_worker/native_input.py",
         "tests/unit/benchmarks/test_optical_benchmark_c3a.py",
         "tests/gpu/test_optical_benchmark_native.py",
         "tests/gpu/test_optical_cuda_scene.py"
@@ -126,7 +125,7 @@
           "def build_cuda_optical_scene(",
           "def cuda_optical_scene_from_arrays("
         ],
-        "benchmarks/optical/native.py": [
+        "optical_worker/native_input.py": [
           "def build_prepared_cuda_local_scene("
         ]
       },
@@ -212,37 +211,47 @@
       "entry_id": "durable_single_lane_benchmark_core",
       "paths": [
         "benchmarks/optical/cases.py",
-        "benchmarks/optical/schema.py",
         "benchmarks/optical/native.py",
+        "benchmarks/optical/receipts.py",
+        "benchmarks/optical/workload_contract.py",
+        "optical_worker/cases.py",
+        "optical_worker/lane_contract.py",
+        "optical_worker/timing.py",
+        "optics/host_bvh.py",
+        "benchmarks/optical/schema.py",
+        "optical_worker/native_input.py",
         "benchmarks/optical/timing.py",
         "benchmarks/optical/instrumentation.py",
         "benchmarks/optical/eligibility.py",
         "benchmarks/optical/assets.py",
-        "benchmarks/optical/workload_contract.py",
+        "optical_worker/workload_contract.py",
         "benchmarks/optical/workloads.py",
-        "benchmarks/optical/receipts.py",
+        "optical_worker/provenance.py",
         "benchmarks/optical/runner.py",
         "benchmarks/optical/artifacts.py"
       ],
       "symbols": {
-        "benchmarks/optical/native.py": [
+        "optics/host_bvh.py": [
+          "def build_host_median_bvh("
+        ],
+        "optical_worker/native_input.py": [
           "class CanonicalTransformReplayHost:",
           "class CanonicalFixedRenderFixtureHost:"
         ],
-        "benchmarks/optical/receipts.py": [
+        "optical_worker/provenance.py": [
           "class C3OneShotNativeExecutionBindingEvidence:"
         ],
-        "benchmarks/optical/workload_contract.py": [
+        "optical_worker/workload_contract.py": [
           "class FrozenWorkloadContent:"
         ]
       },
       "cuda_selected": {
         "action": "retain",
-        "acceptance": "keep canonical cases, contracts, independent native preparation, single-lane runner, artifacts, and the selected CUDA regression lane; no paired selector remains in this surface"
+        "acceptance": "keep canonical cases and the single-owner production contracts/timing/host BVH consumed by the selected CUDA runtime or durable regression core; remove losing-lane helpers, two-lane tables and unconsumed compatibility aliases; no paired selector remains"
       },
       "warp_selected": {
         "action": "retain",
-        "acceptance": "keep canonical cases, contracts, independent native preparation, single-lane runner, artifacts, and the selected Warp regression lane; no paired selector remains in this surface"
+        "acceptance": "keep canonical cases and the single-owner production contracts/timing/host BVH consumed by the selected Warp runtime or durable regression core; remove losing-lane helpers, two-lane tables and unconsumed compatibility aliases; no paired selector remains"
       },
       "must_resolve_by": "P12.4e"
     },
