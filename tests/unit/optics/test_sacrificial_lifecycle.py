@@ -302,22 +302,22 @@ def test_failed_transfer_retains_entire_input_capsule_through_quarantine(transfe
         def __del__(self):
             finalized.append(self.name)
 
-    def transfer_ephemeral_batch():
+    def transfer_ephemeral_batch(lifetime):
         values = [TrackedOwner("first"), TrackedOwner("last")]
         references = [weakref.ref(owner) for owner in values]
         values.insert(invalid_position, None)
         try:
             if transfer == "finish":
-                guardian.finish_setup_leaf(permit, owners=tuple(values))
+                lifetime.finish_setup_leaf(permit, owners=tuple(values))
             else:
-                guardian.fail_setup_leaf(permit, partial_owners=tuple(values))
+                lifetime.fail_setup_leaf(permit, partial_owners=tuple(values))
         except RuntimeError:
             pass  # Do not retain exception/traceback/temporary tuple as fake ownership.
         else:
             pytest.fail("invalid owner must fail closed")
         return references
 
-    references = transfer_ephemeral_batch()
+    references = transfer_ephemeral_batch(guardian)
     gc.collect()
     assert guardian.state is State.POISONED
     assert guardian.snapshot()["ownership_scope_unknown"]
