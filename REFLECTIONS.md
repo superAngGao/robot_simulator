@@ -3505,3 +3505,11 @@ fresh allocations or profile filtering would conceal them. Independent CPU
 output comparison is still required because compatibility and future recorded
 commands intentionally share their mathematics. This kernel checkpoint does
 not prove recorded execution lifetime or C4 arena integration.
+
+Recorded Warp launches pack Python arguments into ctypes owners and a second
+array of native argument addresses. Freezing only the Python descriptors leaves
+`Launch.set_param_*`, `set_dim`, direct parameter edits and pointer-array edits
+outside the proof. The recording checkpoint therefore compares the actual
+native parameter graph to the frozen semantic ABI during untimed preflight.
+Those checks never turn a recorded object into lease or completion authority.
+Executing it still requires the supervised C4c1c lifetime, then C4c2 composition.

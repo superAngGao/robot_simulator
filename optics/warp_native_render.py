@@ -6,8 +6,14 @@ caller-owned recorded-command ABI will also bind them here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import ctypes
+import hashlib
+import json
+import math
+import struct
+from dataclasses import asdict, dataclass, field
 from math import prod
+from pathlib import Path
 from types import MappingProxyType
 
 from .output_contract import SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES
@@ -26,6 +32,288 @@ _DIR_EPS = 1.0e-8
 _T_EPS = 1.0e-5
 _ATTENUATION_EPS = 1.0e-12
 _MAX_BVH_STACK = 32
+
+WARP_RENDER_COMMAND_SCHEMA = "q54.p12.4.warp-render-command.v1"
+WARP_RENDER_ABI = "warp_bvh_direct_light_recorded_v1"
+
+
+def _render_digest(payload: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            payload, allow_nan=False, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode()
+    ).hexdigest()
+
+
+def _render_sha256(value: object) -> bool:
+    return type(value) is str and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+
+def _render_f32(value: object) -> float:
+    if isinstance(value, bool):
+        raise ValueError("render scalar must be a finite float32 value")
+    try:
+        normalized = struct.unpack("<f", struct.pack("<f", float(value)))[0]
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError("render scalar must be a finite float32 value") from exc
+    if not math.isfinite(normalized):
+        raise ValueError("render scalar must be a finite float32 value")
+    return normalized
+
+
+@dataclass(frozen=True, slots=True)
+class WarpRenderQueryParameters:
+    """Host-only query identity; this record grants no input or GPU authority."""
+
+    num_rays: int
+    frame_id: int
+    sim_time: float
+    env_idx: int
+    sensor_id: str
+    max_distance: float
+    sensor_role: str
+    sensor_role_mask: int
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        for name in ("num_rays", "frame_id", "env_idx"):
+            if type(getattr(self, name)) is not int or not 0 <= getattr(self, name) <= 2147483647:
+                raise ValueError(f"{name} must be a nonnegative int32")
+        for name in ("sensor_id", "sensor_role"):
+            if type(getattr(self, name)) is not str or not getattr(self, name):
+                raise ValueError(f"{name} must be a nonempty string")
+        if type(self.sim_time) is not float or not math.isfinite(self.sim_time) or self.sim_time < 0:
+            raise ValueError("sim_time must be a finite nonnegative float")
+        if (
+            type(self.max_distance) is not float
+            or _render_f32(self.max_distance) != self.max_distance
+            or self.max_distance <= 0
+        ):
+            raise ValueError("max_distance must be a positive finite normalized float32")
+        if type(self.sensor_role_mask) is not int or not 0 <= self.sensor_role_mask <= 9223372036854775807:
+            raise ValueError("sensor_role_mask must be a nonnegative int64")
+
+    @property
+    def sha256(self) -> str:
+        self.validate()
+        return _render_digest(asdict(self))
+
+
+@dataclass(frozen=True, slots=True)
+class WarpCameraParameters:
+    """Immutable normalized camera scalars, never a mutable host matrix owner."""
+
+    query: WarpRenderQueryParameters
+    width: int
+    height: int
+    fx: float
+    fy: float
+    cx: float
+    cy: float
+    origin: tuple[float, float, float]
+    rotation: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        if type(self.query) is not WarpRenderQueryParameters:
+            raise TypeError("camera requires exact normalized query parameters")
+        self.query.validate()
+        if (
+            type(self.width) is not int
+            or type(self.height) is not int
+            or self.width <= 0
+            or self.height <= 0
+            or self.width * self.height != self.query.num_rays
+        ):
+            raise ValueError("camera dimensions must be positive and match its ray count")
+        if type(self.origin) is not tuple or len(self.origin) != 3:
+            raise ValueError("camera origin must be an exact three-scalar tuple")
+        if type(self.rotation) is not tuple or len(self.rotation) != 9:
+            raise ValueError("camera rotation must be an exact nine-scalar tuple")
+        for value in (self.fx, self.fy, self.cx, self.cy, *self.origin, *self.rotation):
+            if type(value) is not float or _render_f32(value) != value:
+                raise ValueError("camera scalars must be normalized finite float32")
+        if self.fx <= 0 or self.fy <= 0:
+            raise ValueError("camera focal lengths must be positive")
+
+    @classmethod
+    def from_spec(cls, camera: object, *, role_table: object) -> "WarpCameraParameters":
+        from sensing.optical import OpticalPinholeCameraSpec
+
+        from .device_scene import DeviceOpticalRoleTable
+
+        if type(camera) is not OpticalPinholeCameraSpec or type(role_table) is not DeviceOpticalRoleTable:
+            raise TypeError("camera and role table must have their exact production types")
+        if tuple(camera.X_world_camera.r.shape) != (3,) or tuple(camera.X_world_camera.R.shape) != (3, 3):
+            raise ValueError("camera transform has invalid shape")
+        return cls(
+            query=WarpRenderQueryParameters(
+                num_rays=camera.width * camera.height,
+                frame_id=camera.frame_id,
+                sim_time=float(camera.sim_time),
+                env_idx=camera.env_idx,
+                sensor_id=camera.sensor_id,
+                max_distance=_render_f32(camera.max_distance),
+                sensor_role=camera.sensor_role,
+                sensor_role_mask=role_table.mask_for(camera.sensor_role),
+            ),
+            width=camera.width,
+            height=camera.height,
+            fx=_render_f32(camera.fx),
+            fy=_render_f32(camera.fy),
+            cx=_render_f32(camera.cx),
+            cy=_render_f32(camera.cy),
+            origin=tuple(_render_f32(v) for v in camera.X_world_camera.r),
+            rotation=tuple(_render_f32(v) for row in camera.X_world_camera.R for v in row),
+        )
+
+    @property
+    def sha256(self) -> str:
+        self.validate()
+        return _render_digest(asdict(self))
+
+
+def _render_command_ids(ray_source: str, num_rays: int, shadows: bool, diagnostics: bool) -> tuple[str, ...]:
+    reset_shadow = (
+        "_reset_shadow_diagnostic_counters_kernel" if diagnostics else "_reset_shadow_primary_counters_kernel"
+    )
+    ids = ["_reset_bvh_primary_counters_kernel"]
+    if num_rays:
+        if ray_source == "camera":
+            ids.insert(0, "_pinhole_camera_raygen_kernel")
+        ids.append("_device_scene_bvh_first_hit_kernel")
+    ids.append(reset_shadow)
+    if num_rays:
+        mode = "with_shadows" if shadows else "no_shadow"
+        suffix = "diagnostics" if diagnostics else "primary"
+        ids.append(f"warp_direct_light_{mode}_{suffix}_v1")
+    return tuple(ids)
+
+
+@dataclass(frozen=True, slots=True)
+class WarpDirectLightRenderCommandEvidence:
+    """Independent local facts, not a completion ticket or authenticity token."""
+
+    schema_version: str
+    operation_id: str
+    kernel_abi_id: str
+    kernel_source_sha256: str
+    device_ordinal: int
+    stream_handle: int
+    native_input_manifest_sha256: str
+    readiness_sha256: str
+    scene_contract_sha256: str
+    input_contract: str
+    fixed_render_fixture_sha256: str | None
+    transform_replay_sha256: str | None
+    transform_frame_index: int | None
+    query_sha256: str
+    camera_contract_sha256: str | None
+    ray_input_storage_sha256: str | None
+    ray_source: str
+    num_rays: int
+    output_profile: str
+    shadows: bool
+    traversal_diagnostics: bool
+    input_storage_sha256: str
+    output_storage_sha256: str
+    command_entry_ids: tuple[str, ...]
+    command_plan_sha256: str
+    dispatch_count: int
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        if (self.schema_version, self.operation_id, self.kernel_abi_id) != (
+            WARP_RENDER_COMMAND_SCHEMA,
+            "warp_bvh_direct_light",
+            WARP_RENDER_ABI,
+        ):
+            raise ValueError("unsupported render evidence identity")
+        for name in (
+            "kernel_source_sha256",
+            "native_input_manifest_sha256",
+            "readiness_sha256",
+            "scene_contract_sha256",
+            "query_sha256",
+            "input_storage_sha256",
+            "output_storage_sha256",
+            "command_plan_sha256",
+        ):
+            if not _render_sha256(getattr(self, name)):
+                raise ValueError(f"invalid render digest: {name}")
+        for name in ("device_ordinal", "num_rays", "dispatch_count"):
+            if type(getattr(self, name)) is not int or not 0 <= getattr(self, name) <= 2147483647:
+                raise ValueError(f"invalid render integer: {name}")
+        if type(self.stream_handle) is not int or self.stream_handle <= 0:
+            raise ValueError("native render requires an explicit nondefault stream")
+        if type(self.shadows) is not bool or type(self.traversal_diagnostics) is not bool:
+            raise ValueError("render modes must be exact bools")
+        if self.output_profile not in ("direct_light_full", "rgb_preview", "render_only"):
+            raise ValueError("invalid direct-light output profile")
+        if self.input_contract == "fixed_native_scene_v1":
+            if (
+                not _render_sha256(self.fixed_render_fixture_sha256)
+                or self.transform_replay_sha256 is not None
+                or self.transform_frame_index is not None
+            ):
+                raise ValueError("fixed render provenance must exclude replay")
+        elif self.input_contract == "canonical_native_replay_v1":
+            if (
+                self.fixed_render_fixture_sha256 is not None
+                or not _render_sha256(self.transform_replay_sha256)
+                or type(self.transform_frame_index) is not int
+                or self.transform_frame_index < 0
+            ):
+                raise ValueError("replay render provenance must exclude fixed fixture")
+        else:
+            raise ValueError("render command does not accept shipping or generic input provenance")
+        if self.ray_source == "camera":
+            if (
+                not self.num_rays
+                or not _render_sha256(self.camera_contract_sha256)
+                or self.ray_input_storage_sha256 is not None
+            ):
+                raise ValueError("camera render provenance is incomplete")
+        elif self.ray_source == "device_rays":
+            if self.camera_contract_sha256 is not None or not _render_sha256(self.ray_input_storage_sha256):
+                raise ValueError("device-ray render provenance is incomplete")
+        else:
+            raise ValueError("invalid render ray source")
+        expected = _render_command_ids(
+            self.ray_source, self.num_rays, self.shadows, self.traversal_diagnostics
+        )
+        if (
+            type(self.command_entry_ids) is not tuple
+            or self.command_entry_ids != expected
+            or self.dispatch_count != len(expected)
+        ):
+            raise ValueError("render command order/count does not match the fixed ABI")
+
+    def to_payload(self) -> dict[str, object]:
+        self.validate()
+        payload = asdict(self)
+        payload["command_entry_ids"] = list(self.command_entry_ids)
+        return payload
+
+    @classmethod
+    def from_payload(cls, payload: object) -> "WarpDirectLightRenderCommandEvidence":
+        if type(payload) is not dict or set(payload) != set(cls.__dataclass_fields__):
+            raise ValueError("invalid render evidence fields")
+        if type(payload["command_entry_ids"]) is not list or any(
+            type(v) is not str for v in payload["command_entry_ids"]
+        ):
+            raise ValueError("render command IDs must be a JSON string array")
+        return cls(**{**payload, "command_entry_ids": tuple(payload["command_entry_ids"])})
+
+    @property
+    def sha256(self) -> str:
+        return _render_digest(self.to_payload())
 
 
 # Ordered physical render ABI. Profiles filter channels, not this storage graph.
@@ -2109,3 +2397,693 @@ def warp_direct_light_shade_entry(*, shadows: bool, traversal_diagnostics: bool)
     if not _HAS_WARP:
         raise RuntimeError("Warp is required for native optical shading")
     return WARP_DIRECT_LIGHT_SHADE_ABIS[shadows, traversal_diagnostics]
+
+
+_RENDER_BVH_ARRAY_NAMES = (
+    "bounds_min",
+    "bounds_max",
+    "left",
+    "right",
+    "start",
+    "count",
+    "prim_ids",
+)
+
+
+def _render_kernel_owners() -> tuple:
+    primary = (
+        _pinhole_camera_raygen_kernel,
+        _reset_bvh_primary_counters_kernel,
+        _device_scene_bvh_first_hit_kernel,
+        _reset_shadow_primary_counters_kernel,
+        _reset_shadow_diagnostic_counters_kernel,
+    )
+    variants = tuple(
+        warp_direct_light_shade_entry(shadows=s, traversal_diagnostics=d)[0]
+        for s, d in ((False, False), (False, True), (True, False), (True, True))
+    )
+    for kernel, names in WARP_DIRECT_LIGHT_SHADE_ABIS.values():
+        if globals()[kernel.func.__name__] is not kernel or tuple(a.label for a in kernel.adj.args) != names:
+            raise ValueError("render fixed shade ABI registry differs from actual kernel")
+    return primary + variants
+
+
+def _render_kernel_facts(kernels: tuple) -> tuple:
+    return tuple(
+        (
+            id(k),
+            id(k.func),
+            id(k.func.__code__),
+            id(k.module),
+            id(k.adj),
+            tuple((a.label, a.type) for a in k.adj.args),
+        )
+        for k in kernels
+    )
+
+
+def _render_input_items(scene, world, bvh) -> tuple:
+    from .device_scene import _warp_local_scene_arrays, _warp_world_scene_arrays
+
+    return (
+        _warp_local_scene_arrays(scene)
+        + _warp_world_scene_arrays(world)
+        + tuple((f"bvh_{name}", getattr(bvh, name)) for name in _RENDER_BVH_ARRAY_NAMES)
+    )
+
+
+def _render_storage_facts(items: tuple, device) -> tuple:
+    return tuple((name, _render_array_snapshot(value, name=name, device=device)) for name, value in items)
+
+
+def _render_storage_key(facts: tuple) -> tuple:
+    return tuple((name, _render_snapshot_key(snapshot)) for name, snapshot in facts)
+
+
+def _render_storage_digest(items: tuple, device) -> str:
+    facts = []
+    for name, value in items:
+        shape, strides, pointer, count = _render_array_layout(value, name=name, device=device)
+        facts.append(
+            (
+                name,
+                id(value),
+                pointer,
+                count,
+                tuple(shape),
+                tuple(strides),
+                value.dtype.__name__,
+                int(device.ordinal),
+            )
+        )
+    return _render_digest(facts)
+
+
+def _render_factory_facts(factory) -> tuple:
+    from optical_worker.native_contract import assert_warp_prepared_authority
+
+    from .device_scene import DeviceOpticalScene, _warp_local_scene_arrays
+
+    assert_warp_prepared_authority(factory.prepared_input, factory.readiness)
+    prepared, scene = factory.prepared_input, factory.local_scene
+    if type(scene) is not DeviceOpticalScene:
+        raise TypeError("render factory requires the exact production local scene")
+    if factory.device is not scene.device or int(factory.device.ordinal) != prepared.device_ordinal:
+        raise ValueError("render factory target device differs from prepared input")
+    if type(factory.stream) is not wp.Stream or factory.stream.device is not factory.device:
+        raise ValueError("render factory requires an exact stream on its indexed device")
+    if type(factory.stream.cuda_stream) is not int or factory.stream.cuda_stream <= 0:
+        raise ValueError("render factory requires a strongly owned nondefault CUDA stream")
+    manifest = prepared.manifest
+    if manifest.input_contract not in ("fixed_native_scene_v1", "canonical_native_replay_v1"):
+        raise ValueError("render factory accepts only fixed or native replay input")
+    packed = prepared.source.packed_scene_owner
+    if packed is None or scene.scene_contract_sha256 != manifest.scene_contract_sha256:
+        raise ValueError("render local scene is not bound to the prepared scene contract")
+    for name in (
+        "num_instances",
+        "num_materials",
+        "num_lights",
+        "num_triangles",
+        "num_planes",
+        "max_body_index",
+    ):
+        if type(getattr(scene, name)) is not int or getattr(scene, name) != getattr(packed, name):
+            raise ValueError(f"local scene count differs from prepared source: {name}")
+    if dict(scene.role_table.role_to_mask) != dict(packed.role_to_mask):
+        raise ValueError("local scene role mapping differs from prepared source")
+    items = _warp_local_scene_arrays(scene)
+    if set(name for name, _ in items) != set(manifest.scene_array_names):
+        raise ValueError("local scene array semantics differ from prepared source")
+    for name, value in items:
+        if value is not prepared.arrays[name]:
+            raise ValueError(f"local scene {name} is not the exact a2 allocation")
+    return (
+        id(prepared),
+        id(factory.readiness),
+        id(scene),
+        id(factory.device),
+        id(factory.stream),
+        int(factory.stream.cuda_stream),
+        manifest.sha256,
+        factory.readiness.sha256,
+        tuple(
+            (name, getattr(scene, name))
+            for name in (
+                "num_instances",
+                "num_materials",
+                "num_lights",
+                "num_triangles",
+                "num_planes",
+                "max_body_index",
+            )
+        ),
+        tuple(sorted(scene.role_table.role_to_mask.items())),
+        _render_storage_key(_render_storage_facts(items, factory.device)),
+        _render_kernel_facts(_render_kernel_owners()),
+    )
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class WarpDirectLightRenderCommandFactory:
+    """Untimed immutable binder. It never launches a recorded GPU command.
+
+    Setup/recording belongs to the future supervised setup owner. This factory
+    supplies no driver, drain, lease or completion authority.
+    """
+
+    prepared_input: object
+    readiness: object
+    local_scene: object
+    device: object
+    stream: object
+    _signature: tuple = field(init=False, repr=False)
+    _source_sha256: str = field(init=False, repr=False)
+    _input_owners: tuple = field(init=False, repr=False)
+    _kernel_owners: tuple = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if hasattr(self, "_signature"):
+            raise RuntimeError("render factory baseline cannot be rebuilt")
+        facts = _render_factory_facts(self)
+        from .device_scene import _warp_local_scene_arrays
+
+        object.__setattr__(
+            self,
+            "_input_owners",
+            _render_storage_facts(_warp_local_scene_arrays(self.local_scene), self.device),
+        )
+        object.__setattr__(self, "_source_sha256", hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+        object.__setattr__(self, "_kernel_owners", _render_kernel_owners())
+        object.__setattr__(self, "_signature", facts)
+
+    @classmethod
+    def prepare(cls, *, prepared_input, readiness, local_scene, device, stream):
+        factory = cls(prepared_input, readiness, local_scene, device, stream)
+        # Compilation is setup work, never a native render command. Execution
+        # warmup remains in the supervised driver and is not claimed here.
+        with wp.ScopedStream(stream):
+            wp.load_module(module=__name__, device=device)
+        return factory
+
+    def validate_bound(self) -> None:
+        if _render_factory_facts(self) != self._signature:
+            raise ValueError("render factory provenance/storage/stream changed")
+        if _render_storage_key(self._input_owners) != self._signature[-2]:
+            raise ValueError("render factory owner retention changed")
+        if _render_kernel_facts(self._kernel_owners) != self._signature[-1]:
+            raise ValueError("render factory kernel retention changed")
+        if hashlib.sha256(Path(__file__).read_bytes()).hexdigest() != self._source_sha256:
+            raise ValueError("render production source changed after factory preparation")
+
+    def seal_camera(
+        self,
+        *,
+        world,
+        bvh,
+        camera,
+        buffers,
+        output_profile,
+        shadows,
+        traversal_diagnostics,
+        transform_frame_index=None,
+        ambient_rgb=(0.1, 0.1, 0.1),
+        background_rgb=(0.0, 0.0, 0.0),
+        shadow_bias=1e-4,
+    ):
+        if type(camera) is not WarpCameraParameters:
+            raise TypeError("render camera must be the exact normalized camera type")
+        camera.validate()
+        return self._seal(
+            world=world,
+            bvh=bvh,
+            camera=camera,
+            query=camera.query,
+            buffers=buffers,
+            output_profile=output_profile,
+            shadows=shadows,
+            traversal_diagnostics=traversal_diagnostics,
+            transform_frame_index=transform_frame_index,
+            ambient_rgb=ambient_rgb,
+            background_rgb=background_rgb,
+            shadow_bias=shadow_bias,
+        )
+
+    def seal_device_rays(
+        self,
+        *,
+        world,
+        bvh,
+        query,
+        buffers,
+        output_profile,
+        shadows,
+        traversal_diagnostics,
+        transform_frame_index=None,
+        ambient_rgb=(0.1, 0.1, 0.1),
+        background_rgb=(0.0, 0.0, 0.0),
+        shadow_bias=1e-4,
+    ):
+        """Compatibility-only resident rays; never an eligible camera binding."""
+        return self._seal(
+            world=world,
+            bvh=bvh,
+            camera=None,
+            query=query,
+            buffers=buffers,
+            output_profile=output_profile,
+            shadows=shadows,
+            traversal_diagnostics=traversal_diagnostics,
+            transform_frame_index=transform_frame_index,
+            ambient_rgb=ambient_rgb,
+            background_rgb=background_rgb,
+            shadow_bias=shadow_bias,
+        )
+
+    def _seal(self, **values):
+        self.validate_bound()
+        # The binding is validated in full before any record_cmd/JIT entry.
+        binding = _WarpRenderBinding(factory=self, **values)
+        descriptors = binding.command_descriptors()
+        commands = []
+        with wp.ScopedStream(self.stream):
+            for descriptor in descriptors:
+                commands.append(
+                    wp.launch(
+                        descriptor.kernel,
+                        dim=descriptor.dim,
+                        inputs=descriptor.arguments,
+                        device=self.device,
+                        stream=self.stream,
+                        record_tape=False,
+                        record_cmd=True,
+                    )
+                )
+        return WarpDirectLightRenderCommandBundle(
+            binding=binding, descriptors=descriptors, commands=tuple(commands)
+        )
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _WarpRenderDescriptor:
+    entry_id: str
+    kernel: object
+    dim: int
+    argument_names: tuple[str, ...]
+    arguments: tuple
+
+    def payload(self) -> dict:
+        arguments = []
+        for name, value in zip(self.argument_names, self.arguments, strict=True):
+            if type(value) is wp.array:
+                arguments.append((name, "array", id(value), int(value.ptr or 0)))
+            else:
+                arguments.append((name, "scalar", type(value).__name__, value))
+        return dict(
+            entry_id=self.entry_id, kernel_id=id(self.kernel), dimension=self.dim, arguments=arguments
+        )
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _WarpRenderBinding:
+    factory: WarpDirectLightRenderCommandFactory
+    world: object
+    bvh: object
+    camera: WarpCameraParameters | None
+    query: WarpRenderQueryParameters
+    buffers: WarpDirectLightBuffers
+    output_profile: object
+    shadows: bool
+    traversal_diagnostics: bool
+    transform_frame_index: int | None
+    ambient_rgb: tuple
+    background_rgb: tuple
+    shadow_bias: float
+    _snapshots: tuple = field(init=False, repr=False)
+    _signature: tuple = field(init=False, repr=False)
+
+    def __post_init__(self):
+        if hasattr(self, "_signature"):
+            raise RuntimeError("render binding baseline cannot be rebuilt")
+        for name in ("ambient_rgb", "background_rgb"):
+            values = getattr(self, name)
+            if type(values) is not tuple or len(values) != 3:
+                raise ValueError(f"{name} must be an exact three-scalar tuple")
+            object.__setattr__(self, name, tuple(_render_f32(v) for v in values))
+        object.__setattr__(self, "shadow_bias", _render_f32(self.shadow_bias))
+        self._validate()
+        snapshots = _render_storage_facts(self.input_items, self.factory.device)
+        object.__setattr__(self, "_snapshots", snapshots)
+        object.__setattr__(self, "_signature", self._facts(snapshots))
+
+    @property
+    def input_items(self):
+        return _render_input_items(self.factory.local_scene, self.world, self.bvh)
+
+    def _validate(self):
+        from .device_bvh import DeviceOpticalBvh, _validate_warp_bvh_storage
+        from .device_scene import WarpWorldSceneBuffers, _validate_warp_world_scene_buffers
+        from .execution import OpticalOutputProfile
+
+        if type(self.factory) is not WarpDirectLightRenderCommandFactory:
+            raise TypeError("render binding requires the exact prepared factory")
+        self.factory.validate_bound()
+        scene, manifest = self.factory.local_scene, self.factory.prepared_input.manifest
+        if type(self.query) is not WarpRenderQueryParameters:
+            raise TypeError("render query must be exact normalized parameters")
+        self.query.validate()
+        if self.camera is not None:
+            if type(self.camera) is not WarpCameraParameters or self.camera.query is not self.query:
+                raise ValueError("render camera/query binding changed")
+            self.camera.validate()
+        if type(self.output_profile) is not OpticalOutputProfile or self.output_profile.value not in (
+            "direct_light_full",
+            "rgb_preview",
+            "render_only",
+        ):
+            raise ValueError("render binding requires a direct-light output profile")
+        if type(self.shadows) is not bool or type(self.traversal_diagnostics) is not bool:
+            raise TypeError("render modes must be exact bools")
+        if type(self.buffers) is not WarpDirectLightBuffers:
+            raise TypeError("render outputs must be exact caller-owned buffers")
+        if (
+            self.buffers.num_rays != self.query.num_rays
+            or self.buffers.traversal_diagnostics != self.traversal_diagnostics
+        ):
+            raise ValueError("render buffer shape or diagnostic mode differs from the query")
+        if type(self.world) is not WarpWorldSceneBuffers or type(self.bvh) is not DeviceOpticalBvh:
+            raise TypeError("render requires exact world scene and BVH objects")
+        _validate_warp_world_scene_buffers(scene, self.world)
+        _validate_warp_bvh_storage(self.bvh)
+        if self.bvh.device is not self.factory.device or self.buffers.device is not self.factory.device:
+            raise ValueError("render storage device differs from factory target")
+        if (
+            self.bvh.num_primitives != scene.num_triangles
+            or self.bvh.scene_contract_sha256 != scene.scene_contract_sha256
+        ):
+            raise ValueError("render BVH differs from the prepared scene")
+        if (self.bvh.frame_id, self.bvh.env_idx) != (self.query.frame_id, self.query.env_idx):
+            raise ValueError("render BVH frame/environment differs from query")
+        if scene.role_table.mask_for(self.query.sensor_role) != self.query.sensor_role_mask:
+            raise ValueError("render role mask differs from exact scene role table")
+        if self.shadow_bias < 0:
+            raise ValueError("render shadow bias must be nonnegative")
+        if manifest.input_contract == "fixed_native_scene_v1":
+            if self.transform_frame_index is not None:
+                raise ValueError("fixed render input cannot have a replay frame")
+            arrays = self.factory.prepared_input.arrays
+            for name, value in self.input_items:
+                if value is not arrays[name]:
+                    raise ValueError(f"fixed render {name} is not the exact prepared allocation")
+        elif (
+            type(self.transform_frame_index) is not int
+            or not 0 <= self.transform_frame_index < manifest.transform_frame_count
+        ):
+            raise ValueError("render replay frame is outside the prepared sequence")
+        self.buffers.validate_bound(read_only_inputs=self.input_items)
+
+    def _facts(self, snapshots):
+        return (
+            id(self.factory),
+            id(self.world),
+            id(self.bvh),
+            id(self.camera),
+            id(self.query),
+            id(self.buffers),
+            self.output_profile.value,
+            self.shadows,
+            self.traversal_diagnostics,
+            self.transform_frame_index,
+            self.ambient_rgb,
+            self.background_rgb,
+            self.shadow_bias,
+            self.query.sha256,
+            None if self.camera is None else self.camera.sha256,
+            self.bvh.frame_id,
+            self.bvh.env_idx,
+            self.bvh.num_nodes,
+            self.bvh.num_primitives,
+            self.bvh.scene_contract_sha256,
+            id(self.world.resources),
+            id(self.bvh.resources),
+            _render_storage_key(snapshots),
+        )
+
+    def validate_bound(self):
+        self._validate()
+        if self._facts(_render_storage_facts(self.input_items, self.factory.device)) != self._signature:
+            raise ValueError("render binding storage or configuration changed")
+        if _render_storage_key(self._snapshots) != self._signature[-1]:
+            raise ValueError("render binding owner retention changed")
+
+    def command_descriptors(self) -> tuple[_WarpRenderDescriptor, ...]:
+        scene, world, bvh, buffers, query = (
+            self.factory.local_scene,
+            self.world,
+            self.bvh,
+            self.buffers,
+            self.query,
+        )
+        values = dict(buffers.arrays)
+        values.update(
+            {
+                "max_distance": query.max_distance,
+                "plane_normals": world.plane_normal_world,
+                "plane_points": world.plane_point_world,
+                "plane_numeric_ids": scene.plane_numeric_instance_id,
+                "plane_source_keys": scene.plane_source_order_key,
+                "plane_role_masks": scene.plane_role_mask,
+                "plane_material_indices": scene.plane_material_index,
+                "num_planes": scene.num_planes,
+                "triangle_v0": world.triangle_v0_world,
+                "triangle_e1": world.triangle_e1_world,
+                "triangle_e2": world.triangle_e2_world,
+                "triangle_normal": world.triangle_normal_world,
+                "triangle_numeric_ids": scene.triangle_numeric_instance_id,
+                "triangle_source_keys": scene.triangle_source_order_key,
+                "triangle_role_masks": scene.triangle_role_mask,
+                "triangle_material_indices": scene.triangle_material_index,
+                **{f"bvh_{name}": getattr(bvh, name) for name in _RENDER_BVH_ARRAY_NAMES},
+                "num_bvh_nodes": bvh.num_nodes,
+                "sensor_role_mask": query.sensor_role_mask,
+                **{
+                    name: getattr(scene, name)
+                    for name in (*_WARP_SHADE_LIGHT_ARGUMENTS, "material_albedo_rgb")
+                },
+                "shadow_bias": self.shadow_bias,
+                **dict(zip(_WARP_SHADE_COLOR_ARGUMENTS, self.ambient_rgb + self.background_rgb, strict=True)),
+            }
+        )
+        if self.camera is not None:
+            camera = self.camera
+            values.update(
+                dict(
+                    width=camera.width,
+                    height=camera.height,
+                    fx=camera.fx,
+                    fy=camera.fy,
+                    cx=camera.cx,
+                    cy=camera.cy,
+                )
+            )
+            values.update(dict(zip(("origin_x", "origin_y", "origin_z"), camera.origin, strict=True)))
+            values.update(
+                dict(zip((f"R{i}{j}" for i in range(3) for j in range(3)), camera.rotation, strict=True))
+            )
+        entries = _render_command_ids(
+            "camera" if self.camera else "device_rays",
+            query.num_rays,
+            self.shadows,
+            self.traversal_diagnostics,
+        )
+        descriptors = []
+        for entry in entries:
+            kernel = globals()[entry]
+            names = tuple(arg.label for arg in kernel.adj.args)
+            descriptors.append(
+                _WarpRenderDescriptor(
+                    entry,
+                    kernel,
+                    1 if "reset" in entry else query.num_rays,
+                    names,
+                    tuple(values[name] for name in names),
+                )
+            )
+        return tuple(descriptors)
+
+    def evidence(self, descriptors):
+        manifest, factory = self.factory.prepared_input.manifest, self.factory
+        return WarpDirectLightRenderCommandEvidence(
+            schema_version=WARP_RENDER_COMMAND_SCHEMA,
+            operation_id="warp_bvh_direct_light",
+            kernel_abi_id=WARP_RENDER_ABI,
+            kernel_source_sha256=factory._source_sha256,
+            device_ordinal=int(factory.device.ordinal),
+            stream_handle=int(factory.stream.cuda_stream),
+            native_input_manifest_sha256=manifest.sha256,
+            readiness_sha256=factory.readiness.sha256,
+            scene_contract_sha256=manifest.scene_contract_sha256,
+            input_contract=manifest.input_contract,
+            fixed_render_fixture_sha256=manifest.fixed_render_fixture_sha256,
+            transform_replay_sha256=manifest.transform_replay_sha256,
+            transform_frame_index=self.transform_frame_index,
+            query_sha256=self.query.sha256,
+            camera_contract_sha256=self.camera.sha256 if self.camera else None,
+            ray_input_storage_sha256=None
+            if self.camera
+            else _render_storage_digest(self.buffers.arrays[:2], factory.device),
+            ray_source="camera" if self.camera else "device_rays",
+            num_rays=self.query.num_rays,
+            output_profile=self.output_profile.value,
+            shadows=self.shadows,
+            traversal_diagnostics=self.traversal_diagnostics,
+            input_storage_sha256=_render_storage_digest(self.input_items, factory.device),
+            output_storage_sha256=_render_storage_digest(self.buffers.arrays, factory.device),
+            command_entry_ids=tuple(d.entry_id for d in descriptors),
+            command_plan_sha256=_render_digest([d.payload() for d in descriptors]),
+            dispatch_count=len(descriptors),
+        )
+
+
+def _render_launch_snapshot(command, descriptor, device) -> tuple:
+    """Inspect the actual packed native leaf, not only the Python argument tuple."""
+    if (
+        type(command) is not wp.Launch
+        or command.kernel is not descriptor.kernel
+        or command.device is not device
+    ):
+        raise ValueError("recorded launch kernel/device identity differs from descriptor")
+    if "launch" in vars(command) or command.adjoint or command.max_blocks != 0 or command.block_dim != 256:
+        raise ValueError("recorded launch execution settings changed")
+    if (
+        command.bounds.ndim != 1
+        or command.bounds.size != descriptor.dim
+        or tuple(command.bounds.shape) != (descriptor.dim, 1, 1, 1)
+    ):
+        raise ValueError("recorded launch dimensions differ from descriptor")
+    if len(command.params) != len(descriptor.arguments) + 1 or len(command.params_addr) != len(
+        command.params
+    ):
+        raise ValueError("recorded launch parameter count differs from descriptor")
+    if command.params[0] is not command.bounds:
+        raise ValueError("recorded bounds owner differs from actual parameter")
+    snapshots = []
+    for index, parameter in enumerate(command.params):
+        if command.params_addr[index] != ctypes.addressof(parameter):
+            raise ValueError("recorded launch native argument pointer changed")
+        if index:
+            expected = descriptor.arguments[index - 1]
+            if type(expected) is wp.array:
+                shape, strides, pointer, _ = _render_array_layout(
+                    expected, name=descriptor.argument_names[index - 1], device=device
+                )
+                if (
+                    type(parameter) is not _WarpArrayDescriptor
+                    or parameter.data != pointer
+                    or parameter.ndim != len(shape)
+                    or tuple(parameter.shape) != shape + (0,) * (4 - len(shape))
+                    or tuple(parameter.strides) != strides + (0,) * (4 - len(strides))
+                    or parameter.grad != (int(expected.grad.ptr or 0) if expected.grad is not None else 0)
+                ):
+                    raise ValueError("recorded array descriptor differs from exact bound storage")
+            else:
+                scalar_type = (
+                    ctypes.c_float
+                    if type(expected) is float
+                    else (
+                        ctypes.c_int64
+                        if descriptor.argument_names[index - 1] == "sensor_role_mask"
+                        else ctypes.c_int32
+                    )
+                )
+                if type(parameter) is not scalar_type or parameter.value != expected:
+                    raise ValueError("recorded scalar differs from normalized binding")
+        snapshots.append((id(parameter), ctypes.addressof(parameter), bytes(parameter)))
+    return (
+        id(command),
+        id(command.kernel),
+        id(command.module_exec),
+        id(command.hooks),
+        id(command.device),
+        command.hooks.forward,
+        command.hooks.backward,
+        command.hooks.forward_smem_bytes,
+        command.hooks.backward_smem_bytes,
+        id(command.params),
+        id(command.params_addr),
+        tuple(snapshots),
+        command.adjoint,
+        command.max_blocks,
+        command.block_dim,
+    )
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class WarpDirectLightRenderCommandBundle:
+    """Sealed recorded owners/evidence, deliberately without an execution API.
+
+    Only the future supervised C4c1c driver may execute these commands; this
+    object itself has no event, completion ticket, result capability or lease.
+    """
+
+    binding: _WarpRenderBinding
+    descriptors: tuple[_WarpRenderDescriptor, ...]
+    commands: tuple
+    evidence: WarpDirectLightRenderCommandEvidence = field(init=False)
+    _signature: tuple = field(init=False, repr=False)
+    _command_owners: tuple = field(init=False, repr=False)
+
+    def __post_init__(self):
+        if hasattr(self, "_signature"):
+            raise RuntimeError("render bundle baseline cannot be rebuilt")
+        if type(self.binding) is not _WarpRenderBinding:
+            raise TypeError("render bundle requires its exact validated binding")
+        self.binding.validate_bound()
+        object.__setattr__(self, "evidence", self.binding.evidence(self.descriptors))
+        object.__setattr__(self, "_command_owners", self.commands)
+        object.__setattr__(self, "_signature", self._facts())
+
+    def _facts(self):
+        if (
+            type(self.binding) is not _WarpRenderBinding
+            or type(self.evidence) is not WarpDirectLightRenderCommandEvidence
+        ):
+            raise TypeError("render bundle binding/evidence type changed")
+        expected = self.binding.command_descriptors()
+        if (
+            type(self.descriptors) is not tuple
+            or type(self.commands) is not tuple
+            or len(self.commands) != len(expected)
+        ):
+            raise ValueError("recorded render command count/order changed")
+        if len(self.descriptors) != len(expected):
+            raise ValueError("render descriptors do not match fixed plan")
+        for observed, actual in zip(self.descriptors, expected, strict=True):
+            if (
+                type(observed) is not _WarpRenderDescriptor
+                or type(observed.arguments) is not tuple
+                or type(observed.argument_names) is not tuple
+                or observed.payload() != actual.payload()
+            ):
+                raise ValueError("render descriptor differs from exact fixed ABI")
+        if self.commands is not self._command_owners:
+            raise ValueError("recorded command retention tuple changed")
+        return (
+            id(self.binding),
+            id(self.evidence),
+            id(self.descriptors),
+            tuple(id(d) for d in self.descriptors),
+            id(self.commands),
+            tuple(
+                _render_launch_snapshot(c, d, self.binding.factory.device)
+                for c, d in zip(self.commands, expected, strict=True)
+            ),
+            self.binding.evidence(expected).sha256,
+        )
+
+    def validate_bound(self):
+        self.binding.validate_bound()
+        if self._facts() != self._signature or self.evidence.sha256 != self._signature[-1]:
+            raise ValueError("recorded render bundle or evidence changed")
+        if WarpDirectLightRenderCommandEvidence.from_payload(self.evidence.to_payload()) != self.evidence:
+            raise ValueError("render evidence is not canonical")

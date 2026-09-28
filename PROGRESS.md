@@ -1036,11 +1036,11 @@ Next milestone:
       unavailable while 183 is unreachable. C4c1b2's storage-only checkpoint
       adds caller-owned physical buffer validation; scoped review status is
       recorded in the versioned `c4c1b2-storage` collab reports.
-      The deterministic reset/four fixed shade ABI checkpoint is implemented
-      and awaiting independent review (see `c4c1b2-fixed-shade` v1); 75 focused
-      kernel/compatibility tests pass, including independent CPU output checks.
-      Factory/evidence and recorded bundle remain pending; no native recorded
-      execution or result outlet is opened by these kernel/storage checkpoints.
+      The deterministic reset/four fixed shade ABI checkpoint is independently
+      approved at `845dbb3` (see `c4c1b2-fixed-shade` review v1). Camera/evidence,
+      immutable factory and recorded ownership are now implemented and awaiting
+      independent review (`c4c1b2-recording` v1); 200 focused tests pass. No native
+      recorded execution or result outlet is opened by these checkpoints.
       C4c1c remains unimplemented. The design retains the bounded native Warp
       render ABI—one kernel source, caller-owned deterministic buffers, four
       fixed shade ABIs, and immutable recorded commands/evidence—but now moves
