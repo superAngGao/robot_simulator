@@ -175,3 +175,74 @@ def test_cpu_wrong_device_and_noncontiguous_storage_rejected(wp):
     other = wp.empty((5, 3), dtype=wp.float32, device=wp.get_cuda_device(1))
     with pytest.raises(ValueError, match="same indexed CUDA device"):
         WarpDirectLightBuffers(**{**values, "directions": other})
+
+
+@pytest.mark.parametrize("role", ["output", "input"])
+@pytest.mark.parametrize("field", ["data", "grad", "shape", "strides", "ndim"])
+def test_cached_launch_descriptor_drift_rejected_without_repair(wp, role, field, monkeypatch):
+    buffers = WarpDirectLightBuffers(**_kwargs(wp))
+    value = buffers.origins if role == "output" else wp.empty((5, 3), device=buffers.device)
+    inputs = () if role == "output" else (("scene", value),)
+    descriptor = value.__ctype__()
+    buffers.validate_bound(read_only_inputs=inputs)  # Legal lazy materialization.
+    scalar = field not in ("shape", "strides")
+    old = getattr(descriptor, field) if scalar else getattr(descriptor, field)[0]
+    invalid = buffers.directions.ptr if field == "data" else old + 1
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("descriptor validation must perform no GPU runtime work")
+
+    try:
+        if scalar:
+            setattr(descriptor, field, invalid)
+        else:
+            getattr(descriptor, field)[0] = invalid
+        with monkeypatch.context() as patch:
+            for name in ("init", "get_device", "empty", "zeros", "copy", "launch", "synchronize_device"):
+                patch.setattr(wp, name, forbidden)
+            with pytest.raises(ValueError, match="cached launch descriptor"):
+                buffers.validate_bound(read_only_inputs=inputs)
+        assert (getattr(descriptor, field) if scalar else getattr(descriptor, field)[0]) == invalid
+    finally:
+        if scalar:
+            setattr(descriptor, field, old)
+        else:
+            getattr(descriptor, field)[0] = old
+    buffers.validate_bound(read_only_inputs=inputs)
+
+
+@pytest.mark.parametrize("field,invalid", [("strides", (40,)), ("ndim", 2), ("size", 9)])
+def test_read_only_input_cannot_hide_overlap_behind_stale_metadata(wp, field, invalid):
+    values = _kwargs(wp)
+    root = wp.empty((100,), dtype=wp.float32, device=values["origins"].device)
+    values["intensity"] = root[10:15]
+    buffers = WarpDirectLightBuffers(**values)
+    scene = root[:2]
+    inputs = (("scene", scene),)
+    buffers.validate_bound(read_only_inputs=inputs)
+    original = getattr(scene, field)
+    try:
+        setattr(scene, field, invalid)
+        assert scene.is_contiguous  # Warp does not recalculate this flag.
+        if field == "strides":
+            assert scene.ptr + scene.strides[0] == buffers.intensity.ptr
+        with pytest.raises(ValueError):
+            buffers.validate_bound(read_only_inputs=inputs)
+    finally:
+        setattr(scene, field, original)
+    buffers.validate_bound(read_only_inputs=inputs)
+
+
+def test_nonowning_read_only_input_allowed_but_launch_override_rejected(wp):
+    buffers = WarpDirectLightBuffers(**_kwargs(wp))
+    owner = wp.empty((2,), device=buffers.device)
+    view = wp.array(ptr=owner.ptr, shape=owner.shape, dtype=owner.dtype, device=owner.device)
+    inputs = (("external", view),)
+    buffers.validate_bound(read_only_inputs=inputs)  # Factory must retain/prove its input owner.
+    view.__ctype__ = lambda: buffers.origins.__ctype__()
+    try:
+        with pytest.raises(ValueError, match="override"):
+            buffers.validate_bound(read_only_inputs=inputs)
+    finally:
+        del view.__ctype__
+    buffers.validate_bound(read_only_inputs=inputs)

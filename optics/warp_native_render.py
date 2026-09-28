@@ -13,6 +13,7 @@ from .output_contract import SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES
 
 try:  # pragma: no cover - exercised in GPU environments.
     import warp as wp
+    from warp._src.types import array_t as _WarpArrayDescriptor
 
     _HAS_WARP = True
 except Exception:  # pragma: no cover - keeps CPU-only imports working.
@@ -65,13 +66,8 @@ def warp_direct_light_buffer_layout(
     return result
 
 
-def _render_array_snapshot(value: object, *, name: str, device: object) -> tuple:
-    """Untimed physical inspection. This is not a provenance/lease authority.
-
-    Native outputs must be Warp allocations or Warp slices/reshapes retaining
-    them. Foreign interop views remain the responsibility of the input binding,
-    not an alternate mutable-output allocator in this slice.
-    """
+def _render_array_layout(value: object, *, name: str, device: object) -> tuple:
+    """Inspect the layout actually passed by Warp, for both inputs and outputs."""
     if type(value) is not wp.array:
         raise TypeError(f"{name}: expected an exact Warp array")
     if value.device is not device or not value.device.is_cuda:
@@ -95,6 +91,36 @@ def _render_array_snapshot(value: object, *, name: str, device: object) -> tuple
     pointer = int(value.ptr or 0)
     if active_bytes and pointer <= 0:
         raise ValueError(f"{name}: null active storage")
+    # Warp 1.12 caches array_t, and packs value.__ctype__() at launch time.
+    # Inspect only an existing descriptor; do not create or repair one here.
+    if "__ctype__" in vars(value):
+        raise ValueError(f"{name}: instance-level launch descriptor override")
+    descriptor = value.ctype
+    if descriptor is not None:
+        if type(descriptor) is not _WarpArrayDescriptor:
+            raise ValueError(f"{name}: invalid cached launch descriptor type")
+        descriptor_shape = shape + (0,) * (len(descriptor.shape) - len(shape))
+        descriptor_strides = strides + (0,) * (len(descriptor.strides) - len(strides))
+        grad_pointer = int(value.grad.ptr or 0) if value.grad is not None else 0
+        if (
+            descriptor.data != pointer
+            or descriptor.grad != grad_pointer
+            or descriptor.ndim != len(shape)
+            or tuple(descriptor.shape) != descriptor_shape
+            or tuple(descriptor.strides) != descriptor_strides
+        ):
+            raise ValueError(f"{name}: cached launch descriptor disagrees with storage")
+    return shape, strides, pointer, active_bytes
+
+
+def _render_array_snapshot(value: object, *, name: str, device: object) -> tuple:
+    """Untimed physical inspection. This is not a provenance/lease authority.
+
+    Native outputs must be Warp allocations or Warp slices/reshapes retaining
+    them. Foreign interop views remain the responsibility of the input binding,
+    not an alternate mutable-output allocator in this slice.
+    """
+    shape, strides, pointer, active_bytes = _render_array_layout(value, name=name, device=device)
     chain = []
     seen = set()
     current = value
@@ -238,12 +264,7 @@ class WarpDirectLightBuffers:
         if type(read_only_inputs) is not tuple:
             raise TypeError("read_only_inputs must be a frozen tuple")
         for name, value in read_only_inputs:
-            if type(value) is not wp.array or value.device is not self.device or not value.is_contiguous:
-                raise ValueError(f"{name}: invalid read-only Warp input")
-            size = prod(value.shape) * wp.types.type_size_in_bytes(value.dtype)
-            start = int(value.ptr or 0)
-            if size < 0 or value.capacity < size or (size and start <= 0):
-                raise ValueError(f"{name}: invalid read-only input interval")
+            _, _, start, size = _render_array_layout(value, name=name, device=self.device)
             for output_name, snapshot in snapshots:
                 end = start + size
                 output_start, output_size = snapshot[5:7]

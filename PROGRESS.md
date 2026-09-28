@@ -1034,7 +1034,8 @@ Next milestone:
       C4c1b1 single-source extraction is owner-approved at `00f1790 + f771e61`;
       the isolated 101 recovery records that the original Git objects remain
       unavailable while 183 is unreachable. C4c1b2's storage-only checkpoint
-      adds caller-owned physical buffer validation (independent review pending).
+      adds caller-owned physical buffer validation; scoped review status is
+      recorded in the versioned `c4c1b2-storage` collab reports.
       Reset/shade ABIs, factory/evidence, and recorded bundle remain pending;
       no native execution or result outlet is opened by the storage contract.
       C4c1c remains unimplemented. The design retains the bounded native Warp
