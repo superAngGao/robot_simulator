@@ -285,3 +285,48 @@ assert guardian.snapshot()['possible_dirty_device_ordinals'] == []
         [sys.executable, "-I", "-S", "-c", code, str(root)], capture_output=True, text=True
     )
     assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize("transfer", ["finish", "fail"])
+@pytest.mark.parametrize("invalid_position", [0, 1, 2])
+def test_failed_transfer_retains_entire_input_capsule_through_quarantine(transfer, invalid_position):
+    guardian = SacrificialRenderGuardian(session_id="transfer_test", target_ordinal=1)
+    # Even a non-owner-producing descriptor cannot hide an invalid partial batch.
+    permit = guardian.begin_setup_leaf(descriptor(returns_owner=transfer == "finish"))
+    finalized = []
+
+    class TrackedOwner:
+        def __init__(self, name):
+            self.name = name
+
+        def __del__(self):
+            finalized.append(self.name)
+
+    def transfer_ephemeral_batch():
+        values = [TrackedOwner("first"), TrackedOwner("last")]
+        references = [weakref.ref(owner) for owner in values]
+        values.insert(invalid_position, None)
+        try:
+            if transfer == "finish":
+                guardian.finish_setup_leaf(permit, owners=tuple(values))
+            else:
+                guardian.fail_setup_leaf(permit, partial_owners=tuple(values))
+        except RuntimeError:
+            pass  # Do not retain exception/traceback/temporary tuple as fake ownership.
+        else:
+            pytest.fail("invalid owner must fail closed")
+        return references
+
+    references = transfer_ephemeral_batch()
+    gc.collect()
+    assert guardian.state is State.POISONED
+    assert guardian.snapshot()["ownership_scope_unknown"]
+    assert all(reference() is not None for reference in references)
+    assert not finalized
+    with pytest.raises(LifetimeError):
+        guardian.emergency_drain(Handshake(), lambda: pytest.fail("unknown owner cannot sync to release"))
+    assert guardian.state is State.QUARANTINED
+    del guardian
+    gc.collect()
+    assert all(reference() is not None for reference in references)
+    assert not finalized

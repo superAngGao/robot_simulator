@@ -145,12 +145,17 @@ class SacrificialRenderGuardian:
         if permit.descriptor.unreturned_resource_possible and not owners:
             self.fail_setup_leaf(permit)
             raise LifetimeError("owner-producing leaf returned no owner")
+        # The entire reachable result graph is in custody before inspecting
+        # its members. An invalid middle member must not strand later owners.
+        self._adopt(owners, "owner_transfer_capsule", HOST_OWNER, permit.descriptor.operation_id)
         try:
             for owner in owners:
                 self._adopt(owner, "setup_owner", self._target, permit.descriptor.operation_id)
         except BaseException:
             self._unknown_owner = True
             self._state = State.POISONED
+            self._active = None
+            self._record("owner_transfer_failed", leaf_sequence=permit.sequence)
             raise
         self._active = None
         self._record("setup_leaf_completed", leaf_sequence=permit.sequence)
@@ -161,10 +166,16 @@ class SacrificialRenderGuardian:
             raise LifetimeError("wrong setup failure permit")
         self._unknown_owner |= permit.descriptor.unreturned_resource_possible
         self._state = State.POISONED
-        for owner in partial_owners:
-            self._adopt(owner, "partial_owner", self._target, permit.descriptor.operation_id)
+        self._adopt(partial_owners, "partial_owner_capsule", HOST_OWNER, permit.descriptor.operation_id)
         self._active = None
         self._record("setup_leaf_failed", leaf_sequence=permit.sequence)
+        try:
+            for owner in partial_owners:
+                self._adopt(owner, "partial_owner", self._target, permit.descriptor.operation_id)
+        except BaseException:
+            self._unknown_owner = True
+            self._record("owner_transfer_failed", leaf_sequence=permit.sequence)
+            raise
 
     def _wait(self, role, handshake, wait):
         # ACK is checked by the real test-only supervised channel before return.
