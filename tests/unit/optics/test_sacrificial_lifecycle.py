@@ -281,5 +281,7 @@ guardian = SacrificialRenderGuardian(session_id='cpu_test', target_ordinal=1)
 assert guardian.resource_count == 0
 assert guardian.snapshot()['possible_dirty_device_ordinals'] == []
 """
-    completed = subprocess.run([sys.executable, "-I", "-S", "-c", code, str(root)], capture_output=True, text=True)
+    completed = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", code, str(root)], capture_output=True, text=True
+    )
     assert completed.returncode == 0, completed.stderr

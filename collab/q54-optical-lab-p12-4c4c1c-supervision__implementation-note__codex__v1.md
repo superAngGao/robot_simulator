@@ -60,7 +60,10 @@ unit protocol suite: 64 passed; seven clean-worker integration tests rejected
 the intentionally dirty scratch worktree at manifest construction. This is
 not a product-code failure or a passing integration claim. Those tests must
 be repeated on the frozen clean candidate before approval. One further
-CPU-denied-import test was added before freezing.
+CPU-denied-import test was added before freezing. The clean e271ed7 candidate
+subsequently passed all four files: **72 passed in 10.70s**, including the
+seven previously environment-blocked integration tests. A line-wrap-only
+follow-up fixes the final import-test Ruff E501 before independent review.
 
 No arbitrary evidence payload is accepted as lifecycle authority. Snapshots
 are detached diagnostic observations, not result-capable serialized receipts.
