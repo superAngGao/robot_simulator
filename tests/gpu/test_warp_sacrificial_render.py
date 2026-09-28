@@ -29,6 +29,7 @@ def run_case(
     target=0,
     ack_role=None,
     ack_fault="normal",
+    repetitions=1,
 ):
     root = Path(__file__).resolve().parents[2]
     payload = dict(
@@ -43,6 +44,7 @@ def run_case(
         position=position,
         ack_role=ack_role,
         ack_fault=ack_fault,
+        repetitions=repetitions,
     )
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_bytes(canonical_bytes(payload))
@@ -124,6 +126,9 @@ def test_recorded_render_targets_second_real_gpu_and_restores_ambient(tmp_path):
     inspected = next(item for item in journal if item["operation"] == "result_inspected")
     assert inspected["bundle_evidence"]["device_ordinal"] == 1
     assert inspected["ambient_device_ordinal"] == 0
+    assert not inspected["target_current_is_execution_stream"]
+    assert not inspected["ambient_stream_initialized"]
+    assert inspected["context_checks"] == 10
     assert_no_early_destruction(journal)
 
 
@@ -132,6 +137,103 @@ def assert_no_early_destruction(journal):
     if "allocation_owner_finalized" in operations:
         assert "release_begin" in operations
         assert operations.index("release_begin") < operations.index("allocation_owner_finalized")
+
+
+@pytest.mark.parametrize("shadows,diagnostics", [(False, False), (False, True), (True, False), (True, True)])
+@pytest.mark.parametrize("resident_rays", [None, 0])
+def test_exact_recorded_bundle_reused_with_two_complete_sentinels(
+    tmp_path, shadows, diagnostics, resident_rays
+):
+    supervisor, journal = run_case(
+        tmp_path, shadows=shadows, diagnostics=diagnostics, resident_rays=resident_rays, repetitions=2
+    )
+    assert supervisor["worker_return_code"] == 0, (supervisor, journal)
+    inspected = next(item for item in journal if item["operation"] == "result_inspected")
+    assert inspected["recorded_repetitions"] == 2
+    audit = inspected["leaf_audit"]
+    assert (
+        audit["native_launches"]
+        == audit["entry_calls"]
+        == audit["restoration_checks"]
+        == (10 if resident_rays is None else 4)
+    )
+    assert audit["native_events"] == 0 and audit["rejected"] == []
+    assert not inspected["target_current_is_execution_stream"]
+    assert inspected["ambient_stream_initialized"]
+    evidence = next(item for item in journal if item["operation"] == "released")["evidence"]
+    assert evidence["attempted_auxiliary_count"] == evidence["confirmed_auxiliary_return_count"] > 0
+    assert evidence["completed_leaf_count"] == evidence["scheduled_leaf_count"]
+    assert [item["operation"] for item in journal].count("validation_drain_entered") == 1
+    assert_no_early_destruction(journal)
+
+
+@pytest.mark.parametrize(
+    "fault,target_name",
+    [
+        ("audit_allocation", "warp.empty"),
+        ("audit_copy", "warp.copy"),
+        ("audit_materialization", "warp.array.numpy"),
+        ("audit_numpy", "numpy.asarray"),
+        ("audit_bridge", "warp.to_torch"),
+        ("audit_dlpack", "torch.utils.dlpack.to_dlpack"),
+        ("audit_module", "warp.load_module"),
+        ("audit_event", "warp.Stream.record_event"),
+        ("audit_sync", "warp.synchronize_device"),
+    ],
+)
+def test_real_recorded_leaf_rejects_forbidden_runtime_before_native_submit(tmp_path, fault, target_name):
+    supervisor, journal = run_case(tmp_path, fault=fault)
+    assert supervisor["worker_return_code"] == 74, (supervisor, journal)
+    audit = next(item for item in journal if item["operation"] == "recorded_leaf_audit")["evidence"]
+    assert audit["rejected"] == [target_name]
+    assert audit["entry_calls"] == audit["restoration_checks"] == 1
+    assert audit["native_launches"] == audit["native_events"] == 0
+    operations = [item["operation"] for item in journal]
+    assert operations.count("emergency_sync_entered") == 1
+    assert "execution_context_checked" in operations
+    assert "result_inspected" not in operations
+    assert_no_early_destruction(journal)
+
+
+@pytest.mark.parametrize("target", [0, 1])
+def test_exception_restores_exact_current_stream_on_real_devices(tmp_path, target):
+    supervisor, journal = run_case(tmp_path, target=target, fault="submit_then_raise", position=2)
+    assert supervisor["worker_return_code"] == 74, (supervisor, journal)
+    checks = [item for item in journal if item["operation"] == "execution_context_checked"]
+    assert len(checks) == 3 and checks[-1]["checks"] == 6
+    assert_no_early_destruction(journal)
+
+
+@pytest.mark.parametrize("fault", ["context_stream_drift", "context_ambient_drift"])
+def test_stream_drift_quarantines_without_target_only_sync(tmp_path, fault):
+    supervisor, journal = run_case(tmp_path, target=1, fault=fault)
+    assert supervisor["worker_return_code"] == 74, (supervisor, journal)
+    operations = [item["operation"] for item in journal]
+    assert "context_drift_quarantined" in operations
+    assert not {
+        "emergency_sync_entered",
+        "release_begin",
+        "allocation_owner_finalized",
+        "result_inspected",
+    }.intersection(operations)
+
+
+@pytest.mark.parametrize(
+    "fault,attempted,returned",
+    [
+        ("auxiliary_submit_then_raise", 5, 5),
+        ("second_pass_submit_then_raise", 6, 5),
+    ],
+)
+def test_reuse_partial_failure_retains_both_snapshots(tmp_path, fault, attempted, returned):
+    supervisor, journal = run_case(tmp_path, fault=fault, repetitions=2)
+    assert supervisor["worker_return_code"] == 74, (supervisor, journal)
+    evidence = next(item for item in journal if item["operation"] == "release_begin")["evidence"]
+    assert evidence["attempted_launch_count"] == attempted
+    assert evidence["confirmed_launch_return_count"] == returned
+    assert evidence["possible_submission_latched"] and evidence["state"] == "SYNCED"
+    assert [item["operation"] for item in journal].count("emergency_sync_entered") == 1
+    assert_no_early_destruction(journal)
 
 
 @pytest.mark.parametrize("resident_rays", [0, 1, 21])

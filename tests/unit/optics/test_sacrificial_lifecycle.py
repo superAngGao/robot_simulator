@@ -287,6 +287,104 @@ assert guardian.snapshot()['possible_dirty_device_ordinals'] == []
     assert completed.returncode == 0, completed.stderr
 
 
+def two_pass_setup():
+    guardian, reference = setup()
+    guardian.setup_barrier(Handshake(), lambda: None)
+    plan = ("snapshot:rgb", "snapshot:counter", "sentinel:rgb", "sentinel:counter")
+    guardian.seal(command_count=2, repetitions=2, auxiliary_plan=plan)
+    return guardian, reference, plan
+
+
+def test_fixed_two_pass_schedule_never_reopens_or_resets_latch():
+    guardian, reference, plan = two_pass_setup()
+    launches(guardian, 2)
+    with pytest.raises(LifetimeError):
+        guardian.seal(command_count=2)
+    with pytest.raises(LifetimeError):
+        guardian.before_launch(2)
+    with pytest.raises(LifetimeError):
+        guardian.validation_drain(Handshake(), lambda: pytest.fail("early drain"))
+    for name in plan:
+        guardian.before_auxiliary(name)
+        with pytest.raises(LifetimeError):
+            guardian.before_auxiliary(name)
+        guardian.auxiliary_returned(name)
+        with pytest.raises(LifetimeError):
+            guardian.auxiliary_returned(name)
+        assert guardian.snapshot()["possible_submission_latched"]
+    for position in (2, 3):
+        guardian.before_launch(position)
+        guardian.launch_returned(position)
+    with pytest.raises(LifetimeError):
+        guardian.before_launch(4)
+    guardian.validation_drain(Handshake(), lambda: None)
+    evidence = guardian.snapshot()
+    assert evidence["attempted_launch_count"] == evidence["confirmed_launch_return_count"] == 4
+    assert evidence["attempted_auxiliary_count"] == evidence["confirmed_auxiliary_return_count"] == 4
+    assert evidence["completed_leaf_count"] == evidence["scheduled_leaf_count"] == 8
+    guardian.inspection_completed()
+    guardian.release()
+    gc.collect()
+    assert reference() is None
+
+
+@pytest.mark.parametrize("wrong", ["sentinel:rgb", "snapshot:counter", "unknown", None])
+def test_auxiliary_skip_or_order_error_cannot_advance(wrong):
+    guardian, _, _ = two_pass_setup()
+    launches(guardian, 2)
+    before = guardian.snapshot()
+    with pytest.raises(LifetimeError):
+        guardian.before_auxiliary(wrong)
+    assert guardian.snapshot() == before
+    guardian.poison("test_end")
+    guardian.emergency_drain(Handshake(), lambda: None)
+    guardian.release()
+
+
+@pytest.mark.parametrize("failure", ["auxiliary", "second_pass"])
+def test_two_pass_partial_failure_retains_graph_until_supervised_drain(failure):
+    guardian, reference, plan = two_pass_setup()
+    launches(guardian, 2)
+    if failure == "auxiliary":
+        guardian.before_auxiliary(plan[0])
+    else:
+        for name in plan:
+            guardian.before_auxiliary(name)
+            guardian.auxiliary_returned(name)
+        guardian.before_launch(2)
+    guardian.poison("submitted_then_raised")
+    assert guardian.snapshot()["possible_submission_latched"]
+    assert not guardian.snapshot()["device_quiescence_proven"]
+    assert reference() is not None
+    with pytest.raises(LifetimeError):
+        guardian.release()
+    with pytest.raises(LifetimeError):
+        guardian.seal(command_count=2)
+    guardian.emergency_drain(Handshake(), lambda: None)
+    guardian.release()
+    gc.collect()
+    assert reference() is None
+
+
+@pytest.mark.parametrize(
+    "plan",
+    [
+        (),
+        ("snapshot:x",),
+        ("snapshot:x", "sentinel:y"),
+        ("snapshot:x", "snapshot:x", "sentinel:x", "sentinel:x"),
+    ],
+)
+def test_two_pass_schedule_requires_exact_copy_then_fill_plan(plan):
+    guardian, _ = setup()
+    guardian.setup_barrier(Handshake(), lambda: None)
+    with pytest.raises(LifetimeError):
+        guardian.seal(command_count=2, repetitions=2, auxiliary_plan=plan)
+    assert guardian.state is State.SETUP_QUIESCENT
+    guardian.seal(command_count=2)
+    guardian.release()
+
+
 @pytest.mark.parametrize("transfer", ["finish", "fail"])
 @pytest.mark.parametrize("invalid_position", [0, 1, 2])
 def test_failed_transfer_retains_entire_input_capsule_through_quarantine(transfer, invalid_position):

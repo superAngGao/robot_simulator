@@ -1038,10 +1038,15 @@ Next milestone:
       recorded in the versioned `c4c1b2-storage` collab reports.
       The deterministic reset/four fixed shade ABI checkpoint is independently
       approved at `845dbb3` (see `c4c1b2-fixed-shade` review v1). Camera/evidence,
-      immutable factory and recorded ownership are now implemented and awaiting
-      independent review (`c4c1b2-recording` v1); 200 focused tests pass. No native
+      immutable factory and recorded ownership are independently approved at
+      `266fc821` (`c4c1b2-recording` review v2; evidence `c8c675a`). No product
       recorded execution or result outlet is opened by these checkpoints.
-      C4c1c remains unimplemented. The design retains the bounded native Warp
+      C4c1c supervised validation is implemented but not yet approved. The v4
+      independent code review requires same-bundle two-pass sentinel coverage,
+      real recorded-leaf API auditing, and exact current-stream restoration.
+      The bounded acceptance-closure design at `c747fb6` is approved (verbatim
+      report archived in `95e1c9f`); its implementation and new GPU evidence
+      remain subject to fresh independent code review. The design retains the bounded native Warp
       render ABI—one kernel source, caller-owned deterministic buffers, four
       fixed shade ABIs, and immutable recorded commands/evidence—but now moves
       readiness into an exact CPU-safe production contract shared by Warp and
@@ -1060,7 +1065,8 @@ Next milestone:
       replayable termination evidence, and Warp/CUDA register-before-copy a2
       preparation. The focused CPU contracts and real two-backend/two-device
       setup-failure matrix pass. Product `PREPARE_FROZEN_ROW` GPU execution
-      remains explicitly disabled pending C4c0 implementation review. The
+      remains explicitly disabled; C4c0's scoped approval does not authorize
+      opening later-stage preparation or execution. The
       first implementation review's two P1s are now closed: the worker-facing
       prepared-input contract/authority moved out of the benchmark package,
       a live repository import ledger rejects every non-allowlisted source,

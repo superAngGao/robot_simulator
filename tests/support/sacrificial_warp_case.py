@@ -95,7 +95,7 @@ class FixedWarpSetup:
                 time.sleep(60)
         self.wp.synchronize_device(self.target)
 
-    def leaf(self, operation, function, *, produces_owner=False, kind="allocation"):
+    def leaf(self, operation, function, *, produces_owner=False, kind="allocation", scope_stream=True):
         permit = self.guardian.begin_setup_leaf(
             DeviceScopeDescriptor.exact_target(
                 operation_id="".join(f"_{c.lower()}" if c.isupper() else c for c in operation),
@@ -109,7 +109,7 @@ class FixedWarpSetup:
         try:
             scope = (
                 self.wp.ScopedStream(self.stream)
-                if self.stream is not None
+                if self.stream is not None and scope_stream
                 else self.wp.ScopedDevice(self.target)
                 if self.target is not None
                 else nullcontext()

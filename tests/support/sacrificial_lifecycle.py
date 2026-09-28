@@ -66,6 +66,10 @@ class SacrificialRenderGuardian:
         self._attempted = 0
         self._returned = 0
         self._command_count: int | None = None
+        self._schedule: tuple[tuple[str, object], ...] = ()
+        self._schedule_index = 0
+        self._auxiliary_attempted = 0
+        self._auxiliary_returned = 0
         self._launch_active = False
         self._blocking_entered: str | None = None
         self._setup_quiescent = False
@@ -91,6 +95,10 @@ class SacrificialRenderGuardian:
             possible_submission_latched=self._attempted > 0,
             attempted_launch_count=self._attempted,
             confirmed_launch_return_count=self._returned,
+            attempted_auxiliary_count=self._auxiliary_attempted,
+            confirmed_auxiliary_return_count=self._auxiliary_returned,
+            scheduled_leaf_count=len(self._schedule),
+            completed_leaf_count=self._schedule_index,
             setup_quiescence_proven=self._setup_quiescent,
             device_quiescence_proven=self._device_quiescent,
             blocking_role_entered=self._blocking_entered,
@@ -208,14 +216,40 @@ class SacrificialRenderGuardian:
         self._state = State.SETUP_QUIESCENT
         self._record("setup_quiescence_proven")
 
-    def seal(self, *, command_count: int) -> None:
+    def seal(self, *, command_count: int, repetitions: int = 1, auxiliary_plan: tuple[str, ...] = ()) -> None:
         self._require(State.SETUP_QUIESCENT)
         if type(command_count) is not int or command_count not in (2, 4, 5):
             raise LifetimeError("fixed render command count must be 2, 4 or 5")
+        if type(repetitions) is not int or repetitions not in (1, 2) or type(auxiliary_plan) is not tuple:
+            raise LifetimeError("fixed one/two-pass schedule required")
+        if repetitions == 1 and auxiliary_plan:
+            raise LifetimeError("one-pass validation has no auxiliary leaves")
+        if repetitions == 2:
+            half = len(auxiliary_plan) // 2
+            names = tuple(
+                value.removeprefix("snapshot:") for value in auxiliary_plan[:half] if type(value) is str
+            )
+            if (
+                not half
+                or len(auxiliary_plan) != 2 * half
+                or len(names) != half
+                or len(set(names)) != half
+                or any(not name.isidentifier() for name in names)
+                or auxiliary_plan
+                != tuple(f"snapshot:{name}" for name in names) + tuple(f"sentinel:{name}" for name in names)
+            ):
+                raise LifetimeError("two-pass auxiliary schedule must snapshot then fill each exact output")
+        schedule = tuple(("render", index) for index in range(command_count))
+        if repetitions == 2:
+            schedule += tuple(("auxiliary", name) for name in auxiliary_plan)
+            schedule += tuple(("render", index) for index in range(command_count, 2 * command_count))
         self._guardian.seal(self._authority)
-        self._command_count = command_count
+        self._command_count = command_count * repetitions
+        self._schedule = schedule
         self._state = State.SEALED
-        self._record("guardian_sealed", command_count=command_count)
+        self._record(
+            "guardian_sealed", command_count=command_count, repetitions=repetitions, schedule=schedule
+        )
 
     def before_launch(self, position: int) -> None:
         self._require(State.SEALED, State.SUBMITTING)
@@ -224,6 +258,8 @@ class SacrificialRenderGuardian:
             or self._launch_active
             or position != self._attempted
             or self._attempted >= self._command_count
+            or self._schedule_index >= len(self._schedule)
+            or self._schedule[self._schedule_index] != ("render", position)
         ):
             raise LifetimeError("recorded launch order is invalid")
         self._state = State.SUBMITTING
@@ -234,15 +270,52 @@ class SacrificialRenderGuardian:
 
     def launch_returned(self, position: int) -> None:
         self._require(State.SUBMITTING)
-        if type(position) is not int or not self._launch_active or position != self._returned:
+        if (
+            type(position) is not int
+            or not self._launch_active
+            or position != self._returned
+            or self._schedule[self._schedule_index] != ("render", position)
+        ):
             raise LifetimeError("launch return is not the active leaf")
         self._returned += 1
         self._launch_active = False
+        self._schedule_index += 1
         self._record("launch_returned", position=position)
+
+    def before_auxiliary(self, name: str) -> None:
+        self._require(State.SUBMITTING)
+        if (
+            type(name) is not str
+            or self._launch_active
+            or self._schedule_index >= len(self._schedule)
+            or self._schedule[self._schedule_index] != ("auxiliary", name)
+        ):
+            raise LifetimeError("auxiliary leaf is not the next frozen operation")
+        self._auxiliary_attempted += 1
+        self._launch_active = True
+        self._device_quiescent = False
+        self._record("auxiliary_submission_latched", name=name)
+
+    def auxiliary_returned(self, name: str) -> None:
+        self._require(State.SUBMITTING)
+        if (
+            type(name) is not str
+            or not self._launch_active
+            or self._schedule[self._schedule_index] != ("auxiliary", name)
+        ):
+            raise LifetimeError("auxiliary return is not the active frozen leaf")
+        self._auxiliary_returned += 1
+        self._launch_active = False
+        self._schedule_index += 1
+        self._record("auxiliary_returned", name=name)
 
     def validation_drain(self, handshake, wait) -> None:
         self._require(State.SUBMITTING)
-        if self._launch_active or self._returned != self._command_count:
+        if (
+            self._launch_active
+            or self._returned != self._command_count
+            or self._schedule_index != len(self._schedule)
+        ):
             raise LifetimeError("validation drain requires all launch returns")
         self._wait("V", handshake, wait)
         self._state = State.VALIDATED

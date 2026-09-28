@@ -45,6 +45,7 @@ def main():
             "position",
             "ack_role",
             "ack_fault",
+            "repetitions",
         }
     ):
         return 65
@@ -56,6 +57,13 @@ def main():
         or payload["target"] not in (0, 1, 2)
         or type(payload["shadows"]) is not bool
         or type(payload["diagnostics"]) is not bool
+        or type(payload["repetitions"]) is not int
+        or payload["repetitions"] not in (1, 2)
+        or (payload["repetitions"] == 2 and payload["resident_rays"] not in (None, 0))
+        or (
+            payload["fault"] in ("auxiliary_submit_then_raise", "second_pass_submit_then_raise")
+            and payload["repetitions"] != 2
+        )
         or payload["profile"] not in ("direct_light_full", "rgb_preview", "render_only")
         or (
             payload["resident_rays"] is not None
@@ -68,6 +76,19 @@ def main():
         or payload["fault"]
         not in (
             "normal",
+            "audit_allocation",
+            "audit_copy",
+            "audit_materialization",
+            "audit_numpy",
+            "audit_bridge",
+            "audit_dlpack",
+            "audit_module",
+            "audit_event",
+            "audit_sync",
+            "context_stream_drift",
+            "context_ambient_drift",
+            "auxiliary_submit_then_raise",
+            "second_pass_submit_then_raise",
             "runtime_import_failure",
             "allocation_return_failure",
             "readback_storage_failure",

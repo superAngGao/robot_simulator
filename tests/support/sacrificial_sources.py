@@ -90,6 +90,7 @@ sensing/surface_query.py
 tests/__init__.py
 tests/support/__init__.py
 tests/support/sacrificial_lifecycle.py
+tests/support/sacrificial_leaf_audit.py
 tests/support/sacrificial_watchdog.py
 tests/support/sacrificial_sources.py
 tests/support/sacrificial_warp_case.py

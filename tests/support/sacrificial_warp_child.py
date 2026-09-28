@@ -88,6 +88,55 @@ def main():
         )
         wp, np = driver.wp, case.modules.np
         ambient_device = wp.get_device()
+        from tests.support.sacrificial_leaf_audit import RecordedLeafAudit
+
+        current_stream_fixture = driver.leaf(
+            "current_stream_fixture", lambda: wp.Stream(device=driver.target), produces_owner=True
+        )
+        driver.leaf(
+            "install_current_stream_fixture",
+            lambda: driver.target.set_stream(current_stream_fixture, sync=False),
+            kind="runtime_import_or_init",
+            scope_stream=False,
+        )
+        assert current_stream_fixture is not driver.stream
+
+        def context_identity():
+            # Do not call get_stream on untouched ambient hardware: that getter
+            # creates a context/stream. These are existing Warp 1.12 CPU fields.
+            target_current = driver.target._stream
+            ambient_current = ambient_device._stream
+            return (
+                wp.get_device(),
+                target_current,
+                None if target_current is None else target_current.cuda_stream,
+                ambient_current,
+                None if ambient_current is None else ambient_current.cuda_stream,
+                driver.stream,
+                driver.stream.cuda_stream,
+            )
+
+        frozen_context = context_identity()
+        assert frozen_context[1] is current_stream_fixture
+        driver.host(frozen_context, "execution_context_owners")
+        context_checks = 0
+
+        def check_context():
+            nonlocal context_checks
+            actual = context_identity()
+            if any(
+                (
+                    actual[index] is not frozen_context[index]
+                    if index in (0, 1, 3, 5)
+                    else actual[index] != frozen_context[index]
+                )
+                for index in range(len(actual))
+            ):
+                guardian.quarantine("execution_context_drift")
+                journal("context_drift_quarantined", evidence=guardian.snapshot())
+                os._exit(74)
+            context_checks += 1
+
         from optics.execution import CpuDirectLightOpticalExecutor
         from optics.scene import OpticalInstanceSnapshot, OpticalSceneSnapshot, build_cpu_bvh_acceleration
         from physics.spatial import SpatialTransform
@@ -163,7 +212,7 @@ def main():
             if payload["fault"] == "warmup_failure" and index == payload["position"]:
                 driver.exit_failure("warmup_failure")
         for name, value in case.buffers.arrays:
-            if name in ("origins", "directions"):
+            if payload["resident_rays"] is not None and name in ("origins", "directions"):
                 continue
             driver.leaf(f"sentinel_{name}", lambda value=value: value.fill_(77), kind="warmup_launch")
         host_results = {}
@@ -174,6 +223,46 @@ def main():
             host_views[name] = driver.host(
                 wp.array(host_results[name], dtype=value.dtype, device="cpu", copy=False), "inspection_view"
             )
+        first_gpu_results, first_host_results, first_host_views = {}, {}, {}
+        if payload["repetitions"] == 2:
+            for name, value in case.buffers.arrays:
+                first_gpu_results[name] = driver.leaf(
+                    f"first_snapshot_{name}",
+                    lambda value=value: wp.empty(value.shape, dtype=value.dtype, device=driver.target),
+                    produces_owner=True,
+                )
+                dtype = np.int32 if value.dtype is wp.int32 else np.float32
+                first_host_results[name] = driver.host(
+                    np.empty(value.shape, dtype=dtype), "first_inspection_storage"
+                )
+                first_host_views[name] = driver.host(
+                    wp.array(first_host_results[name], dtype=value.dtype, device="cpu", copy=False),
+                    "first_inspection_view",
+                )
+                assert first_gpu_results[name] is not value
+                if value.size:
+                    assert first_gpu_results[name].ptr != value.ptr
+        audit_event = driver.leaf(
+            "audit_event", lambda: wp.Event(device=driver.target), produces_owner=True, kind="event_create"
+        )
+        audit = driver.leaf(
+            "prepare_leaf_audit",
+            lambda: RecordedLeafAudit(
+                wp,
+                commands=case.bundle.commands,
+                stream=driver.stream,
+                sample_array=case.buffers.hit_mask,
+                event=audit_event,
+                fault=payload["fault"],
+            ),
+            produces_owner=True,
+            kind="runtime_import_or_init",
+        )
+        auxiliary_plan = ()
+        physical_arrays = driver.host(dict(case.buffers.arrays), "physical_output_binding")
+        if payload["repetitions"] == 2:
+            auxiliary_plan = tuple(f"snapshot:{name}" for name, _ in case.buffers.arrays)
+            auxiliary_plan += tuple(f"sentinel:{name}" for name, _ in case.buffers.arrays)
         case.bundle.validate_bound()
         journal("setup_import_ledger", paths=list(ledger.verify()))
 
@@ -187,12 +276,38 @@ def main():
             wp.synchronize_device(driver.target)
 
         guardian.setup_barrier(channel, setup_barrier)
-        guardian.seal(command_count=len(case.bundle.commands))
+        guardian.seal(
+            command_count=len(case.bundle.commands),
+            repetitions=payload["repetitions"],
+            auxiliary_plan=auxiliary_plan,
+        )
         driver.assert_owner_retention()
         journal("guardian_sealed", evidence=guardian.snapshot())
         driver.transport_hold("sealed")
         case.bundle.validate_bound()
-        for index, command in enumerate(case.bundle.commands):
+        frozen_bundle = case.bundle
+        frozen_commands = case.bundle.commands
+        for index in range(len(frozen_commands) * payload["repetitions"]):
+            if index == len(frozen_commands):
+                for auxiliary_index, name in enumerate(auxiliary_plan):
+                    guardian.before_auxiliary(name)
+                    role, channel_name = name.split(":")
+                    value = physical_arrays[channel_name]
+                    check_context()
+                    try:
+                        with wp.ScopedStream(driver.stream, sync_enter=False, sync_exit=False):
+                            if role == "snapshot":
+                                wp.copy(first_gpu_results[channel_name], value, stream=driver.stream)
+                            else:
+                                value.fill_(-113)
+                        if payload["fault"] == "auxiliary_submit_then_raise" and auxiliary_index == 0:
+                            raise RuntimeError("fixed auxiliary copy submitted then raised")
+                    finally:
+                        check_context()
+                    guardian.auxiliary_returned(name)
+                assert case.bundle is frozen_bundle and case.bundle.commands is frozen_commands
+                case.bundle.validate_bound()
+            command = frozen_commands[index % len(frozen_commands)]
             if payload["fault"] == "pre_latch_failure" and index == payload["position"]:
                 if index == 0:
                     journal("release_begin", evidence=guardian.snapshot())
@@ -207,8 +322,18 @@ def main():
                 and index == payload["position"]
             ):
                 driver.exit_failure("post_latch_failure")
-            command.launch(stream=driver.stream)
-            assert wp.get_device() is ambient_device
+            check_context()
+            try:
+                audit.run(command)
+                if payload["fault"] == "context_stream_drift":
+                    driver.target.set_stream(driver.stream, sync=False)
+                elif payload["fault"] == "context_ambient_drift":
+                    # Deliberate CPU-metadata drift, no foreign GPU initialization.
+                    ambient_device._stream = driver.stream
+            finally:
+                journal("recorded_leaf_audit", evidence=audit.evidence())
+                check_context()
+                journal("execution_context_checked", checks=context_checks)
             if index == 0 and payload["fault"] == "journal_encoding_failure":
                 journal("fixed_encoding_failure", invalid_value=object())
             if index == 0 and payload["fault"] == "journal_write_failure":
@@ -216,7 +341,10 @@ def main():
                 journal("fixed_write_failure")
             if index == 0:
                 driver.transport_hold("submit")
-            if payload["fault"] == "submit_then_raise" and index == payload["position"]:
+            if (payload["fault"] == "submit_then_raise" and index == payload["position"]) or (
+                payload["fault"] == "second_pass_submit_then_raise"
+                and index == len(frozen_commands) + payload["position"]
+            ):
                 raise RuntimeError("fixed native launch submitted then raised before return confirmation")
             guardian.launch_returned(index)
 
@@ -231,71 +359,85 @@ def main():
             # Only after render quiescence; destinations were retained before seal.
             for name, value in case.buffers.arrays:
                 wp.copy(host_views[name], value, stream=driver.stream)
+                if payload["repetitions"] == 2:
+                    wp.copy(first_host_views[name], first_gpu_results[name], stream=driver.stream)
             wp.synchronize_device(driver.target)
 
         guardian.validation_drain(channel, validation_drain)
         driver.assert_owner_retention()
         driver.transport_hold("validated")
-        for name in (
-            "hit_mask",
-            "range_m",
-            "position_world",
-            "normal_world",
-            "numeric_instance_id",
-            "material_index",
-            "rgb",
-            "intensity",
-        ):
-            actual, expected = host_results[name], truth.channel(name)
-            if name in ("hit_mask", "numeric_instance_id", "material_index"):
-                np.testing.assert_array_equal(actual, expected)
-            else:
-                np.testing.assert_allclose(actual, expected, atol=1e-5, rtol=1e-5, equal_nan=True)
-        np.testing.assert_allclose(host_results["origins"], rays.origins_world, atol=1e-6, rtol=1e-6)
-        np.testing.assert_allclose(host_results["directions"], rays.directions_world, atol=1e-6, rtol=1e-6)
-        scalar_counts = {
-            name: int(value[0])
-            for name, value in host_results.items()
-            if name.startswith(("bvh_", "shadow_"))
-        }
-        assert all(value >= 0 for value in scalar_counts.values())
-        assert scalar_counts["bvh_stack_overflow_count"] == scalar_counts["shadow_stack_overflow_count"] == 0
-        for name in ("bvh_max_stack_depth", "shadow_max_stack_depth"):
-            assert scalar_counts[name] <= case.modules.native_render._MAX_BVH_STACK
-        for name in scalar_counts:
-            assert host_results[name].dtype == np.int32 and host_results[name].shape == (1,)
-        if case.buffers.num_rays == 0:
-            assert all(value == 0 for value in scalar_counts.values())
-        if not payload["shadows"]:
-            assert all(value == 0 for name, value in scalar_counts.items() if name.startswith("shadow_"))
-        if payload["diagnostics"]:
-            total = scalar_counts["shadow_traversal_ray_count"]
+        if payload["repetitions"] == 2:
+            for name in host_results:
+                np.testing.assert_array_equal(first_host_results[name], host_results[name])
+        assert audit.native_launches == len(frozen_commands) * payload["repetitions"]
+        assert audit.entry_calls == audit.native_launches == audit.restoration_checks
+        assert audit.native_events == 0 and not audit.rejected
+        observations = (host_results,) if payload["repetitions"] == 1 else (first_host_results, host_results)
+        for host_results in observations:
+            for name in (
+                "hit_mask",
+                "range_m",
+                "position_world",
+                "normal_world",
+                "numeric_instance_id",
+                "material_index",
+                "rgb",
+                "intensity",
+            ):
+                actual, expected = host_results[name], truth.channel(name)
+                if name in ("hit_mask", "numeric_instance_id", "material_index"):
+                    np.testing.assert_array_equal(actual, expected)
+                else:
+                    np.testing.assert_allclose(actual, expected, atol=1e-5, rtol=1e-5, equal_nan=True)
+            np.testing.assert_allclose(host_results["origins"], rays.origins_world, atol=1e-6, rtol=1e-6)
+            np.testing.assert_allclose(
+                host_results["directions"], rays.directions_world, atol=1e-6, rtol=1e-6
+            )
+            scalar_counts = {
+                name: int(value[0])
+                for name, value in host_results.items()
+                if name.startswith(("bvh_", "shadow_"))
+            }
+            assert all(value >= 0 for value in scalar_counts.values())
             assert (
-                total
-                == scalar_counts["shadow_traversal_directional_ray_count"]
-                + scalar_counts["shadow_traversal_point_ray_count"]
+                scalar_counts["bvh_stack_overflow_count"] == scalar_counts["shadow_stack_overflow_count"] == 0
             )
-            assert (
-                total
-                == scalar_counts["shadow_traversal_occluded_count"]
-                + scalar_counts["shadow_traversal_unoccluded_count"]
-            )
-            assert total <= int(host_results["hit_mask"].sum()) * len(registry.lights)
-            assert (
-                scalar_counts["shadow_traversal_leaf_visit_count"]
-                <= scalar_counts["shadow_traversal_node_visit_count"]
-            )
-            assert scalar_counts["shadow_traversal_node_visit_count"] <= total * len(
-                case.source.arrays["bvh_left"]
-            )
-            assert scalar_counts["shadow_traversal_triangle_test_count"] <= total * len(
-                case.source.arrays["triangle_v0_world"]
-            )
-            assert scalar_counts["shadow_traversal_plane_test_count"] <= total * len(
-                case.source.arrays["plane_normal_world"]
-            )
-            if total == 0:
-                assert scalar_counts["shadow_max_stack_depth"] == 0
+            for name in ("bvh_max_stack_depth", "shadow_max_stack_depth"):
+                assert scalar_counts[name] <= case.modules.native_render._MAX_BVH_STACK
+            for name in scalar_counts:
+                assert host_results[name].dtype == np.int32 and host_results[name].shape == (1,)
+            if case.buffers.num_rays == 0:
+                assert all(value == 0 for value in scalar_counts.values())
+            if not payload["shadows"]:
+                assert all(value == 0 for name, value in scalar_counts.items() if name.startswith("shadow_"))
+            if payload["diagnostics"]:
+                total = scalar_counts["shadow_traversal_ray_count"]
+                assert (
+                    total
+                    == scalar_counts["shadow_traversal_directional_ray_count"]
+                    + scalar_counts["shadow_traversal_point_ray_count"]
+                )
+                assert (
+                    total
+                    == scalar_counts["shadow_traversal_occluded_count"]
+                    + scalar_counts["shadow_traversal_unoccluded_count"]
+                )
+                assert total <= int(host_results["hit_mask"].sum()) * len(registry.lights)
+                assert (
+                    scalar_counts["shadow_traversal_leaf_visit_count"]
+                    <= scalar_counts["shadow_traversal_node_visit_count"]
+                )
+                assert scalar_counts["shadow_traversal_node_visit_count"] <= total * len(
+                    case.source.arrays["bvh_left"]
+                )
+                assert scalar_counts["shadow_traversal_triangle_test_count"] <= total * len(
+                    case.source.arrays["triangle_v0_world"]
+                )
+                assert scalar_counts["shadow_traversal_plane_test_count"] <= total * len(
+                    case.source.arrays["plane_normal_world"]
+                )
+                if total == 0:
+                    assert scalar_counts["shadow_max_stack_depth"] == 0
         guardian.inspection_completed()
         journal(
             "result_inspected",
@@ -308,6 +450,11 @@ def main():
                 np.unique(host_results["material_index"][host_results["hit_mask"] != 0]).size
             ),
             ambient_device_ordinal=ambient_device.ordinal,
+            recorded_repetitions=payload["repetitions"],
+            context_checks=context_checks,
+            target_current_is_execution_stream=frozen_context[1] is driver.stream,
+            ambient_stream_initialized=frozen_context[3] is not None,
+            leaf_audit=audit.evidence(),
             scalar_counts=scalar_counts,
             source_manifest_sha256=case.prepared.manifest.sha256,
             bundle_evidence=case.bundle.evidence.to_payload(),
