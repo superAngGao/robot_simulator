@@ -1041,12 +1041,18 @@ Next milestone:
       immutable factory and recorded ownership are independently approved at
       `266fc821` (`c4c1b2-recording` review v2; evidence `c8c675a`). No product
       recorded execution or result outlet is opened by these checkpoints.
-      C4c1c supervised validation is implemented but not yet approved. The v4
-      independent code review requires same-bundle two-pass sentinel coverage,
-      real recorded-leaf API auditing, and exact current-stream restoration.
-      The bounded acceptance-closure design at `c747fb6` is approved (verbatim
-      report archived in `95e1c9f`); its implementation and new GPU evidence
-      remain subject to fresh independent code review. The design retains the bounded native Warp
+      C4c1c supervised validation and its bounded acceptance closure are
+      independently approved at `6d57fa7` (complete `gpu-validation` review v8).
+      Fresh independent verification passed 472 tests with no skips; original
+      Warp-property, CUDA-wrapper and generic Torch counterexamples were
+      independently closed, including calibrated native body-entry checks.
+      Same-bundle two-pass sentinels, CPU-oracle correctness, exact declared
+      stream/device restoration and terminal fault ownership are covered.
+      Author clean-checkout evidence separately records 239 passes. The
+      acceptance-closure design at `c747fb6` remains unchanged (review archived
+      in `95e1c9f`). This approves only C4c1c; C4c2-c4, C4d/B3, product GPU
+      preparation, a3b and result/baseline outlets remain closed. The design
+      retains the bounded native Warp
       render ABI—one kernel source, caller-owned deterministic buffers, four
       fixed shade ABIs, and immutable recorded commands/evidence—but now moves
       readiness into an exact CPU-safe production contract shared by Warp and
