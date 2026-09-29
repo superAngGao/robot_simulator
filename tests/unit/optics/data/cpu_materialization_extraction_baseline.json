@@ -1,0 +1,205 @@
+{
+  "baseline_commit": "c969296",
+  "sources": {
+    "benchmarks/optical/assets.py": {
+      "definitions": {
+        "AssetFileEvidence": {
+          "ast_sha256": "765a435186eb7ffb346dedbf8aea90d4eaabe4be13416b0b7024aeeeffde7fa4",
+          "first_line": 36,
+          "last_line": 69
+        },
+        "AssetManifestEvidence": {
+          "ast_sha256": "184971dc77abbbe24aa46fa06837d5bdbcc3098e606e7516e72741eb3c461bf2",
+          "first_line": 72,
+          "last_line": 93
+        },
+        "AssetPreflightError": {
+          "ast_sha256": "4774218f60a4de7953a45c0ae0fc2328fd7655e4c8b9f058812d38ecb60e3ff8",
+          "first_line": 32,
+          "last_line": 33
+        },
+        "_canonical_sha256": {
+          "ast_sha256": "4c960a9ddf060ba12146aa3f4ed91a7704c2f13810247d56691bd4de81c5a51e",
+          "first_line": 254,
+          "last_line": 262
+        },
+        "_git_commit_text": {
+          "ast_sha256": "07a2d94fffcc137611fbc89597c58907246d6685212e9cea7f0d6f34d22f7c87",
+          "first_line": 294,
+          "last_line": 299
+        },
+        "_git_output": {
+          "ast_sha256": "ab9ed4e432a573bae390ea1c0524107b48fd75b45968706745d73ef61254ad7f",
+          "first_line": 265,
+          "last_line": 283
+        },
+        "_resolve_within": {
+          "ast_sha256": "ae20e39247dd5c6214fe13cb403c7f1e7f75c9b953ad34ff8057e46e0696f3c1",
+          "first_line": 246,
+          "last_line": 251
+        },
+        "_sha256_text": {
+          "ast_sha256": "93d42692a3658c013d7c43ab229e63f2bce18567429c15f537fad52f2c7d5d15",
+          "first_line": 286,
+          "last_line": 291
+        },
+        "preflight_case_asset": {
+          "ast_sha256": "3b914af346c73bf39b46800ae30b348e704cb1a94231969b96e8ad5e25499c9a",
+          "first_line": 96,
+          "last_line": 243
+        }
+      },
+      "source_sha256": "3509f688dd49039bec51ebfa9877e6413a1582f62243f4146df9d923dd711a6e"
+    },
+    "benchmarks/optical/workloads.py": {
+      "definitions": {
+        "_asymmetric_registry": {
+          "ast_sha256": "e6b6e0bf43f012ce42fac62681f59317e2a53b4c5d7b7b51b504e48a85df6001",
+          "first_line": 165,
+          "last_line": 220
+        },
+        "_body_triangle_registry": {
+          "ast_sha256": "0e0b7e634c0f0b675b74df982444cd12946aff3c9f994aa8a55ae46c2ad199cb",
+          "first_line": 135,
+          "last_line": 162
+        },
+        "build_canonical_fixed_fixture": {
+          "ast_sha256": "6cfb856546a11b05e462e8cacb7af0eb8dbc935244f013a027b54166a0c94140",
+          "first_line": 110,
+          "last_line": 132
+        },
+        "build_canonical_packed_scene": {
+          "ast_sha256": "d6140ce04c37a871b2aa72dd90d72334f768aa79fabf35fc073daedc44ee4eed",
+          "first_line": 33,
+          "last_line": 75
+        },
+        "build_canonical_transform_replay": {
+          "ast_sha256": "294420f45f5fc5529e473137585ca6db1d8666da6ff2063c0cc7425f168ac52a",
+          "first_line": 78,
+          "last_line": 107
+        }
+      },
+      "source_sha256": "6b8d8d7e0ea74df973462f491a9ec94281133a2d619e5ff0569b12038dde7936"
+    },
+    "examples/mujoco_menagerie_robot_preview.py": {
+      "definitions": {
+        "ImportedMjcfVisualScene": {
+          "ast_sha256": "d283d098e76a2b5c9e753dcf33b05c7cb2181d1f4a2574725f6a3b742eb023c6",
+          "first_line": 54,
+          "last_line": 62
+        },
+        "_MeshAsset": {
+          "ast_sha256": "7db6c85541b366e5f0b3a459ae7bc9f8925badca362384e18243b29f96d6ecc5",
+          "first_line": 65,
+          "last_line": 69
+        },
+        "_add_lights": {
+          "ast_sha256": "9c47602935886117783cb2829a2ead665f2195eaaa88ab082cd0f2b615fa828d",
+          "first_line": 331,
+          "last_line": 349
+        },
+        "_add_materials": {
+          "ast_sha256": "a504c0063063ce91b199d22d9102d9a82c6c6ce5b5367d20398436b856904132",
+          "first_line": 315,
+          "last_line": 328
+        },
+        "_add_visual_geom": {
+          "ast_sha256": "c7b4e8d4cec45b01272438180e083aa841830b4797da962d96af1d253e65c2fc",
+          "first_line": 276,
+          "last_line": 312
+        },
+        "_axis_angle_R": {
+          "ast_sha256": "22f1bbaaa61abf60d171a022fca4d00e4d0c6d70f491d1d179061d6337c7e3b7",
+          "first_line": 394,
+          "last_line": 410
+        },
+        "_body_transform": {
+          "ast_sha256": "56cb185e32846c86bfb971c89e578bbb6640e8c8293f984d99d392888ace9239",
+          "first_line": 252,
+          "last_line": 273
+        },
+        "_geom_material_id": {
+          "ast_sha256": "c7e00ca9300a82df2f140fd305fd3127c0257852f913ca2f6eaf3d3d90a46882",
+          "first_line": 352,
+          "last_line": 356
+        },
+        "_home_joint_values": {
+          "ast_sha256": "a7f30f32a60673eb0c95d57c0029412daf3c622b2f0eaecff3180279827e2b4c",
+          "first_line": 359,
+          "last_line": 366
+        },
+        "_look_at_camera_R": {
+          "ast_sha256": "a9fbc6e20426d1acfef7a6d8cf54516fc9e67b578e5b3ebdc25e941619dbf9a4",
+          "first_line": 413,
+          "last_line": 423
+        },
+        "_parse_args": {
+          "ast_sha256": "c94838403442ca286c38893fae9f4850bc7c0955ac9774838de36483704bc2d7",
+          "first_line": 426,
+          "last_line": 436
+        },
+        "_parse_vec": {
+          "ast_sha256": "f893db8a6e04a996efc7a6ae2086d58956b7cad17b49ba9cba4eb1d74fabdd21",
+          "first_line": 369,
+          "last_line": 375
+        },
+        "_quat_to_R": {
+          "ast_sha256": "528b85f40e2cd411e586d22b88eed012ae6ee997a08a7cc5a284886f46021096",
+          "first_line": 378,
+          "last_line": 391
+        },
+        "_read_mesh_assets": {
+          "ast_sha256": "70d116aece5c1c5a4b06ac8725949214ad95bb4a7dcabf197b29a5cf998dbb27",
+          "first_line": 229,
+          "last_line": 241
+        },
+        "_walk_body": {
+          "ast_sha256": "e70afb955810141fb32c241e8ea45348d5a434170c642282fef4002f1af9d3ef",
+          "first_line": 244,
+          "last_line": 249
+        },
+        "import_mjcf_visual_scene": {
+          "ast_sha256": "adba3de7939c5c4aa447891a0767b0ded7978c0fe0dc3b3b60c3c1d1af9669a7",
+          "first_line": 101,
+          "last_line": 175
+        },
+        "main": {
+          "ast_sha256": "d05746270187200ba00ae02127ace72fb3242543605fbb9735cadb9e67a53e1e",
+          "first_line": 72,
+          "last_line": 98
+        },
+        "make_model_camera": {
+          "ast_sha256": "89dd257596920a2f4fc770f28c0a2830cadf5e2fee34675cf2281dc6ed4604f7",
+          "first_line": 191,
+          "last_line": 226
+        },
+        "render_imported_scene": {
+          "ast_sha256": "a9cc3391fdf9420b92636878d1fcf21bd22d2782aef23489d94c3190c7a9ba1a",
+          "first_line": 178,
+          "last_line": 188
+        }
+      },
+      "source_sha256": "f7dacf48637e942ddcf411a9582598be2c7237740dec2fca1aac2736ffeccad0"
+    },
+    "tools/optical_pipeline_lab/camera_presets.py": {
+      "definitions": {
+        "_look_at_camera_rotation": {
+          "ast_sha256": "26ef203fd9950950a1a38ae92a7f42c7f158ab214d8c5c30f90badabadeb95b5",
+          "first_line": 101,
+          "last_line": 111
+        },
+        "build_lab_video_camera": {
+          "ast_sha256": "76b5502f4d84bab9d6848cd6b1443c74d623fe5b346ff59140b9c8a2dbda5f6f",
+          "first_line": 54,
+          "last_line": 98
+        },
+        "build_model_bounds_camera": {
+          "ast_sha256": "2ea794d44e01adfeec6819bb3c831f30436a525e4e6569c89e895a0807418469",
+          "first_line": 14,
+          "last_line": 51
+        }
+      },
+      "source_sha256": "3dacc37c0303c328a4eb72a952c62f35ca317ff68109843e310e52e4554484cc"
+    }
+  }
+}

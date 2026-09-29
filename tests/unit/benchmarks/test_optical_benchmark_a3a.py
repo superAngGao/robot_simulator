@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-import benchmarks.optical.assets as optical_assets
 import benchmarks.optical.schema as optical_schema
+import optical_worker.assets as optical_assets
 from benchmarks.optical.assets import (
     ASSET_MANIFEST_SCHEMA_VERSION,
     GO2_ASSET_REQUIREMENT,
