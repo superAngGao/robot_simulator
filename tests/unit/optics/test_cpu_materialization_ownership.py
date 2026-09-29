@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import hashlib
 import importlib
 import json
 import subprocess
@@ -11,6 +10,8 @@ import sys
 from pathlib import Path
 
 import pytest
+
+from tests.support.structural_ast import AST_ENCODING, structural_ast, structural_ast_sha256
 
 ROOT = Path(__file__).resolve().parents[3]
 BASELINE = json.loads(
@@ -66,6 +67,7 @@ def test_every_moved_definition_is_the_same_object_at_legacy_import(old, new, se
 
 @pytest.mark.parametrize("old,new,selected", MOVES)
 def test_moved_ast_matches_frozen_pre_extraction_definition(old, new, selected):
+    assert BASELINE["ast_encoding"] == AST_ENCODING
     tree = ast.parse((ROOT / _path(new)).read_text(encoding="utf-8"))
     definitions = {node.name: node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
     for name in _names(old, selected):
@@ -80,8 +82,36 @@ def test_moved_ast_matches_frozen_pre_extraction_definition(old, new, selected):
                 and [(item.name, item.asname) for item in child.names] == [("import_mjcf_visual_scene", None)]
             ):
                 child.module = "examples.mujoco_menagerie_robot_preview"
-        actual = hashlib.sha256(ast.dump(node, include_attributes=False).encode("utf-8")).hexdigest()
+        actual = structural_ast_sha256(node)
         assert actual == BASELINE["sources"][_path(old)]["definitions"][name]["ast_sha256"]
+
+
+def test_structural_ast_retains_empty_fields_and_optional_values():
+    tree = ast.parse("def f(): pass")
+    encoded = structural_ast(tree.body[0])
+    fields = dict(encoded[1])
+    assert fields["decorator_list"] == []
+    assert fields["returns"] is None
+    assert dict(fields["args"][1])["defaults"] == []
+    # PEP 695's absent/empty field is the sole semantic no-op normalization.
+    without_field = ast.parse("def f(): pass")
+    if hasattr(without_field.body[0], "type_params"):
+        del without_field.body[0].type_params
+    assert structural_ast_sha256(without_field) == structural_ast_sha256(tree)
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "def f(a, b=1): return a - b",
+        "def f(b, a=1): return a + b",
+        "def f(a, b=2): return a + b",
+        "def f(a, b=1):\n from another_owner import value\n return a + b",
+    ],
+)
+def test_structural_ast_rejects_real_algorithm_argument_default_and_import_drift(changed):
+    original = ast.parse("def f(a, b=1): return a + b")
+    assert structural_ast_sha256(ast.parse(changed)) != structural_ast_sha256(original)
 
 
 @pytest.mark.parametrize(

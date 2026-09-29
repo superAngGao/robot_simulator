@@ -4,47 +4,47 @@
     "benchmarks/optical/assets.py": {
       "definitions": {
         "AssetFileEvidence": {
-          "ast_sha256": "765a435186eb7ffb346dedbf8aea90d4eaabe4be13416b0b7024aeeeffde7fa4",
+          "ast_sha256": "8bca8ae9fe501c09d522b24d095be70790ebaf244670309786d27d8497122861",
           "first_line": 36,
           "last_line": 69
         },
         "AssetManifestEvidence": {
-          "ast_sha256": "184971dc77abbbe24aa46fa06837d5bdbcc3098e606e7516e72741eb3c461bf2",
+          "ast_sha256": "43d9d6c4c7c97ef279952e0b5a6255a88fff52a4443acd3fb288f147d05605f4",
           "first_line": 72,
           "last_line": 93
         },
         "AssetPreflightError": {
-          "ast_sha256": "4774218f60a4de7953a45c0ae0fc2328fd7655e4c8b9f058812d38ecb60e3ff8",
+          "ast_sha256": "602d6823ebc43566966a428d8256a01d12fb424fcf24701cedebce1fc8c1e734",
           "first_line": 32,
           "last_line": 33
         },
         "_canonical_sha256": {
-          "ast_sha256": "4c960a9ddf060ba12146aa3f4ed91a7704c2f13810247d56691bd4de81c5a51e",
+          "ast_sha256": "798212c9509e4402e9566c503ba3c02f8bc8c0ba749428ede27b2ac7d584a693",
           "first_line": 254,
           "last_line": 262
         },
         "_git_commit_text": {
-          "ast_sha256": "07a2d94fffcc137611fbc89597c58907246d6685212e9cea7f0d6f34d22f7c87",
+          "ast_sha256": "a592867bd5c2eea87ed87f3293939e2179c22e0b09d51c7ef5cf6f69738a3625",
           "first_line": 294,
           "last_line": 299
         },
         "_git_output": {
-          "ast_sha256": "ab9ed4e432a573bae390ea1c0524107b48fd75b45968706745d73ef61254ad7f",
+          "ast_sha256": "875d83a59889580f384448a1b101abb881b027ab27135a6df4b17bfab28a223e",
           "first_line": 265,
           "last_line": 283
         },
         "_resolve_within": {
-          "ast_sha256": "ae20e39247dd5c6214fe13cb403c7f1e7f75c9b953ad34ff8057e46e0696f3c1",
+          "ast_sha256": "82ad3ca498496860d70d80b53feb9b337b7aba90ef03bdba04fcbbe18ce048c4",
           "first_line": 246,
           "last_line": 251
         },
         "_sha256_text": {
-          "ast_sha256": "93d42692a3658c013d7c43ab229e63f2bce18567429c15f537fad52f2c7d5d15",
+          "ast_sha256": "63b812207e94fd38b5f1994a0d03d8454d18c551db7412d94dcd70ec78ec9a41",
           "first_line": 286,
           "last_line": 291
         },
         "preflight_case_asset": {
-          "ast_sha256": "3b914af346c73bf39b46800ae30b348e704cb1a94231969b96e8ad5e25499c9a",
+          "ast_sha256": "e593fc74c303e5316e5894e9313aed916eda27fb1cdc2979f62b189c1def6fc9",
           "first_line": 96,
           "last_line": 243
         }
@@ -54,27 +54,27 @@
     "benchmarks/optical/workloads.py": {
       "definitions": {
         "_asymmetric_registry": {
-          "ast_sha256": "e6b6e0bf43f012ce42fac62681f59317e2a53b4c5d7b7b51b504e48a85df6001",
+          "ast_sha256": "65a1b9d1030d2937525ec097247010b34e1bd9e8e50be05941067a75dd107a0c",
           "first_line": 165,
           "last_line": 220
         },
         "_body_triangle_registry": {
-          "ast_sha256": "0e0b7e634c0f0b675b74df982444cd12946aff3c9f994aa8a55ae46c2ad199cb",
+          "ast_sha256": "b1e3716635ec16424e82d78585af6f219790d3ca561ff4b50b675c234d5aff4a",
           "first_line": 135,
           "last_line": 162
         },
         "build_canonical_fixed_fixture": {
-          "ast_sha256": "6cfb856546a11b05e462e8cacb7af0eb8dbc935244f013a027b54166a0c94140",
+          "ast_sha256": "179705d5a3cb1db1052aa2027864e5bf2a1e610d8fc670c28cc3eddc9cff09f9",
           "first_line": 110,
           "last_line": 132
         },
         "build_canonical_packed_scene": {
-          "ast_sha256": "d6140ce04c37a871b2aa72dd90d72334f768aa79fabf35fc073daedc44ee4eed",
+          "ast_sha256": "683aeced84fa959d45d1ceb9676b47f70df0dd9e3d3fe42c64494f82d6f825e6",
           "first_line": 33,
           "last_line": 75
         },
         "build_canonical_transform_replay": {
-          "ast_sha256": "294420f45f5fc5529e473137585ca6db1d8666da6ff2063c0cc7425f168ac52a",
+          "ast_sha256": "20834bb8683cf0f36269a6a204b437b6ee07fdbf6c6481a66d89ba84836d7536",
           "first_line": 78,
           "last_line": 107
         }
@@ -84,97 +84,97 @@
     "examples/mujoco_menagerie_robot_preview.py": {
       "definitions": {
         "ImportedMjcfVisualScene": {
-          "ast_sha256": "d283d098e76a2b5c9e753dcf33b05c7cb2181d1f4a2574725f6a3b742eb023c6",
+          "ast_sha256": "93a87835cf6e38a71c26ed063b75ccb8ca37bf68e5484740c88c8576e1ee5490",
           "first_line": 54,
           "last_line": 62
         },
         "_MeshAsset": {
-          "ast_sha256": "7db6c85541b366e5f0b3a459ae7bc9f8925badca362384e18243b29f96d6ecc5",
+          "ast_sha256": "dbe9b95633fe2d026ddf47b15c559f2ea32b71fd1a71471b2c4a7345c67370b7",
           "first_line": 65,
           "last_line": 69
         },
         "_add_lights": {
-          "ast_sha256": "9c47602935886117783cb2829a2ead665f2195eaaa88ab082cd0f2b615fa828d",
+          "ast_sha256": "1eaace219b2be591d413d5ad6c7d4d758a1138ef76be18c717022726e015f70e",
           "first_line": 331,
           "last_line": 349
         },
         "_add_materials": {
-          "ast_sha256": "a504c0063063ce91b199d22d9102d9a82c6c6ce5b5367d20398436b856904132",
+          "ast_sha256": "c1e9b71767aec445d213dda2184063ea4b1531081c9c3fdd6b9242804474c017",
           "first_line": 315,
           "last_line": 328
         },
         "_add_visual_geom": {
-          "ast_sha256": "c7b4e8d4cec45b01272438180e083aa841830b4797da962d96af1d253e65c2fc",
+          "ast_sha256": "5c4069b88b49acfd078aedfd3796aa2e2cfbb541017dd71a424059b61e9292fd",
           "first_line": 276,
           "last_line": 312
         },
         "_axis_angle_R": {
-          "ast_sha256": "22f1bbaaa61abf60d171a022fca4d00e4d0c6d70f491d1d179061d6337c7e3b7",
+          "ast_sha256": "ff6471031d176b02879e92c669da41906b8635be71a370109402e2105b82b4db",
           "first_line": 394,
           "last_line": 410
         },
         "_body_transform": {
-          "ast_sha256": "56cb185e32846c86bfb971c89e578bbb6640e8c8293f984d99d392888ace9239",
+          "ast_sha256": "d188e264008d60730c98bff0e119cb60b6248305b072618ab93a4e10e566793e",
           "first_line": 252,
           "last_line": 273
         },
         "_geom_material_id": {
-          "ast_sha256": "c7e00ca9300a82df2f140fd305fd3127c0257852f913ca2f6eaf3d3d90a46882",
+          "ast_sha256": "ef43fe02c0e424431d936b0fd0f7cc2a9f52151918aefe7319be598f5a43132c",
           "first_line": 352,
           "last_line": 356
         },
         "_home_joint_values": {
-          "ast_sha256": "a7f30f32a60673eb0c95d57c0029412daf3c622b2f0eaecff3180279827e2b4c",
+          "ast_sha256": "99c91b3324e46ef51955f3c48eca9dae7a85d78297f3dcd114d67395a5e60945",
           "first_line": 359,
           "last_line": 366
         },
         "_look_at_camera_R": {
-          "ast_sha256": "a9fbc6e20426d1acfef7a6d8cf54516fc9e67b578e5b3ebdc25e941619dbf9a4",
+          "ast_sha256": "55ebbde341a89e9fd1358c037943121d73be8490c628f861902f2da03e4afe7f",
           "first_line": 413,
           "last_line": 423
         },
         "_parse_args": {
-          "ast_sha256": "c94838403442ca286c38893fae9f4850bc7c0955ac9774838de36483704bc2d7",
+          "ast_sha256": "fcdd8f47873f85d0a33a324ca7a71a530ca94de83e56641553be399de92e8d94",
           "first_line": 426,
           "last_line": 436
         },
         "_parse_vec": {
-          "ast_sha256": "f893db8a6e04a996efc7a6ae2086d58956b7cad17b49ba9cba4eb1d74fabdd21",
+          "ast_sha256": "d27f3e82e72fb70f19b4b72234aeb65ad227944abfbd24881ff727b9a28aed74",
           "first_line": 369,
           "last_line": 375
         },
         "_quat_to_R": {
-          "ast_sha256": "528b85f40e2cd411e586d22b88eed012ae6ee997a08a7cc5a284886f46021096",
+          "ast_sha256": "0819f11f27328f9b0c4f41269a61d285fd1260fbf6e01be0588ab23af9851f55",
           "first_line": 378,
           "last_line": 391
         },
         "_read_mesh_assets": {
-          "ast_sha256": "70d116aece5c1c5a4b06ac8725949214ad95bb4a7dcabf197b29a5cf998dbb27",
+          "ast_sha256": "714b002c41c8a3aac4c76b80b29f8737f36b8cef7c3cd130b1f81452bdf7bdf9",
           "first_line": 229,
           "last_line": 241
         },
         "_walk_body": {
-          "ast_sha256": "e70afb955810141fb32c241e8ea45348d5a434170c642282fef4002f1af9d3ef",
+          "ast_sha256": "9648e50d6d0eaed238d90314f90889d540086d0bf02dc06c4852eaeff2980cba",
           "first_line": 244,
           "last_line": 249
         },
         "import_mjcf_visual_scene": {
-          "ast_sha256": "adba3de7939c5c4aa447891a0767b0ded7978c0fe0dc3b3b60c3c1d1af9669a7",
+          "ast_sha256": "61ffe67baca63af52f93bd7465267a72aadc19b8013ad0d3d5c6bd359c1b4944",
           "first_line": 101,
           "last_line": 175
         },
         "main": {
-          "ast_sha256": "d05746270187200ba00ae02127ace72fb3242543605fbb9735cadb9e67a53e1e",
+          "ast_sha256": "0e3efd9bc3d66d589f89745228e21ed65f3978680c3a19d10ea3b730ba5c0b94",
           "first_line": 72,
           "last_line": 98
         },
         "make_model_camera": {
-          "ast_sha256": "89dd257596920a2f4fc770f28c0a2830cadf5e2fee34675cf2281dc6ed4604f7",
+          "ast_sha256": "2f7546a9a72e2ec4d3fa968ddcb73e9181d03dd30e86107e4ba412264b385466",
           "first_line": 191,
           "last_line": 226
         },
         "render_imported_scene": {
-          "ast_sha256": "a9cc3391fdf9420b92636878d1fcf21bd22d2782aef23489d94c3190c7a9ba1a",
+          "ast_sha256": "596762c9f3315a2a54fade16c379b6e296135ad39cc83ed70b11a8c571880450",
           "first_line": 178,
           "last_line": 188
         }
@@ -184,22 +184,23 @@
     "tools/optical_pipeline_lab/camera_presets.py": {
       "definitions": {
         "_look_at_camera_rotation": {
-          "ast_sha256": "26ef203fd9950950a1a38ae92a7f42c7f158ab214d8c5c30f90badabadeb95b5",
+          "ast_sha256": "f9094c1681aa2a898f640a447fd0a9f6698f94b7ad24bef46d8bd61728a3406f",
           "first_line": 101,
           "last_line": 111
         },
         "build_lab_video_camera": {
-          "ast_sha256": "76b5502f4d84bab9d6848cd6b1443c74d623fe5b346ff59140b9c8a2dbda5f6f",
+          "ast_sha256": "9594ef7cc9baba7421a652ce742d1f7734139d8395b2fe02564d6b60fc48a58b",
           "first_line": 54,
           "last_line": 98
         },
         "build_model_bounds_camera": {
-          "ast_sha256": "2ea794d44e01adfeec6819bb3c831f30436a525e4e6569c89e895a0807418469",
+          "ast_sha256": "5f443df02cd68b34b43f22014841fecf3e4ee1abe8afc1340a3e416e90828687",
           "first_line": 14,
           "last_line": 51
         }
       },
       "source_sha256": "3dacc37c0303c328a4eb72a952c62f35ca317ff68109843e310e52e4554484cc"
     }
-  }
+  },
+  "ast_encoding": "cpu-extraction-structural-json-v1"
 }
