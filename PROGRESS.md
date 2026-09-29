@@ -1056,7 +1056,16 @@ Next milestone:
       records 412 passes with no skips and all five frozen content contracts;
       author regression separately records 765 passes, including the complete
       135-case supervised suite. This extraction does not approve C4c2 runtime
-      integration: its separate design remains required. C4c2 runtime, C4c3-c4,
+      integration. The separate runtime-integration design v3 is now independently
+      approved at `674af14` (review archived in `c969296`); implementation still
+      proceeds through separately reviewed C2c/d/e/f checkpoints. C2c1 CPU
+      definition ownership is independently approved at `4cac1be` after the
+      Python AST portability repair (CPU-owners review v2). Independent checks
+      include local88/remote117 tests and real Go2/camera parity; author targeted
+      regression records497 passes on101/H200. Round-end owned-process checks
+      found no residual; the earlier unidentified hang remains unroot-caused.
+      C2c resolved sequences, versioned bindings and asset-byte custody remain
+      incomplete. C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
       retains the bounded native Warp
