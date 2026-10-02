@@ -1064,8 +1064,12 @@ Next milestone:
       include local88/remote117 tests and real Go2/camera parity; author targeted
       regression records497 passes on101/H200. Round-end owned-process checks
       found no residual; the earlier unidentified hang remains unroot-caused.
-      C2c resolved sequences, versioned bindings and asset-byte custody remain
-      incomplete. C4c2 runtime, C4c3-c4,
+      C2c2 asset-byte custody is independently approved at `536b815` (asset-custody
+      review v1): actual captured bytes feed the sole importer; independent191
+      tests and real Go2 no-reopen/geometry/content checks passed. Author targeted
+      regression separately passed516 on101/H200. Round-end owned processes
+      exited; no hang was observed in this round. C2c resolved sequences and
+      versioned bindings remain incomplete. C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
       retains the bounded native Warp
