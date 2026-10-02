@@ -24,6 +24,7 @@ from .assets import AssetManifestEvidence
 from .camera_contract import resolve_frozen_camera_contract
 from .cases import canonical_json_bytes, get_case
 from .native_input import _derive_fixed_fixture_arrays
+from .render_sequence_contract import RESOLVED_RENDER_SEQUENCE_SHA256
 from .timing import assert_outside_timed_boundary
 from .workload_contract import frozen_workload_content
 from .workloads import _materialize_canonical_scene, build_canonical_transform_replay
@@ -223,6 +224,42 @@ class CanonicalRenderSource:
 
     packed_scene: PackedOpticalSceneHost
     sequence: ResolvedRenderSequence
+
+
+def load_frozen_render_sequence(case_id: str) -> ResolvedRenderSequence:
+    """Read only frozen descriptive bytes; this does not validate current assets."""
+    assert_outside_timed_boundary("frozen render sequence loading")
+    _case(case_id)
+    path = Path(__file__).parent / "data" / "render_sequences" / "v1" / (case_id + ".jsonl")
+    raw = path.read_bytes()
+    if not raw.endswith(b"\n"):
+        raise ValueError("sequence artifact requires exact one-line JSONL framing")
+    sequence = ResolvedRenderSequence(raw[:-1])
+    if sequence.sha256 != RESOLVED_RENDER_SEQUENCE_SHA256[case_id]:
+        raise ValueError("sequence artifact digest differs from frozen content")
+    return sequence
+
+
+def resolve_render_source(
+    case_id: str,
+    *,
+    go2_model_dir: Path | None = None,
+    asset_evidence: AssetManifestEvidence | None = None,
+) -> CanonicalRenderSource:
+    """Verify actual source/bounds/formula, then use the common artifact bytes.
+
+    A lane may not silently retain different host/libm rounding. Neither this
+    CPU record nor its digest substitutes for the a2 physical storage registry.
+    """
+    reproduced = materialize_render_source(
+        case_id,
+        go2_model_dir=go2_model_dir,
+        asset_evidence=asset_evidence,
+    )
+    frozen = load_frozen_render_sequence(case_id)
+    if reproduced.sequence.canonical_bytes != frozen.canonical_bytes:
+        raise ValueError("actual source/bounds/camera formula differs from frozen render sequence")
+    return CanonicalRenderSource(reproduced.packed_scene, frozen)
 
 
 def materialize_render_source(

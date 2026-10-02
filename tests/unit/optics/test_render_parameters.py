@@ -14,12 +14,15 @@ import pytest
 from optical_worker.camera_contract import resolve_frozen_camera_contract
 from optical_worker.cases import canonical_json_bytes
 from optical_worker.render_parameters import (
-    BoundRenderParameters,
     NATIVE_SCALAR_ORDER,
+    BoundRenderParameters,
     ResolvedRenderSequence,
     bind_render_parameters,
+    load_frozen_render_sequence,
     materialize_render_source,
+    resolve_render_source,
 )
+from optical_worker.render_sequence_contract import RESOLVED_RENDER_SEQUENCE_SHA256
 from optics.camera_presets import build_model_bounds_camera
 
 ASYM = "asymmetric_synthetic_7x3_v1"
@@ -268,3 +271,97 @@ assert not blocked.intersection(sys.modules)
         timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("case", tuple(RESOLVED_RENDER_SEQUENCE_SHA256))
+def test_all_frozen_artifacts_have_exact_schema_and_canonical_identity(case):
+    import hashlib
+
+    sequence = load_frozen_render_sequence(case)
+    assert sequence.sha256 == RESOLVED_RENDER_SEQUENCE_SHA256[case]
+    assert sequence.sha256 == hashlib.sha256(canonical_json_bytes(sequence.to_payload())).hexdigest()
+    assert sequence.to_payload()["case_id"] == case
+
+
+@pytest.mark.parametrize("case", [ASYM, DYNAMIC])
+def test_actual_synthetic_source_resolves_to_frozen_bytes(case):
+    source = resolve_render_source(case)
+    assert source.sequence.canonical_bytes == load_frozen_render_sequence(case).canonical_bytes
+    assert source.packed_scene.scene_contract_sha256 == source.sequence.to_payload()["scene_contract_sha256"]
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        lambda raw: raw + b"\n",
+        lambda raw: raw[:-1],
+        lambda raw: raw.replace(b'"camera_index":0', b'"camera_index":true', 1),
+        lambda raw: raw.replace(b"0x1.5000000000000p+2", b"0x1.5000000000001p+2", 1),
+    ],
+)
+def test_artifact_corruption_never_silently_falls_back(source, monkeypatch, corruption):
+    raw = source.sequence.canonical_bytes + b"\n"
+    changed = corruption(raw)
+    assert changed != raw
+    monkeypatch.setattr(Path, "read_bytes", lambda self: changed)
+    with pytest.raises(ValueError):
+        load_frozen_render_sequence(ASYM)
+
+
+def test_actual_formula_drift_is_rejected_before_native_preparation(monkeypatch):
+    import optical_worker.render_parameters as module
+
+    real = module.materialize_render_source
+
+    def changed(*args, **kwargs):
+        source = real(*args, **kwargs)
+        payload = source.sequence.to_payload()
+        payload["frames"][0]["origin_f64"][0] = (99.0).hex()
+        return module.CanonicalRenderSource(source.packed_scene, ResolvedRenderSequence.from_payload(payload))
+
+    monkeypatch.setattr(module, "materialize_render_source", changed)
+    with pytest.raises(ValueError, match="actual source/bounds"):
+        resolve_render_source(ASYM)
+
+
+def test_native_scalar_storage_swap_and_foreign_sequence_rejected(source):
+    kwargs = dict(
+        sample_index=0,
+        profile="direct_light_full",
+        shadows=True,
+        pass_mode="primary_unprofiled",
+        role_to_mask=source.packed_scene.role_to_mask,
+    )
+    record = bind_render_parameters(source.sequence, **kwargs)
+    payload = json.loads(record.canonical_bytes)
+    scalars = payload["native_scalars_f32"]
+    scalars[0], scalars[1] = scalars[1], scalars[0]
+    with pytest.raises(ValueError):
+        BoundRenderParameters(canonical_json_bytes(payload)).validate(source.sequence, **kwargs)
+    with pytest.raises(ValueError):
+        record.validate(load_frozen_render_sequence(DYNAMIC), **kwargs)
+
+
+def test_preparation_refuses_timed_region_before_source_or_file_access(source, monkeypatch):
+    import optical_worker.render_parameters as module
+    from optical_worker.timing import TimedBoundaryViolation, native_timed_submission
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("preparation side effect inside timed region")
+
+    monkeypatch.setattr(module, "_materialize_canonical_scene", forbidden)
+    monkeypatch.setattr(Path, "read_bytes", forbidden)
+    with native_timed_submission(row_id="r0", lane="warp", boundary="R0"):
+        with pytest.raises(TimedBoundaryViolation):
+            materialize_render_source(ASYM)
+        with pytest.raises(TimedBoundaryViolation):
+            load_frozen_render_sequence(ASYM)
+        with pytest.raises(TimedBoundaryViolation):
+            bind_render_parameters(
+                source.sequence,
+                sample_index=0,
+                profile="render_only",
+                shadows=False,
+                pass_mode="primary_unprofiled",
+                role_to_mask=source.packed_scene.role_to_mask,
+            )
