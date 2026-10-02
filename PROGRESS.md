@@ -1095,7 +1095,15 @@ Next milestone:
       parseability follow-up in the next source-admission candidate; independent
       valid mutants already reject. Round-end owned processes exited and GPU
       process queries were empty; no GPU execution or historical-hang fix claimed.
-      Complete C2c source admission and C2d/e/f integration remain incomplete.
+      C2c6 component source catalog/snapshot and actual post-import ledger are
+      independently approved at `3a0b5e5` (source-catalog review v2). The prior
+      Go2 test-driver defect is repaired; independent218 tests passed without
+      skips, plus both lanes/two real Go2 cases against the actual checkout and
+      all71 Git/disk/catalog digest comparisons. Author affected regression
+      separately passed321. C2c5 mutation-test follow-up is closed. Scoped owned
+      processes exited and GPU process queries were empty. These are CPU-only
+      checks, not GPU/historical-hang proof. Pre-execution source consumption,
+      bytecode policy and complete C2d/e/f worker integration remain incomplete.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
