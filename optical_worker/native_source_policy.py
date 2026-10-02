@@ -24,6 +24,12 @@ _SNAPSHOT_FUNCTION = "_render_launch_snapshot"
 # not this POSIX worker release; packaging must supply the reviewed bytes.
 _SNAPSHOT_SOURCE_SHA256 = "636019f65594ac83dce1b386f4b3f684053e419a8cf81ba5feddce237cf318e4"
 _SNAPSHOT_FUNCTION_SHA256 = "725c7f315fdba4ad6df78e31a149865fd97e26da3c95df24678dbadba0459199"
+# Existing CPU regex construction is not Python code compilation. Keep this
+# exception release-pinned; do not generally admit arbitrary obj.compile().
+_REGEX_SOURCE_PINS = {
+    "optical_worker/protocol.py": "38ff7919ee1b41656a50cf1d6c4fa3280a1f867aac07baaf4a4adbc4189a6470",
+    "optical_worker/lifecycle.py": "2770a0aff05c899f830890edcd4bb14297bd198c87d0936c1808d86067362a43",
+}
 _CTYPES_ATTRIBUTES = frozenset(("addressof", "c_float", "c_int64", "c_int32"))
 _FORBIDDEN_IMPORTS = frozenset(AST_POLICY["forbidden_import_roots"]) | {
     "benchmarks", "examples", "tests", "tools",
@@ -42,6 +48,7 @@ NATIVE_AST_POLICY_SHA256 = canonical_sha256({
     "forbidden_attributes": sorted(_FORBIDDEN_ATTRIBUTES),
     "forbidden_builtin_imports": sorted(_FORBIDDEN_NAMES | {"*"}),
     "literal_lookup_policy": "reject forbidden name/attribute literals in calls, keywords and subscripts",
+    "existing_regex_source_pins": _REGEX_SOURCE_PINS,
     "source_roots": sorted(_SOURCE_ROOTS),
     "launcher_paths": sorted(_LAUNCHER_PATHS),
     "ctypes_exception": {
@@ -115,7 +122,12 @@ def _validate_tree(relative_path: str, tree: ast.Module, source: bytes) -> None:
                 ):
                     raise ClosedWorkerProtocolError("ctypes reference escapes the read-only snapshot")
         elif isinstance(node, ast.Attribute) and node.attr in _FORBIDDEN_ATTRIBUTES | _FORBIDDEN_NAMES:
-            raise ClosedWorkerProtocolError("native source reaches a forbidden runtime attribute")
+            if not (
+                relative_path in _REGEX_SOURCE_PINS and node.attr == "compile"
+                and isinstance(node.value, ast.Name) and node.value.id == "re"
+                and isinstance(node.ctx, ast.Load)
+            ):
+                raise ClosedWorkerProtocolError("native source reaches a forbidden runtime attribute")
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             # Reject literal reflection spelling too, not just obj.attr syntax.
             parent = parents.get(node)
@@ -157,6 +169,8 @@ def validate_native_source_bytes(
     _validate_tree(relative_path, tree, source)
     if relative_path == _SNAPSHOT_PATH and actual != _SNAPSHOT_SOURCE_SHA256:
         raise ClosedWorkerProtocolError("ctypes exception source is not the reviewed release")
+    if relative_path in _REGEX_SOURCE_PINS and actual != _REGEX_SOURCE_PINS[relative_path]:
+        raise ClosedWorkerProtocolError("regex exception source is not the reviewed release")
 
 
 def validate_native_source_file(

@@ -7,16 +7,19 @@
       "entry_id": "native_worker_source_policy",
       "paths": [
         "optical_worker/native_source_policy.py",
-        "tests/unit/optics/test_native_source_policy.py"
+        "optical_worker/native_sources.py",
+        "optical_worker/data/native_sources/v1.json",
+        "tests/unit/optics/test_native_source_policy.py",
+        "tests/unit/optics/test_native_sources.py"
       ],
       "symbols": {},
       "cuda_selected": {
         "action": "collapse",
-        "acceptance": "retain only the selected worker source verifier after separately reviewed bootstrap adoption; remove the Warp renderer ctypes exception and its tests if no selected production consumer remains; remove this verifier if no selected worker adopts it; source checks alone never grant execution authority"
+        "acceptance": "retain only the selected worker source verifier, catalog and actual import ledger after separately reviewed bootstrap adoption; collapse literal paths and digests to the selected production closure; remove the Warp renderer ctypes exception and its tests if no selected production consumer remains; remove these components if no selected worker adopts them; source checks alone never grant execution authority"
       },
       "warp_selected": {
         "action": "collapse",
-        "acceptance": "retain the selected worker source verifier and the exact reviewed read-only packed-descriptor exception after bootstrap adoption; remove unused candidate rules and tests; remove this verifier if no selected worker adopts it; source checks alone never grant execution authority"
+        "acceptance": "retain the selected worker source verifier, catalog, actual import ledger and exact reviewed read-only packed-descriptor exception after bootstrap adoption; collapse literal paths and digests to the selected production closure; remove unused candidate rules and tests; remove these components if no selected worker adopts them; source checks alone never grant execution authority"
       },
       "must_resolve_by": "P12.4e"
     },

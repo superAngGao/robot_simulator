@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import subprocess
@@ -81,12 +82,13 @@ def test_forbidden_imports_aliases_and_native_ingress_reject(source):
     (b"import ctypes", b"import ctypes\nctypes.CDLL('anything')"),
     (b"ctypes.addressof(parameter)", b"ctypes.cast(parameter, ctypes.c_int32)"),
     (b"bytes(parameter)", b"bytearray(parameter)"),
-    (b"snapshots = []", b"snapshots = []\n    command.params[0] = None"),
-    (b"snapshots = []", b"snapshots = []\n    escaped = ctypes"),
+    (b"\n    snapshots = []", b"\n    snapshots = []\n    command.params[0] = None"),
+    (b"\n    snapshots = []", b"\n    snapshots = []\n    escaped = ctypes"),
 ])
 def test_rehashed_renderer_changes_cannot_expand_exception(renderer_release, old, new):
     assert old in renderer_release
     changed = renderer_release.replace(old, new)
+    ast.parse(changed)  # A syntax error is not evidence of semantic rejection.
     with pytest.raises(ClosedWorkerProtocolError):
         _check(changed, RENDERER)  # Deliberately recompute the caller's hash.
 
@@ -146,6 +148,23 @@ def test_review_repros_and_literal_keyword_or_subscript_variants_reject(source):
 ])
 def test_permitted_builtins_reflection_and_inert_policy_data_still_pass(source):
     assert _check(source) is None
+
+
+@pytest.mark.parametrize("path", ["optical_worker/protocol.py", "optical_worker/lifecycle.py"])
+def test_existing_cpu_regex_source_is_admitted_only_as_exact_release(path):
+    source = subprocess.check_output(["git", "show", f"HEAD:{path}"], cwd=ROOT, timeout=20)
+    assert b"re.compile(" in source
+    assert _check(source, path) is None
+    for changed in (
+        source + b"\n# new release\n",
+        source.replace(b"import re", b"import re\nre = fake_runtime"),
+        source.replace(b"re.compile(", b"builtins.compile("),
+    ):
+        ast.parse(changed)
+        with pytest.raises(ClosedWorkerProtocolError):
+            _check(changed, path)
+    with pytest.raises(ClosedWorkerProtocolError):
+        _check(source, "optical_worker/unreviewed_regex.py")
 
 
 def test_posix_actual_release_file_validates(renderer_release, tmp_path):
