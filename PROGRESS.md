@@ -1068,8 +1068,15 @@ Next milestone:
       review v1): actual captured bytes feed the sole importer; independent191
       tests and real Go2 no-reopen/geometry/content checks passed. Author targeted
       regression separately passed516 on101/H200. Round-end owned processes
-      exited; no hang was observed in this round. C2c resolved sequences and
-      versioned bindings remain incomplete. C4c2 runtime, C4c3-c4,
+      exited; no hang was observed in this round. C2c3 CPU resolved sequences
+      and descriptive scalar records are independently approved at `c8b86e7`
+      (render-sequences review v1): four frozen artifacts, actual source/bounds
+      reproduction and24-scalar encoding; independent288 tests and real Go2
+      single-import/pack/120-frame checks passed. Author targeted regression
+      separately passed634 on101/H200. Round-end owned-process checks cleared;
+      the evidence records a stopped, excluded accidental diagnostic pytest.
+      C2c v13 row/schema/C3 binding migration and actual native ABI adoption
+      remain incomplete. C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
       retains the bounded native Warp
