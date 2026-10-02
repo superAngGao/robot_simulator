@@ -38,7 +38,21 @@ def build_canonical_packed_scene(
 ) -> PackedOpticalSceneHost:
     """Build and verify the one packed logical scene frozen for ``case_id``."""
 
+    return _materialize_canonical_scene(
+        case_id, go2_model_dir=go2_model_dir, asset_evidence=asset_evidence
+    )[0]
+
+
+def _materialize_canonical_scene(
+    case_id: str,
+    *,
+    go2_model_dir: Path | None = None,
+    asset_evidence: AssetManifestEvidence | None = None,
+) -> tuple[PackedOpticalSceneHost, tuple[tuple[float, ...], ...] | None]:
+    """One pack and, for imported assets, bounds from that exact import."""
+
     case = get_case(case_id)
+    imported_bounds = None
     if case_id == "asymmetric_synthetic_7x3_v1":
         registry = _asymmetric_registry()
     elif case_id in {
@@ -64,9 +78,14 @@ def build_canonical_packed_scene(
             model_dir=model_dir,
             expected_evidence=asset_evidence,
         )
-        registry = import_mjcf_visual_scene(
+        imported = import_mjcf_visual_scene(
             model_dir, model_xml="go2.xml", file_bytes=captured.files
-        ).registry
+        )
+        registry = imported.registry
+        imported_bounds = tuple(
+            tuple(float(value) for value in bound)
+            for bound in (imported.bounds_min, imported.bounds_max)
+        )
     else:  # pragma: no cover - get_case owns the public case set
         raise ValueError(f"no canonical scene materializer for {case_id!r}")
 
@@ -79,7 +98,7 @@ def build_canonical_packed_scene(
     expected = frozen_workload_content(case_id)
     if packed.scene_contract_sha256 != expected.scene_contract_sha256:
         raise ValueError("materialized scene does not match the frozen workload digest")
-    return packed
+    return packed, imported_bounds
 
 
 def build_canonical_transform_replay(case_id: str) -> CanonicalTransformReplayHost:

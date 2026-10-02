@@ -75,6 +75,7 @@ def _normalize_capture_io(node, module):
         ]
     elif module == "optical_worker.workloads" and node.name == "build_canonical_packed_scene":
         replacements = [
+            ("imported_bounds = None", None),
             ("model_dir = Path(go2_model_dir).resolve()", None),
             (
                 "captured = capture_case_asset(case_id, repo_root=model_dir.parent, model_dir=model_dir, "
@@ -82,10 +83,17 @@ def _normalize_capture_io(node, module):
                 None,
             ),
             (
-                'registry = import_mjcf_visual_scene(model_dir, model_xml="go2.xml", '
-                'file_bytes=captured.files).registry',
+                'imported = import_mjcf_visual_scene(model_dir, model_xml="go2.xml", '
+                'file_bytes=captured.files)',
                 'registry = import_mjcf_visual_scene(Path(go2_model_dir), model_xml="go2.xml").registry',
             ),
+            ("registry = imported.registry", None),
+            (
+                "imported_bounds = tuple(tuple(float(value) for value in bound) "
+                "for bound in (imported.bounds_min, imported.bounds_max))",
+                None,
+            ),
+            ("return (packed, imported_bounds)", "return packed"),
         ]
     for source, replacement in replacements:
         target = structural_ast(ast.parse(source).body[0])
@@ -123,6 +131,20 @@ def test_moved_ast_matches_frozen_pre_extraction_definition(old, new, selected):
     definitions = {node.name: node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
     for name in _names(old, selected):
         node = definitions[name]
+        if new == "optical_worker.workloads" and name == "build_canonical_packed_scene":
+            # Only the public wrapper delegates; the sole materializer retains
+            # every historical math statement. Validate the delegation exactly.
+            assert len(node.body) == 2
+            assert structural_ast(node.body[-1]) == structural_ast(ast.parse(
+                "return _materialize_canonical_scene(case_id, go2_model_dir=go2_model_dir, "
+                "asset_evidence=asset_evidence)[0]"
+            ).body[0])
+            original = node
+            node = definitions["_materialize_canonical_scene"]
+            assert structural_ast(node.args) == structural_ast(original.args)
+            node.name = original.name
+            node.returns = original.returns
+            node.body[0] = original.body[0]
         _normalize_capture_io(node, new)
         # This sole import changes ownership, not the algorithm. Normalize only
         # the exact approved module/name/alias triple; no blanket import removal.
