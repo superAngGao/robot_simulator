@@ -4,6 +4,47 @@
   "must_complete": true,
   "entries": [
     {
+      "entry_id": "canonical_resolved_render_contract",
+      "paths": [
+        "optical_worker/render_parameters.py",
+        "optical_worker/render_sequence_contract.py",
+        "optical_worker/data/render_sequences/v1/asymmetric_synthetic_7x3_v1.jsonl",
+        "optical_worker/data/render_sequences/v1/synthetic_dynamic_rigid_960x640_v1.jsonl",
+        "optical_worker/data/render_sequences/v1/go2_static_960x640_v1.jsonl",
+        "optical_worker/data/render_sequences/v1/go2_static_1920x1080_v1.jsonl",
+        "tests/unit/optics/test_render_parameters.py"
+      ],
+      "symbols": {},
+      "cuda_selected": {
+        "action": "retain",
+        "acceptance": "retain the single canonical camera/render sequence owner, immutable artifacts and selected-backend scalar/provenance regression; no permanent paired selector or losing-lane adapter"
+      },
+      "warp_selected": {
+        "action": "retain",
+        "acceptance": "retain the single canonical camera/render sequence owner, immutable artifacts and selected-backend scalar/provenance regression; no permanent paired selector or losing-lane adapter"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
+      "entry_id": "temporary_render_row_migration_snapshots",
+      "paths": [
+        "tests/unit/benchmarks/data/render_migration_v12.json",
+        "tests/unit/benchmarks/data/render_migration_v13.json",
+        "tests/unit/benchmarks/test_optical_render_migration.py",
+        "tests/unit/optics/test_native_contract_extraction.py"
+      ],
+      "symbols": {},
+      "cuda_selected": {
+        "action": "collapse",
+        "acceptance": "delete both comparison-only migration snapshot files and their v12-v13 comparison machinery after equivalent selected-backend canonical-parameter, closed-gate and moved-body identity regressions are retained; remove snapshot reads from extraction tests, not their remaining invariant coverage; preserve collab historical review/evidence records; never provide a live v12 fallback"
+      },
+      "warp_selected": {
+        "action": "collapse",
+        "acceptance": "delete both comparison-only migration snapshot files and their v12-v13 comparison machinery after equivalent selected-backend canonical-parameter, closed-gate and moved-body identity regressions are retained; remove snapshot reads from extraction tests, not their remaining invariant coverage; preserve collab historical review/evidence records; never provide a live v12 fallback"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
       "entry_id": "canonical_resolved_camera_contract",
       "paths": [
         "optical_worker/camera_contract.py",

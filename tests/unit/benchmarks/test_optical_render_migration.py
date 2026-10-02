@@ -22,6 +22,36 @@ from optical_worker.render_parameters import (
 DATA = Path(__file__).parent / "data"
 
 
+def test_render_cleanup_ledger_covers_durable_and_comparison_only_paths():
+    from optical_worker.render_sequence_contract import RESOLVED_RENDER_SEQUENCE_SHA256
+
+    root = Path(__file__).resolve().parents[3]
+    ledger = json.loads((root / "benchmarks/results/q54_p12_4/cleanup_ledger.json").read_text())
+    entries = {entry["entry_id"]: entry for entry in ledger["entries"]}
+    durable = entries["canonical_resolved_render_contract"]
+    temporary = entries["temporary_render_row_migration_snapshots"]
+    assert set(durable["paths"]) == {
+        "optical_worker/render_parameters.py",
+        "optical_worker/render_sequence_contract.py",
+        "tests/unit/optics/test_render_parameters.py",
+        *(
+            f"optical_worker/data/render_sequences/v1/{case}.jsonl"
+            for case in RESOLVED_RENDER_SEQUENCE_SHA256
+        ),
+    }
+    assert set(temporary["paths"]) == {
+        "tests/unit/benchmarks/data/render_migration_v12.json",
+        "tests/unit/benchmarks/data/render_migration_v13.json",
+        "tests/unit/benchmarks/test_optical_render_migration.py",
+        "tests/unit/optics/test_native_contract_extraction.py",
+    }
+    for entry, action in ((durable, "retain"), (temporary, "collapse")):
+        assert entry["must_resolve_by"] == "P12.4e"
+        for branch in ("cuda_selected", "warp_selected"):
+            assert entry[branch]["action"] == action
+        assert all((root / name).is_file() for name in entry["paths"])
+
+
 def _sha(payload):
     return hashlib.sha256(
         json.dumps(payload, allow_nan=False, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode(
