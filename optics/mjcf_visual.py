@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import math
 import xml.etree.ElementTree as ET
+from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from io import BytesIO
+from pathlib import Path, PurePosixPath
 
 import numpy as np
 
@@ -32,14 +34,21 @@ class _MeshAsset:
     scale: np.ndarray
 
 
-def import_mjcf_visual_scene(model_dir: Path, *, model_xml: str) -> ImportedMjcfVisualScene:
+def import_mjcf_visual_scene(
+    model_dir: Path, *, model_xml: str, file_bytes: Mapping[str, bytes] | None = None
+) -> ImportedMjcfVisualScene:
     try:
         import trimesh
     except Exception as exc:  # pragma: no cover - optional dependency guard.
         raise SystemExit("mujoco_menagerie_robot_preview.py requires trimesh") from exc
 
     xml_path = model_dir / model_xml
-    root = ET.parse(xml_path).getroot()
+    captured = _copy_mjcf_bytes(file_bytes)
+    root = (
+        ET.parse(xml_path).getroot()
+        if captured is None
+        else ET.fromstring(_captured_file(captured, model_dir, xml_path))
+    )
     mesh_dir = (
         model_dir / root.find("compiler").get("meshdir", "assets")
         if root.find("compiler") is not None
@@ -56,7 +65,7 @@ def import_mjcf_visual_scene(model_dir: Path, *, model_xml: str) -> ImportedMjcf
 
     mesh_assets = _read_mesh_assets(root, mesh_dir)
     for mesh in mesh_assets.values():
-        loaded = trimesh.load_mesh(mesh.path, process=False)
+        loaded = _load_visual_mesh(trimesh, mesh.path, model_dir, captured)
         if hasattr(loaded, "dump"):
             parts = loaded.dump()
             loaded = parts[0] if parts else loaded
@@ -106,6 +115,51 @@ def import_mjcf_visual_scene(model_dir: Path, *, model_xml: str) -> ImportedMjcf
         num_triangles=int(state["triangle_count"]),
         bounds_min=state["bounds_min"],
         bounds_max=state["bounds_max"],
+    )
+
+
+def _copy_mjcf_bytes(files: Mapping[str, bytes] | None) -> dict[str, bytes] | None:
+    if files is None:
+        return None
+    result = {}
+    for name, data in files.items():
+        if (
+            type(name) is not str
+            or not name
+            or "\\" in name
+            or ":" in name
+            or PurePosixPath(name).is_absolute()
+            or ".." in PurePosixPath(name).parts
+            or PurePosixPath(name).as_posix() != name
+            or type(data) is not bytes
+        ):
+            raise ValueError("captured MJCF files require normalized relative names and immutable bytes")
+        result[name] = data
+    return result
+
+
+def _captured_file(files: dict[str, bytes], model_dir: Path, path: Path) -> bytes:
+    try:
+        relative = path.relative_to(model_dir).as_posix()
+    except ValueError as exc:
+        raise ValueError("MJCF reference escapes captured model root") from exc
+    if ".." in PurePosixPath(relative).parts or relative not in files:
+        raise ValueError(f"MJCF reference is not in captured files: {relative}")
+    return files[relative]
+
+
+def _load_visual_mesh(trimesh, path: Path, model_dir: Path, captured: dict[str, bytes] | None):
+    if captured is None:
+        return trimesh.load_mesh(path, process=False)
+    if path.suffix.lower() != ".obj":
+        raise ValueError("captured Go2 mesh path must use the frozen OBJ format")
+    # Explicit empty resolver prevents MTL/texture/filesystem/network fallbacks.
+    # Geometry and ordering retain the existing process=False OBJ loader.
+    return trimesh.load_mesh(
+        BytesIO(_captured_file(captured, model_dir, path)),
+        file_type="obj",
+        process=False,
+        resolver={},
     )
 
 

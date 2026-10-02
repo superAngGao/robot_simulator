@@ -52,6 +52,57 @@ def _names(old, selected):
     return tuple(BASELINE["sources"][_path(old)]["definitions"]) if selected is None else selected
 
 
+def _normalize_capture_io(node, module):
+    """Exact C2c2 IO substitutions only; retain the historical mathematical hash."""
+    replacements = []
+    if module == "optics.mjcf_visual" and node.name == "import_mjcf_visual_scene":
+        signature = ast.parse("def f(*, file_bytes: Mapping[str, bytes] | None = None): pass").body[0].args
+        assert structural_ast(node.args.kwonlyargs[-1]) == structural_ast(signature.kwonlyargs[0])
+        assert structural_ast(node.args.kw_defaults[-1]) == structural_ast(signature.kw_defaults[0])
+        node.args.kwonlyargs.pop()
+        node.args.kw_defaults.pop()
+        replacements = [
+            ("captured = _copy_mjcf_bytes(file_bytes)", None),
+            (
+                "root = ET.parse(xml_path).getroot() if captured is None else ET.fromstring("
+                "_captured_file(captured, model_dir, xml_path))",
+                "root = ET.parse(xml_path).getroot()",
+            ),
+            (
+                "loaded = _load_visual_mesh(trimesh, mesh.path, model_dir, captured)",
+                "loaded = trimesh.load_mesh(mesh.path, process=False)",
+            ),
+        ]
+    elif module == "optical_worker.workloads" and node.name == "build_canonical_packed_scene":
+        replacements = [
+            ("model_dir = Path(go2_model_dir).resolve()", None),
+            (
+                "captured = capture_case_asset(case_id, repo_root=model_dir.parent, model_dir=model_dir, "
+                "expected_evidence=asset_evidence)",
+                None,
+            ),
+            (
+                'registry = import_mjcf_visual_scene(model_dir, model_xml="go2.xml", '
+                'file_bytes=captured.files).registry',
+                'registry = import_mjcf_visual_scene(Path(go2_model_dir), model_xml="go2.xml").registry',
+            ),
+        ]
+    for source, replacement in replacements:
+        target = structural_ast(ast.parse(source).body[0])
+        matched = 0
+        for parent in ast.walk(node):
+            for _, children in ast.iter_fields(parent):
+                if not isinstance(children, list):
+                    continue
+                for index, child in list(enumerate(children)):
+                    if isinstance(child, ast.stmt) and structural_ast(child) == target:
+                        children[index : index + 1] = (
+                            [] if replacement is None else ast.parse(replacement).body
+                        )
+                        matched += 1
+        assert matched == 1, f"unexpected capture IO delta: {source}"
+
+
 @pytest.mark.parametrize("old,new,selected", MOVES)
 def test_every_moved_definition_is_the_same_object_at_legacy_import(old, new, selected):
     legacy, production = importlib.import_module(old), importlib.import_module(new)
@@ -72,6 +123,7 @@ def test_moved_ast_matches_frozen_pre_extraction_definition(old, new, selected):
     definitions = {node.name: node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
     for name in _names(old, selected):
         node = definitions[name]
+        _normalize_capture_io(node, new)
         # This sole import changes ownership, not the algorithm. Normalize only
         # the exact approved module/name/alias triple; no blanket import removal.
         for child in ast.walk(node):

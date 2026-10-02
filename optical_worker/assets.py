@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
 from .cases import get_case
 from .workload_contract import (
@@ -297,3 +300,92 @@ def _git_commit_text(value: object) -> bool:
         and len(value) == 40
         and all(character in "0123456789abcdef" for character in value)
     )
+
+
+@dataclass(frozen=True)
+class CapturedAssetBytes:
+    """CPU bytes, not execution authority; constructed after a fresh preflight.
+
+    Importers consume these immutable bytes, never reopen the validated paths.
+    The source evidence describes capture-time content, not future filesystem state.
+    """
+
+    evidence: AssetManifestEvidence
+    files: Mapping[str, bytes]
+
+
+def capture_case_asset(
+    case_id: str,
+    *,
+    repo_root: Path,
+    model_dir: Path | None = None,
+    manifest_path: Path | None = None,
+    expected_evidence: AssetManifestEvidence | None = None,
+) -> CapturedAssetBytes:
+    """Re-preflight locally, then validate the exact bytes passed to the parser.
+
+    A caller's prior evidence is a consistency constraint, never preflight authority.
+    No GPU work occurs here. Post-capture disk changes cannot alter the captured input.
+    """
+    if expected_evidence is not None and type(expected_evidence) is not AssetManifestEvidence:
+        raise AssetPreflightError("expected asset evidence must have the exact production type")
+    root = _resolve_within(repo_root, model_dir or DEFAULT_GO2_MODEL_DIR)
+    evidence = preflight_case_asset(
+        case_id, repo_root=repo_root, model_dir=model_dir, manifest_path=manifest_path
+    )
+    if evidence is None:
+        raise AssetPreflightError("case has no external asset to capture")
+    if expected_evidence is not None and evidence != expected_evidence:
+        raise AssetPreflightError("asset preflight changed since the supplied evidence")
+    captured = {}
+    for item in evidence.files:
+        raw = _read_capture_file(root, Path(item.relative_path))
+        if len(raw) != item.size_bytes or hashlib.sha256(raw).hexdigest() != item.sha256:
+            raise AssetPreflightError(f"asset bytes changed after preflight: {item.relative_path}")
+        captured[item.relative_path] = raw
+    manifest = manifest_path or Path(DEFAULT_ASSET_MANIFEST_NAME)
+    manifest_relative = _resolve_within(root, manifest).relative_to(root)
+    manifest_raw = _read_capture_file(root, manifest_relative)
+    if hashlib.sha256(manifest_raw).hexdigest() != evidence.manifest_sha256:
+        raise AssetPreflightError("asset manifest changed after preflight")
+    # Retain the original preflight's full revision/remote/inventory policy at
+    # both boundaries; this does not substitute stat/mtime for content hashes.
+    final = preflight_case_asset(
+        case_id, repo_root=repo_root, model_dir=model_dir, manifest_path=manifest_path
+    )
+    if final != evidence:
+        raise AssetPreflightError("asset provenance changed during capture")
+    return CapturedAssetBytes(evidence, MappingProxyType(captured))
+
+
+def _read_capture_file(root: Path, relative: Path) -> bytes:
+    path = root
+    for part in relative.parts:
+        path = path / part
+        if path.is_symlink():
+            raise AssetPreflightError(f"symlink is not a capture source: {relative}")
+    _resolve_within(root, path)
+    try:
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_BINARY", 0)
+        )
+        with os.fdopen(os.open(path, flags), "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode):
+                raise AssetPreflightError(f"capture source is not a regular file: {relative}")
+            raw = stream.read()
+            after = os.fstat(stream.fileno())
+
+        def identity(s):
+            return (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+
+        # Windows fstat reports change time while path stat can report creation
+        # time as st_ctime. Compare that field only on the same open descriptor.
+        if identity(before) != identity(after) or identity(after)[:4] != identity(path.stat())[:4]:
+            raise AssetPreflightError(f"asset changed while being captured: {relative}")
+    except OSError as exc:
+        raise AssetPreflightError(f"cannot capture asset bytes: {relative}") from exc
+    return raw

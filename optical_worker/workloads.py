@@ -21,7 +21,7 @@ from optics.registry import (
 from optics.scene_contract import PackedOpticalSceneHost
 from physics.spatial import SpatialTransform
 
-from .assets import AssetManifestEvidence
+from .assets import AssetManifestEvidence, capture_case_asset
 from .cases import get_case
 from .native_input import CanonicalFixedRenderFixtureHost, CanonicalTransformReplayHost
 from .workload_contract import frozen_workload_content
@@ -57,8 +57,15 @@ def build_canonical_packed_scene(
             raise ValueError("Go2 asset evidence does not match the frozen workload source")
         from optics.mjcf_visual import import_mjcf_visual_scene
 
+        model_dir = Path(go2_model_dir).resolve()
+        captured = capture_case_asset(
+            case_id,
+            repo_root=model_dir.parent,
+            model_dir=model_dir,
+            expected_evidence=asset_evidence,
+        )
         registry = import_mjcf_visual_scene(
-            Path(go2_model_dir), model_xml="go2.xml"
+            model_dir, model_xml="go2.xml", file_bytes=captured.files
         ).registry
     else:  # pragma: no cover - get_case owns the public case set
         raise ValueError(f"no canonical scene materializer for {case_id!r}")
