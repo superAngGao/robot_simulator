@@ -58,6 +58,7 @@ from benchmarks.optical.workloads import (
     build_canonical_fixed_fixture,
     build_canonical_packed_scene,
 )
+from optical_worker.render_parameters import bind_render_parameters, load_frozen_render_sequence
 
 
 def test_canonical_native_input_is_immutable_and_order_independent():
@@ -131,10 +132,37 @@ def test_single_lane_runner_refuses_c3_before_timing_even_if_activation_is_flipp
             lane=lane,
             prepared=prepared,
             readiness=_readiness(prepared),
-            request=LaneSampleRequest(run_id="unit-run", repeat_index=1, sample_index=2),
+            request=LaneSampleRequest(run_id="unit-run", repeat_index=1, sample_index=0),
         )
 
     assert trace == []
+
+
+@pytest.mark.parametrize(
+    "sample_request",
+    [
+        LaneSampleRequest(run_id="unit-run", repeat_index=0, sample_index=1),
+        LaneSampleRequest(
+            run_id="unit-run", repeat_index=0, sample_index=0, profile_mode="diagnostic_profiled"
+        ),
+    ],
+)
+def test_runner_rejects_render_sample_or_diagnostic_drift_before_submission(monkeypatch, sample_request):
+    gate = _activated_gate(monkeypatch)
+    row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
+    prepared = _prepared(_runner_native_source())
+    lane = _FakeLane(gate=gate, row=row, prepared=prepared, trace=[])
+    runner = SingleLaneSampleRunner(gate, execution_phase="P12.4a3b")
+    with pytest.raises(LaneIneligibleError, match="render parameters"):
+        runner.run_sample(
+            row_id=row["row_id"],
+            lane=lane,
+            prepared=prepared,
+            readiness=_readiness(prepared),
+            request=sample_request,
+        )
+    assert lane.trace == []
+    assert active_timed_boundary() is None
 
 
 def test_c3_rejection_prevents_lane_from_fabricating_result_provenance(monkeypatch):
@@ -506,9 +534,19 @@ class _FakeLane:
             active_count=252,
             owner_token="unit-output-slot",
         )
+        bound = bind_render_parameters(
+            load_frozen_render_sequence(row["case_id"]),
+            sample_index=0,
+            profile=row["output_profile"],
+            shadows=row["shadows"],
+            pass_mode="primary_unprofiled",
+            role_to_mask={"rgb": 2},
+        )
         render = NativeStageEvidence(
             schema_version=NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
             stage_name="render",
+            bound_render_parameters=bound,
+            bound_render_parameters_sha256=bound.sha256,
             operation_id="warp_bvh_direct_light",
             output_profile=row["output_profile"],
             shadows=row["shadows"],
@@ -543,6 +581,7 @@ class _FakeLane:
             runtime_scene_storage=scene_storage,
             derived_fixture_storage=fixture_storage,
             stage_evidence=(render,),
+            bound_render_parameters=bound,
         )
         if self.invalid_direct_binding:
             return replace(binding, dataflow_binding_sha256="0" * 64)
@@ -640,6 +679,8 @@ class _FakeLane:
             transform_replay_sha256=None,
             transform_frame_index=None,
             fixed_render_fixture_sha256=prepared.manifest.fixed_render_fixture_sha256,
+            bound_render_parameters=native_execution_binding.bound_render_parameters,
+            bound_render_parameters_sha256=native_execution_binding.bound_render_parameters_sha256,
             native_execution_binding=native_execution_binding,
             native_execution_binding_sha256=native_execution_binding.sha256,
             eligibility=eligibility,

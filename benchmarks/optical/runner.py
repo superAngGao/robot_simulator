@@ -234,13 +234,9 @@ class SingleLaneSampleRunner:
             readiness=readiness,
         )
         if not isinstance(binding, C3OneShotNativeExecutionBindingEvidence):
-            raise TypeError(
-                "lane bind_sample must return C3OneShotNativeExecutionBindingEvidence"
-            )
+            raise TypeError("lane bind_sample must return C3OneShotNativeExecutionBindingEvidence")
         try:
-            binding = C3OneShotNativeExecutionBindingEvidence.from_payload(
-                binding.to_payload()
-            )
+            binding = C3OneShotNativeExecutionBindingEvidence.from_payload(binding.to_payload())
         except (AttributeError, TypeError, ValueError) as exc:
             raise LaneIneligibleError(
                 f"native execution binding failed canonical pre-enqueue validation: {exc}"
@@ -250,6 +246,7 @@ class SingleLaneSampleRunner:
             prepared=prepared,
             readiness=readiness,
             binding=binding,
+            request=request,
         )
         raise LaneIneligibleError(
             "C3 one-shot native binding cannot enter timed submission; "
@@ -307,27 +304,21 @@ class SingleLaneSampleRunner:
         if not manifest.result_capable:
             raise LaneIneligibleError("generic native input cannot enter a result-capable lane")
         if manifest.input_contract != row["input_contract"]:
-            raise LaneIneligibleError(
-                "prepared native input contract does not match the frozen row"
-            )
+            raise LaneIneligibleError("prepared native input contract does not match the frozen row")
         case_contract = self._gate["cases"][row["case_id"]]
         if manifest.scene_contract_sha256 != case_contract["scene_contract_sha256"]:
-            raise LaneIneligibleError(
-                "prepared scene content does not match the frozen row workload"
-            )
+            raise LaneIneligibleError("prepared scene content does not match the frozen row workload")
         boundary = row["boundary"]
         if boundary == "R0":
             valid_source = (
                 manifest.transform_replay_sha256 is None
                 and manifest.transform_frame_count == 0
-                and manifest.fixed_render_fixture_sha256
-                == case_contract["fixed_render_fixture_sha256"]
+                and manifest.fixed_render_fixture_sha256 == case_contract["fixed_render_fixture_sha256"]
                 and manifest.fixed_render_fixture_sha256 is not None
             )
         elif boundary in {"R1", "R2"}:
             valid_source = (
-                manifest.transform_replay_sha256
-                == case_contract["transform_replay_sha256"]
+                manifest.transform_replay_sha256 == case_contract["transform_replay_sha256"]
                 and manifest.transform_replay_sha256 is not None
                 and manifest.transform_frame_count > 0
                 and manifest.fixed_render_fixture_sha256 is None
@@ -425,8 +416,17 @@ class SingleLaneSampleRunner:
         prepared: PreparedNativeInput,
         readiness: NativeReadinessEvidence,
         binding: C3OneShotNativeExecutionBindingEvidence,
+        request: LaneSampleRequest,
     ) -> None:
         manifest = prepared.manifest
+        parameters = binding.bound_render_parameters.to_payload()
+        if (
+            parameters["frame_id"] != request.sample_index + 1
+            or parameters["diagnostics"] != (request.profile_mode == "diagnostic_profiled")
+            or parameters["sequence_sha256"]
+            != self._gate["cases"][row["case_id"]]["resolved_render_sequence_sha256"]
+        ):
+            raise LaneIneligibleError("render parameters do not match the pre-enqueue sample request")
         if not manifest.result_capable:
             raise LaneIneligibleError("generic native input cannot enter a result-capable lane")
         expected = {
@@ -437,9 +437,9 @@ class SingleLaneSampleRunner:
             "lane": prepared.backend,
             "renderer_id": self._gate["lane_bindings"][prepared.backend]["renderer_id"],
             "acceleration_class": row["acceleration_class"],
-            "acceleration_id": self._gate["lane_bindings"][prepared.backend][
-                "acceleration_by_class"
-            ][row["acceleration_class"]],
+            "acceleration_id": self._gate["lane_bindings"][prepared.backend]["acceleration_by_class"][
+                row["acceleration_class"]
+            ],
             "output_profile": row["output_profile"],
             "shadows": row["shadows"],
             "input_contract": manifest.input_contract,

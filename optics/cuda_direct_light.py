@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import struct
 import time
 from dataclasses import dataclass
 from functools import lru_cache
@@ -161,6 +162,21 @@ class CudaDirectLightStageEvidence:
     extension_entry: str | None
     num_rays: int
     traversal_diagnostics: bool
+    camera_dimensions: tuple[int, int] | None
+    sensor_role_mask: int
+    native_scalars_f32: tuple[str, ...]
+
+    def validate_render_parameters(self, payload: dict[str, object]) -> None:
+        """Compare a descriptive record to the actual frozen extension ABI."""
+        if (
+            self.camera_dimensions != (payload.get("width"), payload.get("height"))
+            or self.sensor_role_mask != payload.get("sensor_role_mask")
+            or self.output_profile != payload.get("profile")
+            or self.shadows is not payload.get("shadows")
+            or self.traversal_diagnostics is not payload.get("diagnostics")
+            or list(self.native_scalars_f32) != payload.get("native_scalars_f32")
+        ):
+            raise ValueError("bound render parameters differ from actual CUDA scalar ABI")
 
 
 @dataclass(frozen=True)
@@ -347,9 +363,14 @@ class CudaDirectLightRenderStage:
     cuda_transaction_stage_name = "cuda_direct_light_render"
 
     def __setattr__(self, name: str, value: object) -> None:
-        if name != "_sealed" and getattr(self, "_sealed", False):
+        if getattr(self, "_sealed", False):
             raise AttributeError("CUDA render stage binding is immutable after validation")
         object.__setattr__(self, name, value)
+
+    def __delattr__(self, name: str) -> None:
+        if getattr(self, "_sealed", False):
+            raise AttributeError("CUDA render stage binding is immutable after validation")
+        object.__delattr__(self, name)
 
     def __init__(
         self,
@@ -549,6 +570,22 @@ class CudaDirectLightRenderStage:
                 raise ValueError("prepared CUDA renderer is missing stable pinhole_camera_rays_out")
             if len(self._raygen_args) != 20:
                 raise ValueError("CUDA raygen extension argument binding changed")
+            expected = (
+                self.buffers.origins,
+                self.buffers.directions,
+                self.camera.width,
+                self.camera.height,
+                self.camera.fx,
+                self.camera.fy,
+                self.camera.cx,
+                self.camera.cy,
+                *self.camera.origin,
+                *self.camera.rotation,
+            )
+            if any(actual is not wanted for actual, wanted in zip(self._raygen_args[:2], expected[:2])):
+                raise ValueError("CUDA raygen output ABI identity changed")
+            if self._raygen_args[2:] != expected[2:]:
+                raise ValueError("CUDA raygen scalar ABI changed")
         elif self._raygen_entry is not None or self._raygen_args:
             raise ValueError("device-ray CUDA binding cannot contain a raygen entry")
         if self.shade_inputs is None:
@@ -570,6 +607,12 @@ class CudaDirectLightRenderStage:
             prepared_entry = getattr(self.renderer.module, expected_entry_name, None)
             if not callable(prepared_entry) or prepared_entry is not self._shade_entry:
                 raise ValueError(f"prepared CUDA renderer is missing stable {expected_entry_name}")
+            expected_args = self._bind_shade_arguments()
+            if len(expected_args) != len(self._shade_args) or any(
+                (actual != wanted if isinstance(wanted, (int, float)) else actual is not wanted)
+                for actual, wanted in zip(self._shade_args, expected_args)
+            ):
+                raise ValueError("CUDA shade fixed ABI changed")
         if len(self.ambient_rgb) != 3 or len(self.background_rgb) != 3:
             raise ValueError("CUDA direct-light RGB scalars must have three components")
         if not all(math.isfinite(value) for value in (*self.ambient_rgb, *self.background_rgb)):
@@ -588,6 +631,8 @@ class CudaDirectLightRenderStage:
         _validate_render_storage_disjointness(self)
 
     def _freeze_storage_signature(self) -> None:
+        if self._sealed or self._binding_signature is not None:
+            raise ValueError("CUDA render binding signature cannot be rebuilt")
         self._binding_signature = _render_binding_signature(self)
         self._sealed = True
 
@@ -598,6 +643,23 @@ class CudaDirectLightRenderStage:
             raise ValueError("CUDA render stage binding changed after validation")
 
     def _cuda_transaction_stage_evidence(self) -> CudaDirectLightStageEvidence:
+        # This is untimed construction/preflight, not an enqueue operation.
+        # Read scalars from the bound tuples that will actually reach pybind.
+        scalars = ()
+        dimensions = None
+        if self.camera is not None and self.shade_inputs is not None:
+            self._validate_cuda_transaction_stage(self.renderer.context)
+            dimensions = self._raygen_args[2:4]
+            shade_start = 25 if self.shadows else 10
+            # Off ABI has no bias argument; retain its inactive configuration.
+            bias = self._shade_args[24] if self.shadows else self.shadow_bias
+            values = (
+                *self._raygen_args[4:],
+                self.first_hit_inputs.max_distance,
+                *self._shade_args[shade_start : shade_start + 6],
+                bias,
+            )
+            scalars = tuple(struct.pack("<f", value).hex() for value in values)
         return CudaDirectLightStageEvidence(
             operation="first_hit" if self.shade_inputs is None else "direct_light",
             ray_source="camera" if self.camera is not None else "device_rays",
@@ -606,6 +668,9 @@ class CudaDirectLightRenderStage:
             extension_entry=self._shade_entry_name,
             num_rays=int(self.buffers.origins.shape[0]),
             traversal_diagnostics=bool(self.buffers.shadow_traversal_counters),
+            camera_dimensions=dimensions,
+            sensor_role_mask=self.first_hit_inputs.sensor_role_mask,
+            native_scalars_f32=scalars,
         )
 
 

@@ -13,6 +13,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from optical_worker.render_parameters import bind_render_parameters, load_frozen_render_sequence
 from optics.cuda_arena import CudaArenaPlanTarget
 
 from .native import (
@@ -61,6 +62,16 @@ def build_cuda_c3_binding_from_arena_target(
         raise ValueError("CUDA C3 arena a2 authority does not match the target specification")
     slot_owner = target.evidence.slot_storage_manifest_sha256
     runtime_evidence = target._runtime_stage_evidence
+    render_abi = runtime_evidence[0 if spec.boundary == "R0" else 2]
+    bound = bind_render_parameters(
+        load_frozen_render_sequence(spec.case_id),
+        sample_index=target.evidence.transform_frame_index or 0,
+        profile=spec.output_profile,
+        shadows=spec.shadows,
+        pass_mode=spec.diagnostic_mode,
+        role_to_mask=prepared_input.source.packed_scene_owner.role_to_mask,
+    )
+    render_abi.validate_render_parameters(bound.to_payload())
 
     if spec.boundary == "R0":
         render_evidence = runtime_evidence[0]
@@ -75,6 +86,7 @@ def build_cuda_c3_binding_from_arena_target(
         stage_evidence = (
             _stage_evidence(
                 name="render",
+                bound_render_parameters=bound,
                 operation_id=spec.renderer_id,
                 target=target,
                 inputs=runtime_scene + derived_fixture,
@@ -139,6 +151,7 @@ def build_cuda_c3_binding_from_arena_target(
             ),
             _stage_evidence(
                 name="render",
+                bound_render_parameters=bound,
                 operation_id=spec.renderer_id,
                 target=target,
                 inputs=render_inputs,
@@ -169,6 +182,7 @@ def build_cuda_c3_binding_from_arena_target(
         runtime_scene_storage=runtime_scene,
         derived_fixture_storage=derived_fixture,
         stage_evidence=stage_evidence,
+        bound_render_parameters=bound,
     )
     _register_cuda_arena_c3_binding_authority(
         binding,
@@ -187,11 +201,16 @@ def _stage_evidence(
     inputs: tuple[NativeStorageSignature, ...],
     outputs: tuple[NativeStorageSignature, ...],
     dispatch_plan_sha256: str,
+    bound_render_parameters=None,
 ) -> NativeStageEvidence:
     spec = target._spec
     return NativeStageEvidence(
         schema_version=NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
         stage_name=name,
+        bound_render_parameters=bound_render_parameters,
+        bound_render_parameters_sha256=(
+            None if bound_render_parameters is None else bound_render_parameters.sha256
+        ),
         operation_id=operation_id,
         output_profile=spec.output_profile if name == "render" else None,
         shadows=spec.shadows if name == "render" else None,

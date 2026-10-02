@@ -2038,6 +2038,7 @@ def _validate_c3_binding_identity(target: CudaArenaPlanTarget, binding: object) 
         raise NativeOpticalArenaProtocolError("CUDA arena C3 operation identity drifted")
     for stage, runtime_stage_evidence in zip(stages, runtime_evidence, strict=True):
         if stage.stage_name == "render":
+            runtime_stage_evidence.validate_render_parameters(binding.bound_render_parameters.to_payload())
             expected_dispatch = _canonical_sha256(_plain_payload(runtime_stage_evidence))
             if stage.output_profile != spec.output_profile or stage.shadows != spec.shadows:
                 raise NativeOpticalArenaProtocolError("CUDA arena C3 render identity drifted")

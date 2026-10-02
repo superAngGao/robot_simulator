@@ -72,6 +72,7 @@ from benchmarks.optical.workloads import (
     build_canonical_packed_scene,
     build_canonical_transform_replay,
 )
+from optical_worker.render_parameters import bind_render_parameters, load_frozen_render_sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -686,10 +687,20 @@ class _OutOfOrderLane:
                 (output,),
             ),
         )
+        bound = bind_render_parameters(
+            load_frozen_render_sequence(row["case_id"]),
+            sample_index=0,
+            profile=row["output_profile"],
+            shadows=row["shadows"],
+            pass_mode="primary_unprofiled",
+            role_to_mask={"rgb": 2},
+        )
         stages = tuple(
             NativeStageEvidence(
                 schema_version=NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
                 stage_name=name,
+                bound_render_parameters=bound if name == "render" else None,
+                bound_render_parameters_sha256=bound.sha256 if name == "render" else None,
                 operation_id=operation_id,
                 output_profile=row["output_profile"] if name == "render" else None,
                 shadows=row["shadows"] if name == "render" else None,
@@ -730,6 +741,7 @@ class _OutOfOrderLane:
             runtime_scene_storage=scene_storage,
             derived_fixture_storage=(),
             stage_evidence=stages,
+            bound_render_parameters=bound,
         )
 
     def submit_sample(self, *, row, prepared, binding, request):

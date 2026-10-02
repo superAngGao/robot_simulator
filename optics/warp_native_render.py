@@ -3090,3 +3090,62 @@ class WarpDirectLightRenderCommandBundle:
             raise ValueError("recorded render bundle or evidence changed")
         if WarpDirectLightRenderCommandEvidence.from_payload(self.evidence.to_payload()) != self.evidence:
             raise ValueError("render evidence is not canonical")
+
+    def validate_resolved_parameters(self, record):
+        """Untimed C2c check of frozen parameters against actual packed leaves.
+
+        This does not confer a C4 lease or execution/result authority. The
+        future Warp arena must call it before accepting a canonical binding.
+        """
+        import struct
+
+        from optical_worker.render_parameters import BoundRenderParameters, load_frozen_render_sequence
+
+        if type(record) is not BoundRenderParameters:
+            raise TypeError("exact bound render parameters required")
+        self.validate_bound()  # Includes actual ctypes descriptor/scalar storage.
+        binding = self.binding
+        query = binding.query
+        payload = record.validate(
+            load_frozen_render_sequence(binding.factory.prepared_input.manifest.case_id),
+            sample_index=query.frame_id - 1,
+            profile=binding.output_profile.value,
+            shadows=binding.shadows,
+            pass_mode="diagnostic_profiled" if binding.traversal_diagnostics else "primary_unprofiled",
+            role_to_mask=binding.factory.prepared_input.source.packed_scene_owner.role_to_mask,
+        )
+        values = {}
+        for descriptor in self.descriptors:
+            for name, value in zip(descriptor.argument_names, descriptor.arguments, strict=True):
+                if type(value) in (int, float):
+                    if name in values and values[name] != value:
+                        raise ValueError("Warp descriptor scalar differs between commands")
+                    values[name] = value
+        names = (
+            "fx",
+            "fy",
+            "cx",
+            "cy",
+            "origin_x",
+            "origin_y",
+            "origin_z",
+            *(f"R{i}{j}" for i in range(3) for j in range(3)),
+            "max_distance",
+            *_WARP_SHADE_COLOR_ARGUMENTS,
+        )
+        try:
+            actual = tuple(values[name] for name in names)
+        except KeyError as exc:
+            raise ValueError("canonical Warp binding requires the camera fixed ABI") from exc
+        # The diagnostics-off/shadow-off ABI has no dummy bias argument.
+        bias = values["shadow_bias"] if binding.shadows else binding.shadow_bias
+        encoded = [struct.pack("<f", value).hex() for value in (*actual, bias)]
+        if (
+            encoded != payload["native_scalars_f32"]
+            or (values["width"], values["height"]) != (payload["width"], payload["height"])
+            or values["sensor_role_mask"] != payload["sensor_role_mask"]
+            or query.env_idx != payload["env_idx"]
+            or query.sensor_id != payload["sensor_id"]
+            or float(query.sim_time).hex() != payload["sim_time_f64"]
+        ):
+            raise ValueError("bound render parameters differ from actual Warp scalar ABI/metadata")

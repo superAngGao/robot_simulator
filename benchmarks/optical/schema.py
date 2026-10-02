@@ -10,6 +10,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from optical_worker.render_parameters import (
+    BOUND_SCHEMA,
+    NATIVE_SCALAR_ORDER,
+    SEQUENCE_SCHEMA,
+    BoundRenderParameters,
+)
+from optical_worker.render_sequence_contract import RESOLVED_RENDER_SEQUENCE_SHA256
 from optics.native_arena import (
     C4_ACTIVE_LEASE_BINDING_SCHEMA_VERSION,
     C4_ARENA_LIFECYCLE_SCHEMA_VERSION,
@@ -76,12 +83,46 @@ from .workload_contract import (
     frozen_workload_payloads,
 )
 
-GATE_SCHEMA_VERSION = "q54.p12.4.gate.v12"
-RESULT_SCHEMA_VERSION = "q54.p12.4.result.v12"
-ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v7"
+GATE_SCHEMA_VERSION = "q54.p12.4.gate.v13"
+RESULT_SCHEMA_VERSION = "q54.p12.4.result.v13"
+ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v8"
 INVENTORY_SCHEMA_VERSION = "q54.p12.4.architecture-inventory.v1"
 CLEANUP_SCHEMA_VERSION = "q54.p12.4.cleanup-ledger.v1"
 PUBLICATION_BINDING_CONTRACT_VERSION = "q54.p12.4.publication-cuda-binding.v1"
+
+EXPECTED_RESOLVED_RENDER_CONTRACT = {
+    "sequence_schema_version": SEQUENCE_SCHEMA,
+    "bound_schema_version": BOUND_SCHEMA,
+    "sequence_encoding": "canonical_json_record_with_single_lf_jsonl_framing",
+    "sequence_hash_scope": "canonical_record_excluding_framing_lf",
+    "binary64_encoding": "finite_canonical_float_hex",
+    "native_scalar_encoding": "binary64_to_binary32_nearest_even_little_endian_hex",
+    "native_scalar_order": list(NATIVE_SCALAR_ORDER),
+    "source_validation": "actual_materialization_equals_frozen_sequence_before_native_preparation",
+    "physical_parameter_validation": "actual_warp_packed_descriptor_and_cuda_fixed_abi",
+    "sample_metadata": "camera_i_mod_count_frame_i_plus_1_time_i_over_30_env_0_case_sensor",
+    "diagnostics": "exact_frozen_pass_mode_boolean_primary_false_diagnostic_true",
+    "warmup": "separate_provisional_samples_0_to_9_no_measured_index_offset",
+    "worker_isolation": "independent_clean_single_lane_workers_common_protocol_alternating_order",
+    "shipping_resolution": "unsupported_no_replay_substitution",
+    "serialized_parameters_authorize_execution": False,
+}
+
+
+def expected_case_catalog() -> dict[str, dict[str, object]]:
+    content = frozen_workload_payloads()
+    return {
+        case_id: {
+            "sha256": digest,
+            **content[case_id],
+            "resolved_render_sequence_sha256": RESOLVED_RENDER_SEQUENCE_SHA256.get(case_id),
+            "resolved_render_scope": "native_only"
+            if case_id in RESOLVED_RENDER_SEQUENCE_SHA256
+            else "unsupported_shipping",
+        }
+        for case_id, digest in sorted(case_hashes().items())
+    }
+
 
 BOUNDARY_VERSIONS = {
     "R0": "q54.p12.4.r0-native-renderer.v1",
@@ -385,6 +426,9 @@ EXPECTED_NATIVE_EXECUTION_BINDING_CONTRACT = {
     ],
     "stage_payload_contains_own_sha256": False,
     "stage_payload_references_outer_binding": False,
+    "bound_render_parameters_schema": BOUND_SCHEMA,
+    "bound_render_parameters_required": True,
+    "render_stage_references_independent_bound_parameters": True,
     "binding_references_stage_sha256": True,
     "acceleration_receipt_references_acceleration_stage_sha256": True,
     "C3_constructor": "build_c3_one_shot_native_execution_binding",
@@ -408,6 +452,7 @@ EXPECTED_NATIVE_EXECUTION_BINDING_CONTRACT = {
         "exact_prepared_scene_storage",
         "exact_prepared_derived_fixture_storage",
         "ordered_stage_evidence_and_dataflow_sha256",
+        "frozen_sequence_sample_metadata_and_actual_native_scalar_abi",
     ],
     "a3b_result_capable_before_C4_B3_review": False,
 }
@@ -503,6 +548,8 @@ EXECUTION_RECEIPT_REQUIRED_FIELDS = frozenset(
         "fixed_render_fixture_sha256",
         "native_execution_binding",
         "native_execution_binding_sha256",
+        "bound_render_parameters",
+        "bound_render_parameters_sha256",
         "eligibility",
         "eligibility_sha256",
         "operation_trace",
@@ -599,6 +646,8 @@ class ExecutionReceipt:
     fixed_render_fixture_sha256: str | None
     native_execution_binding: C3OneShotNativeExecutionBindingEvidence
     native_execution_binding_sha256: str
+    bound_render_parameters: BoundRenderParameters
+    bound_render_parameters_sha256: str
     eligibility: LaneEligibilityEvidence
     eligibility_sha256: str
     operation_trace: RuntimeOperationTraceEvidence
@@ -717,6 +766,16 @@ class ExecutionReceipt:
         )
         if payload.get("native_execution_binding_sha256") != native_binding.sha256:
             raise ValueError("native execution binding SHA-256 does not match its content")
+        bound_render = BoundRenderParameters.from_payload(
+            payload.get("bound_render_parameters"),
+            case_id=payload["case_id"],
+            profile=payload["output_profile"],
+            shadows=payload["shadows"],
+        )
+        if payload.get("bound_render_parameters_sha256") != bound_render.sha256:
+            raise ValueError("receipt bound render parameters hash mismatch")
+        if bound_render != native_binding.bound_render_parameters:
+            raise ValueError("receipt render parameters differ from execution binding")
         publication_payload = payload.get("shipping_publication")
         publication_hash = payload.get("shipping_publication_sha256")
         shipping_publication: ShippingPublicationReceipt | None
@@ -747,6 +806,8 @@ class ExecutionReceipt:
             fixed_render_fixture_sha256=payload["fixed_render_fixture_sha256"],
             native_execution_binding=native_binding,
             native_execution_binding_sha256=payload["native_execution_binding_sha256"],
+            bound_render_parameters=bound_render,
+            bound_render_parameters_sha256=bound_render.sha256,
             eligibility=eligibility,
             eligibility_sha256=payload["eligibility_sha256"],
             operation_trace=operation_trace,
@@ -795,6 +856,8 @@ class ExecutionReceipt:
             "fixed_render_fixture_sha256": self.fixed_render_fixture_sha256,
             "native_execution_binding": self.native_execution_binding.to_payload(),
             "native_execution_binding_sha256": self.native_execution_binding_sha256,
+            "bound_render_parameters": self.bound_render_parameters.to_payload(),
+            "bound_render_parameters_sha256": self.bound_render_parameters_sha256,
             "eligibility": self.eligibility.to_payload(),
             "eligibility_sha256": self.eligibility_sha256,
             "operation_trace": self.operation_trace.to_payload(),
@@ -918,12 +981,12 @@ def canonical_input_provenance_sha256(
     return hashlib.sha256(encoded).hexdigest()
 
 
-def canonical_row_semantics_sha256(row: Mapping[str, Any], gate: Mapping[str, Any]) -> str:
-    """Hash one row plus every shared contract that changes its execution meaning."""
+def canonical_row_semantics_payload(row: Mapping[str, Any], gate: Mapping[str, Any]) -> dict[str, Any]:
+    """Complete preimage, retained for independently reproducible migrations."""
 
     case_id = str(row.get("case_id", ""))
     boundary = str(row.get("boundary", ""))
-    payload = {
+    return {
         "schema_version": ROW_SEMANTICS_SCHEMA_VERSION,
         "row": row,
         "case_contract": gate.get("cases", {}).get(case_id),
@@ -940,9 +1003,14 @@ def canonical_row_semantics_sha256(row: Mapping[str, Any], gate: Mapping[str, An
         "acceleration_contracts": gate.get("acceleration_contracts"),
         "asset_manifest_contract": gate.get("asset_manifest_contract"),
         "shipping_publication_receipt_contract": gate.get("shipping_publication_receipt_contract"),
+        "resolved_render_contract": gate.get("resolved_render_contract"),
     }
+
+
+def canonical_row_semantics_sha256(row: Mapping[str, Any], gate: Mapping[str, Any]) -> str:
+    """Hash the complete versioned preimage, never a reduced field subset."""
     encoded = json.dumps(
-        payload,
+        canonical_row_semantics_payload(row, gate),
         allow_nan=False,
         ensure_ascii=True,
         separators=(",", ":"),
@@ -1081,6 +1149,16 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
             errors.append("S receipt must not carry replay or fixed-fixture provenance")
 
         native_binding = receipt.native_execution_binding
+        render_payload = receipt.bound_render_parameters.to_payload()
+        if (
+            type(record.get("sample_index")) is not int
+            or render_payload["frame_id"] != record["sample_index"] + 1
+        ):
+            errors.append("receipt render frame does not match sample_index")
+        if render_payload["diagnostics"] != (record.get("profile_mode") == "diagnostic_profiled"):
+            errors.append("receipt render diagnostics does not match profile_mode")
+        if render_payload["sequence_sha256"] != expected_case_content.get("resolved_render_sequence_sha256"):
+            errors.append("receipt render sequence differs from frozen case")
         errors.append(
             "result receipt cannot contain C3 one-shot binding; reviewed C4 binding schema is not implemented"
         )
@@ -1363,11 +1441,7 @@ def validate_frozen_gate(payload: Mapping[str, Any]) -> None:
         errors.append("frozen_before_result_inspection must be true")
 
     expected_hashes = case_hashes()
-    expected_content = frozen_workload_payloads()
-    expected_cases = {
-        case_id: {"sha256": case_sha256, **expected_content[case_id]}
-        for case_id, case_sha256 in sorted(expected_hashes.items())
-    }
+    expected_cases = expected_case_catalog()
     configured_cases = payload.get("cases")
     if not isinstance(configured_cases, Mapping):
         errors.append("cases must be an object")
@@ -1381,6 +1455,13 @@ def validate_frozen_gate(payload: Mapping[str, Any]) -> None:
     if not isinstance(measurement, Mapping):
         errors.append("measurement must be an object")
     else:
+        if measurement.get("same_process_native_pair") is not False:
+            errors.append("native candidates require independent single-lane worker processes")
+        if (
+            measurement.get("native_worker_isolation")
+            != EXPECTED_RESOLVED_RENDER_CONTRACT["worker_isolation"]
+        ):
+            errors.append("measurement native worker isolation is not frozen")
         for field in ("warmup_frames", "measured_frames", "paired_repeats"):
             if not _positive_int(measurement.get(field)):
                 errors.append(f"measurement.{field} must be a positive integer")
@@ -1460,6 +1541,8 @@ def validate_frozen_gate(payload: Mapping[str, Any]) -> None:
         errors.append("native_input_contract does not match the durable a2 contract")
     if payload.get("native_execution_binding_contract") != (EXPECTED_NATIVE_EXECUTION_BINDING_CONTRACT):
         errors.append("native_execution_binding_contract does not match C3a provenance")
+    if payload.get("resolved_render_contract") != EXPECTED_RESOLVED_RENDER_CONTRACT:
+        errors.append("resolved_render_contract differs from frozen sequence/native parameter rules")
     if payload.get("native_output_arena_contract") != EXPECTED_NATIVE_OUTPUT_ARENA_CONTRACT:
         errors.append("native_output_arena_contract does not match the approved C4a contract")
     if payload.get("native_result_activation") != EXPECTED_NATIVE_RESULT_ACTIVATION:

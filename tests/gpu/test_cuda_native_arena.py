@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import struct
 from dataclasses import replace
 
 import pytest
@@ -28,6 +29,7 @@ from benchmarks.optical.workloads import (
     build_canonical_packed_scene,
     build_canonical_transform_replay,
 )
+from optical_worker.render_parameters import bind_render_parameters, load_frozen_render_sequence
 from optics.cuda_arena import (
     CudaActiveArenaSample,
     CudaArenaC3Provenance,
@@ -73,16 +75,31 @@ def _context(device: str = "cuda:0") -> CudaOpticalExecutionContext:
     return CudaOpticalExecutionContext(device=target, stream=stream)
 
 
-def _camera() -> CudaCameraParameters:
+def _render_values(case_id):
+    # Use the reviewed binary32 input record, never a tiny surrogate camera.
+    payload = bind_render_parameters(
+        load_frozen_render_sequence(case_id),
+        sample_index=0,
+        profile="direct_light_full",
+        shadows=False,
+        pass_mode="primary_unprofiled",
+        role_to_mask={"rgb": 2},
+    ).to_payload()
+    values = tuple(struct.unpack("<f", bytes.fromhex(v))[0] for v in payload["native_scalars_f32"])
+    return payload, values
+
+
+def _camera(case_id) -> CudaCameraParameters:
+    payload, values = _render_values(case_id)
     return CudaCameraParameters(
-        width=2,
-        height=1,
-        fx=2.0,
-        fy=2.0,
-        cx=0.5,
-        cy=0.5,
-        origin=(0.0, 0.0, 0.0),
-        rotation=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+        width=payload["width"],
+        height=payload["height"],
+        fx=values[0],
+        fy=values[1],
+        cx=values[2],
+        cy=values[3],
+        origin=values[4:7],
+        rotation=values[7:16],
     )
 
 
@@ -125,9 +142,9 @@ def _spec(
             else ("production_dynamic" if dynamic else "fixed_bvh_fixture")
         ),
         acceleration_id=("cuda_morton_karras_lbvh_rebuild_v1" if dynamic else "fixed_bvh_fixture"),
-        width=2,
-        height=1,
-        num_rays=2,
+        width=case.width,
+        height=case.height,
+        num_rays=case.width * case.height,
         primitive_count=primitive_count,
         node_capacity=node_capacity,
         output_profile="direct_light_full",
@@ -204,12 +221,12 @@ def _dynamic_arena(
         lbvh_factory=lbvh_factory,
         renderer=renderer,
         transforms=transforms,
-        camera=_camera(),
+        camera=_camera(case_id),
         sensor_role_mask=scene_factory.local_scene.role_to_mask["rgb"],
-        max_distance=10.0,
-        ambient_rgb=(0.1, 0.1, 0.1),
-        background_rgb=(0.0, 0.0, 0.0),
-        shadow_bias=1.0e-6,
+        max_distance=_render_values(case_id)[1][16],
+        ambient_rgb=_render_values(case_id)[1][17:20],
+        background_rgb=_render_values(case_id)[1][20:23],
+        shadow_bias=_render_values(case_id)[1][23],
     )
     _A2_AUTHORITIES[id(arena)] = (prepared, readiness)
     return arena
@@ -242,7 +259,7 @@ def _fixed_inputs(prepared: CudaPreparedNativeInput, sensor_role_mask: int):
         bvh_prim_ids=arrays["bvh_prim_ids"],
         num_bvh_nodes=int(arrays["bvh_left"].shape[0]),
         sensor_role_mask=sensor_role_mask,
-        max_distance=10.0,
+        max_distance=_render_values(prepared.manifest.case_id)[1][16],
     )
     shade = CudaShadeInputs(
         material_albedo_rgb=arrays["material_albedo_rgb"],
@@ -255,7 +272,7 @@ def _fixed_inputs(prepared: CudaPreparedNativeInput, sensor_role_mask: int):
     return first, shade
 
 
-def _fixed_arena(*, device: str = "cuda:0"):
+def _fixed_arena(*, device: str = "cuda:0", camera_override=None, ambient_override=None):
     _require_cuda()
     context = _context(device)
     packed = build_canonical_packed_scene("asymmetric_synthetic_7x3_v1")
@@ -289,16 +306,61 @@ def _fixed_arena(*, device: str = "cuda:0"):
         renderer=CudaDirectLightNativeRenderer.prepare(context),
         first_hit_inputs=first,
         shade_inputs=shade,
-        camera=_camera(),
-        ambient_rgb=(0.1, 0.1, 0.1),
-        background_rgb=(0.0, 0.0, 0.0),
-        shadow_bias=1.0e-6,
+        camera=camera_override or _camera("asymmetric_synthetic_7x3_v1"),
+        ambient_rgb=ambient_override or _render_values(prepared.manifest.case_id)[1][17:20],
+        background_rgb=_render_values(prepared.manifest.case_id)[1][20:23],
+        shadow_bias=_render_values(prepared.manifest.case_id)[1][23],
         runtime_scene_arrays=fixed.scene_arrays,
         derived_fixture_arrays=fixed.derived_fixture_arrays,
         resource_owners=(prepared,),
     )
     _A2_AUTHORITIES[id(arena)] = (prepared, readiness)
     return arena
+
+
+@pytest.mark.parametrize("wrong", ["focal", "rotation", "ambient"])
+def test_canonical_c3_rejects_correct_scene_with_wrong_actual_render_scalars(wrong):
+    camera = _camera("asymmetric_synthetic_7x3_v1")
+    options = {}
+    if wrong == "focal":
+        options["camera_override"] = replace(camera, fx=camera.fx + 1.0)
+    elif wrong == "rotation":
+        rotation = list(camera.rotation)
+        rotation[0], rotation[1] = rotation[1], rotation[0]
+        options["camera_override"] = replace(camera, rotation=tuple(rotation))
+    else:
+        options["ambient_override"] = (1.0, 0.0, 0.0)
+    arena = _fixed_arena(**options)
+    target = arena.plan_target(transform_frame_index=None)
+    before = arena.lifecycle_evidence()
+    with pytest.raises(ValueError, match="actual CUDA scalar ABI"):
+        _provenance(arena, target)
+    assert arena.lifecycle_evidence() == before
+    assert before.terminal_event_record_count == 0
+    assert before.slots[0].state == "FREE"
+
+
+def test_cuda_actual_bound_argument_permutation_fails_before_sample_leaf():
+    arena = _fixed_arena()
+    target = arena.plan_target(transform_frame_index=None)
+    provenance = _provenance(arena, target)
+    stage = arena._execution_for_target(target).transaction_template.stages[0]
+    with pytest.raises(AttributeError):
+        stage._sealed = False
+    with pytest.raises(ValueError, match="cannot be rebuilt"):
+        stage._freeze_storage_signature()
+    original = stage._raygen_args
+    arguments = list(original)
+    arguments[4], arguments[5] = arguments[5], arguments[4]
+    object.__setattr__(stage, "_raygen_args", tuple(arguments))
+    before = arena.lifecycle_evidence()
+    try:
+        with pytest.raises(ValueError, match="ABI|changed"):
+            arena.prepare_sample(target=target, provenance=provenance)
+        assert arena.lifecycle_evidence() == before
+        assert before.terminal_event_record_count == 0
+    finally:
+        object.__setattr__(stage, "_raygen_args", original)
 
 
 def test_cuda_r1_arena_reuses_one_event_only_after_exact_reclaim(monkeypatch):
@@ -384,7 +446,7 @@ def test_cuda_slot_manifest_exposes_exact_semantics_dtype_shape_and_events():
     assert by_name["slot0.world.triangle_v0_world"][1].dtype == "torch.float32"
     assert by_name["slot0.world.triangle_v0_world"][1].shape == (1, 3)
     assert by_name["slot0.lbvh.left"][1].dtype == "torch.int32"
-    assert by_name["slot0.render.rgb"][1].shape == (2, 3)
+    assert by_name["slot0.render.rgb"][1].shape == (arena.spec.num_rays, 3)
     assert by_name["terminal_event"][0].resource_kind == "cuda_event"
     assert by_name["diagnostic.acceleration_kernel.start"][0].resource_kind == "cuda_event"
     session_names = {name for record in arena.session_resource_records for name in record.logical_names}

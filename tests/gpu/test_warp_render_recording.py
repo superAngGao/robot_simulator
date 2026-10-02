@@ -228,6 +228,86 @@ def _no_execution(*args, **kwargs):
     raise AssertionError("recording tests cannot execute recorded GPU commands")
 
 
+@pytest.mark.parametrize("shadows", [False, True])
+@pytest.mark.parametrize("diagnostics", [False, True])
+@pytest.mark.parametrize(
+    "profile",
+    list(
+        (
+            OpticalOutputProfile.DIRECT_LIGHT_FULL,
+            OpticalOutputProfile.RGB_PREVIEW,
+            OpticalOutputProfile.RENDER_ONLY,
+        )
+    ),
+)
+def test_frozen_sequence_compares_actual_warp_packed_scalars(wp, monkeypatch, shadows, diagnostics, profile):
+    import struct
+
+    from optical_worker.render_parameters import bind_render_parameters, load_frozen_render_sequence
+    from optics.warp_native_render import WarpRenderQueryParameters
+
+    setup = _setup(wp)
+    record = bind_render_parameters(
+        load_frozen_render_sequence(setup.prepared.manifest.case_id),
+        sample_index=0,
+        profile=profile.value,
+        shadows=shadows,
+        pass_mode="diagnostic_profiled" if diagnostics else "primary_unprofiled",
+        role_to_mask=setup.prepared.source.packed_scene_owner.role_to_mask,
+    )
+    payload = record.to_payload()
+    values = tuple(struct.unpack("<f", bytes.fromhex(v))[0] for v in payload["native_scalars_f32"])
+    query = WarpRenderQueryParameters(
+        num_rays=21,
+        frame_id=1,
+        sim_time=0.0,
+        env_idx=0,
+        sensor_id=payload["sensor_id"],
+        max_distance=values[16],
+        sensor_role="rgb",
+        sensor_role_mask=payload["sensor_role_mask"],
+    )
+    setup.camera = WarpCameraParameters(
+        query=query,
+        width=7,
+        height=3,
+        fx=values[0],
+        fy=values[1],
+        cx=values[2],
+        cy=values[3],
+        origin=values[4:7],
+        rotation=values[7:16],
+    )
+    setup.bvh = replace(setup.bvh, frame_id=1)
+    buffers = _buffers(wp, setup, diagnostics)
+    monkeypatch.setattr(wp.Launch, "launch", _no_execution)
+    bundle = _seal(
+        setup,
+        buffers,
+        shadows=shadows,
+        output_profile=profile,
+        ambient_rgb=values[17:20],
+        background_rgb=values[20:23],
+        shadow_bias=values[23],
+    )
+    bundle.validate_resolved_parameters(record)
+    scalar_checks = 0
+    for command, descriptor in zip(bundle.commands, bundle.descriptors, strict=True):
+        for index, argument in enumerate(descriptor.arguments):
+            if type(argument) is float:
+                parameter = command.params[index + 1]
+                previous = parameter.value
+                parameter.value = previous + 1.0
+                try:
+                    with pytest.raises(ValueError, match="scalar|changed"):
+                        bundle.validate_resolved_parameters(record)
+                finally:
+                    parameter.value = previous
+                scalar_checks += 1
+    assert scalar_checks == (24 if shadows else 23)
+    bundle.validate_resolved_parameters(record)
+
+
 @pytest.mark.parametrize("shadows,diagnostics", [(False, False), (False, True), (True, False), (True, True)])
 @pytest.mark.parametrize(
     "profile",

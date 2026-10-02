@@ -419,6 +419,44 @@ class BoundRenderParameters:
 
     canonical_bytes: bytes
 
+    def to_payload(self):
+        if type(self) is not BoundRenderParameters or type(self.canonical_bytes) is not bytes:
+            raise TypeError("exact immutable bound render record required")
+        payload = json.loads(self.canonical_bytes)
+        if type(payload) is not dict or canonical_json_bytes(payload) != self.canonical_bytes:
+            raise ValueError("bound render record is not canonical")
+        return payload
+
+    @classmethod
+    def from_payload(cls, payload, *, case_id, profile, shadows):
+        """Validate a descriptive record against the frozen case and binding.
+
+        This does not authenticate the role table or actual GPU arguments;
+        the native adapter must cross-check its actual scene and fixed ABI.
+        """
+        if cls is not BoundRenderParameters or type(payload) is not dict:
+            raise TypeError("exact bound render payload required")
+        frame_id = payload.get("frame_id")
+        diagnostics = payload.get("diagnostics")
+        if type(frame_id) is not int or frame_id < 1 or type(diagnostics) is not bool:
+            raise ValueError("invalid bound render frame/diagnostic identity")
+        if payload.get("profile") != profile:
+            raise ValueError("bound render output_profile differs from binding")
+        if payload.get("shadows") is not shadows:
+            raise ValueError("bound render shadows differ from binding")
+        sequence = load_frozen_render_sequence(case_id)
+        role = sequence.to_payload()["frames"][0]["sensor_role"]
+        record = cls(canonical_json_bytes(payload))
+        record.validate(
+            sequence,
+            sample_index=frame_id - 1,
+            profile=profile,
+            shadows=shadows,
+            pass_mode="diagnostic_profiled" if diagnostics else "primary_unprofiled",
+            role_to_mask={role: payload.get("sensor_role_mask")},
+        )
+        return record
+
     def validate(self, sequence, *, sample_index, profile, shadows, pass_mode, role_to_mask):
         expected = _bound_payload(
             sequence,

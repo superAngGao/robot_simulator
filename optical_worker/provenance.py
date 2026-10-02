@@ -16,9 +16,47 @@ from .lane_contract import (
 
 ACCELERATION_RECEIPT_SCHEMA_VERSION = "q54.p12.4.acceleration-receipt.v2"
 SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION = "q54.p12.4.shipping-publication-receipt.v1"
-NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION = "q54.p12.4.native-stage-evidence.v2"
-NATIVE_EXECUTION_BINDING_SCHEMA_VERSION = "q54.p12.4.c3-one-shot-binding.v5"
+NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION = "q54.p12.4.native-stage-evidence.v3"
+NATIVE_EXECUTION_BINDING_SCHEMA_VERSION = "q54.p12.4.c3-one-shot-binding.v6"
 DYNAMIC_DATAFLOW_CONTRACT_SCHEMA_VERSION = "q54.p12.4.dynamic-dataflow.v2"
+
+
+def _validate_render_record(
+    payload,
+    *,
+    expected_sha256,
+    scene_contract_sha256,
+    output_profile,
+    shadows,
+    case_id=None,
+    case_sha256=None,
+):
+    # Lazy import avoids a provenance/native-input/materializer import cycle;
+    # production module import itself retains its dependency-light boundary.
+    from .cases import get_case
+    from .render_parameters import BoundRenderParameters
+    from .render_sequence_contract import RESOLVED_RENDER_SEQUENCE_SHA256
+    from .workload_contract import frozen_workload_content
+
+    matching = [
+        name
+        for name in RESOLVED_RENDER_SEQUENCE_SHA256
+        if frozen_workload_content(name).scene_contract_sha256 == scene_contract_sha256
+    ]
+    if len(matching) != 1 or (case_id is not None and case_id != matching[0]):
+        raise ValueError("render parameter scene/case identity is unresolved or inconsistent")
+    case = get_case(matching[0])
+    if case_sha256 is not None and case_sha256 != case.sha256:
+        raise ValueError("render parameter case hash mismatch")
+    record = BoundRenderParameters.from_payload(
+        payload,
+        case_id=case.case_id,
+        profile=output_profile,
+        shadows=shadows,
+    )
+    if expected_sha256 != record.sha256:
+        raise ValueError("bound render parameters digest mismatch")
+    return record
 
 
 _CUDA_ARENA_C3_BINDING_AUTHORITIES: dict[
@@ -235,6 +273,8 @@ class NativeStageEvidence:
     input_storage: tuple[NativeStorageSignature, ...]
     output_storage: tuple[NativeStorageSignature, ...]
     dispatch_plan_sha256: str
+    bound_render_parameters: object | None
+    bound_render_parameters_sha256: str | None
 
     @classmethod
     def from_payload(cls, payload: object) -> "NativeStageEvidence":
@@ -251,8 +291,22 @@ class NativeStageEvidence:
                 raise ValueError("native render stage output profile is invalid")
             if not isinstance(payload.get("shadows"), bool):
                 raise ValueError("native render stage shadows must be boolean")
+            bound_render = _validate_render_record(
+                payload.get("bound_render_parameters"),
+                expected_sha256=payload.get("bound_render_parameters_sha256"),
+                scene_contract_sha256=payload.get("scene_contract_sha256"),
+                output_profile=payload["output_profile"],
+                shadows=payload["shadows"],
+            )
         elif payload.get("output_profile") is not None or payload.get("shadows") is not None:
             raise ValueError("non-render native stage cannot carry render identity")
+        else:
+            if (
+                payload.get("bound_render_parameters") is not None
+                or payload.get("bound_render_parameters_sha256") is not None
+            ):
+                raise ValueError("non-render stage cannot carry bound render parameters")
+            bound_render = None
         for name in (
             "scene_contract_sha256",
             "transform_replay_sha256",
@@ -291,6 +345,8 @@ class NativeStageEvidence:
             input_storage=input_storage,
             output_storage=output_storage,
             dispatch_plan_sha256=payload["dispatch_plan_sha256"],
+            bound_render_parameters=bound_render,
+            bound_render_parameters_sha256=payload["bound_render_parameters_sha256"],
         )
 
     def to_payload(self) -> dict[str, object]:
@@ -309,6 +365,10 @@ class NativeStageEvidence:
             "input_storage": [value.to_payload() for value in self.input_storage],
             "output_storage": [value.to_payload() for value in self.output_storage],
             "dispatch_plan_sha256": self.dispatch_plan_sha256,
+            "bound_render_parameters": None
+            if self.bound_render_parameters is None
+            else self.bound_render_parameters.to_payload(),
+            "bound_render_parameters_sha256": self.bound_render_parameters_sha256,
         }
 
     @property
@@ -385,6 +445,8 @@ class C3OneShotNativeExecutionBindingEvidence:
     derived_fixture_storage_sha256: str | None
     ordered_stage_evidence: tuple[NativeStageBinding, ...]
     dataflow_binding_sha256: str
+    bound_render_parameters: object
+    bound_render_parameters_sha256: str
 
     @classmethod
     def from_payload(cls, payload: object) -> "C3OneShotNativeExecutionBindingEvidence":
@@ -413,6 +475,15 @@ class C3OneShotNativeExecutionBindingEvidence:
             raise ValueError("native execution binding output profile is invalid")
         if not isinstance(payload.get("shadows"), bool):
             raise ValueError("native execution binding shadows must be boolean")
+        bound_render = _validate_render_record(
+            payload.get("bound_render_parameters"),
+            expected_sha256=payload.get("bound_render_parameters_sha256"),
+            scene_contract_sha256=payload.get("scene_contract_sha256"),
+            output_profile=payload["output_profile"],
+            shadows=payload["shadows"],
+            case_id=payload["case_id"],
+            case_sha256=payload["case_sha256"],
+        )
         for name in (
             "case_sha256",
             "native_input_manifest_sha256",
@@ -438,6 +509,12 @@ class C3OneShotNativeExecutionBindingEvidence:
             raise ValueError("native execution binding transform frame index is invalid")
         if (payload.get("transform_replay_sha256") is None) != (frame_index is None):
             raise ValueError("native execution binding replay hash/index must appear together")
+        if frame_index is not None:
+            from .cases import get_case
+
+            frame_count = int(get_case(payload["case_id"]).transform_sequence["frames"])
+            if frame_index != (bound_render.to_payload()["frame_id"] - 1) % frame_count:
+                raise ValueError("render sample and transform replay frame differ")
         runtime_scene_storage = _storage_sequence(payload.get("runtime_scene_storage"), label="runtime scene")
         if not runtime_scene_storage:
             raise ValueError("native execution binding runtime scene storage is empty")
@@ -477,6 +554,11 @@ class C3OneShotNativeExecutionBindingEvidence:
         all_storage = runtime_scene_storage + derived_fixture_storage
         for stage in stages:
             evidence = stage.evidence
+            if evidence.stage_name == "render" and (
+                evidence.bound_render_parameters != bound_render
+                or evidence.bound_render_parameters_sha256 != bound_render.sha256
+            ):
+                raise ValueError("render stage parameters differ from aggregate binding")
             if (
                 evidence.scene_contract_sha256 != payload["scene_contract_sha256"]
                 or evidence.input_contract != payload["input_contract"]
@@ -537,6 +619,8 @@ class C3OneShotNativeExecutionBindingEvidence:
             derived_fixture_storage_sha256=payload["derived_fixture_storage_sha256"],
             ordered_stage_evidence=tuple(stages),
             dataflow_binding_sha256=payload["dataflow_binding_sha256"],
+            bound_render_parameters=bound_render,
+            bound_render_parameters_sha256=bound_render.sha256,
         )
 
     def to_payload(self) -> dict[str, object]:
@@ -566,6 +650,8 @@ class C3OneShotNativeExecutionBindingEvidence:
             "derived_fixture_storage_sha256": self.derived_fixture_storage_sha256,
             "ordered_stage_evidence": [value.to_payload() for value in self.ordered_stage_evidence],
             "dataflow_binding_sha256": self.dataflow_binding_sha256,
+            "bound_render_parameters": self.bound_render_parameters.to_payload(),
+            "bound_render_parameters_sha256": self.bound_render_parameters_sha256,
         }
 
     def _assert_cuda_arena_adapter_authority(
@@ -1097,6 +1183,7 @@ def build_c3_one_shot_native_execution_binding(
     runtime_scene_storage: Sequence[NativeStorageSignature],
     derived_fixture_storage: Sequence[NativeStorageSignature],
     stage_evidence: Sequence[NativeStageEvidence],
+    bound_render_parameters: object,
 ) -> C3OneShotNativeExecutionBindingEvidence:
     """Build C3 one-shot evidence; this constructor can never authorize results."""
 
@@ -1150,5 +1237,7 @@ def build_c3_one_shot_native_execution_binding(
             derived_fixture_storage=derived_storage,
             ordered_stage_evidence=stages,
         ),
+        bound_render_parameters=bound_render_parameters,
+        bound_render_parameters_sha256=bound_render_parameters.sha256,
     )
     return C3OneShotNativeExecutionBindingEvidence.from_payload(binding.to_payload())

@@ -50,6 +50,7 @@ from benchmarks.optical.timing import (
     RuntimeOperationRecord,
     RuntimeOperationTraceEvidence,
 )
+from optical_worker.render_parameters import bind_render_parameters, load_frozen_render_sequence
 from optics import (
     DIRECT_LIGHT_FULL_HOST_PER_RAY_CHANNEL_SPECS,
     HOST_DIAGNOSTIC_OVERLAY_CONTRACTS,
@@ -64,6 +65,20 @@ from optics import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _bound_parameters(row):
+    # Descriptive parser fixtures, never runtime or C4 authority.
+    return bind_render_parameters(
+        load_frozen_render_sequence(row["case_id"]),
+        sample_index=0,
+        profile=row["output_profile"],
+        shadows=row["shadows"],
+        pass_mode="primary_unprofiled",
+        role_to_mask={"rgb": 2},
+    )
+
+
 RESULT_DIR = REPO_ROOT / "benchmarks" / "results" / "q54_p12_4"
 
 EXPECTED_CASE_HASHES = {
@@ -236,7 +251,7 @@ def test_dynamic_binding_contract_is_bound_to_operation_and_profile():
     with pytest.raises(ValueError, match="operation sequence"):
         _rebuild_c3_binding(binding, stages)
 
-    with pytest.raises(ValueError, match="render stage identity"):
+    with pytest.raises(ValueError, match="bound render output_profile"):
         _rebuild_c3_binding(
             binding,
             [stage.evidence for stage in binding.ordered_stage_evidence],
@@ -559,48 +574,21 @@ def test_shipping_rows_keep_ready_and_reclaim_endpoints_distinct():
             assert endpoints["final_reclaim_metric"] in row["primary_metrics"]
 
 
-def test_result_rejects_replay_provenance_in_shipping_receipt():
+def test_shipping_render_binding_remains_explicitly_unresolved():
     gate = load_frozen_gate()
-    row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "s_physics_rgb8_sync_shadow")
-    record = _valid_result_record(gate, row)
-    publication_payload = copy.deepcopy(record["receipt"]["shipping_publication"])
-    publication_payload["replay_source_count"] = 1
-    publication = ShippingPublicationReceipt.from_payload(publication_payload)
-    receipt = copy.deepcopy(record["receipt"])
-    receipt["shipping_publication"] = publication_payload
-    receipt["shipping_publication_sha256"] = publication.sha256
-    receipt["input_provenance_sha256"] = canonical_input_provenance_sha256(
-        input_contract=receipt["input_contract"],
-        case_id=receipt["case_id"],
-        case_sha256=receipt["case_sha256"],
-        native_input_manifest_sha256=receipt["native_input_manifest_sha256"],
-        native_input_content_sha256=receipt["native_input_content_sha256"],
-        topology_sha256=receipt["topology_sha256"],
-        scene_contract_sha256=receipt["scene_contract_sha256"],
-        transform_replay_sha256=receipt["transform_replay_sha256"],
-        transform_frame_index=receipt["transform_frame_index"],
-        fixed_render_fixture_sha256=receipt["fixed_render_fixture_sha256"],
-        native_execution_binding_sha256=receipt["native_execution_binding_sha256"],
-        asset_manifest_sha256=receipt["eligibility"]["asset_manifest_sha256"],
-        shipping_publication_sha256=publication.sha256,
-    )
-    record["receipt"] = receipt
-    record["receipt_sha256"] = canonical_execution_receipt_sha256(receipt)
-
-    with pytest.raises(ValueError, match="forbidden replay/host operation"):
-        validate_result_record(record, gate)
+    for row in gate["mandatory_rows"]:
+        if row["boundary"] == "S":
+            with pytest.raises(ValueError, match="no resolved native render sequence"):
+                _bound_parameters(row)
 
 
 def test_result_rejects_native_replay_receipt_as_shipping_input_even_if_values_match():
     gate = load_frozen_gate()
-    row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "s_physics_device_only_no_shadow")
+    row = next(row for row in gate["mandatory_rows"] if row["boundary"] == "R1")
     record = _valid_result_record(gate, row)
-    receipt = copy.deepcopy(record["receipt"])
-    receipt["input_contract"] = "canonical_native_replay_v1"
-    record["receipt"] = receipt
-    record["receipt_sha256"] = canonical_execution_receipt_sha256(receipt)
-
-    with pytest.raises(ValueError, match="input_contract"):
+    record["receipt"]["input_contract"] = "gpu_engine_published_frame_v1"
+    record["receipt_sha256"] = canonical_execution_receipt_sha256(record["receipt"])
+    with pytest.raises(ValueError, match="input_contract|provenance"):
         validate_result_record(record, gate)
 
 
@@ -811,6 +799,7 @@ def _valid_result_record(gate, row, *, lane="cuda"):
         runtime_scene_storage=runtime_storage,
         derived_fixture_storage=fixture_storage,
         stage_evidence=native_stages,
+        bound_render_parameters=_bound_parameters(row),
     )
     receipt = ExecutionReceipt(
         producer=f"{lane}_lane",
@@ -843,6 +832,8 @@ def _valid_result_record(gate, row, *, lane="cuda"):
         transform_replay_sha256=replay_sha256,
         transform_frame_index=replay_index,
         fixed_render_fixture_sha256=fixed_fixture_sha256,
+        bound_render_parameters=native_binding.bound_render_parameters,
+        bound_render_parameters_sha256=native_binding.bound_render_parameters_sha256,
         native_execution_binding=native_binding,
         native_execution_binding_sha256=native_binding.sha256,
         eligibility=eligibility,
@@ -1034,6 +1025,8 @@ def _native_stages(
         NativeStageEvidence(
             schema_version=NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
             stage_name=name,
+            bound_render_parameters=_bound_parameters(row) if name == "render" else None,
+            bound_render_parameters_sha256=_bound_parameters(row).sha256 if name == "render" else None,
             operation_id=operation_id,
             output_profile=row["output_profile"] if name == "render" else None,
             shadows=row["shadows"] if name == "render" else None,
@@ -1079,6 +1072,7 @@ def _rebuild_c3_binding(
         runtime_scene_storage=binding.runtime_scene_storage,
         derived_fixture_storage=binding.derived_fixture_storage,
         stage_evidence=stages,
+        bound_render_parameters=binding.bound_render_parameters,
     )
 
 
