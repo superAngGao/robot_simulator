@@ -1086,6 +1086,15 @@ Next milestone:
       (render-cleanup-ledger review v1):47 targeted/124 related CPU tests and17
       negative inventory controls passed, with no process residual. This records
       P12.4e obligations; it does not claim that terminal cleanup has executed.
+      C2c5 CPU source-policy primitive is independently approved with comments
+      at `05d9ccf` (source-policy review v2): exact source/function byte pins,
+      restricted AST checks and read-only file verification; independent175
+      tests pass on each Python3.12/3.14, author remote regression278passes.
+      Initial interpreter-pin and explicit alias/reflection failures were
+      repaired. Two mutation tests need a non-blocking scoped-replacement/
+      parseability follow-up in the next source-admission candidate; independent
+      valid mutants already reject. Round-end owned processes exited and GPU
+      process queries were empty; no GPU execution or historical-hang fix claimed.
       Complete C2c source admission and C2d/e/f integration remain incomplete.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
