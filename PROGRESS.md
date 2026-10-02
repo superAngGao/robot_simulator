@@ -1082,7 +1082,10 @@ Next milestone:
       signed-zero/timed-preflight/storage-drift counterexamples. Author affected
       regression separately passed886 on101/H200. Exact process/GPU checks
       cleared after each round; no unexpected hang was observed. A non-blocking
-      exact-path cleanup-ledger follow-up remains recorded in that review.
+      exact-path cleanup-ledger follow-up is independently approved at `f4dee5d`
+      (render-cleanup-ledger review v1):47 targeted/124 related CPU tests and17
+      negative inventory controls passed, with no process residual. This records
+      P12.4e obligations; it does not claim that terminal cleanup has executed.
       Complete C2c source admission and C2d/e/f integration remain incomplete.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
