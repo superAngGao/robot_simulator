@@ -1104,6 +1104,12 @@ Next milestone:
       processes exited and GPU process queries were empty. These are CPU-only
       checks, not GPU/historical-hang proof. Pre-execution source consumption,
       bytecode policy and complete C2d/e/f worker integration remain incomplete.
+      The CPU-only C2d0 source-consumption design addendum is independently
+      approved at `57fea1c` (source-consumption design review v1): held-source
+      loader, exact six-module cold core and narrowly pinned native-policy v3
+      exception. Independent local3.14/remote3.12 cache diagnostics and actual
+      core/full-verifier probes pass; process checks found no owned residual.
+      This authorizes implementation only, not a completed loader or runtime.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
