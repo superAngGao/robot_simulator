@@ -133,9 +133,12 @@ def test_real_go2_cpu_materialization_has_no_unlisted_imports(release, lane):
     if not asset:
         pytest.skip("real Go2 asset path not configured; required remote invocation supplies it")
     _cold(release, f"""
+from optical_worker.assets import preflight_case_asset
 from optical_worker.render_parameters import materialize_render_source
+model = Path({asset!r})
 for case in ('go2_static_960x640_v1', 'go2_static_1920x1080_v1'):
-    materialize_render_source(case, go2_model_dir=Path({asset!r}))
+    evidence = preflight_case_asset(case, repo_root=model.parent, model_dir=model)
+    materialize_render_source(case, go2_model_dir=model, asset_evidence=evidence)
 observed = snapshot.check_loaded_modules()
 assert 'optics/mjcf_visual.py' in observed
 assert not set(sys.modules) & {{'torch', 'warp', 'benchmarks', 'tests', 'examples'}}
