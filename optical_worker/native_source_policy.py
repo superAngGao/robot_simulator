@@ -16,7 +16,13 @@ from pathlib import Path, PurePosixPath
 from .manifest import AST_POLICY
 from .protocol import ClosedWorkerProtocolError, canonical_sha256
 
-NATIVE_AST_POLICY_VERSION = "q54.p12.4.closed-worker-ast-policy.v2"
+NATIVE_AST_POLICY_VERSION = "q54.p12.4.closed-worker-ast-policy.v3"
+_BOOTSTRAP_PATH = "optical_worker/native_bootstrap.py"
+_BOOTSTRAP_SOURCE_SHA256 = "f61f500de8d41807d4af5f02fd900c7af697057e598468dba79ba3e6801e7521"
+_BOOTSTRAP_CLASS_PINS = {
+    "_CapturedSourceLoader": "7d020c836934fa0411c7387b6563a2a858572c61ee42166914f2cf883bbc260a",
+    "_CapturedSourceFinder": "ed415c9c497e75e45c9cddd07bd843c898d8177dac0f4b72b96ad53e98ac02f2",
+}
 _SNAPSHOT_PATH = "optics/warp_native_render.py"
 _SNAPSHOT_FUNCTION = "_render_launch_snapshot"
 # Exact LF Git/source-release bytes reviewed in C2c4 (4b7bf4c). Deliberately
@@ -49,6 +55,14 @@ NATIVE_AST_POLICY_SHA256 = canonical_sha256({
     "forbidden_builtin_imports": sorted(_FORBIDDEN_NAMES | {"*"}),
     "literal_lookup_policy": "reject forbidden name/attribute literals in calls, keywords and subscripts",
     "existing_regex_source_pins": _REGEX_SOURCE_PINS,
+    "source_loader_exception": {
+        "path": _BOOTSTRAP_PATH,
+        "source_sha256": _BOOTSTRAP_SOURCE_SHA256,
+        "class_source_pins": _BOOTSTRAP_CLASS_PINS,
+        "imports": ["importlib.abc", "importlib.util"],
+        "uses": ["importlib.abc.SourceLoader", "importlib.abc.MetaPathFinder",
+                 "importlib.util.spec_from_loader"],
+    },
     "source_roots": sorted(_SOURCE_ROOTS),
     "launcher_paths": sorted(_LAUNCHER_PATHS),
     "ctypes_exception": {
@@ -79,6 +93,14 @@ def _validate_relative_path(relative_path: str) -> PurePosixPath:
 
 
 def _validate_tree(relative_path: str, tree: ast.Module, source: bytes) -> None:
+    if relative_path == _BOOTSTRAP_PATH:
+        classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+        for name, digest in _BOOTSTRAP_CLASS_PINS.items():
+            node = classes.get(name)
+            if node is None or hashlib.sha256(b"".join(
+                source.splitlines(keepends=True)[node.lineno - 1:node.end_lineno]
+            )).hexdigest() != digest:
+                raise ClosedWorkerProtocolError("source-only loader definitions have drifted")
     snapshots = [node for node in tree.body if isinstance(node, ast.FunctionDef)
                  and node.name == _SNAPSHOT_FUNCTION]
     snapshot = snapshots[0] if relative_path == _SNAPSHOT_PATH and len(snapshots) == 1 else None
@@ -96,7 +118,11 @@ def _validate_tree(relative_path: str, tree: ast.Module, source: bytes) -> None:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 root = alias.name.partition(".")[0]
-                if root == "ctypes" and relative_path == _SNAPSHOT_PATH:
+                if root == "importlib" and relative_path == _BOOTSTRAP_PATH:
+                    if (alias.name not in {"importlib.abc", "importlib.util"} or alias.asname is not None
+                            or len(node.names) != 1 or node not in tree.body):
+                        raise ClosedWorkerProtocolError("source bootstrap importlib import has drifted")
+                elif root == "ctypes" and relative_path == _SNAPSHOT_PATH:
                     if (alias.name != "ctypes" or alias.asname is not None
                             or len(node.names) != 1 or node not in tree.body):
                         raise ClosedWorkerProtocolError("ctypes import must be the sole plain module import")
@@ -113,6 +139,12 @@ def _validate_tree(relative_path: str, tree: ast.Module, source: bytes) -> None:
         elif isinstance(node, ast.Name):
             if node.id in _FORBIDDEN_NAMES:
                 raise ClosedWorkerProtocolError("native source uses or aliases a forbidden dynamic name")
+            if node.id == "importlib":
+                parent = parents.get(node)
+                if not (relative_path == _BOOTSTRAP_PATH and isinstance(node.ctx, ast.Load)
+                        and isinstance(parent, ast.Attribute) and parent.value is node
+                        and parent.attr in {"abc", "util"}):
+                    raise ClosedWorkerProtocolError("importlib reference escapes the source bootstrap")
             if node.id == "ctypes":
                 parent = parents.get(node)
                 if not (
@@ -171,6 +203,8 @@ def validate_native_source_bytes(
         raise ClosedWorkerProtocolError("ctypes exception source is not the reviewed release")
     if relative_path in _REGEX_SOURCE_PINS and actual != _REGEX_SOURCE_PINS[relative_path]:
         raise ClosedWorkerProtocolError("regex exception source is not the reviewed release")
+    if relative_path == _BOOTSTRAP_PATH and actual != _BOOTSTRAP_SOURCE_SHA256:
+        raise ClosedWorkerProtocolError("source bootstrap exception is not the reviewed release")
 
 
 def validate_native_source_file(

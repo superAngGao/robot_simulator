@@ -8,11 +8,15 @@
       "paths": [
         "optical_worker/native_source_policy.py",
         "optical_worker/native_sources.py",
+        "optical_worker/native_bootstrap.py",
         "optical_worker/data/native_sources/v1.json",
+        "optical_worker/data/native_sources/v2.json",
+        "tests/unit/optics/test_native_bootstrap.py",
         "tests/unit/optics/test_native_source_policy.py",
         "tests/unit/optics/test_native_sources.py"
       ],
       "symbols": {},
+      "temporary_entry_exit": "C2d integrated guarded dispatcher replaces the fixed CPU self-check terminal path after independent review; retain isolated source-consumption tests, never a generic callback mode. P12.4e retains only the selected loader/source closure.",
       "cuda_selected": {
         "action": "collapse",
         "acceptance": "retain only the selected worker source verifier, catalog and actual import ledger after separately reviewed bootstrap adoption; collapse literal paths and digests to the selected production closure; remove the Warp renderer ctypes exception and its tests if no selected production consumer remains; remove these components if no selected worker adopts them; source checks alone never grant execution authority"
