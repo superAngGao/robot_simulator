@@ -23,7 +23,7 @@ _SNAPSHOT_FUNCTION = "_render_launch_snapshot"
 # not universal-newline-normalized at verification time. A CRLF checkout is
 # not this POSIX worker release; packaging must supply the reviewed bytes.
 _SNAPSHOT_SOURCE_SHA256 = "636019f65594ac83dce1b386f4b3f684053e419a8cf81ba5feddce237cf318e4"
-_SNAPSHOT_AST_SHA256 = "aece3ed687339523c475e1d145ef0edd4214af1cc2a70750c54a5741106bc410"
+_SNAPSHOT_FUNCTION_SHA256 = "725c7f315fdba4ad6df78e31a149865fd97e26da3c95df24678dbadba0459199"
 _CTYPES_ATTRIBUTES = frozenset(("addressof", "c_float", "c_int64", "c_int32"))
 _FORBIDDEN_IMPORTS = frozenset(AST_POLICY["forbidden_import_roots"]) | {
     "benchmarks", "examples", "tests", "tools",
@@ -40,13 +40,16 @@ NATIVE_AST_POLICY_SHA256 = canonical_sha256({
     "forbidden_import_roots": sorted(_FORBIDDEN_IMPORTS),
     "forbidden_names": sorted(_FORBIDDEN_NAMES),
     "forbidden_attributes": sorted(_FORBIDDEN_ATTRIBUTES),
+    "forbidden_builtin_imports": sorted(_FORBIDDEN_NAMES | {"*"}),
+    "literal_lookup_policy": "reject forbidden name/attribute literals in calls, keywords and subscripts",
     "source_roots": sorted(_SOURCE_ROOTS),
     "launcher_paths": sorted(_LAUNCHER_PATHS),
     "ctypes_exception": {
         "path": _SNAPSHOT_PATH,
         "source_sha256": _SNAPSHOT_SOURCE_SHA256,
         "function": _SNAPSHOT_FUNCTION,
-        "function_ast_sha256": _SNAPSHOT_AST_SHA256,
+        "function_source_sha256": _SNAPSHOT_FUNCTION_SHA256,
+        "function_source_encoding": "exact physical UTF-8 lines including final newline",
         "attributes": sorted(_CTYPES_ATTRIBUTES),
     },
     "source_encoding": "utf-8",
@@ -68,14 +71,16 @@ def _validate_relative_path(relative_path: str) -> PurePosixPath:
     return path
 
 
-def _validate_tree(relative_path: str, tree: ast.Module) -> None:
+def _validate_tree(relative_path: str, tree: ast.Module, source: bytes) -> None:
     snapshots = [node for node in tree.body if isinstance(node, ast.FunctionDef)
                  and node.name == _SNAPSHOT_FUNCTION]
     snapshot = snapshots[0] if relative_path == _SNAPSHOT_PATH and len(snapshots) == 1 else None
     if relative_path == _SNAPSHOT_PATH:
-        if snapshot is None or hashlib.sha256(
-            ast.dump(snapshot, include_attributes=False).encode("utf-8")
-        ).hexdigest() != _SNAPSHOT_AST_SHA256:
+        # ast.dump differs across Python3.12/3.14. Use AST only to locate the
+        # function, then pin its actual bytes, with no source normalization.
+        if snapshot is None or hashlib.sha256(b"".join(
+            source.splitlines(keepends=True)[snapshot.lineno - 1:snapshot.end_lineno]
+        )).hexdigest() != _SNAPSHOT_FUNCTION_SHA256:
             raise ClosedWorkerProtocolError("read-only packed snapshot function has drifted")
     snapshot_nodes = set(ast.walk(snapshot)) if snapshot is not None else set()
     parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
@@ -94,6 +99,10 @@ def _validate_tree(relative_path: str, tree: ast.Module) -> None:
         elif isinstance(node, ast.ImportFrom):
             if (node.module or "").partition(".")[0] in _FORBIDDEN_IMPORTS:
                 raise ClosedWorkerProtocolError("native source imports a forbidden module")
+            if node.level == 0 and node.module == "builtins" and any(
+                alias.name in _FORBIDDEN_NAMES or alias.name == "*" for alias in node.names
+            ):
+                raise ClosedWorkerProtocolError("native source imports a forbidden dynamic builtin")
         elif isinstance(node, ast.Name):
             if node.id in _FORBIDDEN_NAMES:
                 raise ClosedWorkerProtocolError("native source uses or aliases a forbidden dynamic name")
@@ -110,11 +119,15 @@ def _validate_tree(relative_path: str, tree: ast.Module) -> None:
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             # Reject literal reflection spelling too, not just obj.attr syntax.
             parent = parents.get(node)
-            if node.value in _FORBIDDEN_ATTRIBUTES and (
+            if node.value in _FORBIDDEN_ATTRIBUTES | _FORBIDDEN_NAMES and (
                 isinstance(parent, ast.Subscript)
-                or (isinstance(parent, ast.Call) and isinstance(parent.func, ast.Name)
-                    and parent.func.id in {"getattr", "setattr", "delattr", "hasattr"})
+                or isinstance(parent, (ast.Call, ast.keyword))
             ):
+                # Conservatively reject dangerous literal lookup spellings in
+                # calls too, independent of direct/qualified/imported alias
+                # naming. This is a restricted source dialect, not general
+                # Python dataflow analysis; policy-definition strings in data
+                # containers remain valid and do not execute a lookup.
                 raise ClosedWorkerProtocolError("native source reflects a forbidden runtime attribute")
     if relative_path == _SNAPSHOT_PATH and ctypes_imports != 1:
         raise ClosedWorkerProtocolError("packed snapshot needs exactly one plain ctypes import")
@@ -141,7 +154,7 @@ def validate_native_source_bytes(
         tree = ast.parse(source.decode("utf-8"), filename=relative_path)
     except (UnicodeError, SyntaxError, ValueError) as exc:
         raise ClosedWorkerProtocolError("native source cannot be parsed as UTF-8 Python") from exc
-    _validate_tree(relative_path, tree)
+    _validate_tree(relative_path, tree, source)
     if relative_path == _SNAPSHOT_PATH and actual != _SNAPSHOT_SOURCE_SHA256:
         raise ClosedWorkerProtocolError("ctypes exception source is not the reviewed release")
 

@@ -92,11 +92,74 @@ def test_rehashed_renderer_changes_cannot_expand_exception(renderer_release, old
 
 
 def test_exact_source_pin_rejects_even_comment_and_newline_changes(renderer_release):
-    for source in (renderer_release + b"\n# changed release\n", renderer_release.replace(b"\n", b"\r\n")):
-        with pytest.raises(ClosedWorkerProtocolError, match="reviewed release"):
-            _check(source, RENDERER)
+    with pytest.raises(ClosedWorkerProtocolError, match="reviewed release"):
+        _check(renderer_release + b"\n# changed release\n", RENDERER)
+    with pytest.raises(ClosedWorkerProtocolError, match="snapshot function has drifted"):
+        _check(renderer_release.replace(b"\n", b"\r\n"), RENDERER)
     with pytest.raises(ClosedWorkerProtocolError, match="forbidden module"):
         _check(renderer_release, "optics/another_renderer.py")
+
+
+@pytest.mark.parametrize("name,alias", [
+    (name, alias) for name in ("eval", "exec", "compile", "__import__", "*")
+    for alias in ("", " as run") if not (name == "*" and alias)
+])
+def test_forbidden_builtin_imports_with_or_without_alias_reject(name, alias):
+    with pytest.raises(ClosedWorkerProtocolError, match="forbidden dynamic builtin"):
+        _check(f"from builtins import {name}{alias}\n".encode())
+
+
+@pytest.mark.parametrize("reflector", ["getattr", "setattr", "delattr", "hasattr"])
+@pytest.mark.parametrize("attribute", [
+    "__closure__", "__wrapped__", "wp_cuda_launch_kernel", "wp_cuda_event_record",
+])
+@pytest.mark.parametrize("spelling", ["direct", "qualified", "import_alias", "module_alias"])
+def test_literal_reflection_rejects_ordinary_builtin_spellings(reflector, attribute, spelling):
+    prefix, name = {
+        "direct": ("", reflector),
+        "qualified": ("import builtins\n", f"builtins.{reflector}"),
+        "import_alias": (f"from builtins import {reflector} as reflect\n", "reflect"),
+        "module_alias": ("import builtins as b\n", f"b.{reflector}"),
+    }[spelling]
+    with pytest.raises(ClosedWorkerProtocolError, match="reflects a forbidden"):
+        _check(f"{prefix}{name}(runtime.core, {attribute!r})\n".encode())
+
+
+@pytest.mark.parametrize("source", [
+    b"import builtins; builtins.getattr(runtime.core, 'wp_cuda_launch_kernel')(1)",
+    b"from builtins import eval as run; run('1 + 1')",
+    b"from builtins import compile as build; build('x=1', 'probe', 'exec')",
+    b"__builtins__['eval']('1+1')",
+    b"import builtins; vars(builtins).get('eval')('1+1')",
+    b"getattr(object=runtime.core, name='wp_cuda_event_record')",
+])
+def test_review_repros_and_literal_keyword_or_subscript_variants_reject(source):
+    with pytest.raises(ClosedWorkerProtocolError):
+        _check(source)
+
+
+@pytest.mark.parametrize("source", [
+    b"from builtins import bytes as copy_bytes; x = copy_bytes()",
+    b"import builtins; x = builtins.getattr(value, 'ordinary_attribute')",
+    b"from builtins import getattr as reflect; x = reflect(value, 'ordinary_attribute')",
+    b"policy = {'forbidden_names': ['eval', 'exec'], 'attributes': ['__closure__']}",
+])
+def test_permitted_builtins_reflection_and_inert_policy_data_still_pass(source):
+    assert _check(source) is None
+
+
+def test_posix_actual_release_file_validates(renderer_release, tmp_path):
+    digest = hashlib.sha256(renderer_release).hexdigest()
+    if (ROOT / RENDERER).read_bytes() == renderer_release:
+        # Actual deployed checkout, not reconstructed source on the server.
+        validate_native_source_file(ROOT, RENDERER, expected_sha256=digest)
+    else:
+        # Explicit LF release fixture on Windows; not a claim that the original
+        # CRLF working file matches the frozen POSIX source bytes.
+        release_file = tmp_path / RENDERER
+        release_file.parent.mkdir()
+        release_file.write_bytes(renderer_release)
+        validate_native_source_file(tmp_path, RENDERER, expected_sha256=digest)
 
 
 @pytest.mark.parametrize("path", [
