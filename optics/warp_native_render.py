@@ -2999,7 +2999,13 @@ def _render_launch_snapshot(command, descriptor, device) -> tuple:
                         else ctypes.c_int32
                     )
                 )
-                if type(parameter) is not scalar_type or parameter.value != expected:
+                # Initial sealing must prove physical bits, not numeric equality:
+                # binary32 -0.0 compares equal to +0.0 but is a different ABI value.
+                if type(parameter) is not scalar_type or (
+                    bytes(parameter) != struct.pack("<f", expected)
+                    if scalar_type is ctypes.c_float
+                    else parameter.value != expected
+                ):
                     raise ValueError("recorded scalar differs from normalized binding")
         snapshots.append((id(parameter), ctypes.addressof(parameter), bytes(parameter)))
     return (

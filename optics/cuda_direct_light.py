@@ -387,6 +387,7 @@ class CudaDirectLightRenderStage:
         shadow_bias: float,
     ) -> None:
         self._sealed = False
+        self._prepared_evidence: CudaDirectLightStageEvidence | None = None
         self.renderer = renderer
         self.first_hit_inputs = first_hit_inputs
         self.shade_inputs = shade_inputs
@@ -633,6 +634,7 @@ class CudaDirectLightRenderStage:
     def _freeze_storage_signature(self) -> None:
         if self._sealed or self._binding_signature is not None:
             raise ValueError("CUDA render binding signature cannot be rebuilt")
+        self._prepared_evidence = self._build_stage_evidence()
         self._binding_signature = _render_binding_signature(self)
         self._sealed = True
 
@@ -643,6 +645,13 @@ class CudaDirectLightRenderStage:
             raise ValueError("CUDA render stage binding changed after validation")
 
     def _cuda_transaction_stage_evidence(self) -> CudaDirectLightStageEvidence:
+        if not self._sealed or self._prepared_evidence is None:
+            raise ValueError("CUDA render evidence requires a frozen binding")
+        return self._prepared_evidence
+
+    def _build_stage_evidence(self) -> CudaDirectLightStageEvidence:
+        if self._sealed or self._prepared_evidence is not None:
+            raise ValueError("CUDA render evidence cannot be rebuilt")
         # This is untimed construction/preflight, not an enqueue operation.
         # Read scalars from the bound tuples that will actually reach pybind.
         scalars = ()
@@ -989,7 +998,13 @@ def _render_binding_signature(stage: CudaDirectLightRenderStage) -> tuple[object
         id(stage.renderer.context),
         id(stage.renderer.module),
         id(stage.first_hit_inputs),
+        stage.first_hit_inputs.max_distance,
+        stage.first_hit_inputs.sensor_role_mask,
+        stage.first_hit_inputs.num_planes,
+        stage.first_hit_inputs.num_bvh_nodes,
         id(stage.shade_inputs),
+        None if stage.shade_inputs is None else stage.shade_inputs.num_lights,
+        id(stage._prepared_evidence),
         id(stage.buffers),
         stage.camera,
         stage.output_profile,

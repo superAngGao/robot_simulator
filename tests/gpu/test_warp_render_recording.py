@@ -244,7 +244,7 @@ def test_frozen_sequence_compares_actual_warp_packed_scalars(wp, monkeypatch, sh
     import struct
 
     from optical_worker.render_parameters import bind_render_parameters, load_frozen_render_sequence
-    from optics.warp_native_render import WarpRenderQueryParameters
+    from optics.warp_native_render import WarpDirectLightRenderCommandBundle, WarpRenderQueryParameters
 
     setup = _setup(wp)
     record = bind_render_parameters(
@@ -305,6 +305,28 @@ def test_frozen_sequence_compares_actual_warp_packed_scalars(wp, monkeypatch, sh
                     parameter.value = previous
                 scalar_checks += 1
     assert scalar_checks == (24 if shadows else 23)
+    bundle.validate_resolved_parameters(record)
+    signed_zero_checks = 0
+    for command, descriptor in zip(bundle.commands, bundle.descriptors, strict=True):
+        for index, argument in enumerate(descriptor.arguments):
+            if type(argument) is float and argument == 0.0:
+                parameter = command.params[index + 1]
+                previous = parameter.value
+                previous_bits = bytes(parameter)
+                parameter.value = -0.0 if previous_bits == bytes(4) else 0.0
+                assert bytes(parameter) != previous_bits
+                try:
+                    with pytest.raises(ValueError, match="scalar|changed"):
+                        bundle.validate_resolved_parameters(record)
+                    # Wrong native bits cannot become a newly accepted baseline.
+                    with pytest.raises(ValueError, match="scalar"):
+                        WarpDirectLightRenderCommandBundle(
+                            binding=bundle.binding, descriptors=bundle.descriptors, commands=bundle.commands
+                        )
+                finally:
+                    parameter.value = previous
+                signed_zero_checks += 1
+    assert signed_zero_checks > 0
     bundle.validate_resolved_parameters(record)
 
 

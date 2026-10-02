@@ -42,7 +42,18 @@ def test_single_definitions_preserve_all_bodies_and_alias_identities(old, new):
     legacy = importlib.import_module(f"benchmarks.optical.{old}")
     production = importlib.import_module(f"optical_worker.{new}")
     old_definitions = _definitions(_base_source(f"benchmarks/optical/{old}.py"))
-    assert _definitions(Path(production.__file__).read_text()) == old_definitions
+    current = _definitions(Path(production.__file__).read_text())
+    if new == "provenance":
+        # C2c4 v13 deliberately extends only these binding/parameter definitions.
+        changed = {
+            "NativeStageEvidence",
+            "C3OneShotNativeExecutionBindingEvidence",
+            "build_c3_one_shot_native_execution_binding",
+        }
+        assert set(current) == set(old_definitions) | {"_validate_render_record"}
+        assert {name for name in old_definitions if current[name] != old_definitions[name]} == changed
+    else:
+        assert current == old_definitions
     assert not _definitions(Path(legacy.__file__).read_text())
     for name in old_definitions:
         assert getattr(legacy, name) is getattr(production, name)
@@ -316,9 +327,12 @@ def test_forged_c3_never_invokes_claimed_authority_callback():
     assert calls == []
 
 
-def test_frozen_gates_and_product_source_boundary_are_byte_unchanged():
+def test_historical_gate_and_closed_product_source_boundary_are_preserved():
+    historical = json.loads((ROOT / "tests/unit/benchmarks/data/render_migration_v12.json").read_text())
+    assert historical["gate"] == json.loads(_base_source("benchmarks/results/q54_p12_4/gate.json"))
+    # The complete v12 -> v13 field/preimage migration is checked independently
+    # in test_optical_render_migration; product admission remains byte-frozen.
     paths = [
-        "benchmarks/results/q54_p12_4/gate.json",
         "benchmarks/results/q54_p12_4/closed_worker_runtime_contract.json",
         "optical_worker/worker.py",
         "optical_worker/manifest.py",

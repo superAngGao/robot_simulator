@@ -955,6 +955,59 @@ def test_measured_acquire_uses_only_constant_time_authority_checks(monkeypatch):
     active.cancel_before_enqueue()
 
 
+def test_actual_timed_enqueue_does_not_revalidate_or_materialize_render_evidence(monkeypatch):
+    from optical_worker.timing import native_timed_submission
+    from optics.cuda_direct_light import CudaDirectLightRenderStage
+
+    arena = _fixed_arena()
+    target = arena.plan_target(transform_frame_index=None)
+    prepared = arena.prepare_sample(target=target, provenance=_provenance(arena, target))
+    stage = arena._execution_for_target(target).transaction_template.stages[0]
+    evidence = stage._cuda_transaction_stage_evidence()
+    calls = []
+
+    def forbidden(*args, **kwargs):
+        calls.append(True)
+        raise AssertionError("full render preflight/evidence materialization inside submission")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(CudaDirectLightRenderStage, "_validate_cuda_transaction_stage", forbidden)
+        patch.setattr(CudaDirectLightRenderStage, "_build_stage_evidence", forbidden)
+        with native_timed_submission(row_id="c2c4-native-regression", lane="cuda", boundary="R0"):
+            active = arena.acquire(prepared)
+            active.enqueue()
+            active.finish()
+    assert not calls
+    assert stage._cuda_transaction_stage_evidence() is evidence
+    assert arena.lifecycle_evidence().terminal_event_record_count == 1
+    active.resolve()
+    active.release_device_result()
+    active.reclaim()
+    arena.begin_drain()
+    arena.close()
+
+
+@pytest.mark.parametrize("field", ["max_distance", "sensor_role_mask", "num_planes", "num_bvh_nodes"])
+def test_cached_render_evidence_does_not_hide_inline_first_hit_scalar_drift(field):
+    arena = _fixed_arena()
+    target = arena.plan_target(transform_frame_index=None)
+    provenance = _provenance(arena, target)
+    stage = arena._execution_for_target(target).transaction_template.stages[0]
+    inputs = stage.first_hit_inputs
+    original = getattr(inputs, field)
+    before = arena.lifecycle_evidence()
+    object.__setattr__(inputs, field, original + 1)
+    try:
+        with pytest.raises(ValueError, match="changed"):
+            arena.prepare_sample(target=target, provenance=provenance)
+        assert arena.lifecycle_evidence() == before
+        assert before.terminal_event_record_count == 0
+    finally:
+        object.__setattr__(inputs, field, original)
+    arena.begin_drain()
+    arena.close()
+
+
 def test_cuda_arena_restores_ambient_device_across_every_generation_transition():
     if torch.cuda.device_count() < 2:
         pytest.skip("requires two visible CUDA devices")

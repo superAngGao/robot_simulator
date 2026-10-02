@@ -287,7 +287,11 @@ def test_existing_cases_and_content_are_unchanged():
     root = Path(__file__).resolve().parents[3]
     gate = json.loads((root / "benchmarks/results/q54_p12_4/gate.json").read_text())
     assert case_hashes() == {name: value["sha256"] for name, value in gate["cases"].items()}
-    assert frozen_workload_payloads() == {
-        name: {key: value for key, value in content.items() if key != "sha256"}
-        for name, content in gate["cases"].items()
-    }
+    for name, workload in frozen_workload_payloads().items():
+        catalog = gate["cases"][name]
+        assert set(catalog) == set(workload) | {
+            "sha256",
+            "resolved_render_sequence_sha256",
+            "resolved_render_scope",
+        }
+        assert workload == {key: catalog[key] for key in workload}

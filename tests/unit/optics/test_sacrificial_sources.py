@@ -60,6 +60,43 @@ ledger.verify()
     assert result.returncode == 0, result.stderr
 
 
+def test_cold_schema_import_admits_complete_render_contract_closure():
+    code = """
+import json, sys
+from pathlib import Path
+sys.path.extend(json.loads(sys.argv[2]))
+sys.path.insert(0, sys.argv[1])
+from tests.support.sacrificial_sources import RepositoryImportLedger, frozen_source_manifest
+ledger = RepositoryImportLedger(frozen_source_manifest(Path(sys.argv[1])))
+ledger.install()
+import benchmarks.optical.schema
+assert 'optical_worker.render_parameters' in sys.modules
+assert 'optical_worker.camera_contract' in sys.modules
+ledger.verify()
+try:
+    import tests.support.sacrificial_protocol_child
+except RuntimeError as exc:
+    assert 'outside frozen closure' in str(exc)
+else:
+    raise AssertionError('unlisted source admitted after legitimate imports')
+"""
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            code,
+            str(ROOT),
+            json.dumps([p for p in sys.path if p and not Path(p).resolve().is_relative_to(ROOT)]),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
 def test_guardian_is_constructed_before_site_packages_or_gpu_driver_import():
     tree = ast.parse((ROOT / "tests/support/sacrificial_warp_child.py").read_text())
     main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")

@@ -33,6 +33,7 @@ benchmarks/optical/workload_contract.py
 benchmarks/optical/workloads.py
 optical_worker/__init__.py
 optical_worker/assets.py
+optical_worker/camera_contract.py
 optical_worker/cases.py
 optical_worker/lane_contract.py
 optical_worker/lifecycle.py
@@ -41,12 +42,15 @@ optical_worker/native_contract.py
 optical_worker/native_input.py
 optical_worker/provenance.py
 optical_worker/protocol.py
+optical_worker/render_parameters.py
+optical_worker/render_sequence_contract.py
 optical_worker/timing.py
 optical_worker/workload_contract.py
 optical_worker/workloads.py
 optics/__init__.py
 optics/_cuda_lbvh_source.py
 optics/builder.py
+optics/camera_presets.py
 optics/cuda_arena.py
 optics/cuda_direct_light.py
 optics/cuda_lbvh.py
