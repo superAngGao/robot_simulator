@@ -1075,8 +1075,16 @@ Next milestone:
       single-import/pack/120-frame checks passed. Author targeted regression
       separately passed634 on101/H200. Round-end owned-process checks cleared;
       the evidence records a stopped, excluded accidental diagnostic pytest.
-      C2c v13 row/schema/C3 binding migration and actual native ABI adoption
-      remain incomplete. C4c2 runtime, C4c3-c4,
+      C2c4 v13 row/schema/C3 binding migration and bounded native ABI validation
+      are independently approved with comments at `4b7bf4c` (render-binding
+      review v2). The initial four findings were repaired; independent250 local,
+      372 native/core,135 sacrificial and130 legacy tests passed, plus actual
+      signed-zero/timed-preflight/storage-drift counterexamples. Author affected
+      regression separately passed886 on101/H200. Exact process/GPU checks
+      cleared after each round; no unexpected hang was observed. A non-blocking
+      exact-path cleanup-ledger follow-up remains recorded in that review.
+      Complete C2c source admission and C2d/e/f integration remain incomplete.
+      C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
       retains the bounded native Warp
