@@ -4,6 +4,23 @@
   "must_complete": true,
   "entries": [
     {
+      "entry_id": "native_worker_source_policy",
+      "paths": [
+        "optical_worker/native_source_policy.py",
+        "tests/unit/optics/test_native_source_policy.py"
+      ],
+      "symbols": {},
+      "cuda_selected": {
+        "action": "collapse",
+        "acceptance": "retain only the selected worker source verifier after separately reviewed bootstrap adoption; remove the Warp renderer ctypes exception and its tests if no selected production consumer remains; remove this verifier if no selected worker adopts it; source checks alone never grant execution authority"
+      },
+      "warp_selected": {
+        "action": "collapse",
+        "acceptance": "retain the selected worker source verifier and the exact reviewed read-only packed-descriptor exception after bootstrap adoption; remove unused candidate rules and tests; remove this verifier if no selected worker adopts it; source checks alone never grant execution authority"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
       "entry_id": "canonical_resolved_render_contract",
       "paths": [
         "optical_worker/render_parameters.py",
