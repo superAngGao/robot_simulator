@@ -87,3 +87,16 @@ remain unchanged. Literal per-lane source catalogs, actual import ledger and
 bootstrap admission still need implementation and review; this CPU primitive
 is not an execution capability. C2d/e/f, full C4, B3/host payload, shipping,
 a3b and benchmark result/baseline generation are not approved here.
+
+Post-record transfer observation: while fetching the evidence-only9c5e12b,
+Git automatic maintenance reported `bad object worktrees/robot_sim_c2c5_05d9ccf/HEAD`
+and `failed to run repack` in the common database's gc.log. The fetch/new detached
+worktree still succeeded. Subsequent read-only checks found both05d9ccf and9c5e12b
+as valid commit objects, the expected worktree HEAD bytes, clean status and the
+correct three-commit history. A separately executed
+`timeout -k 5s 30s git fsck --connectivity-only --no-dangling` exited0 with no
+diagnostics. The two approved code/test files are unchanged in the evidence HEAD.
+The cause of the transient automatic-maintenance failure is not established;
+gc.log and all worktrees were preserved, no repack/prune/reset performed. For
+the final evidence transfer only, `git -c gc.auto=0 fetch` avoids another
+background maintenance attempt without changing persistent Git configuration.
