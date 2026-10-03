@@ -134,6 +134,41 @@ def fail_actual_import(lifecycle, fault, directory):
         assert runtime not in sys.modules
 
 
+def _assert_actual_prepare_import_failure(peer, tmp_path, lane, prior_fault, propagate):
+    controller = NativeGuardedSetupLifecycle(lane_id=lane, channel=peer.channel, configuration=peer.config)
+    before_exit = None
+    try:
+        with controller.segment():
+            try:
+                fail_actual_import(
+                    controller,
+                    lane + ("_import_thread_failure" if prior_fault else "_import_failure"),
+                    tmp_path,
+                )
+            except NativeWorkerPreparationAborted as error:
+                assert error.evidence is controller.termination_evidence
+                before_exit = error.evidence.lifecycle.to_payload()
+                assert before_exit["summary"]["unknown_device_scope"]
+                assert before_exit["summary"]["disposition"] == "multi_or_unknown_device_quarantine_exit"
+                assert before_exit["summary"]["normal_complete_count"] == 0
+                assert before_exit["summary"]["terminal_arm_attempt_count"] == 0
+                assert before_exit["summary"]["emergency_sync_attempt_count"] == 0
+                assert before_exit["summary"]["release_status"] == "not_authorized"
+                assert [e["operation"] for e in before_exit["transition_trace"]].count(
+                    "termination_started"
+                ) == 1
+                if propagate:
+                    raise
+    except NativeWorkerPreparationAborted:
+        assert propagate
+    except WorkerSetupProtocolError:
+        assert not propagate
+    else:
+        raise AssertionError("failed preparation exited normally")
+    assert before_exit is not None
+    assert controller.evidence().to_payload() == before_exit
+
+
 class Owner:
     def __init__(self, directory, fault):
         self.directory, self.fault = directory, fault
@@ -360,12 +395,38 @@ def supervise(fault, liveness_fd, directory):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("child", "supervisor"))
+    parser.add_argument(
+        "mode", choices=("child", "supervisor", "import_probe_caught", "import_probe_propagated")
+    )
     parser.add_argument("fault", choices=FAULTS)
     parser.add_argument("fd", type=int)
     parser.add_argument("directory", type=Path)
     args = parser.parse_args()
-    if args.mode == "child":
+    if args.mode.startswith("import_probe_"):
+        if args.fault not in {
+            "cuda_import_failure",
+            "warp_import_failure",
+            "cuda_import_thread_failure",
+            "warp_import_thread_failure",
+        }:
+            raise ValueError("not a fixed import probe")
+        # Reuse the unit assertion/real socket peer in a cold CPU process. This
+        # is a test-only role, never a production worker request or callback.
+        from tests.support.guarded_peer import Peer
+
+        peer = Peer()
+        try:
+            _assert_actual_prepare_import_failure(
+                peer,
+                args.directory,
+                "warp" if args.fault.startswith("warp_") else "cuda",
+                "_thread_" in args.fault,
+                args.mode == "import_probe_propagated",
+            )
+        finally:
+            peer.close()
+        print(json.dumps({"pid": os.getpid(), "ppid": os.getppid()}))
+    elif args.mode == "child":
         child(args.fault, args.fd, args.directory)
     else:
         print(json.dumps(supervise(args.fault, args.fd, args.directory), sort_keys=True))

@@ -1,10 +1,13 @@
 """C2d1 CPU-only real client/core integration; GPU adoption remains closed."""
 
 import copy
-import socket
+import json
+import os
+import subprocess
+import sys
 import threading
-import uuid
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -18,47 +21,7 @@ from optical_worker.guarded_lifecycle import _TERMINAL_CUSTODY, NativeGuardedSet
 from optical_worker.lifecycle import DeviceScopeDescriptor, WorkerSetupProtocolError
 from optical_worker.native_setup import NativeWorkerPreparationAborted, _abort
 from optical_worker.wait_protocol import GuardConfiguration, GuardProtocolError, GuardWaitClient
-from optical_worker.wait_supervision import GuardSupervisorCore, GuardSupervisorTransport
-
-
-class Peer:
-    def __init__(self):
-        self.config = GuardConfiguration(uuid.uuid4().hex, 1, 1000, 5000)
-        self.channel, self.remote = socket.socketpair()
-        self.stop = threading.Event()
-        self.ready = threading.Event()
-        self.errors = []
-        self.thread = threading.Thread(target=self.run, daemon=True)
-        self.thread.start()
-        assert self.ready.wait(2)
-
-    def run(self):
-        self.core = GuardSupervisorCore(self.config)
-        transport = GuardSupervisorTransport(self.remote, self.core)
-        self.ready.set()
-        try:
-            while not self.stop.wait(0.001):
-                import select
-
-                self.before_service()
-                read, write, _ = select.select(
-                    [self.remote], [self.remote] if transport.wants_write else [], [], 0.01
-                )
-                transport.service(readable=bool(read), writable=bool(write))
-                self.core.tick()
-        except BaseException as error:
-            self.errors.append(error)
-
-    def before_service(self):
-        pass
-
-    def close(self):
-        self.stop.set()
-        self.thread.join(2)
-        assert not self.thread.is_alive()
-        self.channel.close()
-        self.remote.close()
-        assert not self.errors, self.errors
+from tests.support.guarded_peer import Peer
 
 
 @pytest.fixture
@@ -819,43 +782,36 @@ def test_explicit_unknown_scope_rejects_normal_exit_without_another_public_call(
 @pytest.mark.parametrize("lane", ["cuda", "warp"])
 @pytest.mark.parametrize("prior_fault", [False, True])
 @pytest.mark.parametrize("propagate", [False, True])
-def test_actual_prepare_import_failure_records_scope_before_unwind(
-    peer, tmp_path, lane, prior_fault, propagate
-):
-    from tests.support.guarded_custody_process import fail_actual_import
-
-    controller = NativeGuardedSetupLifecycle(lane_id=lane, channel=peer.channel, configuration=peer.config)
-    before_exit = None
+def test_actual_prepare_import_failure_records_scope_before_unwind(tmp_path, lane, prior_fault, propagate):
+    # A combined pytest collection may already import Torch/Warp. Observe a
+    # genuine cold import in an isolated CPU child; never unload runtime modules.
+    harness = Path(__file__).resolve().parents[2] / "support" / "guarded_custody_process.py"
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            str(harness),
+            "import_probe_propagated" if propagate else "import_probe_caught",
+            lane + ("_import_thread_failure" if prior_fault else "_import_failure"),
+            "0",
+            str(tmp_path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
     try:
-        with controller.segment():
-            try:
-                fail_actual_import(
-                    controller,
-                    lane + ("_import_thread_failure" if prior_fault else "_import_failure"),
-                    tmp_path,
-                )
-            except NativeWorkerPreparationAborted as error:
-                assert error.evidence is controller.termination_evidence
-                before_exit = error.evidence.lifecycle.to_payload()
-                assert before_exit["summary"]["unknown_device_scope"]
-                assert before_exit["summary"]["disposition"] == "multi_or_unknown_device_quarantine_exit"
-                assert before_exit["summary"]["normal_complete_count"] == 0
-                assert before_exit["summary"]["terminal_arm_attempt_count"] == 0
-                assert before_exit["summary"]["emergency_sync_attempt_count"] == 0
-                assert before_exit["summary"]["release_status"] == "not_authorized"
-                assert [e["operation"] for e in before_exit["transition_trace"]].count(
-                    "termination_started"
-                ) == 1
-                if propagate:
-                    raise
-    except NativeWorkerPreparationAborted:
-        assert propagate
-    except WorkerSetupProtocolError:
-        assert not propagate
-    else:
-        pytest.fail("failed preparation exited normally")
-    assert before_exit is not None
-    assert controller.evidence().to_payload() == before_exit
+        output, error = process.communicate(timeout=25)
+        assert process.returncode == 0, (output, error)
+        identity = json.loads(output)
+        assert identity["pid"] == process.pid
+        assert identity["ppid"] == os.getpid()
+        print(json.dumps({"import_probe": identity, "returncode": process.returncode}))
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=3)
 
 
 def test_unknown_scope_reporting_still_rejects_wrong_thread_and_post_intent(peer):
