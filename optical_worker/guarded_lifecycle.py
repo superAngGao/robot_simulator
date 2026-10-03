@@ -34,6 +34,43 @@ def _forbidden_legacy_notifier(_ordinal):
 _TERMINAL_CUSTODY = []
 
 
+class _GuardedSegment:
+    """Single-use context, including explicit/duplicate context protocol calls."""
+
+    def __init__(self, controller, role):
+        self._controller = controller
+        self._context = controller._segment_context(role)
+        self._entered = False
+        self._exited = False
+
+    def _reject(self):
+        error = WorkerSetupProtocolError("guarded segment context is single-use and ordered")
+        self._controller._fail_guard("reentrant", error)
+        if threading.current_thread() is self._controller._owner_thread and not self._controller._terminating:
+            self._controller.terminate(
+                fault="setup_failure",
+                detection_phase="segment_context_misuse",
+                emergency_target_synchronize=None,
+            )
+        raise error
+
+    def __enter__(self):
+        if self._entered or self._exited:
+            self._reject()
+        self._entered = True
+        try:
+            return self._context.__enter__()
+        except BaseException:
+            self._exited = True
+            raise
+
+    def __exit__(self, kind, value, traceback):
+        if not self._entered or self._exited:
+            self._reject()
+        self._exited = True
+        return self._context.__exit__(kind, value, traceback)
+
+
 class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
     """One CPU-created controller owning the actual guard and inherited guardian."""
 
@@ -88,9 +125,16 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
         if exception is not None and not any(item is exception for item in self._failure_holds):
             self._failure_holds.append(exception)
 
+    def _retain_controller(self):
+        # A wrong-thread or out-of-context failure must not rely on later
+        # owner-thread unwinding to keep potentially dirty resources alive.
+        if not any(controller is self for controller in _TERMINAL_CUSTODY):
+            _TERMINAL_CUSTODY.append(self)
+
     def _fail_guard(self, kind, exception=None):
         with self._event_lock:
             self._hold_failure(exception)
+            self._retain_controller()
             if self._replay.controller == "TERMINAL_INTENT":
                 return
             if self._terminating:
@@ -120,8 +164,11 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
             raise WorkerSetupProtocolError("setup leaf has no armed segment")
         self._guard_client.require_live_ticket(self._guard_ticket, role="setup")
 
-    @contextmanager
     def segment(self, role="setup"):
+        return _GuardedSegment(self, role)
+
+    @contextmanager
+    def _segment_context(self, role):
         self._check_running()
         if self._context_active or role not in {"setup", "resolve"}:
             error = WorkerSetupProtocolError("nested or invalid guarded segment")
@@ -292,7 +339,7 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
         self._terminating = True
         self._state = "POISONED"
         self._pending_leaf_permit = None
-        _TERMINAL_CUSTODY.append(self)
+        self._retain_controller()
         self._record("terminal_custody_retained", {})
         if self.guardian.state in {"CONSTRUCTING", "SEALED"}:
             self.guardian.freeze_partial(self._guardian_authority)

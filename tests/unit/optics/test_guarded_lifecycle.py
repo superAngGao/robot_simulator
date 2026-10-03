@@ -224,6 +224,27 @@ def test_nested_segment_invalidates_outer_success(peer):
     assert summary["custody"] == "full_quarantine"
 
 
+@pytest.mark.parametrize("attack", ["exit_before_enter", "double_enter", "double_exit", "reenter"])
+def test_context_protocol_misuse_is_terminal_and_single_use(peer, attack):
+    controller = lifecycle(peer)
+    context = controller.segment()
+    if attack != "exit_before_enter":
+        context.__enter__()
+    if attack in {"double_exit", "reenter"}:
+        context.__exit__(None, None, None)
+    with pytest.raises(WorkerSetupProtocolError):
+        if attack in {"double_enter", "reenter"}:
+            context.__enter__()
+        else:
+            context.__exit__(None, None, None)
+    assert controller in _TERMINAL_CUSTODY
+    assert controller.termination_evidence.lifecycle.to_payload()["summary"]["custody"] == "full_quarantine"
+    if attack == "double_enter":
+        # Drain only the Python generator; it cannot COMPLETE the failed guard.
+        with pytest.raises(WorkerSetupProtocolError):
+            context.__exit__(None, None, None)
+
+
 def test_replay_rejects_changed_summaries_and_transitions(peer):
     payload = terminate(lifecycle(peer)).lifecycle.to_payload()
     for key, value in [
