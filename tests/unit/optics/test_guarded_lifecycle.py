@@ -459,7 +459,17 @@ class TerminalFaultPeer(Peer):
 
 
 @pytest.mark.parametrize("dirty", [False, True])
-@pytest.mark.parametrize("misuse", ["thread", "context"])
+@pytest.mark.parametrize(
+    "misuse",
+    [
+        "thread",
+        "context",
+        "commit_target_barrier",
+        "commit_clean_close",
+        "latch_measured_sample_submission",
+        "require_adopted",
+    ],
+)
 def test_terminal_ack_fault_prevents_all_subsequent_side_effects(dirty, misuse):
     peer = TerminalFaultPeer()
     try:
@@ -470,11 +480,12 @@ def test_terminal_ack_fault_prevents_all_subsequent_side_effects(dirty, misuse):
             with controller.segment():
                 controller.enter_device_leaf(controller.begin_device_leaf(descriptor()))
         context = controller.segment()
-        peer.attack = (
-            lambda: controller.begin_device_leaf(descriptor())
-            if misuse == "thread"
-            else context.__exit__(None, None, None)
-        )
+        if misuse == "thread":
+            peer.attack = lambda: controller.begin_device_leaf(descriptor())
+        elif misuse == "context":
+            peer.attack = lambda: context.__exit__(None, None, None)
+        else:
+            peer.attack = lambda: getattr(controller, misuse)()
         calls = []
         payload = terminate(controller, lambda: calls.append("sync")).lifecycle.to_payload()
         assert peer.injected and calls == []
@@ -631,3 +642,154 @@ def test_blocking_native_or_destructor_call_does_not_hold_controller_lock(peer, 
     assert payload["summary"]["custody"] == (
         "full_quarantine" if during == "sync" else "remaining_quarantine"
     )
+
+
+@pytest.mark.parametrize(
+    "scope",
+    ["explicit_unknown", "returned_foreign", "returned_unknown", "descriptor_foreign", "descriptor_unknown"],
+)
+def test_compromised_scope_cannot_complete_even_when_scope_error_is_caught(peer, scope):
+    controller = lifecycle(peer)
+    owner = object()
+    returned_owner = object()
+    controller.adopt_host_owner(owner, role="sentinel", operation_id="setup")
+    with pytest.raises(WorkerSetupProtocolError):
+        with controller.segment():
+            controller.enter_device_leaf(controller.begin_device_leaf(descriptor()))
+            if scope == "explicit_unknown":
+                controller.mark_unknown_device_scope(source="fixed_test", reason="unknown_return")
+            else:
+                with pytest.raises(WorkerSetupProtocolError):
+                    if scope.startswith("returned"):
+                        controller.adopt_returned_device_owner(
+                            returned_owner,
+                            actual_device_ordinal=0 if scope.endswith("foreign") else None,
+                            role="returned",
+                            operation_id="fixed_test",
+                        )
+                    else:
+                        value = (
+                            descriptor(0)
+                            if scope.endswith("foreign")
+                            else replace(descriptor(), device_ordinals=(), unreturned_resource_possible=True)
+                        )
+                        controller.begin_device_leaf(value)
+            # Even swallowing the scope rejection cannot admit another leaf.
+            with pytest.raises(WorkerSetupProtocolError):
+                controller.begin_device_leaf(descriptor())
+    payload = controller.termination_evidence.lifecycle.to_payload()
+    with pytest.raises(WorkerSetupProtocolError):
+        with controller.segment("resolve"):
+            pytest.fail("new body after scope compromise")
+    operations = [event["operation"] for event in payload["transition_trace"]]
+    assert operations.count("normal_arm_started") == 1
+    assert "normal_body_returned" not in operations
+    assert "normal_complete_started" not in operations
+    assert "terminal_arm_started" not in operations
+    assert payload["summary"]["normal_complete_count"] == 0
+    assert payload["summary"]["entered_leaf_count"] == 1
+    assert payload["summary"]["disposition"] == "multi_or_unknown_device_quarantine_exit"
+    assert controller.guardian.contains_exact_owner(owner)
+    if scope.startswith("returned"):
+        assert controller.guardian.contains_exact_owner(returned_owner)
+    assert controller.evidence().to_payload() == payload
+
+
+def test_unknown_scope_before_first_guard_rejects_arm(peer):
+    controller = lifecycle(peer)
+    controller.mark_unknown_device_scope(source="fixed_test", reason="unknown_import")
+    with pytest.raises(WorkerSetupProtocolError):
+        with controller.segment():
+            pytest.fail("compromised scope entered first guard")
+    payload = terminate(controller).lifecycle.to_payload()
+    assert all("arm" not in event["operation"] for event in payload["transition_trace"])
+    assert payload["summary"]["custody"] == "full_quarantine"
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["commit_target_barrier", "commit_clean_close", "latch_measured_sample_submission", "require_adopted"],
+)
+@pytest.mark.parametrize("during", ["sync", "cleanup"])
+def test_caught_public_api_rejection_invalidates_terminal_success(peer, method, during):
+    controller = lifecycle(peer)
+    rejected = []
+
+    def misuse():
+        try:
+            getattr(controller, method)()
+        except WorkerSetupProtocolError:
+            rejected.append(True)
+
+    class Owner:
+        def __del__(self):
+            misuse()
+
+    if during == "sync":
+        with controller.segment():
+            controller.enter_device_leaf(controller.begin_device_leaf(descriptor()))
+    else:
+        controller.adopt_host_owner(Owner(), role="sentinel", operation_id="setup")
+    payload = terminate(controller, misuse).lifecycle.to_payload()
+    assert rejected == [True]
+    assert payload["summary"]["terminal_operation_failed"] is True
+    assert payload["summary"]["custody"] == (
+        "full_quarantine" if during == "sync" else "remaining_quarantine"
+    )
+    assert payload["summary"]["emergency_sync_outcome"] == ("failed" if during == "sync" else "not_attempted")
+    with pytest.raises(WorkerSetupProtocolError):
+        getattr(controller, method)()
+    assert controller.evidence().to_payload() == payload
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "descriptor",
+        "permit",
+        "ownership",
+        "host_adoption",
+        "device_adoption",
+        "unknown_scope",
+        "seal",
+        "commit_clean_close",
+        "invalid_termination",
+        "invalid_segment_role",
+    ],
+)
+def test_swallowed_public_operation_error_cannot_complete_guard(peer, method):
+    controller = lifecycle(peer)
+    with pytest.raises(WorkerSetupProtocolError):
+        with controller.segment():
+            with pytest.raises((WorkerSetupProtocolError, GuardProtocolError, ValueError)):
+                if method == "descriptor":
+                    controller.begin_device_leaf(object())
+                elif method == "permit":
+                    controller.enter_device_leaf(object())
+                elif method == "ownership":
+                    controller.require_adopted(object())
+                elif method == "host_adoption":
+                    controller.adopt_host_owner(object(), role="!invalid", operation_id="test")
+                elif method == "device_adoption":
+                    controller.adopt_returned_device_owner(
+                        object(), actual_device_ordinal=1, role="!invalid", operation_id="test"
+                    )
+                elif method == "unknown_scope":
+                    controller.mark_unknown_device_scope(source="!invalid", reason="test")
+                elif method == "seal":
+                    controller.begin_device_leaf(descriptor())
+                    controller.seal_guardian()
+                elif method == "invalid_termination":
+                    controller.terminate(
+                        fault="not_a_fault", detection_phase="test", emergency_target_synchronize=None
+                    )
+                elif method == "invalid_segment_role":
+                    with controller.segment([]):
+                        pytest.fail("invalid role entered body")
+                else:
+                    controller.commit_clean_close()
+    payload = controller.termination_evidence.lifecycle.to_payload()
+    assert payload["summary"]["guarded_segment_failed"] is True
+    assert payload["summary"]["normal_complete_count"] == 0
+    assert payload["summary"]["terminal_arm_attempt_count"] == 0
+    assert payload["summary"]["custody"] == "full_quarantine"

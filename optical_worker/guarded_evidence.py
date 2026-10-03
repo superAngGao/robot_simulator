@@ -244,6 +244,7 @@ class _Replay:
                 self.controller == "RUNNING"
                 and self.guard_state == "IDLE"
                 and not self.failed
+                and not self.compromised
                 and guard["role"] in {"setup", "resolve"},
                 "normal ARM predecessor",
             )
@@ -262,6 +263,7 @@ class _Replay:
                 and guard["role"] != "emergency"
                 and not self.body_returned
                 and not self.failed
+                and not self.compromised
                 and self.permit is None
                 and not self.notifications
                 and (self.descriptor is None or self.descriptor_started),
@@ -275,13 +277,17 @@ class _Replay:
                 and self.guard_state == "ARMED"
                 and self.body_returned
                 and not self.failed
+                and not self.compromised
                 and guard["role"] != "emergency",
                 "invalid normal COMPLETE",
             )
             self.guard_state = "COMPLETE_PENDING"
         elif operation == "normal_disarmed":
             exact_fields(details, set())
-            _require(self.guard_state == "COMPLETE_PENDING" and not self.failed, "unexpected DISARMED")
+            _require(
+                self.guard_state == "COMPLETE_PENDING" and not self.failed and not self.compromised,
+                "unexpected DISARMED",
+            )
             self.guard_state, self.guard = "IDLE", None
             self.complete_count += 1
         elif operation == "guard_failed":

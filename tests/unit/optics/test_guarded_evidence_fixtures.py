@@ -450,3 +450,39 @@ def test_terminal_failure_event_replay_and_no_later_success(boundary):
         worker["transition_trace"].append(duplicate)
         with pytest.raises(GuardProtocolError):
             rebuilt_prefix(worker)
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["descriptor_foreign", "descriptor_unknown", "owner_foreign", "owner_unknown", "explicit_unknown"],
+)
+def test_worker_body_success_after_compromised_source_rejected(source):
+    worker = compromised_prefix(source)
+    trace = worker["transition_trace"]
+    event = copy.deepcopy(trace[-1])
+    event.update(index=len(trace), operation="normal_body_returned", details={})
+    trace.append(event)
+    with pytest.raises(GuardProtocolError):
+        replay_lifecycle(worker["configuration"], "warp", trace)
+
+
+@pytest.mark.parametrize(
+    "operation", ["normal_arm_started", "normal_body_returned", "normal_complete_started", "normal_disarmed"]
+)
+def test_each_normal_admission_rejects_preceding_unknown_fact(operation):
+    worker = story("sync_success")
+    index = next(i for i, event in enumerate(worker["transition_trace"]) if event["operation"] == operation)
+    trace = worker["transition_trace"][: index + 1]
+    unknown = copy.deepcopy(trace[-1])
+    if operation == "normal_arm_started":
+        unknown["guard"] = None
+    unknown.update(
+        operation="unknown_scope_set", details={"source": "fixed_source", "reason": "unknown_return"}
+    )
+    trace.insert(index, unknown)
+    for position, event in enumerate(trace):
+        event["index"] = position
+    # The known scope prefix is valid; only the attempted normal admission is not.
+    replay_lifecycle(worker["configuration"], "warp", trace[:-1])
+    with pytest.raises(GuardProtocolError):
+        replay_lifecycle(worker["configuration"], "warp", trace)

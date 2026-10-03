@@ -154,6 +154,10 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
     def _check_running(self):
         self._check_owner()
         with self._event_lock:
+            if not self._terminating and self._replay.compromised:
+                error = WorkerSetupProtocolError("compromised scope forbids further normal work")
+                self._fail_guard("operation", error)
+                raise error
             if self._terminating or self._replay.controller != "RUNNING" or self._replay.failed:
                 error = WorkerSetupProtocolError("guarded setup is failed or terminal")
                 if self._terminating:
@@ -170,13 +174,26 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
             raise WorkerSetupProtocolError("setup leaf has no armed segment")
         self._guard_client.require_live_ticket(self._guard_ticket, role="setup")
 
+    @contextmanager
+    def _observe_public_operation(self):
+        # Catching a controller-owned API rejection inside an active operation
+        # cannot turn that operation into success. Healthy pre-guard validation
+        # still rejects without claiming an in-flight failure.
+        try:
+            yield
+        except BaseException as error:
+            with self._event_lock:
+                if self._context_active or self._terminating:
+                    self._fail_guard("operation", error)
+            raise
+
     def segment(self, role="setup"):
         return _GuardedSegment(self, role)
 
     @contextmanager
     def _segment_context(self, role):
         self._check_running()
-        if self._context_active or role not in {"setup", "resolve"}:
+        if self._context_active or type(role) is not str or role not in {"setup", "resolve"}:
             error = WorkerSetupProtocolError("nested or invalid guarded segment")
             self._fail_guard("reentrant" if self._context_active else "protocol", error)
             raise error
@@ -220,45 +237,66 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
             self._context_active = False
 
     def begin_device_leaf(self, descriptor):
-        self._require_setup()
-        if type(descriptor) is not DeviceScopeDescriptor:
-            raise WorkerSetupProtocolError("setup descriptor must have exact production type")
-        descriptor.validated()
-        self._record("descriptor_observed", {"descriptor": descriptor.to_payload()})
-        return super().begin_device_leaf(descriptor)
+        with self._observe_public_operation():
+            self._require_setup()
+            if type(descriptor) is not DeviceScopeDescriptor:
+                raise WorkerSetupProtocolError("setup descriptor must have exact production type")
+            descriptor.validated()
+            self._record("descriptor_observed", {"descriptor": descriptor.to_payload()})
+            return super().begin_device_leaf(descriptor)
 
     def enter_device_leaf(self, permit):
-        self._require_setup()
-        return super().enter_device_leaf(permit)
+        with self._observe_public_operation():
+            self._require_setup()
+            return super().enter_device_leaf(permit)
 
     def adopt_host_owner(self, owner, *, role, operation_id):
-        self._check_running()
-        return super().adopt_host_owner(owner, role=role, operation_id=operation_id)
+        with self._observe_public_operation():
+            self._check_running()
+            return super().adopt_host_owner(owner, role=role, operation_id=operation_id)
 
     def adopt_returned_device_owner(self, owner, *, actual_device_ordinal, role, operation_id):
-        self._require_setup()
-        return super().adopt_returned_device_owner(
-            owner, actual_device_ordinal=actual_device_ordinal, role=role, operation_id=operation_id
-        )
+        with self._observe_public_operation():
+            self._require_setup()
+            return super().adopt_returned_device_owner(
+                owner, actual_device_ordinal=actual_device_ordinal, role=role, operation_id=operation_id
+            )
 
     def mark_unknown_device_scope(self, *, source, reason):
-        self._check_running()
-        return super().mark_unknown_device_scope(source=source, reason=reason)
+        with self._observe_public_operation():
+            self._check_running()
+            return super().mark_unknown_device_scope(source=source, reason=reason)
+
+    def require_adopted(self, *owners):
+        # This inherited public rejection path must observe terminal/reentrant
+        # misuse too; it never gains submission or release authority.
+        with self._observe_public_operation():
+            self._check_running()
+            return super().require_adopted(*owners)
 
     def seal_guardian(self):
-        self._check_running()
-        if self._pending_leaf_permit is not None:
-            raise WorkerSetupProtocolError("seal cannot discard an unentered setup permit")
-        return super().seal_guardian()
+        with self._observe_public_operation():
+            self._check_running()
+            if self._pending_leaf_permit is not None:
+                raise WorkerSetupProtocolError("seal cannot discard an unentered setup permit")
+            return super().seal_guardian()
+
+    def _reject_closed_entry(self, message):
+        self._check_owner()
+        error = WorkerSetupProtocolError(message)
+        with self._event_lock:
+            if self._terminating or self._context_active:
+                self._fail_guard("protocol", error)
+        raise error
 
     def commit_target_barrier(self, **_kwargs):
-        raise WorkerSetupProtocolError("final graph/barrier admission is not implemented in C2d1")
+        self._reject_closed_entry("final graph/barrier admission is not implemented in C2d1")
 
     def latch_measured_sample_submission(self):
-        raise WorkerSetupProtocolError("measured submission remains closed in C2d1")
+        self._reject_closed_entry("measured submission remains closed in C2d1")
 
     def commit_clean_close(self):
-        raise WorkerSetupProtocolError("guarded cleanup requires supervised terminal custody")
+        self._reject_closed_entry("guarded cleanup requires supervised terminal custody")
 
     def evidence(self):
         with self._event_lock:
@@ -385,7 +423,8 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
         return self._release("target_sync")
 
     def terminate(self, *, fault, detection_phase, emergency_target_synchronize):
-        self._begin_termination(fault, detection_phase)
+        with self._observe_public_operation():
+            self._begin_termination(fault, detection_phase)
         with self._event_lock:
             if self._replay.compromised or self._replay.failed or self._terminal_fault:
                 disposition = self._quarantine()
