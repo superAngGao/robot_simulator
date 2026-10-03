@@ -1146,6 +1146,13 @@ Next milestone:
       control/custody/evidence only. Source-frozen runtime/module custody, real
       multi-GPU uploads, complete setup/readiness and remaining C2d/e/f work are
       still pending; all product/result activation remains closed.
+      C2d2 captured repository-module custody design is independently approved
+      with comments at `0eb29f5` (source-custody design-review v1). Its CPU-only
+      loader/guardian composition is not yet implemented. Code review must
+      check explicit pre-guard/swallowed-error failure intake and distinguish
+      launcher configuration from the client's retained configuration object.
+      Four independent CPU dependency/API probes passed with actual exits;
+      no source-frozen integration or GPU safety is inferred from these probes.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
