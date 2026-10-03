@@ -1102,14 +1102,22 @@ Next milestone:
       all71 Git/disk/catalog digest comparisons. Author affected regression
       separately passed321. C2c5 mutation-test follow-up is closed. Scoped owned
       processes exited and GPU process queries were empty. These are CPU-only
-      checks, not GPU/historical-hang proof. Pre-execution source consumption,
-      bytecode policy and complete C2d/e/f worker integration remain incomplete.
+      checks, not GPU/historical-hang proof. Complete C2d/e/f guarded worker
+      integration remains incomplete.
       The CPU-only C2d0 source-consumption design addendum is independently
       approved at `57fea1c` (source-consumption design review v1): held-source
       loader, exact six-module cold core and narrowly pinned native-policy v3
       exception. Independent local3.14/remote3.12 cache diagnostics and actual
       core/full-verifier probes pass; process checks found no owned residual.
-      This authorizes implementation only, not a completed loader or runtime.
+      CPU C2d0 implementation is now independently approved at `1f0576b`
+      (source-consumption code-review v2): held-byte source-only loading,
+      exact core and bootstrap owners, terminal identity-drift rejection and
+      narrow policy/catalog repins. Initial owner/spec/package audit omissions
+      were repaired. Independent remote323 tests pass with no skips; actual
+      POSIX entry, real Go2 and original/restoration attack probes pass. Local
+      independent268 tests pass with6 platform/asset skips covered remotely.
+      Owned processes exited and GPU compute queries were empty. This closes
+      only CPU source consumption, not GPU custody or integrated lifecycle.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
