@@ -253,6 +253,69 @@ def test_preloaded_module_rejected(release):
     assert result[0] != 0 and b"repository module preloaded" in result[2]
 
 
+@pytest.mark.parametrize("name", ["optical_worker", "optical_worker.native_sources"])
+@pytest.mark.parametrize("field", ["spec_name", "package"])
+def test_review_core_spec_and_package_drift_is_terminal(release, name, field):
+    result = _internal(
+        release,
+        after=f"""
+entry._verify(session)
+module = sys.modules[{name!r}]
+if {field!r} == 'spec_name':
+    module.__spec__.name = 'foreign.alias'
+else:
+    module.__package__ = 'foreign.package'
+for attempt in range(2):
+    try:
+        entry._verify(session)
+    except entry.SourceBootstrapError:
+        assert session.failed
+    else:
+        raise AssertionError('identity drift accepted or session revived')
+print('rejected')
+""",
+    )
+    assert result[0] == 0, result[2].decode()
+    assert result[1].splitlines() == [b"rejected"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "sys.modules.pop('__main__')",
+        "replacement = types.ModuleType('__main__'); replacement.__file__ = entry.__file__; "
+        "sys.modules['__main__'] = replacement",
+        "replacement = types.ModuleType('__main__'); replacement.__dict__.update(entry.__dict__); "
+        "sys.modules['__main__'] = replacement",
+        "entry.__file__ = '/foreign/bootstrap.py'",
+        "entry.__name__ = 'foreign.alias'",
+        "entry.__package__ = 'foreign.package'",
+        "entry.__loader__ = object()",
+        "entry.__spec__ = object()",
+    ],
+)
+def test_review_bootstrap_owner_is_held_and_replacement_is_terminal(release, mutation):
+    result = _internal(
+        release,
+        after=f"""
+entry._verify(session)
+assert session.bootstrap_owner is entry
+{mutation}
+for attempt in range(2):
+    try:
+        entry._verify(session)
+    except entry.SourceBootstrapError:
+        assert session.failed
+    else:
+        raise AssertionError('bootstrap drift accepted or session revived')
+assert session.bootstrap_owner is entry
+print('rejected')
+""",
+    )
+    assert result[0] == 0, result[2].decode()
+    assert result[1].splitlines() == [b"rejected"]
+
+
 def test_loader_exception_retains_failed_record_and_prevents_retry(release):
     result = _internal(
         release,

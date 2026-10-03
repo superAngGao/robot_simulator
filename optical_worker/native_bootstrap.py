@@ -235,6 +235,18 @@ class _SourceSession:
     def __init__(self, root, revision, lane, catalog_sha256, sources):
         self.root, self.revision, self.lane = root, revision, lane
         self.catalog_sha256, self.sources = catalog_sha256, sources
+        # Retain the interpreter's trusted initial script owner separately. It
+        # was NOT executed by our source loader; this is an identity hold, not
+        # retroactive source-execution authority.
+        self.bootstrap_owner = sys.modules["__main__"]
+        self.bootstrap_loader = self.bootstrap_owner.__loader__
+        self.bootstrap_spec = self.bootstrap_owner.__spec__
+        self.bootstrap_package = self.bootstrap_owner.__package__
+        _require(
+            self.bootstrap_owner.__name__ == "__main__"
+            and self.bootstrap_owner.__file__ == str(root / _BOOTSTRAP),
+            "bootstrap owner is not the configured source entry",
+        )
         self.failed = False
         self.loaders, self.modules, self.trace = {}, {}, []
         self.finder = _CapturedSourceFinder(self)
@@ -243,6 +255,15 @@ class _SourceSession:
         _require(
             not self.failed and _ACTIVE_SESSION is self and sys.meta_path[0] is self.finder,
             "source session is failed/foreign or finder replaced",
+        )
+        _require(
+            sys.modules.get("__main__") is self.bootstrap_owner
+            and self.bootstrap_owner.__name__ == "__main__"
+            and self.bootstrap_owner.__file__ == str(self.root / _BOOTSTRAP)
+            and self.bootstrap_owner.__loader__ is self.bootstrap_loader
+            and self.bootstrap_owner.__spec__ is self.bootstrap_spec
+            and self.bootstrap_owner.__package__ == self.bootstrap_package,
+            "bootstrap owner identity/metadata drift",
         )
 
     def audit(self):
@@ -254,9 +275,15 @@ class _SourceSession:
                     state == "completed" and sys.modules.get(name) is module, "module identity/state drift"
                 )
                 loader._check(name)
+                expected_package = (
+                    name if loader.relative.endswith("/__init__.py") else name.rpartition(".")[0]
+                )
                 _require(
                     module.__name__ == name
+                    and module.__package__ == expected_package
                     and module.__loader__ is loader
+                    and module.__spec__.name == name
+                    and module.__spec__.parent == expected_package
                     and module.__spec__.loader is loader
                     and module.__spec__.origin == loader.origin
                     and module.__file__ == loader.origin,
