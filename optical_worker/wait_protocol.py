@@ -191,6 +191,7 @@ class GuardWaitClient:
         self._channel.setblocking(False)
         self._thread = threading.current_thread()
         self._states: dict[int, tuple[str, GuardWaitTicket | None, int | None]] = {0: ("IDLE", None, 0)}
+        self._ticket_origins: dict[GuardWaitTicket, tuple[str, int, str, int]] = {}
         self._operation_active = False
         self._last_clock_ns: int | None = None
 
@@ -201,6 +202,56 @@ class GuardWaitClient:
     @property
     def state(self) -> str:
         return self._snapshot()[1][0]
+
+    @property
+    def next_guard_sequence(self) -> int:
+        """Inspect the real idle attempt index; this does not reserve it."""
+        self._check_thread()
+        _, current = self._snapshot()
+        if current[0] != "IDLE" or current[2] is None:
+            raise GuardProtocolError("no idle guard sequence available")
+        return current[2]
+
+    def require_live_ticket(self, ticket: GuardWaitTicket, *, role: str) -> None:
+        """Only the exact ACK-created object in the current history is live."""
+        self._check_thread()
+        self._require_ticket_origin(ticket)
+        index, current = self._snapshot()
+        pending = self._states.get(index - 1)
+        if (
+            type(ticket) is not GuardWaitTicket or current[0] != "ARMED"
+            or current[1] is not ticket or pending is None or pending[0] != "ARM_PENDING"
+            or ticket.session != self.configuration.session
+            or ticket.device_ordinal != self.configuration.device_ordinal
+            or ticket.sequence != pending[2] or ticket.role != role or role not in ROLES
+        ):
+            raise GuardProtocolError("ticket is not the exact live guard")
+
+    def require_completed_ticket(self, ticket: GuardWaitTicket) -> None:
+        """Observe only the just-completed normal ticket, never a parsed copy."""
+        self._check_thread()
+        self._require_ticket_origin(ticket)
+        index, current = self._snapshot()
+        completing = self._states.get(index - 1)
+        armed = self._states.get(index - 2)
+        pending = self._states.get(index - 3)
+        if (
+            type(ticket) is not GuardWaitTicket or current[0] != "IDLE"
+            or completing is None or completing[:2] != ("COMPLETE_PENDING", ticket)
+            or completing[1] is not ticket
+            or armed is None or armed[0] != "ARMED" or armed[1] is not ticket
+            or pending is None or pending[0] != "ARM_PENDING"
+            or ticket.session != self.configuration.session
+            or ticket.device_ordinal != self.configuration.device_ordinal
+            or ticket.sequence != pending[2] or ticket.role not in {"setup", "resolve"}
+        ):
+            raise GuardProtocolError("ticket is not the just-completed normal guard")
+
+    def _require_ticket_origin(self, ticket: GuardWaitTicket) -> None:
+        if type(ticket) is not GuardWaitTicket or self._ticket_origins.get(ticket) != (
+            ticket.session, ticket.device_ordinal, ticket.role, ticket.sequence,
+        ):
+            raise GuardProtocolError("ticket identity/original ACK fields are not registered")
 
     def _snapshot(self):
         index = len(self._states) - 1
@@ -255,6 +306,9 @@ class GuardWaitClient:
             self._commit(pending, ("ARMED", ticket, next_sequence(sequence)))
             if self.state != "ARMED":
                 raise GuardProtocolError("ARM ticket already retired by failure")
+            self._ticket_origins[ticket] = (
+                request["session"], request["device_ordinal"], request["role"], request["sequence"],
+            )
             return ticket
         except BaseException:
             self.fail()

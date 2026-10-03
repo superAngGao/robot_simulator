@@ -4,6 +4,28 @@
   "must_complete": true,
   "entries": [
     {
+      "entry_id": "native_worker_guarded_custody",
+      "paths": [
+        "optical_worker/guarded_lifecycle.py",
+        "optical_worker/guarded_evidence.py",
+        "optical_worker/wait_protocol.py",
+        "tests/support/guarded_custody_process.py",
+        "tests/unit/optics/test_guarded_lifecycle.py",
+        "tests/unit/optics/test_guarded_custody_process.py"
+      ],
+      "symbols": {},
+      "temporary_entry_exit": "C2d source-frozen adoption replaces the fixed sacrificial driver only after equivalent integrated fault coverage; it is not a product-selectable callback or alternate allocator. Preserve C0 unchanged until the separately reviewed migration removes the unused mode.",
+      "cuda_selected": {
+        "action": "collapse",
+        "acceptance": "retain the selected worker's sole guarded custody controller and replay with shared guardian/permit/wait implementation; remove unused C0/native modes, losing-lane adapters and transitional drivers only after equivalent retained lifecycle fault coverage; never duplicate upload loops"
+      },
+      "warp_selected": {
+        "action": "collapse",
+        "acceptance": "retain the selected worker's sole guarded custody controller and replay with shared guardian/permit/wait implementation; remove unused C0/native modes, losing-lane adapters and transitional drivers only after equivalent retained lifecycle fault coverage; never duplicate upload loops"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
       "entry_id": "native_worker_source_policy",
       "paths": [
         "optical_worker/native_source_policy.py",

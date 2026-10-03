@@ -257,7 +257,7 @@ termination replay as the v3 state machine. Allowed inherited events/details:
 | guardian_sealed | coverage_sha256 | CONSTRUCTING -> SEALED once; no pending permit, known scope. Current records/state reconstruct this digest. |
 | guardian_partial_frozen | coverage_sha256 | CONSTRUCTING/SEALED -> PARTIAL_FROZEN once during termination; digest replays new state. |
 | guardian_quarantine_transferred | coverage_sha256 | PARTIAL_FROZEN/SEALED -> TRANSFERRED_TO_QUARANTINE once, before full_quarantine custody event. |
- 
+
 Descriptor validation adds `descriptor_observed {descriptor}` immediately
 before its corresponding setup_operation_started, same active guard/epoch.
 The full canonical descriptor is recorded, not just its supplied hash; the

@@ -34,6 +34,8 @@ _COMMON = (
     "optical_worker/assets.py",
     "optical_worker/camera_contract.py",
     "optical_worker/cases.py",
+    "optical_worker/guarded_evidence.py",
+    "optical_worker/guarded_lifecycle.py",
     "optical_worker/lane_contract.py",
     "optical_worker/lifecycle.py",
     "optical_worker/manifest.py",
