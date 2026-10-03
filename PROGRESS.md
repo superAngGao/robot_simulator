@@ -1135,7 +1135,16 @@ Next milestone:
       publication, plus irreversible prefix bounds including compromised scope.
       This permits repair implementation only; the existing code is NOT approved.
       The full reports and author test-evidence v1 retain scope/actual-exit checks.
-      Repair code, fresh independent code review, and remaining C2d/e/f work are
+      C2d1 CPU custody repairs are now independently approved at `854c2ea`
+      (code-review v5). Follow-up F3-F6 conservative scope/failure composition
+      findings are closed, including actual prepare-handler inner abort before
+      unwinding. Independent remote769 tests and24 expanded CPU exception probes
+      pass; author remote769 and local476 tests separately pass. Cold import
+      probes run in isolated children; earlier combined-test isolation failures
+      remain recorded. Round-end owned-process checks found no residual; no GPU
+      safety or historical-hang diagnosis is claimed. Approval covers CPU
+      control/custody/evidence only. Source-frozen runtime/module custody, real
+      multi-GPU uploads, complete setup/readiness and remaining C2d/e/f work are
       still pending; all product/result activation remains closed.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
