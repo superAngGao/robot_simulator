@@ -1118,6 +1118,16 @@ Next milestone:
       independent268 tests pass with6 platform/asset skips covered remotely.
       Owned processes exited and GPU compute queries were empty. This closes
       only CPU source consumption, not GPU custody or integrated lifecycle.
+      C2d1 guarded-custody interface design v2 is independently approved with
+      comments at `f1f4394` (guarded-custody design review v2). The initial
+      CPU-cancel watchdog gap and undefined lifecycle replay grammar were
+      repaired: a terminal ACK now precedes even CPU-only cleanup, and v3
+      evidence distinguishes release authorization/start/completion/failure.
+      Independent bounded CPU dependency probes pass; no controller code or
+      GPU behavior is approved by those probes. The one non-blocking trailing
+      space at proposal line260 remains a recorded cleanup follow-up. Code,
+      real supervised subprocess acceptance and remaining C2d/e/f work are
+      still pending; all product/result activation remains closed.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
