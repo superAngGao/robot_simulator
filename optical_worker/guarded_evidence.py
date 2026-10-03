@@ -109,6 +109,7 @@ class _Replay:
         self.next_sequence = 0
         self.purpose = None
         self.failed = False
+        self.terminal_failed = False
         self.dirty = set()
         self.unknown = False
         self.notified_dirty = set()
@@ -156,6 +157,7 @@ class _Replay:
             "next_sequence": self.next_sequence,
             "terminal_purpose": self.purpose,
             "guarded_segment_failed": self.failed,
+            "terminal_operation_failed": self.terminal_failed,
             "possible_dirty_device_ordinals": sorted(self.dirty),
             "unknown_device_scope": self.unknown,
             "setup_operation_count": self.operation_count,
@@ -443,6 +445,14 @@ class _Replay:
             exact_fields(details, set())
             _require(self.controller == "TERMINATING" and self.custody == "none", "duplicate custody entry")
             self.custody = "retained"
+        elif operation == "terminal_operation_failed":
+            exact_fields(details, {"failure_kind"})
+            _enum(details["failure_kind"], FAILURE_KINDS)
+            _require(
+                self.controller == "TERMINATING" and self.custody != "none" and not self.terminal_failed,
+                "duplicate or premature terminal fault",
+            )
+            self.terminal_failed = True
         elif operation == "terminal_arm_started":
             exact_fields(details, {"purpose"})
             purpose = _enum(details["purpose"], {"cpu_cancel", "target_sync"})
@@ -452,6 +462,7 @@ class _Replay:
                 and self.guardian in {"PARTIAL_FROZEN", "SEALED"}
                 and self.guard_state == "IDLE"
                 and not self.failed
+                and not self.terminal_failed
                 and not self.compromised
                 and self.terminal_arms == 0
                 and guard["role"] == "emergency",
@@ -488,10 +499,14 @@ class _Replay:
                 "sync lacks exact terminal target guard",
             )
             if operation == "emergency_sync_started":
-                _require(self.sync_count == 0, "second emergency sync")
+                _require(self.sync_count == 0 and not self.terminal_failed, "unsafe emergency sync entry")
                 self.sync_count, self.sync_outcome = 1, "started"
             else:
                 _require(self.sync_outcome == "started", "sync outcome without entry")
+                _require(
+                    operation == "emergency_sync_failed" or not self.terminal_failed,
+                    "sync success after terminal fault",
+                )
                 self.sync_outcome = "succeeded" if operation.endswith("succeeded") else "failed"
         elif operation == "resource_release_authorized":
             exact_fields(details, {"reason"})
@@ -504,7 +519,8 @@ class _Replay:
                 and self.guard_state == "ARMED"
                 and guard["role"] == "emergency"
                 and not self.compromised
-                and not self.failed,
+                and not self.failed
+                and not self.terminal_failed,
                 "unsafe release authorization",
             )
             _require(
@@ -519,12 +535,15 @@ class _Replay:
             self.guardian, self.release = "RELEASE_AUTHORIZED", "authorized"
         elif operation == "ordinary_cleanup_started":
             exact_fields(details, set())
-            _require(self.release == "authorized", "cleanup not authorized or repeated")
+            _require(self.release == "authorized" and not self.terminal_failed, "unsafe cleanup entry")
             self.release = "started"
         elif operation == "guardian_released":
             exact_fields(details, set())
             _require(
-                self.release == "started" and self.guardian == "RELEASE_AUTHORIZED", "release not started"
+                self.release == "started"
+                and self.guardian == "RELEASE_AUTHORIZED"
+                and not self.terminal_failed,
+                "unsafe release success",
             )
             self.guardian, self.release = "RELEASED", "completed"
         elif operation == "cleanup_failed":
@@ -566,6 +585,7 @@ class _Replay:
                 _require(
                     self.compromised
                     or self.failed
+                    or self.terminal_failed
                     or self.guard_state == "FAILED"
                     or self.sync_outcome == "failed",
                     "quarantine has no recorded cause",
@@ -580,7 +600,8 @@ class _Replay:
                     self.custody == "retained"
                     and self.release == "completed"
                     and self.guardian == "RELEASED"
-                    and self.guard_state == "ARMED",
+                    and self.guard_state == "ARMED"
+                    and not self.terminal_failed,
                     "successful terminal intent lacks release proof",
                 )
                 expected = (
@@ -683,11 +704,19 @@ def validate_custody_artifact(value):
             acknowledgements.add((details["operation"], details["sequence"], details["role"]))
         elif event["operation"] == "normal_complete_received":
             completes.add((details["sequence"], details["role"]))
-    worker_arms, worker_completes = set(), set()
+    worker_arms, worker_completes, complete_attempts = set(), set(), set()
+    supervisor_roles = dict(arms)
     for event in worker["transition_trace"]:
         operation, guard = event["operation"], event["guard"]
         if operation in {"normal_arm_started", "terminal_arm_started"}:
             worker_arms.add((guard["sequence"], guard["role"]))
+            _require(
+                guard["sequence"] not in supervisor_roles
+                or supervisor_roles[guard["sequence"]] == guard["role"],
+                "worker ARM attempt conflicts with supervisor role",
+            )
+        elif operation == "normal_complete_started":
+            complete_attempts.add((guard["sequence"], guard["role"]))
         elif operation in {"guard_armed", "normal_disarmed"}:
             response = "ARMED" if operation == "guard_armed" else "DISARMED"
             identity = (guard["sequence"], guard["role"])
@@ -699,6 +728,29 @@ def validate_custody_artifact(value):
         worker["summary"]["normal_complete_count"] <= supervisor["summary"]["normal_complete_count"],
         "worker completion count exceeds supervisor",
     )
+    replay = replay_lifecycle(worker["configuration"], worker["lane_id"], worker["transition_trace"])
+    bounded_tail = (
+        worker["record_kind"] == "terminal"
+        or replay.controller == "TERMINATING"
+        or replay.failed
+        or replay.terminal_failed
+        or replay.compromised
+    )
+    if bounded_tail:
+        allowed_arms = set(worker_arms)
+        if (
+            worker["record_kind"] == "prefix"
+            and replay.controller == "TERMINATING"
+            and replay.guard_state == "IDLE"
+            and not replay.failed
+            and not replay.terminal_failed
+            and not replay.compromised
+            and replay.terminal_arms == 0
+            and replay.next_sequence is not None
+        ):
+            allowed_arms.add((replay.next_sequence, "emergency"))
+        _require(arms <= allowed_arms, "supervisor ARM after irreversible worker boundary")
+        _require(completes <= complete_attempts, "supervisor COMPLETE was never attempted by worker")
     if worker["summary"]["release_status"] == "completed":
         _require(
             arms == worker_arms and completes == worker_completes,

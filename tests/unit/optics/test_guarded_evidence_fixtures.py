@@ -4,9 +4,17 @@ import copy
 
 import pytest
 
-from optical_worker.guarded_evidence import LIFECYCLE_VERSION, GuardedLifecycleEvidence, replay_lifecycle
+from optical_worker.guarded_evidence import (
+    LIFECYCLE_VERSION,
+    VALIDATION_VERSION,
+    GuardedLifecycleEvidence,
+    replay_lifecycle,
+    validate_custody_artifact,
+)
+from optical_worker.lifecycle import UNKNOWN_DEVICE_OWNER
 from optical_worker.protocol import canonical_sha256
 from optical_worker.wait_protocol import GuardConfiguration, GuardProtocolError
+from optical_worker.wait_supervision import GuardSupervisorCore
 
 
 def story(kind):
@@ -26,6 +34,7 @@ def story(kind):
         "next_sequence": 1,
         "terminal_purpose": None,
         "guarded_segment_failed": True,
+        "terminal_operation_failed": False,
         "possible_dirty_device_ordinals": [1],
         "unknown_device_scope": False,
         "setup_operation_count": 1,
@@ -262,3 +271,182 @@ def test_missing_scope_notification_cannot_manufacture_clean_release(kind):
     assert replay.summary()["disposition"] == "multi_or_unknown_device_quarantine_exit"
     assert replay.summary()["possible_dirty_device_ordinals"] == ([0] if kind == "foreign" else [])
     assert replay.summary()["unknown_device_scope"] == (kind == "unknown")
+
+
+def prefix(payload, last_operation):
+    """Cut actual grammar at an event; this helper is not an expected-summary oracle."""
+    payload = copy.deepcopy(payload)
+    index = next(
+        i for i, event in enumerate(payload["transition_trace"]) if event["operation"] == last_operation
+    )
+    payload["transition_trace"] = payload["transition_trace"][: index + 1]
+    return rebuilt_prefix(payload)
+
+
+def rebuilt_prefix(payload):
+    for index, event in enumerate(payload["transition_trace"]):
+        event["index"] = index
+    replay = replay_lifecycle(payload["configuration"], payload["lane_id"], payload["transition_trace"])
+    payload.update(record_kind="prefix", summary=replay.summary(), guardian_coverage=replay.coverage())
+    return payload
+
+
+def artifact(worker, steps):
+    config = GuardConfiguration.from_payload(
+        worker["configuration"] if worker is not None else story("inner_abort")["configuration"]
+    )
+    core = GuardSupervisorCore(config)
+    for operation, sequence, role, ack in steps:
+        response = core.accept(config.message(operation, sequence, role))
+        if ack:
+            core.acknowledge_written(response)
+    core.observe_exit(74)
+    return {
+        "schema_version": VALIDATION_VERSION,
+        "worker": worker,
+        "supervisor": core.evidence(require_final=True).to_payload(),
+    }
+
+
+SETUP_ARM = ("ARM", 0, "setup", True)
+SETUP_COMPLETE = ("COMPLETE", 0, "setup", True)
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+@pytest.mark.parametrize("received_ack", [False, True])
+def test_conflicting_pending_arm_role_rejected(terminal, received_ack):
+    worker = story("arm_failure")
+    if not terminal:
+        worker = prefix(worker, "normal_arm_started")
+    with pytest.raises(GuardProtocolError, match="conflicts"):
+        validate_custody_artifact(artifact(worker, [("ARM", 0, "resolve", received_ack)]))
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+@pytest.mark.parametrize("extra", ["complete", "normal_arm", "emergency_arm"])
+def test_failure_cannot_be_followed_by_complete_or_new_arm(terminal, extra):
+    worker = story("inner_abort")
+    if not terminal:
+        worker = prefix(worker, "guard_failed")
+    steps = [SETUP_ARM, SETUP_COMPLETE]
+    if extra != "complete":
+        steps.append(("ARM", 1, "resolve" if extra == "normal_arm" else "emergency", True))
+    with pytest.raises(GuardProtocolError):
+        validate_custody_artifact(artifact(worker, steps))
+
+
+@pytest.mark.parametrize("state", ["no_arm", "arm_pending", "ack_written"])
+def test_failed_arm_allows_unknown_matching_transport_outcome(state):
+    steps = [] if state == "no_arm" else [("ARM", 0, "setup", state == "ack_written")]
+    validate_custody_artifact(artifact(story("arm_failure"), steps))
+
+
+@pytest.mark.parametrize("completion", ["none", "pending", "ack_written"])
+def test_failed_complete_ack_can_follow_real_completion(completion):
+    steps = [SETUP_ARM]
+    if completion != "none":
+        steps.append(("COMPLETE", 0, "setup", completion == "ack_written"))
+    validate_custody_artifact(artifact(story("complete_failure"), steps))
+
+
+def test_absent_worker_and_healthy_prefix_may_lag_supervisor():
+    steps = [SETUP_ARM, SETUP_COMPLETE, ("ARM", 1, "resolve", True)]
+    validate_custody_artifact(artifact(None, steps))
+    for operation in ("guardian_created", "normal_arm_started", "guard_armed", "normal_complete_started"):
+        validate_custody_artifact(artifact(prefix(story("sync_success"), operation), steps))
+
+
+@pytest.mark.parametrize("extra_role", [None, "emergency", "setup", "resolve"])
+def test_healthy_terminal_prefix_permits_only_next_emergency(extra_role):
+    worker = prefix(story("sync_success"), "termination_started")
+    steps = [SETUP_ARM, SETUP_COMPLETE]
+    if extra_role:
+        steps.append(("ARM", 1, extra_role, True))
+    if extra_role in {None, "emergency"}:
+        validate_custody_artifact(artifact(worker, steps))
+    else:
+        with pytest.raises(GuardProtocolError):
+            validate_custody_artifact(artifact(worker, steps))
+
+
+def compromised_prefix(source):
+    if source.startswith("descriptor"):
+        return prefix(story("unknown" if source.endswith("unknown") else "foreign"), "descriptor_observed")
+    worker = prefix(story("inner_abort"), "low_level_leaf_entered")
+    event = {
+        "index": len(worker["transition_trace"]),
+        "epoch": 1,
+        "guard": {"sequence": 0, "role": "setup"},
+    }
+    if source == "explicit_unknown":
+        event.update(
+            operation="unknown_scope_set", details={"source": "fixed_source", "reason": "failed_owner"}
+        )
+    else:
+        event.update(
+            operation="owner_adopted",
+            details={
+                "sequence": 0,
+                "role": "destination",
+                "owner_type": "FixedOwner",
+                "device_scope": UNKNOWN_DEVICE_OWNER if source.endswith("unknown") else 0,
+                "operation_id": "fixed_leaf",
+            },
+        )
+    worker["transition_trace"].append(event)
+    return rebuilt_prefix(worker)
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["descriptor_foreign", "descriptor_unknown", "owner_foreign", "owner_unknown", "explicit_unknown"],
+)
+@pytest.mark.parametrize("extra", ["matching_only", "complete", "normal_arm", "emergency_arm"])
+def test_compromised_prefix_before_failure_or_notification_is_irreversible(source, extra):
+    worker = compromised_prefix(source)
+    assert worker["summary"]["controller_state"] == "RUNNING"
+    assert worker["summary"]["guarded_segment_failed"] is False
+    steps = [SETUP_ARM]
+    if extra != "matching_only":
+        steps.append(SETUP_COMPLETE)
+        if extra != "complete":
+            steps.append(("ARM", 1, "resolve" if extra == "normal_arm" else "emergency", True))
+        with pytest.raises(GuardProtocolError):
+            validate_custody_artifact(artifact(worker, steps))
+    else:
+        validate_custody_artifact(artifact(worker, steps))
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "guardian_created",
+        "terminal_custody_retained",
+        "terminal_arm_started",
+        "guard_armed",
+        "emergency_sync_started",
+        "emergency_sync_succeeded",
+        "ordinary_cleanup_started",
+    ],
+)
+def test_terminal_failure_event_replay_and_no_later_success(boundary):
+    worker = story("sync_success")
+    # Select the terminal ACK, not the earlier normal ACK.
+    index = max(i for i, event in enumerate(worker["transition_trace"]) if event["operation"] == boundary)
+    event = copy.deepcopy(worker["transition_trace"][index])
+    event.update(operation="terminal_operation_failed", details={"failure_kind": "thread"})
+    worker["transition_trace"].insert(index + 1, event)
+    for position, item in enumerate(worker["transition_trace"]):
+        item["index"] = position
+    with pytest.raises(GuardProtocolError):
+        replay_lifecycle(worker["configuration"], "warp", worker["transition_trace"])
+    # After custody, the prefix itself is valid and its failure is irreversible.
+    if boundary != "guardian_created":
+        worker["transition_trace"] = worker["transition_trace"][: index + 2]
+        worker = rebuilt_prefix(worker)
+        assert worker["summary"]["terminal_operation_failed"] is True
+        duplicate = copy.deepcopy(worker["transition_trace"][-1])
+        duplicate["index"] += 1
+        worker["transition_trace"].append(duplicate)
+        with pytest.raises(GuardProtocolError):
+            rebuilt_prefix(worker)

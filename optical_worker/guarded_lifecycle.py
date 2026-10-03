@@ -86,7 +86,6 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
         self._guard_ticket = None
         self._context_active = False
         self._terminating = False
-        self._terminal_fault = False
         self._failure_holds = []
         self._termination_evidence = None
         self._replay = None
@@ -138,7 +137,8 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
             if self._replay.controller == "TERMINAL_INTENT":
                 return
             if self._terminating:
-                self._terminal_fault = True
+                if not self._replay.terminal_failed:
+                    self._record("terminal_operation_failed", {"failure_kind": kind})
                 return
             if not self._replay.failed:
                 self._record("guard_failed", {"failure_kind": kind})
@@ -153,10 +153,16 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
 
     def _check_running(self):
         self._check_owner()
-        if self._terminating or self._replay.controller != "RUNNING" or self._replay.failed:
-            if self._terminating and self._replay.controller != "TERMINAL_INTENT":
-                self._terminal_fault = True
-            raise WorkerSetupProtocolError("guarded setup is failed or terminal")
+        with self._event_lock:
+            if self._terminating or self._replay.controller != "RUNNING" or self._replay.failed:
+                error = WorkerSetupProtocolError("guarded setup is failed or terminal")
+                if self._terminating:
+                    self._fail_guard("reentrant", error)
+                raise error
+
+    @property
+    def _terminal_fault(self):
+        return self._replay.terminal_failed
 
     def _require_setup(self):
         self._check_running()
@@ -283,94 +289,124 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
         )
 
     def _terminal_arm(self, purpose):
-        self._guard_reference = {"sequence": self._guard_client.next_guard_sequence, "role": "emergency"}
-        self._record("terminal_arm_started", {"purpose": purpose})
+        with self._event_lock:
+            if self._terminal_fault:
+                return False
+            self._guard_reference = {"sequence": self._guard_client.next_guard_sequence, "role": "emergency"}
+            self._record("terminal_arm_started", {"purpose": purpose})
         try:
             ticket = self._guard_client.arm("emergency")
             self._guard_client.require_live_ticket(ticket, role="emergency")
-            self._guard_ticket = ticket
-            self._record("guard_armed", {})
+            with self._event_lock:
+                self._guard_ticket = ticket
+                self._record("guard_armed", {})
         except BaseException as error:
-            self._hold_failure(error)
-            self._record("terminal_arm_failed", {"failure_kind": "arm_ack"})
+            with self._event_lock:
+                self._hold_failure(error)
+                self._record("terminal_arm_failed", {"failure_kind": "arm_ack"})
             self._guard_client.close()
             return False
         return True
 
+    def _cleanup_failed(self):
+        # Called with the controller lock, only after real release admission.
+        self._record("cleanup_failed", {"guardian_state": self.guardian.state})
+        self._record("quarantine_custody_committed", {"extent": "remaining"})
+        return "cleanup_failed_exit"
+
     def _release(self, purpose):
-        try:
+        with self._event_lock:
+            if self._terminal_fault:
+                return self._quarantine()
             self._guard_client.require_live_ticket(self._guard_ticket, role="emergency")
             self.guardian.authorize_release(self._guardian_authority)
             self._record(
                 "resource_release_authorized",
-                {
-                    "reason": "cpu_cancel" if purpose == "cpu_cancel" else "emergency_sync",
-                },
+                {"reason": "cpu_cancel" if purpose == "cpu_cancel" else "emergency_sync"},
             )
-            if self._terminal_fault:
-                raise WorkerSetupProtocolError("reentrant terminal operation invalidated cleanup")
             self._record("ordinary_cleanup_started", {})
+        try:
+            # Destructors may report another failure. Never hold the controller
+            # lock here, including when they use another thread.
             self.guardian.release_whole_graph(self._guardian_authority)
-            if self._terminal_fault:
-                raise WorkerSetupProtocolError("reentrant cleanup invalidated success")
-            self._record("guardian_released", {})
         except BaseException as error:
-            self._hold_failure(error)
-            if self.guardian.state not in {"RELEASE_AUTHORIZED", "RELEASED"}:
-                # No ordinary release began. Keep the entire graph terminal.
-                raise
-            self._record("cleanup_failed", {"guardian_state": self.guardian.state})
-            self._record("quarantine_custody_committed", {"extent": "remaining"})
-            return "cleanup_failed_exit"
-        return "cancelled_before_submission_exit" if purpose == "cpu_cancel" else "aborted_synced_exit"
+            with self._event_lock:
+                self._hold_failure(error)
+                return self._cleanup_failed()
+        with self._event_lock:
+            if self._terminal_fault:
+                return self._cleanup_failed()
+            self._record("guardian_released", {})
+            return "cancelled_before_submission_exit" if purpose == "cpu_cancel" else "aborted_synced_exit"
+
+    def _begin_termination(self, fault, detection_phase):
+        self._check_owner()
+        with self._event_lock:
+            if self._terminating:
+                error = WorkerSetupProtocolError("guarded termination is single-use")
+                self._fail_guard("reentrant", error)
+                raise error
+            if fault not in _FAULT_KINDS or not _valid_identifier(detection_phase):
+                raise WorkerSetupProtocolError("invalid terminal fault/phase")
+            self._hold_failure(sys.exception())
+            if self._guard_client.state != "IDLE" or self._replay.failed:
+                self._fail_guard("operation")
+            self._record("termination_started", {"fault": fault, "detection_phase": detection_phase})
+            self._terminating = True
+            self._state = "POISONED"
+            self._pending_leaf_permit = None
+            self._retain_controller()
+            self._record("terminal_custody_retained", {})
+            if self.guardian.state in {"CONSTRUCTING", "SEALED"}:
+                self.guardian.freeze_partial(self._guardian_authority)
+                self._record("guardian_partial_frozen", {"coverage_sha256": self.guardian.coverage_sha256})
+
+    def _synchronize(self, synchronize):
+        target = self.target_device_ordinal
+        with self._event_lock:
+            if self._terminal_fault:
+                return self._quarantine()
+            self._guard_client.require_live_ticket(self._guard_ticket, role="emergency")
+            self._record("emergency_sync_started", {"device_ordinal": target})
+        try:
+            if synchronize is None:
+                raise WorkerSetupProtocolError("no exact runtime target sync selected")
+            synchronize()
+        except BaseException as error:
+            with self._event_lock:
+                self._hold_failure(error)
+                self._record("emergency_sync_failed", {"device_ordinal": target})
+                return self._quarantine()
+        with self._event_lock:
+            if self._terminal_fault:
+                self._record("emergency_sync_failed", {"device_ordinal": target})
+                return self._quarantine()
+            self._record("emergency_sync_succeeded", {"device_ordinal": target})
+        return self._release("target_sync")
 
     def terminate(self, *, fault, detection_phase, emergency_target_synchronize):
-        self._check_owner()
-        if self._terminating:
-            if self._termination_evidence is None:
-                self._terminal_fault = True
-            raise WorkerSetupProtocolError("guarded termination is single-use")
-        if fault not in _FAULT_KINDS or not _valid_identifier(detection_phase):
-            raise WorkerSetupProtocolError("invalid terminal fault/phase")
-        self._hold_failure(sys.exception())
-        if self._guard_client.state != "IDLE" or self._replay.failed:
-            self._fail_guard("operation")
-        self._record("termination_started", {"fault": fault, "detection_phase": detection_phase})
-        self._terminating = True
-        self._state = "POISONED"
-        self._pending_leaf_permit = None
-        self._retain_controller()
-        self._record("terminal_custody_retained", {})
-        if self.guardian.state in {"CONSTRUCTING", "SEALED"}:
-            self.guardian.freeze_partial(self._guardian_authority)
-            self._record("guardian_partial_frozen", {"coverage_sha256": self.guardian.coverage_sha256})
-        if self._replay.compromised or self._replay.failed:
-            disposition = self._quarantine()
-        else:
-            purpose = (
-                "cpu_cancel" if not self._replay.dirty and self._replay.descriptor is None else "target_sync"
-            )
-            if not self._terminal_arm(purpose):
+        self._begin_termination(fault, detection_phase)
+        with self._event_lock:
+            if self._replay.compromised or self._replay.failed or self._terminal_fault:
                 disposition = self._quarantine()
+            else:
+                disposition = None
+                purpose = (
+                    "cpu_cancel"
+                    if not self._replay.dirty and self._replay.descriptor is None
+                    else "target_sync"
+                )
+        if disposition is None:
+            if not self._terminal_arm(purpose):
+                with self._event_lock:
+                    disposition = self._quarantine()
             elif purpose == "cpu_cancel":
                 disposition = self._release(purpose)
             else:
-                target = self.target_device_ordinal
-                self._guard_client.require_live_ticket(self._guard_ticket, role="emergency")
-                self._record("emergency_sync_started", {"device_ordinal": target})
-                try:
-                    if emergency_target_synchronize is None:
-                        raise WorkerSetupProtocolError("no exact runtime target sync selected")
-                    emergency_target_synchronize()
-                    if self._terminal_fault:
-                        raise WorkerSetupProtocolError("reentrant terminal sync invalidated success")
-                except BaseException as error:
-                    self._hold_failure(error)
-                    self._record("emergency_sync_failed", {"device_ordinal": target})
-                    disposition = self._quarantine()
-                else:
-                    self._record("emergency_sync_succeeded", {"device_ordinal": target})
-                    disposition = self._release(purpose)
-        self._record("terminal_intent", {"disposition": disposition})
-        self._termination_evidence = GuardedTerminationEvidence(self.evidence())
-        return self._termination_evidence
+                disposition = self._synchronize(emergency_target_synchronize)
+        with self._event_lock:
+            if self._terminal_fault and self._replay.release == "completed":
+                disposition = self._cleanup_failed()
+            self._record("terminal_intent", {"disposition": disposition})
+            self._termination_evidence = GuardedTerminationEvidence(self.evidence())
+            return self._termination_evidence

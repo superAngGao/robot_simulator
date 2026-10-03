@@ -40,6 +40,7 @@ class Peer:
             while not self.stop.wait(0.001):
                 import select
 
+                self.before_service()
                 read, write, _ = select.select(
                     [self.remote], [self.remote] if transport.wants_write else [], [], 0.01
                 )
@@ -47,6 +48,9 @@ class Peer:
                 self.core.tick()
         except BaseException as error:
             self.errors.append(error)
+
+    def before_service(self):
+        pass
 
     def close(self):
         self.stop.set()
@@ -299,6 +303,7 @@ def test_handwritten_initial_prefix_has_no_completion_authority():
             "next_sequence": 0,
             "terminal_purpose": None,
             "guarded_segment_failed": False,
+            "terminal_operation_failed": False,
             "possible_dirty_device_ordinals": [],
             "unknown_device_scope": False,
             "setup_operation_count": 0,
@@ -440,3 +445,189 @@ def test_full_transaction_trace_rejects_local_edit_and_rehash(peer, attack):
             event["index"] = position
         with pytest.raises(GuardProtocolError):
             replay_lifecycle(payload["configuration"], payload["lane_id"], forged)
+
+
+class TerminalFaultPeer(Peer):
+    """Inject before the real supervisor writes its committed terminal ACK."""
+
+    def before_service(self):
+        pending = self.core.pending_response
+        if pending and pending["role"] == "emergency" and not getattr(self, "injected", False):
+            self.injected = True
+            with pytest.raises(WorkerSetupProtocolError):
+                self.attack()
+
+
+@pytest.mark.parametrize("dirty", [False, True])
+@pytest.mark.parametrize("misuse", ["thread", "context"])
+def test_terminal_ack_fault_prevents_all_subsequent_side_effects(dirty, misuse):
+    peer = TerminalFaultPeer()
+    try:
+        controller = lifecycle(peer)
+        owner = object()
+        controller.adopt_host_owner(owner, role="sentinel", operation_id="setup")
+        if dirty:
+            with controller.segment():
+                controller.enter_device_leaf(controller.begin_device_leaf(descriptor()))
+        context = controller.segment()
+        peer.attack = (
+            lambda: controller.begin_device_leaf(descriptor())
+            if misuse == "thread"
+            else context.__exit__(None, None, None)
+        )
+        calls = []
+        payload = terminate(controller, lambda: calls.append("sync")).lifecycle.to_payload()
+        assert peer.injected and calls == []
+        assert controller.guardian.contains_exact_owner(owner)
+        operations = [event["operation"] for event in payload["transition_trace"]]
+        assert operations.index("terminal_operation_failed") < operations.index(
+            "guard_armed", operations.index("terminal_arm_started")
+        )
+        assert operations.count("terminal_operation_failed") == 1
+        assert operations.count("terminal_arm_started") == 1
+        assert "emergency_sync_started" not in operations
+        assert "resource_release_authorized" not in operations
+        assert "ordinary_cleanup_started" not in operations
+        assert "cleanup_failed" not in operations
+        assert payload["summary"]["custody"] == "full_quarantine"
+        assert payload["summary"]["normal_complete_count"] == int(dirty)
+        assert payload["summary"]["terminal_operation_failed"] is True
+        assert GuardedLifecycleEvidence.from_payload(payload).to_payload() == payload
+        with pytest.raises(WorkerSetupProtocolError, match="single-use"):
+            terminate(controller)
+        assert controller.evidence().to_payload() == payload
+    finally:
+        peer.close()
+
+
+@pytest.mark.parametrize("dirty", [False, True])
+@pytest.mark.parametrize("boundary", ["termination_started", "terminal_custody_retained"])
+def test_terminal_entry_is_atomic_and_fault_before_arm_cannot_start_it(peer, monkeypatch, dirty, boundary):
+    controller = lifecycle(peer)
+    owner = object()
+    controller.adopt_host_owner(owner, role="sentinel", operation_id="setup")
+    if dirty:
+        with controller.segment():
+            controller.enter_device_leaf(controller.begin_device_leaf(descriptor()))
+    checked = threading.Event()
+    observations, errors, threads = [], [], []
+    original_record = controller._record
+    original_begin = controller._begin_termination
+
+    def fault():
+        acquired = controller._event_lock.acquire(blocking=False)
+        observations.append(acquired)
+        if acquired:
+            controller._event_lock.release()
+        checked.set()
+        try:
+            controller.begin_device_leaf(descriptor())
+        except WorkerSetupProtocolError as error:
+            errors.append(error)
+
+    def record(operation, details):
+        original_record(operation, details)
+        if operation == boundary:
+            thread = threading.Thread(target=fault)
+            threads.append(thread)
+            thread.start()
+            assert checked.wait(2)
+            assert observations == [False]
+            assert errors == []  # Fault cannot commit in the entry critical section.
+
+    def begin(*args):
+        original_begin(*args)
+        # Schedule the already waiting error before the next admission point.
+        for thread in threads:
+            thread.join(2)
+            assert not thread.is_alive()
+        assert len(errors) == 1
+
+    monkeypatch.setattr(controller, "_record", record)
+    monkeypatch.setattr(controller, "_begin_termination", begin)
+    payload = terminate(controller, lambda: pytest.fail("pre-ARM fault synchronized")).lifecycle.to_payload()
+    operations = [event["operation"] for event in payload["transition_trace"]]
+    assert operations.index("terminal_custody_retained") < operations.index("terminal_operation_failed")
+    assert "terminal_arm_started" not in operations
+    assert "resource_release_authorized" not in operations
+    assert payload["summary"]["custody"] == "full_quarantine"
+    assert controller.guardian.contains_exact_owner(owner)
+    assert GuardedLifecycleEvidence.from_payload(payload).to_payload() == payload
+
+
+@pytest.mark.parametrize("boundary", ["before_sync", "before_release", "after_release"])
+def test_terminal_success_boundaries_preserve_true_custody(peer, monkeypatch, boundary):
+    controller = lifecycle(peer)
+    owner = object()
+    controller.adopt_host_owner(owner, role="sentinel", operation_id="setup")
+    with controller.segment():
+        controller.enter_device_leaf(controller.begin_device_leaf(descriptor()))
+    method = "_synchronize" if boundary == "before_sync" else "_release"
+    original = getattr(controller, method)
+
+    def misuse():
+        with pytest.raises(WorkerSetupProtocolError):
+            controller.begin_device_leaf(descriptor())
+
+    def boundary_call(*args):
+        if boundary != "after_release":
+            misuse()
+        result = original(*args)
+        if boundary == "after_release":
+            misuse()
+        return result
+
+    monkeypatch.setattr(controller, method, boundary_call)
+    sync_calls = []
+    payload = terminate(controller, lambda: sync_calls.append(True)).lifecycle.to_payload()
+    operations = [event["operation"] for event in payload["transition_trace"]]
+    assert sync_calls == ([] if boundary == "before_sync" else [True])
+    assert payload["summary"]["terminal_operation_failed"] is True
+    if boundary == "after_release":
+        assert payload["summary"]["disposition"] == "cleanup_failed_exit"
+        assert payload["summary"]["custody"] == "remaining_quarantine"
+        assert operations.index("guardian_released") < operations.index("terminal_operation_failed")
+        assert not controller.guardian.contains_exact_owner(owner)
+    else:
+        assert payload["summary"]["custody"] == "full_quarantine"
+        assert "resource_release_authorized" not in operations
+        assert controller.guardian.contains_exact_owner(owner)
+
+
+@pytest.mark.parametrize("during", ["sync", "destructor"])
+def test_blocking_native_or_destructor_call_does_not_hold_controller_lock(peer, during):
+    controller = lifecycle(peer)
+    rejected, threads = [], []
+
+    def wrong_thread():
+        try:
+            controller.begin_device_leaf(descriptor())
+        except WorkerSetupProtocolError:
+            rejected.append(True)
+
+    def inject():
+        thread = threading.Thread(target=wrong_thread)
+        threads.append(thread)
+        thread.start()
+        thread.join(2)
+        # Record rather than throw inside __del__; assertions run below.
+        rejected.append(not thread.is_alive())
+
+    class Owner:
+        def __del__(self):
+            inject()
+
+    if during == "sync":
+        with controller.segment():
+            controller.enter_device_leaf(controller.begin_device_leaf(descriptor()))
+    else:
+        controller.adopt_host_owner(Owner(), role="sentinel", operation_id="setup")
+    payload = terminate(controller, inject).lifecycle.to_payload()
+    for thread in threads:
+        thread.join(2)
+        assert not thread.is_alive()
+    assert rejected == [True, True]
+    assert payload["summary"]["terminal_operation_failed"] is True
+    assert payload["summary"]["custody"] == (
+        "full_quarantine" if during == "sync" else "remaining_quarantine"
+    )
