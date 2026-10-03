@@ -1125,8 +1125,17 @@ Next milestone:
       evidence distinguishes release authorization/start/completion/failure.
       Independent bounded CPU dependency probes pass; no controller code or
       GPU behavior is approved by those probes. The one non-blocking trailing
-      space at proposal line260 remains a recorded cleanup follow-up. Code,
-      real supervised subprocess acceptance and remaining C2d/e/f work are
+      space at proposal line260 was removed in the unapproved code candidate.
+      C2d1 CPU implementation `4ee33ab` received Request changes: a fault during
+      terminal ACK could still admit sync/release, and combined evidence could
+      accept contradictory worker/supervisor histories. Author628 and independent
+      reviewer199 passing tests did not close the independently reproduced bugs.
+      The bounded repair-design v2 at `2ea88c8` is independently approved
+      (repair-design-review v2): terminal failure/admission and atomic custody
+      publication, plus irreversible prefix bounds including compromised scope.
+      This permits repair implementation only; the existing code is NOT approved.
+      The full reports and author test-evidence v1 retain scope/actual-exit checks.
+      Repair code, fresh independent code review, and remaining C2d/e/f work are
       still pending; all product/result activation remains closed.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
