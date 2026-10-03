@@ -16,7 +16,7 @@ from optical_worker.guarded_evidence import (
 )
 from optical_worker.guarded_lifecycle import _TERMINAL_CUSTODY, NativeGuardedSetupLifecycle
 from optical_worker.lifecycle import DeviceScopeDescriptor, WorkerSetupProtocolError
-from optical_worker.native_setup import _abort
+from optical_worker.native_setup import NativeWorkerPreparationAborted, _abort
 from optical_worker.wait_protocol import GuardConfiguration, GuardProtocolError, GuardWaitClient
 from optical_worker.wait_supervision import GuardSupervisorCore, GuardSupervisorTransport
 
@@ -704,6 +704,113 @@ def test_unknown_scope_before_first_guard_rejects_arm(peer):
     payload = terminate(controller).lifecycle.to_payload()
     assert all("arm" not in event["operation"] for event in payload["transition_trace"])
     assert payload["summary"]["custody"] == "full_quarantine"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "foreign_descriptor",
+        "unknown_descriptor",
+        "foreign_owner",
+        "unknown_owner",
+        "explicit_unknown",
+        "invalid_permit",
+        "sealed_invalid_permit",
+    ],
+)
+@pytest.mark.parametrize("propagate", [False, True])
+def test_native_abort_commits_custody_before_outer_context_unwinds(peer, failure, propagate):
+    controller = lifecycle(peer)
+    sentinel, returned_owner = object(), object()
+    controller.adopt_host_owner(sentinel, role="sentinel", operation_id="setup")
+    before_exit = None
+    original = None
+    try:
+        with controller.segment():
+            if failure == "sealed_invalid_permit":
+                controller.seal_guardian()
+            try:
+                if failure == "foreign_descriptor":
+                    controller.begin_device_leaf(descriptor(0))
+                elif failure == "unknown_descriptor":
+                    controller.begin_device_leaf(
+                        replace(descriptor(), device_ordinals=(), unreturned_resource_possible=True)
+                    )
+                elif failure in {"foreign_owner", "unknown_owner"}:
+                    controller.adopt_returned_device_owner(
+                        returned_owner,
+                        actual_device_ordinal=0 if failure == "foreign_owner" else None,
+                        role="returned",
+                        operation_id="fixed_test",
+                    )
+                elif failure == "explicit_unknown":
+                    controller.mark_unknown_device_scope(source="fixed_test", reason="unknown_return")
+                    raise RuntimeError("original setup failure")
+                else:
+                    controller.enter_device_leaf(object())
+            except BaseException as error:
+                original = error
+                aborted = _abort(controller, exception=error, sync=lambda: pytest.fail("abort retried sync"))
+                assert type(aborted) is NativeWorkerPreparationAborted
+                assert aborted.evidence is controller.termination_evidence
+                before_exit = aborted.evidence.lifecycle.to_payload()
+                assert controller.guardian.state == "TRANSFERRED_TO_QUARANTINE"
+                assert controller.guardian.contains_exact_owner(sentinel)
+                assert any(item is error for item in controller._failure_holds)
+                if failure != "sealed_invalid_permit":
+                    assert controller.guardian.contains_exact_owner(error)
+                if failure in {"foreign_owner", "unknown_owner"}:
+                    assert controller.guardian.contains_exact_owner(returned_owner)
+                summary = before_exit["summary"]
+                assert summary["controller_state"] == "TERMINAL_INTENT"
+                assert summary["custody"] == "full_quarantine"
+                assert summary["normal_complete_count"] == summary["terminal_arm_attempt_count"] == 0
+                assert summary["emergency_sync_attempt_count"] == 0
+                assert summary["release_status"] == "not_authorized"
+                operations = [event["operation"] for event in before_exit["transition_trace"]]
+                assert operations.count("termination_started") == 1
+                assert operations.count("terminal_custody_retained") == 1
+                if propagate:
+                    raise aborted from error
+            else:
+                pytest.fail("fault did not occur")
+    except NativeWorkerPreparationAborted as error:
+        assert propagate and error.__cause__ is original
+    except WorkerSetupProtocolError:
+        # Catching the aborted result cannot make the outer segment complete.
+        assert not propagate
+    else:
+        pytest.fail("terminated segment exited normally")
+    assert before_exit is not None
+    assert controller.evidence().to_payload() == before_exit
+
+
+@pytest.mark.parametrize("mutation", ["not_exception", "wrong_role", "wrong_operation"])
+def test_failure_retention_does_not_reopen_normal_host_adoption(peer, mutation):
+    controller = lifecycle(peer)
+    value = object() if mutation == "not_exception" else RuntimeError("custody only")
+    with pytest.raises(WorkerSetupProtocolError):
+        with controller.segment():
+            with pytest.raises(WorkerSetupProtocolError):
+                controller.enter_device_leaf(object())
+            with pytest.raises(WorkerSetupProtocolError):
+                controller.adopt_host_owner(
+                    value,
+                    role="normal" if mutation == "wrong_role" else "setup_exception_graph",
+                    operation_id="normal" if mutation == "wrong_operation" else "setup_exception",
+                )
+            assert not controller.guardian.contains_exact_owner(value)
+    assert controller.termination_evidence.lifecycle.to_payload()["summary"]["custody"] == "full_quarantine"
+
+
+def test_explicit_unknown_scope_rejects_normal_exit_without_another_public_call(peer):
+    controller = lifecycle(peer)
+    with pytest.raises(WorkerSetupProtocolError):
+        with controller.segment():
+            controller.mark_unknown_device_scope(source="fixed_test", reason="unknown_return")
+    summary = controller.termination_evidence.lifecycle.to_payload()["summary"]
+    assert summary["custody"] == "full_quarantine"
+    assert summary["normal_complete_count"] == summary["terminal_arm_attempt_count"] == 0
 
 
 @pytest.mark.parametrize(

@@ -31,6 +31,9 @@ FAULTS = (
     "normal_success",
     "normal_leaf_raise",
     "inner_abort",
+    "foreign_inner_abort",
+    "unknown_inner_abort",
+    "invalid_permit_inner_abort",
     "pre_leaf_raise",
     "foreign",
     "unknown",
@@ -104,6 +107,38 @@ def child(fault, fd, directory):
         cpu_only = fault.startswith("cpu_") or fault.startswith("terminal_") or fault.startswith("cleanup_")
         if not cpu_only:
             with lifecycle.segment():
+                if fault in {"foreign_inner_abort", "unknown_inner_abort", "invalid_permit_inner_abort"}:
+                    try:
+                        if fault == "invalid_permit_inner_abort":
+                            lifecycle.enter_device_leaf(object())
+                        elif fault == "foreign_inner_abort":
+                            lifecycle.begin_device_leaf(
+                                DeviceScopeDescriptor.exact_target(
+                                    operation_id="cpu_leaf",
+                                    leaf_kind="allocation",
+                                    device_ordinal=0,
+                                    scope_source="cpu_fixture",
+                                    runtime_identity="cpu_fixture",
+                                )
+                            )
+                        else:
+                            lifecycle.begin_device_leaf(
+                                DeviceScopeDescriptor.unknown(
+                                    operation_id="cpu_leaf",
+                                    leaf_kind="allocation",
+                                    scope_source="cpu_fixture",
+                                    runtime_identity="cpu_fixture",
+                                )
+                            )
+                    except BaseException as error:
+                        aborted = _abort(lifecycle, exception=error, sync=sync)
+                        assert aborted.evidence is lifecycle.termination_evidence
+                        assert lifecycle.guardian.contains_exact_owner(error)
+                        mark(
+                            directory, "inner_abort.json", json.dumps(aborted.evidence.lifecycle.to_payload())
+                        )
+                        raise aborted from error
+                    raise AssertionError("fixed abort fault did not occur")
                 scope = DeviceScopeDescriptor.exact_target(
                     operation_id="cpu_leaf",
                     leaf_kind="allocation",

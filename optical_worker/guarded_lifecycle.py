@@ -252,6 +252,20 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
 
     def adopt_host_owner(self, owner, *, role, operation_id):
         with self._observe_public_operation():
+            self._check_owner()
+            # native_setup._abort must retain its original exception before
+            # terminate(), even when the failing public leaf already poisoned
+            # normal work. This is retention only, never renewed admission.
+            with self._event_lock:
+                if (
+                    not self._terminating
+                    and (self._replay.failed or self._replay.compromised)
+                    and isinstance(owner, BaseException)
+                    and role == "setup_exception_graph"
+                    and operation_id == "setup_exception"
+                ):
+                    self._fail_guard("operation", owner)
+                    return super().adopt_host_owner(owner, role=role, operation_id=operation_id)
             self._check_running()
             return super().adopt_host_owner(owner, role=role, operation_id=operation_id)
 
