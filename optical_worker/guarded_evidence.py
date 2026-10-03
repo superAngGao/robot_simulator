@@ -176,7 +176,8 @@ class _Replay:
             and self.guard_state == "ARMED"
             and self.guard is not None
             and self.guard["role"] == "setup"
-            and not self.failed,
+            and not self.failed
+            and not self.body_returned,
             "setup fact requires an armed normal setup segment",
         )
 
@@ -220,6 +221,8 @@ class _Replay:
         else:
             _require(guard == self.guard, "event is attached to the wrong guard")
         if self.index == 0:
+            exact_fields(details, {"lane_id", "target_device_ordinal"})
+            bounded_integer(details["target_device_ordinal"], 1023)
             _require(
                 operation == "guardian_created"
                 and details
@@ -529,6 +532,7 @@ class _Replay:
             _enum(details["guardian_state"], {"RELEASE_AUTHORIZED", "RELEASED"})
             _require(
                 self.release in {"authorized", "started", "completed"}
+                and (self.release != "authorized" or details["guardian_state"] == "RELEASE_AUTHORIZED")
                 and (self.release != "completed" or details["guardian_state"] == "RELEASED"),
                 "cleanup failure outside authorized release",
             )

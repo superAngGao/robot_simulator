@@ -138,7 +138,8 @@ def child(fault, fd, directory):
         mark(directory, "worker.json", json.dumps(evidence.lifecycle.to_payload()))
         if fault in {"cpu_exit_hang", "target_exit_hang"}:
             stall()
-        os._exit(0)
+        disposition = evidence.lifecycle.to_payload()["summary"]["disposition"]
+        os._exit(0 if disposition in {"cancelled_before_submission_exit", "aborted_synced_exit"} else 74)
     except BaseException:
         evidence = lifecycle.termination_evidence
         if evidence is not None:

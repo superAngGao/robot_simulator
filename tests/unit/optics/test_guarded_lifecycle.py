@@ -296,3 +296,126 @@ def test_handwritten_initial_prefix_has_no_completion_authority():
     payload["record_kind"] = "terminal"
     with pytest.raises(GuardProtocolError):
         GuardedLifecycleEvidence.from_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "field,value", [("role", "resolve"), ("sequence", 7), ("session", "b" * 32), ("device_ordinal", 0)]
+)
+def test_ticket_original_ack_fields_cannot_drift(peer, field, value):
+    client = GuardWaitClient(peer.channel, peer.config)
+    ticket = client.arm("setup")
+    object.__setattr__(ticket, field, value)
+    with pytest.raises(GuardProtocolError):
+        client.require_live_ticket(ticket, role=ticket.role)
+
+
+def test_foreign_thread_invalidates_outer_success(peer):
+    controller = lifecycle(peer)
+    errors = []
+
+    def wrong_thread():
+        try:
+            controller.begin_device_leaf(descriptor())
+        except WorkerSetupProtocolError as error:
+            errors.append(error)
+
+    with pytest.raises(WorkerSetupProtocolError):
+        with controller.segment():
+            thread = threading.Thread(target=wrong_thread)
+            thread.start()
+            thread.join(2)
+            assert not thread.is_alive()
+    assert len(errors) == 1
+    payload = controller.termination_evidence.lifecycle.to_payload()
+    assert payload["summary"]["entered_leaf_count"] == 0
+    assert payload["summary"]["normal_complete_count"] == 0
+    assert payload["summary"]["custody"] == "full_quarantine"
+    controller._state = "NO_SETUP_GPU_WORK"
+    with pytest.raises(WorkerSetupProtocolError):
+        with controller.segment():
+            pytest.fail("C0 field restoration revived failed controller")
+
+
+def test_reentrant_sync_cannot_authorize_cleanup(peer):
+    controller = lifecycle(peer)
+    with controller.segment():
+        controller.enter_device_leaf(controller.begin_device_leaf(descriptor()))
+
+    def sync():
+        with pytest.raises(WorkerSetupProtocolError):
+            terminate(controller)
+
+    summary = terminate(controller, sync).lifecycle.to_payload()["summary"]
+    assert summary["emergency_sync_attempt_count"] == 1
+    assert summary["emergency_sync_outcome"] == "failed"
+    assert summary["release_status"] == "not_authorized"
+    assert summary["custody"] == "full_quarantine"
+
+
+def test_reentrant_destructor_cannot_report_success(peer):
+    controller = lifecycle(peer)
+    calls = []
+
+    class ReentrantOwner:
+        def __del__(self):
+            try:
+                terminate(controller)
+            except WorkerSetupProtocolError:
+                calls.append("rejected")
+
+    controller.adopt_host_owner(ReentrantOwner(), role="reentrant_owner", operation_id="cpu_setup")
+    summary = terminate(controller).lifecycle.to_payload()["summary"]
+    assert calls == ["rejected"]
+    assert summary["disposition"] == "cleanup_failed_exit"
+    assert summary["guardian_state"] == "RELEASED"
+    assert summary["custody"] == "remaining_quarantine"
+
+
+@pytest.mark.parametrize("scope", [None, 0])
+def test_returned_owner_is_retained_before_scope_rejection(peer, scope):
+    controller = lifecycle(peer)
+    owner = object()
+    with pytest.raises(WorkerSetupProtocolError):
+        with controller.segment():
+            controller.enter_device_leaf(controller.begin_device_leaf(descriptor()))
+            controller.adopt_returned_device_owner(
+                owner, actual_device_ordinal=scope, role="returned", operation_id="cpu_leaf"
+            )
+    assert controller.guardian.contains_exact_owner(owner)
+    payload = controller.termination_evidence.lifecycle.to_payload()
+    assert payload["summary"]["disposition"] == "multi_or_unknown_device_quarantine_exit"
+    assert payload["summary"]["emergency_sync_attempt_count"] == 0
+
+
+@pytest.mark.parametrize("attack", ["delete", "duplicate", "guard", "epoch", "extra", "invent"])
+def test_full_transaction_trace_rejects_local_edit_and_rehash(peer, attack):
+    controller = lifecycle(peer)
+    with controller.segment():
+        controller.enter_device_leaf(controller.begin_device_leaf(descriptor()))
+        controller.adopt_returned_device_owner(
+            object(), actual_device_ordinal=1, role="returned", operation_id="cpu_leaf"
+        )
+    payload = terminate(controller, lambda: None).lifecycle.to_payload()
+    trace = payload["transition_trace"]
+    for index, original in enumerate(trace):
+        forged = copy.deepcopy(trace)
+        if attack == "delete":
+            # Terminal intent omission is legitimately an unfinished prefix,
+            # not something a consistency parser can identify as forgery.
+            if index == len(trace) - 1:
+                continue
+            forged.pop(index)
+        elif attack == "duplicate":
+            forged.insert(index, copy.deepcopy(original))
+        elif attack == "guard":
+            forged[index]["guard"] = {"sequence": 9, "role": "setup"}
+        elif attack == "epoch":
+            forged[index]["epoch"] = 2
+        elif attack == "extra":
+            forged[index]["details"]["invented"] = True
+        else:
+            forged[index]["operation"] = "invented_transition"
+        for position, event in enumerate(forged):
+            event["index"] = position
+        with pytest.raises(GuardProtocolError):
+            replay_lifecycle(payload["configuration"], payload["lane_id"], forged)

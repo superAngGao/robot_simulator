@@ -11,6 +11,7 @@
         "optical_worker/wait_protocol.py",
         "tests/support/guarded_custody_process.py",
         "tests/unit/optics/test_guarded_lifecycle.py",
+        "tests/unit/optics/test_guarded_evidence_fixtures.py",
         "tests/unit/optics/test_guarded_custody_process.py"
       ],
       "symbols": {},
