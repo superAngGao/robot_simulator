@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import importlib.abc
 import json
 import os
 import select
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -18,8 +20,17 @@ sys.path.insert(0, str(ROOT))
 
 from optical_worker.guarded_evidence import VALIDATION_VERSION, validate_custody_artifact  # noqa: E402
 from optical_worker.guarded_lifecycle import NativeGuardedSetupLifecycle  # noqa: E402
-from optical_worker.lifecycle import DeviceScopeDescriptor, NativeWorkerResourceGuardian  # noqa: E402
-from optical_worker.native_setup import _abort  # noqa: E402
+from optical_worker.lifecycle import (  # noqa: E402
+    DeviceScopeDescriptor,
+    NativeWorkerResourceGuardian,
+    WorkerSetupProtocolError,
+)
+from optical_worker.native_setup import (  # noqa: E402
+    NativeWorkerPreparationAborted,
+    _abort,
+    prepare_cuda_native_input_for_closed_worker,
+    prepare_warp_native_input_for_closed_worker,
+)
 from optical_worker.protocol import encode_framed_message  # noqa: E402
 from optical_worker.wait_protocol import MAX_BODY_BYTES, GuardConfiguration  # noqa: E402
 from optical_worker.wait_supervision import GuardSupervisorCore, GuardSupervisorTransport  # noqa: E402
@@ -34,6 +45,10 @@ FAULTS = (
     "foreign_inner_abort",
     "unknown_inner_abort",
     "invalid_permit_inner_abort",
+    "cuda_import_failure",
+    "warp_import_failure",
+    "cuda_import_thread_failure",
+    "warp_import_thread_failure",
     "pre_leaf_raise",
     "foreign",
     "unknown",
@@ -67,6 +82,58 @@ def stall():
         time.sleep(0.02)
 
 
+def fail_actual_import(lifecycle, fault, directory):
+    """Fixed CPU fixture at the actual prepare call; never import a runtime."""
+    runtime = "warp" if fault.startswith("warp_") else "torch"
+    assert runtime not in sys.modules
+    original = ImportError("fixed CPU runtime import failure")
+    rejected = []
+
+    class ImportFailure(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname != runtime:
+                return None
+            if "_thread_" in fault:
+
+                def misuse():
+                    try:
+                        lifecycle.require_adopted()
+                    except WorkerSetupProtocolError as error:
+                        rejected.append(error)
+
+                thread = threading.Thread(target=misuse)
+                thread.start()
+                thread.join(2)
+                assert not thread.is_alive() and len(rejected) == 1
+            raise original
+
+    injector = ImportFailure()
+    source = object()
+    sys.meta_path.insert(0, injector)
+    try:
+        prepare = (
+            prepare_warp_native_input_for_closed_worker
+            if runtime == "warp"
+            else prepare_cuda_native_input_for_closed_worker
+        )
+        try:
+            prepare(source, lifecycle=lifecycle)
+        except NativeWorkerPreparationAborted as aborted:
+            assert aborted.__cause__ is original
+            assert aborted.evidence is lifecycle.termination_evidence
+            assert lifecycle.guardian.contains_exact_owner(source)
+            assert lifecycle.guardian.contains_exact_owner(original)
+            payload = aborted.evidence.lifecycle.to_payload()
+            assert payload["summary"]["unknown_device_scope"]
+            assert payload["summary"]["custody"] == "full_quarantine"
+            mark(directory, "inner_abort.json", json.dumps(payload))
+            raise
+        raise AssertionError("fixed import failure did not abort")
+    finally:
+        sys.meta_path.remove(injector)
+        assert runtime not in sys.modules
+
+
 class Owner:
     def __init__(self, directory, fault):
         self.directory, self.fault = directory, fault
@@ -81,7 +148,7 @@ def child(fault, fd, directory):
     mark(directory, "identity.json", json.dumps({"pid": os.getpid(), "ppid": os.getppid()}))
     atexit.register(mark, directory, "atexit")
     lifecycle = NativeGuardedSetupLifecycle(
-        lane_id="cuda",
+        lane_id="warp" if fault.startswith("warp_") else "cuda",
         channel=socket.socket(fileno=fd),
         configuration=configuration(),
     )
@@ -107,6 +174,8 @@ def child(fault, fd, directory):
         cpu_only = fault.startswith("cpu_") or fault.startswith("terminal_") or fault.startswith("cleanup_")
         if not cpu_only:
             with lifecycle.segment():
+                if "_import_" in fault:
+                    fail_actual_import(lifecycle, fault, directory)
                 if fault in {"foreign_inner_abort", "unknown_inner_abort", "invalid_permit_inner_abort"}:
                     try:
                         if fault == "invalid_permit_inner_abort":

@@ -716,6 +716,7 @@ def test_unknown_scope_before_first_guard_rejects_arm(peer):
         "explicit_unknown",
         "invalid_permit",
         "sealed_invalid_permit",
+        "sealed_invalid_permit_unknown",
     ],
 )
 @pytest.mark.parametrize("propagate", [False, True])
@@ -727,7 +728,7 @@ def test_native_abort_commits_custody_before_outer_context_unwinds(peer, failure
     original = None
     try:
         with controller.segment():
-            if failure == "sealed_invalid_permit":
+            if failure.startswith("sealed_"):
                 controller.seal_guardian()
             try:
                 if failure == "foreign_descriptor":
@@ -750,6 +751,8 @@ def test_native_abort_commits_custody_before_outer_context_unwinds(peer, failure
                     controller.enter_device_leaf(object())
             except BaseException as error:
                 original = error
+                if failure == "sealed_invalid_permit_unknown":
+                    controller.mark_unknown_device_scope(source="test", reason="sealed_failure")
                 aborted = _abort(controller, exception=error, sync=lambda: pytest.fail("abort retried sync"))
                 assert type(aborted) is NativeWorkerPreparationAborted
                 assert aborted.evidence is controller.termination_evidence
@@ -757,7 +760,7 @@ def test_native_abort_commits_custody_before_outer_context_unwinds(peer, failure
                 assert controller.guardian.state == "TRANSFERRED_TO_QUARANTINE"
                 assert controller.guardian.contains_exact_owner(sentinel)
                 assert any(item is error for item in controller._failure_holds)
-                if failure != "sealed_invalid_permit":
+                if not failure.startswith("sealed_"):
                     assert controller.guardian.contains_exact_owner(error)
                 if failure in {"foreign_owner", "unknown_owner"}:
                     assert controller.guardian.contains_exact_owner(returned_owner)
@@ -811,6 +814,132 @@ def test_explicit_unknown_scope_rejects_normal_exit_without_another_public_call(
     summary = controller.termination_evidence.lifecycle.to_payload()["summary"]
     assert summary["custody"] == "full_quarantine"
     assert summary["normal_complete_count"] == summary["terminal_arm_attempt_count"] == 0
+
+
+@pytest.mark.parametrize("lane", ["cuda", "warp"])
+@pytest.mark.parametrize("prior_fault", [False, True])
+@pytest.mark.parametrize("propagate", [False, True])
+def test_actual_prepare_import_failure_records_scope_before_unwind(
+    peer, tmp_path, lane, prior_fault, propagate
+):
+    from tests.support.guarded_custody_process import fail_actual_import
+
+    controller = NativeGuardedSetupLifecycle(lane_id=lane, channel=peer.channel, configuration=peer.config)
+    before_exit = None
+    try:
+        with controller.segment():
+            try:
+                fail_actual_import(
+                    controller,
+                    lane + ("_import_thread_failure" if prior_fault else "_import_failure"),
+                    tmp_path,
+                )
+            except NativeWorkerPreparationAborted as error:
+                assert error.evidence is controller.termination_evidence
+                before_exit = error.evidence.lifecycle.to_payload()
+                assert before_exit["summary"]["unknown_device_scope"]
+                assert before_exit["summary"]["disposition"] == "multi_or_unknown_device_quarantine_exit"
+                assert before_exit["summary"]["normal_complete_count"] == 0
+                assert before_exit["summary"]["terminal_arm_attempt_count"] == 0
+                assert before_exit["summary"]["emergency_sync_attempt_count"] == 0
+                assert before_exit["summary"]["release_status"] == "not_authorized"
+                assert [e["operation"] for e in before_exit["transition_trace"]].count(
+                    "termination_started"
+                ) == 1
+                if propagate:
+                    raise
+    except NativeWorkerPreparationAborted:
+        assert propagate
+    except WorkerSetupProtocolError:
+        assert not propagate
+    else:
+        pytest.fail("failed preparation exited normally")
+    assert before_exit is not None
+    assert controller.evidence().to_payload() == before_exit
+
+
+def test_unknown_scope_reporting_still_rejects_wrong_thread_and_post_intent(peer):
+    controller = lifecycle(peer)
+    rejected = []
+
+    def misuse():
+        try:
+            controller.mark_unknown_device_scope(source="test", reason="test")
+        except WorkerSetupProtocolError as error:
+            rejected.append(error)
+
+    thread = threading.Thread(target=misuse)
+    thread.start()
+    thread.join(2)
+    assert not thread.is_alive() and len(rejected) == 1
+    assert not controller.evidence().to_payload()["summary"]["unknown_device_scope"]
+    # Owner-thread failure reporting can tighten, but not clear, the failed state.
+    controller.mark_unknown_device_scope(source="test", reason="observed_after_failure")
+    before = terminate(controller).lifecycle.to_payload()
+    assert before["summary"]["guarded_segment_failed"] and before["summary"]["unknown_device_scope"]
+    misuse()
+    assert len(rejected) == 2
+    assert controller.evidence().to_payload() == before
+
+
+def test_unknown_scope_reporting_during_terminal_sync_is_reentry_not_new_scope(peer):
+    controller = lifecycle(peer)
+    with controller.segment():
+        controller.enter_device_leaf(controller.begin_device_leaf(descriptor()))
+
+    def misuse():
+        with pytest.raises(WorkerSetupProtocolError):
+            controller.mark_unknown_device_scope(source="test", reason="late_scope")
+
+    summary = terminate(controller, misuse).lifecycle.to_payload()["summary"]
+    assert summary["terminal_operation_failed"] and not summary["unknown_device_scope"]
+    assert summary["emergency_sync_outcome"] == "failed"
+    assert summary["custody"] == "full_quarantine"
+
+
+@pytest.mark.parametrize("checkpoint", ["descriptor_observed", "owner_adopted"])
+def test_foreign_thread_failure_cannot_split_scope_notifications(peer, monkeypatch, checkpoint):
+    controller = lifecycle(peer)
+    attempted, finished = threading.Event(), threading.Event()
+    threads, rejected = [], []
+    record = controller._record
+
+    def misuse():
+        attempted.set()
+        try:
+            controller.require_adopted()
+        except WorkerSetupProtocolError as error:
+            rejected.append(error)
+        finally:
+            finished.set()
+
+    def record_and_schedule(operation, details):
+        record(operation, details)
+        if operation == checkpoint and not threads:
+            thread = threading.Thread(target=misuse)
+            threads.append(thread)
+            thread.start()
+            assert attempted.wait(2)
+            # The real metadata operation owns the same CPU state lock here.
+            assert not finished.wait(0.02)
+
+    monkeypatch.setattr(controller, "_record", record_and_schedule)
+    with pytest.raises(NativeWorkerPreparationAborted):
+        with controller.segment():
+            if checkpoint == "descriptor_observed":
+                controller.begin_device_leaf(descriptor())
+            else:
+                with pytest.raises(WorkerSetupProtocolError):
+                    controller.adopt_returned_device_owner(
+                        object(), actual_device_ordinal=0, role="returned", operation_id="test"
+                    )
+            threads[0].join(2)
+            assert finished.is_set() and not threads[0].is_alive() and len(rejected) == 1
+            assert not controller._replay.notifications
+            controller.mark_unknown_device_scope(source="test", reason="partial_failure")
+            aborted = _abort(controller, exception=RuntimeError("original"), sync=lambda: pytest.fail("sync"))
+            assert aborted.evidence.lifecycle.to_payload()["summary"]["unknown_device_scope"]
+            raise aborted
 
 
 @pytest.mark.parametrize(

@@ -237,7 +237,9 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
             self._context_active = False
 
     def begin_device_leaf(self, descriptor):
-        with self._observe_public_operation():
+        # Scope declarations and their inherited notifications are one CPU-only
+        # operation. A concurrent fault must not split that bookkeeping chain.
+        with self._observe_public_operation(), self._event_lock:
             self._require_setup()
             if type(descriptor) is not DeviceScopeDescriptor:
                 raise WorkerSetupProtocolError("setup descriptor must have exact production type")
@@ -246,7 +248,7 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
             return super().begin_device_leaf(descriptor)
 
     def enter_device_leaf(self, permit):
-        with self._observe_public_operation():
+        with self._observe_public_operation(), self._event_lock:
             self._require_setup()
             return super().enter_device_leaf(permit)
 
@@ -270,7 +272,7 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
             return super().adopt_host_owner(owner, role=role, operation_id=operation_id)
 
     def adopt_returned_device_owner(self, owner, *, actual_device_ordinal, role, operation_id):
-        with self._observe_public_operation():
+        with self._observe_public_operation(), self._event_lock:
             self._require_setup()
             return super().adopt_returned_device_owner(
                 owner, actual_device_ordinal=actual_device_ordinal, role=role, operation_id=operation_id
@@ -278,8 +280,16 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
 
     def mark_unknown_device_scope(self, *, source, reason):
         with self._observe_public_operation():
-            self._check_running()
-            return super().mark_unknown_device_scope(source=source, reason=reason)
+            self._check_owner()
+            with self._event_lock:
+                if self._terminating or self._replay.controller != "RUNNING":
+                    self._check_running()
+                if not _valid_identifier(source) or not _valid_identifier(reason):
+                    raise WorkerSetupProtocolError("unknown scope needs valid source/reason")
+                # Failure metadata only tightens custody. In particular, an
+                # import may fail after another error has already closed normal
+                # work; native_setup must still record unknown scope then abort.
+                return super().mark_unknown_device_scope(source=source, reason=reason)
 
     def require_adopted(self, *owners):
         # This inherited public rejection path must observe terminal/reentrant

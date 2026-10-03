@@ -22,6 +22,10 @@ FAULTS = (
     "foreign_inner_abort",
     "unknown_inner_abort",
     "invalid_permit_inner_abort",
+    "cuda_import_failure",
+    "warp_import_failure",
+    "cuda_import_thread_failure",
+    "warp_import_thread_failure",
     "pre_leaf_raise",
     "foreign",
     "unknown",
@@ -84,13 +88,18 @@ def test_real_guarded_custody_process(fault, tmp_path):
         if fault.startswith(("cpu_", "terminal_")) or fault.startswith("cleanup_"):
             assert not (tmp_path / "sync").exists()
             assert not (tmp_path / "leaf").exists()
-        if fault in {
-            "normal_leaf_raise",
-            "inner_abort",
-            "pre_leaf_raise",
-            "foreign",
-            "unknown",
-        } or fault.endswith("_inner_abort"):
+        if (
+            fault
+            in {
+                "normal_leaf_raise",
+                "inner_abort",
+                "pre_leaf_raise",
+                "foreign",
+                "unknown",
+            }
+            or fault.endswith("_inner_abort")
+            or "_import_" in fault
+        ):
             assert not (tmp_path / "sync").exists()
             assert not (tmp_path / "destructor").exists()
             assert summary["normal_complete_count"] == 0
@@ -117,8 +126,10 @@ def test_real_guarded_custody_process(fault, tmp_path):
                 "cleanup_raise_before": "cleanup_failed_exit",
                 "cleanup_raise_after": "cleanup_failed_exit",
             }.get(fault, "quarantined_process_exit")
+            if "_import_" in fault:
+                expected = "multi_or_unknown_device_quarantine_exit"
             assert worker["summary"]["disposition"] == expected
-        if fault.endswith("_inner_abort"):
+        if fault.endswith("_inner_abort") or "_import_" in fault:
             inner = json.loads((tmp_path / "inner_abort.json").read_text(encoding="utf-8"))
             assert inner == worker
             assert inner["summary"]["guardian_state"] == "TRANSFERRED_TO_QUARANTINE"
@@ -126,6 +137,9 @@ def test_real_guarded_custody_process(fault, tmp_path):
             assert inner["summary"]["release_status"] == "not_authorized"
             assert report["worker_returncode"] == 74
             assert not (tmp_path / "leaf").exists()
+            if "_import_" in fault:
+                assert inner["summary"]["unknown_device_scope"]
+                assert inner["lane_id"] == ("warp" if fault.startswith("warp_") else "cuda")
         if fault.startswith("cleanup_raise"):
             assert worker["summary"]["custody"] == "remaining_quarantine"
             assert (tmp_path / "destructor").exists() == (fault == "cleanup_raise_after")
