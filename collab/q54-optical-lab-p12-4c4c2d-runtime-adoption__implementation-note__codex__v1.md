@@ -347,13 +347,67 @@ Remote reruns at02be61fc20891c50cb967264cdef8d1a1e264997:
   passed; cleanup-ledger validator1 passed in0.47s. No101 fallback, install,
   unrelated process kill or GPU reset. The earlier interrupted batch stays failed.
 
+### Fixed supervised runtime driver at ae5d3f4 (unreviewed)
+
+Candidate: ae5d3f4b1ddd11d4fbed363b49f3fc70ddae5762. Added only the fixed
+tests/support/native_runtime_process.py driver, its supervisor dispatch/test
+coverage and exact cleanup paths. No production code/catalog, C0 protocol,
+product request, activation gate or shared collaboration rule changed.
+
+The driver sequences the captured session's setup definitions, external contract,
+canonical materialization, runtime binding, shared upload, explicit validation
+readback and terminal disposal. It does not copy preparation/upload loops or
+issue final execution readiness. Fixed terminal-sync failure/hang selectors are
+present but NOT yet exercised with a real successful native setup. Per-phase
+v0 observations are debug facts only, not the required runtime-custody schema.
+The complete dependency table, GPU positives and failure matrix are still missing.
+
+Actual author verification on primary183, clean isolated
+/data2/shared/ang.gao/robot_sim_c2d3_binding_wip at ae5d3f4, robot_sim Python3.12:
+
+- test_native_runtime_driver_process.py:4 passed in12.61s; wrapper3302020,
+  Python3302022, parent3301980, start2026-10-07T22:40:34+08. Wait/SSH exit0;
+  outer90s fail-bound did not fire. Both lanes reject environment-digest mismatch
+  and an unlisted NumPy import via the real captured entry and real supervisor.
+  Supervisors/children:3302036/3302041,3302078/3302079,3302110/3302111,
+  3302181/3302183. All supervisor exits0, actual reaped child exits74. Evidence
+  replay validates full quarantine, zero emergency/terminal sync attempts and
+  no ordinary atexit cleanup. These are pre-native rejection tests, NOT GPU
+  initialization/upload/cold-runtime successes.
+- test_native_source_custody_process.py plus test_guarded_custody_process.py:
+  61 passed in134.65s. Wrapper3302945, Python3302947, parent3302943,
+  start22:41:32+08; actual wait/SSH exit0; outer190s fail-bound did not fire.
+  All actual child exits were observed/reaped by their supervisors. Deliberate
+  hang fixtures, including source import/cleanup/exit and terminal sync/cleanup/
+  exit, were watchdog-killed (exit-9), not counted as successful disposal.
+  Examples: source-import Warp3303268/CUDA3304352; source-cleanup3303755/
+  3304810; source-exit3303883/3304911; sync-hang3305160; target-cleanup3305220;
+  target-exit3305235. This remains CPU-fixture supervision proof, not a new
+  real-GPU hang matrix or a claim that the historical101 hang is fixed.
+- Local Ruff check for all three changed Python files passed. Cleanup validator
+  in test_optical_benchmark_contracts.py:1 passed,40 deselected in0.42s. An
+  initial command named a nonexistent cleanup test file and collected no tests;
+  only the corrected command is counted. Local git show/diff checks passed.
+- Bundle c2d3-runtime-driver-wip.bundle SHA-256
+  cf8fe53d17bb2474735ada628c661d34dc31a361266724619203b89bf0d3a5d2
+  matched before fast-forwarding the isolated checkout. No original checkout
+  modification, install,101 fallback, GPU reset or unrelated process kill.
+- At22:43:58+08, post-test read-only OS inventory found no ang.gao Python/test/
+  worker/supervisor/timeout processes, only user-session/current SSH readers.
+  GPU inventory showed only the pre-existing MPS2238410,60MiB. No scope-wide
+  approval or GPU activation follows from these scoped hygiene observations.
+
+### Remaining work after this driver round
+
 1. Derive and freeze the actual required deployment/native closure, absent-probe
    and publication tables from observed/source-audited dependencies. The offline
    32-wheel facts are not this permission table. Finish runtime-custody evidence
    schema/replay; CPU fixture loader/adoption tests do not replace real dependencies.
-2. Finish and verify the actual captured RuntimeSetupBinding/fixed supervised
-   driver and terminal disposal. Explicit readback is implemented, but its real
-   cold runtime/fault matrix is still missing.
+2. Verify the now-wired captured RuntimeSetupBinding/fixed supervised driver and
+   terminal disposal against the actual frozen native environment. Explicit
+   readback and fixed dispatch are implemented, but the real cold runtime/fault
+   matrix, terminal-sync selectors and versioned runtime-custody replay are not
+   yet verified by these pre-native negative tests.
 3. Keep catalog v4/policy v5 pins synchronized with any subsequent reviewed-scope
    source edits, and verify the literal actual runtime closure. Current pins and
    CPU source-entry tests are WIP acceptance of bytes only, not GPU authorization
