@@ -114,6 +114,9 @@ def test_fixed_runtime_driver_quarantines_without_fallback_or_ordinary_cleanup(
         assert worker["summary"]["terminal_arm_attempt_count"] == 0
         assert worker["summary"]["normal_complete_count"] == (1 if fault == "environment_digest" else 2)
         failure = json.loads((tmp_path / "failure.json").read_text())
+        assert 1 <= len(failure["exception_chain"]) <= 8
+        assert failure["exception_chain"][0]["type"] == failure["type"]
+        assert failure["exception_chain"][0]["message"] == failure["message"][:512]
         assert failure["phase"] == (
             "external_environment" if fault == "environment_digest" else "canonical_materialization"
         )
@@ -129,6 +132,8 @@ def test_fixed_runtime_driver_quarantines_without_fallback_or_ordinary_cleanup(
         if fault == "unlisted_numpy":
             observed = json.loads((tmp_path / "external_failure.json").read_text())
             assert observed["failed"] is True
+            assert observed["failure_metadata"][0]["name"] == "numpy"
+            assert observed["failure_metadata"][0]["error"] == failure["exception_chain"][0]["message"]
             assert observed["events"] == [
                 {
                     "index": 0,

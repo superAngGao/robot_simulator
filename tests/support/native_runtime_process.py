@@ -151,11 +151,38 @@ def child(fault, fd, directory):
                 record = entry._SOURCE_CUSTODY.get(session)
                 controller = None if record is None else record[0]
         try:
+            # Bounded diagnostic chain, never a custody receipt or admission.
+            # Keep the original lower-level cause visible when a dependency
+            # wraps it as an optional-package/missing-trimesh error.
+            causes, seen = [], set()
+            cause = error
+            while cause is not None and id(cause) not in seen and len(causes) < 8:
+                seen.add(id(cause))
+                causes.append({"type": type(cause).__name__, "message": str(cause)[:512]})
+                cause = cause.__cause__ if cause.__cause__ is not None else cause.__context__
             admission = None if session is None else session.external
             # __init__ may have failed before events exists. Diagnostic output
             # must not replace the original terminal evidence in that case.
             events = None if admission is None else vars(admission).get("events")
             if type(events) is list:
+                metadata = []
+                partial = vars(admission)
+                contexts = partial.get("failure_contexts", [])
+                for failed_error, failed_name, native_create in contexts[:8]:
+                    record = partial.get("records", {}).get(failed_name)
+                    module = None if record is None else record.get("module")
+                    raw = {} if module is None else vars(module)
+                    spec = partial.get("specs", {}).get(failed_name)
+                    loader = partial.get("loaders", {}).get(failed_name)
+                    metadata.append({
+                        "name": failed_name, "native_create": native_create,
+                        "error_type": type(failed_error).__name__, "error": str(failed_error)[:512],
+                        "module_name": raw.get("__name__"), "package": raw.get("__package__"),
+                        "file": raw.get("__file__"),
+                        "exact_spec": raw.get("__spec__") is spec,
+                        "exact_loader": raw.get("__loader__") is loader,
+                        "spec_loader_is_wrapper": spec is not None and spec.loader is loader,
+                    })
                 # Preserve the failed prefix as observations, never as an
                 # admission rule or a successful runtime-custody receipt.
                 _write(
@@ -165,12 +192,14 @@ def child(fault, fd, directory):
                         "phase": phase,
                         "events": list(events),
                         "failed": admission.failed,
+                        "failure_metadata": metadata,
                     },
                 )
             _write(
                 directory,
                 "failure.json",
-                {"phase": phase, "type": type(error).__name__, "message": str(error)[:1024]},
+                {"phase": phase, "type": type(error).__name__, "message": str(error)[:1024],
+                 "exception_chain": causes},
             )
             if controller is not None and controller.termination_evidence is not None:
                 _write(directory, "worker.json", controller.termination_evidence.lifecycle.to_payload())
