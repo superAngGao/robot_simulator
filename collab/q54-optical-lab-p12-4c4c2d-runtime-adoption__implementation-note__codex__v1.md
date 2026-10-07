@@ -103,6 +103,23 @@ Read-only primary183 check at21:03:42 found no ang.gao test/worker/Python proces
 only the existing MPS2238410,60MiB was listed by the GPU process query. No GPU work
 was launched for this local author run. Historical hang resolution is not claimed.
 
+Remote cross-platform CPU confirmation of WIP7b7279aecb1aa24385ac3e435a06ea7bc12ba496:
+primary183, robot_sim Python3.12.13, new detached worktree
+/data2/shared/ang.gao/robot_sim_c2d3_importer_wip. Bundle SHA-256 matched locally
+and remotely:f6aef8ba7992c68c8aeaab488a118c0df5f15296257e7f604ddfcb290a40fd21.
+The same six test files passed270 in9.57s. Timeout wrapper PID3204483,
+parent3204480, observed start21:06:56, shell date21:06:57; wait returned0 and
+the SSH command completed0. The Python child PID was not separately sampled;
+do not treat the wrapper PID as its PID. The45s timeout/5s kill grace was not
+triggered. This CPU run is not the design's actual supervised GPU fault matrix.
+
+At21:07:22, remote user-process inspection found no ang.gao Python/pytest/worker/
+supervisor/timeout residual, and GPU inventory still showed only pre-existing
+MPS2238410,60MiB. Local process inspection also found no Python/SSH residual.
+The isolated WIP checkout and original /data2/shared/ang.gao/robot_simulator were
+clean; original HEAD remained f771e612beaeea126e26926738097512cd2d809c. No101
+fallback, GPU test, dependency installation, process kill or original-tree edit.
+
 ### Remaining checkpoint work
 
 1. Freeze actual deployment/native inventory, missing-probe and publication tables;
