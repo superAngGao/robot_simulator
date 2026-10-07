@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from optical_worker import native_setup
-from optical_worker.lifecycle import NativeWorkerSetupLifecycle
+from optical_worker.lifecycle import DeviceScopeDescriptor, NativeWorkerSetupLifecycle
 
 
 class _Owners:
@@ -98,7 +98,7 @@ def test_missing_guardian_hold_is_not_upload_admission():
 
 @pytest.mark.parametrize("lane", ["cuda", "warp"])
 def test_upload_body_matches_approved_pre_extraction_ast(lane):
-    """Freeze old mechanics, not a test copy of the allocation/copy algorithm."""
+    """Freeze old mechanics apart from the explicit operation-ID encoding fix."""
     root = Path(__file__).resolve().parents[3]
     old_text = subprocess.run(
         ["git", "show", "956d1fa8d51b85c25ac17825adef17640f0e69b5:optical_worker/native_setup.py"],
@@ -118,6 +118,36 @@ def test_upload_body_matches_approved_pre_extraction_ast(lane):
         i for i, n in enumerate(old_try.body) if isinstance(n, ast.Import) and n.names[0].name == "numpy"
     )
     old_body = old_try.body[start:]
+
+    # The original C0 code rejected canonical uppercase names (x_world_R),
+    # after earlier copies had already been submitted. Normalize only its five
+    # exact per-array operation-ID expressions; retain every other AST node.
+    class OperationIds(ast.NodeTransformer):
+        changed = 0
+
+        def visit_keyword(self, node):
+            if node.arg == "operation_id" and isinstance(node.value, ast.JoinedStr):
+                pieces = node.value.values
+                assert len(pieces) == 2 and isinstance(pieces[0], ast.Constant)
+                assert isinstance(pieces[1], ast.FormattedValue)
+                assert ast.dump(pieces[1].value) == ast.dump(ast.parse("manifest.name", mode="eval").body)
+                assert pieces[1].conversion == -1 and pieces[1].format_spec is None
+                prefix = pieces[0].value
+                assert prefix in {
+                    f"{lane}_{value}_" for value in ("stage", "host_view", "allocate", "upload")
+                }
+                node.value = ast.Call(
+                    func=ast.Name(id="_array_operation_id", ctx=ast.Load()),
+                    args=[ast.Constant(prefix[:-1]), pieces[1].value],
+                    keywords=[],
+                )
+                self.changed += 1
+            return node
+
+    original = ast.Module(body=old_body, type_ignores=[])
+    ids = OperationIds()
+    ids.visit(original)
+    assert ids.changed == 5
     new_function = getattr(native_setup, f"_upload_{lane}_native_input")
     new = ast.parse(inspect.getsource(new_function)).body[0]
     new_start = next(
@@ -147,3 +177,50 @@ def test_upload_body_matches_approved_pre_extraction_ast(lane):
         )
         == 1
     )
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "cuda_stage",
+        "cuda_host_view",
+        "cuda_allocate",
+        "cuda_upload",
+        "warp_stage",
+        "warp_host_view",
+        "warp_allocate",
+        "warp_upload",
+        "validation_host",
+        "validation_view",
+        "validation_d2h",
+    ],
+)
+def test_array_operation_ids_preserve_case_distinction_and_are_guardian_valid(prefix):
+    lifecycle = NativeWorkerSetupLifecycle(
+        lane_id="warp",
+        target_device_ordinal=1,
+        emergency_sync_notifier=lambda _: pytest.fail("CPU operation-ID check synchronized"),
+        session_identity="array_ids_unit",
+    )
+    names = ["fixed_x_world_R", "fixed_x_world_r", "replay_x_world_R", "replay_x_world_r", "A" * 1024]
+    ids = [native_setup._array_operation_id(prefix, name) for name in names]
+    assert len(set(ids)) == len(names)
+    assert ids == [native_setup._array_operation_id(prefix, name) for name in names]
+    for identifier in ids:
+        assert len(identifier) <= 128
+        lifecycle.adopt_host_owner(object(), role="array_name_test", operation_id=identifier)
+        DeviceScopeDescriptor.exact_target(
+            operation_id=identifier,
+            leaf_kind="allocation",
+            device_ordinal=1,
+            scope_source="array_name_test",
+            runtime_identity="cpu_validation",
+        )
+
+
+@pytest.mark.parametrize(
+    "prefix,name", [("INVALID", "a"), ("a" * 64, "a"), (None, "a"), ("valid", ""), ("valid", None)]
+)
+def test_invalid_array_operation_ids_fail_before_resource_registration(prefix, name):
+    with pytest.raises(ValueError):
+        native_setup._array_operation_id(prefix, name)

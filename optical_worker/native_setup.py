@@ -7,6 +7,7 @@ guardian already exist.
 
 from __future__ import annotations
 
+import hashlib
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ from .lifecycle import (
     NativeWorkerSetupLifecycle,
     SetupQuiescenceEvidence,
     TransportTerminationEvidence,
+    _valid_identifier,
 )
 from .native_contract import (
     CudaPreparedNativeInput,
@@ -25,6 +27,21 @@ from .native_contract import (
     register_prepared_native_input,
     warp_dtype_from_host_dtype,
 )
+
+
+def _array_operation_id(prefix: str, array_name: str) -> str:
+    """Bounded diagnostic ID without changing/case-folding the array identity.
+
+    Canonical arrays include distinct x_world_R/x_world_r names. Guardian IDs
+    are lowercase and bounded; the full UTF-8 name digest keeps those separate.
+    This ID is not storage authority: the exact manifest/objects still bind it.
+    """
+    if type(array_name) is not str or not array_name or type(prefix) is not str:
+        raise ValueError("array operation requires an exact nonempty name and prefix")
+    result = f"{prefix}_{hashlib.sha256(array_name.encode('utf-8')).hexdigest()}"
+    if not _valid_identifier(result):
+        raise ValueError("array operation prefix is invalid or too long")
+    return result
 
 
 class NativeWorkerPreparationAborted(RuntimeError):
@@ -211,19 +228,19 @@ def _upload_cuda_native_input(source, *, context):
         lifecycle.adopt_host_owner(
             host,
             role="cuda_h2d_host_staging",
-            operation_id=f"cuda_stage_{manifest.name}",
+            operation_id=_array_operation_id("cuda_stage", manifest.name),
         )
         host_tensor = torch.from_numpy(host)
         lifecycle.adopt_host_owner(
             host_tensor,
             role="cuda_h2d_torch_host_view",
-            operation_id=f"cuda_host_view_{manifest.name}",
+            operation_id=_array_operation_id("cuda_host_view", manifest.name),
         )
         _enter_device_leaf(
             lifecycle,
             _descriptor(
                 lifecycle,
-                operation_id=f"cuda_allocate_{manifest.name}",
+                operation_id=_array_operation_id("cuda_allocate", manifest.name),
                 leaf_kind="allocation",
                 runtime_identity="torch_empty_explicit_device_v1",
             ),
@@ -242,14 +259,14 @@ def _upload_cuda_native_input(source, *, context):
                 else lifecycle.target_device_ordinal
             ),
             role="cuda_a2_device_array",
-            operation_id=f"cuda_allocate_{manifest.name}",
+            operation_id=_array_operation_id("cuda_allocate", manifest.name),
         )
         lifecycle.require_adopted(host, host_tensor, destination, stream)
         _enter_device_leaf(
             lifecycle,
             _descriptor(
                 lifecycle,
-                operation_id=f"cuda_upload_{manifest.name}",
+                operation_id=_array_operation_id("cuda_upload", manifest.name),
                 leaf_kind="host_to_device_copy",
                 runtime_identity="torch_copy_explicit_stream_v1",
             ),
@@ -324,7 +341,7 @@ def _upload_warp_native_input(source, *, context):
             lifecycle.adopt_host_owner(
                 host,
                 role="warp_h2d_host_staging",
-                operation_id=f"warp_stage_{manifest.name}",
+                operation_id=_array_operation_id("warp_stage", manifest.name),
             )
             host_array = wp.array(
                 host,
@@ -335,13 +352,13 @@ def _upload_warp_native_input(source, *, context):
             lifecycle.adopt_host_owner(
                 host_array,
                 role="warp_h2d_cpu_array_view",
-                operation_id=f"warp_host_view_{manifest.name}",
+                operation_id=_array_operation_id("warp_host_view", manifest.name),
             )
             _enter_device_leaf(
                 lifecycle,
                 _descriptor(
                     lifecycle,
-                    operation_id=f"warp_allocate_{manifest.name}",
+                    operation_id=_array_operation_id("warp_allocate", manifest.name),
                     leaf_kind="allocation",
                     runtime_identity="warp_empty_explicit_device_v1",
                 ),
@@ -356,14 +373,14 @@ def _upload_warp_native_input(source, *, context):
                 destination,
                 actual_device_ordinal=int(destination.device.ordinal),
                 role="warp_a2_device_array",
-                operation_id=f"warp_allocate_{manifest.name}",
+                operation_id=_array_operation_id("warp_allocate", manifest.name),
             )
             lifecycle.require_adopted(host, host_array, destination, stream)
             _enter_device_leaf(
                 lifecycle,
                 _descriptor(
                     lifecycle,
-                    operation_id=f"warp_upload_{manifest.name}",
+                    operation_id=_array_operation_id("warp_upload", manifest.name),
                     leaf_kind="host_to_device_copy",
                     runtime_identity="warp_copy_explicit_stream_v1",
                 ),

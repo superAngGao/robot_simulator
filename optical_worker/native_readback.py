@@ -16,6 +16,7 @@ from .native_contract import (
     warp_dtype_from_host_dtype,
 )
 from .native_setup import (
+    _array_operation_id,
     _descriptor,
     _enter_device_leaf,
     _torch_copy_exact,
@@ -110,7 +111,9 @@ def _readback_prepared_native_input(source, prepared, *, lifecycle, runtime, tar
         host = np.empty(manifest.shape, dtype=np.dtype(manifest.dtype), order="C")
         retained.append(host)
         lifecycle.adopt_host_owner(
-            host, role="validation_d2h_host_storage", operation_id=f"validation_host_{manifest.name}"
+            host,
+            role="validation_d2h_host_storage",
+            operation_id=_array_operation_id("validation_host", manifest.name),
         )
         if cuda:
             view = runtime.from_numpy(host)
@@ -120,12 +123,14 @@ def _readback_prepared_native_input(source, prepared, *, lifecycle, runtime, tar
             )
         retained.append(view)
         lifecycle.adopt_host_owner(
-            view, role="validation_d2h_host_view", operation_id=f"validation_view_{manifest.name}"
+            view,
+            role="validation_d2h_host_view",
+            operation_id=_array_operation_id("validation_view", manifest.name),
         )
         lifecycle.require_adopted(host, view, device_array, stream)
         _leaf(
             lifecycle,
-            f"validation_d2h_{manifest.name}",
+            _array_operation_id("validation_d2h", manifest.name),
             "device_to_host_copy",
             "torch_copy_explicit_stream_v1" if cuda else "warp_copy_explicit_stream_v1",
         )
