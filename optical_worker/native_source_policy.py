@@ -16,13 +16,24 @@ from pathlib import Path, PurePosixPath
 from .manifest import AST_POLICY
 from .protocol import ClosedWorkerProtocolError, canonical_sha256
 
-NATIVE_AST_POLICY_VERSION = "q54.p12.4.closed-worker-ast-policy.v4"
+NATIVE_AST_POLICY_VERSION = "q54.p12.4.closed-worker-ast-policy.v5"
 _BOOTSTRAP_PATH = "optical_worker/native_bootstrap.py"
-_BOOTSTRAP_SOURCE_SHA256 = "7dfb6074c7b5dc639a0763d21217c4e294afc340a03ee89b3ba058e8d088e02c"
+_BOOTSTRAP_SOURCE_SHA256 = "b23568e7aa8a4e40df247ae9e6bfd6f9110c03e6e15b95c68c4a0c0446ca81f5"
 _BOOTSTRAP_CLASS_PINS = {
-    "_CapturedSourceLoader": "453f555e8cc589ea46c5421cdf944d08ff80060847f45baa73a22db7cdee2236",
-    "_CapturedSourceFinder": "86bd5870f5ffcd7642e07cd35e634eddee5850dbdce79062ec1b159effd9f74c",
+    "_CapturedSourceLoader": "cc647d0af05f892513eceea40708734e5a7aafe82c278507d094a65894639ecb",
+    "_CapturedSourceFinder": "6f6b0d973dd9f04b32f08baff51b3e3e1292fa29f5e7183e0dfc35805e7c895e",
+    "_ExternalSourceLoader": "899851de4bdc0a4244d7dae08fef978aba0933387a37125f8139f5bee274dd2a",
+    "_ExternalAdmission": "85d215428396e51dbb6fa178269c1982006c35015dc32e1ff94f8cda559a74df",
+    "_ExternalNamespaceLoader": "524801ff222139e86fa76fa918b42a20ee61d6bcfe9e783542c880da3cad46bf",
+    "_RuntimeSetupBinding": "85bf4bb6a12a3ab17807393c27993ca319e5b614eda9c14d4f1d6c0b042f6112",
+    "_SourceSession": "648f29bd53ce255bc349536a6945218d3561b0f00ef5c4348945597e30aac8be",
 }
+_BOOTSTRAP_IMPORTS = frozenset(("importlib.abc", "importlib.machinery", "importlib.util"))
+_BOOTSTRAP_USES = frozenset((
+    "importlib.abc.SourceLoader", "importlib.abc.MetaPathFinder", "importlib.abc.Loader",
+    "importlib.machinery.SourceFileLoader", "importlib.machinery.ExtensionFileLoader",
+    "importlib.machinery.PathFinder.find_spec", "importlib.util.spec_from_loader",
+))
 _SNAPSHOT_PATH = "optics/warp_native_render.py"
 _SNAPSHOT_FUNCTION = "_render_launch_snapshot"
 # Exact LF Git/source-release bytes reviewed in C2c4 (4b7bf4c). Deliberately
@@ -59,9 +70,8 @@ NATIVE_AST_POLICY_SHA256 = canonical_sha256({
         "path": _BOOTSTRAP_PATH,
         "source_sha256": _BOOTSTRAP_SOURCE_SHA256,
         "class_source_pins": _BOOTSTRAP_CLASS_PINS,
-        "imports": ["importlib.abc", "importlib.util"],
-        "uses": ["importlib.abc.SourceLoader", "importlib.abc.MetaPathFinder",
-                 "importlib.util.spec_from_loader"],
+        "imports": sorted(_BOOTSTRAP_IMPORTS),
+        "uses": sorted(_BOOTSTRAP_USES),
     },
     "source_roots": sorted(_SOURCE_ROOTS),
     "launcher_paths": sorted(_LAUNCHER_PATHS),
@@ -119,7 +129,7 @@ def _validate_tree(relative_path: str, tree: ast.Module, source: bytes) -> None:
             for alias in node.names:
                 root = alias.name.partition(".")[0]
                 if root == "importlib" and relative_path == _BOOTSTRAP_PATH:
-                    if (alias.name not in {"importlib.abc", "importlib.util"} or alias.asname is not None
+                    if (alias.name not in _BOOTSTRAP_IMPORTS or alias.asname is not None
                             or len(node.names) != 1 or node not in tree.body):
                         raise ClosedWorkerProtocolError("source bootstrap importlib import has drifted")
                 elif root == "ctypes" and relative_path == _SNAPSHOT_PATH:
@@ -140,10 +150,12 @@ def _validate_tree(relative_path: str, tree: ast.Module, source: bytes) -> None:
             if node.id in _FORBIDDEN_NAMES:
                 raise ClosedWorkerProtocolError("native source uses or aliases a forbidden dynamic name")
             if node.id == "importlib":
-                parent = parents.get(node)
+                chain, current = [node.id], node
+                while isinstance(parents.get(current), ast.Attribute) and parents[current].value is current:
+                    current = parents[current]
+                    chain.append(current.attr)
                 if not (relative_path == _BOOTSTRAP_PATH and isinstance(node.ctx, ast.Load)
-                        and isinstance(parent, ast.Attribute) and parent.value is node
-                        and parent.attr in {"abc", "util"}):
+                        and isinstance(current.ctx, ast.Load) and ".".join(chain) in _BOOTSTRAP_USES):
                     raise ClosedWorkerProtocolError("importlib reference escapes the source bootstrap")
             if node.id == "ctypes":
                 parent = parents.get(node)

@@ -18,7 +18,7 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType, ModuleType
 
 _BOOTSTRAP = "optical_worker/native_bootstrap.py"
-_CATALOG = "optical_worker/data/native_sources/v3.json"
+_CATALOG = "optical_worker/data/native_sources/v4.json"
 _MAX_BYTES = 4 * 1024 * 1024  # Rechecked against the sole protocol constant.
 _ROOTS = frozenset(
     ("optical_worker", "optics", "physics", "robot", "sensing", "benchmarks", "examples", "tests", "tools")

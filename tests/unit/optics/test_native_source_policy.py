@@ -44,6 +44,7 @@ def test_real_reviewed_renderer_passes_without_importing_it(renderer_release):
 @pytest.mark.parametrize("path", [
     "optical_worker/workloads.py", "optical_worker/native_input.py",
     "optical_worker/native_setup.py", "optical_worker/native_contract.py",
+    "optical_worker/native_readback.py", "optical_worker/runtime_environment.py",
     "optical_worker/render_parameters.py", "optical_worker/provenance.py",
     "optical_worker/wait_protocol.py", "optical_worker/wait_supervision.py",
     "optics/cuda_arena.py", "optics/cuda_timeline.py", "optics/cuda_scene.py",
@@ -251,7 +252,7 @@ assert not set(sys.modules) & {{'numpy', 'torch', 'warp', 'optics', 'benchmarks'
     subprocess.run([sys.executable, "-I", "-S", "-c", script], check=True, timeout=20)
     assert AST_POLICY["schema_version"].endswith("v1")
     assert AST_POLICY_SHA256 == canonical_sha256(AST_POLICY)
-    assert NATIVE_AST_POLICY_VERSION.endswith("v4")
+    assert NATIVE_AST_POLICY_VERSION.endswith("v5")
     assert NATIVE_AST_POLICY_SHA256 != AST_POLICY_SHA256
     with pytest.raises(ClosedWorkerProtocolError, match="forbidden module"):
         validate_trusted_source_ast(ROOT / RENDERER)

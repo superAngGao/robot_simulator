@@ -279,6 +279,20 @@ Remote confirmation of readback WIP e82d1a041470486d976a1c4103c794957014cbf0:
 
 ### Still required before the whole C2d3 code review
 
+Source admission WIP after021f8af: catalog v4 and AST policy v5 pin the current
+candidate's exact Git LF bytes, including runtime_environment/native_readback.
+The bootstrap import exception adds only standard source/extension file loaders,
+explicit PathFinder.find_spec, namespace Loader and existing spec_from_loader;
+every importlib use must be an exact complete attribute chain, not a namespace
+alias. Full bootstrap bytes plus seven source/loader/admission/binding classes
+are pinned. The public direct entry remains CPU source verification only; C0's
+policy/dispatcher and all activation gates are unchanged. This supersedes the
+earlier WIP statement that the source catalog has not yet been repinned, but
+does NOT authorize an external dependency or a GPU setup request. The complete
+runtime contract and fixed supervised driver remain unfinished. New pins identify
+an author candidate, not independent approval. Regression results follow after
+execution; old v1-v3 catalogs remain historical records.
+
 1. Freeze actual deployment/native inventory, missing-probe and publication tables;
    implement real captured-session external loader/adoption and evidence replay.
 2. Finish and verify the actual captured RuntimeSetupBinding/driver path; adopt

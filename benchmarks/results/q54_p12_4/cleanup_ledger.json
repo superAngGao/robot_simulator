@@ -78,6 +78,7 @@
         "optical_worker/data/native_sources/v1.json",
         "optical_worker/data/native_sources/v2.json",
         "optical_worker/data/native_sources/v3.json",
+        "optical_worker/data/native_sources/v4.json",
         "tests/unit/optics/test_native_source_custody.py",
         "tests/unit/optics/test_native_source_custody_process.py",
         "tests/support/source_custody_process.py",
