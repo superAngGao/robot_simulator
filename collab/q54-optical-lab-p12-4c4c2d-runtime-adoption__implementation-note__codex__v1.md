@@ -208,6 +208,56 @@ and clean at the21:31:55 check. Local process inspection at that check found no
 Python/SSH residual. No101 fallback, unrelated kill, reset or package installation.
 Neither these passes nor author source inspection is independent code approval.
 
+### Explicit input readback WIP after c4bc795
+
+Added native_readback.py, called once by the captured session after its own
+registered upload. Before calling it, the session rechecks the original runtime
+record, prepared object, stream identity, module/runtime roots and source. It
+does not remint a consumed upload binding or issue execution readiness.
+
+The helper adopts a custody list before returning any new host owner, then
+retains each NumPy destination and Torch/Warp CPU view before the next copy.
+It uses the shared explicit-stream copy/event helpers inside one already armed
+setup segment. Only after the supervised event wait succeeds does the existing
+_validate_native_input_host_observations compare actual host observations. This
+is input verification, not B3 host delivery. Storage signatures are rechecked
+before copies and after the wait. Returned event device metadata is checked;
+foreign/unknown scope prevents the wait and takes the guarded quarantine path.
+
+Also fixed duplicate guardian adoption in _hold_runtime_owner: the importer
+already owns Torch._C, and the upload core already owns its prepared result.
+An already held exact object now keeps its original custody record instead of
+attempting a second registration under a different role. A negative/positive
+unit covers the pre-adopted native root; real cold-path verification is still
+required, not inferred from that unit.
+
+Readback tests use the real guarded controller/protocol peer, a2 physical-storage
+registry and shared host validator, with CPU-backed fake device/copy/event leaves.
+They cover empty/integer/float arrays, completion-before-inspection, wrong content,
+storage rebinding, copy/event/record/wait failures, host-view/event/report adoption
+failure, foreign/unknown event device and owner retention through quarantine.
+Event observations use weak references rather than retaining the event in the
+test harness. Session tests cover ordering, single validation and unchanged burned
+upload authority. They do NOT prove native GPU execution, cold import or hung
+native-call supervision. The source catalogue remains deliberately un-repinned.
+
+Author checks:
+
+- Focused readback/binding tests:60 passed in4.95s; Ruff passed.
+- Eight-file CPU regression:388 passed in17.93s on Python3.14. Python25960,
+  parent21916, start2026-10-07T21:52:42.4224070+08:00; explicitly waited,
+  HasExited=True, ExitCode=0. Logs:c4_assets/c2d3-readback-cpu-author.log/.err.
+  Files: test_runtime_environment, test_runtime_import_admission,
+  test_guarded_runtime_binding, test_guarded_native_readback,
+  test_native_upload_core, test_guarded_lifecycle, test_guarded_wait_core,
+  test_native_contract_extraction, all under tests/unit/optics/ with .py suffix.
+- Primary183 read-only preflight21:50:37 found no owned test/worker processes,
+  only session/SSH readers and the existing MPS2238410 (60MiB). No new GPU work
+  was launched by these local CPU tests; remote results, if run, follow below.
+
+This is still incomplete C2d3 author work, not independent approval or a new
+CPU-only acceptance boundary. No shared workflow or activation gate changed.
+
 ### Still required before the whole C2d3 code review
 
 1. Freeze actual deployment/native inventory, missing-probe and publication tables;

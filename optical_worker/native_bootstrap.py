@@ -100,7 +100,19 @@ _MATERIALIZATION_SOURCES = MappingProxyType(
     }
 )
 _RUNTIME_PHASES = frozenset(
-    {"materializing", "materialized", "initializing_runtime", "runtime_ready", "uploading", "uploaded"}
+    {
+        "materializing",
+        "materialized",
+        "initializing_runtime",
+        "runtime_ready",
+        "uploading",
+        "uploaded",
+        "validating_input",
+        "input_validated",
+    }
+)
+_VALIDATION_SOURCES = MappingProxyType(
+    {"optical_worker.native_readback": "optical_worker/native_readback.py"}
 )
 # One-shot trusted-process identities, never reconstructed from a receipt.
 # None is a permanent failed/in-progress binding tombstone, not permission to retry.
@@ -108,6 +120,7 @@ _SOURCE_CUSTODY = {}
 _VERIFIED_SNAPSHOTS = {}
 _EXTERNAL_CUSTODY = {}
 _RUNTIME_BINDINGS = {}
+_UPLOADED_INPUTS = {}
 
 
 class SourceBootstrapError(RuntimeError):
@@ -855,6 +868,7 @@ class _SourceSession:
         self.external = None
         self.runtime_owners = []
         self.render_source, self.canonical_input, self.prepared_input = None, None, None
+        self.validation_report = None
         self.loaders, self.modules, self.trace = {}, {}, []
         self.finder = _CapturedSourceFinder(self)
 
@@ -868,13 +882,16 @@ class _SourceSession:
         if self.phase in {"configuring_runtime", "runtime_configured"}:
             return _CORE | _CUSTODY_PRELUDE | _SETUP_DEFINITIONS | _EXTERNAL_CONTRACT_DEFINITIONS
         if self.phase in _RUNTIME_PHASES:
-            return (
+            admitted = (
                 _CORE
                 | _CUSTODY_PRELUDE
                 | _SETUP_DEFINITIONS
                 | _EXTERNAL_CONTRACT_DEFINITIONS
                 | _MATERIALIZATION_SOURCES
             )
+            if self.phase in {"validating_input", "input_validated"}:
+                admitted = admitted | _VALIDATION_SOURCES
+            return admitted
         raise SourceBootstrapError("invalid CPU source phase")
 
     def fail(self, error):
@@ -1073,7 +1090,12 @@ class _SourceSession:
         self.runtime_owners.append(owner)
         controller = self.bound_controller()
         if device_ordinal is None:
-            controller.adopt_host_owner(owner, role=role, operation_id=role)
+            if controller.guardian.contains_exact_owner(owner):
+                # Imported native roots and upload-core results already have
+                # their original custody record. Preserve that scope and role.
+                controller.require_adopted(owner)
+            else:
+                controller.adopt_host_owner(owner, role=role, operation_id=role)
         else:
             controller.adopt_returned_device_owner(
                 owner, actual_device_ordinal=device_ordinal, role=role, operation_id=role
@@ -1195,6 +1217,12 @@ class _SourceSession:
         # Burn even on identity/metadata rejection. The surrounding armed
         # segment handles poison and never falls back to C0 synchronization.
         _RUNTIME_BINDINGS[self] = None
+        return self._validate_runtime_binding_record(binding, record)
+
+    def _validate_runtime_binding_record(self, binding, record):
+        self.check_live()
+        controller = self.bound_controller()
+        controller._require_setup()
         _require(
             type(binding) is _RuntimeSetupBinding and record is not None and record[0] is binding,
             "runtime binding is foreign, copied, unregistered or consumed",
@@ -1246,6 +1274,7 @@ class _SourceSession:
             controller = self.bound_controller()
             with controller.segment("setup"):
                 self.phase = "uploading"
+                runtime_record = _RUNTIME_BINDINGS.get(self)
                 module, target, stream = self._consume_runtime_binding(binding)
                 self.audit()
                 self.external.audit()
@@ -1265,10 +1294,49 @@ class _SourceSession:
                 self.prepared_input = prepared
                 self._hold_runtime_owner(prepared, "guarded_prepared_input")
                 assert_prepared_storage_registered(prepared)
+                _UPLOADED_INPUTS[self] = (runtime_record, prepared)
                 self.audit()
                 self.external.audit()
             self.phase = "uploaded"
             return prepared
+        except BaseException as error:
+            self.fail(error)
+            raise
+
+    def validate_native_input(self):
+        """One supervised explicit D2H validation, never final readiness."""
+        try:
+            self.check_live()
+            _require(self.phase == "uploaded", "input readback is ordered and single-use")
+            controller = self.bound_controller()
+            with controller.segment("setup"):
+                self.phase = "validating_input"
+                record = _UPLOADED_INPUTS.get(self)
+                _require(
+                    record is not None and record[1] is self.prepared_input,
+                    "input readback requires this session's exact uploaded object",
+                )
+                runtime_record, prepared = record
+                module, target, stream = self._validate_runtime_binding_record(
+                    runtime_record[0], runtime_record
+                )
+                controller.require_adopted(prepared)
+                self.external.audit()
+                from optical_worker.native_readback import _readback_prepared_native_input
+
+                report = _readback_prepared_native_input(
+                    self.canonical_input,
+                    prepared,
+                    lifecycle=controller,
+                    runtime=module,
+                    target=target,
+                    stream=stream,
+                )
+                self.validation_report = report
+                self.audit()
+                self.external.audit()
+            self.phase = "input_validated"
+            return report
         except BaseException as error:
             self.fail(error)
             raise

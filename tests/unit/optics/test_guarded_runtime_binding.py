@@ -70,6 +70,7 @@ def runtime_session(monkeypatch):
                 fault="setup_failure", detection_phase="unit_end", emergency_target_synchronize=lambda: None
             )
         bootstrap._RUNTIME_BINDINGS.pop(session, None)
+        bootstrap._UPLOADED_INPUTS.pop(session, None)
         peer.close()
 
 
@@ -105,6 +106,18 @@ def test_object_setattr_binding_resource_drift_rejects_before_upload(runtime_ses
             session._consume_runtime_binding(binding)
     assert bootstrap._RUNTIME_BINDINGS[session] is None
     assert controller.termination_evidence is not None
+
+
+def test_file_loader_owned_native_root_is_not_adopted_twice(runtime_session):
+    session, controller, module, _ = runtime_session
+    controller.adopt_host_owner(module._C, role="external_import_owner", operation_id="external_import_owner")
+    before = controller.guardian.resource_count
+    binding = session.initialize_native_runtime()
+    assert binding.runtime is module._C
+    assert controller.guardian.resource_count == before + 3  # target, stream, binding only
+    before = controller.guardian.resource_count
+    session._hold_runtime_owner(module._C, "alternate_root_role")
+    assert controller.guardian.resource_count == before
 
 
 def test_handmade_same_type_binding_does_not_copy_registration(runtime_session):
@@ -223,6 +236,93 @@ def test_upload_entry_rejects_stream_rebind_without_calling_shared_core(runtime_
     )
     assert after == before
     assert session.phase != "uploaded"
+
+
+@pytest.mark.parametrize("drift", ["prepared", "stream", "source"])
+def test_readback_entry_rechecks_uploaded_and_runtime_identity_before_helper(
+    runtime_session, monkeypatch, drift
+):
+    from optical_worker import native_readback
+
+    session, controller, _, _ = runtime_session
+    binding = session.initialize_native_runtime()
+    record = bootstrap._RUNTIME_BINDINGS[session]
+    with controller.segment():
+        session._consume_runtime_binding(binding)
+    prepared = object()
+    controller.adopt_host_owner(prepared, role="unit_prepared", operation_id="unit_prepared")
+    session.prepared_input, session.phase = prepared, "uploaded"
+    bootstrap._UPLOADED_INPUTS[session] = (record, prepared)
+    called = []
+    monkeypatch.setattr(
+        native_readback, "_readback_prepared_native_input", lambda *a, **k: called.append(True)
+    )
+    if drift == "prepared":
+        session.prepared_input = object()
+    elif drift == "stream":
+        binding.stream.cuda_stream += 1
+    else:
+        session.canonical_input = object()
+    with pytest.raises(bootstrap.SourceBootstrapError):
+        session.validate_native_input()
+    assert not called
+    assert session.phase != "input_validated"
+    assert controller.termination_evidence is not None
+
+
+def test_readback_session_orders_one_validation_without_reminting_upload(runtime_session, monkeypatch):
+    """Session ordering only; helper math/custody is tested against its real body."""
+    from optical_worker import native_readback
+
+    session, controller, module, _ = runtime_session
+    binding = session.initialize_native_runtime()
+    record = bootstrap._RUNTIME_BINDINGS[session]
+    with controller.segment():
+        session._consume_runtime_binding(binding)
+    prepared, report = object(), object()
+    controller.adopt_host_owner(prepared, role="unit_prepared", operation_id="unit_prepared")
+    session.prepared_input, session.phase = prepared, "uploaded"
+    bootstrap._UPLOADED_INPUTS[session] = (record, prepared)
+    calls = []
+
+    def helper(source, actual_prepared, *, lifecycle, runtime, target, stream):
+        controller._require_setup()
+        assert source is session.canonical_input and actual_prepared is prepared
+        assert lifecycle is controller and runtime is module
+        assert target is binding.target and stream is binding.stream
+        assert session.phase == "validating_input"
+        calls.append(True)
+        controller.adopt_host_owner(report, role="unit_report", operation_id="unit_report")
+        return report
+
+    monkeypatch.setattr(native_readback, "_readback_prepared_native_input", helper)
+    assert session.validate_native_input() is report
+    assert session.phase == "input_validated" and session.validation_report is report
+    assert bootstrap._RUNTIME_BINDINGS[session] is None
+    completed = controller.evidence().to_payload()["summary"]["normal_complete_count"]
+    assert completed == 3  # initialization, unit consumption, validation
+    with pytest.raises(bootstrap.SourceBootstrapError, match="single-use"):
+        session.validate_native_input()
+    assert calls == [True]
+    assert controller.evidence().to_payload()["summary"]["normal_complete_count"] == completed
+
+
+@pytest.mark.parametrize("phase", ["materialized", "runtime_ready"])
+def test_readback_session_cannot_precede_its_upload(runtime_session, monkeypatch, phase):
+    from optical_worker import native_readback
+
+    session, controller, _, _ = runtime_session
+    if phase == "runtime_ready":
+        session.initialize_native_runtime()
+    calls = []
+    monkeypatch.setattr(
+        native_readback, "_readback_prepared_native_input", lambda *a, **k: calls.append(True)
+    )
+    before = controller.evidence().to_payload()["summary"]["normal_complete_count"]
+    with pytest.raises(bootstrap.SourceBootstrapError, match="single-use"):
+        session.validate_native_input()
+    assert not calls
+    assert controller.evidence().to_payload()["summary"]["normal_complete_count"] == before
 
 
 @pytest.mark.parametrize("case_id", ["asymmetric_synthetic_7x3_v1", "synthetic_dynamic_rigid_960x640_v1"])
