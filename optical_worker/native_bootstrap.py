@@ -1890,6 +1890,19 @@ def _install(root, revision, lane, catalog_sha256):
     global _ACTIVE_SESSION
     _require(_ACTIVE_SESSION is None, "bootstrap is single-use")
     _ACTIVE_SESSION = object()  # Even a failed cold start cannot be retried.
+    # Check before pathlib/subprocess or any other helper that can lazily
+    # import stdlib. Even a subsequently caught import could invoke a rogue
+    # startup finder before a later topology rejection.
+    finders = (
+        importlib.machinery.BuiltinImporter,
+        importlib.machinery.FrozenImporter,
+        importlib.machinery.PathFinder,
+    )
+    _require(
+        len(sys.meta_path) == len(finders)
+        and all(actual is expected for actual, expected in zip(sys.meta_path, finders)),
+        "unexpected cold interpreter finder chain",
+    )
     _require(
         sys.flags.isolated
         and sys.flags.no_site
@@ -1907,16 +1920,6 @@ def _install(root, revision, lane, catalog_sha256):
     )
     _require(
         not any(Path(path).resolve().is_relative_to(root) for path in sys.path), "repository on search path"
-    )
-    finders = (
-        importlib.machinery.BuiltinImporter,
-        importlib.machinery.FrozenImporter,
-        importlib.machinery.PathFinder,
-    )
-    _require(
-        len(sys.meta_path) == len(finders)
-        and all(actual is expected for actual, expected in zip(sys.meta_path, finders)),
-        "unexpected cold interpreter finder chain",
     )
     _require(
         all(type(path) is str and path and Path(path).is_absolute()
