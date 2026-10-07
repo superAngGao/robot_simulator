@@ -1,0 +1,155 @@
+"""Actual cold Warp upload/readback plus terminal-disposal supervision.
+
+Opt-in host-specific author acceptance, not a product deployment profile or
+complete C2d3 acceptance. No parent Torch/Warp import, fixture uploads or warmup.
+CUDA/Go2/foreign-device and setup fault matrices remain separate required work.
+"""
+
+import hashlib
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from optical_worker.guarded_evidence import validate_custody_artifact
+from optical_worker.native_sources import CATALOG_PATH
+from optical_worker.runtime_environment import RuntimeEnvironmentContract
+
+ROOT = Path(__file__).resolve().parents[2]
+ENVIRONMENT = ROOT / "tests/data/runtime_environments/183_warp_synthetic_author_v1.json"
+ENVIRONMENT_SHA256 = "ae95257eb95b4441e5ae786a5ae65f3e7a86459e30aa455abfc27ecae0ed2299"
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(
+        os.name != "posix" or os.environ.get("ROBOT_SIM_TEST_C2D3_COLD_WARP") != "1",
+        reason="explicit matching 183 deployment required; a skip is NOT C2d3 acceptance",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "fault", ["runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang"]
+)
+def test_actual_cold_canonical_warp_setup_and_terminal_disposition(tmp_path, fault):
+    environment = RuntimeEnvironmentContract.from_payload(json.loads(ENVIRONMENT.read_bytes()))
+    # The trusted test configuration pins bytes, not a caller self-reported hash.
+    assert environment.sha256 == ENVIRONMENT_SHA256
+    environment.verify_files(expected_sha256=ENVIRONMENT_SHA256)
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, timeout=15).decode().strip()
+    request = {
+        "root": str(ROOT),
+        "revision": revision,
+        "lane": "warp",
+        "catalog_sha256": hashlib.sha256((ROOT / CATALOG_PATH).read_bytes()).hexdigest(),
+        "guard_configuration": {
+            "protocol_version": "q54.closed-worker.guarded-wait.v1",
+            "session": "f" * 32,
+            "device_ordinal": 1,
+            "ack_timeout_ms": 1000,
+            "operation_timeout_ms": 30000,
+        },
+        "environment_path": str(ENVIRONMENT),
+        "environment_sha256": ENVIRONMENT_SHA256,
+        "case_id": "asymmetric_synthetic_7x3_v1",
+        "go2_model_dir": None,
+    }
+    (tmp_path / "request.json").write_text(json.dumps(request), encoding="utf-8")
+    read_fd, write_fd = os.pipe()
+    supervisor = subprocess.Popen(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            str(ROOT / "tests/support/guarded_custody_process.py"),
+            "supervisor",
+            fault,
+            str(read_fd),
+            str(tmp_path),
+        ],
+        pass_fds=(read_fd,),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    os.close(read_fd)
+    try:
+        output, error = supervisor.communicate(timeout=300)
+        assert supervisor.returncode == 0, (output, error)
+        result = json.loads(output)
+        artifact = result["artifact"]
+        validate_custody_artifact(artifact)
+        assert result["stderr"] == error == ""
+        assert result["parent_alive"] is True
+        assert json.loads((tmp_path / "identity.json").read_text()) == {
+            "pid": result["worker_pid"],
+            "ppid": supervisor.pid,
+        }
+        control = artifact["supervisor"]["summary"]
+        worker = artifact["worker"]["summary"]
+        assert control["complete"] and control["state"] == "EXITED"
+        assert control["arm_count"] == 7 and control["normal_complete_count"] == 6
+        assert worker["setup_work_counts"] == {
+            "allocation": 42,
+            "host_to_device_copy": 42,
+            "device_to_host_copy": 42,
+            "event_create": 2,
+            "event_record": 2,
+            "event_wait": 2,
+            "runtime_import_or_init": 5,
+        }
+        report = json.loads((tmp_path / "input_validation_report.json").read_text())
+        assert report["final_execution_readiness_issued"] is False
+        assert len(report["validated_arrays"]) == len(set(report["validated_arrays"])) == 42
+        assert {"instance_X_body_geometry_R", "instance_X_body_geometry_r"} <= set(report["validated_arrays"])
+        assert report["content_sha256"] == "1771f0ce65a929075d542032c54a95e4c777de361e904a377c6f2a197303a32d"
+        assert report["topology_sha256"] == "6a6136c2e6991470f5fd6823af9fbcf87faddf71a7d574cfa42ce198a4e81966"
+        assert not (tmp_path / "ordinary_atexit.json").exists()
+        assert not (tmp_path / "failure.json").exists()
+        assert json.loads((tmp_path / "terminal_sync_entered.json").read_text()) == {"device_ordinal": 1}
+        if fault == "runtime_terminal_sync_hang":
+            assert result["worker_returncode"] == -9
+            assert control["deadline_expired"] and control["kill_requested"]
+            assert control["terminal_reason"] == "deadline_expired"
+            # The last worker snapshot predates terminal entry. Do not fabricate
+            # completion/release from a killed worker; supervisor proves reap.
+            assert artifact["worker"]["record_kind"] == "prefix"
+            assert worker["release_status"] == "not_authorized"
+            assert not (tmp_path / "worker.json").exists()
+        else:
+            assert not control["deadline_expired"] and not control["kill_requested"]
+            assert worker["emergency_sync_attempt_count"] == worker["terminal_arm_attempt_count"] == 1
+            if fault == "runtime_success":
+                assert result["worker_returncode"] == 0
+                assert worker["disposition"] == "aborted_synced_exit"
+                assert worker["guardian_state"] == "RELEASED"
+                assert worker["release_status"] == "completed"
+            else:
+                assert result["worker_returncode"] == 74
+                assert worker["emergency_sync_outcome"] == "failed"
+                assert worker["guardian_state"] == "TRANSFERRED_TO_QUARANTINE"
+                assert worker["custody"] == "full_quarantine"
+                assert worker["release_status"] == "not_authorized"
+        (tmp_path / "custody_artifact.json").write_text(json.dumps(artifact), encoding="utf-8")
+        print(
+            json.dumps(
+                {
+                    "fault": fault,
+                    "parent_pid": os.getpid(),
+                    "supervisor_pid": supervisor.pid,
+                    "worker_pid": result["worker_pid"],
+                    "worker_returncode": result["worker_returncode"],
+                }
+            )
+        )
+    finally:
+        os.close(write_fd)
+        if supervisor.poll() is None:
+            try:
+                supervisor.communicate(timeout=40)
+            except subprocess.TimeoutExpired:
+                supervisor.kill()
+                supervisor.communicate(timeout=3)

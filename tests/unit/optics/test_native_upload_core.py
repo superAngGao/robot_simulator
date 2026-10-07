@@ -202,7 +202,15 @@ def test_array_operation_ids_preserve_case_distinction_and_are_guardian_valid(pr
         emergency_sync_notifier=lambda _: pytest.fail("CPU operation-ID check synchronized"),
         session_identity="array_ids_unit",
     )
-    names = ["fixed_x_world_R", "fixed_x_world_r", "replay_x_world_R", "replay_x_world_r", "A" * 1024]
+    names = [
+        "fixed_x_world_R",
+        "fixed_x_world_r",
+        "replay_x_world_R",
+        "replay_x_world_r",
+        "instance_X_body_geometry_R",
+        "instance_X_body_geometry_r",
+        "A" * 1024,
+    ]
     ids = [native_setup._array_operation_id(prefix, name) for name in names]
     assert len(set(ids)) == len(names)
     assert ids == [native_setup._array_operation_id(prefix, name) for name in names]
