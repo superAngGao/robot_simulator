@@ -9,9 +9,9 @@ from optical_worker.wait_supervision import GuardSupervisorCore, GuardSupervisor
 
 
 class Peer:
-    def __init__(self):
-        self.config = GuardConfiguration(uuid.uuid4().hex, 1, 1000, 5000)
-        self.channel, self.remote = socket.socketpair()
+    def __init__(self, *, configuration=None, channel_pair=None):
+        self.config = configuration or GuardConfiguration(uuid.uuid4().hex, 1, 1000, 5000)
+        self.channel, self.remote = socket.socketpair() if channel_pair is None else channel_pair
         self.stop = threading.Event()
         self.ready = threading.Event()
         self.errors = []

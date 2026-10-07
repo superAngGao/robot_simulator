@@ -67,6 +67,27 @@ FAULTS = (
     "target_exit_hang",
 )
 
+SOURCE_FAULTS = tuple(
+    "source_" + name
+    for name in (
+        "success",
+        "prelude_raise",
+        "module_adopt",
+        "compile_raise",
+        "body_raise",
+        "caught_nested",
+        "audit_raise",
+        "import_hang",
+        "parent_loss",
+        "no_ack",
+        "wrong_ack",
+        "ack_eof",
+        "stalled_disarm",
+        "cleanup_hang",
+        "exit_hang",
+    )
+)
+
 
 def configuration():
     # Operational CPU-test budgets, not product/performance gates.
@@ -288,13 +309,17 @@ def child(fault, fd, directory):
 
 
 def supervise(fault, liveness_fd, directory):
+    source_mode = fault in SOURCE_FAULTS
+    config = GuardConfiguration("c" * 32, 1, 1000, 5000) if source_mode else configuration()
+    child_script = Path(__file__).with_name("source_custody_process.py") if source_mode else Path(__file__)
     channel, worker_channel = socket.socketpair()
     process = subprocess.Popen(
         [
             sys.executable,
             "-I",
+            *(["-S"] if source_mode else []),
             "-B",
-            str(Path(__file__).resolve()),
+            str(child_script.resolve()),
             "child",
             fault,
             str(worker_channel.fileno()),
@@ -306,14 +331,14 @@ def supervise(fault, liveness_fd, directory):
         stderr=subprocess.PIPE,
     )
     worker_channel.close()
-    core = GuardSupervisorCore(configuration())
+    core = GuardSupervisorCore(config)
     transport = GuardSupervisorTransport(channel, core)
     started = time.monotonic()
     injected = False
     parent_alive = True
     try:
         while True:
-            if time.monotonic() - started > 12:
+            if time.monotonic() - started > (20 if source_mode else 12):
                 raise RuntimeError("outer test fail-bound; NOT successful supervisor termination")
             code = process.poll()
             if code is not None:
@@ -339,7 +364,10 @@ def supervise(fault, liveness_fd, directory):
                 elif fault.endswith("ack_eof"):
                     channel.shutdown(socket.SHUT_WR)
                     injected = True
-                elif fault == "normal_stalled_disarm" and pending["operation"] == "DISARMED":
+                elif (
+                    fault in {"normal_stalled_disarm", "source_stalled_disarm"}
+                    and pending["operation"] == "DISARMED"
+                ):
                     channel.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
                     while True:
                         try:
@@ -398,7 +426,7 @@ def main():
     parser.add_argument(
         "mode", choices=("child", "supervisor", "import_probe_caught", "import_probe_propagated")
     )
-    parser.add_argument("fault", choices=FAULTS)
+    parser.add_argument("fault", choices=FAULTS + SOURCE_FAULTS)
     parser.add_argument("fd", type=int)
     parser.add_argument("directory", type=Path)
     args = parser.parse_args()

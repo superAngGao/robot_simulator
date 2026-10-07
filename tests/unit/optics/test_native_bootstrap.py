@@ -81,10 +81,10 @@ def _copy(release, tmp_path):
     return root, release[1]
 
 
-def _internal(release, before="", after=""):
+def _internal(release, before="", after="", lane="warp"):
     # Fixed isolated test driver calls the REAL production classes, not a loader
     # duplicate. It is intentionally not an accepted product entry/callback.
-    root, revision, lane, digest, _ = _args(release)
+    root, revision, lane, digest, _ = _args(release, lane)
     script = f"""
 import importlib.util, importlib, sys, types
 from pathlib import Path

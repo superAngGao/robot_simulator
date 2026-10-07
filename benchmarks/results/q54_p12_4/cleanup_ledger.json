@@ -10,6 +10,7 @@
         "optical_worker/guarded_evidence.py",
         "optical_worker/wait_protocol.py",
         "tests/support/guarded_custody_process.py",
+        "tests/support/guarded_peer.py",
         "tests/unit/optics/test_guarded_lifecycle.py",
         "tests/unit/optics/test_guarded_evidence_fixtures.py",
         "tests/unit/optics/test_guarded_custody_process.py"
@@ -34,6 +35,10 @@
         "optical_worker/native_bootstrap.py",
         "optical_worker/data/native_sources/v1.json",
         "optical_worker/data/native_sources/v2.json",
+        "optical_worker/data/native_sources/v3.json",
+        "tests/unit/optics/test_native_source_custody.py",
+        "tests/unit/optics/test_native_source_custody_process.py",
+        "tests/support/source_custody_process.py",
         "tests/unit/optics/test_native_bootstrap.py",
         "tests/unit/optics/test_native_source_policy.py",
         "tests/unit/optics/test_native_sources.py"

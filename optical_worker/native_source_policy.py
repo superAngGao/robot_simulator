@@ -16,12 +16,12 @@ from pathlib import Path, PurePosixPath
 from .manifest import AST_POLICY
 from .protocol import ClosedWorkerProtocolError, canonical_sha256
 
-NATIVE_AST_POLICY_VERSION = "q54.p12.4.closed-worker-ast-policy.v3"
+NATIVE_AST_POLICY_VERSION = "q54.p12.4.closed-worker-ast-policy.v4"
 _BOOTSTRAP_PATH = "optical_worker/native_bootstrap.py"
-_BOOTSTRAP_SOURCE_SHA256 = "18e7bf22e88fa71dc150ddfe85151cc05498514784d85ac59571aab0fee0b10a"
+_BOOTSTRAP_SOURCE_SHA256 = "7dfb6074c7b5dc639a0763d21217c4e294afc340a03ee89b3ba058e8d088e02c"
 _BOOTSTRAP_CLASS_PINS = {
-    "_CapturedSourceLoader": "7d020c836934fa0411c7387b6563a2a858572c61ee42166914f2cf883bbc260a",
-    "_CapturedSourceFinder": "ed415c9c497e75e45c9cddd07bd843c898d8177dac0f4b72b96ad53e98ac02f2",
+    "_CapturedSourceLoader": "453f555e8cc589ea46c5421cdf944d08ff80060847f45baa73a22db7cdee2236",
+    "_CapturedSourceFinder": "86bd5870f5ffcd7642e07cd35e634eddee5850dbdce79062ec1b159effd9f74c",
 }
 _SNAPSHOT_PATH = "optics/warp_native_render.py"
 _SNAPSHOT_FUNCTION = "_render_launch_snapshot"

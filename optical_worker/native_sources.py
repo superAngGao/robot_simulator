@@ -22,9 +22,9 @@ from .protocol import (
     decode_canonical_message,
 )
 
-NATIVE_SOURCE_CATALOG_VERSION = "q54.p12.4.native-component-source-catalog.v2"
+NATIVE_SOURCE_CATALOG_VERSION = "q54.p12.4.native-component-source-catalog.v3"
 NATIVE_SOURCE_SNAPSHOT_VERSION = "q54.p12.4.native-component-source-snapshot.v1"
-CATALOG_PATH = "optical_worker/data/native_sources/v2.json"
+CATALOG_PATH = "optical_worker/data/native_sources/v3.json"
 
 # Deliberate literal inventory, not filesystem discovery. Includes eager
 # physics/sensing package initialization, even where the requested leaf is CPU.
