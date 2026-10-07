@@ -1175,6 +1175,18 @@ Next milestone:
       actual cold/dual-device/fault acceptance remains required. Primary183
       holds a matching isolated clean design checkout. Original worktrees and
       unrelated GPU processes were preserved; no owned hang was observed.
+      Implementation update (2026-10-08, C2d3 still WIP): generated-stdlib
+      design v1 was independently approved; implementation through `f97186c`
+      has 461 passed / 3 skipped CPU regressions and 6 passed real cold Warp
+      GPU tests, plus 30 passed C0 regressions. These overlapping suites are
+      not whole-stage acceptance. Real Go2 still fails safely at the pinned
+      SciPy extension's distinct intrinsic module name. Independent gap-scan
+      v1 confirms a bounded metadata-contract gap; native-module-name design
+      v1 is pending separate review. Both-lane Go2/upload/readback, complete
+      failure/dual-device matrix and versioned runtime-custody schema remain
+      required. See the generated-stdlib implementation note v1 for exact
+      revisions, artifacts, failures and process-reap evidence. No approval or
+      activation is inferred from advancing past an earlier import failure.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
