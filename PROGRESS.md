@@ -1188,6 +1188,18 @@ Next milestone:
       required. See the generated-stdlib implementation note v1 for exact
       revisions, artifacts, failures and process-reap evidence. No approval or
       activation is inferred from advancing past an earlier import failure.
+      Native-name implementation through `a50b227` now passes that original
+      boundary; an independent bounded implementation gap scan found no new
+      defect in the name/identity/cache changes, but expressly issued no C2d3
+      code approval. Final-HEAD author CPU subset: 382 passed / 2 Go2-env skips;
+      independent subset: 339 passed plus 16 extra counterexamples. Real Go2
+      still fails closed at materialization's unlisted-publication audit.
+      Ordinary CPU diagnostics identify three fileless Cython runtime modules
+      as candidates, not yet actual captured admission evidence or permission.
+      The native-module-name implementation note v1 retains earlier selector
+      failures, two supervised deadline exits, subsequent safe failure, exact
+      test revisions and no-residual-process checks. Complete parent validation
+      and later-stage activation remain pending; C4 is not complete.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
