@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import hashlib
 import importlib.abc
+import importlib.machinery
 import importlib.util
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
-from types import MappingProxyType
+from types import MappingProxyType, ModuleType
 
 _BOOTSTRAP = "optical_worker/native_bootstrap.py"
 _CATALOG = "optical_worker/data/native_sources/v3.json"
@@ -47,10 +48,14 @@ _SETUP_DEFINITIONS = MappingProxyType(
         "optical_worker.native_contract": "optical_worker/native_contract.py",
     }
 )
+_EXTERNAL_CONTRACT_DEFINITIONS = MappingProxyType(
+    {"optical_worker.runtime_environment": "optical_worker/runtime_environment.py"}
+)
 # One-shot trusted-process identities, never reconstructed from a receipt.
 # None is a permanent failed/in-progress binding tombstone, not permission to retry.
 _SOURCE_CUSTODY = {}
 _VERIFIED_SNAPSHOTS = {}
+_EXTERNAL_CUSTODY = {}
 
 
 class SourceBootstrapError(RuntimeError):
@@ -219,7 +224,7 @@ class _CapturedSourceLoader(importlib.abc.SourceLoader):
             )
             self.session.modules[self.name] = (module, self, "started")
             self.session.trace.append(("started", self.name))
-            if self.name in _SETUP_DEFINITIONS:
+            if self.name in _SETUP_DEFINITIONS or self.name in _EXTERNAL_CONTRACT_DEFINITIONS:
                 controller = self.session.bound_controller()
                 controller._require_setup()
                 controller.adopt_host_owner(
@@ -241,6 +246,12 @@ class _CapturedSourceFinder(importlib.abc.MetaPathFinder):
         self.session = session
 
     def find_spec(self, fullname, path=None, target=None):
+        external = _EXTERNAL_CUSTODY.get(self.session)
+        if external is not None and fullname.partition(".")[0] not in _ROOTS:
+            spec = external[0].find_spec(fullname, path, target)
+            if type(spec) is _AbsentExternalSpec:
+                raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
+            return spec
         if fullname.partition(".")[0] in {"numpy", "torch", "warp"}:
             error = SourceBootstrapError("runtime imports remain closed in CPU source custody")
             self.session.fail(error)
@@ -253,7 +264,7 @@ class _CapturedSourceFinder(importlib.abc.MetaPathFinder):
                 fullname in self.session.admitted_sources() and target is None,
                 "repository import outside CPU core or reload",
             )
-            if fullname in _SETUP_DEFINITIONS:
+            if fullname in _SETUP_DEFINITIONS or fullname in _EXTERNAL_CONTRACT_DEFINITIONS:
                 self.session.bound_controller()._require_setup()
             _require(fullname not in self.session.loaders, "duplicate loader")
             loader = _CapturedSourceLoader(self.session, fullname)
@@ -261,6 +272,464 @@ class _CapturedSourceFinder(importlib.abc.MetaPathFinder):
             return importlib.util.spec_from_loader(fullname, loader)
         except BaseException as error:
             self.session.fail(error)
+            raise
+
+
+class _ExternalSourceLoader(importlib.abc.SourceLoader):
+    """One retained standard file loader; Python bytecode caches are not input."""
+
+    def __init__(self, admission, name, delegate, origin, source):
+        self.admission, self.name = admission, name
+        self.delegate, self.origin, self.source = delegate, origin, source
+
+    def _check(self):
+        self.admission.check_live()
+        _require(self.admission.loaders.get(self.name) is self, "external loader identity changed")
+        _require(
+            self.admission.loader_bindings[self.name] == (self, self.delegate, self.origin, self.source),
+            "external loader binding changed",
+        )
+
+    def get_filename(self, fullname):
+        self._check()
+        _require(fullname == self.name, "external filename requested for another module")
+        return self.origin
+
+    def get_data(self, path):
+        self._check()
+        _require(path == self.origin and self.source is not None, "external source cannot read a cache")
+        return self.source
+
+    def get_code(self, fullname):
+        self._check()
+        record = self.admission.records.get(self.name)
+        _require(
+            fullname == self.name
+            and self.source is not None
+            and record is not None
+            and record["state"] == "executing"
+            and sys.modules.get(fullname) is record["module"],
+            "external code requested outside exact execution",
+        )
+        return self.source_to_code(self.source, self.origin)
+
+    def create_module(self, spec):
+        try:
+            self._check()
+            _require(spec is self.admission.specs[self.name], "external spec identity changed")
+            _require(self.name not in self.admission.records, "external module recreation")
+            self.admission.record("create_started", self.name, "file_module")
+            self.admission.stack.append(self.name)
+            if type(self.delegate) is importlib.machinery.ExtensionFileLoader:
+                module = self.delegate.create_module(spec)
+                _require(module is not None, "native loader returned no module")
+            else:
+                module = ModuleType(self.name)
+            # This registry is held by the adopted source session before any
+            # explicit adoption that can fail. Preserve partial native owners.
+            self.admission.records[self.name] = {"module": module, "state": "created", "kind": "file_module"}
+            self.admission.hold(module)
+            self.admission.record("created", self.name, "file_module")
+            self.admission.stack.pop()
+            return module
+        except BaseException as error:
+            self.admission.fail(error, self.name, native_create=self.source is None)
+            raise
+
+    def exec_module(self, module):
+        try:
+            self._check()
+            record = self.admission.records.get(self.name)
+            _require(
+                record is not None
+                and record["module"] is module
+                and record["state"] == "created"
+                and sys.modules.get(self.name) is module
+                and module.__spec__ is self.admission.specs[self.name]
+                and module.__loader__ is self,
+                "external module execution identity/order changed",
+            )
+            record["state"] = "executing"
+            self.admission.record("exec_started", self.name, "file_module")
+            self.admission.stack.append(self.name)
+            if self.source is None:
+                self.delegate.exec_module(module)
+            else:
+                super().exec_module(module)
+            self.admission.check_live()
+            self.admission.reconcile_publications(self.name)
+            self.admission.stack.pop()
+            record["state"] = "completed"
+            self.admission.check_module(self.name)
+            self.admission.record("completed", self.name, "file_module")
+        except BaseException as error:
+            self.admission.fail(error, self.name, native_create=self.source is None)
+            raise
+
+
+class _ExternalAdmission:
+    """Fixed external rules belonging to the existing captured source session.
+
+    No independently installable finder, public module selector or import
+    capability is provided. A parsed environment is not enough to construct
+    this object: source custody and an actual setup guard must already exist.
+    """
+
+    def __init__(self, session, environment, expected_sha256):
+        _require(type(session) is _SourceSession, "external admission needs the exact source session")
+        session.check_live()
+        controller = session.bound_controller()
+        controller._require_setup()
+        environment.verify_files(expected_sha256=expected_sha256)
+        self.session, self.controller, self.environment = session, controller, environment
+        self.expected_sha256 = expected_sha256
+        payload = environment.to_payload()
+        self.payload = payload
+        self.roots = {r["id"]: r["path"] for r in payload["roots"]}
+        self.search_roots = tuple(str(Path(r["path"])) for r in payload["roots"] if r["kind"] == "site")
+        self.files = {(r["root"], r["path"]): r for r in payload["files"]}
+        self.rules = {r["name"]: r for r in payload["modules"]}
+        self.publications = {r["name"]: r for r in payload["publications"]}
+        self.namespaces = {r["name"]: r for r in payload["namespaces"]}
+        self.absent = {(r["name"], r["requester"], r["phase"]) for r in payload["absent_probes"]}
+        self.phase = "materialization"
+        self.stack, self.events, self.retained, self.failures = [], [], [], []
+        self.loaders, self.loader_bindings, self.specs, self.records = {}, {}, {}, {}
+        self.baseline = dict(sys.modules)
+        self.failed = False
+        _require(
+            not any(name in self.baseline for name in self.rules | self.publications | self.namespaces),
+            "external dependency was preloaded",
+        )
+        controller.adopt_host_owner(
+            environment, role="runtime_environment", operation_id="runtime_environment"
+        )
+        controller.adopt_host_owner(
+            self, role="runtime_import_custody", operation_id="runtime_import_custody"
+        )
+
+    def record(self, operation, name, kind):
+        self.events.append(
+            {
+                "index": len(self.events),
+                "operation": operation,
+                "name": name,
+                "kind": kind,
+                "phase": self.phase,
+            }
+        )
+
+    def hold(self, value):
+        if not any(owner is value for owner in self.retained):
+            self.retained.append(value)
+            self.controller.adopt_host_owner(
+                value,
+                role="external_import_owner",
+                operation_id="external_import_owner",
+            )
+
+    def check_live(self):
+        _require(not self.failed, "external import session failed")
+        self.session.check_live()
+        binding = _EXTERNAL_CUSTODY.get(self.session)
+        _require(
+            binding is not None
+            and binding[0] is self
+            and binding[1] is self.environment
+            and binding[2] == self.expected_sha256
+            and binding[3] is self.controller,
+            "external custody was not issued by this source session",
+        )
+        _require(self.session.bound_controller() is self.controller, "external controller identity changed")
+        self.controller._require_setup()
+        _require(self.environment.sha256 == self.expected_sha256, "external environment identity drift")
+        _require(self.environment.to_payload() == self.payload, "external rule table drift")
+        p = self.payload
+        _require(
+            self.roots == {r["id"]: r["path"] for r in p["roots"]}
+            and self.search_roots == tuple(str(Path(r["path"])) for r in p["roots"] if r["kind"] == "site")
+            and self.files == {(r["root"], r["path"]): r for r in p["files"]}
+            and self.rules == {r["name"]: r for r in p["modules"]}
+            and self.publications == {r["name"]: r for r in p["publications"]}
+            and self.namespaces == {r["name"]: r for r in p["namespaces"]}
+            and self.absent == {(r["name"], r["requester"], r["phase"]) for r in p["absent_probes"]},
+            "external lookup index drift",
+        )
+
+    def fail(self, error, name, *, native_create=False):
+        if self.failed:
+            return
+        self.failed = True
+        self.failures.append(error)
+        # Custody, never permission: keep any partial publication/root alive even
+        # if importlib removes it or adoption subsequently rejects poisoned work.
+        for key, module in tuple(sys.modules.items()):
+            if self.baseline.get(key) is not module:
+                self.retained.append(module)
+        self.record("failed", name, "failure")
+        if native_create and not self.controller._terminating:
+            try:
+                self.controller.mark_unknown_device_scope(
+                    source="external_native_import",
+                    reason="native_import_failed_before_complete_custody",
+                )
+            except BaseException as scope_error:
+                self.failures.append(scope_error)
+        self.session.fail(error)
+
+    def _paths(self, fullname):
+        parent = fullname.rpartition(".")[0]
+        if not parent:
+            return self.search_roots
+        _require(parent in self.records, "external parent was not admitted")
+        parent_record = self.records[parent]
+        if parent_record["kind"] == "namespace":
+            return tuple(
+                str(Path(self.roots[r["root"]]) / r["path"]) for r in self.namespaces[parent]["locations"]
+            )
+        rule = self.rules.get(parent)
+        _require(rule is not None and rule["is_package"], "external parent is not a file package")
+        return (str((Path(self.roots[rule["root"]]) / rule["path"]).parent),)
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.partition(".")[0] in sys.stdlib_module_names:
+            return None  # The pinned interpreter's standard library is trusted.
+        try:
+            self.check_live()
+            _require(target is None and fullname not in self.records, "external reload or duplicate import")
+            expected_paths = self._paths(fullname)
+            _require(
+                path is None if not fullname.rpartition(".")[0] else tuple(path or ()) == expected_paths,
+                "external package search path drift",
+            )
+            requester = self.stack[-1] if self.stack else None
+            rule = self.rules.get(fullname)
+            namespace = self.namespaces.get(fullname)
+            optional = (fullname, requester, self.phase) in self.absent
+            _require(rule is not None or namespace is not None or optional, "unlisted external import")
+            spec = importlib.machinery.PathFinder.find_spec(fullname, list(expected_paths))
+            if optional:
+                _require(
+                    fullname not in sys.modules and spec is None, "expected absent dependency is present"
+                )
+                self.record("absent_probe", fullname, "absent_probe")
+                # This exact no-code outcome is the only non-poisoning exception.
+                return _AbsentExternalSpec(fullname)
+            _require(spec is not None, "frozen external module missing")
+            if namespace is not None:
+                _require(namespace["phase"] == self.phase, "namespace phase mismatch")
+                locations = [str(Path(self.roots[r["root"]]) / r["path"]) for r in namespace["locations"]]
+                _require(
+                    spec.loader is None
+                    and spec.origin is None
+                    and list(spec.submodule_search_locations) == locations,
+                    "namespace identity drift",
+                )
+                # importlib creates a namespace object without executing a body.
+                # A controlled wrapper adopts it before returning to its caller.
+                loader = _ExternalNamespaceLoader(self, fullname, locations)
+                spec = importlib.util.spec_from_loader(fullname, loader, is_package=True)
+                spec.origin = None
+                spec.submodule_search_locations = locations
+                self.specs[fullname] = spec
+                self.loaders[fullname] = loader
+                return spec
+            _require(rule["phase"] == self.phase, "file module phase mismatch")
+            origin = str(Path(self.roots[rule["root"]]) / rule["path"])
+            file_record = self.files[(rule["root"], rule["path"])]
+            delegate_type = (
+                importlib.machinery.SourceFileLoader
+                if file_record["kind"] == "python"
+                else importlib.machinery.ExtensionFileLoader
+            )
+            _require(
+                type(spec.loader) is delegate_type and spec.origin == origin,
+                "external file origin/loader drift",
+            )
+            _require(
+                (spec.submodule_search_locations is not None) == rule["is_package"], "external package drift"
+            )
+            candidate = Path(origin)
+            _require(
+                not candidate.is_symlink() and candidate.resolve(strict=True) == candidate,
+                "external path resolved differently",
+            )
+            data = candidate.read_bytes()
+            _require(
+                len(data) == file_record["size"]
+                and hashlib.sha256(data).hexdigest() == file_record["sha256"],
+                "external file bytes changed",
+            )
+            source = data if file_record["kind"] == "python" else None
+            loader = _ExternalSourceLoader(self, fullname, spec.loader, origin, source)
+            self.loaders[fullname] = loader
+            self.loader_bindings[fullname] = (loader, spec.loader, origin, source)
+            self.hold(spec.loader)
+            spec.loader = loader
+            self.specs[fullname] = spec
+            self.hold(spec)
+            self.record("file_resolved", fullname, "file_module")
+            return spec
+        except BaseException as error:
+            self.fail(error, fullname)
+            raise
+
+    def reconcile_publications(self, publisher):
+        publisher_record = self.records.get(publisher)
+        if publisher_record is None:
+            return
+        for name, rule in self.publications.items():
+            if rule["publisher"] != publisher:
+                continue
+            previous = self.records.get(name)
+            _require(name in sys.modules, "required creator publication missing")
+            _require(
+                rule["phase"] == (previous["phase"] if previous is not None else self.phase),
+                "publication phase mismatch",
+            )
+            root = self.records.get(rule["creator"])
+            _require(
+                root is not None and sys.modules.get(rule["creator"]) is root["module"], "creator root drift"
+            )
+            value = root["module"]
+            for attribute in rule["attributes"]:
+                # Do not invoke third-party __getattr__ and create new objects
+                # while supposedly auditing a previously published object.
+                value = vars(value).get(attribute)
+                _require(value is not None, "creator attribute path missing")
+            _require(
+                value is sys.modules[name] and isinstance(value, ModuleType), "publication owner mismatch"
+            )
+            if previous is not None:
+                _require(
+                    previous["module"] is value
+                    and previous["creator"] is root["module"]
+                    and previous["publisher"] is publisher_record["module"],
+                    "published module replaced",
+                )
+                continue
+            self.records[name] = {
+                "kind": rule["kind"],
+                "state": "completed",
+                "module": value,
+                "creator": root["module"],
+                "publisher": publisher_record["module"],
+                "phase": self.phase,
+            }
+            self.hold(value)
+            self.record("creator_publication", name, rule["kind"])
+
+    def check_module(self, name):
+        record = self.records[name]
+        _require(sys.modules.get(name) is record["module"], "external sys.modules identity drift")
+        if record["kind"] == "namespace":
+            module, spec, loader = record["module"], self.specs[name], self.loaders[name]
+            locations = tuple(
+                str(Path(self.roots[r["root"]]) / r["path"]) for r in self.namespaces[name]["locations"]
+            )
+            _require(
+                module.__spec__ is spec
+                and module.__loader__ is loader
+                and spec.loader is loader
+                and module.__name__ == name
+                and module.__package__ == name
+                and spec.name == name
+                and spec.origin is None
+                and tuple(module.__path__) == locations
+                and tuple(spec.submodule_search_locations) == locations
+                and loader.locations == locations
+                and vars(module).get("__file__") is None,
+                "namespace metadata drift",
+            )
+            return
+        if record["kind"] != "file_module":
+            return
+        module, spec = record["module"], self.specs[name]
+        loader = self.loaders[name]
+        expected_package = name if self.rules[name]["is_package"] else name.rpartition(".")[0]
+        _require(
+            module.__spec__ is spec
+            and module.__loader__ is loader
+            and spec.loader is loader
+            and spec.name == name
+            and spec.parent == expected_package
+            and module.__name__ == name
+            and module.__package__ == expected_package
+            and module.__file__ == loader.origin
+            and spec.origin == loader.origin,
+            "external module metadata drift",
+        )
+        if self.rules[name]["is_package"]:
+            _require(
+                list(module.__path__) == [str(Path(loader.origin).parent)]
+                and list(spec.submodule_search_locations) == list(module.__path__),
+                "external package drift",
+            )
+
+    def audit(self):
+        try:
+            self.check_live()
+            _require(not self.stack, "external import is still in progress")
+            self.environment.verify_files(expected_sha256=self.expected_sha256)
+            for name, original in self.baseline.items():
+                _require(sys.modules.get(name) is original, "pre-existing module identity changed")
+            for publisher in {rule["publisher"] for rule in self.publications.values()}:
+                self.reconcile_publications(publisher)
+            for name, module in tuple(sys.modules.items()):
+                if name in self.baseline or name.partition(".")[0] in _ROOTS | sys.stdlib_module_names:
+                    continue
+                _require(
+                    name in self.records and self.records[name]["module"] is module,
+                    "unlisted module publication",
+                )
+            for name, record in self.records.items():
+                _require(record["state"] == "completed", "external module incomplete")
+                self.check_module(name)
+                self.controller.require_adopted(record["module"])
+        except BaseException as error:
+            self.fail(error, "audit")
+            raise
+
+
+class _AbsentExternalSpec:
+    """Internal sentinel: the finder raises absence, so no loader/body is invoked."""
+
+    def __init__(self, name):
+        self.name = name
+
+
+class _ExternalNamespaceLoader(importlib.abc.Loader):
+    def __init__(self, admission, name, locations):
+        self.admission, self.name, self.locations = admission, name, tuple(locations)
+
+    def create_module(self, spec):
+        try:
+            self.admission.check_live()
+            _require(spec is self.admission.specs[self.name], "namespace spec replaced")
+            _require(self.name not in self.admission.records, "namespace recreation")
+            module = ModuleType(self.name)
+            self.admission.records[self.name] = {"kind": "namespace", "state": "created", "module": module}
+            self.admission.hold(module)
+            return module
+        except BaseException as error:
+            self.admission.fail(error, self.name)
+            raise
+
+    def exec_module(self, module):
+        try:
+            self.admission.check_live()
+            record = self.admission.records[self.name]
+            _require(
+                record["module"] is module
+                and record["state"] == "created"
+                and tuple(module.__path__) == self.locations,
+                "namespace binding changed",
+            )
+            record["state"] = "completed"
+            self.admission.check_module(self.name)
+            self.admission.record("namespace", self.name, "namespace")
+        except BaseException as error:
+            self.admission.fail(error, self.name)
             raise
 
 
@@ -284,6 +753,7 @@ class _SourceSession:
         self.failures = []
         self.phase = "core"
         self.snapshot = None
+        self.external = None
         self.loaders, self.modules, self.trace = {}, {}, []
         self.finder = _CapturedSourceFinder(self)
 
@@ -294,6 +764,8 @@ class _SourceSession:
             return _CORE | _CUSTODY_PRELUDE
         if self.phase in {"importing", "imported"}:
             return _CORE | _CUSTODY_PRELUDE | _SETUP_DEFINITIONS
+        if self.phase in {"configuring_runtime", "runtime_configured"}:
+            return _CORE | _CUSTODY_PRELUDE | _SETUP_DEFINITIONS | _EXTERNAL_CONTRACT_DEFINITIONS
         raise SourceBootstrapError("invalid CPU source phase")
 
     def fail(self, error):
@@ -392,6 +864,32 @@ class _SourceSession:
             self.fail(error)
             raise
 
+    def configure_external_environment(self, environment_payload, expected_sha256):
+        """Internal trusted-launch configuration, not a worker IPC operation."""
+        try:
+            self.check_live()
+            _require(
+                self.phase == "imported" and self not in _EXTERNAL_CUSTODY,
+                "external configuration is ordered and single-use",
+            )
+            _EXTERNAL_CUSTODY[self] = None
+            controller = self.bound_controller()
+            with controller.segment("setup"):
+                self.phase = "configuring_runtime"
+                from optical_worker.runtime_environment import RuntimeEnvironmentContract
+
+                environment = RuntimeEnvironmentContract.from_payload(environment_payload)
+                admission = object.__new__(_ExternalAdmission)
+                self.external = admission  # Retain partial construction before initialization.
+                _EXTERNAL_CUSTODY[self] = (admission, environment, expected_sha256, controller)
+                admission.__init__(self, environment, expected_sha256)
+                self.audit()
+                admission.audit()
+            self.phase = "runtime_configured"
+        except BaseException as error:
+            self.fail(error)
+            raise
+
     def check_live(self):
         _require(
             not self.failed
@@ -428,6 +926,9 @@ class _SourceSession:
                 not controller._terminating and not controller._replay.failed,
                 "source custody is terminal or failed",
             )
+        external = _EXTERNAL_CUSTODY.get(self)
+        if external is not None:
+            _require(self.external is external[0], "external source session identity drift")
 
     def audit(self):
         try:

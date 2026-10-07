@@ -65,6 +65,46 @@ Earlier no-exit-code invocation: c2d3-core-cpu-author.log/.err.
 
 ## Required next implementation work (still incomplete)
 
+### Additional unreviewed importer work after 46618be
+
+The existing captured-source finder now has an internal external-admission adapter,
+not a second repository finder. It verifies the trusted environment, retains exact
+file specs/delegates before create, retains returned modules before exec, executes
+held Python source rather than existing bytecode, and separates absent probes,
+creator-owned publications and namespaces from file execution. Segment audit
+rechecks deployment files, exact module metadata and creator identities. A started
+import error stays failed even when the dependency catches it; available partial
+modules and original errors remain held. Namespace/search-path and lookup-table
+drift also fail closed. The added configuration method is internal only; no product
+IPC dispatch or runtime/sample activation calls it.
+
+These mechanics are still unfinished C2d3 implementation. The 21 added tests use
+real importlib and actual temporary Python files but unit-double the source-session
+and guardian prerequisites. They neither execute a native extension nor prove
+cold captured-source/supervisor/GPU resource safety. The actual environment tables,
+runtime binding/driver, evidence replay and mandatory native fault tests below
+remain missing. No new independently approved subcheckpoint is claimed.
+
+An initial run exposed Windows mixed path-separator comparisons (13 failures,
+7 passes), corrected by deriving platform-native search-root spellings from the
+canonical environment paths. The importer-only rerun passed 20 cases; after adding
+the retained-source/file-drift check it passed 21 in0.57s. The bytecode negative
+test first proves a standard loader would accept its unchecked-hash hostile cache,
+then proves this loader executes the frozen source instead.
+
+Combined local author regression:270 passed in8.14s, Python3.14, PID8216,
+parent32284, start2026-10-07T21:05:03.7594155+08:00, explicitly observed
+HasExited=True/ExitCode=0. This includes import/environment/core, guarded lifecycle,
+guarded evidence fixtures and readiness-authority tests. Logs outside the repo:
+c4_assets/c2d3-importer-cpu-author.log and .err. Changed-file Ruff check passes.
+No source-policy/catalog repin, product admission or GPU acceptance is implied.
+
+Read-only primary183 check at21:03:42 found no ang.gao test/worker/Python process;
+only the existing MPS2238410,60MiB was listed by the GPU process query. No GPU work
+was launched for this local author run. Historical hang resolution is not claimed.
+
+### Remaining checkpoint work
+
 1. Freeze actual deployment/native inventory, missing-probe and publication tables;
    implement real captured-session external loader/adoption and evidence replay.
 2. Construct exact single-use guarded RuntimeSetupBinding; share the cores without
