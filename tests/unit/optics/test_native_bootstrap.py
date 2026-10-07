@@ -142,7 +142,9 @@ entry._install = observe_rejection
 
 
 def test_cold_singleton_stdlib_and_post_poison_reporting(release):
-    result = _internal(release, after="""
+    result = _internal(
+        release,
+        after="""
 entry._verify(session)
 assert sys.meta_path == [session.finder]
 assert session.finder.find_spec('sys').origin == 'built-in'
@@ -163,7 +165,8 @@ else:
     raise AssertionError('poisoned repository import reopened')
 assert not {'numpy','warp','torch','benchmarks'}.intersection(sys.modules)
 print('singleton_stdlib_checked')
-""")
+""",
+    )
     assert result[0] == 0, result[2].decode()
     assert result[1].splitlines() == [b"singleton_stdlib_checked"]
 
@@ -174,6 +177,98 @@ def test_actual_posix_source_entry_without_packaging(lane):
         pytest.skip("actual POSIX release test is required remotely")
     root = Path(__file__).resolve().parents[3]
     _report(_direct((root, _git(root, "rev-parse", "HEAD")), lane))
+
+
+@pytest.mark.parametrize("value", ["", "default", "unapproved_module", "_sysconfigdata_foreign"])
+def test_cold_generated_name_override_rejected_before_body(release, value):
+    before = f"""
+value = {value!r}
+if value == 'default':
+    value = ('_sysconfigdata_' + getattr(sys, 'abiflags', '') + '_' + sys.platform
+             + '_' + getattr(sys.implementation, '_multiarch', ''))
+entry.os.environ['_PYTHON_SYSCONFIGDATA_NAME'] = value
+"""
+    result = _internal(release, before=before, after="raise AssertionError('bootstrap accepted override')")
+    assert result[0] != 0 and b"sysconfig name override forbidden" in result[2]
+    assert b"bootstrap accepted override" not in result[2]
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or sys.version_info[:2] != (3, 12),
+    reason="real generated-module contract requires pinned CPython3.12 POSIX",
+)
+@pytest.mark.parametrize(
+    "mutation", ["none", "late_override", "replacement", "removed", "metadata", "intrinsic"]
+)
+def test_real_generated_stdlib_cached_query_then_boundary(release, mutation):
+    result = _internal(
+        release,
+        after=f"""
+entry._verify(session)
+descriptor = entry._IMPORT_TOPOLOGIES[session][6]
+name = descriptor[1]
+assert name not in sys.modules
+import sysconfig
+value = sysconfig.get_config_var('HOST_GNU_TYPE')
+assert value
+module = sys.modules[name]
+assert module.__file__ == descriptor[2]
+session.audit()
+assert entry._GENERATED_STDLIB_MODULES[session] is module
+assert sysconfig.get_config_var('HOST_GNU_TYPE') == value
+session.audit()
+mutation = {mutation!r}
+if mutation == 'late_override':
+    entry.os.environ['_PYTHON_SYSCONFIGDATA_NAME'] = ''
+elif mutation == 'replacement':
+    replacement = types.ModuleType(name)
+    replacement.__dict__.update(module.__dict__)
+    sys.modules[name] = replacement
+elif mutation == 'removed':
+    del sys.modules[name]
+elif mutation == 'metadata':
+    module.__spec__.origin += '.wrong'
+elif mutation == 'intrinsic':
+    sys.implementation._multiarch += '_wrong'
+if mutation != 'none':
+    try:
+        session.audit()
+    except entry.SourceBootstrapError:
+        assert session.failed and session.failures
+    else:
+        raise AssertionError('generated drift accepted')
+else:
+    assert sys.meta_path == [session.finder] and not session.failed
+assert not {{'numpy','warp','torch','benchmarks'}}.intersection(sys.modules)
+print('generated_boundary_checked')
+""",
+    )
+    assert result[0] == 0, result[2].decode()
+    assert result[1].splitlines() == [b"generated_boundary_checked"]
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or sys.version_info[:2] != (3, 12),
+    reason="real generated-module contract requires pinned CPython3.12 POSIX",
+)
+def test_generated_stdlib_preload_remains_forbidden(release):
+    result = _internal(release, before="import sysconfig; sysconfig.get_config_var('HOST_GNU_TYPE')")
+    assert result[0] != 0 and b"module preloaded before source custody" in result[2]
+
+
+def test_other_platform_cannot_mint_generated_linux_permission(release):
+    if os.name == "posix" and sys.version_info[:2] == (3, 12):
+        pytest.skip("unsupported-platform behavior is covered on the author Windows interpreter")
+    result = _internal(
+        release,
+        after="""
+assert entry._IMPORT_TOPOLOGIES[session][6][1] is None
+assert not session.is_interpreter_name('_sysconfigdata__linux_x86_64-linux-gnu')
+print('no_generated_permission')
+""",
+    )
+    assert result[0] == 0, result[2].decode()
+    assert result[1].splitlines() == [b"no_generated_permission"]
 
 
 @pytest.mark.parametrize("relative", ["optical_worker/__init__.py", "optical_worker/native_sources.py"])

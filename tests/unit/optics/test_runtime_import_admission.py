@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib
+import os
 import py_compile
 import sys
 from pathlib import Path
@@ -129,14 +130,32 @@ def importer(tmp_path, monkeypatch):
         finder = bootstrap._CapturedSourceFinder(session)
         session.finder = finder
         chain = [finder]
-        delegates = tuple((owner, owner.find_spec) for owner in (
-            importlib.machinery.BuiltinImporter, importlib.machinery.FrozenImporter,
-            importlib.machinery.PathFinder,
-        ))
-        monkeypatch.setitem(bootstrap._IMPORT_TOPOLOGIES, session, (
-            chain, finder, tuple(sys.path), tuple(sys.path_hooks), delegates,
-            frozenset(sys.stdlib_module_names) | frozenset(sys.builtin_module_names),
-        ))
+        delegates = tuple(
+            (owner, owner.find_spec)
+            for owner in (
+                importlib.machinery.BuiltinImporter,
+                importlib.machinery.FrozenImporter,
+                importlib.machinery.PathFinder,
+            )
+        )
+        generated = bootstrap._capture_generated_stdlib(root, tuple(sys.path))
+        if generated[1] is not None:
+            # This in-process unit fixture does not certify cold startup.
+            # Remove only the existing CPU data module, restoring it via monkeypatch.
+            monkeypatch.delitem(sys.modules, generated[1], raising=False)
+        monkeypatch.setitem(
+            bootstrap._IMPORT_TOPOLOGIES,
+            session,
+            (
+                chain,
+                finder,
+                tuple(sys.path),
+                tuple(sys.path_hooks),
+                delegates,
+                frozenset(sys.stdlib_module_names) | frozenset(sys.builtin_module_names),
+                generated,
+            ),
+        )
         sys.meta_path = chain
         sessions.append(admission)
         return admission, root
@@ -153,20 +172,36 @@ def importer(tmp_path, monkeypatch):
         # Unit doubles have no CUDA resources/quarantine. Never use this test
         # teardown as production release authority.
         admission.retained.clear()
+        bootstrap._GENERATED_STDLIB_SPECS.pop(admission.session, None)
+        bootstrap._GENERATED_STDLIB_MODULES.pop(admission.session, None)
 
 
-@pytest.mark.parametrize("name,requester", [
-    ("mapbox_earcut", "trimesh.creation"), ("manifold3d", "trimesh.creation"),
-    ("triangle", "trimesh.creation"), ("collada", "trimesh.exchange.dae"),
-])
+@pytest.mark.parametrize(
+    "name,requester",
+    [
+        ("mapbox_earcut", "trimesh.creation"),
+        ("manifold3d", "trimesh.creation"),
+        ("triangle", "trimesh.creation"),
+        ("collada", "trimesh.exchange.dae"),
+    ],
+)
 def test_metadata_absence_uses_normal_importlib_without_poison(importer, name, requester):
-    sources = {"trimesh": "", "trimesh.exchange": "",
-               "trimesh.util": ("def has_module(name):\n from importlib.util import find_spec\n"
-                                " return find_spec(name) is not None\n"),
-               requester: f"from trimesh.util import has_module\navailable = has_module({name!r})\n"}
-    admission, _ = importer(sources, packages=("trimesh", "trimesh.exchange"), absent=[
-        {"name": name, "requester": requester, "phase": "materialization"},
-    ])
+    sources = {
+        "trimesh": "",
+        "trimesh.exchange": "",
+        "trimesh.util": (
+            "def has_module(name):\n from importlib.util import find_spec\n"
+            " return find_spec(name) is not None\n"
+        ),
+        requester: f"from trimesh.util import has_module\navailable = has_module({name!r})\n",
+    }
+    admission, _ = importer(
+        sources,
+        packages=("trimesh", "trimesh.exchange"),
+        absent=[
+            {"name": name, "requester": requester, "phase": "materialization"},
+        ],
+    )
     actual = importlib.import_module(requester)
     assert actual.available is False
     assert not admission.failed and not admission.session.failed
@@ -178,11 +213,16 @@ def test_metadata_absence_uses_normal_importlib_without_poison(importer, name, r
 
 
 def test_same_absence_supports_repeated_query_and_normal_import(importer):
-    admission, _ = importer({"c2ext": (
-        "from importlib.util import find_spec\n"
-        "assert find_spec('c2missing') is None\nassert find_spec('c2missing') is None\n"
-        "try:\n import c2missing\nexcept ModuleNotFoundError as error:\n missing_name = error.name\n"
-    )}, absent=[{"name": "c2missing", "requester": "c2ext", "phase": "materialization"}])
+    admission, _ = importer(
+        {
+            "c2ext": (
+                "from importlib.util import find_spec\n"
+                "assert find_spec('c2missing') is None\nassert find_spec('c2missing') is None\n"
+                "try:\n import c2missing\nexcept ModuleNotFoundError as error:\n missing_name = error.name\n"
+            )
+        },
+        absent=[{"name": "c2missing", "requester": "c2ext", "phase": "materialization"}],
+    )
     module = importlib.import_module("c2ext")
     assert module.missing_name == "c2missing"
     assert len([e for e in admission.events if e["kind"] == "absent_probe"]) == 3
@@ -194,7 +234,8 @@ def test_same_absence_supports_repeated_query_and_normal_import(importer):
 def test_resolution_topology_drift_never_calls_added_finder(importer, monkeypatch, mutation):
     admission, _ = importer(
         {"c2ext": "from importlib.util import find_spec\nvalue = find_spec('c2missing')\n"},
-        absent=[{"name": "c2missing", "requester": "c2ext", "phase": "materialization"}])
+        absent=[{"name": "c2missing", "requester": "c2ext", "phase": "materialization"}],
+    )
     calls = []
 
     class Witness:
@@ -235,8 +276,9 @@ def test_resolution_topology_drift_never_calls_added_finder(importer, monkeypatc
 
 def test_poison_does_not_prevent_stdlib_terminal_import_or_reopen_external(importer):
     admission, _ = importer({"c2ext": ""})
-    name = next(n for n in ("quopri", "colorsys", "html.parser", "urllib.robotparser")
-                if n not in sys.modules)
+    name = next(
+        n for n in ("quopri", "colorsys", "html.parser", "urllib.robotparser") if n not in sys.modules
+    )
     original_error = RuntimeError("failed_before_terminal_reporting")
     admission.session.fail(original_error)
     module = importlib.import_module(name)
@@ -245,6 +287,38 @@ def test_poison_does_not_prevent_stdlib_terminal_import_or_reopen_external(impor
     with pytest.raises(bootstrap.SourceBootstrapError):
         importlib.import_module("c2ext")
     assert "c2ext" not in admission.loaders and "c2ext" not in admission.records
+
+
+@pytest.mark.skipif(os.name != "posix" or sys.version_info[:2] != (3, 12),
+                    reason="real interpreter data module requires CPython3.12 POSIX")
+@pytest.mark.parametrize("mutation", ["none", "replacement", "late_override"])
+def test_external_audit_generated_module_is_not_an_external_publication(importer, monkeypatch, mutation):
+    admission, _ = importer({"c2ext": ""})
+    session = admission.session
+    name = bootstrap._IMPORT_TOPOLOGIES[session][6][1]
+    module = importlib.import_module(name)
+    admission.audit()
+    assert bootstrap._GENERATED_STDLIB_MODULES[session] is module
+    assert not admission.events and name not in admission.records
+    assert importlib.import_module(name) is module
+    if mutation == "replacement":
+        replacement = type(module)(name)
+        replacement.__dict__.update(module.__dict__)
+        monkeypatch.setitem(sys.modules, name, replacement)
+    elif mutation == "late_override":
+        monkeypatch.setenv("_PYTHON_SYSCONFIGDATA_NAME", "")
+    try:
+        if mutation == "none":
+            admission.audit()
+            assert not admission.failed and not session.failed
+        else:
+            with pytest.raises(bootstrap.SourceBootstrapError):
+                admission.audit()
+            assert admission.failed and session.failed
+    finally:
+        if mutation == "late_override":
+            monkeypatch.delenv("_PYTHON_SYSCONFIGDATA_NAME")
+    assert not admission.events or all(event["kind"] == "failure" for event in admission.events)
 
 
 def _disabled_sources():

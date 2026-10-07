@@ -18,7 +18,7 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType, ModuleType
 
 _BOOTSTRAP = "optical_worker/native_bootstrap.py"
-_CATALOG = "optical_worker/data/native_sources/v7.json"
+_CATALOG = "optical_worker/data/native_sources/v8.json"
 _MAX_BYTES = 4 * 1024 * 1024  # Rechecked against the sole protocol constant.
 _ROOTS = frozenset(
     ("optical_worker", "optics", "physics", "robot", "sensing", "benchmarks", "examples", "tests", "tools")
@@ -122,6 +122,8 @@ _EXTERNAL_CUSTODY = {}
 _RUNTIME_BINDINGS = {}
 _UPLOADED_INPUTS = {}
 _IMPORT_TOPOLOGIES = {}
+_GENERATED_STDLIB_SPECS = {}
+_GENERATED_STDLIB_MODULES = {}
 
 
 class SourceBootstrapError(RuntimeError):
@@ -131,6 +133,56 @@ class SourceBootstrapError(RuntimeError):
 def _require(condition, message):
     if not condition:
         raise SourceBootstrapError(message)
+
+
+def _generated_interpreter_identity():
+    # Pure CPU startup facts; never ask sysconfig (which honors an override).
+    return (
+        sys.executable,
+        tuple(sys.version_info),
+        getattr(sys, "abiflags", ""),
+        sys.platform,
+        getattr(sys.implementation, "_multiarch", ""),
+        getattr(sys, "_stdlib_dir", None),
+        os.name,
+    )
+
+
+def _capture_generated_stdlib(root, paths):
+    _require("_PYTHON_SYSCONFIGDATA_NAME" not in os.environ, "sysconfig name override forbidden")
+    identity = _generated_interpreter_identity()
+    if os.name != "posix" or sys.version_info[:2] != (3, 12):
+        return (identity, None, None, None, None)
+    _, _, abi, platform, multiarch, directory, _ = identity
+    _require(
+        all(type(v) is str and all(c.isalnum() or c in "_-" for c in v) for v in (abi, platform, multiarch)),
+        "invalid generated interpreter name facts",
+    )
+    _require(type(directory) is str and bool(directory), "missing exact interpreter stdlib directory")
+    base = Path(directory)
+    _require(
+        base.is_absolute()
+        and base.resolve(strict=True) == base
+        and directory in paths
+        and not base.is_relative_to(root)
+        and not {p.lower() for p in base.parts} & {"site-packages", "dist-packages"},
+        "generated stdlib root is not an exact cold interpreter directory",
+    )
+    name = f"_sysconfigdata_{abi}_{platform}_{multiarch}"
+    origin = base / (name + ".py")
+    _require(
+        origin.is_file() and not origin.is_symlink() and origin.resolve(strict=True) == origin,
+        "generated stdlib source missing or redirected",
+    )
+    source = origin.read_bytes()
+    # Standard CPython loader/cache trust, not held-source bytecode attestation.
+    return (identity, name, str(origin), len(source), hashlib.sha256(source).hexdigest())
+
+
+def _is_interpreter_name(name, names, generated=None):
+    return name.partition(".")[0] in names or (
+        generated is not None and generated[1] is not None and name == generated[1]
+    )
 
 
 def _hex(value, length):
@@ -314,7 +366,9 @@ class _CapturedSourceFinder(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         try:
             topology = self.session.check_import_topology()
-            if fullname.partition(".")[0] in topology[5]:
+            if self.session.is_interpreter_name(fullname):
+                if fullname == topology[6][1]:
+                    return self.session.generated_stdlib_spec(fullname, path, target)
                 # Terminal reporting may need unloaded stdlib modules after
                 # poison. Topology integrity does not reopen session liveness.
                 for owner, method in topology[4]:
@@ -621,7 +675,7 @@ class _ExternalAdmission:
         return (str((Path(self.roots[rule["root"]]) / rule["path"]).parent),)
 
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.partition(".")[0] in sys.stdlib_module_names:
+        if self.session.is_interpreter_name(fullname):
             return None  # The pinned interpreter's standard library is trusted.
         try:
             self.check_live()
@@ -1136,6 +1190,7 @@ class _ExternalAdmission:
     def audit(self):
         try:
             self.check_live()
+            self.session.audit_generated_stdlib()
             _require(not self.stack, "external import is still in progress")
             self.environment.verify_files(expected_sha256=self.expected_sha256)
             for name, original in self.baseline.items():
@@ -1143,7 +1198,11 @@ class _ExternalAdmission:
             for publisher in {rule["publisher"] for rule in self.publications.values()}:
                 self.reconcile_publications(publisher)
             for name, module in tuple(sys.modules.items()):
-                if name in self.baseline or name.partition(".")[0] in _ROOTS | sys.stdlib_module_names:
+                if (
+                    name in self.baseline
+                    or name.partition(".")[0] in _ROOTS
+                    or self.session.is_interpreter_name(name)
+                ):
                     continue
                 _require(
                     name in self.records and self.records[name]["module"] is module,
@@ -1426,9 +1485,12 @@ class _SourceSession:
 
                 environment = RuntimeEnvironmentContract.from_payload(environment_payload)
                 _require(
-                    not any(Path(row["path"]) == Path(path)
-                            for row in environment.to_payload()["roots"] if row["kind"] == "site"
-                            for path in self.check_import_topology()[2]),
+                    not any(
+                        Path(row["path"]) == Path(path)
+                        for row in environment.to_payload()["roots"]
+                        if row["kind"] == "site"
+                        for path in self.check_import_topology()[2]
+                    ),
                     "external site root is on the interpreter search path",
                 )
                 admission = object.__new__(_ExternalAdmission)
@@ -1773,21 +1835,111 @@ class _SourceSession:
         """Pure CPU integrity, also usable by terminal stdlib after poison."""
         topology = _IMPORT_TOPOLOGIES.get(self)
         _require(topology is not None, "source import topology was not installed")
-        chain, finder, paths, hooks, delegates, names = topology
+        chain, finder, paths, hooks, delegates, names, generated = topology
+        _require("_PYTHON_SYSCONFIGDATA_NAME" not in os.environ, "sysconfig name override forbidden")
+        _require(generated[0] == _generated_interpreter_identity(), "generated interpreter identity drift")
         _require(
-            sys.meta_path is chain and len(chain) == 1 and chain[0] is finder
-            and finder is self.finder and tuple(sys.path) == paths
+            sys.meta_path is chain
+            and len(chain) == 1
+            and chain[0] is finder
+            and finder is self.finder
+            and tuple(sys.path) == paths
             and len(sys.path_hooks) == len(hooks)
             and all(actual is expected for actual, expected in zip(sys.path_hooks, hooks))
             and frozenset(sys.stdlib_module_names) | frozenset(sys.builtin_module_names) == names,
             "closed import topology changed",
         )
         _require(
-            all(owner.find_spec.__self__ is owner
-                and owner.find_spec.__func__ is method.__func__ for owner, method in delegates),
+            all(
+                owner.find_spec.__self__ is owner and owner.find_spec.__func__ is method.__func__
+                for owner, method in delegates
+            ),
             "standard resolver binding changed",
         )
         return topology
+
+    def is_interpreter_name(self, name):
+        topology = _IMPORT_TOPOLOGIES[self]
+        return _is_interpreter_name(name, topology[5], topology[6])
+
+    def _check_generated_source(self):
+        descriptor = self.check_import_topology()[6]
+        if descriptor[1] is None:
+            return descriptor
+        path = Path(descriptor[2])
+        _require(
+            path.is_file() and not path.is_symlink() and path.resolve(strict=True) == path,
+            "generated stdlib source missing or redirected",
+        )
+        data = path.read_bytes()
+        _require(
+            len(data) == descriptor[3] and hashlib.sha256(data).hexdigest() == descriptor[4],
+            "generated stdlib source snapshot drift",
+        )
+        return descriptor
+
+    def generated_stdlib_spec(self, fullname, path, target):
+        descriptor = self._check_generated_source()
+        _require(
+            fullname == descriptor[1] and path is None and target is None and fullname not in sys.modules,
+            "generated stdlib reload or foreign request",
+        )
+        delegate = self.check_import_topology()[4][2][1]
+        spec = delegate(fullname, [str(Path(descriptor[2]).parent)], None)
+        self.check_import_topology()
+        _require(
+            spec is not None
+            and type(spec.loader) is importlib.machinery.SourceFileLoader
+            and spec.name == fullname
+            and spec.origin == descriptor[2]
+            and spec.loader.name == fullname
+            and spec.loader.path == descriptor[2]
+            and spec.submodule_search_locations is None,
+            "generated stdlib spec or loader drift",
+        )
+        self._check_generated_source()
+        _GENERATED_STDLIB_SPECS[self] = (spec, spec.loader)
+        return spec
+
+    def audit_generated_stdlib(self):
+        try:
+            descriptor = self._check_generated_source()
+            name = descriptor[1]
+            if name is None:
+                return
+            previous = _GENERATED_STDLIB_MODULES.get(self)
+            if name not in sys.modules:
+                _require(previous is None, "generated stdlib module removed")
+                return
+            module = sys.modules[name]
+            resolved = _GENERATED_STDLIB_SPECS.get(self)
+            _require(
+                resolved is not None and type(module) is ModuleType,
+                "generated stdlib module not resolved by this session",
+            )
+            spec, loader = resolved
+            _require(
+                type(loader) is importlib.machinery.SourceFileLoader
+                and module.__name__ == name
+                and module.__package__ == ""
+                and module.__spec__ is spec
+                and module.__loader__ is loader
+                and module.__file__ == descriptor[2]
+                and spec.name == name
+                and spec.origin == descriptor[2]
+                and spec.loader is loader
+                and spec.submodule_search_locations is None
+                and loader.name == name
+                and loader.path == descriptor[2]
+                and not getattr(spec, "_initializing", False),
+                "generated stdlib loaded metadata drift",
+            )
+            _require(previous is None or module is previous, "generated stdlib object replaced")
+            if previous is None:
+                _GENERATED_STDLIB_MODULES[self] = module
+        except BaseException as error:
+            self.fail(error)
+            raise
 
     def check_live(self):
         self.check_import_topology()
@@ -1833,6 +1985,7 @@ class _SourceSession:
     def audit(self):
         try:
             self.check_live()
+            self.audit_generated_stdlib()
             expected = self.admitted_sources()
             if self.phase in _RUNTIME_PHASES:
                 required = _CORE | _CUSTODY_PRELUDE | _SETUP_DEFINITIONS | _EXTERNAL_CONTRACT_DEFINITIONS
@@ -1910,38 +2063,43 @@ def _install(root, revision, lane, catalog_sha256):
         and sys.implementation.name == "cpython",
         "isolated CPython -I -S -B required",
     )
+    _require("_PYTHON_SYSCONFIGDATA_NAME" not in os.environ, "sysconfig name override forbidden")
+    names = frozenset(sys.stdlib_module_names) | frozenset(sys.builtin_module_names)
     _require(not any(name.partition(".")[0] in _ROOTS for name in sys.modules), "repository module preloaded")
     _require(
-        all(
-            name.partition(".")[0] in sys.stdlib_module_names | set(sys.builtin_module_names) | {"__main__"}
-            for name in sys.modules
-        ),
+        all(name == "__main__" or _is_interpreter_name(name, names) for name in sys.modules),
         "non-standard-library module preloaded before source custody",
     )
     _require(
         not any(Path(path).resolve().is_relative_to(root) for path in sys.path), "repository on search path"
     )
     _require(
-        all(type(path) is str and path and Path(path).is_absolute()
+        all(
+            type(path) is str
+            and path
+            and Path(path).is_absolute()
             and not {part.lower() for part in Path(path).parts}.intersection(
-                {"site-packages", "dist-packages"})
-            for path in sys.path),
+                {"site-packages", "dist-packages"}
+            )
+            for path in sys.path
+        ),
         "unexpected cold interpreter search path",
     )
     paths, hooks = tuple(sys.path), tuple(sys.path_hooks)
     delegates = tuple((finder, finder.find_spec) for finder in finders)
-    names = frozenset(sys.stdlib_module_names) | frozenset(sys.builtin_module_names)
+    generated = _capture_generated_stdlib(root, paths)
     sources = _capture(root, revision, lane, catalog_sha256)
     _require(
         len(sys.meta_path) == len(finders)
         and all(actual is expected for actual, expected in zip(sys.meta_path, finders))
-        and tuple(sys.path) == paths and tuple(sys.path_hooks) == hooks,
+        and tuple(sys.path) == paths
+        and tuple(sys.path_hooks) == hooks,
         "cold interpreter topology changed during capture",
     )
     session = _SourceSession(root, revision, lane, catalog_sha256, sources)
     _ACTIVE_SESSION = session
     chain = [session.finder]
-    _IMPORT_TOPOLOGIES[session] = (chain, session.finder, paths, hooks, delegates, names)
+    _IMPORT_TOPOLOGIES[session] = (chain, session.finder, paths, hooks, delegates, names, generated)
     sys.meta_path = chain
     session.check_import_topology()
     return session
