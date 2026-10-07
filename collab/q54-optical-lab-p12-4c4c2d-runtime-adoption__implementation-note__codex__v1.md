@@ -258,6 +258,25 @@ Author checks:
 This is still incomplete C2d3 author work, not independent approval or a new
 CPU-only acceptance boundary. No shared workflow or activation gate changed.
 
+Remote confirmation of readback WIP e82d1a041470486d976a1c4103c794957014cbf0:
+
+- Transfer bundle SHA-256
+  dfc54d23cb7dc75441a4ff03c11636d5997d9032f89c4558c0c5d098c37cd890
+  matched locally and on183. The clean isolated binding_wip worktree was
+  fast-forwarded; the original worktree was not changed.
+- Same eight CPU files on robot_sim Python3.12.13:388 passed in16.44s,
+  Python3254995, timeout wrapper3254993, parent3254991, sampled process start
+  2026-10-07 21:54:32+08 (command date21:54:33). Explicit wait and SSH exit0;
+  the60s safety timeout did not fire. No GPU test or cold-runtime pass is claimed.
+- Final183 check21:55:35 found no owned Python/test/worker/supervisor/timeout
+  process, only user-session/current SSH readers. GPU compute inventory contained
+  only existing MPS2238410,60MiB, untouched. Local process query also found no
+  Python/SSH residual. These are scoped observations, not a claim to repair all
+  historical hangs or to prove the whole shared machine globally idle.
+- Isolated worktree clean at e82d1a0; original robot_simulator clean and unchanged
+  at f771e612beaeea126e26926738097512cd2d809c. git show --check passed locally.
+  No101 fallback, package install, unrelated process kill or GPU reset.
+
 ### Still required before the whole C2d3 code review
 
 1. Freeze actual deployment/native inventory, missing-probe and publication tables;
