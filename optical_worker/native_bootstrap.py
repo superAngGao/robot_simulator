@@ -434,6 +434,12 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
 
     def _check(self):
         self.admission.check_live()
+        self._check_binding()
+
+    def _check_binding(self):
+        # Exact local facts are checked at every supported boundary. The caller
+        # already checks session/environment liveness before exec or audit;
+        # do not repeat a whole environment traversal once per audited module.
         _require(self.admission.loaders.get(self.name) is self, "external loader identity changed")
         binding = self.admission.loader_bindings[self.name]
         _require(
@@ -1191,7 +1197,7 @@ class _ExternalAdmission:
             return
         module, spec = record["module"], self.specs[name]
         loader = self.loaders[name]
-        loader._check()
+        loader._check_binding()
         self.check_module_name(name)
         expected_package = name if self.rules[name]["is_package"] else name.rpartition(".")[0]
         _require(

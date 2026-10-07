@@ -863,9 +863,20 @@ def test_intrinsic_name_preserves_qualified_identity_and_readonly_audits(importe
     assert module.__loader__ is admission.loaders[name]
     assert module.__package__ == "scipy._lib._uarray"
     assert "uarray" not in sys.modules and "uarray._uarray" not in sys.modules
+    live_checks = []
+    original_check = admission.check_live
+
+    def count_check():
+        live_checks.append(True)
+        original_check()
+
+    monkeypatch.setattr(admission, "check_live", count_check)
     before = list(admission.events), list(admission.retained), dict(admission.records)
     admission.audit()
     admission.audit()
+    # Each audit revalidates the environment once, then every actual module's
+    # identity/metadata. It must not redo the full graph once per module.
+    assert len(live_checks) == 2
     assert before == (admission.events, admission.retained, admission.records)
     assert calls == ["create", "exec"]
 
