@@ -125,6 +125,18 @@ def test_fixed_runtime_driver_quarantines_without_fallback_or_ordinary_cleanup(
         assert not (tmp_path / "terminal_sync_entered.json").exists()
         assert not (tmp_path / "runtime_initialization.json").exists()
         assert not (tmp_path / "input_validation_report.json").exists()
+        if fault == "unlisted_numpy":
+            observed = json.loads((tmp_path / "external_failure.json").read_text())
+            assert observed["failed"] is True
+            assert observed["events"] == [
+                {
+                    "index": 0,
+                    "operation": "failed",
+                    "name": "numpy",
+                    "kind": "failure",
+                    "phase": "materialization",
+                }
+            ]
         (tmp_path / "custody_artifact.json").write_text(json.dumps(result["artifact"]), encoding="utf-8")
         print(
             json.dumps(

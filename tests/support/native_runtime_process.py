@@ -151,6 +151,18 @@ def child(fault, fd, directory):
                 record = entry._SOURCE_CUSTODY.get(session)
                 controller = None if record is None else record[0]
         try:
+            if session is not None and session.external is not None:
+                # Preserve the failed prefix as observations, never as an
+                # admission rule or a successful runtime-custody receipt.
+                _write(
+                    directory,
+                    "external_failure.json",
+                    {
+                        "phase": phase,
+                        "events": list(session.external.events),
+                        "failed": session.external.failed,
+                    },
+                )
             _write(
                 directory,
                 "failure.json",
