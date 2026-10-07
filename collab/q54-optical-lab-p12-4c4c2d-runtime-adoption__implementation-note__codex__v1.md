@@ -448,6 +448,15 @@ a bounded design amendment and independent review, not a blanket exception or
 package install. Current sticky failure/activation rules remain unchanged. This
 updates the dynamic-workload status above but does not close full C2d3 or C4.
 
+The bounded optional-adapter design supplement v2 subsequently passed fresh
+independent design review at c60d627 (report/followup v2). It explicitly denies
+two present optional adapters before execution, preserving sticky started
+failures. V1's configuration-boundary ambiguity was corrected before approval.
+Implementation remains pending: no new schema/denial path, product preparation
+or result activation follows from this design-only closure. Next implement the
+exact approved supplement and continue whole C2d3 validation, not a CPU-subset
+acceptance checkpoint.
+
 Final local Win32_Process query showed no python.exe/python3.exe/ssh.exe residual.
 The confirmation test process was explicitly waited and observed exited0; other
 short-lived test utility/child PIDs were not all sampled, so no complete process
