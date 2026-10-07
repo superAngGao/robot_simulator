@@ -89,6 +89,9 @@ SOURCE_FAULTS = tuple(
     )
 )
 
+# Fixed sacrificial C2d3 driver only. Not product IPC or an arbitrary callback.
+RUNTIME_FAULTS = ("runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang")
+
 
 def configuration():
     # Operational CPU-test budgets, not product/performance gates.
@@ -311,14 +314,28 @@ def child(fault, fd, directory):
 
 def supervise(fault, liveness_fd, directory):
     source_mode = fault in SOURCE_FAULTS
-    config = GuardConfiguration("c" * 32, 1, 1000, 5000) if source_mode else configuration()
-    child_script = Path(__file__).with_name("source_custody_process.py") if source_mode else Path(__file__)
+    runtime_mode = fault in RUNTIME_FAULTS
+    if runtime_mode:
+        request = json.loads((directory / "request.json").read_text(encoding="utf-8"))
+        config = GuardConfiguration.from_payload(request["guard_configuration"])
+        child_script = Path(__file__).with_name("native_runtime_process.py")
+    else:
+        config = GuardConfiguration("c" * 32, 1, 1000, 5000) if source_mode else configuration()
+        child_script = (
+            Path(__file__).with_name("source_custody_process.py") if source_mode else Path(__file__)
+        )
+    # Harness-wide failure bound is distinct from unchanged per-operation ACK/
+    # watchdog semantics. Seven fixed stages plus terminal disposal, not a
+    # renewable deadline within any native call. It cannot authorize success.
+    outer_bound = (
+        (10 * config.operation_timeout_ms / 1000 + 30) if runtime_mode else (20 if source_mode else 12)
+    )
     channel, worker_channel = socket.socketpair()
     process = subprocess.Popen(
         [
             sys.executable,
             "-I",
-            *(["-S"] if source_mode else []),
+            *(["-S"] if source_mode or runtime_mode else []),
             "-B",
             str(child_script.resolve()),
             "child",
@@ -339,7 +356,7 @@ def supervise(fault, liveness_fd, directory):
     parent_alive = True
     try:
         while True:
-            if time.monotonic() - started > (20 if source_mode else 12):
+            if time.monotonic() - started > outer_bound:
                 raise RuntimeError("outer test fail-bound; NOT successful supervisor termination")
             code = process.poll()
             if code is not None:
@@ -435,7 +452,7 @@ def main():
     parser.add_argument(
         "mode", choices=("child", "supervisor", "import_probe_caught", "import_probe_propagated")
     )
-    parser.add_argument("fault", choices=FAULTS + SOURCE_FAULTS)
+    parser.add_argument("fault", choices=FAULTS + SOURCE_FAULTS + RUNTIME_FAULTS)
     parser.add_argument("fd", type=int)
     parser.add_argument("directory", type=Path)
     args = parser.parse_args()
