@@ -12,6 +12,7 @@
         "optical_worker/native_readback.py",
         "tests/unit/optics/test_runtime_environment.py",
         "tests/unit/optics/test_runtime_import_admission.py",
+        "tests/unit/optics/test_runtime_import_cold.py",
         "tests/unit/optics/test_guarded_runtime_binding.py",
         "tests/unit/optics/test_guarded_native_readback.py",
         "tests/unit/optics/test_native_upload_core.py"

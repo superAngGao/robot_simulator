@@ -293,6 +293,35 @@ runtime contract and fixed supervised driver remain unfinished. New pins identif
 an author candidate, not independent approval. Regression results follow after
 execution; old v1-v3 catalogs remain historical records.
 
+At58c480d3754953a5b3e61d61288d9b5ba2dee4ad, local source policy/catalog/
+bootstrap/source-custody files completed289 passed,6 skipped in212.29s.
+Python34868, parent7040, start2026-10-07T22:13:49.3235689+08; explicitly waited,
+HasExited=True/ExitCode=0. Skips are2 real-Go2 cases without the local asset
+configuration and4 actual-POSIX checkout/entry cases. They require183 evidence.
+Logs:c4_assets/c2d3-source-v4-cpu-author.log/.err. Ruff passed.
+
+The remote first combined five-file batch did NOT pass: its outer240s budget
+expired, wait/SSH exit124. Python3277682/wrapper3277680/parent3277678,
+start22:17:14. It had reached the actual-supervisor source fault matrix, not
+stopped at an unexplained first hang. At22:20:57 the current child3282251 and
+supervisor3282246 were3s into the declared source_cleanup_hang fixture; no
+component watchdog failure was observed. Do not reuse completed dots as a full
+pass. At22:21:44 the terminated batch had no owned Python/timeout/worker residual;
+GPU inventory was only unchanged MPS2238410. Separate bounded reruns follow;
+per-operation supervision deadlines are not relaxed. Transfer bundle SHA-256
+66366d3dde6edd9e64c25214aa7e19a9266609bf966a1acb06151871883be3c7 matched both
+hosts; only the isolated binding_wip checkout was fast-forwarded.
+
+Added actual -I -S -B captured-session tests with fixed CPU-only external fixture
+modules. Unlike the earlier importer units, these use the real SourceSession,
+guardian/controller, environment configuration, captured contract type and
+external loader together. They check held modules/aliases, expected absence,
+started-body failure, swallowed unexpected absence and identity drift, preserving
+poison without a second ARM/sync. The fixture imports no NumPy/Torch/Warp and
+does not prove cold GPU custody. First local run10 passed in56.59s; a subsequent
+explicit hold assertion still requires the fresh rerun below. No checkpoint is
+approved from this CPU-only composition.
+
 1. Freeze actual deployment/native inventory, missing-probe and publication tables;
    implement real captured-session external loader/adoption and evidence replay.
 2. Finish and verify the actual captured RuntimeSetupBinding/driver path; adopt
