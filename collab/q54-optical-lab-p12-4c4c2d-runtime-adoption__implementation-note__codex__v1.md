@@ -120,8 +120,6 @@ The isolated WIP checkout and original /data2/shared/ang.gao/robot_simulator wer
 clean; original HEAD remained f771e612beaeea126e26926738097512cd2d809c. No101
 fallback, GPU test, dependency installation, process kill or original-tree edit.
 
-### Remaining checkpoint work
-
 ### Guarded runtime/source wiring after 2235056 (also unreviewed)
 
 Added a literal CPU materialization module closure to the same captured finder,
@@ -166,6 +164,26 @@ parent12880, start2026-10-07T21:25:36.4027532+08:00, HasExited=True/ExitCode=0.
 Logs:c4_assets/c2d3-binding-cpu-author.log and .err. Ruff/diff checks pass.
 Before remote work,183 check21:26:04 showed H200×8 and only existing MPS2238410;
 no owned Python/test process. No101 fallback or dependency change.
+
+Remote WIP50d4e05 CPU confirmation:295 passed in10.26s, robot_sim3.12.13,
+Python PID3228715, wrapper3228713, parent3228711, start21:27:31. Wait/SSH exit0.
+Bundle hash e328e22a6da5473425df8bc126e99c1712aae8aabcb1bce3d399c42ce80c1d8c
+matched both sides; isolated worktree /data2/shared/ang.gao/robot_sim_c2d3_binding_wip.
+
+The subsequent two existing GPU C0 a2 positives FAILED, not skipped or hung:
+2 failed in5.83s, Python3229353/wrapper3229351/parent3229349, start21:27:53,
+wait/SSH exit1. Both encountered TypeError while creating weakref(lifecycle):
+the real C0 NativeWorkerSetupLifecycle is slotted and non-weakrefable. The earlier
+unit double and guarded subclass had not exposed this regression from46618be.
+Their C0 exception handling ran; no C2d3 cold setup proof is claimed.
+
+Repair: retain exact strong lifecycle identity in the one-shot upload context
+registry until immediate consumption. Failed context adoption removes the
+registration before propagating the original error; context construction itself
+submits no GPU work. The weak context identity/callback and consume-before-use
+checks remain. Added the real C0 lifecycle CPU test plus failed-adoption removal
+test; affected core/binding set36 passed in2.38s. GPU re-verification is recorded
+separately below once actually run. Do not treat the failed run as acceptance.
 
 ### Still required before the whole C2d3 code review
 

@@ -161,16 +161,24 @@ def _create_upload_context(lifecycle, runtime, target, stream):
 
     _UPLOAD_CONTEXTS[key] = (
         weakref.ref(context, discard),
-        weakref.ref(lifecycle),
+        lifecycle,
         runtime,
         target,
         stream,
     )
-    lifecycle.adopt_host_owner(
-        context,
-        role="native_upload_context",
-        operation_id="native_upload_context_create",
-    )
+    try:
+        lifecycle.adopt_host_owner(
+            context,
+            role="native_upload_context",
+            operation_id="native_upload_context_create",
+        )
+    except BaseException:
+        # The C0 lifecycle is slotted/non-weakrefable. Its exact strong identity
+        # is retained only until immediate consumption, or failed construction.
+        # Context construction enqueues no device work; existing operand custody
+        # and the caller's failure policy remain responsible for runtime owners.
+        _UPLOAD_CONTEXTS.pop(key, None)
+        raise
     return context
 
 
@@ -181,7 +189,7 @@ def _consume_upload_context(context):
     if (
         record is None
         or record[0]() is not context
-        or record[1]() is not context.lifecycle
+        or record[1] is not context.lifecycle
         or record[2] is not context.runtime
         or record[3] is not context.target
         or record[4] is not context.stream

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from optical_worker import native_setup
+from optical_worker.lifecycle import NativeWorkerSetupLifecycle
 
 
 class _Owners:
@@ -39,6 +40,34 @@ def test_context_is_adopted_exactly_and_consumed_once():
     assert id(context) not in native_setup._UPLOAD_CONTEXTS
     with pytest.raises(ValueError, match="consumed"):
         native_setup._consume_upload_context(context)
+
+
+def test_context_accepts_exact_nonweakrefable_production_c0_lifecycle():
+    lifecycle = NativeWorkerSetupLifecycle(
+        lane_id="cuda",
+        target_device_ordinal=1,
+        emergency_sync_notifier=lambda _: pytest.fail("CPU-only context synchronized"),
+        session_identity="upload_context_unit",
+    )
+    runtime, target, stream = object(), object(), object()
+    context = native_setup._create_upload_context(lifecycle, runtime, target, stream)
+    assert native_setup._consume_upload_context(context) == (lifecycle, runtime, target, stream)
+    assert id(context) not in native_setup._UPLOAD_CONTEXTS
+
+
+def test_failed_context_adoption_removes_strong_identity_registration():
+    class RejectOwner(_Owners):
+        def adopt_host_owner(self, owner, **_):
+            self.rejected = owner
+            raise RuntimeError("context adoption rejected")
+
+    lifecycle = RejectOwner()
+    before = set(native_setup._UPLOAD_CONTEXTS)
+    with pytest.raises(RuntimeError, match="adoption rejected"):
+        native_setup._create_upload_context(lifecycle, object(), object(), object())
+    assert set(native_setup._UPLOAD_CONTEXTS) == before
+    with pytest.raises(ValueError, match="unregistered"):
+        native_setup._consume_upload_context(lifecycle.rejected)
 
 
 @pytest.mark.parametrize("field", ["lifecycle", "runtime", "target", "stream"])
