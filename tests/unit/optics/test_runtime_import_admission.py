@@ -157,7 +157,7 @@ def importer(tmp_path, monkeypatch):
             ),
         )
         sys.meta_path = chain
-        sessions.append(admission)
+        sessions.append((admission, generated[1]))
         return admission, root
 
     yield create
@@ -168,13 +168,12 @@ def importer(tmp_path, monkeypatch):
                 sys.modules[name] = original_modules[name]
             else:
                 del sys.modules[name]
-    for admission in sessions:
+    for admission, generated_name in sessions:
         # Unit doubles have no CUDA resources/quarantine. Never use this test
         # teardown as production release authority.
         admission.retained.clear()
         bootstrap._GENERATED_STDLIB_SPECS.pop(admission.session, None)
         bootstrap._GENERATED_STDLIB_MODULES.pop(admission.session, None)
-        generated_name = bootstrap._IMPORT_TOPOLOGIES[admission.session][6][1]
         if generated_name is not None and generated_name not in original_modules:
             sys.modules.pop(generated_name, None)
 
