@@ -1182,7 +1182,8 @@ Next milestone:
       not whole-stage acceptance. Real Go2 still fails safely at the pinned
       SciPy extension's distinct intrinsic module name. Independent gap-scan
       v1 confirms a bounded metadata-contract gap; native-module-name design
-      v1 is pending separate review. Both-lane Go2/upload/readback, complete
+      v1 at `b05c1e1` is now independently approved for implementation only
+      (design-review v1); no code approval is implied. Both-lane Go2/upload/readback, complete
       failure/dual-device matrix and versioned runtime-custody schema remain
       required. See the generated-stdlib implementation note v1 for exact
       revisions, artifacts, failures and process-reap evidence. No approval or
