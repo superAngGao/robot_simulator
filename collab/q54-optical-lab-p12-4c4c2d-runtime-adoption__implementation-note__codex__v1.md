@@ -185,6 +185,29 @@ checks remain. Added the real C0 lifecycle CPU test plus failed-adoption removal
 test; affected core/binding set36 passed in2.38s. GPU re-verification is recorded
 separately below once actually run. Do not treat the failed run as acceptance.
 
+Repair re-verification at1fae16aa2f72d8c032befd56c2011e5068456212:
+
+- Bundle SHA-2568577ed641de33908b3be57f9b416c264e1a7408667ee3efd71797a7a82150cce
+  matched on both hosts; the clean isolated WIP checkout fast-forwarded, no reset.
+- Two original GPU positives:2 passed in6.31s, Python3231674/wrapper3231672,
+  parent3231637, start21:30:27, wait/SSH exit0.
+- Entire tests/gpu/test_optical_closed_worker_setup.py:10 passed in10.90s,
+  no skips, Python3233498/wrapper3233496/parent3233494, start21:31:13,
+  wait/SSH exit0. This includes existing failure/custody/quarantine/warmup
+  regressions, not the new C2d3 cold captured setup acceptance matrix.
+- Local combined CPU regression:297 passed in10.14s, Python30928,
+  parent29240, start21:31:23.9481449+08:00, HasExited=True/ExitCode=0.
+  Logs:c4_assets/c2d3-binding-fixed-cpu-author.log and .err.
+- Remote same seven CPU files:297 passed in9.72s, Python3234723,
+  wrapper3234721/parent3234719, start21:32:06, wait/SSH exit0.
+
+No timeout fired. Final183 check21:32:41 found no ang.gao Python/test/worker/
+supervisor/timeout processes and only the unchanged existing MPS2238410,60MiB.
+The isolated worktree is clean at1fae16a; the original checkout was unchanged
+and clean at the21:31:55 check. Local process inspection at that check found no
+Python/SSH residual. No101 fallback, unrelated kill, reset or package installation.
+Neither these passes nor author source inspection is independent code approval.
+
 ### Still required before the whole C2d3 code review
 
 1. Freeze actual deployment/native inventory, missing-probe and publication tables;
