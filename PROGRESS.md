@@ -1148,11 +1148,22 @@ Next milestone:
       still pending; all product/result activation remains closed.
       C2d2 captured repository-module custody design is independently approved
       with comments at `0eb29f5` (source-custody design-review v1). Its CPU-only
-      loader/guardian composition is not yet implemented. Code review must
-      check explicit pre-guard/swallowed-error failure intake and distinguish
-      launcher configuration from the client's retained configuration object.
-      Four independent CPU dependency/API probes passed with actual exits;
-      no source-frozen integration or GPU safety is inferred from these probes.
+      implementation is now independently approved at `0dd6848` (source-custody
+      code-review v2): same captured-source loader and guarded guardian, exact
+      module/session ownership before body execution, original swallowed and
+      pre-guard error retention, and distinct launch/client configuration
+      identities. The initial P2 no-ACK test oracle is repaired; both actual
+      supervisor-killed and worker-self-exit endpoints passed in both lanes.
+      Fresh independent verification:61 real process cases,725 regressions
+      without skips (including actual Go2 assets), and8 identity probes passed.
+      Primary183/H200 is reachable again; tests used isolated clean worktrees,
+      preserving the original clean mainf771e61 checkout. Round-end owned
+      processes exited/reaped; pre-existing MPS was untouched. Equal-valued
+      ModuleSpec metadata copies are descriptive, not claimed rejected identity
+      attacks. This approves repository-module CPU custody only, not external
+      runtime/native-create ownership, GPU setup, readiness or historical-hang
+      resolution. The next C2d checkpoint still requires explicit runtime
+      adoption design and real-device failure evidence before GPU admission.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
