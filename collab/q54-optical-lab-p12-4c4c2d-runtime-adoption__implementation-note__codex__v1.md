@@ -23,7 +23,9 @@ This draft records ongoing work, not a request to approve a smaller checkpoint.
   plugin/quiet settings. Site roots are distinguished from native-library roots;
   containment roots may overlap but the same physical path cannot be inventoried
   twice. Parsing/verification returns no import/readiness capability. No actual
-  deployment inventory or permission table has yet been frozen.
+  deployment inventory or permission table had been frozen at that initial
+  slice. The later cold-Warp test evidence below records the first narrow author
+  fixture; it is not the complete required runtime matrix or a product profile.
 - Extracted each existing CUDA/Warp native_setup upload body into its single
   internal core. C0 wrappers retain existing signatures, fresh-epoch entry and
   catches/abort policy. A registered exact internal context is held before upload
@@ -399,19 +401,30 @@ Actual author verification on primary183, clean isolated
 
 ### Remaining work after this driver round
 
+Subsequent actual runtime progress at022b2ee is recorded in
+q54-optical-lab-p12-4c4c2d-runtime-cold-warp__test-evidence__codex__v1.md.
+The first111-module Warp/NumPy author fixture is frozen and real canonical
+upload/readback plus terminal success/failure/hang now have3 non-skipped GPU
+tests. The run exposed and repaired case-sensitive array-name operation IDs in
+both sole upload cores/readback. C0 GPU and expanded295-test regression passed
+on183. These facts supersede the prior statement that only pre-native rejection
+tests exist, but do not close the rest of the whole-C2d3 obligations below.
+
 1. Derive and freeze the actual required deployment/native closure, absent-probe
    and publication tables from observed/source-audited dependencies. The offline
-   32-wheel facts are not this permission table. Finish runtime-custody evidence
+   32-wheel facts are not this permission table. The narrow Warp fixture is not
+   CUDA/Go2 admission or complete native scope proof. Finish runtime-custody evidence
    schema/replay; CPU fixture loader/adoption tests do not replace real dependencies.
 2. Verify the now-wired captured RuntimeSetupBinding/fixed supervised driver and
    terminal disposal against the actual frozen native environment. Explicit
-   readback and fixed dispatch are implemented, but the real cold runtime/fault
-   matrix, terminal-sync selectors and versioned runtime-custody replay are not
-   yet verified by these pre-native negative tests.
+   readback and fixed dispatch are implemented; actual Warp asymmetric terminal
+   selectors now pass. The rest of the real cold runtime/fault matrix and
+   versioned runtime-custody replay remain incomplete.
 3. Keep catalog v4/policy v5 pins synchronized with any subsequent reviewed-scope
    source edits, and verify the literal actual runtime closure. Current pins and
    CPU source-entry tests are WIP acceptance of bytes only, not GPU authorization
-   or independent code approval. No external runtime permission table is yet active.
+   or independent code approval. Only the explicitly configured sacrificial test
+   consumes the frozen Warp author table; product runtime admission remains off.
 4. Fixed supervised actual Torch/Warp cold setup and all required real assets,
    dual-device and fault/hang tests; existing C0/C2d0-2 regressions. No CPU mock or
    preloaded process substitutes for that matrix.
@@ -423,7 +436,7 @@ approvals do not cover these code edits. Product worker, gate.json, source-polic
 admission, sample/result/baseline activation and shared collaboration rules are
 not expanded. Full C2d/C4 and all previously closed later paths remain incomplete.
 
-## Round-end hygiene
+## Earlier round-end hygiene (20:43; later rounds recorded above)
 
 Final local Win32_Process query showed no python.exe/python3.exe/ssh.exe residual.
 The confirmation test process was explicitly waited and observed exited0; other
@@ -434,5 +447,5 @@ Primary183 remained reachable. Read-only check at20:43:10 showed no ang.gao
 Python/test/worker/supervisor processes, only user-session/current SSH readers;
 GPU inventory showed existing MPS2238410,60MiB, untouched. Remote design checkout
 remains clean f668b5b; no WIP code was installed/copied there and no GPU work was
-launched in this turn. No101 fallback, unrelated process kill, install, reset,
+launched in that earlier round. No101 fallback, unrelated process kill, install, reset,
 original-worktree edit or historical-hang-resolution claim.
