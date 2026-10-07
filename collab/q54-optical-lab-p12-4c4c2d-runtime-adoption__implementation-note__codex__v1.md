@@ -438,6 +438,16 @@ not expanded. Full C2d/C4 and all previously closed later paths remain incomplet
 
 ## Earlier round-end hygiene (20:43; later rounds recorded above)
 
+Later progress at a502ef1 is recorded in cold-warp test-evidence v2: six real
+asymmetric/dynamic Warp cold tests passed, including terminal raise/hang with
+actual supervisor reap. Both Go2 CPU-source regressions passed independently of
+new runtime admission. Fresh optional-import gap-scan v1 confirmed a design gap:
+pinned trimesh has optional adapter bodies that fail and are caught by parents;
+the existing absent-leaf rule cannot admit those started failures. Next work is
+a bounded design amendment and independent review, not a blanket exception or
+package install. Current sticky failure/activation rules remain unchanged. This
+updates the dynamic-workload status above but does not close full C2d3 or C4.
+
 Final local Win32_Process query showed no python.exe/python3.exe/ssh.exe residual.
 The confirmation test process was explicitly waited and observed exited0; other
 short-lived test utility/child PIDs were not all sampled, so no complete process
