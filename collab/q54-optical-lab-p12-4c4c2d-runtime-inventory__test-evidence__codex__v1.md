@@ -105,3 +105,19 @@ All tests here are author evidence. Complete C2d3 still requires its actual
 captured-runtime GPU/fault/dual-device matrix, source-policy pinning, observed
 runtime evidence replay, terminal disposal integration and fresh independent
 code review. Full C4, C4d/B3, product preparation, a3b and result/baseline stay closed.
+
+## Remote regression and round-end process check
+
+Author candidate:ad10f3dd4c992cae724c9efde43a2f5cd50b7785. Transfer bundle SHA-256
+277c43da751634c7ab0b74e4a73b629f0b343f28ad71a038d6416724f473cfcb matched on both
+hosts. The existing clean isolated binding_wip tree fast-forwarded from e82d1a0.
+Remote robot_sim tool/ledger tests:13 passed in4.00s, Python3267622, wrapper3267620,
+parent3267588, sampled start2026-10-07 22:07:57+08. Explicit wait/SSH exit0;40s
+timeout did not fire. This is Linux CPU verification, not GPU admission evidence.
+
+Final183 observation22:08:20: no ang.gao Python/test/worker/supervisor/timeout
+residual, only user-session/current SSH readers. GPU compute inventory only
+unchanged existing MPS2238410,60MiB. Local Python/SSH residual query was empty.
+Isolated checkout clean; original robot_simulator still clean at f771e612beaeea126e26926738097512cd2d809c.
+Local diff/show checks passed. No package install,101 fallback, GPU reset or
+unrelated process termination. No claim that historical hangs have been repaired.
