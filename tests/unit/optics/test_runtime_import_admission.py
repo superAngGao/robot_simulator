@@ -127,7 +127,17 @@ def importer(tmp_path, monkeypatch):
         )
         admission.__init__(session, environment, environment.sha256)
         finder = bootstrap._CapturedSourceFinder(session)
-        sys.meta_path.insert(0, finder)
+        session.finder = finder
+        chain = [finder]
+        delegates = tuple((owner, owner.find_spec) for owner in (
+            importlib.machinery.BuiltinImporter, importlib.machinery.FrozenImporter,
+            importlib.machinery.PathFinder,
+        ))
+        monkeypatch.setitem(bootstrap._IMPORT_TOPOLOGIES, session, (
+            chain, finder, tuple(sys.path), tuple(sys.path_hooks), delegates,
+            frozenset(sys.stdlib_module_names) | frozenset(sys.builtin_module_names),
+        ))
+        sys.meta_path = chain
         sessions.append(admission)
         return admission, root
 
@@ -143,6 +153,98 @@ def importer(tmp_path, monkeypatch):
         # Unit doubles have no CUDA resources/quarantine. Never use this test
         # teardown as production release authority.
         admission.retained.clear()
+
+
+@pytest.mark.parametrize("name,requester", [
+    ("mapbox_earcut", "trimesh.creation"), ("manifold3d", "trimesh.creation"),
+    ("triangle", "trimesh.creation"), ("collada", "trimesh.exchange.dae"),
+])
+def test_metadata_absence_uses_normal_importlib_without_poison(importer, name, requester):
+    sources = {"trimesh": "", "trimesh.exchange": "",
+               "trimesh.util": ("def has_module(name):\n from importlib.util import find_spec\n"
+                                " return find_spec(name) is not None\n"),
+               requester: f"from trimesh.util import has_module\navailable = has_module({name!r})\n"}
+    admission, _ = importer(sources, packages=("trimesh", "trimesh.exchange"), absent=[
+        {"name": name, "requester": requester, "phase": "materialization"},
+    ])
+    actual = importlib.import_module(requester)
+    assert actual.available is False
+    assert not admission.failed and not admission.session.failed
+    assert name not in admission.records and name not in admission.loaders and name not in sys.modules
+    assert [(e["kind"], e["operation"]) for e in admission.events if e["name"] == name] == [
+        ("absent_probe", "absent_probe"),
+    ]
+    admission.audit()
+
+
+def test_same_absence_supports_repeated_query_and_normal_import(importer):
+    admission, _ = importer({"c2ext": (
+        "from importlib.util import find_spec\n"
+        "assert find_spec('c2missing') is None\nassert find_spec('c2missing') is None\n"
+        "try:\n import c2missing\nexcept ModuleNotFoundError as error:\n missing_name = error.name\n"
+    )}, absent=[{"name": "c2missing", "requester": "c2ext", "phase": "materialization"}])
+    module = importlib.import_module("c2ext")
+    assert module.missing_name == "c2missing"
+    assert len([e for e in admission.events if e["kind"] == "absent_probe"]) == 3
+    assert "c2missing" not in admission.records and "c2missing" not in admission.loaders
+    assert not admission.failed and not admission.session.failed
+
+
+@pytest.mark.parametrize("mutation", ["tail", "path", "hook", "delegate", "resolver_tail"])
+def test_resolution_topology_drift_never_calls_added_finder(importer, monkeypatch, mutation):
+    admission, _ = importer(
+        {"c2ext": "from importlib.util import find_spec\nvalue = find_spec('c2missing')\n"},
+        absent=[{"name": "c2missing", "requester": "c2ext", "phase": "materialization"}])
+    calls = []
+
+    class Witness:
+        def find_spec(self, *args):
+            calls.append(args)
+            raise AssertionError("alternate finder executed")
+
+    old_chain, old_paths, old_hooks = list(sys.meta_path), list(sys.path), list(sys.path_hooks)
+    if mutation == "tail":
+        sys.meta_path.append(Witness())
+    elif mutation == "path":
+        sys.path.append("unexpected_external_root")
+    elif mutation == "hook":
+        sys.path_hooks.append(Witness().find_spec)
+    elif mutation == "delegate":
+        monkeypatch.setattr(importlib.machinery.PathFinder, "find_spec", classmethod(Witness().find_spec))
+    else:
+        original_record = admission.record
+
+        def record(operation, name, kind):
+            original_record(operation, name, kind)
+            if kind == "absent_probe":
+                sys.meta_path.append(Witness())
+
+        admission.record = record
+    try:
+        with pytest.raises(bootstrap.SourceBootstrapError):
+            importlib.import_module("c2ext")
+    finally:
+        sys.meta_path[:] = old_chain
+        sys.path[:] = old_paths
+        sys.path_hooks[:] = old_hooks
+        monkeypatch.undo()
+    assert calls == []
+    assert admission.session.failed
+    assert "c2missing" not in admission.records and "c2missing" not in admission.loaders
+
+
+def test_poison_does_not_prevent_stdlib_terminal_import_or_reopen_external(importer):
+    admission, _ = importer({"c2ext": ""})
+    name = next(n for n in ("quopri", "colorsys", "html.parser", "urllib.robotparser")
+                if n not in sys.modules)
+    original_error = RuntimeError("failed_before_terminal_reporting")
+    admission.session.fail(original_error)
+    module = importlib.import_module(name)
+    assert module.__name__ == name
+    assert admission.session.failed and admission.session.failures[0] is original_error
+    with pytest.raises(bootstrap.SourceBootstrapError):
+        importlib.import_module("c2ext")
+    assert "c2ext" not in admission.loaders and "c2ext" not in admission.records
 
 
 def _disabled_sources():

@@ -18,7 +18,7 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType, ModuleType
 
 _BOOTSTRAP = "optical_worker/native_bootstrap.py"
-_CATALOG = "optical_worker/data/native_sources/v6.json"
+_CATALOG = "optical_worker/data/native_sources/v7.json"
 _MAX_BYTES = 4 * 1024 * 1024  # Rechecked against the sole protocol constant.
 _ROOTS = frozenset(
     ("optical_worker", "optics", "physics", "robot", "sensing", "benchmarks", "examples", "tests", "tools")
@@ -121,6 +121,7 @@ _VERIFIED_SNAPSHOTS = {}
 _EXTERNAL_CUSTODY = {}
 _RUNTIME_BINDINGS = {}
 _UPLOADED_INPUTS = {}
+_IMPORT_TOPOLOGIES = {}
 
 
 class SourceBootstrapError(RuntimeError):
@@ -311,11 +312,33 @@ class _CapturedSourceFinder(importlib.abc.MetaPathFinder):
         self.session = session
 
     def find_spec(self, fullname, path=None, target=None):
+        try:
+            topology = self.session.check_import_topology()
+            if fullname.partition(".")[0] in topology[5]:
+                # Terminal reporting may need unloaded stdlib modules after
+                # poison. Topology integrity does not reopen session liveness.
+                for owner, method in topology[4]:
+                    spec = method(fullname, path, target)
+                    self.session.check_import_topology()
+                    if spec is not None:
+                        return spec
+                return None
+        except BaseException as error:
+            self.session.fail(error)
+            raise
         external = _EXTERNAL_CUSTODY.get(self.session)
         if external is not None and fullname.partition(".")[0] not in _ROOTS:
             spec = external[0].find_spec(fullname, path, target)
             if type(spec) is _AbsentExternalSpec:
-                raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
+                try:
+                    _require(spec.name == fullname, "absent resolution identity changed")
+                    self.session.check_import_topology()
+                except BaseException as error:
+                    external[0].fail(error, fullname)
+                    raise
+                # No tail finder exists. Normal importlib returns None for a
+                # metadata query and raises for an actual missing import.
+                return None
             if type(spec) is _DisabledExternalToken:
                 # The only deliberate rejection edge. Validation errors inside
                 # consume_disabled still poison; arbitrary ImportError does not
@@ -328,7 +351,9 @@ class _CapturedSourceFinder(importlib.abc.MetaPathFinder):
             self.session.fail(error)
             raise error
         if fullname.partition(".")[0] not in _ROOTS:
-            return None
+            error = SourceBootstrapError("external imports require configured custody")
+            self.session.fail(error)
+            raise error
         try:
             self.session.check_live()
             _require(
@@ -619,7 +644,7 @@ class _ExternalAdmission:
                     fullname not in sys.modules and spec is None, "expected absent dependency is present"
                 )
                 self.record("absent_probe", fullname, "absent_probe")
-                # This exact no-code outcome is the only non-poisoning exception.
+                # No-code absence, not a started-import exception exemption.
                 return _AbsentExternalSpec(fullname)
             _require(spec is not None, "frozen external module missing")
             if namespace is not None:
@@ -1149,7 +1174,7 @@ class _ExternalAdmission:
 
 
 class _AbsentExternalSpec:
-    """Internal sentinel: the finder raises absence, so no loader/body is invoked."""
+    """Internal no-spec sentinel; singleton importlib resolution executes no body."""
 
     def __init__(self, name):
         self.name = name
@@ -1400,6 +1425,12 @@ class _SourceSession:
                 from optical_worker.runtime_environment import RuntimeEnvironmentContract
 
                 environment = RuntimeEnvironmentContract.from_payload(environment_payload)
+                _require(
+                    not any(Path(row["path"]) == Path(path)
+                            for row in environment.to_payload()["roots"] if row["kind"] == "site"
+                            for path in self.check_import_topology()[2]),
+                    "external site root is on the interpreter search path",
+                )
                 admission = object.__new__(_ExternalAdmission)
                 self.external = admission  # Retain partial construction before initialization.
                 _EXTERNAL_CUSTODY[self] = (admission, environment, expected_sha256, controller)
@@ -1738,7 +1769,28 @@ class _SourceSession:
             self.fail(error)
             raise
 
+    def check_import_topology(self):
+        """Pure CPU integrity, also usable by terminal stdlib after poison."""
+        topology = _IMPORT_TOPOLOGIES.get(self)
+        _require(topology is not None, "source import topology was not installed")
+        chain, finder, paths, hooks, delegates, names = topology
+        _require(
+            sys.meta_path is chain and len(chain) == 1 and chain[0] is finder
+            and finder is self.finder and tuple(sys.path) == paths
+            and len(sys.path_hooks) == len(hooks)
+            and all(actual is expected for actual, expected in zip(sys.path_hooks, hooks))
+            and frozenset(sys.stdlib_module_names) | frozenset(sys.builtin_module_names) == names,
+            "closed import topology changed",
+        )
+        _require(
+            all(owner.find_spec.__self__ is owner
+                and owner.find_spec.__func__ is method.__func__ for owner, method in delegates),
+            "standard resolver binding changed",
+        )
+        return topology
+
     def check_live(self):
+        self.check_import_topology()
         _require(
             not self.failed
             and not self.failures
@@ -1856,10 +1908,39 @@ def _install(root, revision, lane, catalog_sha256):
     _require(
         not any(Path(path).resolve().is_relative_to(root) for path in sys.path), "repository on search path"
     )
+    finders = (
+        importlib.machinery.BuiltinImporter,
+        importlib.machinery.FrozenImporter,
+        importlib.machinery.PathFinder,
+    )
+    _require(
+        len(sys.meta_path) == len(finders)
+        and all(actual is expected for actual, expected in zip(sys.meta_path, finders)),
+        "unexpected cold interpreter finder chain",
+    )
+    _require(
+        all(type(path) is str and path and Path(path).is_absolute()
+            and not {part.lower() for part in Path(path).parts}.intersection(
+                {"site-packages", "dist-packages"})
+            for path in sys.path),
+        "unexpected cold interpreter search path",
+    )
+    paths, hooks = tuple(sys.path), tuple(sys.path_hooks)
+    delegates = tuple((finder, finder.find_spec) for finder in finders)
+    names = frozenset(sys.stdlib_module_names) | frozenset(sys.builtin_module_names)
     sources = _capture(root, revision, lane, catalog_sha256)
+    _require(
+        len(sys.meta_path) == len(finders)
+        and all(actual is expected for actual, expected in zip(sys.meta_path, finders))
+        and tuple(sys.path) == paths and tuple(sys.path_hooks) == hooks,
+        "cold interpreter topology changed during capture",
+    )
     session = _SourceSession(root, revision, lane, catalog_sha256, sources)
     _ACTIVE_SESSION = session
-    sys.meta_path.insert(0, session.finder)
+    chain = [session.finder]
+    _IMPORT_TOPOLOGIES[session] = (chain, session.finder, paths, hooks, delegates, names)
+    sys.meta_path = chain
+    session.check_import_topology()
     return session
 
 

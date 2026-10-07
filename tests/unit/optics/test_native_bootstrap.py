@@ -108,6 +108,51 @@ def test_actual_source_entry(release, lane):
     assert value["repository_revision"] == release[1]
 
 
+@pytest.mark.parametrize("mutation", ["prepend", "append", "reorder", "site_path"])
+def test_cold_install_rejects_nonstandard_topology_without_callback(release, mutation):
+    before = """
+class Witness:
+    def find_spec(self, *args):
+        print('FORBIDDEN_CALLBACK')
+        raise AssertionError('unexpected finder ran')
+""" + {
+        "prepend": "sys.meta_path.insert(0, Witness())",
+        "append": "sys.meta_path.append(Witness())",
+        "reorder": "sys.meta_path[:] = reversed(sys.meta_path)",
+        "site_path": "sys.path.append(str(root.parent / 'site-packages'))",
+    }[mutation]
+    result = _internal(release, before=before)
+    assert result[0] != 0 and b"SourceBootstrapError" in result[2]
+    assert b"FORBIDDEN_CALLBACK" not in result[1] + result[2]
+
+
+def test_cold_singleton_stdlib_and_post_poison_reporting(release):
+    result = _internal(release, after="""
+entry._verify(session)
+assert sys.meta_path == [session.finder]
+assert session.finder.find_spec('sys').origin == 'built-in'
+assert session.finder.find_spec('_frozen_importlib').origin == 'frozen'
+import xml.dom.minidom
+assert xml.dom.minidom.__spec__.origin.endswith('minidom.py')
+assert 'colorsys' not in sys.modules
+error = RuntimeError('reporting_after_failure')
+session.fail(error)
+import colorsys
+assert colorsys.rgb_to_hsv(1, 0, 0) == (0, 1, 1)
+assert session.failed and session.failures[0] is error
+try:
+    import optical_worker.native_setup
+except entry.SourceBootstrapError:
+    pass
+else:
+    raise AssertionError('poisoned repository import reopened')
+assert not {'numpy','warp','torch','benchmarks'}.intersection(sys.modules)
+print('singleton_stdlib_checked')
+""")
+    assert result[0] == 0, result[2].decode()
+    assert result[1].splitlines() == [b"singleton_stdlib_checked"]
+
+
 @pytest.mark.parametrize("lane", ["warp", "cuda"])
 def test_actual_posix_source_entry_without_packaging(lane):
     if os.name != "posix":

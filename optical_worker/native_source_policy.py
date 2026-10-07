@@ -16,23 +16,25 @@ from pathlib import Path, PurePosixPath
 from .manifest import AST_POLICY
 from .protocol import ClosedWorkerProtocolError, canonical_sha256
 
-NATIVE_AST_POLICY_VERSION = "q54.p12.4.closed-worker-ast-policy.v7"
+NATIVE_AST_POLICY_VERSION = "q54.p12.4.closed-worker-ast-policy.v8"
 _BOOTSTRAP_PATH = "optical_worker/native_bootstrap.py"
-_BOOTSTRAP_SOURCE_SHA256 = "2ae582d96c9599a4dead2ab45aafdf9036ab6f5f76b8f2346f8ee9fc8e2345e6"
+_BOOTSTRAP_SOURCE_SHA256 = "21902602abe4b8dbc4dabe16f61a2dd92eb9fe1de22eee9be201dde6d8d4c44c"
 _BOOTSTRAP_CLASS_PINS = {
     "_CapturedSourceLoader": "cc647d0af05f892513eceea40708734e5a7aafe82c278507d094a65894639ecb",
-    "_CapturedSourceFinder": "c3a6271d4f60e1d2ff3586597ff06eb17e8d03ea4839502fa34691cd97e30aa9",
+    "_CapturedSourceFinder": "189f4bce12d3c1890ba01348bcf581fce965cda143bfda8523ba19f036e513fc",
     "_ExternalSourceLoader": "24ab545a9a3d4dce359d0bc845e00579aca91479a5b2c0b788b296a737910cd6",
-    "_ExternalAdmission": "649ee738d3b7d6a5a6c2350b11fdd4593514e4cde277230bd9448a6d11b574a7",
+    "_ExternalAdmission": "f8a16b8eed925a3e50819dfb60fb12f8c8038b8eb1aff3df02b814a7889d1b67",
     "_ExternalNamespaceLoader": "524801ff222139e86fa76fa918b42a20ee61d6bcfe9e783542c880da3cad46bf",
     "_RuntimeSetupBinding": "85bf4bb6a12a3ab17807393c27993ca319e5b614eda9c14d4f1d6c0b042f6112",
-    "_SourceSession": "7971468c20ce80bb0d0ea2d1572d278e90e2837a177ee0f5d8f8f9030c8a2f12",
+    "_SourceSession": "5d12ac7d7531947b0cded8727fb881c641484795c1aff6315637db2924409024",
 }
 _BOOTSTRAP_IMPORTS = frozenset(("importlib.abc", "importlib.machinery", "importlib.util"))
 _BOOTSTRAP_USES = frozenset((
     "importlib.abc.SourceLoader", "importlib.abc.MetaPathFinder", "importlib.abc.Loader",
     "importlib.machinery.SourceFileLoader", "importlib.machinery.ExtensionFileLoader",
     "importlib.machinery.PathFinder.find_spec", "importlib.util.spec_from_loader",
+    "importlib.machinery.BuiltinImporter", "importlib.machinery.FrozenImporter",
+    "importlib.machinery.PathFinder",
 ))
 _SNAPSHOT_PATH = "optics/warp_native_render.py"
 _SNAPSHOT_FUNCTION = "_render_launch_snapshot"

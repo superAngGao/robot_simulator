@@ -24,7 +24,7 @@ from .protocol import (
 
 NATIVE_SOURCE_CATALOG_VERSION = "q54.p12.4.native-component-source-catalog.v6"
 NATIVE_SOURCE_SNAPSHOT_VERSION = "q54.p12.4.native-component-source-snapshot.v1"
-CATALOG_PATH = "optical_worker/data/native_sources/v6.json"
+CATALOG_PATH = "optical_worker/data/native_sources/v7.json"
 
 # Deliberate literal inventory, not filesystem discovery. Includes eager
 # physics/sensing package initialization, even where the requested leaf is CPU.
