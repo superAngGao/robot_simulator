@@ -12,6 +12,7 @@ import hashlib
 import sys
 from dataclasses import dataclass
 from email.parser import BytesParser
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
 from .protocol import canonical_json_bytes, decode_canonical_message
@@ -117,6 +118,23 @@ def _expected_file_module_name(row: dict, file: dict) -> str:
             )
             return intrinsic_name
     return row["name"]
+
+
+@lru_cache(maxsize=1)
+def _file_module_names(encoded: bytes) -> tuple[tuple[str, str], ...]:
+    """Pure immutable metadata index, keyed by complete canonical bytes.
+
+    A worker binds one environment. Never cache file verification, source/session
+    liveness, loader/module identity or an execution observation here.
+    """
+    _require(type(encoded) is bytes, "environment encoding must be bytes")
+    payload = decode_canonical_message(encoded, max_bytes=len(encoded))
+    _validate(payload)
+    files = {(entry["root"], entry["path"]): entry for entry in payload["files"]}
+    return tuple(
+        (row["name"], _expected_file_module_name(row, files[(row["root"], row["path"])]))
+        for row in payload["modules"]
+    )
 
 
 def _validate(payload: object) -> None:
@@ -419,16 +437,10 @@ class RuntimeEnvironmentContract:
         """One declared file's intrinsic name; does not resolve or authorize it."""
         _require(type(self) is RuntimeEnvironmentContract, "exact environment contract required")
         _module(name)
-        payload = self.to_payload()
-        _validate(payload)
-        rows = [row for row in payload["modules"] if row["name"] == name]
-        _require(len(rows) == 1, "intrinsic name requires a declared file module")
-        row = rows[0]
-        file = next(
-            entry for entry in payload["files"]
-            if (entry["root"], entry["path"]) == (row["root"], row["path"])
-        )
-        return _expected_file_module_name(row, file)
+        for import_name, intrinsic_name in _file_module_names(self.encoded):
+            if import_name == name:
+                return intrinsic_name
+        raise ValueError("intrinsic name requires a declared file module")
 
     def verify_files(self, *, expected_sha256: str) -> None:
         """Verify CPU filesystem facts without importing a single inventoried module."""

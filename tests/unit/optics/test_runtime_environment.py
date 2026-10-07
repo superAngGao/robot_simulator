@@ -195,6 +195,29 @@ def test_intrinsic_native_row_wrong_kind_rejected_before_execution(deployment, d
         RuntimeEnvironmentContract.from_payload(payload)
 
 
+def test_intrinsic_metadata_cache_does_not_cache_identity_or_file_verification(deployment):
+    root, payload = deployment
+    original = RuntimeEnvironmentContract.from_payload(payload)
+    assert original.expected_file_module_name("fake._native") == "fake._native"
+    changed = copy.deepcopy(payload)
+    changed["modules"] = [r for r in changed["modules"] if r["name"] != "fake._native"]
+    changed["publications"] = []
+    other = RuntimeEnvironmentContract.from_payload(changed)
+    with pytest.raises(ValueError, match="declared file module"):
+        other.expected_file_module_name("fake._native")
+    # Returning to the original exact bytes is valid; no observed module/file
+    # fact was cached. Same contract identity with changed bytes revalidates too.
+    assert original.expected_file_module_name("fake._native") == "fake._native"
+    object.__setattr__(original, "encoded", other.encoded)
+    with pytest.raises(ValueError, match="declared file module"):
+        original.expected_file_module_name("fake._native")
+    original = RuntimeEnvironmentContract.from_payload(payload)
+    assert original.expected_file_module_name("fake._native") == "fake._native"
+    (root / "fake/_native.so").write_bytes(b"changed after metadata caching")
+    with pytest.raises(ValueError, match="file bytes changed"):
+        original.verify_files(expected_sha256=original.sha256)
+
+
 def test_active_remote_fixture_version_and_cold_test_digest_move_together():
     # CPU-only packaging check: do not import the GPU test or initialize a
     # backend, and do not pretend Windows validates POSIX deployment paths.
