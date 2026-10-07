@@ -122,6 +122,11 @@ def importer(tmp_path, monkeypatch):
         session.check_live = check
         session.bound_controller = lambda: controller
         session.fail = fail
+        generated = bootstrap._capture_generated_stdlib(root, tuple(sys.path))
+        if generated[1] is not None:
+            # Before baseline capture: a cold fixture cannot keep an old data
+            # module in its baseline and then upload a replacement identity.
+            monkeypatch.delitem(sys.modules, generated[1], raising=False)
         admission = object.__new__(bootstrap._ExternalAdmission)
         monkeypatch.setitem(
             bootstrap._EXTERNAL_CUSTODY, session, (admission, environment, environment.sha256, controller)
@@ -138,11 +143,6 @@ def importer(tmp_path, monkeypatch):
                 importlib.machinery.PathFinder,
             )
         )
-        generated = bootstrap._capture_generated_stdlib(root, tuple(sys.path))
-        if generated[1] is not None:
-            # This in-process unit fixture does not certify cold startup.
-            # Remove only the existing CPU data module, restoring it via monkeypatch.
-            monkeypatch.delitem(sys.modules, generated[1], raising=False)
         monkeypatch.setitem(
             bootstrap._IMPORT_TOPOLOGIES,
             session,
@@ -174,6 +174,9 @@ def importer(tmp_path, monkeypatch):
         admission.retained.clear()
         bootstrap._GENERATED_STDLIB_SPECS.pop(admission.session, None)
         bootstrap._GENERATED_STDLIB_MODULES.pop(admission.session, None)
+        generated_name = bootstrap._IMPORT_TOPOLOGIES[admission.session][6][1]
+        if generated_name is not None and generated_name not in original_modules:
+            sys.modules.pop(generated_name, None)
 
 
 @pytest.mark.parametrize(
