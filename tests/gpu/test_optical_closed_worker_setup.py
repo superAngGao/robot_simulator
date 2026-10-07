@@ -28,10 +28,14 @@ def _source() -> CanonicalNativeInput:
         arrays={
             "float_values": np.arange(18, dtype=np.float32).reshape(6, 3),
             "integer_values": np.array([7, 3, 11, 5], dtype=np.int32),
+            "x_world_R": np.eye(3, dtype=np.float64)[None],
+            "x_world_r": np.array([[1.0, 2.0, 3.0]], dtype=np.float64),
         },
         array_semantics={
             "float_values": "closed-worker float upload probe",
             "integer_values": "closed-worker integer upload probe",
+            "x_world_R": "closed-worker case-sensitive rotation upload probe",
+            "x_world_r": "closed-worker case-sensitive translation upload probe",
         },
         topology_arrays=("integer_values",),
         semantics={"purpose": "closed-worker guarded setup fault matrix"},
@@ -91,6 +95,11 @@ def test_guarded_a2_register_before_copy_and_final_quiescence(lane):
     assert evidence.proven_quiescent_device_ordinals == (target,)
     assert evidence.unknown_device_scope is False
     assert lifecycle.guardian.state == "SEALED"
+    # These distinct canonical-style names previously failed guardian ID
+    # validation after earlier copies were submitted. Exercise both real cores.
+    for name in ("x_world_R", "x_world_r"):
+        observed = prepared.arrays[name].cpu().numpy() if lane == "cuda" else prepared.arrays[name].numpy()
+        np.testing.assert_array_equal(observed, source.arrays[name])
     assert torch.cuda.current_device() == ambient
 
 
