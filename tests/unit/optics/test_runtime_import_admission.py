@@ -163,7 +163,9 @@ def importer(tmp_path, monkeypatch):
     yield create
     sys.meta_path[:] = original_meta_path
     for name in tuple(sys.modules):
-        if name.split(".")[0] in {"c2ext", "c2namespace", "c2missing", "trimesh", "embreex", "shapely"}:
+        if name.split(".")[0] in {
+            "c2ext", "c2namespace", "c2missing", "trimesh", "embreex", "shapely", "scipy", "uarray",
+        }:
             if name in original_modules:
                 sys.modules[name] = original_modules[name]
             else:
@@ -814,6 +816,136 @@ def test_native_self_alias_is_exact_returned_root_and_audits_are_read_only(impor
     admission.audit()
     admission.audit()
     assert before == (admission.events, admission.retained, admission.records)
+    assert calls == ["create", "exec"]
+
+
+def _intrinsic_name_importer(importer, monkeypatch, fault=None, name="scipy._lib._uarray._uarray"):
+    # Fixed synthetic delegates exercise the real wrapper, not native execution
+    # or captured-worker custody. Real pinned SciPy proof remains mandatory.
+    calls, returned = [], []
+
+    def create(delegate, spec):
+        calls.append("create")
+        module = type(sys)(admission.environment.expected_file_module_name(spec.name))
+        returned.append(module)
+        if fault == "missing":
+            del module.__name__
+        elif fault in {"none", "empty", "integer", "qualified", "arbitrary"}:
+            module.__name__ = {"none": None, "empty": "", "integer": 3,
+                               "qualified": name, "arbitrary": "other._uarray"}[fault]
+        elif fault == "lookalike":
+            module.__name__ = "uarray._uarray"
+        return module
+
+    def execute(delegate, module):
+        calls.append("exec")
+        if fault == "exec_changed":
+            module.__name__ = name
+
+    monkeypatch.setattr(importlib.machinery.ExtensionFileLoader, "create_module", create)
+    monkeypatch.setattr(importlib.machinery.ExtensionFileLoader, "exec_module", execute)
+    parents = tuple(".".join(name.split(".")[:i]) for i in range(1, len(name.split("."))))
+    admission, _ = importer(
+        {**dict.fromkeys(parents, ""), name: "fixture bytes; never native execution"},
+        packages=parents, native=(name,),
+    )
+    importlib.import_module(parents[-1])
+    return admission, name, calls, returned
+
+
+def test_intrinsic_name_preserves_qualified_identity_and_readonly_audits(importer, monkeypatch):
+    admission, name, calls, returned = _intrinsic_name_importer(importer, monkeypatch)
+    module = importlib.import_module(name)
+    assert module is returned[0] is admission.records[name]["module"]
+    assert module.__name__ == "uarray._uarray"
+    assert module.__spec__.name == name
+    assert module.__spec__ is admission.specs[name]
+    assert module.__loader__ is admission.loaders[name]
+    assert module.__package__ == "scipy._lib._uarray"
+    assert "uarray" not in sys.modules and "uarray._uarray" not in sys.modules
+    before = list(admission.events), list(admission.retained), dict(admission.records)
+    admission.audit()
+    admission.audit()
+    assert before == (admission.events, admission.retained, admission.records)
+    assert calls == ["create", "exec"]
+
+
+@pytest.mark.parametrize(
+    "fault", ["missing", "none", "empty", "integer", "qualified", "arbitrary", "exec_changed"]
+)
+def test_native_name_failure_retains_actual_return_before_unwind(importer, monkeypatch, fault):
+    admission, name, calls, returned = _intrinsic_name_importer(importer, monkeypatch, fault)
+    with pytest.raises(bootstrap.SourceBootstrapError, match="intrinsic module name drift"):
+        importlib.import_module(name)
+    assert admission.failed and admission.session.failed
+    assert admission.records[name]["module"] is returned[0]
+    assert name not in sys.modules
+    assert calls == (["create", "exec"] if fault == "exec_changed" else ["create"])
+    assert not any(e["name"] == name and e["operation"] == "completed" for e in admission.events)
+    with pytest.raises(bootstrap.SourceBootstrapError):
+        admission.audit()
+
+
+@pytest.mark.parametrize(
+    "drift", ["name", "spec", "loader", "package", "file", "origin", "delegate", "delegate_name",
+              "delegate_path", "nonpackage"]
+)
+def test_intrinsic_name_full_metadata_checked_before_exec(importer, monkeypatch, drift):
+    admission, name, calls, returned = _intrinsic_name_importer(importer, monkeypatch)
+    spec = admission.find_spec(name, sys.modules["scipy._lib._uarray"].__path__)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    if drift == "name":
+        module.__name__ = name
+    elif drift == "spec":
+        module.__spec__ = copy.copy(spec)
+    elif drift == "loader":
+        module.__loader__ = copy.copy(module.__loader__)
+    elif drift == "package":
+        module.__package__ = "uarray"
+    elif drift == "file":
+        module.__file__ = "wrong.so"
+    elif drift == "origin":
+        spec.origin = "wrong.so"
+    elif drift == "delegate":
+        spec.loader.delegate = copy.copy(spec.loader.delegate)
+    elif drift == "delegate_name":
+        spec.loader.delegate.name = "uarray._uarray"
+    elif drift == "delegate_path":
+        spec.loader.delegate.path = "wrong.so"
+    else:
+        module.__path__ = []
+    with pytest.raises(bootstrap.SourceBootstrapError):
+        spec.loader.exec_module(module)
+    assert calls == ["create"] and admission.failed and admission.session.failed
+    assert admission.records[name]["module"] is returned[0]
+
+
+@pytest.mark.parametrize("name", ["scipy._lib.other._uarray", "scipy._lib._uarray.other"])
+def test_native_name_relation_has_no_prefix_or_suffix_exemption(importer, monkeypatch, name):
+    admission, name, calls, returned = _intrinsic_name_importer(importer, monkeypatch, "lookalike", name)
+    with pytest.raises(bootstrap.SourceBootstrapError, match="intrinsic module name drift"):
+        importlib.import_module(name)
+    assert calls == ["create"] and admission.failed
+    assert admission.records[name]["module"] is returned[0]
+
+
+@pytest.mark.parametrize("drift", ["name", "replacement", "short_alias", "short_none"])
+def test_intrinsic_name_late_drift_and_alias_do_not_gain_permission(importer, monkeypatch, drift):
+    admission, name, calls, returned = _intrinsic_name_importer(importer, monkeypatch)
+    module = importlib.import_module(name)
+    if drift == "name":
+        module.__name__ = name
+    elif drift == "replacement":
+        replacement = type(sys)(module.__name__)
+        vars(replacement).update(vars(module))
+        sys.modules[name] = replacement
+    else:
+        sys.modules["uarray._uarray"] = module if drift == "short_alias" else None
+    with pytest.raises(bootstrap.SourceBootstrapError):
+        admission.audit()
+    assert admission.failed and admission.session.failed
+    assert admission.records[name]["module"] is returned[0]
     assert calls == ["create", "exec"]
 
 

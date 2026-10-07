@@ -154,6 +154,47 @@ def test_native_self_selector_is_metadata_only_and_preserves_qualified_creator(d
     assert not any(n == "fake" or n.startswith("fake.") for n in sys.modules)
 
 
+def test_intrinsic_name_query_is_cpu_only_and_only_for_declared_file_rows(deployment):
+    _, payload = deployment
+    original = RuntimeEnvironmentContract.from_payload(payload)
+    assert original.expected_file_module_name("fake") == "fake"
+    assert original.expected_file_module_name("fake._native") == "fake._native"
+    for name in ("scipy._lib._uarray._uarray", "vendor", "fake.alias", "fake._native.child"):
+        with pytest.raises(ValueError, match="declared file module"):
+            original.expected_file_module_name(name)
+    row = next(r for r in payload["modules"] if r["name"] == "fake._native")
+    row["name"] = "scipy._lib._uarray._uarray"
+    payload["modules"].sort(key=lambda r: r["name"])
+    payload["publications"] = []
+    # Parent names are explicit even in this CPU-only metadata fixture. The
+    # disposable namespace directory is not a claim about real SciPy layout.
+    payload["namespaces"].extend(
+        {"name": parent, "phase": "materialization", "locations": [{"root": "site", "path": "vendor"}]}
+        for parent in ("scipy", "scipy._lib", "scipy._lib._uarray")
+    )
+    payload["namespaces"].sort(key=lambda r: r["name"])
+    before = dict(sys.modules)
+    contract = RuntimeEnvironmentContract.from_payload(payload)
+    assert contract.expected_file_module_name(row["name"]) == "uarray._uarray"
+    assert dict(sys.modules) == before
+    assert contract.to_payload() == payload  # no new serialized caller field
+
+
+@pytest.mark.parametrize("drift", ["python", "package"])
+def test_intrinsic_native_row_wrong_kind_rejected_before_execution(deployment, drift):
+    _, payload = deployment
+    row = next(r for r in payload["modules"] if r["name"] == "fake._native")
+    row["name"] = "scipy._lib._uarray._uarray"
+    payload["modules"].sort(key=lambda r: r["name"])
+    payload["publications"] = []
+    if drift == "package":
+        row["is_package"] = True
+    else:
+        row["path"] = "fake/owner.py"
+    with pytest.raises(ValueError, match="nonpackage extension"):
+        RuntimeEnvironmentContract.from_payload(payload)
+
+
 def test_active_remote_fixture_version_and_cold_test_digest_move_together():
     # CPU-only packaging check: do not import the GPU test or initialize a
     # backend, and do not pretend Windows validates POSIX deployment paths.

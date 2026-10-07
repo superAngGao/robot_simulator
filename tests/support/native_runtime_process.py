@@ -65,6 +65,29 @@ def child(fault, fd, directory):
         # phase separately; a killed partial write cannot replace a good prefix.
         _write(directory, "prefix.json", controller.evidence().to_payload())
         admission = session.external
+        native_metadata = []
+        if admission is not None:
+            for name, record in admission.records.items():
+                if record["kind"] != "file_module":
+                    continue
+                loader = admission.loaders[name]
+                if loader.source is not None:
+                    continue
+                module, spec = record["module"], admission.specs[name]
+                raw = vars(module)
+                native_metadata.append({
+                    "name": name, "module_name": raw.get("__name__"),
+                    "package": raw.get("__package__"), "file": raw.get("__file__"),
+                    "spec_name": spec.name, "state": record["state"],
+                    "exact_module": sys.modules.get(name) is module,
+                    "exact_spec": raw.get("__spec__") is spec,
+                    "exact_loader": raw.get("__loader__") is loader and spec.loader is loader,
+                    "same_object_keys": sorted(key for key, value in sys.modules.items() if value is module),
+                    "create_started": sum(e["name"] == name and e["operation"] == "create_started"
+                                          for e in admission.events),
+                    "exec_started": sum(e["name"] == name and e["operation"] == "exec_started"
+                                        for e in admission.events),
+                })
         _write(
             directory,
             phase + ".json",
@@ -72,6 +95,7 @@ def child(fault, fd, directory):
                 "schema_version": "q54.c2d3.driver-observation.v0",
                 "phase": phase,
                 "external_events": [] if admission is None else list(admission.events),
+                "native_module_metadata": native_metadata,
                 "repository_trace": list(session.trace),
                 "sample_submission_count": 0,
             },

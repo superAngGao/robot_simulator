@@ -23,6 +23,11 @@ _DISABLED_OPTIONAL_ADAPTERS = (
     ("trimesh.path.polygons", "trimesh/path/polygons.py", "trimesh.path.path", "shapely", "polygons"),
     ("trimesh.ray.ray_pyembree", "trimesh/ray/ray_pyembree.py", "trimesh.ray", "embreex", "ray_pyembree"),
 )
+# Intrinsic metadata only: neither value is an import/alias permission. Exact
+# file identity and version remain solely in the bound deployment inventory.
+_NATIVE_MODULE_NAMES = (
+    ("scipy._lib._uarray._uarray", "uarray._uarray"),
+)
 _PHASES = frozenset({"materialization", "runtime"})
 _FILE_KINDS = frozenset({"python", "extension", "native", "metadata", "data"})
 _REPOSITORY_ROOTS = frozenset(
@@ -101,6 +106,17 @@ def _rows(value: object, key, label: str) -> list:
 
 def _phase(value: object) -> None:
     _require(type(value) is str and value in _PHASES, "invalid runtime admission phase")
+
+
+def _expected_file_module_name(row: dict, file: dict) -> str:
+    for import_name, intrinsic_name in _NATIVE_MODULE_NAMES:
+        if row["name"] == import_name:
+            _require(
+                file["kind"] == "extension" and row["is_package"] is False,
+                "intrinsic native name requires a nonpackage extension",
+            )
+            return intrinsic_name
+    return row["name"]
 
 
 def _validate(payload: object) -> None:
@@ -188,6 +204,7 @@ def _validate(payload: object) -> None:
         _require(root_kinds[row["root"]] == "site", "native library root cannot supply imported modules")
         _require(type(row["is_package"]) is bool, "is_package must be boolean")
         _phase(row["phase"])
+        _expected_file_module_name(row, files[(row["root"], row["path"])])
         modules[name] = row
 
     namespaces = set()
@@ -397,6 +414,21 @@ class RuntimeEnvironmentContract:
     def required_go2_disabled_names(self) -> tuple[str, ...]:
         """Fixed canonical Go2 obligation, not a field supplied in a receipt."""
         return tuple(row[0] for row in _DISABLED_OPTIONAL_ADAPTERS)
+
+    def expected_file_module_name(self, name: str) -> str:
+        """One declared file's intrinsic name; does not resolve or authorize it."""
+        _require(type(self) is RuntimeEnvironmentContract, "exact environment contract required")
+        _module(name)
+        payload = self.to_payload()
+        _validate(payload)
+        rows = [row for row in payload["modules"] if row["name"] == name]
+        _require(len(rows) == 1, "intrinsic name requires a declared file module")
+        row = rows[0]
+        file = next(
+            entry for entry in payload["files"]
+            if (entry["root"], entry["path"]) == (row["root"], row["path"])
+        )
+        return _expected_file_module_name(row, file)
 
     def verify_files(self, *, expected_sha256: str) -> None:
         """Verify CPU filesystem facts without importing a single inventoried module."""

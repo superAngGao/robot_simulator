@@ -435,9 +435,20 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
     def _check(self):
         self.admission.check_live()
         _require(self.admission.loaders.get(self.name) is self, "external loader identity changed")
+        binding = self.admission.loader_bindings[self.name]
         _require(
-            self.admission.loader_bindings[self.name] == (self, self.delegate, self.origin, self.source),
+            binding[0] is self and binding[1] is self.delegate
+            and binding[2] == self.origin and binding[3] is self.source,
             "external loader binding changed",
+        )
+        delegate_type = (
+            importlib.machinery.ExtensionFileLoader
+            if self.source is None else importlib.machinery.SourceFileLoader
+        )
+        _require(
+            type(self.delegate) is delegate_type
+            and self.delegate.name == self.name and self.delegate.path == self.origin,
+            "external delegate metadata drift",
         )
 
     def get_filename(self, fullname):
@@ -479,6 +490,9 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
             # This registry is held by the adopted source session before any
             # explicit adoption that can fail. Preserve partial native owners.
             self.admission.records[self.name] = {"module": module, "state": "created", "kind": "file_module"}
+            # Native return is already retained. Importlib has not initialized
+            # spec/loader/package yet, so inspect only the raw intrinsic name.
+            self.admission.check_module_name(self.name)
             self.admission.check_self_alias_absence(self.name, "postcreate")
             self.admission.hold(module)
             self.admission.record("created", self.name, "file_module")
@@ -501,6 +515,9 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
                 and module.__loader__ is self,
                 "external module execution identity/order changed",
             )
+            # Importlib has initialized metadata now. Reject drift before the
+            # delegated native exec, not merely after its side effects.
+            self.admission.check_module(self.name)
             self.admission.check_self_alias_absence(self.name, "preexec")
             record["state"] = "executing"
             self.admission.record("exec_started", self.name, "file_module")
@@ -1140,6 +1157,13 @@ class _ExternalAdmission:
             self.hold(value)
             self.record("creator_publication", name, rule["kind"])
 
+    def check_module_name(self, name):
+        record = self.records[name]
+        _require(record["kind"] == "file_module", "intrinsic name requires a file record")
+        actual = vars(record["module"]).get("__name__")
+        expected = self.environment.expected_file_module_name(name)
+        _require(type(actual) is str and actual == expected, "external intrinsic module name drift")
+
     def check_module(self, name):
         record = self.records[name]
         _require(sys.modules.get(name) is record["module"], "external sys.modules identity drift")
@@ -1167,6 +1191,8 @@ class _ExternalAdmission:
             return
         module, spec = record["module"], self.specs[name]
         loader = self.loaders[name]
+        loader._check()
+        self.check_module_name(name)
         expected_package = name if self.rules[name]["is_package"] else name.rpartition(".")[0]
         _require(
             module.__spec__ is spec
@@ -1174,7 +1200,6 @@ class _ExternalAdmission:
             and spec.loader is loader
             and spec.name == name
             and spec.parent == expected_package
-            and module.__name__ == name
             and module.__package__ == expected_package
             and module.__file__ == loader.origin
             and spec.origin == loader.origin,
@@ -1185,6 +1210,11 @@ class _ExternalAdmission:
                 list(module.__path__) == [str(Path(loader.origin).parent)]
                 and list(spec.submodule_search_locations) == list(module.__path__),
                 "external package drift",
+            )
+        else:
+            _require(
+                spec.submodule_search_locations is None and "__path__" not in vars(module),
+                "external nonpackage drift",
             )
 
     def audit(self):
