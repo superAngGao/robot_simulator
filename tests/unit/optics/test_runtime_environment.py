@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import copy
 import hashlib
+import json
 import subprocess
 import sys
 from dataclasses import FrozenInstanceError
@@ -11,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from optical_worker.protocol import canonical_sha256
 from optical_worker.runtime_environment import RUNTIME_ENVIRONMENT_VERSION, RuntimeEnvironmentContract
 
 
@@ -149,6 +152,25 @@ def test_native_self_selector_is_metadata_only_and_preserves_qualified_creator(d
     contract.verify_files(expected_sha256=contract.sha256)
     assert contract.to_payload() == payload
     assert not any(n == "fake" or n.startswith("fake.") for n in sys.modules)
+
+
+def test_active_remote_fixture_version_and_cold_test_digest_move_together():
+    # CPU-only packaging check: do not import the GPU test or initialize a
+    # backend, and do not pretend Windows validates POSIX deployment paths.
+    root = Path(__file__).resolve().parents[3]
+    payload = json.loads(
+        (root / "tests/data/runtime_environments/183_warp_synthetic_author_v3.json").read_bytes()
+    )
+    tree = ast.parse((root / "tests/gpu/test_native_runtime_cold_warp.py").read_bytes())
+    pins = [
+        node.value.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "ENVIRONMENT_SHA256" for t in node.targets)
+        and isinstance(node.value, ast.Constant)
+    ]
+    assert payload["schema_version"] == RUNTIME_ENVIRONMENT_VERSION
+    assert pins == [canonical_sha256(payload)]
 
 
 @pytest.mark.parametrize(

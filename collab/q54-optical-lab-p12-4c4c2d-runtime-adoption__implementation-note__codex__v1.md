@@ -563,3 +563,10 @@ versioned runtime-custody record/replay and remaining mandatory device/fault
 matrix. Whole C2d3 independent code review is not yet requested; no CPU subset
 approval substitutes for it. Product, C2e/f, C4c3/c4, C4d/B3, a3b, result/baseline,
 R2, host payload and shipping gates remain closed.
+
+Before running the new fixture on GPU, author inspection found that55817c0 had
+changed the fixture path but left the test's expected digest at v2. A new CPU
+packaging test reproduced this mismatch (1 failed in0.24s); updating that exact
+pin yielded47 passing environment tests in1.12s. No importer check was weakened,
+and no GPU submission had been attempted with the stale pin. This follow-up
+changes tests only, not the already pinned production source/catalog.
