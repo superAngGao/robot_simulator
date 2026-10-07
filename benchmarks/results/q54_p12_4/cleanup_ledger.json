@@ -4,6 +4,48 @@
   "must_complete": true,
   "entries": [
     {
+      "entry_id": "native_worker_runtime_admission",
+      "paths": [
+        "optical_worker/runtime_environment.py",
+        "optical_worker/native_setup.py",
+        "optical_worker/native_contract.py",
+        "optical_worker/native_readback.py",
+        "tests/unit/optics/test_runtime_environment.py",
+        "tests/unit/optics/test_runtime_import_admission.py",
+        "tests/unit/optics/test_guarded_runtime_binding.py",
+        "tests/unit/optics/test_guarded_native_readback.py",
+        "tests/unit/optics/test_native_upload_core.py"
+      ],
+      "symbols": {},
+      "temporary_entry_exit": "C2d3 is incomplete until real captured-runtime acceptance and independent code review. Input-validation readback is not B3 delivery. Remove sacrificial validation entry points only after equivalent selected-worker custody/failure tests exist; no activation is granted by this ledger.",
+      "cuda_selected": {
+        "action": "collapse",
+        "acceptance": "retain the sole selected CUDA environment, exact runtime/input authority and supervised upload/validation; remove Warp-only rules and upload/readback adapters; remove historical AST extraction references after equivalent sole-core regression coverage; preserve archived evidence and no duplicate upload loops"
+      },
+      "warp_selected": {
+        "action": "collapse",
+        "acceptance": "retain the sole selected Warp environment, exact runtime/input authority and supervised upload/validation; remove CUDA-only rules and upload/readback adapters; remove historical AST extraction references after equivalent sole-core regression coverage; preserve archived evidence and no duplicate upload loops"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
+      "entry_id": "offline_runtime_inventory_authoring",
+      "paths": [
+        "tools/optical_runtime_inventory.py",
+        "tests/unit/optics/test_runtime_inventory_tool.py"
+      ],
+      "symbols": {},
+      "cuda_selected": {
+        "action": "retain",
+        "acceptance": "retain CPU-only explicit installed-file observation for the selected deployment; no module execution, automatic import permission, dependency installation or backend selection; raw comparison inventory is historical evidence, not the selected runtime allowlist"
+      },
+      "warp_selected": {
+        "action": "retain",
+        "acceptance": "retain CPU-only explicit installed-file observation for the selected deployment; no module execution, automatic import permission, dependency installation or backend selection; raw comparison inventory is historical evidence, not the selected runtime allowlist"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
       "entry_id": "native_worker_guarded_custody",
       "paths": [
         "optical_worker/guarded_lifecycle.py",
