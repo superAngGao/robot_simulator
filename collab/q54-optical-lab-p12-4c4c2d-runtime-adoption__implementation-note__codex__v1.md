@@ -322,15 +322,42 @@ does not prove cold GPU custody. First local run10 passed in56.59s; a subsequent
 explicit hold assertion still requires the fresh rerun below. No checkpoint is
 approved from this CPU-only composition.
 
-1. Freeze actual deployment/native inventory, missing-probe and publication tables;
-   implement real captured-session external loader/adoption and evidence replay.
-2. Finish and verify the actual captured RuntimeSetupBinding/driver path; adopt
-   actual readback destinations and supervised waits. Current binding unit tests
-   do not stand in for its real cold runtime/fault matrix.
-3. Extend literal repository admission and pin the new bootstrap/policy/catalog.
-   Current source catalog is intentionally NOT repinned for these unfinished
-   edits: it must reject changed source bytes rather than silently admit them.
-   Source-frozen entry acceptance is therefore not claimed at this WIP revision.
+Remote reruns at02be61fc20891c50cb967264cdef8d1a1e264997:
+
+- Transfer bundle SHA-2567587872f5a3f99702780883b403ac6be9f5adea3cca052046b5566dda74ae918
+  matched. Same isolated worktree, no original-worktree edit/reset.
+- Five ordinary files (the four local source files plus test_runtime_import_cold):
+  305 passed in211.91s, no skips, with the real Go2 path configured. Python3284363,
+  wrapper3284361, parent3284330, start22:23:02. Explicit wait/SSH exit0,360s
+  batch budget not reached. This fresh run includes the final explicit guardian
+  hold assertion in the new ten-case cold CPU composition test.
+- Separate test_native_source_custody_process.py:32 passed in121.87s. Python3287651,
+  wrapper3287649, parent3287647, start22:25:27; wait/SSH exit0,180s batch budget not
+  reached. Each real supervisor reported exit0 and validated/reaped its child;
+  success children exited0, injected failures74 or supervised kill -9 as specified.
+  Examples: import-hang Warp child3288048/CUDA3289293; cleanup-hang3288632/3289780;
+  exit-hang3288815/3289935 all observed/reaped -9. Parent-alive expiry, parent loss,
+  no/wrong/EOF ACK, stalled disarm, compile/body/adoption/audit failure and cleanup/
+  exit hangs are covered. These are CPU source-custody branches, NOT real native
+  CUDA/Warp initialization faults or a C2d3 GPU acceptance claim.
+- Final183 check22:27:54 found no owned Python/test/worker/supervisor/timeout
+  residual, only session/SSH readers. GPU inventory still only MPS2238410,60MiB.
+  Local Python/SSH residual query empty. Both isolated checkout and original
+  f771e612beaeea126e26926738097512cd2d809c checkout clean. Local show/diff checks
+  passed; cleanup-ledger validator1 passed in0.47s. No101 fallback, install,
+  unrelated process kill or GPU reset. The earlier interrupted batch stays failed.
+
+1. Derive and freeze the actual required deployment/native closure, absent-probe
+   and publication tables from observed/source-audited dependencies. The offline
+   32-wheel facts are not this permission table. Finish runtime-custody evidence
+   schema/replay; CPU fixture loader/adoption tests do not replace real dependencies.
+2. Finish and verify the actual captured RuntimeSetupBinding/fixed supervised
+   driver and terminal disposal. Explicit readback is implemented, but its real
+   cold runtime/fault matrix is still missing.
+3. Keep catalog v4/policy v5 pins synchronized with any subsequent reviewed-scope
+   source edits, and verify the literal actual runtime closure. Current pins and
+   CPU source-entry tests are WIP acceptance of bytes only, not GPU authorization
+   or independent code approval. No external runtime permission table is yet active.
 4. Fixed supervised actual Torch/Warp cold setup and all required real assets,
    dual-device and fault/hang tests; existing C0/C2d0-2 regressions. No CPU mock or
    preloaded process substitutes for that matrix.
