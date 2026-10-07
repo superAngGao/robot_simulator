@@ -78,9 +78,14 @@ def test_captured_source_real_supervision(release, tmp_path, fault, lane):
         }
         assert not (tmp_path / "atexit").exists()
         assert not (tmp_path / "destructor").exists()
-        if fault.endswith("hang") or fault == "source_parent_loss":
+        no_ack = fault in {"source_no_ack", "source_worker_exit_no_ack"}
+        supervisor_killed_no_ack = no_ack and report["worker_returncode"] < 0
+        if fault.endswith("hang") or fault == "source_parent_loss" or supervisor_killed_no_ack:
             assert summary["deadline_expired"] and summary["kill_requested"]
             assert report["worker_returncode"] < 0
+            operations = [event["operation"] for event in supervisor["trace"]]
+            assert operations.index("deadline_expired") < operations.index("kill_requested")
+            assert operations.index("kill_requested") < operations.index("process_exited")
         else:
             assert report["worker_returncode"] == (0 if fault == "source_success" else 74)
             assert (tmp_path / "no_runtime").exists()
@@ -88,6 +93,22 @@ def test_captured_source_real_supervision(release, tmp_path, fault, lane):
         if fault == "source_parent_loss":
             assert summary["terminal_reason"] == "parent_lost"
         worker = report["artifact"]["worker"]
+        if no_ack:
+            assert summary["arm_count"] == 1 and summary["normal_complete_count"] == 0
+            operations = [event["operation"] for event in supervisor["trace"]]
+            assert "ack_written" not in operations
+            assert "normal_complete_received" not in operations
+            assert not (tmp_path / "body_entry").exists()
+            if supervisor_killed_no_ack:
+                assert summary["terminal_reason"] == "deadline_expired"
+                # The supervisor may preempt ANY worker exception-tail write.
+                # Absence of worker/no_runtime is not a completion claim.
+                assert summary["observed_returncode"] == report["worker_returncode"]
+            else:
+                assert worker is not None and worker["record_kind"] == "terminal"
+                assert worker["summary"]["custody"] == "full_quarantine"
+            if fault == "source_worker_exit_no_ack":
+                assert report["injected"] and report["worker_returncode"] == 74
         if worker is not None:
             observed = worker["summary"]
             assert observed["entered_leaf_count"] == 0

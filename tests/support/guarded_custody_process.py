@@ -80,6 +80,7 @@ SOURCE_FAULTS = tuple(
         "import_hang",
         "parent_loss",
         "no_ack",
+        "worker_exit_no_ack",
         "wrong_ack",
         "ack_eof",
         "stalled_disarm",
@@ -386,6 +387,14 @@ def supervise(fault, liveness_fd, directory):
                 parent_alive = False
                 core.fault("parent_lost")
             try:
+                if fault == "source_worker_exit_no_ack" and not injected and channel in readable:
+                    # Fixed test-only transport scheduling: let the client's
+                    # unchanged ACK clock precede the supervisor ARM clock.
+                    # No source body is admitted without ACK; no deadline is
+                    # extended/restarted after commitment. Exercise self-exit
+                    # as well as the racing supervisor-killed no-ACK ending.
+                    time.sleep(0.4)
+                    injected = True
                 transport.service(readable=channel in readable, writable=channel in writable)
             except (RuntimeError, OSError, ValueError):
                 if core.state != "TERMINATING":
