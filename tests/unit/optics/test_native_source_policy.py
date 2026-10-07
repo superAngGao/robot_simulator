@@ -24,6 +24,23 @@ ROOT = Path(__file__).resolve().parents[3]
 RENDERER = "optics/warp_native_render.py"
 
 
+def test_cold_bootstrap_and_production_contract_select_the_same_catalog():
+    # Cold entry cannot import the production module before its source capture.
+    # Check the two bootstrap literals without executing either entry.
+    selections = []
+    for relative, symbol in (
+        ("optical_worker/native_bootstrap.py", "_CATALOG"),
+        ("optical_worker/native_sources.py", "CATALOG_PATH"),
+    ):
+        tree = ast.parse((ROOT / relative).read_bytes())
+        values = [ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
+                  and any(isinstance(target, ast.Name) and target.id == symbol for target in node.targets)]
+        assert len(values) == 1
+        selections.append(values[0])
+    assert selections[0] == selections[1]
+    assert (ROOT / selections[0]).is_file()
+
+
 def _check(source: bytes, path="optical_worker/future_module.py"):
     return validate_native_source_bytes(path, source, expected_sha256=hashlib.sha256(source).hexdigest())
 
