@@ -155,6 +155,7 @@ def _environment(root, fault):
     package.mkdir()
     source = (
         "import sys\nfrom types import ModuleType\n"
+        "from importlib.util import find_spec\nassert find_spec('c2missing') is None\n"
         "try:\n import c2missing\nexcept ModuleNotFoundError:\n pass\n"
         "created = ModuleType('c2dep.created')\n"
         "sys.modules['c2dep.created'] = created\n"
@@ -270,6 +271,7 @@ try:
         controller.require_adopted(c2dep, c2dep.created)
         assert sys.modules['c2dep.alias'] is sys.modules['c2dep.created'] is c2dep.created
         assert 'c2missing' not in sys.modules
+        assert len([e for e in admission.events if e['kind'] == 'absent_probe']) == 2
         terminal = controller.terminate(fault='setup_failure', detection_phase='cpu_external_fixture',
                                          emergency_target_synchronize=None).lifecycle.to_payload()
         assert terminal['summary']['disposition'] == 'cancelled_before_submission_exit'

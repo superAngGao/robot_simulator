@@ -111,10 +111,25 @@ def test_actual_source_entry(release, lane):
 @pytest.mark.parametrize("mutation", ["prepend", "append", "reorder", "site_path"])
 def test_cold_install_rejects_nonstandard_topology_without_callback(release, mutation):
     before = """
+calls = []
 class Witness:
     def find_spec(self, *args):
-        print('FORBIDDEN_CALLBACK')
+        calls.append(args)
         raise AssertionError('unexpected finder ran')
+original_install = entry._install
+def observe_rejection(*args):
+    try:
+        return original_install(*args)
+    except entry.SourceBootstrapError:
+        # Like the fixed entry's caught terminal failure, do not send an
+        # unhandled exception into CPython's lazy traceback imports. Those are
+        # outside the call being measured and would consult the injected chain.
+        if calls:
+            entry.os.write(1, b'callback_during_rejection')
+            entry.os._exit(79)
+        entry.os.write(1, b'cold_rejected_no_callback')
+        entry.os._exit(78)
+entry._install = observe_rejection
 """ + {
         "prepend": "sys.meta_path.insert(0, Witness())",
         "append": "sys.meta_path.append(Witness())",
@@ -122,8 +137,8 @@ class Witness:
         "site_path": "sys.path.append(str(root.parent / 'site-packages'))",
     }[mutation]
     result = _internal(release, before=before)
-    assert result[0] != 0 and b"SourceBootstrapError" in result[2]
-    assert b"FORBIDDEN_CALLBACK" not in result[1] + result[2]
+    assert result[0] == 78, result[2].decode()
+    assert result[1] == b"cold_rejected_no_callback" and result[2] == b""
 
 
 def test_cold_singleton_stdlib_and_post_poison_reporting(release):
