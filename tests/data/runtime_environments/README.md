@@ -1,21 +1,26 @@
 # C2d3 author deployment fixtures (not product profiles)
 
-`183_warp_synthetic_author_v2.json` is the active schema-v2 candidate for cold Warp
+`183_warp_synthetic_author_v3.json` is the active schema-v3 candidate for cold Warp
 asymmetric/dynamic canonical-input upload/readback on primary183 (H200, robot_sim
 CPython3.12.13). It grants no worker IPC/product activation. The opt-in test must
 run without skips on the matching host before its narrow result can be cited.
 This is NOT the complete required Warp/CUDA/Go2/multi-device acceptance matrix.
 
 Canonical contract SHA-256:
-`f42485bdf9580d56b86080aad18d2d3e5a8832c23bd0868419852b2da4b734af`.
-The hash covers canonical encoding, not the pretty-printed file's raw bytes.
+`077399dc319dd9bb2d0ace5f6f776743c6b6b50b8bc14a410a87d68438eb4903`.
+The hash covers canonical encoding, not the file's raw bytes.
 
 The required `disabled_optional_modules` table is explicitly empty: synthetic
 inputs do not import trimesh. No dependency permission was added during this
-schema migration. `183_warp_synthetic_author_v1.json` is retained unchanged as
+schema migration. The publication table also remains empty: these workloads
+do not need the newly specified native creator-self aliases. Versioned Go2
+profiles and their complete closure still require implementation and review.
+`183_warp_synthetic_author_v2.json` is retained unchanged (canonical hash
+`f42485bdf9580d56b86080aad18d2d3e5a8832c23bd0868419852b2da4b734af`).
+`183_warp_synthetic_author_v1.json` is retained unchanged as
 historical evidence (canonical hash
 `ae95257eb95b4441e5ae786a5ae65f3e7a86459e30aa455abfc27ecae0ed2299`).
-The v2 parser rejects v1; it does not silently insert an empty table.
+The v3 parser rejects v1/v2; it does not silently migrate an old contract.
 
 Authoring source: installed-file inventory
 `/data2/shared/ang.gao/c2d3-offline-wheel-inventory-v1.json`, SHA-256

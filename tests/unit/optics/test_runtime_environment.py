@@ -128,6 +128,69 @@ def test_environment_is_canonical_detached_and_never_executes_inventory(deployme
         contract.encoded = b"{}"
 
 
+def _self_alias_payload(deployment):
+    _, payload = deployment
+    payload["publications"] = [
+        {
+            "name": "fake.native_alias",
+            "kind": "module_alias",
+            "creator": "fake._native",
+            "publisher": "fake._native",
+            "attributes": [],
+            "phase": "runtime",
+        }
+    ]
+    return payload
+
+
+def test_native_self_selector_is_metadata_only_and_preserves_qualified_creator(deployment):
+    payload = _self_alias_payload(deployment)
+    contract = RuntimeEnvironmentContract.from_payload(payload)
+    contract.verify_files(expected_sha256=contract.sha256)
+    assert contract.to_payload() == payload
+    assert not any(n == "fake" or n.startswith("fake.") for n in sys.modules)
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "python",
+        "package",
+        "publisher",
+        "phase",
+        "created",
+        "tuple",
+        "collision",
+        "cycle",
+        "v1",
+        "v2",
+    ],
+)
+def test_native_self_selector_rejects_non_native_or_unfrozen_relation(deployment, drift):
+    payload = _self_alias_payload(deployment)
+    row = payload["publications"][0]
+    if drift == "python":
+        row.update(creator="fake.owner", publisher="fake.owner", phase="materialization")
+    elif drift == "package":
+        payload["modules"][1]["is_package"] = True
+    elif drift == "publisher":
+        row["publisher"] = "fake"
+    elif drift == "phase":
+        row["phase"] = "materialization"
+    elif drift == "created":
+        row["kind"] = "created_module"
+    elif drift == "tuple":
+        row["attributes"] = ()
+    elif drift == "collision":
+        row["name"] = "fake._native"
+    elif drift == "cycle":
+        row["creator"] = row["publisher"] = row["name"]
+    else:
+        payload["schema_version"] = "q54.p12.4.runtime-environment." + drift
+    with pytest.raises(ValueError):
+        RuntimeEnvironmentContract.from_payload(payload)
+
+
 @pytest.mark.parametrize(
     "table", ["roots", "files", "distributions", "modules", "absent_probes", "publications", "namespaces"]
 )

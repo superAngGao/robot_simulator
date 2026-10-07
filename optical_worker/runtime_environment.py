@@ -16,7 +16,7 @@ from pathlib import Path, PurePosixPath
 
 from .protocol import canonical_json_bytes, decode_canonical_message
 
-RUNTIME_ENVIRONMENT_VERSION = "q54.p12.4.runtime-environment.v2"
+RUNTIME_ENVIRONMENT_VERSION = "q54.p12.4.runtime-environment.v3"
 # Literal policy, not a caller-extensible import denylist. File hashes still
 # belong to the one trusted deployment inventory (not a duplicate hash table).
 _DISABLED_OPTIONAL_ADAPTERS = (
@@ -235,12 +235,20 @@ def _validate(payload: object) -> None:
         _require(_module(row["publisher"]) in modules, "publisher must be an admitted file module")
         attributes = row["attributes"]
         _require(
-            type(attributes) is list
-            and bool(attributes)
-            and all(type(a) is str and a.isidentifier() for a in attributes),
-            "publication requires a fixed nonempty attribute path",
+            type(attributes) is list and all(type(a) is str and a.isidentifier() for a in attributes),
+            "publication requires a fixed attribute path",
         )
         _phase(row["phase"])
+        if not attributes:
+            creator = modules[row["creator"]]
+            _require(
+                row["kind"] == "module_alias"
+                and row["creator"] == row["publisher"]
+                and not creator["is_package"]
+                and row["phase"] == creator["phase"],
+                "creator-self alias requires one non-package native creator/publisher and phase",
+            )
+            referenced_file(creator["root"], creator["path"], {"extension"})
         publications[name] = row
 
     def probe_key(row):

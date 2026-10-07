@@ -42,12 +42,15 @@ def importer(tmp_path, monkeypatch):
     original_meta_path = list(sys.meta_path)
     original_modules = dict(sys.modules)
 
-    def create(sources, *, absent=(), publications=(), namespace=False, disabled=(), packages=()):
+    def create(sources, *, absent=(), publications=(), namespace=False, disabled=(), packages=(), native=()):
         root = tmp_path.resolve()
         files, modules = [], []
         for name, source in sources.items():
             is_package = name == "c2ext" or name in packages
             relative = name.replace(".", "/") + ("/__init__.py" if is_package else ".py")
+            if name in native:
+                assert not is_package
+                relative = name.replace(".", "/") + importlib.machinery.EXTENSION_SUFFIXES[0]
             path = root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             data = source.encode("utf-8")
@@ -56,7 +59,7 @@ def importer(tmp_path, monkeypatch):
                 {
                     "root": "site",
                     "path": relative,
-                    "kind": "python",
+                    "kind": "extension" if name in native else "python",
                     "size": len(data),
                     "sha256": hashlib.sha256(data).hexdigest(),
                 }
@@ -533,6 +536,175 @@ def test_swallowed_started_import_error_is_sticky_and_retains_partial_module(imp
     assert admission.failed and admission.failures
     with pytest.raises(bootstrap.SourceBootstrapError):
         admission.audit()
+
+
+def test_failure_intake_keeps_late_owner_and_each_error_without_readoption(importer, monkeypatch):
+    admission, _ = importer(
+        {
+            "c2ext": "import sys, types\ntry:\n from . import child\nexcept ImportError: pass\n"
+            "sys.modules['c2ext.late'] = types.ModuleType('late')\n"
+            "raise ValueError('outer_after_late_publication')\n",
+            "c2ext.child": "raise ImportError('inner_started_failure')\n",
+        }
+    )
+    with pytest.raises(ValueError, match="outer_after_late_publication") as failure:
+        importlib.import_module("c2ext")
+    late = sys.modules.pop("c2ext.late")
+    assert any(x is late for x in admission.retained)
+    assert any(x is failure.value for x in admission.failures)
+    assert any(str(x) == "inner_started_failure" for x in admission.failures)
+    assert "c2ext.late" not in admission.records
+    owners, events, notifications = (
+        list(admission.controller.owners),
+        list(admission.events),
+        list(admission.session.failures),
+    )
+    admission.controller._terminating = True
+    monkeypatch.setattr(admission.controller, "adopt_host_owner", lambda *a, **k: pytest.fail("readoption"))
+    admission.fail(failure.value, "c2ext", native_create=True)
+    admission.fail(failure.value, "c2ext", native_create=True)
+    assert admission.controller.owners == owners and admission.events == events
+    assert admission.session.failures == notifications
+    assert (
+        sum(e is failure.value and n == "c2ext" and native for e, n, native in admission.failure_contexts)
+        == 1
+    )
+    assert any(x is late for x in admission.retained)
+
+
+def test_failure_recording_fault_cannot_skip_sticky_notification(importer, monkeypatch):
+    admission, _ = importer({"c2ext": "pass\n"})
+    original, recording = ValueError("original"), RuntimeError("recording")
+
+    def reject(*args):
+        raise recording
+
+    monkeypatch.setattr(admission, "record", reject)
+    admission.fail(original, "c2ext")
+    assert admission.failed and admission.session.failed
+    assert admission.failures == [original, recording]
+
+
+def _native_alias_importer(importer, monkeypatch, fault=None):
+    # Fixed fake native delegates exercise production importlib/registry checks,
+    # not native exception safety or the mandatory real SciPy extension matrix.
+    calls = []
+
+    def create(delegate, spec):
+        calls.append("create")
+        module = type(sys)(spec.name)
+        if fault == "create_publication":
+            sys.modules["c2ext.alias"] = module
+        return module
+
+    def execute(delegate, module):
+        calls.append("exec")
+        if fault != "missing":
+            sys.modules["c2ext.alias"] = module
+        if fault == "wrong_owner":
+            replacement = type(sys)(module.__name__)
+            vars(replacement).update(vars(module))
+            sys.modules["c2ext.alias"] = replacement
+        if fault == "qualified":
+            sys.modules[module.__name__] = type(sys)(module.__name__)
+        if fault == "exec_failure":
+            raise ImportError("native_exec_fixture_failure")
+
+    monkeypatch.setattr(importlib.machinery.ExtensionFileLoader, "create_module", create)
+    monkeypatch.setattr(importlib.machinery.ExtensionFileLoader, "exec_module", execute)
+    row = _publication()
+    row.update(creator="c2ext._native", publisher="c2ext._native", attributes=[])
+    admission, _ = importer(
+        {"c2ext": "pass\n", "c2ext._native": "fixture only"}, native=("c2ext._native",), publications=[row]
+    )
+    importlib.import_module("c2ext")
+    return admission, calls
+
+
+def test_native_self_alias_is_exact_returned_root_and_audits_are_read_only(importer, monkeypatch):
+    admission, calls = _native_alias_importer(importer, monkeypatch)
+    # Configuration does not invent observations for an unrequested publisher.
+    admission.audit()
+    assert "c2ext.alias" not in admission.records and calls == []
+    module = importlib.import_module("c2ext._native")
+    record = admission.records["c2ext.alias"]
+    assert record["module"] is record["creator"] is record["publisher"] is module
+    assert record["relation"] == "creator_self"
+    assert module.__name__ == module.__spec__.name == "c2ext._native"
+    assert "c2ext.alias" not in admission.loaders and "c2ext.alias" not in admission.specs
+    before = list(admission.events), list(admission.retained), dict(admission.records)
+    admission.audit()
+    admission.audit()
+    assert before == (admission.events, admission.retained, admission.records)
+    assert calls == ["create", "exec"]
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "precreate_none",
+        "create_publication",
+        "preexec_none",
+        "missing",
+        "wrong_owner",
+        "qualified",
+        "exec_failure",
+        "deleted_record",
+        "extra",
+        "alias_replaced",
+        "phase",
+    ],
+)
+def test_native_self_alias_drift_fails_closed_at_real_loader_boundary(importer, monkeypatch, fault):
+    admission, calls = _native_alias_importer(importer, monkeypatch, fault)
+    with pytest.raises((bootstrap.SourceBootstrapError, ImportError)):
+        if fault == "precreate_none":
+            sys.modules["c2ext.alias"] = None
+        if fault == "phase":
+            admission.phase = "runtime"
+        if fault == "preexec_none":
+            spec = admission.find_spec("c2ext._native", sys.modules["c2ext"].__path__)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules["c2ext._native"] = module
+            sys.modules["c2ext.alias"] = None
+            spec.loader.exec_module(module)
+        else:
+            module = importlib.import_module("c2ext._native")
+        if fault == "deleted_record":
+            del admission.records["c2ext.alias"]
+        elif fault == "extra":
+            sys.modules["c2ext.extra"] = module
+        elif fault == "alias_replaced":
+            sys.modules["c2ext.alias"] = type(sys)(module.__name__)
+        admission.audit()
+    assert admission.failed and admission.session.failed
+    assert calls == (
+        []
+        if fault in {"precreate_none", "phase"}
+        else ["create"]
+        if fault in {"create_publication", "preexec_none"}
+        else ["create", "exec"]
+    )
+    if calls:
+        assert admission.records["c2ext._native"]["module"] is not None
+    if fault == "deleted_record":
+        assert "c2ext.alias" not in admission.records
+
+
+def test_attribute_publication_record_cannot_be_recreated_by_audit(importer):
+    admission, _ = importer(
+        {
+            "c2ext": "import sys, types\nalias = types.ModuleType('alias')\n"
+            "sys.modules['c2ext.alias'] = alias\n"
+        },
+        publications=[_publication()],
+    )
+    importlib.import_module("c2ext")
+    del admission.records["c2ext.alias"]
+    with pytest.raises(bootstrap.SourceBootstrapError, match="during audit"):
+        admission.audit()
+    assert "c2ext.alias" not in admission.records
+    assert sum(e["operation"] == "creator_publication" for e in admission.events) == 1
 
 
 def _publication():

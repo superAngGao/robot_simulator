@@ -18,7 +18,7 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType, ModuleType
 
 _BOOTSTRAP = "optical_worker/native_bootstrap.py"
-_CATALOG = "optical_worker/data/native_sources/v5.json"
+_CATALOG = "optical_worker/data/native_sources/v6.json"
 _MAX_BYTES = 4 * 1024 * 1024  # Rechecked against the sole protocol constant.
 _ROOTS = frozenset(
     ("optical_worker", "optics", "physics", "robot", "sensing", "benchmarks", "examples", "tests", "tools")
@@ -389,6 +389,7 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
             self._check()
             _require(spec is self.admission.specs[self.name], "external spec identity changed")
             _require(self.name not in self.admission.records, "external module recreation")
+            self.admission.check_self_alias_absence(self.name, "precreate")
             self.admission.record("create_started", self.name, "file_module")
             self.admission.stack.append(self.name)
             if type(self.delegate) is importlib.machinery.ExtensionFileLoader:
@@ -399,6 +400,7 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
             # This registry is held by the adopted source session before any
             # explicit adoption that can fail. Preserve partial native owners.
             self.admission.records[self.name] = {"module": module, "state": "created", "kind": "file_module"}
+            self.admission.check_self_alias_absence(self.name, "postcreate")
             self.admission.hold(module)
             self.admission.record("created", self.name, "file_module")
             self.admission.stack.pop()
@@ -420,6 +422,7 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
                 and module.__loader__ is self,
                 "external module execution identity/order changed",
             )
+            self.admission.check_self_alias_absence(self.name, "preexec")
             record["state"] = "executing"
             self.admission.record("exec_started", self.name, "file_module")
             self.admission.stack.append(self.name)
@@ -429,7 +432,7 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
                 super().exec_module(module)
             self.admission.check_live()
             self.admission.confirm_disabled_fallbacks(self.name)
-            self.admission.reconcile_publications(self.name)
+            self.admission.reconcile_publications(self.name, admitting=True)
             self.admission.stack.pop()
             record["state"] = "completed"
             self.admission.check_module(self.name)
@@ -469,6 +472,7 @@ class _ExternalAdmission:
         self.materialization_case, self.materialization_finished = None, False
         self.phase = "materialization"
         self.stack, self.events, self.retained, self.failures = [], [], [], []
+        self.failure_contexts, self.self_alias_checks = [], {}
         self.loaders, self.loader_bindings, self.specs, self.records = {}, {}, {}, {}
         self.baseline = dict(sys.modules)
         self.failed = False
@@ -540,16 +544,24 @@ class _ExternalAdmission:
         )
 
     def fail(self, error, name, *, native_create=False):
-        if self.failed:
-            return
+        first_failure = not self.failed
         self.failed = True
-        self.failures.append(error)
+        if not any(value is error for value in self.failures):
+            self.failures.append(error)
+        if not any(
+            e is error and n == name and native == native_create for e, n, native in self.failure_contexts
+        ):
+            self.failure_contexts.append((error, name, native_create))
         # Custody, never permission: keep any partial publication/root alive even
         # if importlib removes it or adoption subsequently rejects poisoned work.
+        # A caught inner failure does not stop its already executing parent from
+        # publishing another owner. Extend the held graph on EVERY failure; do
+        # not call normal guardian adoption on a quarantined lifecycle.
+        retained_ids = {id(owner) for owner in self.retained}
         for key, module in tuple(sys.modules.items()):
-            if self.baseline.get(key) is not module:
+            if self.baseline.get(key) is not module and id(module) not in retained_ids:
                 self.retained.append(module)
-        self.record("failed", name, "failure")
+                retained_ids.add(id(module))
         if native_create and not self.controller._terminating:
             try:
                 self.controller.mark_unknown_device_scope(
@@ -558,6 +570,15 @@ class _ExternalAdmission:
                 )
             except BaseException as scope_error:
                 self.failures.append(scope_error)
+        if not first_failure:
+            # Keep late native context above, even if the controller has already
+            # committed process-terminal quarantine. Never rewrite that terminal
+            # evidence or start another terminal operation during unwinding.
+            return
+        try:
+            self.record("failed", name, "failure")
+        except BaseException as record_error:
+            self.failures.append(record_error)
         self.session.fail(error)
 
     def _paths(self, fullname):
@@ -948,14 +969,50 @@ class _ExternalAdmission:
                     "Go2 materialization lacks a required fallback confirmation",
                 )
 
-    def reconcile_publications(self, publisher):
+    def check_self_alias_absence(self, creator, boundary):
+        rows = [r for r in self.publications.values() if r["creator"] == creator and not r["attributes"]]
+        if not rows:
+            return
+        expected = {"precreate": (), "postcreate": ("precreate",), "preexec": ("precreate", "postcreate")}
+        _require(
+            boundary in expected and self.self_alias_checks.get(creator, ()) == expected[boundary],
+            "creator-self absence boundary order changed",
+        )
+        _require(all(r["phase"] == self.phase for r in rows), "creator-self phase changed")
+        _require(all(r["name"] not in sys.modules for r in rows), "creator-self alias published early")
+        self.self_alias_checks[creator] = expected[boundary] + (boundary,)
+        self.record("self_alias_" + boundary + "_absent", creator, "file_module")
+
+    def reconcile_publications(self, publisher, *, admitting=False):
         publisher_record = self.records.get(publisher)
         if publisher_record is None:
+            _require(
+                not admitting
+                and all(
+                    r["name"] not in sys.modules and r["name"] not in self.records
+                    for r in self.publications.values()
+                    if r["publisher"] == publisher
+                ),
+                "unrequested publisher has a publication",
+            )
             return
+        if admitting:
+            _require(
+                publisher_record["kind"] == "file_module"
+                and publisher_record["state"] == "executing"
+                and self.stack
+                and self.stack[-1] == publisher,
+                "publication admission requires actual publisher execution",
+            )
+        else:
+            _require(
+                publisher_record["state"] == "completed", "publication audit before publisher completion"
+            )
         for name, rule in self.publications.items():
             if rule["publisher"] != publisher:
                 continue
             previous = self.records.get(name)
+            _require((previous is None) == admitting, "publication cannot be admitted twice or during audit")
             _require(name in sys.modules, "required creator publication missing")
             _require(
                 rule["phase"] == (previous["phase"] if previous is not None else self.phase),
@@ -966,6 +1023,15 @@ class _ExternalAdmission:
                 root is not None and sys.modules.get(rule["creator"]) is root["module"], "creator root drift"
             )
             value = root["module"]
+            relation = "creator_attribute" if rule["attributes"] else "creator_self"
+            if relation == "creator_self":
+                _require(
+                    root is publisher_record
+                    and self.self_alias_checks.get(publisher) == ("precreate", "postcreate", "preexec")
+                    and type(self.loader_bindings[publisher][1]) is importlib.machinery.ExtensionFileLoader,
+                    "creator-self native execution boundary changed",
+                )
+                self.check_module(publisher)
             for attribute in rule["attributes"]:
                 # Do not invoke third-party __getattr__ and create new objects
                 # while supposedly auditing a previously published object.
@@ -978,7 +1044,8 @@ class _ExternalAdmission:
                 _require(
                     previous["module"] is value
                     and previous["creator"] is root["module"]
-                    and previous["publisher"] is publisher_record["module"],
+                    and previous["publisher"] is publisher_record["module"]
+                    and previous["relation"] == relation,
                     "published module replaced",
                 )
                 continue
@@ -989,6 +1056,7 @@ class _ExternalAdmission:
                 "creator": root["module"],
                 "publisher": publisher_record["module"],
                 "phase": self.phase,
+                "relation": relation,
             }
             self.hold(value)
             self.record("creator_publication", name, rule["kind"])

@@ -506,3 +506,60 @@ closure, both lanes/both Go2 uploads and readback, versioned runtime-custody
 record/replay, remaining real-device scope/fault matrix, and independent review.
 No CPU subset approval is requested. C4 remains incomplete; all later product,
 host/shipping, a3b and result/baseline gates remain closed.
+
+## Creator-self and late failure custody WIP (2026-10-08, base 149edd4)
+
+Independent gap scan at56acbd3 found the missing native creator-root selector
+and skipped late failure intake. The bounded supplement was independently
+approved as design only at2907730; report archived verbatim at149edd4, SHA-256
+`551c80efb14158f4c9f0c08ec3544e2e57906a6bf4cc3b3431783e968223efa9`.
+This section records implementation progress, not a code approval checkpoint.
+
+Schema v3 now restricts empty publication attributes to the same non-package
+native creator/publisher and phase. The captured loader checks alias absence
+before/after create and before exec, then exact retained-root identity after
+exec. Qualified file metadata remains authoritative. Audits cannot recreate a
+deleted publication record, for either selector. Late failure intake holds new
+available module objects and each original exception/context in the already
+held graph, without ordinary readoption or another terminal notification.
+An exception in failure-event recording no longer skips source-session poison.
+
+Policy v7 and catalog v6 repin exact staged Git LF bytes. Catalog raw SHA-256:
+`4a441e6a61d1bd1962707b03679bac17c9b210d11343ac04986aabfe14848263`.
+Active synthetic Warp environment v3 canonical SHA-256:
+`077399dc319dd9bb2d0ace5f6f776743c6b6b50b8bc14a410a87d68438eb4903`.
+Its dependency permission is unchanged, and publications remain empty. Historical
+v1/v2 profiles stay intact. No actual Go2 alias table is granted by that fixture.
+
+Author-local CPython3.14 observations:
+
+- Before implementation, outside-candidate cold repro
+  `c4_assets/test_c2d3_late_custody_author_v1.py` (SHA-256
+  `b9f92727e666a82927f0fc879a1d12482a2a3fded29aad9b4d94ab49e5e987b4`)
+  failed both lane labels in16.64s at `late owner missing from held graph`.
+  It had already checked real captured controller/guardian full quarantine and
+  zero emergency sync/terminal ARM. CPU fixture dependencies and a guard peer,
+  not actual native/GPU work or the product supervisor, were used.
+- After the fix, its promoted cold regression file passed2 in12.05s. It checks
+  owner/error identity, removal from sys.modules without loss of the held owner,
+  and unchanged controller evidence after repeated Python/native failure intake.
+- Schema/import mechanics group:128 passed in3.28s. Fake native delegates are
+  explicitly local-mechanics tests, not SciPy/native exception-safety evidence.
+- Seven-file regression command (environment, import-admission, import-cold,
+  import-failure-cold, native-source-policy, native-sources and
+  native-runtime-driver-process):354 passed,8 skipped in160.16s. The skips are
+  two Go2 cases without local assets, two POSIX checkout-byte checks, and four
+  POSIX supervisor-descriptor cases. Required matching-host tests remain due.
+  Test parent PID35160 and children were observed exited; final local Python
+  process query was empty. No timeout counted as success.
+- Ruff checks passed. An initial command used a nonexistent test filename and
+  ran no tests; the corrected command above completed. Trying to validate the
+  POSIX deployment fixture on Windows correctly rejected its path format;
+  canonical digest calculation alone is not deployment validation.
+
+Remote current-code evidence follows separately. Still unimplemented/unverified:
+complete real Go2/CUDA external/native closure, real captured self-alias proof,
+versioned runtime-custody record/replay and remaining mandatory device/fault
+matrix. Whole C2d3 independent code review is not yet requested; no CPU subset
+approval substitutes for it. Product, C2e/f, C4c3/c4, C4d/B3, a3b, result/baseline,
+R2, host payload and shipping gates remain closed.
