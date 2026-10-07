@@ -33,6 +33,34 @@ def _stall():
         time.sleep(0.02)
 
 
+def _unrecorded_module_observations(admission):
+    """Bounded failure diagnostics, not classification or admission authority.
+
+    Includes ordinary stdlib/repository imports: lack of an external record
+    alone does not mean forbidden. Observe raw current objects and held-owner
+    identity without importing, resolving, adopting, deleting or normalizing.
+    """
+    partial = vars(admission)
+    baseline, records = partial.get("baseline", {}), partial.get("records", {})
+    retained = partial.get("retained", [])
+    entries = sorted((key, value) for key, value in tuple(sys.modules.items())
+                     if key not in baseline and key not in records)
+    observations = []
+    for key, value in entries[:256]:
+        raw = vars(value) if type(value) is type(sys) else {}
+        spec = raw.get("__spec__")
+        observations.append({
+            "key": key, "type": type(value).__name__, "module_name": raw.get("__name__"),
+            "package": raw.get("__package__"), "file": raw.get("__file__"),
+            "spec_name": None if spec is None else spec.name,
+            "spec_origin": None if spec is None else spec.origin,
+            "loader_is_none": raw.get("__loader__") is None,
+            "held_in_failure_graph": any(owner is value for owner in retained),
+            "raw_attribute_names": sorted(raw)[:32],
+        })
+    return {"total": len(entries), "truncated": len(entries) > 256, "modules": observations}
+
+
 def child(fault, fd, directory):
     if fault not in {"runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang"}:
         raise ValueError("not a fixed runtime fault selector")
@@ -217,6 +245,7 @@ def child(fault, fd, directory):
                         "events": list(events),
                         "failed": admission.failed,
                         "failure_metadata": metadata,
+                        "unrecorded_modules": _unrecorded_module_observations(admission),
                     },
                 )
             _write(

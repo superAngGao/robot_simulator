@@ -134,6 +134,11 @@ def test_fixed_runtime_driver_quarantines_without_fallback_or_ordinary_cleanup(
             assert observed["failed"] is True
             assert observed["failure_metadata"][0]["name"] == "numpy"
             assert observed["failure_metadata"][0]["error"] == failure["exception_chain"][0]["message"]
+            unrecorded = observed["unrecorded_modules"]
+            assert type(unrecorded["total"]) is int
+            assert unrecorded["truncated"] is (unrecorded["total"] > 256)
+            assert len(unrecorded["modules"]) == min(256, unrecorded["total"])
+            assert all(len(row["raw_attribute_names"]) <= 32 for row in unrecorded["modules"])
             assert observed["events"] == [
                 {
                     "index": 0,
