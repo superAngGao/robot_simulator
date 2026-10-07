@@ -7,6 +7,7 @@ No backend import or native binary is executed by this suite.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib
 import py_compile
@@ -39,12 +40,13 @@ def importer(tmp_path, monkeypatch):
     monkeypatch.setenv("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
     sessions = []
     original_meta_path = list(sys.meta_path)
+    original_modules = dict(sys.modules)
 
-    def create(sources, *, absent=(), publications=(), namespace=False):
+    def create(sources, *, absent=(), publications=(), namespace=False, disabled=(), packages=()):
         root = tmp_path.resolve()
         files, modules = [], []
         for name, source in sources.items():
-            is_package = name == "c2ext"
+            is_package = name == "c2ext" or name in packages
             relative = name.replace(".", "/") + ("/__init__.py" if is_package else ".py")
             path = root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -59,6 +61,8 @@ def importer(tmp_path, monkeypatch):
                     "sha256": hashlib.sha256(data).hexdigest(),
                 }
             )
+            if name in {row["name"] for row in disabled}:
+                continue
             modules.append(
                 {
                     "name": name,
@@ -84,6 +88,7 @@ def importer(tmp_path, monkeypatch):
             "distributions": [],
             "modules": sorted(modules, key=lambda r: r["name"]),
             "absent_probes": list(absent),
+            "disabled_optional_modules": list(disabled),
             "publications": list(publications),
             "namespaces": (
                 [
@@ -126,12 +131,316 @@ def importer(tmp_path, monkeypatch):
     yield create
     sys.meta_path[:] = original_meta_path
     for name in tuple(sys.modules):
-        if name.split(".")[0] in {"c2ext", "c2namespace", "c2missing"}:
-            del sys.modules[name]
+        if name.split(".")[0] in {"c2ext", "c2namespace", "c2missing", "trimesh", "embreex", "shapely"}:
+            if name in original_modules:
+                sys.modules[name] = original_modules[name]
+            else:
+                del sys.modules[name]
     for admission in sessions:
         # Unit doubles have no CUDA resources/quarantine. Never use this test
         # teardown as production release authority.
         admission.retained.clear()
+
+
+def _disabled_sources():
+    # Tiny dependency fixtures, never used for canonical Go2 acceptance. The
+    # real production finder/loader is used unchanged by the importer fixture.
+    return {
+        "trimesh": "from . import ray, path\n",
+        "trimesh.exceptions": (
+            "class ExceptionWrapper:\n"
+            " def __init__(self, error): self.exception = (type(error), error.args)\n"
+            " def __getattribute__(self, name):\n"
+            "  kind, args = object.__getattribute__(self, 'exception')\n"
+            "  raise kind(*args)\n"
+        ),
+        "trimesh.ray": (
+            "try:\n from . import ray_pyembree\n has_embree = True\n"
+            "except BaseException as error:\n from ..exceptions import ExceptionWrapper\n"
+            " ray_pyembree = ExceptionWrapper(error)\n has_embree = False\n"
+        ),
+        "trimesh.path": "from . import path\n",
+        "trimesh.path.path": (
+            "try:\n from . import polygons\n"
+            "except BaseException as error:\n from ..exceptions import ExceptionWrapper\n"
+            " polygons = ExceptionWrapper(error)\n"
+        ),
+        "trimesh.path.polygons": "raise AssertionError('ADAPTER BODY MUST NOT RUN')\n",
+        "trimesh.ray.ray_pyembree": "raise AssertionError('ADAPTER BODY MUST NOT RUN')\n",
+    }
+
+
+def _disabled_rows():
+    return [
+        {
+            "name": name,
+            "path": name.replace(".", "/") + ".py",
+            "root": "site",
+            "requester": requester,
+            "phase": "materialization",
+            "absent_prerequisite": dependency,
+            "fallback_attribute": attribute,
+        }
+        for name, requester, dependency, attribute in (
+            ("trimesh.path.polygons", "trimesh.path.path", "shapely", "polygons"),
+            ("trimesh.ray.ray_pyembree", "trimesh.ray", "embreex", "ray_pyembree"),
+        )
+    ]
+
+
+def _disabled_importer(importer, sources=None):
+    return importer(
+        _disabled_sources() if sources is None else sources,
+        disabled=_disabled_rows(),
+        packages=("trimesh", "trimesh.ray", "trimesh.path"),
+    )
+
+
+def test_disabled_modules_are_present_but_never_executed_and_unused_rows_are_legal(importer):
+    admission, _ = _disabled_importer(importer)
+    admission.audit()
+    assert not admission.disabled_records and not admission.disabled_tokens and not admission.events
+    importlib.import_module("trimesh")
+    admission.audit()
+    for name in admission.disabled:
+        assert name not in sys.modules and name not in admission.records and name not in admission.loaders
+        record = admission.disabled_records[name]
+        assert record["state"] == "fallback_confirmed"
+        assert type(record["error"]) is ImportError and record["error"].__traceback__ is not None
+        events = [e for e in admission.events if e["name"] == name]
+        assert [e["operation"] for e in events] == ["disabled_optional", "disabled_fallback_confirmed"]
+        assert all(e["present"] and e["loader_kind"] == "SourceFileLoader" for e in events)
+        assert all(
+            e["create_count"] == e["exec_count"] == e["body_count"] == e["native_create_count"] == 0
+            for e in events
+        )
+        assert events[0]["fallback_identity"] is None and events[1]["fallback_identity"] is not None
+        admission.controller.require_adopted(record["fallback"])
+        admission.controller.require_adopted(record["error"])
+    before = list(admission.events), list(admission.retained), list(admission.controller.owners)
+    admission.audit()
+    admission.audit()
+    assert before == (admission.events, admission.retained, admission.controller.owners)
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "v1",
+        "missing_table",
+        "extra_field",
+        "duplicate",
+        "order",
+        "third_row",
+        "requester",
+        "prerequisite",
+        "attribute",
+        "phase",
+        "path",
+        "root",
+        "executable_name",
+        "executable_alias",
+        "absent_name",
+        "owner_phase",
+        "file_kind",
+    ],
+)
+def test_disabled_schema_has_no_caller_defined_policy(importer, drift):
+    admission, _ = _disabled_importer(importer)
+    p = admission.environment.to_payload()
+    rows = p["disabled_optional_modules"]
+    row = rows[0]
+    if drift == "v1":
+        p["schema_version"] = "q54.p12.4.runtime-environment.v1"
+    elif drift == "missing_table":
+        del p["disabled_optional_modules"]
+    elif drift == "extra_field":
+        row["ignore_errors"] = True
+    elif drift == "duplicate":
+        rows.insert(0, copy.deepcopy(row))
+    elif drift == "order":
+        rows.reverse()
+    elif drift == "third_row":
+        row["name"] = "trimesh.path.invented"
+    elif drift in {"requester", "prerequisite", "attribute", "phase", "path", "root"}:
+        key = {"prerequisite": "absent_prerequisite", "attribute": "fallback_attribute"}.get(drift, drift)
+        row[key] = "different"
+    elif drift in {"executable_name", "executable_alias"}:
+        p["modules"].append(
+            {
+                "name": row["name"] if drift == "executable_name" else "trimesh.path.alias",
+                "root": row["root"],
+                "path": row["path"],
+                "phase": "materialization",
+                "is_package": False,
+            }
+        )
+        p["modules"].sort(key=lambda r: r["name"])
+    elif drift == "absent_name":
+        p["absent_probes"] = [{"name": row["name"], "requester": row["requester"], "phase": row["phase"]}]
+    elif drift == "owner_phase":
+        next(r for r in p["modules"] if r["name"] == row["requester"])["phase"] = "runtime"
+    else:
+        next(r for r in p["files"] if r["path"] == row["path"])["kind"] = "extension"
+    with pytest.raises((ValueError, TypeError)):
+        RuntimeEnvironmentContract.from_payload(p)
+    assert not admission.events and not admission.records and not admission.disabled_records
+
+
+@pytest.mark.parametrize("drift", ["copy", "unissued", "pending"])
+def test_live_denial_tokens_cannot_be_copied_or_left_unconsumed(importer, monkeypatch, drift):
+    admission, _ = _disabled_importer(importer)
+    consume = admission.consume_disabled
+
+    def intercepted(token, name):
+        if drift == "pending":
+            return admission.disabled_records[name]["error"]
+        invalid = copy.copy(token) if drift == "copy" else bootstrap._DisabledExternalToken()
+        return consume(invalid, name)
+
+    monkeypatch.setattr(admission, "consume_disabled", intercepted)
+    with pytest.raises(bootstrap.SourceBootstrapError):
+        importlib.import_module("trimesh")
+    assert admission.failed and admission.session.failed
+    assert admission.disabled_tokens
+    assert all(r["state"] == "resolution_verified" for r in admission.disabled_records.values())
+    assert not any(e["operation"] == "disabled_optional" for e in admission.events)
+    assert "trimesh.ray.ray_pyembree" not in admission.loaders
+
+
+@pytest.mark.parametrize(
+    "drift", ["error_args", "error_name", "error_path", "error_identity", "spec", "loader"]
+)
+def test_confirmed_denial_custody_is_revalidated_on_audit(importer, drift):
+    admission, _ = _disabled_importer(importer)
+    importlib.import_module("trimesh")
+    record = admission.disabled_records["trimesh.ray.ray_pyembree"]
+    if drift.startswith("error_"):
+        if drift == "error_identity":
+            record["error"] = ImportError(
+                *record["error"].args, name=record["error"].name, path=record["error"].path
+            )
+        else:
+            setattr(
+                record["error"],
+                drift.removeprefix("error_"),
+                ("wrong",) if drift == "error_args" else "wrong",
+            )
+    elif drift == "spec":
+        record["spec"] = copy.copy(record["spec"])
+    else:
+        record["spec"].loader = copy.copy(record["spec"].loader)
+    before = list(admission.events)
+    with pytest.raises(bootstrap.SourceBootstrapError):
+        admission.audit()
+    assert admission.failed and admission.session.failed
+    assert admission.events[:-1] == before
+    assert admission.events[-1]["operation"] == "failed"
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "bytes",
+        "missing",
+        "present_prerequisite",
+        "preloaded_prerequisite",
+        "preloaded_none",
+        "preloaded_descendant",
+        "wrong_phase",
+    ],
+)
+def test_disabled_resolver_rejects_drift_before_adapter_execution(importer, monkeypatch, drift):
+    admission, root = _disabled_importer(importer)
+    name = "trimesh.ray.ray_pyembree"
+    if drift == "bytes":
+        (root / "trimesh/ray/ray_pyembree.py").write_text("wrong", encoding="utf-8")
+    elif drift == "missing":
+        (root / "trimesh/ray/ray_pyembree.py").unlink()
+    elif drift == "present_prerequisite":
+        (root / "embreex.py").write_text("raise AssertionError('MUST NOT LOAD')", encoding="utf-8")
+    elif drift == "preloaded_prerequisite":
+        monkeypatch.setitem(sys.modules, "embreex", None)
+    elif drift in {"preloaded_none", "preloaded_descendant"}:
+        monkeypatch.setitem(sys.modules, name + (".child" if drift == "preloaded_descendant" else ""), None)
+    else:
+        admission.phase = "runtime"
+    with pytest.raises(bootstrap.SourceBootstrapError):
+        importlib.import_module("trimesh")
+    assert admission.failed and admission.session.failed
+    assert name not in admission.records and name not in admission.loaders
+    with pytest.raises(bootstrap.SourceBootstrapError):
+        admission.audit()
+
+
+def test_disabled_wrong_live_requester_fails_through_actual_finder(importer):
+    sources = _disabled_sources()
+    sources["trimesh.ray"] = ""
+    sources["trimesh.path.path"] = "try:\n from ..ray import ray_pyembree\nexcept BaseException:\n pass\n"
+    admission, _ = _disabled_importer(importer, sources)
+    with pytest.raises(bootstrap.SourceBootstrapError):
+        importlib.import_module("trimesh")
+    assert admission.failed and admission.session.failed
+    assert "trimesh.ray.ray_pyembree" not in admission.loaders
+    assert not admission.disabled_records
+
+
+@pytest.mark.parametrize("suffix", ["", ".child"])
+def test_unrequested_disabled_publication_is_rejected_by_audit(importer, monkeypatch, suffix):
+    admission, _ = _disabled_importer(importer)
+    name = "trimesh.ray.ray_pyembree"
+    monkeypatch.setitem(sys.modules, name + suffix, None)
+    with pytest.raises(bootstrap.SourceBootstrapError):
+        admission.audit()
+    assert admission.failed and admission.session.failed
+    assert not admission.disabled_records and not admission.disabled_tokens
+    assert name not in admission.loaders and name not in admission.records
+
+
+@pytest.mark.parametrize("drift", ["type", "args", "flag", "body_error"])
+def test_parent_fallback_failures_stay_sticky(importer, drift):
+    sources = _disabled_sources()
+    sources["trimesh.ray"] += {
+        "type": "ray_pyembree = object()\n",
+        "args": (
+            "object.__getattribute__(ray_pyembree, '__dict__')['exception'] = (ImportError, ('wrong',))\n"
+        ),
+        "flag": "has_embree = True\n",
+        "body_error": "raise ImportError('Frozen optional adapter disabled: trimesh.ray.ray_pyembree')\n",
+    }[drift]
+    admission, _ = _disabled_importer(importer, sources)
+    with pytest.raises((bootstrap.SourceBootstrapError, ImportError)):
+        importlib.import_module("trimesh")
+    assert admission.failed and admission.session.failed
+    record = admission.disabled_records["trimesh.ray.ray_pyembree"]
+    assert record["state"] == "rejection_issued"
+    assert any(value is record["error"] for value in admission.retained)
+    assert "trimesh.ray.ray_pyembree" not in admission.loaders
+
+
+@pytest.mark.parametrize(
+    "drift", ["copied", "unissued", "consumed", "replacement_fallback", "repeat_request"]
+)
+def test_disabled_authority_and_confirmed_identity_cannot_be_reused(importer, drift):
+    admission, _ = _disabled_importer(importer)
+    importlib.import_module("trimesh")
+    name = "trimesh.ray.ray_pyembree"
+    record = admission.disabled_records[name]
+    with pytest.raises(bootstrap.SourceBootstrapError):
+        if drift in {"copied", "unissued", "consumed"}:
+            token = record["token"]
+            if drift == "copied":
+                token = copy.copy(token)
+            elif drift == "unissued":
+                token = bootstrap._DisabledExternalToken()
+            admission.consume_disabled(token, name)
+        elif drift == "replacement_fallback":
+            wrapper_type = type(record["fallback"])
+            vars(record["requester"])["ray_pyembree"] = wrapper_type(record["error"])
+            admission.audit()
+        else:
+            admission.find_spec(name, admission._paths(name))
+    assert admission.failed and admission.session.failed
 
 
 def test_real_file_import_retains_exact_objects_and_executes_held_source(importer):

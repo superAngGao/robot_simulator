@@ -18,7 +18,7 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType, ModuleType
 
 _BOOTSTRAP = "optical_worker/native_bootstrap.py"
-_CATALOG = "optical_worker/data/native_sources/v4.json"
+_CATALOG = "optical_worker/data/native_sources/v5.json"
 _MAX_BYTES = 4 * 1024 * 1024  # Rechecked against the sole protocol constant.
 _ROOTS = frozenset(
     ("optical_worker", "optics", "physics", "robot", "sensing", "benchmarks", "examples", "tests", "tools")
@@ -316,6 +316,12 @@ class _CapturedSourceFinder(importlib.abc.MetaPathFinder):
             spec = external[0].find_spec(fullname, path, target)
             if type(spec) is _AbsentExternalSpec:
                 raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
+            if type(spec) is _DisabledExternalToken:
+                # The only deliberate rejection edge. Validation errors inside
+                # consume_disabled still poison; arbitrary ImportError does not
+                # receive an exemption from admission's failure handler.
+                error = external[0].consume_disabled(spec, fullname)
+                raise error
             return spec
         if fullname.partition(".")[0] in {"numpy", "torch", "warp"}:
             error = SourceBootstrapError("runtime imports remain closed in CPU source custody")
@@ -422,6 +428,7 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
             else:
                 super().exec_module(module)
             self.admission.check_live()
+            self.admission.confirm_disabled_fallbacks(self.name)
             self.admission.reconcile_publications(self.name)
             self.admission.stack.pop()
             record["state"] = "completed"
@@ -457,13 +464,17 @@ class _ExternalAdmission:
         self.publications = {r["name"]: r for r in payload["publications"]}
         self.namespaces = {r["name"]: r for r in payload["namespaces"]}
         self.absent = {(r["name"], r["requester"], r["phase"]) for r in payload["absent_probes"]}
+        self.disabled = {r["name"]: r for r in payload["disabled_optional_modules"]}
+        self.disabled_records, self.disabled_tokens, self.disabled_bindings = {}, {}, {}
+        self.materialization_case, self.materialization_finished = None, False
         self.phase = "materialization"
         self.stack, self.events, self.retained, self.failures = [], [], [], []
         self.loaders, self.loader_bindings, self.specs, self.records = {}, {}, {}, {}
         self.baseline = dict(sys.modules)
         self.failed = False
         _require(
-            not any(name in self.baseline for name in self.rules | self.publications | self.namespaces),
+            not any(name in self.baseline for name in self.rules | self.publications | self.namespaces)
+            and not any(self._has_module_prefix(name) for name in self.disabled),
             "external dependency was preloaded",
         )
         controller.adopt_host_owner(
@@ -523,6 +534,10 @@ class _ExternalAdmission:
             and self.absent == {(r["name"], r["requester"], r["phase"]) for r in p["absent_probes"]},
             "external lookup index drift",
         )
+        _require(
+            self.disabled == {r["name"]: r for r in p["disabled_optional_modules"]},
+            "disabled optional index drift",
+        )
 
     def fail(self, error, name, *, native_create=False):
         if self.failed:
@@ -571,6 +586,8 @@ class _ExternalAdmission:
                 "external package search path drift",
             )
             requester = self.stack[-1] if self.stack else None
+            if fullname in self.disabled:
+                return self._prepare_disabled(fullname, requester, expected_paths)
             rule = self.rules.get(fullname)
             namespace = self.namespaces.get(fullname)
             optional = (fullname, requester, self.phase) in self.absent
@@ -641,6 +658,295 @@ class _ExternalAdmission:
         except BaseException as error:
             self.fail(error, fullname)
             raise
+
+    @staticmethod
+    def _has_module_prefix(name):
+        return any(key == name or key.startswith(name + ".") for key in sys.modules)
+
+    def _disabled_resolution(self, name, *, retain=False):
+        """Metadata-only resolution, also used by read-only segment audits."""
+        rule = self.disabled[name]
+        _require(not self._has_module_prefix(name), "disabled adapter was published or preloaded")
+        _require(
+            name not in self.records and name not in self.loaders, "disabled adapter has executable custody"
+        )
+        spec = importlib.machinery.PathFinder.find_spec(name, list(self._paths(name)))
+        # Retain a found metadata owner before any further fallible check. This
+        # does not create or execute the adapter module.
+        if spec is not None and retain:
+            self.hold(spec)
+            self.hold(spec.loader)
+        origin = str(Path(self.roots[rule["root"]]) / rule["path"])
+        _require(
+            spec is not None
+            and type(spec.loader) is importlib.machinery.SourceFileLoader
+            and spec.origin == origin
+            and spec.submodule_search_locations is None,
+            "disabled adapter spec/origin/kind drift",
+        )
+        candidate = Path(origin)
+        _require(
+            not candidate.is_symlink() and candidate.resolve(strict=True) == candidate,
+            "disabled adapter path drift",
+        )
+        data = candidate.read_bytes()
+        file_record = self.files[(rule["root"], rule["path"])]
+        _require(
+            len(data) == file_record["size"] and hashlib.sha256(data).hexdigest() == file_record["sha256"],
+            "disabled adapter file bytes changed",
+        )
+        prerequisite = rule["absent_prerequisite"]
+        _require(not self._has_module_prefix(prerequisite), "disabled prerequisite was preloaded")
+        prerequisite_spec = importlib.machinery.PathFinder.find_spec(prerequisite, list(self.search_roots))
+        if prerequisite_spec is not None and retain:
+            self.hold(prerequisite_spec)
+            self.hold(prerequisite_spec.loader)
+        _require(prerequisite_spec is None, "disabled prerequisite is unexpectedly present")
+        return spec
+
+    def _prepare_disabled(self, name, requester, expected_paths):
+        rule = self.disabled[name]
+        _require(
+            self.phase == rule["phase"] == "materialization" and requester == rule["requester"],
+            "disabled optional requester/phase mismatch",
+        )
+        _require(name not in self.disabled_records, "disabled optional request is single-use")
+        owner = self.records.get(requester)
+        _require(
+            owner is not None and owner["kind"] == "file_module" and owner["state"] == "executing",
+            "disabled requester is not an executing file module",
+        )
+        self.check_module(requester)
+        _require(tuple(expected_paths) == self._paths(name), "disabled search path changed")
+        record = {
+            "state": "unrequested",
+            "requester": owner["module"],
+            "name": name,
+            "spec": None,
+            "error": None,
+            "fallback": None,
+            "token": None,
+        }
+        # This held registry keeps partial resolution/denial construction alive.
+        self.disabled_records[name] = record
+        spec = self._disabled_resolution(name, retain=True)
+        record["spec"] = spec
+        record["state"] = "resolution_verified"
+        error = ImportError(f"Frozen optional adapter disabled: {name}", name=name, path=spec.origin)
+        record["error"] = error
+        self.hold(error)
+        token = _DisabledExternalToken()
+        record["token"] = token
+        self.disabled_tokens[token] = record
+        self.disabled_bindings[name] = (record, owner["module"], spec, error, token, spec.loader)
+        self.hold(token)
+        return token
+
+    def _check_disabled_identity(self, name):
+        record = self.disabled_records[name]
+        binding = self.disabled_bindings.get(name)
+        _require(
+            binding is not None
+            and binding[0] is record
+            and binding[1] is record["requester"]
+            and binding[2] is record["spec"]
+            and binding[3] is record["error"]
+            and binding[4] is record["token"]
+            and binding[5] is record["spec"].loader,
+            "disabled construction identity changed",
+        )
+        rule = self.disabled[name]
+        spec, error = record["spec"], record["error"]
+        origin = str(Path(self.roots[rule["root"]]) / rule["path"])
+        _require(
+            spec.name == name
+            and spec.origin == origin
+            and spec.submodule_search_locations is None
+            and type(spec.loader) is importlib.machinery.SourceFileLoader
+            and type(error) is ImportError
+            and error.args == (f"Frozen optional adapter disabled: {name}",)
+            and error.name == name
+            and error.path == origin,
+            "disabled resolution/error identity drift",
+        )
+
+    def consume_disabled(self, token, name):
+        try:
+            self.check_live()
+            record = self.disabled_tokens.get(token) if type(token) is _DisabledExternalToken else None
+            _require(
+                record is not None
+                and self.disabled_records.get(name) is record
+                and record["name"] == name
+                and record["token"] is token
+                and record["state"] == "resolution_verified",
+                "unissued, foreign or consumed disabled token",
+            )
+            self._check_disabled_identity(name)
+            rule = self.disabled[name]
+            requester = rule["requester"]
+            _require(
+                self.phase == "materialization"
+                and self.stack
+                and self.stack[-1] == requester
+                and self.records[requester]["module"] is record["requester"]
+                and self.records[requester]["state"] == "executing",
+                "disabled token requester drift",
+            )
+            self.check_module(requester)
+            error = record["error"]
+            del self.disabled_tokens[token]
+            record["state"] = "rejection_issued"
+            self._record_disabled(name, "disabled_optional")
+            return error
+        except BaseException as error:
+            self.fail(error, name)
+            raise
+
+    def _disabled_fallback(self, name):
+        self._check_disabled_identity(name)
+        record, rule = self.disabled_records[name], self.disabled[name]
+        requester = self.records[rule["requester"]]["module"]
+        _require(requester is record["requester"], "disabled fallback owner identity changed")
+        wrapper_owner = self.records.get("trimesh.exceptions")
+        _require(
+            wrapper_owner is not None
+            and wrapper_owner["state"] == "completed"
+            and wrapper_owner["kind"] == "file_module",
+            "fallback class owner incomplete",
+        )
+        self.check_module("trimesh.exceptions")
+        placeholder = vars(requester).get(rule["fallback_attribute"])
+        # Retain before inspecting an object whose attribute access may raise.
+        if placeholder is not None:
+            self.hold(placeholder)
+        wrapper_class = vars(wrapper_owner["module"]).get("ExceptionWrapper")
+        _require(
+            type(wrapper_class) is type and type(placeholder) is wrapper_class,
+            "disabled fallback has wrong exact type",
+        )
+        fields = object.__getattribute__(placeholder, "__dict__")
+        expected = (ImportError, record["error"].args)
+        _require(
+            type(fields) is dict
+            and type(fields.get("exception")) is tuple
+            and fields["exception"] == expected,
+            "disabled fallback error differs from issued error",
+        )
+        if rule["requester"] == "trimesh.ray":
+            _require(vars(requester).get("has_embree") is False, "disabled ray fallback flag drift")
+        _require(
+            not self._has_module_prefix(name) and name not in self.records and name not in self.loaders,
+            "disabled adapter unexpectedly executed/published",
+        )
+        return placeholder
+
+    def confirm_disabled_fallbacks(self, requester):
+        for name, rule in self.disabled.items():
+            if rule["requester"] != requester:
+                continue
+            # importlib can answer from sys.modules (even a None sentinel)
+            # without consulting our finder. Check configured rows as well as
+            # issued denials before accepting the parent's completed body.
+            _require(not self._has_module_prefix(name), "disabled adapter was preloaded/published")
+            record = self.disabled_records.get(name)
+            if record is None:
+                continue
+            _require(record["state"] == "rejection_issued", "disabled fallback confirmation order")
+            record["fallback"] = self._disabled_fallback(name)
+            record["state"] = "fallback_confirmed"
+            self._record_disabled(name, "disabled_fallback_confirmed")
+
+    def _record_disabled(self, name, operation):
+        record, rule = self.disabled_records[name], self.disabled[name]
+        requester_rule = self.rules[rule["requester"]]
+
+        def digest(value):
+            return hashlib.sha256(
+                json.dumps(
+                    value, allow_nan=False, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest()
+
+        def owner_token(value):
+            if value is None:
+                return None
+            for index, owner in enumerate(self.retained):
+                if owner is value:
+                    return f"external-owner-{index}"
+            raise SourceBootstrapError("disabled evidence owner has no custody identity")
+
+        self.events.append(
+            {
+                "index": len(self.events),
+                "operation": operation,
+                "name": name,
+                "kind": "disabled_optional",
+                "phase": self.phase,
+                "environment_sha256": self.expected_sha256,
+                "rule_sha256": digest(rule),
+                "requester": rule["requester"],
+                "requester_identity": owner_token(record["requester"]),
+                "requester_source_sha256": self.files[(requester_rule["root"], requester_rule["path"])][
+                    "sha256"
+                ],
+                "origin": record["spec"].origin,
+                "source_sha256": self.files[(rule["root"], rule["path"])]["sha256"],
+                "loader_kind": "SourceFileLoader",
+                "present": True,
+                "absent_prerequisite": rule["absent_prerequisite"],
+                "prerequisite_spec": None,
+                "request_id": name,
+                "fallback_attribute": rule["fallback_attribute"] if record["fallback"] is not None else None,
+                "fallback_identity": owner_token(record["fallback"]),
+                "create_count": 0,
+                "exec_count": 0,
+                "body_count": 0,
+                "native_create_count": 0,
+                "error_type": "ImportError",
+                "error_args": list(record["error"].args),
+                "error_name": record["error"].name,
+                "error_path": record["error"].path,
+            }
+        )
+
+    def bind_materialization_case(self, case_id):
+        self.check_live()
+        _require(
+            self.materialization_case is None and self.session.phase == "materializing",
+            "materialization case is single-use and source-session owned",
+        )
+        self.materialization_case = case_id
+        if case_id in {"go2_static_960x640_v1", "go2_static_1920x1080_v1"}:
+            _require(
+                set(self.disabled) == set(self.environment.required_go2_disabled_names),
+                "Go2 requires both frozen disabled adapter rules",
+            )
+
+    def finish_materialization(self):
+        self.check_live()
+        _require(
+            self.materialization_case is not None
+            and not self.materialization_finished
+            and self.session.phase == "materializing"
+            and self.session.canonical_input.manifest.case_id == self.materialization_case,
+            "materialization completion is not bound to the actual canonical source",
+        )
+        self._check_required_disabled()
+        self.materialization_finished = True
+
+    def _check_required_disabled(self):
+        if self.materialization_case in {"go2_static_960x640_v1", "go2_static_1920x1080_v1"}:
+            _require(
+                set(self.disabled) == set(self.environment.required_go2_disabled_names),
+                "Go2 disabled table drift",
+            )
+            for name in self.environment.required_go2_disabled_names:
+                _require(
+                    name in self.disabled_records
+                    and self.disabled_records[name]["state"] == "fallback_confirmed",
+                    "Go2 materialization lacks a required fallback confirmation",
+                )
 
     def reconcile_publications(self, publisher):
         publisher_record = self.records.get(publisher)
@@ -754,6 +1060,21 @@ class _ExternalAdmission:
                 _require(record["state"] == "completed", "external module incomplete")
                 self.check_module(name)
                 self.controller.require_adopted(record["module"])
+            _require(not self.disabled_tokens, "disabled rejection token remains live at audit")
+            for name in self.disabled:
+                _require(not self._has_module_prefix(name), "disabled adapter was preloaded/published")
+            for name, record in self.disabled_records.items():
+                _require(record["state"] == "fallback_confirmed", "disabled denial incomplete at boundary")
+                self._disabled_resolution(name)
+                _require(
+                    self._disabled_fallback(name) is record["fallback"], "disabled fallback storage replaced"
+                )
+            if self.materialization_finished:
+                _require(
+                    self.session.canonical_input.manifest.case_id == self.materialization_case,
+                    "completed materialization case drift",
+                )
+                self._check_required_disabled()
         except BaseException as error:
             self.fail(error, "audit")
             raise
@@ -764,6 +1085,12 @@ class _AbsentExternalSpec:
 
     def __init__(self, name):
         self.name = name
+
+
+class _DisabledExternalToken:
+    """Identity-only token. Its fields/type cannot confer rejection authority."""
+
+    __slots__ = ()
 
 
 class _ExternalNamespaceLoader(importlib.abc.Loader):
@@ -1035,6 +1362,7 @@ class _SourceSession:
             controller = self.bound_controller()
             with controller.segment("setup"):
                 self.phase = "materializing"
+                self.external.bind_materialization_case(case_id)
                 self._runtime_leaf("canonical_dependency_import", "runtime_import_or_init")
                 from optical_worker.assets import preflight_case_asset
                 from optical_worker.lane_contract import (
@@ -1076,6 +1404,7 @@ class _SourceSession:
                     )
                 self.canonical_input = source
                 self._hold_runtime_owner(source, "canonical_native_input")
+                self.external.finish_materialization()
                 self.audit()
                 self.external.audit()
             self.phase = "materialized"
@@ -1110,7 +1439,7 @@ class _SourceSession:
             leaf_kind=kind,
             device_ordinal=controller.target_device_ordinal,
             scope_source="captured_runtime_admission",
-            runtime_identity="frozen_runtime_environment_v1",
+            runtime_identity="frozen_runtime_environment_v2",
         )
         controller.enter_device_leaf(controller.begin_device_leaf(descriptor))
 

@@ -56,6 +56,7 @@ def test_fixed_runtime_driver_quarantines_without_fallback_or_ordinary_cleanup(
             "distributions": [],
             "modules": [],
             "absent_probes": [],
+            "disabled_optional_modules": [],
             "publications": [],
             "namespaces": [],
             "settings": {"TORCH_DEVICE_BACKEND_AUTOLOAD": "0", "warp_quiet": True},

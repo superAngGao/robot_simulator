@@ -78,6 +78,7 @@ def deployment(tmp_path):
             },
         ],
         "absent_probes": [{"name": "optional_absent", "requester": "fake.owner", "phase": "materialization"}],
+        "disabled_optional_modules": [],
         "publications": [
             {
                 "name": "fake._native.child",

@@ -468,3 +468,41 @@ GPU inventory showed existing MPS2238410,60MiB, untouched. Remote design checkou
 remains clean f668b5b; no WIP code was installed/copied there and no GPU work was
 launched in that earlier round. No101 fallback, unrelated process kill, install, reset,
 original-worktree edit or historical-hang-resolution claim.
+
+## Optional-adapter implementation WIP (2026-10-08, base 8128e79)
+
+This progress supersedes the earlier "implementation remains pending" statement,
+not the whole-C2d3 acceptance requirements. Approved supplement v2 is now wired
+into the existing finder/admission: schema-v2 fixed two-row policy, metadata-only
+resolution, same-session single-use rejection tokens, exact ImportError custody,
+parent fallback confirmation, repeated audit and Go2 completion requirements.
+Started import failures remain sticky. Cached sys.modules entries (including
+None) are checked at parent completion as well as resolution/audit because Python
+can bypass a finder for cached entries. No product request or gate changed.
+
+Catalogue v5/policy v6 pin exact Git LF source bytes. Active synthetic Warp fixture
+v2 explicitly has an empty disabled table; old v1 stays unchanged as evidence.
+Neither fixture claims Go2/Torch admission. No dependency installation occurred.
+
+Author-local CPython3.14 validation, not independent approval:
+
+- environment/import-admission tests: 102 passed in2.83s; real import machinery,
+  fixture dependencies and unit guardian doubles, no GPU claim;
+- five-file environment/admission/cold/source-policy/source suite: 315 passed,
+  4 skipped, 1 failed in93.03s. The failure was the test's old policy-v5 assertion;
+  after explicit v6 update that exact test passed in0.28s. Skipped Go2 tests on
+  this host are not acceptance evidence;
+- newly added cold optional-segment matrix: 10 passed,10 deselected in56.11s,
+  covering both lane labels, initial unrequested configuration, unused rows,
+  later actual fixture import, and adoption/issuance/confirmation exceptions.
+  It uses actual captured source session/controller and guard peer, but no
+  canonical Go2 materialization, real supervisor timeout or native runtime;
+- Ruff checks and working/index diff checks passed at this WIP point.
+
+All test commands above were observed exited; no timeout was treated as success.
+Remote/current-revision GPU regression follows in a separate evidence update.
+Still required before whole code review: frozen real Go2/CUDA dependency/native
+closure, both lanes/both Go2 uploads and readback, versioned runtime-custody
+record/replay, remaining real-device scope/fault matrix, and independent review.
+No CPU subset approval is requested. C4 remains incomplete; all later product,
+host/shipping, a3b and result/baseline gates remain closed.

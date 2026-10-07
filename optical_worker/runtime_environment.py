@@ -16,7 +16,13 @@ from pathlib import Path, PurePosixPath
 
 from .protocol import canonical_json_bytes, decode_canonical_message
 
-RUNTIME_ENVIRONMENT_VERSION = "q54.p12.4.runtime-environment.v1"
+RUNTIME_ENVIRONMENT_VERSION = "q54.p12.4.runtime-environment.v2"
+# Literal policy, not a caller-extensible import denylist. File hashes still
+# belong to the one trusted deployment inventory (not a duplicate hash table).
+_DISABLED_OPTIONAL_ADAPTERS = (
+    ("trimesh.path.polygons", "trimesh/path/polygons.py", "trimesh.path.path", "shapely", "polygons"),
+    ("trimesh.ray.ray_pyembree", "trimesh/ray/ray_pyembree.py", "trimesh.ray", "embreex", "ray_pyembree"),
+)
 _PHASES = frozenset({"materialization", "runtime"})
 _FILE_KINDS = frozenset({"python", "extension", "native", "metadata", "data"})
 _REPOSITORY_ROOTS = frozenset(
@@ -108,6 +114,7 @@ def _validate(payload: object) -> None:
             "distributions",
             "modules",
             "absent_probes",
+            "disabled_optional_modules",
             "publications",
             "namespaces",
             "settings",
@@ -248,10 +255,71 @@ def _validate(payload: object) -> None:
         )
         _phase(row["phase"])
 
+    disabled = set()
+    policy = {row[0]: row[1:] for row in _DISABLED_OPTIONAL_ADAPTERS}
+    executable_paths = {(row["root"], row["path"]) for row in modules.values()}
+    absent_names = {row["name"] for row in p["absent_probes"]}
+
+    def disabled_key(row):
+        r = _fields(
+            row,
+            {
+                "name",
+                "root",
+                "path",
+                "requester",
+                "phase",
+                "absent_prerequisite",
+                "fallback_attribute",
+            },
+            "disabled optional module",
+        )
+        return _module(r["name"]), _module(r["requester"]), _text(r["phase"], "disabled phase")
+
+    for row in _rows(p["disabled_optional_modules"], disabled_key, "disabled optional modules"):
+        name = row["name"]
+        _require(name in policy, "disabled optional module is not in the fixed policy")
+        _require(
+            (row["path"], row["requester"], row["absent_prerequisite"], row["fallback_attribute"])
+            == policy[name]
+            and row["phase"] == "materialization",
+            "disabled optional mapping differs from the fixed policy",
+        )
+        _require(
+            name not in modules
+            and name not in publications
+            and name not in namespaces
+            and name not in absent_names,
+            "disabled optional name collides with an import rule",
+        )
+        referenced_file(row["root"], row["path"], {"python"})
+        _require(root_kinds[row["root"]] == "site", "disabled adapter needs a site root")
+        _require(
+            (row["root"], row["path"]) not in executable_paths,
+            "disabled path is executable under another name",
+        )
+        for owner in (row["requester"], "trimesh.exceptions"):
+            _require(owner in modules, "disabled adapter requires an admitted fallback owner")
+            owner_rule = modules[owner]
+            _require(
+                owner_rule["phase"] == "materialization"
+                and files[(owner_rule["root"], owner_rule["path"])]["kind"] == "python",
+                "disabled fallback owner must be a materialization Python module",
+            )
+        prerequisite = row["absent_prerequisite"]
+        _require(
+            not any(
+                n == prerequisite or n.startswith(prerequisite + ".")
+                for n in modules | publications | dict.fromkeys(namespaces)
+            ),
+            "disabled prerequisite cannot also be admitted",
+        )
+        disabled.add(name)
+
     # Any qualified name has an explicitly admitted package parent. Optional
     # probes cannot fabricate parents; creator publications cannot bypass them.
     present = set(modules) | set(publications) | namespaces
-    for name in present | {row["name"] for row in p["absent_probes"]}:
+    for name in present | absent_names | disabled:
         parent = name.rpartition(".")[0]
         if parent:
             _require(parent in present, f"unlisted module parent: {parent}")
@@ -316,6 +384,11 @@ class RuntimeEnvironmentContract:
     @property
     def sha256(self) -> str:
         return hashlib.sha256(self.encoded).hexdigest()
+
+    @property
+    def required_go2_disabled_names(self) -> tuple[str, ...]:
+        """Fixed canonical Go2 obligation, not a field supplied in a receipt."""
+        return tuple(row[0] for row in _DISABLED_OPTIONAL_ADAPTERS)
 
     def verify_files(self, *, expected_sha256: str) -> None:
         """Verify CPU filesystem facts without importing a single inventoried module."""

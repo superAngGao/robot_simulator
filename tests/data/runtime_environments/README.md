@@ -1,14 +1,21 @@
 # C2d3 author deployment fixtures (not product profiles)
 
-`183_warp_synthetic_author_v1.json` is the exact candidate used for cold Warp
-asymmetric canonical-input upload/readback on primary183 (H200, robot_sim
+`183_warp_synthetic_author_v2.json` is the active schema-v2 candidate for cold Warp
+asymmetric/dynamic canonical-input upload/readback on primary183 (H200, robot_sim
 CPython3.12.13). It grants no worker IPC/product activation. The opt-in test must
 run without skips on the matching host before its narrow result can be cited.
 This is NOT the complete required Warp/CUDA/Go2/multi-device acceptance matrix.
 
 Canonical contract SHA-256:
-`ae95257eb95b4441e5ae786a5ae65f3e7a86459e30aa455abfc27ecae0ed2299`.
+`f42485bdf9580d56b86080aad18d2d3e5a8832c23bd0868419852b2da4b734af`.
 The hash covers canonical encoding, not the pretty-printed file's raw bytes.
+
+The required `disabled_optional_modules` table is explicitly empty: synthetic
+inputs do not import trimesh. No dependency permission was added during this
+schema migration. `183_warp_synthetic_author_v1.json` is retained unchanged as
+historical evidence (canonical hash
+`ae95257eb95b4441e5ae786a5ae65f3e7a86459e30aa455abfc27ecae0ed2299`).
+The v2 parser rejects v1; it does not silently insert an empty table.
 
 Authoring source: installed-file inventory
 `/data2/shared/ang.gao/c2d3-offline-wheel-inventory-v1.json`, SHA-256
