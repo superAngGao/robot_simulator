@@ -321,16 +321,13 @@ def register_native_readiness(subject: object, prepared: object) -> None:
     _register_identity_authority(_READINESS_AUTHORITIES, subject, prepared)
 
 
-def _assert_prepared_authority(
-    prepared: object, readiness: object, *, backend: NativeBackend,
-    prepared_type: type,
+def _assert_registered_prepared_storage(
+    prepared: object, *, backend: NativeBackend, prepared_type: type,
 ) -> None:
-    """Validate exact live a2 ownership and frozen facts for one backend."""
+    """Untimed upload/storage check; does not certify execution readiness."""
 
     if type(prepared) is not prepared_type:
         raise TypeError(f"{backend} a2 authority requires the exact prepared input type")
-    if type(readiness) is not NativeReadinessEvidence:
-        raise TypeError(f"{backend} a2 authority requires NativeReadinessEvidence")
     source = prepared.source
     _require_identity_authority(
         _PREPARED_AUTHORITIES,
@@ -358,6 +355,32 @@ def _assert_prepared_authority(
             raise ValueError(
                 f"{backend} prepared native storage {entry.name!r} changed its physical allocation"
             )
+
+
+def assert_prepared_storage_registered(prepared: object) -> None:
+    """Recheck exact registered a2 allocations without fabricating readiness.
+
+    This alone never permits C3/C4 binding or a result-capable execution path.
+    Those continue to require their existing full prepared/readiness authority.
+    """
+    if type(prepared) is CudaPreparedNativeInput:
+        _assert_registered_prepared_storage(prepared, backend="cuda", prepared_type=CudaPreparedNativeInput)
+    elif type(prepared) is WarpPreparedNativeInput:
+        _assert_registered_prepared_storage(prepared, backend="warp", prepared_type=WarpPreparedNativeInput)
+    else:
+        raise TypeError("storage validation requires an exact production prepared input")
+
+
+def _assert_prepared_authority(
+    prepared: object, readiness: object, *, backend: NativeBackend,
+    prepared_type: type,
+) -> None:
+    """Validate exact live a2 ownership plus frozen execution readiness."""
+    if type(prepared) is not prepared_type:
+        raise TypeError(f"{backend} a2 authority requires the exact prepared input type")
+    if type(readiness) is not NativeReadinessEvidence:
+        raise TypeError(f"{backend} a2 authority requires NativeReadinessEvidence")
+    _assert_registered_prepared_storage(prepared, backend=backend, prepared_type=prepared_type)
     _require_identity_authority(
         _READINESS_AUTHORITIES,
         readiness,

@@ -12,6 +12,7 @@ from optical_worker.native_contract import (
     NativeReadinessEvidence,
     WarpPreparedNativeInput,
     assert_cuda_prepared_authority,
+    assert_prepared_storage_registered,
     assert_warp_prepared_authority,
     register_native_readiness,
     register_prepared_native_input,
@@ -233,3 +234,34 @@ def test_readiness_registration_does_not_certify_unregistered_test_input(backend
     register_native_readiness(unregistered_readiness, unregistered_prepared)
     with pytest.raises(ValueError, match="canonical a2 preparation"):
         check(unregistered_prepared, unregistered_readiness)
+
+
+@pytest.mark.parametrize(
+    ("backend", "check"),
+    (("warp", assert_warp_prepared_authority), ("cuda", assert_cuda_prepared_authority)),
+)
+def test_upload_storage_check_does_not_mint_or_require_execution_readiness(backend, check):
+    prepared, unrelated_readiness = _pair(backend)
+    upload_only = replace(prepared)
+    register_prepared_native_input(upload_only, prepared.source)
+    assert_prepared_storage_registered(upload_only)
+    with pytest.raises(TypeError, match="NativeReadinessEvidence"):
+        check(upload_only, None)
+    with pytest.raises(ValueError, match="canonical a2 preparation"):
+        check(upload_only, unrelated_readiness)
+    array = upload_only.arrays["scene"]
+    if backend == "warp":
+        array.ptr = 2000
+    else:
+        array.storage.ptr = 2000
+    with pytest.raises(ValueError, match="physical allocation"):
+        assert_prepared_storage_registered(upload_only)
+
+
+@pytest.mark.parametrize("backend", ("warp", "cuda"))
+def test_storage_only_check_rejects_unregistered_wrappers(backend):
+    prepared, _ = _pair(backend)
+    with pytest.raises(ValueError, match="canonical a2 preparation"):
+        assert_prepared_storage_registered(replace(prepared))
+    with pytest.raises(TypeError, match="exact production"):
+        assert_prepared_storage_registered(object())

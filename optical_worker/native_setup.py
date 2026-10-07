@@ -7,7 +7,9 @@ guardian already exist.
 
 from __future__ import annotations
 
+import weakref
 from collections.abc import Callable
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
@@ -126,6 +128,290 @@ def _abort(
     )
 
 
+@dataclass(frozen=True, eq=False)
+class _NativeUploadContext:
+    """Internal mechanics shared by C0 and the guarded runtime binding.
+
+    This is NOT readiness or a public execution capability. Only the fixed
+    wrappers create it; one consumption burns its registration before upload.
+    """
+
+    lifecycle: NativeWorkerSetupLifecycle
+    runtime: object
+    target: object
+    stream: object
+
+
+_UPLOAD_CONTEXTS = {}
+
+
+def _create_upload_context(lifecycle, runtime, target, stream):
+    context = _NativeUploadContext(lifecycle, runtime, target, stream)
+    key = id(context)
+
+    def discard(reference):
+        record = _UPLOAD_CONTEXTS.get(key)
+        if record is not None and record[0] is reference:
+            _UPLOAD_CONTEXTS.pop(key, None)
+
+    _UPLOAD_CONTEXTS[key] = (
+        weakref.ref(context, discard),
+        weakref.ref(lifecycle),
+        runtime,
+        target,
+        stream,
+    )
+    lifecycle.adopt_host_owner(
+        context,
+        role="native_upload_context",
+        operation_id="native_upload_context_create",
+    )
+    return context
+
+
+def _consume_upload_context(context):
+    if type(context) is not _NativeUploadContext:
+        raise TypeError("upload core requires its exact internal context")
+    record = _UPLOAD_CONTEXTS.pop(id(context), None)
+    if (
+        record is None
+        or record[0]() is not context
+        or record[1]() is not context.lifecycle
+        or record[2] is not context.runtime
+        or record[3] is not context.target
+        or record[4] is not context.stream
+    ):
+        raise ValueError("upload context is unregistered, consumed or has changed")
+    context.lifecycle.require_adopted(context)
+    return context.lifecycle, context.runtime, context.target, context.stream
+
+
+def _upload_cuda_native_input(source, *, context):
+    """Single allocation/upload implementation; the caller owns failure policy."""
+    lifecycle, torch, target, stream = _consume_upload_context(context)
+    import numpy as np
+
+    prepared: dict[str, Any] = {}
+    for manifest in source.manifest.arrays:
+        value = source.arrays[manifest.name]
+        host = np.array(value, copy=True, order="C")
+        lifecycle.adopt_host_owner(
+            host,
+            role="cuda_h2d_host_staging",
+            operation_id=f"cuda_stage_{manifest.name}",
+        )
+        host_tensor = torch.from_numpy(host)
+        lifecycle.adopt_host_owner(
+            host_tensor,
+            role="cuda_h2d_torch_host_view",
+            operation_id=f"cuda_host_view_{manifest.name}",
+        )
+        _enter_device_leaf(
+            lifecycle,
+            _descriptor(
+                lifecycle,
+                operation_id=f"cuda_allocate_{manifest.name}",
+                leaf_kind="allocation",
+                runtime_identity="torch_empty_explicit_device_v1",
+            ),
+        )
+        destination = _torch_empty_exact(
+            torch,
+            shape=tuple(host.shape),
+            dtype=host_tensor.dtype,
+            target=target,
+        )
+        lifecycle.adopt_returned_device_owner(
+            destination,
+            actual_device_ordinal=(
+                destination.device.index
+                if destination.device.index is not None
+                else lifecycle.target_device_ordinal
+            ),
+            role="cuda_a2_device_array",
+            operation_id=f"cuda_allocate_{manifest.name}",
+        )
+        lifecycle.require_adopted(host, host_tensor, destination, stream)
+        _enter_device_leaf(
+            lifecycle,
+            _descriptor(
+                lifecycle,
+                operation_id=f"cuda_upload_{manifest.name}",
+                leaf_kind="host_to_device_copy",
+                runtime_identity="torch_copy_explicit_stream_v1",
+            ),
+        )
+        _torch_copy_exact(torch, destination, host_tensor, stream)
+        prepared[manifest.name] = destination
+
+    _enter_device_leaf(
+        lifecycle,
+        _descriptor(
+            lifecycle,
+            operation_id="cuda_ready_event_create",
+            leaf_kind="event_create",
+            runtime_identity="torch_cuda_event_v1",
+        ),
+    )
+    ready_event = _torch_event_exact(torch)
+    lifecycle.adopt_returned_device_owner(
+        ready_event,
+        actual_device_ordinal=lifecycle.target_device_ordinal,
+        role="cuda_a2_ready_event",
+        operation_id="cuda_ready_event_create",
+    )
+    lifecycle.require_adopted(ready_event, stream)
+    _enter_device_leaf(
+        lifecycle,
+        _descriptor(
+            lifecycle,
+            operation_id="cuda_ready_event_record",
+            leaf_kind="event_record",
+            runtime_identity="torch_event_record_indexed_stream_v1",
+        ),
+    )
+    _torch_record_event_exact(ready_event, stream)
+    _enter_device_leaf(
+        lifecycle,
+        _descriptor(
+            lifecycle,
+            operation_id="cuda_ready_event_host_wait",
+            leaf_kind="event_wait",
+            runtime_identity="torch_event_synchronize_v1",
+        ),
+    )
+    _torch_wait_event_host_exact(ready_event)
+    result = CudaPreparedNativeInput(
+        manifest=source.manifest,
+        device_ordinal=lifecycle.target_device_ordinal,
+        arrays=MappingProxyType(prepared),
+        ready_event=ready_event,
+        source=source,
+    )
+    lifecycle.adopt_returned_device_owner(
+        result,
+        actual_device_ordinal=lifecycle.target_device_ordinal,
+        role="cuda_a2_prepared_input",
+        operation_id="cuda_a2_result",
+    )
+    register_prepared_native_input(result, source)
+    return result
+
+
+def _upload_warp_native_input(source, *, context):
+    """Single allocation/upload implementation; the caller owns failure policy."""
+    lifecycle, wp, target, stream = _consume_upload_context(context)
+    import numpy as np
+
+    prepared: dict[str, Any] = {}
+    with wp.ScopedDevice(target):
+        for manifest in source.manifest.arrays:
+            value = source.arrays[manifest.name]
+            host = np.array(value, copy=True, order="C")
+            lifecycle.adopt_host_owner(
+                host,
+                role="warp_h2d_host_staging",
+                operation_id=f"warp_stage_{manifest.name}",
+            )
+            host_array = wp.array(
+                host,
+                dtype=warp_dtype_from_host_dtype(wp, value.dtype),
+                device="cpu",
+                copy=False,
+            )
+            lifecycle.adopt_host_owner(
+                host_array,
+                role="warp_h2d_cpu_array_view",
+                operation_id=f"warp_host_view_{manifest.name}",
+            )
+            _enter_device_leaf(
+                lifecycle,
+                _descriptor(
+                    lifecycle,
+                    operation_id=f"warp_allocate_{manifest.name}",
+                    leaf_kind="allocation",
+                    runtime_identity="warp_empty_explicit_device_v1",
+                ),
+            )
+            destination = _warp_empty_exact(
+                wp,
+                shape=tuple(host.shape),
+                dtype=warp_dtype_from_host_dtype(wp, value.dtype),
+                target=target,
+            )
+            lifecycle.adopt_returned_device_owner(
+                destination,
+                actual_device_ordinal=int(destination.device.ordinal),
+                role="warp_a2_device_array",
+                operation_id=f"warp_allocate_{manifest.name}",
+            )
+            lifecycle.require_adopted(host, host_array, destination, stream)
+            _enter_device_leaf(
+                lifecycle,
+                _descriptor(
+                    lifecycle,
+                    operation_id=f"warp_upload_{manifest.name}",
+                    leaf_kind="host_to_device_copy",
+                    runtime_identity="warp_copy_explicit_stream_v1",
+                ),
+            )
+            _warp_copy_exact(wp, destination, host_array, stream)
+            prepared[manifest.name] = destination
+
+        _enter_device_leaf(
+            lifecycle,
+            _descriptor(
+                lifecycle,
+                operation_id="warp_ready_event_create",
+                leaf_kind="event_create",
+                runtime_identity="warp_event_explicit_device_v1",
+            ),
+        )
+        ready_event = _warp_event_exact(wp, target=target)
+        lifecycle.adopt_returned_device_owner(
+            ready_event,
+            actual_device_ordinal=int(target.ordinal),
+            role="warp_a2_ready_event",
+            operation_id="warp_ready_event_create",
+        )
+        lifecycle.require_adopted(ready_event, stream)
+        _enter_device_leaf(
+            lifecycle,
+            _descriptor(
+                lifecycle,
+                operation_id="warp_ready_event_record",
+                leaf_kind="event_record",
+                runtime_identity="warp_stream_record_event_v1",
+            ),
+        )
+        _warp_record_event_exact(stream, ready_event)
+        _enter_device_leaf(
+            lifecycle,
+            _descriptor(
+                lifecycle,
+                operation_id="warp_ready_event_host_wait",
+                leaf_kind="event_wait",
+                runtime_identity="warp_synchronize_event_v1",
+            ),
+        )
+        _warp_wait_event_host_exact(wp, ready_event)
+    result = WarpPreparedNativeInput(
+        manifest=source.manifest,
+        device_ordinal=lifecycle.target_device_ordinal,
+        arrays=MappingProxyType(prepared),
+        ready_event=ready_event,
+        source=source,
+    )
+    lifecycle.adopt_returned_device_owner(
+        result,
+        actual_device_ordinal=lifecycle.target_device_ordinal,
+        role="warp_a2_prepared_input",
+        operation_id="warp_a2_result",
+    )
+    register_prepared_native_input(result, source)
+    return result
+
+
 def prepare_cuda_native_input_for_closed_worker(
     source: object,
     *,
@@ -174,113 +460,8 @@ def prepare_cuda_native_input_for_closed_worker(
             operation_id="cuda_setup_stream_create",
         )
 
-        import numpy as np
-
-        prepared: dict[str, Any] = {}
-        for manifest in source.manifest.arrays:
-            value = source.arrays[manifest.name]
-            host = np.array(value, copy=True, order="C")
-            lifecycle.adopt_host_owner(
-                host,
-                role="cuda_h2d_host_staging",
-                operation_id=f"cuda_stage_{manifest.name}",
-            )
-            host_tensor = torch.from_numpy(host)
-            lifecycle.adopt_host_owner(
-                host_tensor,
-                role="cuda_h2d_torch_host_view",
-                operation_id=f"cuda_host_view_{manifest.name}",
-            )
-            _enter_device_leaf(
-                lifecycle,
-                _descriptor(
-                    lifecycle,
-                    operation_id=f"cuda_allocate_{manifest.name}",
-                    leaf_kind="allocation",
-                    runtime_identity="torch_empty_explicit_device_v1",
-                ),
-            )
-            destination = _torch_empty_exact(
-                torch,
-                shape=tuple(host.shape),
-                dtype=host_tensor.dtype,
-                target=target,
-            )
-            lifecycle.adopt_returned_device_owner(
-                destination,
-                actual_device_ordinal=(
-                    destination.device.index
-                    if destination.device.index is not None
-                    else lifecycle.target_device_ordinal
-                ),
-                role="cuda_a2_device_array",
-                operation_id=f"cuda_allocate_{manifest.name}",
-            )
-            lifecycle.require_adopted(host, host_tensor, destination, stream)
-            _enter_device_leaf(
-                lifecycle,
-                _descriptor(
-                    lifecycle,
-                    operation_id=f"cuda_upload_{manifest.name}",
-                    leaf_kind="host_to_device_copy",
-                    runtime_identity="torch_copy_explicit_stream_v1",
-                ),
-            )
-            _torch_copy_exact(torch, destination, host_tensor, stream)
-            prepared[manifest.name] = destination
-
-        _enter_device_leaf(
-            lifecycle,
-            _descriptor(
-                lifecycle,
-                operation_id="cuda_ready_event_create",
-                leaf_kind="event_create",
-                runtime_identity="torch_cuda_event_v1",
-            ),
-        )
-        ready_event = _torch_event_exact(torch)
-        lifecycle.adopt_returned_device_owner(
-            ready_event,
-            actual_device_ordinal=lifecycle.target_device_ordinal,
-            role="cuda_a2_ready_event",
-            operation_id="cuda_ready_event_create",
-        )
-        lifecycle.require_adopted(ready_event, stream)
-        _enter_device_leaf(
-            lifecycle,
-            _descriptor(
-                lifecycle,
-                operation_id="cuda_ready_event_record",
-                leaf_kind="event_record",
-                runtime_identity="torch_event_record_indexed_stream_v1",
-            ),
-        )
-        _torch_record_event_exact(ready_event, stream)
-        _enter_device_leaf(
-            lifecycle,
-            _descriptor(
-                lifecycle,
-                operation_id="cuda_ready_event_host_wait",
-                leaf_kind="event_wait",
-                runtime_identity="torch_event_synchronize_v1",
-            ),
-        )
-        _torch_wait_event_host_exact(ready_event)
-        result = CudaPreparedNativeInput(
-            manifest=source.manifest,
-            device_ordinal=lifecycle.target_device_ordinal,
-            arrays=MappingProxyType(prepared),
-            ready_event=ready_event,
-            source=source,
-        )
-        lifecycle.adopt_returned_device_owner(
-            result,
-            actual_device_ordinal=lifecycle.target_device_ordinal,
-            role="cuda_a2_prepared_input",
-            operation_id="cuda_a2_result",
-        )
-        register_prepared_native_input(result, source)
-        return result
+        context = _create_upload_context(lifecycle, torch, target, stream)
+        return _upload_cuda_native_input(source, context=context)
     except BaseException as exc:
         if torch is None or target is None:
             lifecycle.mark_unknown_device_scope(
@@ -352,115 +533,8 @@ def prepare_warp_native_input_for_closed_worker(
             operation_id="warp_setup_stream_resolve",
         )
 
-        import numpy as np
-
-        prepared: dict[str, Any] = {}
-        with wp.ScopedDevice(target):
-            for manifest in source.manifest.arrays:
-                value = source.arrays[manifest.name]
-                host = np.array(value, copy=True, order="C")
-                lifecycle.adopt_host_owner(
-                    host,
-                    role="warp_h2d_host_staging",
-                    operation_id=f"warp_stage_{manifest.name}",
-                )
-                host_array = wp.array(
-                    host,
-                    dtype=warp_dtype_from_host_dtype(wp, value.dtype),
-                    device="cpu",
-                    copy=False,
-                )
-                lifecycle.adopt_host_owner(
-                    host_array,
-                    role="warp_h2d_cpu_array_view",
-                    operation_id=f"warp_host_view_{manifest.name}",
-                )
-                _enter_device_leaf(
-                    lifecycle,
-                    _descriptor(
-                        lifecycle,
-                        operation_id=f"warp_allocate_{manifest.name}",
-                        leaf_kind="allocation",
-                        runtime_identity="warp_empty_explicit_device_v1",
-                    ),
-                )
-                destination = _warp_empty_exact(
-                    wp,
-                    shape=tuple(host.shape),
-                    dtype=warp_dtype_from_host_dtype(wp, value.dtype),
-                    target=target,
-                )
-                lifecycle.adopt_returned_device_owner(
-                    destination,
-                    actual_device_ordinal=int(destination.device.ordinal),
-                    role="warp_a2_device_array",
-                    operation_id=f"warp_allocate_{manifest.name}",
-                )
-                lifecycle.require_adopted(host, host_array, destination, stream)
-                _enter_device_leaf(
-                    lifecycle,
-                    _descriptor(
-                        lifecycle,
-                        operation_id=f"warp_upload_{manifest.name}",
-                        leaf_kind="host_to_device_copy",
-                        runtime_identity="warp_copy_explicit_stream_v1",
-                    ),
-                )
-                _warp_copy_exact(wp, destination, host_array, stream)
-                prepared[manifest.name] = destination
-
-            _enter_device_leaf(
-                lifecycle,
-                _descriptor(
-                    lifecycle,
-                    operation_id="warp_ready_event_create",
-                    leaf_kind="event_create",
-                    runtime_identity="warp_event_explicit_device_v1",
-                ),
-            )
-            ready_event = _warp_event_exact(wp, target=target)
-            lifecycle.adopt_returned_device_owner(
-                ready_event,
-                actual_device_ordinal=int(target.ordinal),
-                role="warp_a2_ready_event",
-                operation_id="warp_ready_event_create",
-            )
-            lifecycle.require_adopted(ready_event, stream)
-            _enter_device_leaf(
-                lifecycle,
-                _descriptor(
-                    lifecycle,
-                    operation_id="warp_ready_event_record",
-                    leaf_kind="event_record",
-                    runtime_identity="warp_stream_record_event_v1",
-                ),
-            )
-            _warp_record_event_exact(stream, ready_event)
-            _enter_device_leaf(
-                lifecycle,
-                _descriptor(
-                    lifecycle,
-                    operation_id="warp_ready_event_host_wait",
-                    leaf_kind="event_wait",
-                    runtime_identity="warp_synchronize_event_v1",
-                ),
-            )
-            _warp_wait_event_host_exact(wp, ready_event)
-        result = WarpPreparedNativeInput(
-            manifest=source.manifest,
-            device_ordinal=lifecycle.target_device_ordinal,
-            arrays=MappingProxyType(prepared),
-            ready_event=ready_event,
-            source=source,
-        )
-        lifecycle.adopt_returned_device_owner(
-            result,
-            actual_device_ordinal=lifecycle.target_device_ordinal,
-            role="warp_a2_prepared_input",
-            operation_id="warp_a2_result",
-        )
-        register_prepared_native_input(result, source)
-        return result
+        context = _create_upload_context(lifecycle, wp, target, stream)
+        return _upload_warp_native_input(source, context=context)
     except BaseException as exc:
         if wp is None or target is None:
             lifecycle.mark_unknown_device_scope(
