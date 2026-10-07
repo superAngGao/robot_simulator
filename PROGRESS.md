@@ -1164,6 +1164,17 @@ Next milestone:
       runtime/native-create ownership, GPU setup, readiness or historical-hang
       resolution. The next C2d checkpoint still requires explicit runtime
       adoption design and real-device failure evidence before GPU admission.
+      C2d3 runtime-adoption design v2 is now independently approved at `f668b5b`
+      (runtime-adoption design-review v2). Initial optional-import and
+      dependency-created-module policy gaps are closed: pre-execution absent
+      probes are distinguished from failed imports, and actual creator-root
+      identity replaces fictitious file-loader evidence. Approval permits only
+      implementation of guarded external admission, shared a2 upload/storage
+      validation/readback and terminal disposal in fixed supervised drivers.
+      This round used source inspection only, no backend import or GPU tests;
+      actual cold/dual-device/fault acceptance remains required. Primary183
+      holds a matching isolated clean design checkout. Original worktrees and
+      unrelated GPU processes were preserved; no owned hang was observed.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
