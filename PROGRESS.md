@@ -1200,6 +1200,15 @@ Next milestone:
       failures, two supervised deadline exits, subsequent safe failure, exact
       test revisions and no-residual-process checks. Complete parent validation
       and later-stage activation remain pending; C4 is not complete.
+      Captured Go2 attempt at `c8b404c` now records the three fileless Cython
+      objects as actual unrecorded modules held in the failure graph; it exits74
+      under supervision without timeout, not as a successful input preparation.
+      The Cython-publication test-evidence v1 records exact artifacts,6passed
+      author diagnostic/driver tests, no residual test processes, and open
+      creator-relation questions. A fresh independent gap-review session could
+      not start because the agent thread limit was reached; no verdict or new
+      admission rule is claimed. Production gates and environment tables are
+      unchanged. Resume independent review before extending this contract.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
