@@ -151,7 +151,11 @@ def child(fault, fd, directory):
                 record = entry._SOURCE_CUSTODY.get(session)
                 controller = None if record is None else record[0]
         try:
-            if session is not None and session.external is not None:
+            admission = None if session is None else session.external
+            # __init__ may have failed before events exists. Diagnostic output
+            # must not replace the original terminal evidence in that case.
+            events = None if admission is None else vars(admission).get("events")
+            if type(events) is list:
                 # Preserve the failed prefix as observations, never as an
                 # admission rule or a successful runtime-custody receipt.
                 _write(
@@ -159,8 +163,8 @@ def child(fault, fd, directory):
                     "external_failure.json",
                     {
                         "phase": phase,
-                        "events": list(session.external.events),
-                        "failed": session.external.failed,
+                        "events": list(events),
+                        "failed": admission.failed,
                     },
                 )
             _write(
