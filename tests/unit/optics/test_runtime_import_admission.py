@@ -36,6 +36,7 @@ class _Owners:
 
 @pytest.fixture
 def importer(tmp_path, monkeypatch):
+    monkeypatch.setenv("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
     sessions = []
     original_meta_path = list(sys.meta_path)
 

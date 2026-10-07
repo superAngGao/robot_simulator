@@ -122,10 +122,58 @@ fallback, GPU test, dependency installation, process kill or original-tree edit.
 
 ### Remaining checkpoint work
 
+### Guarded runtime/source wiring after 2235056 (also unreviewed)
+
+Added a literal CPU materialization module closure to the same captured finder,
+including the actual physics/sensing package-initializer dependencies. The internal
+session calls resolve_render_source and CanonicalNativeInput.from_scene_contract
+on the same packed scene; synthetic replay and R0 fixed fixtures still come from
+the sole production builders. It does not accept caller arrays or shipping cases.
+Partial repository modules are held before body execution. Extended-phase audits
+check the exact executed subset of this frozen closure, while the previous CPU
+core/prelude phases retain their exact full-set requirement.
+
+Added internal indexed Torch/Warp initialization, actual-object RuntimeSetupBinding,
+and one-shot upload dispatch into the shared cores. The registry freezes exact
+session/controller/module/runtime/target/stream/source and stream metadata.
+Registration failures retain returned resources in the previously adopted session
+before unwinding. Partial initialization records UNKNOWN and guarded failure;
+no C0 notifier or emergency retry is used. Product dispatch/activation is unchanged.
+The new bootstrap bytes still are NOT admitted by the old source policy/catalog.
+
+The shared Torch copy helper now enters an explicit target-device scope before
+StreamContext and exits them in reverse order, including copy exceptions. This
+does not change the extracted allocation/upload bodies. Installed Torch2.9.1
+Python sources on183 and upstream native code were inspected, not executed as
+proof of cold scope: StreamContext restores streams through set_stream, while
+CUDA12 device-guard restoration has a separate lazy-device mechanism. Sources:
+[Torch CUDA Module.cpp](https://raw.githubusercontent.com/pytorch/pytorch/v2.9.1/torch/csrc/cuda/Module.cpp),
+[CUDAFunctions.cpp](https://raw.githubusercontent.com/pytorch/pytorch/v2.9.1/c10/cuda/CUDAFunctions.cpp),
+[CUDAHooks.cpp](https://raw.githubusercontent.com/pytorch/pytorch/v2.9.1/aten/src/ATen/cuda/detail/CUDAHooks.cpp).
+These source observations do not establish that all linked native dependencies
+touch only the target device. That cold real-device proof remains mandatory.
+
+25 new tests use real guard client/core state transitions with simulated CUDA
+objects, plus real canonical CPU materializers. They cover exact identity,
+handmade copies, drift, consumption, partial-init UNKNOWN, returned-owner custody,
+the actual upload entry rejecting before its core, and nested device/stream
+scope unwind. They do not prove real GPU safety. An initial owner-custody assertion
+used the wrong enum spelling; it was corrected to the existing formal
+TRANSFERRED_TO_QUARANTINE state (no production enum change).
+
+Local combined regression:295 passed in10.29s, Python3.14, PID31928,
+parent12880, start2026-10-07T21:25:36.4027532+08:00, HasExited=True/ExitCode=0.
+Logs:c4_assets/c2d3-binding-cpu-author.log and .err. Ruff/diff checks pass.
+Before remote work,183 check21:26:04 showed H200×8 and only existing MPS2238410;
+no owned Python/test process. No101 fallback or dependency change.
+
+### Still required before the whole C2d3 code review
+
 1. Freeze actual deployment/native inventory, missing-probe and publication tables;
    implement real captured-session external loader/adoption and evidence replay.
-2. Construct exact single-use guarded RuntimeSetupBinding; share the cores without
-   C0 abort fallback; adopt actual readback destinations and supervised waits.
+2. Finish and verify the actual captured RuntimeSetupBinding/driver path; adopt
+   actual readback destinations and supervised waits. Current binding unit tests
+   do not stand in for its real cold runtime/fault matrix.
 3. Extend literal repository admission and pin the new bootstrap/policy/catalog.
    Current source catalog is intentionally NOT repinned for these unfinished
    edits: it must reject changed source bytes rather than silently admit them.

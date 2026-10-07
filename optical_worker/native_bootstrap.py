@@ -51,11 +51,63 @@ _SETUP_DEFINITIONS = MappingProxyType(
 _EXTERNAL_CONTRACT_DEFINITIONS = MappingProxyType(
     {"optical_worker.runtime_environment": "optical_worker/runtime_environment.py"}
 )
+_MATERIALIZATION_SOURCES = MappingProxyType(
+    {
+        "optical_worker.assets": "optical_worker/assets.py",
+        "optical_worker.camera_contract": "optical_worker/camera_contract.py",
+        "optical_worker.cases": "optical_worker/cases.py",
+        "optical_worker.lane_contract": "optical_worker/lane_contract.py",
+        "optical_worker.native_input": "optical_worker/native_input.py",
+        "optical_worker.provenance": "optical_worker/provenance.py",
+        "optical_worker.render_parameters": "optical_worker/render_parameters.py",
+        "optical_worker.render_sequence_contract": "optical_worker/render_sequence_contract.py",
+        "optical_worker.timing": "optical_worker/timing.py",
+        "optical_worker.workload_contract": "optical_worker/workload_contract.py",
+        "optical_worker.workloads": "optical_worker/workloads.py",
+        "optics": "optics/__init__.py",
+        "optics.camera_presets": "optics/camera_presets.py",
+        "optics.host_bvh": "optics/host_bvh.py",
+        "optics.mjcf_visual": "optics/mjcf_visual.py",
+        "optics.registry": "optics/registry.py",
+        "optics.scene_contract": "optics/scene_contract.py",
+        "physics": "physics/__init__.py",
+        "physics._robot_tree_base": "physics/_robot_tree_base.py",
+        "physics.collision": "physics/collision.py",
+        "physics.collision_filter": "physics/collision_filter.py",
+        "physics.constraint_solver": "physics/constraint_solver.py",
+        "physics.constraint_solvers": "physics/constraint_solvers.py",
+        "physics.contact": "physics/contact.py",
+        "physics.contact_tolerances": "physics/contact_tolerances.py",
+        "physics.cuda_publication": "physics/cuda_publication.py",
+        "physics.dynamics_cache": "physics/dynamics_cache.py",
+        "physics.dynamics_utils": "physics/dynamics_utils.py",
+        "physics.force_source": "physics/force_source.py",
+        "physics.geometry": "physics/geometry.py",
+        "physics.integrator": "physics/integrator.py",
+        "physics.joint": "physics/joint.py",
+        "physics.publish": "physics/publish.py",
+        "physics.robot_tree": "physics/robot_tree.py",
+        "physics.spatial": "physics/spatial.py",
+        "physics.step_pipeline": "physics/step_pipeline.py",
+        "physics.telemetry": "physics/telemetry.py",
+        "physics.terrain": "physics/terrain.py",
+        "sensing": "sensing/__init__.py",
+        "sensing.builders": "sensing/builders.py",
+        "sensing.optical": "sensing/optical.py",
+        "sensing.readings": "sensing/readings.py",
+        "sensing.state_sample": "sensing/state_sample.py",
+        "sensing.surface_query": "sensing/surface_query.py",
+    }
+)
+_RUNTIME_PHASES = frozenset(
+    {"materializing", "materialized", "initializing_runtime", "runtime_ready", "uploading", "uploaded"}
+)
 # One-shot trusted-process identities, never reconstructed from a receipt.
 # None is a permanent failed/in-progress binding tombstone, not permission to retry.
 _SOURCE_CUSTODY = {}
 _VERIFIED_SNAPSHOTS = {}
 _EXTERNAL_CUSTODY = {}
+_RUNTIME_BINDINGS = {}
 
 
 class SourceBootstrapError(RuntimeError):
@@ -224,7 +276,7 @@ class _CapturedSourceLoader(importlib.abc.SourceLoader):
             )
             self.session.modules[self.name] = (module, self, "started")
             self.session.trace.append(("started", self.name))
-            if self.name in _SETUP_DEFINITIONS or self.name in _EXTERNAL_CONTRACT_DEFINITIONS:
+            if self.name not in _CORE and self.name not in _CUSTODY_PRELUDE:
                 controller = self.session.bound_controller()
                 controller._require_setup()
                 controller.adopt_host_owner(
@@ -264,7 +316,7 @@ class _CapturedSourceFinder(importlib.abc.MetaPathFinder):
                 fullname in self.session.admitted_sources() and target is None,
                 "repository import outside CPU core or reload",
             )
-            if fullname in _SETUP_DEFINITIONS or fullname in _EXTERNAL_CONTRACT_DEFINITIONS:
+            if fullname not in _CORE and fullname not in _CUSTODY_PRELUDE:
                 self.session.bound_controller()._require_setup()
             _require(fullname not in self.session.loaders, "duplicate loader")
             loader = _CapturedSourceLoader(self.session, fullname)
@@ -442,6 +494,9 @@ class _ExternalAdmission:
         )
         _require(self.session.bound_controller() is self.controller, "external controller identity changed")
         self.controller._require_setup()
+        _require(
+            os.environ.get("TORCH_DEVICE_BACKEND_AUTOLOAD") == "0", "external backend plugin setting drift"
+        )
         _require(self.environment.sha256 == self.expected_sha256, "external environment identity drift")
         _require(self.environment.to_payload() == self.payload, "external rule table drift")
         p = self.payload
@@ -733,6 +788,50 @@ class _ExternalNamespaceLoader(importlib.abc.Loader):
             raise
 
 
+class _RuntimeSetupBinding:
+    """Actual retained runtime objects; only the source session registers these.
+
+    The exact registry, not construction or a parsed digest, is upload authority.
+    It is one-shot and is not execution/final-graph readiness.
+    """
+
+    __slots__ = (
+        "session",
+        "controller",
+        "module",
+        "runtime",
+        "target",
+        "stream",
+        "stream_identity",
+        "source",
+    )
+
+    def __init__(self):
+        raise TypeError("runtime bindings are issued only after guarded runtime initialization")
+
+    def __setattr__(self, name, value):
+        raise TypeError("runtime binding is frozen")
+
+    def __delattr__(self, name):
+        raise TypeError("runtime binding is frozen")
+
+
+def _stream_identity(lane, stream, target):
+    # Fixed metadata fields only; no ambient-device getter or CUDA query.
+    if lane == "cuda":
+        _require(
+            target.type == "cuda"
+            and type(target.index) is int
+            and stream.device.type == "cuda"
+            and type(stream.device.index) is int
+            and stream.device.index == target.index,
+            "CUDA stream target drift",
+        )
+        return (stream.device.index, int(stream.cuda_stream))
+    _require(stream.device is target and target.is_cuda, "Warp stream target drift")
+    return (int(target.ordinal), int(stream.cuda_stream))
+
+
 class _SourceSession:
     def __init__(self, root, revision, lane, catalog_sha256, sources):
         self.root, self.revision, self.lane = root, revision, lane
@@ -754,6 +853,8 @@ class _SourceSession:
         self.phase = "core"
         self.snapshot = None
         self.external = None
+        self.runtime_owners = []
+        self.render_source, self.canonical_input, self.prepared_input = None, None, None
         self.loaders, self.modules, self.trace = {}, {}, []
         self.finder = _CapturedSourceFinder(self)
 
@@ -766,6 +867,14 @@ class _SourceSession:
             return _CORE | _CUSTODY_PRELUDE | _SETUP_DEFINITIONS
         if self.phase in {"configuring_runtime", "runtime_configured"}:
             return _CORE | _CUSTODY_PRELUDE | _SETUP_DEFINITIONS | _EXTERNAL_CONTRACT_DEFINITIONS
+        if self.phase in _RUNTIME_PHASES:
+            return (
+                _CORE
+                | _CUSTODY_PRELUDE
+                | _SETUP_DEFINITIONS
+                | _EXTERNAL_CONTRACT_DEFINITIONS
+                | _MATERIALIZATION_SOURCES
+            )
         raise SourceBootstrapError("invalid CPU source phase")
 
     def fail(self, error):
@@ -883,9 +992,283 @@ class _SourceSession:
                 self.external = admission  # Retain partial construction before initialization.
                 _EXTERNAL_CUSTODY[self] = (admission, environment, expected_sha256, controller)
                 admission.__init__(self, environment, expected_sha256)
+                os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
                 self.audit()
                 admission.audit()
             self.phase = "runtime_configured"
+        except BaseException as error:
+            self.fail(error)
+            raise
+
+    def materialize_native_source(self, case_id, *, go2_model_dir=None):
+        """Fixed canonical CPU path; no supplied arrays, callbacks or readiness."""
+        try:
+            self.check_live()
+            _require(self.phase == "runtime_configured", "canonical materialization is single-use")
+            _require(
+                case_id
+                in {
+                    "asymmetric_synthetic_7x3_v1",
+                    "synthetic_dynamic_rigid_960x640_v1",
+                    "go2_static_960x640_v1",
+                    "go2_static_1920x1080_v1",
+                },
+                "case is outside C2d3 materialization",
+            )
+            controller = self.bound_controller()
+            with controller.segment("setup"):
+                self.phase = "materializing"
+                self._runtime_leaf("canonical_dependency_import", "runtime_import_or_init")
+                from optical_worker.assets import preflight_case_asset
+                from optical_worker.lane_contract import (
+                    CANONICAL_NATIVE_REPLAY_INPUT,
+                    FIXED_NATIVE_SCENE_INPUT,
+                )
+                from optical_worker.native_input import CanonicalNativeInput
+                from optical_worker.render_parameters import resolve_render_source
+                from optical_worker.workloads import (
+                    build_canonical_fixed_fixture,
+                    build_canonical_transform_replay,
+                )
+
+                is_go2 = case_id in {"go2_static_960x640_v1", "go2_static_1920x1080_v1"}
+                _require(is_go2 == (go2_model_dir is not None), "Go2 path belongs only to frozen Go2 cases")
+                model_dir = Path(go2_model_dir).resolve(strict=True) if is_go2 else None
+                asset = (
+                    preflight_case_asset(case_id, repo_root=model_dir.parent, model_dir=model_dir)
+                    if is_go2
+                    else None
+                )
+                if asset is not None:
+                    self._hold_runtime_owner(asset, "canonical_asset")
+                render = resolve_render_source(case_id, go2_model_dir=model_dir, asset_evidence=asset)
+                self.render_source = render
+                self._hold_runtime_owner(render, "canonical_render_source")
+                packed = render.packed_scene
+                if case_id == "synthetic_dynamic_rigid_960x640_v1":
+                    replay = build_canonical_transform_replay(case_id)
+                    self._hold_runtime_owner(replay, "canonical_replay")
+                    source = CanonicalNativeInput.from_scene_contract(
+                        packed, input_contract=CANONICAL_NATIVE_REPLAY_INPUT, replay=replay
+                    )
+                else:
+                    fixture = build_canonical_fixed_fixture(packed)
+                    self._hold_runtime_owner(fixture, "canonical_fixed_fixture")
+                    source = CanonicalNativeInput.from_scene_contract(
+                        packed, input_contract=FIXED_NATIVE_SCENE_INPUT, fixed_fixture=fixture
+                    )
+                self.canonical_input = source
+                self._hold_runtime_owner(source, "canonical_native_input")
+                self.audit()
+                self.external.audit()
+            self.phase = "materialized"
+            return source.manifest
+        except BaseException as error:
+            self.fail(error)
+            raise
+
+    def _hold_runtime_owner(self, owner, role, *, device_ordinal=None):
+        # Retain in the already adopted session BEFORE a registration that may
+        # raise. Failure custody therefore includes the last returned object.
+        self.runtime_owners.append(owner)
+        controller = self.bound_controller()
+        if device_ordinal is None:
+            controller.adopt_host_owner(owner, role=role, operation_id=role)
+        else:
+            controller.adopt_returned_device_owner(
+                owner, actual_device_ordinal=device_ordinal, role=role, operation_id=role
+            )
+
+    def _runtime_leaf(self, operation, kind):
+        from optical_worker.lifecycle import DeviceScopeDescriptor
+
+        controller = self.bound_controller()
+        descriptor = DeviceScopeDescriptor.exact_target(
+            operation_id=operation,
+            leaf_kind=kind,
+            device_ordinal=controller.target_device_ordinal,
+            scope_source="captured_runtime_admission",
+            runtime_identity="frozen_runtime_environment_v1",
+        )
+        controller.enter_device_leaf(controller.begin_device_leaf(descriptor))
+
+    def initialize_native_runtime(self):
+        """Internal sacrificial-driver entry; not connected to product IPC."""
+        try:
+            self.check_live()
+            _require(
+                self.phase == "materialized" and self not in _RUNTIME_BINDINGS,
+                "runtime initialization is ordered and single-use",
+            )
+            _RUNTIME_BINDINGS[self] = None
+            controller = self.bound_controller()
+            ordinal = controller.target_device_ordinal
+            with controller.segment("setup"):
+                self.phase = "initializing_runtime"
+                self.external.audit()
+                self.external.phase = "runtime"
+                _require(os.environ.get("TORCH_DEVICE_BACKEND_AUTOLOAD") == "0", "backend plugins enabled")
+                try:
+                    self._runtime_leaf("indexed_runtime_import", "runtime_import_or_init")
+                    if self.lane == "cuda":
+                        import torch as module
+
+                        runtime = module._C
+                        self._hold_runtime_owner(runtime, "torch_runtime_root")
+                        target = module.device("cuda", ordinal)
+                        self._hold_runtime_owner(target, "torch_target_descriptor")
+                        self._runtime_leaf("indexed_runtime_stream", "allocation")
+                        stream = module.cuda.Stream(device=target)
+                        # Store before reading returned metadata as that read
+                        # or its ordinal validation may itself fail.
+                        self.runtime_owners.append(stream)
+                        _require(type(stream.device.index) is int, "CUDA stream has no indexed device")
+                        self._hold_runtime_owner(
+                            stream, "torch_runtime_stream", device_ordinal=stream.device.index
+                        )
+                    else:
+                        import warp as module
+
+                        module.config.quiet = True
+                        _require(module.config.quiet is True, "Warp quiet initialization required")
+                        self._runtime_leaf("indexed_warp_init", "runtime_import_or_init")
+                        module.init()
+                        runtime = self.external.records["warp._src.context"]["module"].runtime
+                        self._hold_runtime_owner(runtime, "warp_runtime_root")
+                        target = module.get_device(f"cuda:{ordinal}")
+                        self.runtime_owners.append(target)
+                        _require(target.is_cuda, "Warp returned a non-CUDA target")
+                        self._hold_runtime_owner(
+                            target, "warp_runtime_target", device_ordinal=int(target.ordinal)
+                        )
+                        self._runtime_leaf("indexed_runtime_stream", "runtime_import_or_init")
+                        stream = module.get_stream(target)
+                        self.runtime_owners.append(stream)
+                        self._hold_runtime_owner(
+                            stream, "warp_runtime_stream", device_ordinal=int(stream.device.ordinal)
+                        )
+                except BaseException:
+                    if not controller._terminating:
+                        controller.mark_unknown_device_scope(
+                            source="partial_runtime_initialization", reason="runtime_init_not_completed"
+                        )
+                    raise
+                identity = _stream_identity(self.lane, stream, target)
+                _require(identity[0] == ordinal, "runtime target differs from the guarded ordinal")
+                self.external.audit()
+                self.audit()
+                binding = object.__new__(_RuntimeSetupBinding)
+                for key, value in (
+                    ("session", self),
+                    ("controller", controller),
+                    ("module", module),
+                    ("runtime", runtime),
+                    ("target", target),
+                    ("stream", stream),
+                    ("stream_identity", identity),
+                    ("source", self.canonical_input),
+                ):
+                    object.__setattr__(binding, key, value)
+                _RUNTIME_BINDINGS[self] = (
+                    binding,
+                    controller,
+                    self.external,
+                    module,
+                    runtime,
+                    target,
+                    stream,
+                    identity,
+                    self.canonical_input,
+                )
+                self._hold_runtime_owner(binding, "runtime_setup_binding")
+            self.phase = "runtime_ready"
+            return binding
+        except BaseException as error:
+            self.fail(error)
+            raise
+
+    def _consume_runtime_binding(self, binding):
+        self.check_live()
+        controller = self.bound_controller()
+        controller._require_setup()
+        record = _RUNTIME_BINDINGS.get(self)
+        # Burn even on identity/metadata rejection. The surrounding armed
+        # segment handles poison and never falls back to C0 synchronization.
+        _RUNTIME_BINDINGS[self] = None
+        _require(
+            type(binding) is _RuntimeSetupBinding and record is not None and record[0] is binding,
+            "runtime binding is foreign, copied, unregistered or consumed",
+        )
+        _, original_controller, admission, module, runtime, target, stream, identity, source = record
+        _require(
+            binding.session is self
+            and binding.controller is controller
+            and controller is original_controller
+            and self.external is admission
+            and binding.module is module
+            and binding.runtime is runtime
+            and binding.target is target
+            and binding.stream is stream
+            and binding.stream_identity == identity
+            and binding.source is source
+            and self.canonical_input is source,
+            "runtime binding resource identity drift",
+        )
+        expected_name = "torch" if self.lane == "cuda" else "warp"
+        _require(
+            admission.records[expected_name]["module"] is module and sys.modules.get(expected_name) is module,
+            "runtime module replacement",
+        )
+        _require(
+            _stream_identity(self.lane, stream, target) == identity
+            and identity[0] == controller.target_device_ordinal,
+            "runtime stream storage drift",
+        )
+        if self.lane == "cuda":
+            _require(
+                module._C is runtime and os.environ.get("TORCH_DEVICE_BACKEND_AUTOLOAD") == "0",
+                "Torch runtime/configuration drift",
+            )
+        else:
+            _require(
+                target.runtime is runtime
+                and module.config.quiet is True
+                and admission.records["warp._src.context"]["module"].runtime is runtime,
+                "Warp runtime/configuration drift",
+            )
+        controller.require_adopted(binding, module, runtime, target, stream, self.canonical_input)
+        return module, target, stream
+
+    def upload_native_input(self, binding):
+        try:
+            self.check_live()
+            _require(self.phase == "runtime_ready", "guarded upload is ordered and single-use")
+            controller = self.bound_controller()
+            with controller.segment("setup"):
+                self.phase = "uploading"
+                module, target, stream = self._consume_runtime_binding(binding)
+                self.audit()
+                self.external.audit()
+                from optical_worker.native_contract import assert_prepared_storage_registered
+                from optical_worker.native_setup import (
+                    _create_upload_context,
+                    _upload_cuda_native_input,
+                    _upload_warp_native_input,
+                )
+
+                self._runtime_leaf("indexed_upload_scope", "runtime_import_or_init")
+                context = _create_upload_context(controller, module, target, stream)
+                if self.lane == "cuda":
+                    prepared = _upload_cuda_native_input(self.canonical_input, context=context)
+                else:
+                    prepared = _upload_warp_native_input(self.canonical_input, context=context)
+                self.prepared_input = prepared
+                self._hold_runtime_owner(prepared, "guarded_prepared_input")
+                assert_prepared_storage_registered(prepared)
+                self.audit()
+                self.external.audit()
+            self.phase = "uploaded"
+            return prepared
         except BaseException as error:
             self.fail(error)
             raise
@@ -934,7 +1317,11 @@ class _SourceSession:
         try:
             self.check_live()
             expected = self.admitted_sources()
-            _require(set(self.modules) == set(expected), "executed core incomplete")
+            if self.phase in _RUNTIME_PHASES:
+                required = _CORE | _CUSTODY_PRELUDE | _SETUP_DEFINITIONS | _EXTERNAL_CONTRACT_DEFINITIONS
+                _require(set(required) <= set(self.modules) <= set(expected), "executed source closure drift")
+            else:
+                _require(set(self.modules) == set(expected), "executed core incomplete")
             for name, (module, loader, state) in self.modules.items():
                 _require(
                     state == "completed" and sys.modules.get(name) is module, "module identity/state drift"
@@ -954,22 +1341,25 @@ class _SourceSession:
                     and module.__file__ == loader.origin,
                     "module metadata drift",
                 )
-                expected_path = [str(self.root / "optical_worker")] if name == "optical_worker" else None
+                expected_path = (
+                    [str(Path(loader.origin).parent)] if loader.relative.endswith("/__init__.py") else None
+                )
                 _require(module.__spec__.submodule_search_locations == expected_path, "package spec drift")
                 if expected_path is not None:
                     _require(module.__path__ == expected_path, "package search path drift")
             _require(
-                len(self.trace) == 2 * len(expected)
+                len(self.trace) == 2 * len(self.modules)
                 and all(
                     self.trace.count((operation, name)) == 1
-                    for name in expected
+                    for name in self.modules
                     for operation in ("started", "completed")
                 ),
                 "execution trace drift",
             )
             if self.snapshot is not None:
                 observed = self.snapshot.check_loaded_modules()
-                _require(set(observed) == set(expected.values()) | {_BOOTSTRAP}, "source ledger drift")
+                executed = {expected[name] for name in self.modules}
+                _require(set(observed) == executed | {_BOOTSTRAP}, "source ledger drift")
             if _SOURCE_CUSTODY.get(self) is not None and self.phase != "binding":
                 controller = self.bound_controller()
                 controller.require_adopted(self, self.snapshot, self.bootstrap_owner)
@@ -991,6 +1381,13 @@ def _install(root, revision, lane, catalog_sha256):
         "isolated CPython -I -S -B required",
     )
     _require(not any(name.partition(".")[0] in _ROOTS for name in sys.modules), "repository module preloaded")
+    _require(
+        all(
+            name.partition(".")[0] in sys.stdlib_module_names | set(sys.builtin_module_names) | {"__main__"}
+            for name in sys.modules
+        ),
+        "non-standard-library module preloaded before source custody",
+    )
     _require(
         not any(Path(path).resolve().is_relative_to(root) for path in sys.path), "repository on search path"
     )
