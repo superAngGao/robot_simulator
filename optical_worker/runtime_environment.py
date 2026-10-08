@@ -423,7 +423,7 @@ def validate_native_global_observations(payload, environment, *, require_complet
         _require(parent is None or type(parent) is int and 0 <= parent < index, "native parent order")
         name, operation = call["observer"], call["operation"]
         _require(name in modules and operation in {"create", "exec"}
-                 and call["phase"] in _PHASES, "native call relation")
+                 and call["phase"] == modules[name]["phase"], "native call relation")
         _require((name, operation) not in seen_calls, "duplicate native call")
         if operation == "exec":
             _require((name, "create") in seen_calls, "native exec before create")
@@ -437,7 +437,7 @@ def validate_native_global_observations(payload, environment, *, require_complet
         if parent is not None and calls[parent]["state"] == "completed":
             _require(call["state"] == "completed", "completed parent has incomplete child")
         calls.append(call)
-    pending, admitted, tokens = {}, {}, set()
+    pending, admitted, tokens, returned = {}, {}, set(), set()
     event_keys = {"index", "operation", "name", "phase", "observer", "observer_call", "call_sequence",
                   "parent_call_sequence", "absence_checkpoint", "checkpoint", "request_name", "object_token"}
     for index, value in enumerate(p["events"]):
@@ -450,11 +450,21 @@ def validate_native_global_observations(payload, environment, *, require_complet
         _require(event["phase"] == call["phase"] == rule["phase"]
                  and event["observer"] == call["observer"] == rule["observer"]
                  and event["observer_call"] == call["operation"] == "exec"
+                 and type(event["parent_call_sequence"]) is type(call["parent_sequence"])
                  and event["parent_call_sequence"] == call["parent_sequence"]
                  and event["absence_checkpoint"] == "observer_exec_entry" and name in call["absent_names"],
                  "native global interval mismatch")
         token = event["object_token"]
         _require(type(token) is int and token > 0, "native global object token")
+        # An exec-return fact closes the delegated interval, even if fallible
+        # wrapper work has not yet emitted its admission. No nested event can
+        # occur after that fact, including in a failed prefix.
+        parent = call["parent_sequence"]
+        while parent is not None:
+            _require(parent not in returned, "parent return preceded nested event")
+            parent = calls[parent]["parent_sequence"]
+        if event["checkpoint"] == "exec_return":
+            returned.add(sequence)
         if event["operation"] == "observed_pending":
             _require(name not in pending and name not in admitted and token not in tokens,
                      "duplicate native global observation")

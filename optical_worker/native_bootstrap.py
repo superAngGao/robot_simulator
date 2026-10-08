@@ -614,7 +614,7 @@ class _ExternalAdmission:
         self.native_thread = _thread.get_ident()
         self.native_context, self.native_calls, self.native_call_bindings = [], [], {}
         self.native_global_records, self.native_global_bindings = {}, {}
-        self.native_global_events = []
+        self.native_global_events, self.native_global_event_bindings = [], []
         self.native_checkpoint_active = False
         self.baseline = dict(sys.modules)
         self.failed = False
@@ -650,14 +650,19 @@ class _ExternalAdmission:
         _require(binding is not None and binding[0] is frame
                  and sequence < len(self.native_calls) and self.native_calls[sequence] is frame,
                  "native call identity drift")
-        _, loader, module, operation, phase, parent, absent, marker, state = binding
+        _, loader, module, operation, phase, parent, absent, marker, spec, state = binding
+        # Hold a substituted spec before rejecting it, without adopting or
+        # granting it the identity of the spec used by the actual delegate.
+        for value in (frame["spec"], self.specs.get(loader.name)):
+            if value is not spec:
+                self.retained.append(value)
         _require(frame["loader"] is loader and frame["module"] is module
                  and frame["operation"] == operation and frame["phase"] == phase
                  and frame["parent"] is parent and frame["absent"] == absent
-                 and frame["wrapper"] is marker and frame["state"] == state,
+                 and frame["wrapper"] is marker and frame["spec"] is spec and frame["state"] == state,
                  "native call binding drift")
         loader._check_binding()
-        _require(self.specs[loader.name] is frame["spec"], "native call spec drift")
+        _require(self.specs[loader.name] is spec, "native call spec drift")
         if module is not None:
             _require(self.records[loader.name]["module"] is module, "native call root drift")
         return binding
@@ -666,7 +671,7 @@ class _ExternalAdmission:
         binding = self._check_native_call(frame)
         frame["module"], frame["state"] = module, state
         self.native_call_bindings[frame["sequence"]] = (
-            binding[0], binding[1], module, *binding[3:8], state
+            binding[0], binding[1], module, *binding[3:-1], state
         )
 
     def enter_import_wrapper(self, checkpoint, request_name=None):
@@ -713,7 +718,7 @@ class _ExternalAdmission:
                  "absent": absent, "wrapper": marker, "state": "started"}
         self.native_calls.append(frame)
         self.native_call_bindings[frame["sequence"]] = (
-            frame, loader, module, operation, self.phase, parent, absent, marker, "started"
+            frame, loader, module, operation, self.phase, parent, absent, marker, frame["spec"], "started"
         )
         self.native_context.append(frame)
         return frame
@@ -739,14 +744,32 @@ class _ExternalAdmission:
 
     def _global_event(self, operation, name, record, checkpoint, request_name):
         frame = record["frame"]
-        self.native_global_events.append({
+        event = {
             "index": len(self.native_global_events), "operation": operation, "name": name,
             "phase": frame["phase"], "observer": frame["loader"].name, "observer_call": "exec",
             "call_sequence": frame["sequence"],
             "parent_call_sequence": None if frame["parent"] is None else frame["parent"]["sequence"],
             "absence_checkpoint": "observer_exec_entry", "checkpoint": checkpoint,
             "request_name": request_name, "object_token": record["token"],
-        })
+        }
+        # The projection is mutable descriptive data. Preserve the actual
+        # issued facts and roots separately before exposing that projection.
+        self.native_global_event_bindings.append(
+            (event, tuple(event.items()), name, record, record["module"], frame))
+        self.native_global_events.append(event)
+
+    def _check_global_events(self):
+        _require(len(self.native_global_events) == len(self.native_global_event_bindings),
+                 "native global event history length drift")
+        for event, binding in zip(self.native_global_events, self.native_global_event_bindings):
+            issued, facts, name, record, module, frame = binding
+            _require(event is issued and type(event) is dict and set(event) == {key for key, _ in facts}
+                     and all(type(event[key]) is type(value) and event[key] == value for key, value in facts),
+                     "native global issued event drift")
+            self._check_global_record(name, record)
+            _require(self.native_global_records.get(name) is record and record["module"] is module
+                     and record["frame"] is frame and event["object_token"] == record["token"]
+                     and event["call_sequence"] == frame["sequence"], "native global event root drift")
 
     @staticmethod
     def _check_global_metadata(name, value):
@@ -829,6 +852,7 @@ class _ExternalAdmission:
         self._check_native_call(frame)
         _require(not self.failed and frame["state"] == "returned"
                  and self.native_context[-1] is frame["wrapper"], "native call completed out of order")
+        self._check_global_events()
         for name in frame["absent"]:
             record = self.native_global_records.get(name)
             _require(record is not None and record["frame"] is frame
@@ -843,6 +867,9 @@ class _ExternalAdmission:
     def audit_native_globals(self):
         self.native_global_checkpoint("audit")
         _require(not self.native_context, "native import context still active")
+        for frame in self.native_calls:
+            self._check_native_call(frame)
+        self._check_global_events()
         for name, rule in self.native_globals.items():
             record = self.native_global_records.get(name)
             observer = self.records.get(rule["observer"])
@@ -856,6 +883,13 @@ class _ExternalAdmission:
                 self.controller.require_adopted(record["module"])
 
     def native_global_observations(self):
+        try:
+            return self._native_global_observations()
+        except BaseException as error:
+            self.fail(error, "native_global_evidence")
+            raise
+
+    def _native_global_observations(self):
         # No admission from serialization. Failure prefixes may include pending calls.
         if not self.failed:
             self._check_native_thread()
@@ -863,6 +897,7 @@ class _ExternalAdmission:
                 self._check_native_call(frame)
             for name, record in self.native_global_records.items():
                 self._check_global_record(name, record)
+            self._check_global_events()
         calls = [{"sequence": frame["sequence"],
                   "parent_sequence": None if frame["parent"] is None else frame["parent"]["sequence"],
                   "observer": frame["loader"].name, "operation": frame["operation"],

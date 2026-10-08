@@ -1209,6 +1209,18 @@ Next milestone:
       not start because the agent thread limit was reached; no verdict or new
       admission rule is claimed. Production gates and environment tables are
       unchanged. Resume independent review before extending this contract.
+      Continuation on 2026-10-08 restored fresh independent review capacity.
+      Native-global publication design v1 was independently approved for bounded
+      implementation only (archive at `8b7c9b8`). It permits exact observed native
+      exec intervals and direct custody, without claiming creator ownership.
+      Candidate `4933b7c` received Request changes in implementation-gap-review v1:
+      copied spec substitution, mutable issued-event tokens and contradictory
+      descriptive replay were independently reproduced. Repairs are in progress;
+      this remains a gap review, not C2d3 code acceptance. Its real guarded Go2
+      Warp 960 attempt v9 expired at the unchanged 120-second materialization
+      bound; supervisor reaped worker4118680 (-9), no upload/readback succeeded.
+      CPU subsets do not replace actual both-lane/Go2/dual-device/failure evidence
+      or the still-required aggregate runtime-custody schema. C4 remains open.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design

@@ -331,3 +331,127 @@ def test_evidence_rejects_fabricated_admissions(importer, monkeypatch, fault):
         event["checkpoint"] = "request_entry"
     with pytest.raises(ValueError):
         validate_native_global_observations(payload, admission.environment, require_complete=True)
+
+
+@pytest.mark.parametrize("boundary", ["pending", "audit", "issuance"])
+def test_coherent_spec_copy_cannot_replace_original_execution_spec(importer, monkeypatch, boundary):
+    specs = []
+
+    def replace(admission):
+        original = admission.specs["c2ext._parent"]
+        replacement = copy.copy(original)
+        specs.extend((original, replacement))
+        admission.specs["c2ext._parent"] = replacement
+        sys.modules["c2ext._parent"].__spec__ = replacement
+        for frame in admission.native_calls:
+            if frame["loader"].name == "c2ext._parent":
+                frame["spec"] = replacement
+
+    def execute(admission, name):
+        _publish()
+        if boundary == "pending":
+            admission.session.finder.find_spec("fractions")
+            replace(admission)
+
+    admission = _setup(importer, monkeypatch, execute)
+    if boundary == "pending":
+        with pytest.raises(SourceBootstrapError, match="binding drift"):
+            importlib.import_module("c2ext._parent")
+        assert not any(e["operation"] == "admitted" for e in admission.native_global_events)
+    else:
+        importlib.import_module("c2ext._parent")
+        replace(admission)
+        with pytest.raises(SourceBootstrapError, match="binding drift"):
+            (admission.audit if boundary == "audit" else admission.native_global_observations)()
+    assert admission.failed and admission.session.failed
+    assert all(any(owner is spec for owner in admission.retained) for spec in specs)
+    assert admission.session.finder.find_spec("fractions") is not None
+
+
+@pytest.mark.parametrize("boundary", ["pending", "audit", "issuance"])
+@pytest.mark.parametrize("fault", ["paired_token", "checkpoint", "remove", "reorder", "copy"])
+def test_live_event_projection_cannot_rewrite_issued_facts(importer, monkeypatch, boundary, fault):
+    def mutate(admission):
+        events = admission.native_global_events
+        if fault == "paired_token":
+            for event in events:
+                event["object_token"] += 100
+        elif fault == "checkpoint":
+            events[0]["checkpoint"], events[0]["request_name"] = "exec_return", None
+        elif fault == "remove":
+            events.clear()
+        elif fault == "reorder":
+            if len(events) == 1:
+                events.append(events[0])
+            else:
+                events.reverse()
+        else:
+            events[:] = [dict(event) for event in events]
+
+    def execute(admission, name):
+        _publish()
+        admission.session.finder.find_spec("fractions")
+        if boundary == "pending":
+            mutate(admission)
+
+    admission = _setup(importer, monkeypatch, execute)
+    if boundary == "pending":
+        with pytest.raises(SourceBootstrapError, match="event"):
+            importlib.import_module("c2ext._parent")
+        assert not any(e["operation"] == "admitted" for e in admission.native_global_events)
+    else:
+        importlib.import_module("c2ext._parent")
+        mutate(admission)
+        count = len(admission.native_global_events)
+        with pytest.raises(SourceBootstrapError, match="event"):
+            (admission.audit if boundary == "audit" else admission.native_global_observations)()
+        assert len(admission.native_global_events) == count
+    assert admission.failed and admission.session.failed
+    assert admission.native_global_records["c2ext.shared"]["token"] == 1
+    assert any(owner is sys.modules["c2ext.shared"] for owner in admission.retained)
+
+
+@pytest.mark.parametrize("complete", [False, True])
+@pytest.mark.parametrize("fault", ["create_phase", "parent_return", "bool_parent"])
+def test_replay_rejects_impossible_call_phase_and_return_order(importer, monkeypatch, complete, fault):
+    def execute(admission, name):
+        _publish("c2ext.shared" if name.endswith("_parent") else "c2ext.child_shared")
+        if name.endswith("_parent"):
+            importlib.import_module("c2ext._child")
+
+    row = {"name": "c2ext.child_shared", "observer": "c2ext._child",
+           "operation": "exec", "phase": "materialization"}
+    admission = _setup(importer, monkeypatch, execute, extra=[row])
+    importlib.import_module("c2ext._parent")
+    payload = admission.native_global_observations()
+    if fault == "create_phase":
+        next(c for c in payload["calls"] if c["observer"] == "c2ext._parent"
+             and c["operation"] == "create")["phase"] = "runtime"
+    elif fault == "parent_return":
+        payload["events"][0]["checkpoint"], payload["events"][0]["request_name"] = "exec_return", None
+    else:
+        # Parent sequence is an integer identity, never a boolean flag.
+        payload["events"][1]["parent_call_sequence"] = True
+    if not complete:
+        payload["events"].pop()
+        parent = next(c for c in payload["calls"] if c["observer"] == "c2ext._parent"
+                      and c["operation"] == "exec")
+        parent["state"] = "failed"
+    with pytest.raises(ValueError):
+        validate_native_global_observations(payload, admission.environment, require_complete=complete)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_unrelated_observer_returns_do_not_close_sibling_intervals(importer, monkeypatch, reverse):
+    def execute(admission, name):
+        _publish("c2ext.shared" if name.endswith("_parent") else "c2ext.child_shared")
+
+    row = {"name": "c2ext.child_shared", "observer": "c2ext._child",
+           "operation": "exec", "phase": "materialization"}
+    admission = _setup(importer, monkeypatch, execute, extra=[row])
+    names = ["c2ext._parent", "c2ext._child"]
+    for name in reversed(names) if reverse else names:
+        importlib.import_module(name)
+    admission.audit()
+    validate_native_global_observations(admission.native_global_observations(), admission.environment,
+                                        require_complete=True)
