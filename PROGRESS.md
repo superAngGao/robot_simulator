@@ -1254,6 +1254,18 @@ Next milestone:
       both-lane real matrix, aggregate schema and whole independent review remain.
       Continue CUDA deployment closure, the mandatory real-runtime matrix and
       final aggregate custody schema under the existing approved design.
+      Torch publication F1-F4 repairs at `a3d750b` now have bounded independent
+      implementation-gap approval v3; no whole-stage approval is inferred.
+      Native cold-scope gap review and CUDA ambient design review separately
+      approved their bounded scope and logical/raw device distinction. Actual
+      captured cold import on183 reaches the pre-Stream checkpoint:758 file
+      modules,42 publications,7 replacements and the multiprocessing alias;
+      CUDA remains uninitialized. The fixed diagnostic deliberately quarantines
+      (worker74/reaped,no sync/release), so it is not runtime/upload success.
+      A frozen cold-import deployment candidate and all earlier failed drafts
+      are documented in torch-captured-import test-evidence v1 for independent
+      review. Full native init/upload/readback, both-lane real failure matrix,
+      versioned aggregate custody and whole C2d3 review remain required.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design

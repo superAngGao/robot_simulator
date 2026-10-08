@@ -1,5 +1,16 @@
 # C2d3 author deployment fixtures (not product profiles)
 
+`183_cuda_cold_import_author_v1.json` freezes the bounded Torch cold-import
+candidate (canonical SHA256
+`2ffb9a81595b60855db8768f2892409c49d32d8ec97d41a3673b18e456492e07`).
+It covers857 files,758 file modules,42 publications,7 replacements and8 exact
+absent probes. Actual captured import on production `a3d750b` reached the fixed
+pre-Stream checkpoint, then deliberately quarantined under the existing guard.
+See torch-captured-import test-evidence v1 for source provenance and every failed
+draft. This candidate is under independent review and does not freeze full CUDA
+initialization, uploads, Go2 or native-loading closure. In particular deferred
+NVML loading is not yet included. No product launch selects this fixture.
+
 `183_warp_synthetic_author_v5.json` is the active schema-v5 candidate for cold Warp
 asymmetric/dynamic canonical-input upload/readback on primary183 (H200, robot_sim
 CPython3.12.13). It grants no worker IPC/product activation. The opt-in test must
