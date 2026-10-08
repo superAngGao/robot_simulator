@@ -8,7 +8,7 @@ import pytest
 from optical_worker.runtime_environment import RuntimeEnvironmentContract
 from tests.unit.optics.test_native_bootstrap import _internal
 from tests.unit.optics.test_native_sources import release as _release_fixture
-from tests.unit.optics.test_runtime_import_cold import _environment
+from tests.unit.optics.test_runtime_import_cold import _environment, _custody_inputs
 
 release = _release_fixture
 PEER = Path(__file__).resolve().parents[2] / "support/guarded_peer.py"
@@ -53,6 +53,7 @@ def test_late_parent_publication_survives_guarded_failure(release, tmp_path, lan
         )
     payload["files"].sort(key=lambda row: (row["root"], row["path"]))
     environment = RuntimeEnvironmentContract.from_payload(payload)
+    inputs = _custody_inputs(release, lane, "b")
     result = _internal(
         release,
         lane=lane,
@@ -70,6 +71,7 @@ peer_spec.loader.exec_module(peer_module)
 peer = peer_module.Peer(configuration=controller._guard_client.configuration,
                         channel_pair=(channel, remote))
 try:
+    session.configure_runtime_custody({environment.to_payload()!r}, {inputs!r})
     session.import_setup_definitions()
     session.configure_external_environment({environment.to_payload()!r}, {environment.sha256!r})
     admission = session.external

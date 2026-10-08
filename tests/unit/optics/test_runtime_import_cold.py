@@ -15,9 +15,22 @@ from optical_worker.runtime_environment import RUNTIME_ENVIRONMENT_VERSION, Runt
 from tests.unit.optics.test_native_bootstrap import _internal
 from tests.unit.optics.test_native_sources import release as _release_fixture
 from tests.unit.optics.test_runtime_import_admission import _disabled_rows, _disabled_sources
+from tests.support.runtime_custody_launch import capture_runtime_custody_inputs
+from optical_worker.native_sources import CATALOG_PATH
 
 release = _release_fixture
 PEER = Path(__file__).resolve().parents[2] / "support" / "guarded_peer.py"
+
+
+def _custody_inputs(release, lane, session_character):
+    root, revision = release
+    return capture_runtime_custody_inputs({
+        "root": str(root), "revision": revision, "lane": lane,
+        "catalog_sha256": hashlib.sha256((root / CATALOG_PATH).read_bytes()).hexdigest(),
+        "case_id": "asymmetric_synthetic_7x3_v1",
+        "guard_configuration": {"protocol_version": "q54.closed-worker.guarded-wait.v1",
+            "session": session_character * 32, "device_ordinal": 1, "ack_timeout_ms": 1000, "operation_timeout_ms": 5000},
+    })
 
 
 def _optional_environment(root):
@@ -63,6 +76,7 @@ def _optional_environment(root):
 @pytest.mark.parametrize("fault", ["success", "unused", "adoption", "issuance", "confirmation"])
 def test_optional_configuration_and_import_use_distinct_guarded_segments(release, tmp_path, lane, fault):
     environment = _optional_environment(tmp_path.resolve())
+    inputs = _custody_inputs(release, lane, "e")
     result = _internal(
         release,
         lane=lane,
@@ -80,6 +94,7 @@ peer_spec.loader.exec_module(peer_module)
 peer = peer_module.Peer(configuration=controller._guard_client.configuration,
                         channel_pair=(channel, remote))
 try:
+    session.configure_runtime_custody({environment.to_payload()!r}, {inputs!r})
     session.import_setup_definitions()
     session.configure_external_environment({environment.to_payload()!r}, {environment.sha256!r})
     admission = session.external
@@ -133,10 +148,16 @@ try:
                     'disabled_optional','disabled_fallback_confirmed']
         else:
             assert not admission.disabled_records and not admission.events
+        runtime_record = session.runtime_observation.checkpoint()
+        assert runtime_record.to_payload()['summary']['external_event_count'] == len(admission.events)
+        session.runtime_observation.freeze_adoptions()
         evidence = controller.terminate(fault='setup_failure', detection_phase='cpu_optional_fixture',
                                          emergency_target_synchronize=None).lifecycle.to_payload()
         assert evidence['summary']['disposition'] == 'cancelled_before_submission_exit'
         assert evidence['summary']['normal_complete_count'] == 3
+    selected, selection = session.runtime_observation.final()
+    assert selected is not None and selection['selection'] == 'current', session.runtime_observation.failures
+    assert selected.to_payload()['lifecycle'] == evidence
     assert evidence['summary']['entered_leaf_count'] == 0
     assert not {{'numpy','warp','torch','benchmarks'}}.intersection(sys.modules)
     assert all(name not in admission.loaders and name not in admission.records
@@ -226,6 +247,7 @@ def _environment(root, fault):
 )
 def test_real_cold_session_adopts_external_objects_and_fails_closed(release, tmp_path, lane, fault):
     environment = _environment(tmp_path.resolve(), fault)
+    inputs = _custody_inputs(release, lane, "d")
     result = _internal(
         release,
         lane=lane,
@@ -243,6 +265,7 @@ peer_spec.loader.exec_module(peer_module)
 peer = peer_module.Peer(configuration=controller._guard_client.configuration,
                         channel_pair=(channel, remote))
 try:
+    session.configure_runtime_custody({environment.to_payload()!r}, {inputs!r})
     session.import_setup_definitions()
     session.configure_external_environment({environment.to_payload()!r}, {environment.sha256!r})
     assert session.phase == 'runtime_configured'
@@ -274,10 +297,16 @@ try:
         assert sys.modules['c2dep.alias'] is sys.modules['c2dep.created'] is c2dep.created
         assert 'c2missing' not in sys.modules
         assert len([e for e in admission.events if e['kind'] == 'absent_probe']) == 2
+        runtime_record = session.runtime_observation.checkpoint()
+        assert runtime_record.to_payload()['summary']['external_event_count'] == len(admission.events)
+        session.runtime_observation.freeze_adoptions()
         terminal = controller.terminate(fault='setup_failure', detection_phase='cpu_external_fixture',
                                          emergency_target_synchronize=None).lifecycle.to_payload()
         assert terminal['summary']['disposition'] == 'cancelled_before_submission_exit'
         assert terminal['summary']['normal_complete_count'] == 3
+    selected, selection = session.runtime_observation.final()
+    assert selected is not None and selection['selection'] == 'current', session.runtime_observation.failures
+    assert selected.to_payload()['lifecycle'] == terminal
     assert terminal['summary']['entered_leaf_count'] == 0
     assert not {{'numpy','warp','torch','benchmarks'}}.intersection(sys.modules)
     print('cold_external_composition_checked')

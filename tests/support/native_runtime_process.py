@@ -20,12 +20,48 @@ from pathlib import Path
 
 def _write(directory, name, payload):
     data = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    _write_bytes(directory, name, data)
+
+
+def _write_bytes(directory, name, data):
     temporary = directory / (name + ".partial")
     with temporary.open("xb") as handle:
         handle.write(data)
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, directory / name)
+
+
+def _persist_runtime_custody(directory, record, selection):
+    # Ordered atomic writes are deliberately not a two-file transaction.
+    # Readers reject the pair if either write failed or the sidecar is stale.
+    if record is not None:
+        _write_bytes(directory, "runtime_custody.json", record.encoded)
+    _write(directory, "runtime_custody_selection.json", selection)
+
+
+def _persist_final_runtime_custody(directory, session):
+    observation = session.runtime_observation
+    record, selection = observation.final()
+    diagnostic_present = False
+    if session.failed or observation.failures:
+        try:
+            admission = {} if session.external is None else vars(session.external)
+            _write(directory, "runtime_custody_failure_diagnostic.json", {
+                "schema_version": "q54.c2d3.runtime-custody-diagnostic.v0", "validating": False,
+                "journal": observation.journal,
+                "raw_native_calls": [{key: frame.get(key) for key in ("sequence", "operation", "phase", "state")}
+                                     for frame in admission.get("native_calls", [])],
+                "raw_native_global_events": admission.get("native_global_events"),
+                "raw_module_replacement_events": admission.get("replacement_events"),
+                "raw_interpreter_alias_events": vars(session).get("interpreter_alias_events"),
+                "observed_lifecycle_event_count": selection["observed_lifecycle_event_count"],
+                "collector_errors": [type(item).__name__ for item in observation.failures],
+            })
+            diagnostic_present = True
+        except BaseException as diagnostic_error:
+            observation.failures.append(diagnostic_error)
+    _persist_runtime_custody(directory, record, dict(selection, failure_diagnostic_present=diagnostic_present))
 
 
 def _stall():
@@ -78,6 +114,8 @@ def child(fault, fd, directory):
     }:
         raise ValueError("unexpected fixed runtime configuration field")
     root = Path(request["root"])
+    trusted_inputs = json.loads((directory / "runtime_custody_inputs.json").read_bytes())
+    environment_payload = json.loads(Path(request["environment_path"]).read_bytes())
     _write(directory, "identity.json", {"pid": os.getpid(), "ppid": os.getppid()})
     atexit.register(_write, directory, "ordinary_atexit.json", {"ran": True})
     spec = importlib.util.spec_from_file_location("source_test", root / "optical_worker/native_bootstrap.py")
@@ -135,18 +173,28 @@ def child(fault, fd, directory):
                 "sample_submission_count": 0,
             },
         )
+        record = session.runtime_observation.last_validated
+        count = len(controller._guard_events)
+        if record is None or record.to_payload()["observation_cut"]["lifecycle_event_count"] != count:
+            raise RuntimeError("normal custody checkpoint does not match current lifecycle")
+        _persist_runtime_custody(directory, record, {
+            "schema_version": "q54.p12.4.runtime-custody-selection.v1", "selection": "current",
+            "runtime_record_sha256": record.sha256, "selected_lifecycle_event_count": count,
+            "observed_lifecycle_event_count": count, "failure_diagnostic_present": False,
+        })
 
     try:
         session = entry._install(root, request["revision"], request["lane"], request["catalog_sha256"])
         entry._verify(session)
         session.bind_guarded_custody(socket.socket(fileno=fd), request["guard_configuration"])
         controller = session.bound_controller()
+        session.configure_runtime_custody(environment_payload, trusted_inputs)
+        observe()
         phase = "setup_definitions"
         session.import_setup_definitions()
         observe()
         phase = "external_environment"
-        payload = json.loads(Path(request["environment_path"]).read_text(encoding="utf-8"))
-        session.configure_external_environment(payload, request["environment_sha256"])
+        session.configure_external_environment(environment_payload, request["environment_sha256"])
         observe()
         phase = "canonical_materialization"
         session.materialize_native_source(request["case_id"], go2_model_dir=request["go2_model_dir"])
@@ -190,6 +238,7 @@ def child(fault, fd, directory):
 
                 _warp_synchronize_target_exact(binding.module, binding.target)
 
+        session.runtime_observation.freeze_adoptions()
         terminal = controller.terminate(
             fault="setup_failure",
             detection_phase="fixed_runtime_driver",
@@ -197,6 +246,7 @@ def child(fault, fd, directory):
         )
         result = terminal.lifecycle.to_payload()
         _write(directory, "worker.json", result)
+        _persist_final_runtime_custody(directory, session)
         os._exit(0 if result["summary"]["disposition"] == "aborted_synced_exit" else 74)
     except BaseException as error:
         # Use the SAME source/controller failure policy. Do not retry sync or
@@ -210,6 +260,10 @@ def child(fault, fd, directory):
                 record = entry._SOURCE_CUSTODY.get(session)
                 controller = None if record is None else record[0]
         try:
+            if controller is not None and controller.termination_evidence is not None:
+                _write(directory, "worker.json", controller.termination_evidence.lifecycle.to_payload())
+            if session is not None and controller is not None:
+                _persist_final_runtime_custody(directory, session)
             # Bounded diagnostic chain, never a custody receipt or admission.
             # Keep the original lower-level cause visible when a dependency
             # wraps it as an optional-package/missing-trimesh error.
@@ -250,13 +304,11 @@ def child(fault, fd, directory):
                     {
                         "phase": phase,
                         "events": list(events),
-                        "native_global_observations": (
-                            admission.native_global_observations() if "native_calls" in partial else None
-                        ),
-                        "module_replacement_observations": (
-                            admission.replacement_observations() if "replacement_records" in partial else None
-                        ),
-                        "interpreter_alias_observations": session.interpreter_alias_observations(),
+                        "raw_native_calls": [{key: frame.get(key) for key in ("sequence", "operation", "phase", "state")}
+                                             for frame in partial.get("native_calls", [])],
+                        "raw_native_global_events": partial.get("native_global_events"),
+                        "raw_module_replacement_events": partial.get("replacement_events"),
+                        "raw_interpreter_alias_events": vars(session).get("interpreter_alias_events"),
                         "failed": admission.failed,
                         "failure_metadata": metadata,
                         "unrecorded_modules": _unrecorded_module_observations(admission),

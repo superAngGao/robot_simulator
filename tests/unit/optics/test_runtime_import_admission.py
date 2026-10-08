@@ -1,6 +1,6 @@
 """External importer mechanics, NOT cold-worker/GPU lifecycle acceptance.
 
-The source-custody and guardian prerequisites are unit doubles. Real importlib
+Source custody is a unit double; guardian/guard use the existing CPU Peer. Real importlib
 file resolution, create/exec, module publication and exception paths are used.
 No backend import or native binary is executed by this suite.
 """
@@ -19,21 +19,36 @@ import pytest
 
 from optical_worker import native_bootstrap as bootstrap
 from optical_worker.runtime_environment import RUNTIME_ENVIRONMENT_VERSION, RuntimeEnvironmentContract
+from optical_worker.guarded_lifecycle import NativeGuardedSetupLifecycle
+from tests.support.guarded_peer import Peer
 
 
-class _Owners:
+class _Owners(NativeGuardedSetupLifecycle):
     def __init__(self):
-        self.owners = []
-        self._terminating = False
+        self.peer = Peer()
+        super().__init__(lane_id="cuda", channel=self.peer.channel, configuration=self.peer.config)
+        self.test_segment = self.segment("setup")
+        self.test_segment.__enter__()
 
-    def _require_setup(self):
-        pass
+    @property
+    def owners(self):
+        return self.guardian._owners
 
-    def adopt_host_owner(self, owner, **_):
-        self.owners.append(owner)
-
-    def require_adopted(self, owner):
-        assert any(value is owner for value in self.owners)
+    def close(self):
+        try:
+            # A legacy test deliberately substitutes this private flag to check
+            # late failure retention. Restore its test mutation before teardown.
+            if self.termination_evidence is None and self._terminating and self._replay.controller == "RUNNING":
+                self._terminating = False
+            try:
+                self.test_segment.__exit__(None, None, None)
+            except (RuntimeError, ValueError):
+                if self.termination_evidence is None:
+                    raise
+            if self.termination_evidence is None:
+                self.terminate(fault="setup_failure", detection_phase="unit_end", emergency_target_synchronize=None)
+        finally:
+            self.peer.close()
 
 
 @pytest.fixture
@@ -113,6 +128,7 @@ def importer(tmp_path, monkeypatch):
         environment = RuntimeEnvironmentContract.from_payload(payload)
         controller = _Owners()
         session = object.__new__(bootstrap._SourceSession)
+        session.runtime_observation = bootstrap._RuntimeObservation(session)
         session.failed, session.failures = False, []
 
         def check():
@@ -183,6 +199,7 @@ def importer(tmp_path, monkeypatch):
         # Unit doubles have no CUDA resources/quarantine. Never use this test
         # teardown as production release authority.
         admission.retained.clear()
+        admission.controller.close()
         bootstrap._GENERATED_STDLIB_SPECS.pop(admission.session, None)
         bootstrap._GENERATED_STDLIB_MODULES.pop(admission.session, None)
         if generated_name is not None and generated_name not in original_modules:

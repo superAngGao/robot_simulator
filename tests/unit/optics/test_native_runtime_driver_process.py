@@ -17,6 +17,10 @@ from optical_worker.guarded_evidence import validate_custody_artifact
 from optical_worker.native_sources import CATALOG_PATH
 from optical_worker.runtime_environment import RUNTIME_ENVIRONMENT_VERSION, RuntimeEnvironmentContract
 from tests.unit.optics.test_native_sources import release as _release_fixture
+from tests.support.runtime_custody_launch import capture_runtime_custody_inputs
+from optical_worker.runtime_custody import (
+    RuntimeCustodyRecord, validate_runtime_custody_attachment, validate_runtime_custody_selection,
+)
 
 release = _release_fixture
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="actual inherited POSIX supervisor descriptors")
@@ -83,6 +87,8 @@ def test_fixed_runtime_driver_quarantines_without_fallback_or_ordinary_cleanup(
         "case_id": "asymmetric_synthetic_7x3_v1",
         "go2_model_dir": None,
     }
+    inputs = capture_runtime_custody_inputs(request)
+    (tmp_path / "runtime_custody_inputs.json").write_text(json.dumps(inputs), encoding="utf-8")
     (tmp_path / "request.json").write_text(json.dumps(request), encoding="utf-8")
     read_fd, write_fd = os.pipe()
     process = subprocess.Popen(
@@ -108,6 +114,12 @@ def test_fixed_runtime_driver_quarantines_without_fallback_or_ordinary_cleanup(
         assert process.returncode == 0, (output, error)
         result = json.loads(output)
         validate_custody_artifact(result["artifact"])
+        raw = (tmp_path / "runtime_custody.json").read_bytes()
+        selection = json.loads((tmp_path / "runtime_custody_selection.json").read_bytes())
+        validate_runtime_custody_selection(selection, raw)
+        record = RuntimeCustodyRecord.from_payload(json.loads(raw), environment=environment, trusted_launch_inputs=inputs)
+        assert validate_runtime_custody_attachment(record, environment, inputs, result["artifact"]) == "worker_prefix_matched"
+        assert selection["selection"] == ("prior_validated_cut" if fault == "environment_digest" else "current")
         assert result["worker_returncode"] == 74 and result["parent_alive"] is True
         worker = result["artifact"]["worker"]
         assert worker["summary"]["custody"] == "full_quarantine"

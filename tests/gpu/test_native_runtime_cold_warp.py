@@ -84,6 +84,10 @@ def test_actual_cold_canonical_warp_setup_and_terminal_disposition(tmp_path, fau
         "case_id": case_id,
         "go2_model_dir": None,
     }
+    from tests.support.runtime_custody_launch import capture_runtime_custody_inputs
+
+    inputs = capture_runtime_custody_inputs(request)
+    (tmp_path / "runtime_custody_inputs.json").write_text(json.dumps(inputs), encoding="utf-8")
     (tmp_path / "request.json").write_text(json.dumps(request), encoding="utf-8")
     read_fd, write_fd = os.pipe()
     supervisor = subprocess.Popen(
@@ -110,6 +114,19 @@ def test_actual_cold_canonical_warp_setup_and_terminal_disposition(tmp_path, fau
         result = json.loads(output)
         artifact = result["artifact"]
         validate_custody_artifact(artifact)
+        from optical_worker.runtime_custody import (
+            RuntimeCustodyRecord, validate_runtime_custody_attachment, validate_runtime_custody_selection,
+        )
+
+        raw_record = (tmp_path / "runtime_custody.json").read_bytes()
+        selection = json.loads((tmp_path / "runtime_custody_selection.json").read_bytes())
+        validate_runtime_custody_selection(selection, raw_record)
+        assert selection["selection"] == "current"
+        runtime_record = RuntimeCustodyRecord.from_payload(
+            json.loads(raw_record), environment=environment, trusted_launch_inputs=inputs)
+        assert validate_runtime_custody_attachment(runtime_record, environment, inputs, artifact) == "worker_prefix_matched"
+        assert runtime_record.to_payload()["summary"]["input_validation_observed"] is True
+        assert runtime_record.to_payload()["summary"]["final_execution_readiness_issued"] is False
         assert result["stderr"] == error == ""
         assert result["parent_alive"] is True
         assert json.loads((tmp_path / "identity.json").read_text()) == {

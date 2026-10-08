@@ -31,6 +31,7 @@ def runtime_session(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", module)
     monkeypatch.setenv("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
     session = object.__new__(bootstrap._SourceSession)
+    session.runtime_observation = bootstrap._RuntimeObservation(session)
     session.lane, session.phase = "cuda", "materialized"
     session.failed, session.failures = False, []
     session.runtime_owners = []
@@ -283,7 +284,8 @@ def test_readback_session_orders_one_validation_without_reminting_upload(runtime
     record = bootstrap._RUNTIME_BINDINGS[session]
     with controller.segment():
         session._consume_runtime_binding(binding)
-    prepared, report = object(), object()
+    prepared = SimpleNamespace(manifest=SimpleNamespace(sha256="a" * 64))
+    report = SimpleNamespace(content_sha256="b" * 64, topology_sha256="c" * 64, validated_arrays=("unit",))
     controller.adopt_host_owner(prepared, role="unit_prepared", operation_id="unit_prepared")
     session.prepared_input, session.phase = prepared, "uploaded"
     bootstrap._UPLOADED_INPUTS[session] = (record, prepared)

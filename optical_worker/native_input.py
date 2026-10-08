@@ -12,7 +12,6 @@ from typing import Any
 import numpy as np
 
 from optical_worker.native_contract import (
-    NATIVE_INPUT_SCHEMA_VERSION,
     CudaPreparedNativeInput,
     NativeBackend,
     NativeReadinessEvidence,
@@ -22,6 +21,13 @@ from optical_worker.native_contract import (
     register_native_readiness,
     register_prepared_native_input,
     warp_dtype_from_host_dtype,
+)
+from optical_worker.native_manifest import (
+    NATIVE_INPUT_SCHEMA_VERSION,
+    NativeArrayManifest,
+    NativeInputManifest,
+    _canonical_json_bytes,
+    _sha256_payload,
 )
 from optics.host_bvh import build_host_median_bvh
 from optics.scene_contract import SCENE_CONTRACT_SCHEMA_VERSION, PackedOpticalSceneHost
@@ -80,20 +86,6 @@ _FIXED_FIXTURE_TOPOLOGY_ARRAYS = (
 )
 
 
-def _canonical_json_bytes(value: object) -> bytes:
-    return json.dumps(
-        value,
-        allow_nan=False,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-
-
-def _sha256_payload(value: object) -> str:
-    return hashlib.sha256(_canonical_json_bytes(value)).hexdigest()
-
-
 def _array_content_sha256(array: np.ndarray) -> str:
     digest = hashlib.sha256()
     digest.update(
@@ -107,82 +99,6 @@ def _array_content_sha256(array: np.ndarray) -> str:
     )
     digest.update(array.tobytes(order="C"))
     return digest.hexdigest()
-
-
-@dataclass(frozen=True)
-class NativeArrayManifest:
-    """Stable identity and layout of one canonical native input array."""
-
-    name: str
-    semantic: str
-    dtype: str
-    shape: tuple[int, ...]
-    c_contiguous: bool
-    nbytes: int
-    content_sha256: str
-
-    def to_payload(self) -> dict[str, object]:
-        return {
-            "name": self.name,
-            "semantic": self.semantic,
-            "dtype": self.dtype,
-            "shape": list(self.shape),
-            "c_contiguous": self.c_contiguous,
-            "nbytes": self.nbytes,
-            "content_sha256": self.content_sha256,
-        }
-
-
-@dataclass(frozen=True)
-class NativeInputManifest:
-    """Device-independent evidence shared by independently prepared lanes."""
-
-    schema_version: str
-    case_id: str
-    case_sha256: str
-    materializer_id: str
-    semantics: Mapping[str, object]
-    arrays: tuple[NativeArrayManifest, ...]
-    content_sha256: str
-    topology_sha256: str
-    input_contract: str | None
-    scene_contract_schema_version: str | None
-    scene_contract_sha256: str | None
-    scene_id: str | None
-    scene_array_names: tuple[str, ...]
-    transform_replay_sha256: str | None
-    transform_frame_count: int
-    fixed_render_fixture_sha256: str | None
-    fixed_render_fixture_arrays: tuple[str, ...]
-
-    def to_payload(self) -> dict[str, object]:
-        return {
-            "schema_version": self.schema_version,
-            "case_id": self.case_id,
-            "case_sha256": self.case_sha256,
-            "materializer_id": self.materializer_id,
-            "semantics": dict(self.semantics),
-            "arrays": [array.to_payload() for array in self.arrays],
-            "content_sha256": self.content_sha256,
-            "topology_sha256": self.topology_sha256,
-            "input_contract": self.input_contract,
-            "scene_contract_schema_version": self.scene_contract_schema_version,
-            "scene_contract_sha256": self.scene_contract_sha256,
-            "scene_id": self.scene_id,
-            "scene_array_names": list(self.scene_array_names),
-            "transform_replay_sha256": self.transform_replay_sha256,
-            "transform_frame_count": self.transform_frame_count,
-            "fixed_render_fixture_sha256": self.fixed_render_fixture_sha256,
-            "fixed_render_fixture_arrays": list(self.fixed_render_fixture_arrays),
-        }
-
-    @property
-    def result_capable(self) -> bool:
-        return self.scene_contract_sha256 is not None and self.input_contract is not None
-
-    @property
-    def sha256(self) -> str:
-        return _sha256_payload(self.to_payload())
 
 
 @dataclass(frozen=True)

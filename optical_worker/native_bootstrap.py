@@ -21,7 +21,7 @@ from types import FunctionType, MappingProxyType, ModuleType
 
 _BOOTSTRAP = "optical_worker/native_bootstrap.py"
 _NATIVE_EXEC_OPERATION = "exec"  # Descriptive operation enum, never a dynamic Python callable.
-_CATALOG = "optical_worker/data/native_sources/v11.json"
+_CATALOG = "optical_worker/data/native_sources/v12.json"
 _MAX_BYTES = 4 * 1024 * 1024  # Rechecked against the sole protocol constant.
 _ROOTS = frozenset(
     ("optical_worker", "optics", "physics", "robot", "sensing", "benchmarks", "examples", "tests", "tools")
@@ -43,6 +43,10 @@ _CUSTODY_PRELUDE = MappingProxyType(
         "optical_worker.wait_supervision": "optical_worker/wait_supervision.py",
         "optical_worker.guarded_evidence": "optical_worker/guarded_evidence.py",
         "optical_worker.guarded_lifecycle": "optical_worker/guarded_lifecycle.py",
+        "optical_worker.lane_contract": "optical_worker/lane_contract.py",
+        "optical_worker.native_manifest": "optical_worker/native_manifest.py",
+        "optical_worker.runtime_environment": "optical_worker/runtime_environment.py",
+        "optical_worker.runtime_custody": "optical_worker/runtime_custody.py",
     }
 )
 _SETUP_DEFINITIONS = MappingProxyType(
@@ -556,6 +560,9 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
             # This registry is held by the adopted source session before any
             # explicit adoption that can fail. Preserve partial native owners.
             self.admission.records[self.name] = {"module": module, "state": "created", "kind": "file_module"}
+            observation = self.admission.session.runtime_observation
+            observation.append("returned_owner", {"producer": "file_create", "call_sequence": frame["sequence"],
+                               "leaf_event_index": None, "object_token": observation.token(module)})
             self.admission.return_native_call(frame, module)
             # Native return is already retained. Importlib has not initialized
             # spec/loader/package yet, so inspect only the raw intrinsic name.
@@ -794,6 +801,11 @@ class _ExternalAdmission:
                  "relation": self.replacements[name]["relation"], **record["tokens"]}
         self.replacement_event_bindings.append((event, tuple(event.items()), record))
         self.replacement_events.append(event)
+        observation = self.session.runtime_observation
+        used = sorted({value for value in record["tokens"].values() if value is not None})
+        observation.append("module_replacement", {"event_index": event["index"], "token_bindings": [
+            {"local_token": token, "object_token": observation.token(self.replacement_objects[token - 1])}
+            for token in used]})
 
     def _check_replacement_events(self):
         _require(len(self.replacement_events) == len(self.replacement_event_bindings),
@@ -992,6 +1004,16 @@ class _ExternalAdmission:
         self.native_call_bindings[frame["sequence"]] = (
             binding[0], binding[1], module, *binding[3:-1], state
         )
+        self._observe_file_call(frame)
+
+    def _observe_file_call(self, frame):
+        observation = self.session.runtime_observation
+        observation.append("file_call", {
+            "sequence": frame["sequence"], "parent_sequence": None if frame["parent"] is None else frame["parent"]["sequence"],
+            "observer": frame["loader"].name, "operation": frame["operation"], "phase": frame["phase"], "state": frame["state"],
+            "module_token": None if frame["module"] is None else observation.token(frame["module"]),
+            "spec_token": observation.token(frame["spec"]), "loader_token": observation.token(frame["loader"].delegate),
+        })
 
     def enter_import_wrapper(self, checkpoint, request_name=None):
         try:
@@ -1045,6 +1067,7 @@ class _ExternalAdmission:
             frame, loader, module, operation, self.phase, parent, absent, marker, frame["spec"], "started"
         )
         self.native_context.append(frame)
+        self._observe_file_call(frame)
         return frame
 
     def return_native_call(self, frame, module):
@@ -1065,8 +1088,14 @@ class _ExternalAdmission:
         # Preserve the frame even if metadata drift prevents a normal state commit.
         binding = self.native_call_bindings.get(frame.get("sequence"))
         if binding is not None and binding[0] is frame:
+            previous = frame["state"]
             frame["state"] = "failed"
             self.native_call_bindings[frame["sequence"]] = (*binding[:-1], "failed")
+            if previous != "failed":
+                try:
+                    self._observe_file_call(frame)
+                except BaseException as observation_error:
+                    self.failures.append(observation_error)
         if self.native_context and self.native_context[-1] is frame:
             self.native_context.pop()
 
@@ -1085,6 +1114,16 @@ class _ExternalAdmission:
         self.native_global_event_bindings.append(
             (event, tuple(event.items()), name, record, record["module"], frame))
         self.native_global_events.append(event)
+        observation = self.session.runtime_observation
+        if operation == "observed_pending":
+            adopted = self.controller._guard_events[-1]
+            _require(adopted["operation"] == "owner_adopted"
+                     and adopted["details"]["operation_id"] == "native_global_observation",
+                     "native global observation lacks original adoption")
+            observation.native_global_adoptions[record["token"]] = adopted["index"]
+        observation.append("native_global", {"event_index": event["index"],
+                           "token_bindings": [{"local_token": record["token"], "object_token": observation.token(record["module"])}],
+                           "adoption_event_index": observation.native_global_adoptions[record["token"]]})
 
     def _check_global_events(self, *, live=True):
         _require(len(self.native_global_events) == len(self.native_global_event_bindings),
@@ -1256,6 +1295,39 @@ class _ExternalAdmission:
                 "phase": self.phase,
             }
         )
+        self._observe_external_event(self.events[-1])
+
+    def _observe_external_event(self, event):
+        observation = self.session.runtime_observation
+        name, kind = event["name"], event["kind"]
+        if kind == "file_module":
+            loader, record = self.loaders[name], self.records.get(name)
+            provenance = {"origin": loader.origin, "delegate_kind": type(loader.delegate).__name__,
+                          "spec_token": observation.token(self.specs[name]), "loader_token": observation.token(loader.delegate),
+                          "module_token": None if record is None else observation.token(record["module"])}
+        elif kind == "absent_probe":
+            requester = self.stack[-1]
+            provenance = {"requester": requester, "requester_token": observation.token(self.records[requester]["module"])}
+        elif kind in {"created_module", "module_alias"}:
+            record = self.records[name]
+            provenance = {"module_token": observation.token(record["module"]), "creator_token": observation.token(record["creator"]),
+                          "publisher_token": observation.token(record["publisher"]), "relation": record["relation"],
+                          "attributes": list(self.publications[name]["attributes"])}
+        elif kind == "namespace":
+            provenance = {"module_token": observation.token(self.records[name]["module"]),
+                          "locations": list(self.loaders[name].locations)}
+        elif kind == "disabled_optional":
+            record = self.disabled_records[name]
+            tokens = {event["requester_identity"]: observation.token(record["requester"])}
+            if record["fallback"] is not None:
+                tokens[event["fallback_identity"]] = observation.token(record["fallback"])
+            provenance = {"requester_token": observation.token(record["requester"]),
+                          "fallback_token": None if record["fallback"] is None else observation.token(record["fallback"]),
+                          "token_bindings": [{"local_token": local, "object_token": tokens[local]} for local in sorted(tokens)]}
+        else:
+            _require(kind == "failure", "runtime external observation kind")
+            provenance = {"exception_token": observation.token(self.failures[0])}
+        observation.append("external", {"event": event, "provenance": provenance})
 
     def hold(self, value):
         if not any(owner is value for owner in self.retained):
@@ -1693,6 +1765,7 @@ class _ExternalAdmission:
                 "error_path": record["error"].path,
             }
         )
+        self._observe_external_event(self.events[-1])
 
     def bind_materialization_case(self, case_id):
         self.check_live()
@@ -2014,6 +2087,139 @@ class _RuntimeSetupBinding:
         raise TypeError("runtime binding is frozen")
 
 
+class _RuntimeObservation:
+    """Session-held CPU facts; this table never authorizes a native operation."""
+
+    def __init__(self, session):
+        self.session = session
+        self.journal, self.issued, self.owners = [], [], {}
+        self.first, self.adoptions = {}, {}
+        self.native_global_adoptions = {}
+        self.environment, self.inputs, self.last_validated = None, None, None
+        self.final_attempted, self.final_selection = False, None
+        self.failures = []
+
+    def token(self, owner):
+        key = id(owner)
+        previous = self.owners.get(key)
+        if previous is not None:
+            _require(previous[1] is owner, "runtime observation object identity reused")
+            return previous[0]
+        token = len(self.owners) + 1
+        self.owners[key] = (token, owner)
+        return token
+
+    def append(self, kind, details):
+        controller = self.session.bound_controller()
+        # Copy only this bounded occurrence, not the growing import journal.
+        encoded = json.dumps(details, allow_nan=False, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        copied = json.loads(encoded)
+        index = len(self.journal)
+        event = {"index": index, "kind": kind,
+                 "guard": None if controller._guard_reference is None else dict(controller._guard_reference),
+                 "lifecycle_event_index": len(controller._guard_events) - 1, "details": copied}
+
+        def references(value):
+            if type(value) is dict:
+                for key, item in value.items():
+                    # These are component-local facts or non-token descriptors.
+                    if key in {"event", "manifest", "signature", "local_token"}:
+                        continue
+                    if key.endswith("_token") and item is not None:
+                        _require(type(item) is int and item > 0, "runtime observation token type")
+                        self.first.setdefault(item, index)
+                    else:
+                        references(item)
+            elif type(value) is list:
+                for item in value:
+                    references(item)
+
+        # Keep issuance bytes before publishing the mutable diagnostic view.
+        immutable = json.dumps(event, allow_nan=False, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
+        self.issued.append(immutable)
+        self.journal.append(event)
+        references(copied)
+
+    def freeze_adoptions(self):
+        guardian = self.session.bound_controller().guardian
+        if guardian._state == "RELEASED":
+            return  # Keep the exact matches frozen while the live table existed.
+        _require(len(guardian._owners) == len(guardian._records), "runtime guardian owner table mismatch")
+        for owner, record in zip(guardian._owners, guardian._records):
+            observed = self.owners.get(id(owner))
+            if observed is not None and observed[1] is owner:
+                previous = self.adoptions.get(observed[0])
+                _require(previous is None or previous == record.sequence, "runtime owner adoption changed")
+                self.adoptions[observed[0]] = record.sequence
+
+    def payload(self):
+        session = self.session
+        controller = session.bound_controller()
+        self.freeze_adoptions()
+        _require(len(self.journal) == len(self.issued), "runtime journal issuance interrupted")
+        for event, encoded in zip(self.journal, self.issued):
+            _require(json.dumps(event, allow_nan=False, ensure_ascii=True, sort_keys=True,
+                                separators=(",", ":")).encode() == encoded, "runtime issued journal drift")
+        lifecycle = controller.evidence().to_payload()
+        components = session._runtime_component_projection()
+        phases = [e for e in self.journal if e["kind"] == "phase_completed"]
+        external = [e["details"]["event"] for e in self.journal if e["kind"] == "external"]
+        kinds = {e["kind"] for e in self.journal}
+        return {
+            "schema_version": "q54.p12.4.runtime-custody.v1",
+            "source": {"revision": session.revision, "catalog_sha256": session.catalog_sha256,
+                       "snapshot_sha256": session.snapshot.sha256},
+            "environment_sha256": self.environment.sha256 if "environment_bound" in kinds else None,
+            "configuration": controller._guard_client.configuration.to_payload(), "lane_id": session.lane,
+            "observation_cut": {"journal_length": len(self.journal),
+                                "lifecycle_event_count": len(lifecycle["transition_trace"])},
+            "journal": [json.loads(encoded) for encoded in self.issued],
+            "objects": [{"token": token, "first_journal_index": self.first[token],
+                         "guardian_sequence": self.adoptions.get(token)}
+                        for token, _ in self.owners.values() if token in self.first],
+            "components": components, "lifecycle": lifecycle,
+            "summary": {
+                "last_completed_phase": phases[-1]["details"]["phase"] if phases else None,
+                "external_event_count": len(external),
+                "completed_file_count": sum(e["kind"] == "file_module" and e["operation"] == "completed" for e in external),
+                "successful_guard_sequences": [controller._guard_events[e["details"]["disarmed_event_index"]]["guard"]["sequence"]
+                                               for e in phases],
+                "binding_observed": "runtime_binding" in kinds,
+                "prepared_storage_observed": "prepared_storage" in kinds,
+                "input_validation_observed": "input_validated" in kinds,
+                "final_execution_readiness_issued": False,
+            },
+        }
+
+    def checkpoint(self):
+        _require(self.environment is not None and self.inputs is not None, "runtime custody inputs missing")
+        module = self.session.modules["optical_worker.runtime_custody"][0]
+        record = module.RuntimeCustodyRecord.from_payload(
+            self.payload(), environment=self.environment, trusted_launch_inputs=self.inputs)
+        self.last_validated = record
+        return record
+
+    def final(self):
+        if self.final_attempted:
+            return self.final_selection
+        self.final_attempted = True
+        record, selection = self.last_validated, "prior_validated_cut"
+        try:
+            record = self.checkpoint()
+            selection = "current"
+        except BaseException as error:
+            self.failures.append(error)
+        if record is None:
+            selection = "unavailable"
+        observed = len(self.session.bound_controller()._guard_events)
+        sidecar = {"schema_version": "q54.p12.4.runtime-custody-selection.v1", "selection": selection,
+                   "runtime_record_sha256": None if record is None else record.sha256,
+                   "selected_lifecycle_event_count": None if record is None else record.to_payload()["observation_cut"]["lifecycle_event_count"],
+                   "observed_lifecycle_event_count": observed, "failure_diagnostic_present": False}
+        self.final_selection = record, sidecar
+        return self.final_selection
+
+
 def _stream_identity(lane, stream, target):
     # Fixed metadata fields only; no ambient-device getter or CUDA query.
     if lane == "cuda":
@@ -2054,6 +2260,7 @@ class _SourceSession:
         self.runtime_owners = []
         self.render_source, self.canonical_input, self.prepared_input = None, None, None
         self.validation_report = None
+        self.runtime_observation = _RuntimeObservation(self)
         self.loaders, self.modules, self.trace = {}, {}, []
         self.finder = _CapturedSourceFinder(self)
 
@@ -2099,6 +2306,13 @@ class _SourceSession:
         self.failed = True
         if not any(value is error for value in self.failures):
             self.failures.append(error)
+        if _SOURCE_CUSTODY.get(self) is not None:
+            try:
+                observation = self.runtime_observation
+                observation.freeze_adoptions()
+                observation.append("failure", {"source": "source_session", "exception_token": observation.token(error)})
+            except BaseException as observation_error:
+                self.failures.append(observation_error)
         # Commit poison and the original error before ancillary intake. The
         # available graph must still be held before any terminal operation.
         self.retain_import_boundary()
@@ -2148,8 +2362,10 @@ class _SourceSession:
             self.phase = "prelude"
             from optical_worker.guarded_lifecycle import NativeGuardedSetupLifecycle
             from optical_worker.wait_protocol import GuardConfiguration
+            from optical_worker import runtime_custody
 
             self.audit()
+            _require(runtime_custody is self.modules["optical_worker.runtime_custody"][0], "runtime custody definition drift")
             launch_config = GuardConfiguration.from_payload(configuration_payload)
             controller = NativeGuardedSetupLifecycle(
                 lane_id=self.lane, channel=channel, configuration=launch_config
@@ -2177,6 +2393,11 @@ class _SourceSession:
             self.bound_controller()
             self.phase = "bound"
             self.audit()
+            observation = self.runtime_observation
+            observation.append("source_bound", {
+                "session_token": observation.token(self), "bootstrap_token": observation.token(self.bootstrap_owner),
+                "controller_token": observation.token(controller),
+            })
         except BaseException as error:
             self.fail(error)
             raise
@@ -2196,14 +2417,97 @@ class _SourceSession:
                 )
                 self.audit()
             self.phase = "imported"
+            self._runtime_phase_completed("setup_definitions")
         except BaseException as error:
             self.fail(error)
             raise
+
+    def configure_runtime_custody(self, environment_payload, trusted_launch_inputs):
+        """Bind upstream CPU facts before C2d3 work; source-only custody stays C2d2."""
+        try:
+            self.check_live()
+            _require(self.phase == "bound" and self.runtime_observation.environment is None,
+                     "runtime custody inputs are single-use before setup")
+            from optical_worker.runtime_custody import validate_runtime_custody_inputs
+            from optical_worker.runtime_environment import RuntimeEnvironmentContract
+
+            environment = RuntimeEnvironmentContract.from_payload(environment_payload)
+            validate_runtime_custody_inputs(trusted_launch_inputs, environment)
+            observation = self.runtime_observation
+            observation.environment = environment
+            observation.inputs = json.loads(json.dumps(trusted_launch_inputs, allow_nan=False))
+            self.audit()
+            return observation.checkpoint()
+        except BaseException as error:
+            self.fail(error)
+            raise
+
+    def _runtime_phase_completed(self, phase):
+        observation = self.runtime_observation
+        controller = self.bound_controller()
+        event = controller._guard_events[-1]
+        _require(event["operation"] == "normal_disarmed", "runtime phase lacks actual DISARMED")
+        observation.append("phase_completed", {
+            "phase": phase, "disarmed_event_index": event["index"],
+            "materialization_case_id": self.canonical_input.manifest.case_id if phase == "canonical_materialization" else None,
+        })
+        if observation.environment is not None:
+            observation.checkpoint()
+
+    def _runtime_component_projection(self):
+        """Project only already-held issued facts, including after terminal exit intent."""
+        descriptor, thread, _, resolution, observed = _INTERPRETER_ALIAS_CUSTODY[self]
+        _require(thread == _thread.get_ident(), "runtime alias projection foreign thread")
+        if observed is not None and observed[1] is not None:
+            _require(len(self.interpreter_alias_events) == 1 and self.interpreter_alias_events[0] is observed[1]
+                     and _same_facts(observed[1], observed[2]), "runtime alias issued facts drift")
+        else:
+            _require(not self.interpreter_alias_events, "runtime alias invented issued facts")
+        identity = list(descriptor[0])
+        identity[1] = list(identity[1])
+        schema = self.modules["optical_worker.runtime_environment"][0]
+        alias = {"schema_version": schema.INTERPRETER_ALIAS_OBSERVATIONS_VERSION,
+                 "interpreter_identity": identity, "source_path": descriptor[1], "source_sha256": descriptor[3],
+                 "resolution": None if resolution is None else {"name": "multiprocessing", "origin": descriptor[1],
+                     "loader": "SourceFileLoader", "search_locations": [str(Path(descriptor[1]).parent)]},
+                 "events": [dict(event) for event in self.interpreter_alias_events]}
+        native, replacements = None, None
+        admission = self.external
+        if admission is not None:
+            # A partially initialized or corrupt producer must raise here. It
+            # is not converted to a fictitious absent component after failure.
+            admission._check_native_thread()
+            _require(len(admission.native_calls) == len(admission.native_call_bindings), "runtime native call history drift")
+            for frame in admission.native_calls:
+                admission._check_native_call(frame)
+            admission._check_global_events(live=False)
+            _require(set(admission.replacement_records) == set(admission.replacement_bindings)
+                     and len(admission.replacement_events) == len(admission.replacement_event_bindings),
+                     "runtime replacement history drift")
+            for name in admission.replacement_records:
+                admission._check_replacement(name, live=False)
+            for event, binding in zip(admission.replacement_events, admission.replacement_event_bindings):
+                _require(event is binding[0] and _same_facts(event, binding[1])
+                         and admission.replacement_records.get(event["name"]) is binding[2],
+                         "runtime replacement issued facts drift")
+            calls = [{"sequence": frame["sequence"],
+                      "parent_sequence": None if frame["parent"] is None else frame["parent"]["sequence"],
+                      "observer": frame["loader"].name, "operation": frame["operation"], "phase": frame["phase"],
+                      "absent_names": list(frame["absent"]), "state": frame["state"]} for frame in admission.native_calls]
+            native = {"schema_version": schema.NATIVE_GLOBAL_OBSERVATIONS_VERSION,
+                      "environment_sha256": admission.expected_sha256, "calls": calls,
+                      "events": [dict(event) for event in admission.native_global_events]}
+            replacements = {"schema_version": schema.MODULE_REPLACEMENT_OBSERVATIONS_VERSION,
+                            "environment_sha256": admission.expected_sha256,
+                            "events": [dict(event) for event in admission.replacement_events]}
+        return {"native_globals": native, "module_replacements": replacements, "interpreter_alias": alias}
 
     def configure_external_environment(self, environment_payload, expected_sha256):
         """Internal trusted-launch configuration, not a worker IPC operation."""
         try:
             self.check_live()
+            _require(self.runtime_observation.last_validated is not None,
+                     "external configuration requires separately bound runtime custody inputs")
             _require(
                 self.phase == "imported" and self not in _EXTERNAL_CUSTODY,
                 "external configuration is ordered and single-use",
@@ -2229,10 +2533,17 @@ class _SourceSession:
                 _EXTERNAL_CUSTODY[self] = (
                     admission, environment, expected_sha256, controller, _thread.get_ident())
                 admission.__init__(self, environment, expected_sha256)
+                observation = self.runtime_observation
+                _require(environment.sha256 == observation.environment.sha256, "runtime environment differs from launch inputs")
+                observation.append("environment_bound", {
+                    "environment_sha256": environment.sha256, "environment_token": observation.token(environment),
+                    "admission_token": observation.token(admission),
+                })
                 os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
                 self.audit()
                 admission.audit()
             self.phase = "runtime_configured"
+            self._runtime_phase_completed("external_environment")
         except BaseException as error:
             self.fail(error)
             raise
@@ -2301,6 +2612,7 @@ class _SourceSession:
                 self.audit()
                 self.external.audit()
             self.phase = "materialized"
+            self._runtime_phase_completed("canonical_materialization")
             return source.manifest
         except BaseException as error:
             self.fail(error)
@@ -2311,6 +2623,8 @@ class _SourceSession:
         # raise. Failure custody therefore includes the last returned object.
         self.runtime_owners.append(owner)
         controller = self.bound_controller()
+        if role == "torch_target_descriptor":
+            self._observe_runtime_return("runtime_target", owner)
         if device_ordinal is None:
             if controller.guardian.contains_exact_owner(owner):
                 # Imported native roots and upload-core results already have
@@ -2335,6 +2649,14 @@ class _SourceSession:
             runtime_identity="frozen_runtime_environment_v2",
         )
         controller.enter_device_leaf(controller.begin_device_leaf(descriptor))
+
+    def _observe_runtime_return(self, producer, owner):
+        controller = self.bound_controller()
+        leaf = next(event["index"] for event in reversed(controller._guard_events)
+                    if event["operation"] == "low_level_leaf_entered")
+        observation = self.runtime_observation
+        observation.append("returned_owner", {"producer": producer, "call_sequence": None,
+                           "leaf_event_index": leaf, "object_token": observation.token(owner)})
 
     def initialize_native_runtime(self):
         """Internal sacrificial-driver entry; not connected to product IPC."""
@@ -2366,6 +2688,7 @@ class _SourceSession:
                         # Store before reading returned metadata as that read
                         # or its ordinal validation may itself fail.
                         self.runtime_owners.append(stream)
+                        self._observe_runtime_return("runtime_stream", stream)
                         _require(type(stream.device.index) is int, "CUDA stream has no indexed device")
                         self._hold_runtime_owner(
                             stream, "torch_runtime_stream", device_ordinal=stream.device.index
@@ -2381,6 +2704,7 @@ class _SourceSession:
                         self._hold_runtime_owner(runtime, "warp_runtime_root")
                         target = module.get_device(f"cuda:{ordinal}")
                         self.runtime_owners.append(target)
+                        self._observe_runtime_return("runtime_target", target)
                         _require(target.is_cuda, "Warp returned a non-CUDA target")
                         self._hold_runtime_owner(
                             target, "warp_runtime_target", device_ordinal=int(target.ordinal)
@@ -2388,6 +2712,7 @@ class _SourceSession:
                         self._runtime_leaf("indexed_runtime_stream", "runtime_import_or_init")
                         stream = module.get_stream(target)
                         self.runtime_owners.append(stream)
+                        self._observe_runtime_return("runtime_stream", stream)
                         self._hold_runtime_owner(
                             stream, "warp_runtime_stream", device_ordinal=int(stream.device.ordinal)
                         )
@@ -2425,7 +2750,15 @@ class _SourceSession:
                     self.canonical_input,
                 )
                 self._hold_runtime_owner(binding, "runtime_setup_binding")
+                observation = self.runtime_observation
+                observation.append("runtime_binding", {
+                    "binding_token": observation.token(binding), "controller_token": observation.token(controller),
+                    "module_token": observation.token(module), "runtime_token": observation.token(runtime),
+                    "target_token": observation.token(target), "stream_token": observation.token(stream),
+                    "source_token": observation.token(self.canonical_input), "stream_identity": list(identity),
+                })
             self.phase = "runtime_ready"
+            self._runtime_phase_completed("runtime_initialization")
             return binding
         except BaseException as error:
             self.fail(error)
@@ -2439,7 +2772,10 @@ class _SourceSession:
         # Burn even on identity/metadata rejection. The surrounding armed
         # segment handles poison and never falls back to C0 synchronization.
         _RUNTIME_BINDINGS[self] = None
-        return self._validate_runtime_binding_record(binding, record)
+        validated = self._validate_runtime_binding_record(binding, record)
+        observation = self.runtime_observation
+        observation.append("binding_consumed", {"binding_token": observation.token(binding)})
+        return validated
 
     def _validate_runtime_binding_record(self, binding, record):
         self.check_live()
@@ -2500,7 +2836,7 @@ class _SourceSession:
                 module, target, stream = self._consume_runtime_binding(binding)
                 self.audit()
                 self.external.audit()
-                from optical_worker.native_contract import assert_prepared_storage_registered
+                from optical_worker.native_contract import observe_prepared_storage
                 from optical_worker.native_setup import (
                     _create_upload_context,
                     _upload_cuda_native_input,
@@ -2515,11 +2851,29 @@ class _SourceSession:
                     prepared = _upload_warp_native_input(self.canonical_input, context=context)
                 self.prepared_input = prepared
                 self._hold_runtime_owner(prepared, "guarded_prepared_input")
-                assert_prepared_storage_registered(prepared)
+                storage = observe_prepared_storage(prepared)
                 _UPLOADED_INPUTS[self] = (runtime_record, prepared)
+                observation = self.runtime_observation
+                arrays = []
+                for entry in storage:
+                    signature = entry.signature
+                    arrays.append({"name": entry.name, "array_token": observation.token(entry.array),
+                                   "storage_owner_token": None if entry.storage_owner is None else observation.token(entry.storage_owner),
+                                   "signature": {"device_ordinal": signature.device_ordinal, "base_pointer": signature.base_pointer,
+                                       "storage_identity": signature.storage_identity, "storage_nbytes": signature.storage_nbytes,
+                                       "active_start": signature.active_start, "active_count": signature.active_count,
+                                       "dtype": signature.dtype, "shape": list(signature.shape), "strides": list(signature.strides)}})
+                from optical_worker.protocol import canonical_sha256
+
+                observation.append("prepared_storage", {
+                    "prepared_token": observation.token(prepared), "source_token": observation.token(prepared.source),
+                    "ready_event_token": observation.token(prepared.ready_event), "manifest": prepared.manifest.to_payload(),
+                    "arrays": arrays, "storage_sha256": canonical_sha256(arrays),
+                })
                 self.audit()
                 self.external.audit()
             self.phase = "uploaded"
+            self._runtime_phase_completed("native_upload")
             return prepared
         except BaseException as error:
             self.fail(error)
@@ -2555,9 +2909,16 @@ class _SourceSession:
                     stream=stream,
                 )
                 self.validation_report = report
+                observation = self.runtime_observation
+                observation.append("input_validated", {
+                    "prepared_token": observation.token(prepared), "manifest_sha256": prepared.manifest.sha256,
+                    "content_sha256": report.content_sha256, "topology_sha256": report.topology_sha256,
+                    "validated_arrays": list(report.validated_arrays),
+                })
                 self.audit()
                 self.external.audit()
             self.phase = "input_validated"
+            self._runtime_phase_completed("input_validation")
             return report
         except BaseException as error:
             self.fail(error)
@@ -2696,6 +3057,14 @@ class _SourceSession:
             self.interpreter_alias_events.append(event)
             _INTERPRETER_ALIAS_CUSTODY[self] = (
                 descriptor, thread, retained, resolution, (publisher, event, tuple(event.items())))
+            observation = self.runtime_observation
+            observation.append("interpreter_alias", {
+                "event_index": event["index"], "token_bindings": [
+                    {"local_token": 1, "object_token": observation.token(descriptor[4])},
+                    {"local_token": 2, "object_token": observation.token(publisher)}],
+                "publisher_token": observation.token(publisher), "spec_token": observation.token(resolution[0]),
+                "loader_token": observation.token(resolution[1]),
+            })
         except BaseException as error:
             self.fail(error)
             raise

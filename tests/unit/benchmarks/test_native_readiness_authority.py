@@ -16,6 +16,7 @@ from optical_worker.native_contract import (
     assert_warp_prepared_authority,
     register_native_readiness,
     register_prepared_native_input,
+    observe_prepared_storage,
 )
 
 
@@ -134,6 +135,36 @@ def _pair(backend: str):
     register_prepared_native_input(prepared, source)
     register_native_readiness(readiness, prepared)
     return prepared, readiness
+
+
+@pytest.mark.parametrize("backend", ["warp", "cuda"])
+def test_custody_storage_projection_uses_one_existing_audit(backend, monkeypatch):
+    from optical_worker import native_contract
+
+    prepared, _ = _pair(backend)
+    original = native_contract._physical_storage_signature
+    calls = []
+
+    def inspect(*args):
+        calls.append(args)
+        return original(*args)
+
+    monkeypatch.setattr(native_contract, "_physical_storage_signature", inspect)
+    observed = observe_prepared_storage(prepared)
+    assert len(calls) == len(prepared.arrays) == 1
+    assert observed is native_contract._PREPARED_STORAGE[id(prepared)][3]
+    assert observed[0].array is prepared.arrays["scene"]
+    assert observed[0].storage_owner is (
+        prepared.arrays["scene"].storage if backend == "cuda" else None
+    )
+    with pytest.raises(ValueError, match="not issued"):
+        observe_prepared_storage(replace(prepared))
+    if backend == "cuda":
+        prepared.arrays["scene"].storage.ptr += 8
+    else:
+        prepared.arrays["scene"].ptr += 8
+    with pytest.raises(ValueError, match="changed its physical allocation"):
+        observe_prepared_storage(prepared)
 
 
 @pytest.mark.parametrize(

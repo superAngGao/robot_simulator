@@ -52,6 +52,24 @@ def test_single_definitions_preserve_all_bodies_and_alias_identities(old, new):
         }
         assert set(current) == set(old_definitions) | {"_validate_render_record"}
         assert {name for name in old_definitions if current[name] != old_definitions[name]} == changed
+    elif new == "native_input":
+        # C2d3 moves only the inert descriptors/codec into the CPU manifest
+        # module and adds narrow parsing there. Existing constructor/encoding
+        # bodies must still equal the original relocation baseline.
+        from optical_worker import native_manifest
+
+        moved = {"NativeArrayManifest", "NativeInputManifest", "_canonical_json_bytes", "_sha256_payload"}
+        tree = ast.parse(Path(native_manifest.__file__).read_text())
+        definitions = {}
+        for node in tree.body:
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name in moved:
+                if isinstance(node, ast.ClassDef):
+                    node.body = [item for item in node.body
+                                 if not isinstance(item, ast.FunctionDef) or item.name != "from_payload"]
+                definitions[node.name] = ast.dump(node, include_attributes=False)
+                assert getattr(production, node.name) is getattr(native_manifest, node.name)
+        assert not set(current) & moved
+        assert current | definitions == old_definitions
     else:
         assert current == old_definitions
     assert not _definitions(Path(legacy.__file__).read_text())

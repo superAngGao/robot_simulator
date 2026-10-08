@@ -1304,6 +1304,17 @@ Next milestone:
       See captured-ambient-and-terminal test-evidence v1 for raw limits/hashes.
       Formal runtime-custody schema implementation and the full required fault/
       dual-device/Go2 matrix still precede whole-stage review and acceptance.
+      Runtime-custody implementation-plan v3 at `ab24a7f` was independently
+      approved for implementation only; its unchanged report is archived in
+      `c915c56`. The aggregate implementation is now WIP: a stdlib-only shared
+      manifest, occurrence-bound session journal/tokens, existing-component and
+      lifecycle cross-replay, independent cold launch inputs, failure-cut
+      selection and ordered record/sidecar persistence. Five actual cold CPU
+      native-loader-double failure windows verify current versus unchanged
+      prior-cut selection; new-schema real-device execution and the complete
+      required mutation/fault matrix are still outstanding. See runtime-custody
+      implementation-note v1 for exact local checks and remaining work. This
+      code has not received independent implementation or whole-C2d3 approval.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design

@@ -14,8 +14,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from .native_manifest import NATIVE_INPUT_SCHEMA_VERSION
+
 NativeBackend = Literal["warp", "cuda"]
-NATIVE_INPUT_SCHEMA_VERSION = "q54.p12.4.native-input.v2"
+
 
 
 def _sha256_text(value: object) -> bool:
@@ -323,7 +325,7 @@ def register_native_readiness(subject: object, prepared: object) -> None:
 
 def _assert_registered_prepared_storage(
     prepared: object, *, backend: NativeBackend, prepared_type: type,
-) -> None:
+) -> tuple[_RegisteredArray, ...]:
     """Untimed upload/storage check; does not certify execution readiness."""
 
     if type(prepared) is not prepared_type:
@@ -355,6 +357,7 @@ def _assert_registered_prepared_storage(
             raise ValueError(
                 f"{backend} prepared native storage {entry.name!r} changed its physical allocation"
             )
+    return registered_storage[3]
 
 
 def assert_prepared_storage_registered(prepared: object) -> None:
@@ -363,12 +366,25 @@ def assert_prepared_storage_registered(prepared: object) -> None:
     This alone never permits C3/C4 binding or a result-capable execution path.
     Those continue to require their existing full prepared/readiness authority.
     """
+    observe_prepared_storage(prepared)
+
+
+def observe_prepared_storage(prepared: object) -> tuple[_RegisteredArray, ...]:
+    """Return the held registry entries after the sole existing storage audit.
+
+    The custody observer projects these CPU signatures and exact object
+    references immediately. No second device inspection or registration occurs,
+    and the returned tuple grants no prepared/readiness authority.
+    """
     if type(prepared) is CudaPreparedNativeInput:
-        _assert_registered_prepared_storage(prepared, backend="cuda", prepared_type=CudaPreparedNativeInput)
-    elif type(prepared) is WarpPreparedNativeInput:
-        _assert_registered_prepared_storage(prepared, backend="warp", prepared_type=WarpPreparedNativeInput)
-    else:
-        raise TypeError("storage validation requires an exact production prepared input")
+        return _assert_registered_prepared_storage(
+            prepared, backend="cuda", prepared_type=CudaPreparedNativeInput,
+        )
+    if type(prepared) is WarpPreparedNativeInput:
+        return _assert_registered_prepared_storage(
+            prepared, backend="warp", prepared_type=WarpPreparedNativeInput,
+        )
+    raise TypeError("storage validation requires an exact production prepared input")
 
 
 def _assert_prepared_authority(
