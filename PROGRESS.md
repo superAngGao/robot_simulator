@@ -1230,6 +1230,14 @@ Next milestone:
       samples locate repeated immutable configuration decoding. Implementation
       note v2 records exact evidence and the bounded immutable-config cache plus
       remaining evidence repairs; fresh review and uninstrumented rerun follow.
+      On `3646630`, both uninstrumented actual Go2 Warp sizes passed canonical
+      input upload/readback (42 arrays), sole supervised target sync/release and
+      worker exit0 under unchanged bounds. Independent gap-review v3 inspected
+      those artifacts and closed the prior eight counterexamples, while requesting
+      one same-call observation/admission replay-order fix. Implementation-note v3
+      records that repair and exact narrow evidence. CUDA closure, full failure/
+      hang/dual-device matrix and aggregate runtime-custody schema still block
+      whole C2d3 acceptance; no later gate opens from these Warp successes.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design

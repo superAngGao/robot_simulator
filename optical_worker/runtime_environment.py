@@ -472,6 +472,8 @@ def validate_native_global_observations(payload, environment, *, require_complet
         if event["operation"] == "observed_pending":
             _require(name not in pending and name not in admitted and token not in tokens,
                      "duplicate native global observation")
+            _require(all(old["call_sequence"] != sequence for old in admitted.values()),
+                     "native observation after same-call admission")
             checkpoint, request = event["checkpoint"], event["request_name"]
             _require((checkpoint == "exec_return" and request is None)
                      or (checkpoint == "request_entry" and type(request) is str and bool(request)),

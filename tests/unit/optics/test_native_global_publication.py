@@ -560,3 +560,55 @@ def test_return_observation_cannot_describe_a_still_started_call(importer, monke
     payload["calls"][payload["events"][0]["call_sequence"]]["state"] = "started"
     with pytest.raises(ValueError, match="started call"):
         validate_native_global_observations(payload, admission.environment)
+
+
+@pytest.mark.parametrize("mode", ["complete", "prefix", "failed_child"])
+def test_all_same_call_first_observations_precede_its_first_admission(importer, monkeypatch, mode):
+    def execute(admission, name):
+        if name.endswith("_child"):
+            raise ValueError("later unrelated child failed")
+        _publish()
+        _publish("c2ext.shared_two")
+
+    row = {"name": "c2ext.shared_two", "observer": "c2ext._parent",
+           "operation": "exec", "phase": "materialization"}
+    admission = _setup(importer, monkeypatch, execute, extra=[row])
+    importlib.import_module("c2ext._parent")
+    if mode == "failed_child":
+        with pytest.raises(ValueError, match="later unrelated"):
+            importlib.import_module("c2ext._child")
+    payload = admission.native_global_observations()
+    validate_native_global_observations(payload, admission.environment, require_complete=mode == "complete")
+    events = payload["events"]
+    payload["events"] = [events[index] for index in (0, 2, 1, 3)]
+    for index, event in enumerate(payload["events"]):
+        event["index"] = index
+    with pytest.raises(ValueError, match="same-call admission"):
+        validate_native_global_observations(payload, admission.environment,
+                                            require_complete=mode == "complete")
+
+
+@pytest.mark.parametrize("at_request", [False, True])
+def test_three_globals_at_one_return_can_follow_completed_child(importer, monkeypatch, at_request):
+    def execute(admission, name):
+        if name.endswith("_child"):
+            _publish("c2ext.child_shared")
+            return
+        importlib.import_module("c2ext._child")
+        _publish()
+        if at_request:
+            admission.session.finder.find_spec("fractions")
+        _publish("c2ext.shared_two")
+        _publish("c2ext.shared_three")
+
+    rows = [{"name": name, "observer": observer, "operation": "exec", "phase": "materialization"}
+            for name, observer in [("c2ext.child_shared", "c2ext._child"),
+                                   ("c2ext.shared_two", "c2ext._parent"),
+                                   ("c2ext.shared_three", "c2ext._parent")]]
+    admission = _setup(importer, monkeypatch, execute, extra=rows)
+    importlib.import_module("c2ext._parent")
+    admission.audit()
+    payload = admission.native_global_observations()
+    assert payload["events"][1]["operation"] == "admitted"
+    assert payload["events"][2]["operation"] == "observed_pending"
+    validate_native_global_observations(payload, admission.environment, require_complete=True)
