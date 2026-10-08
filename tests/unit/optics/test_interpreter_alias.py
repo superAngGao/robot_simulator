@@ -106,3 +106,53 @@ print('boundary_checked')
 """)
     assert result[0] == 0, result[2].decode()
     assert result[1].strip() == b"boundary_checked"
+
+
+@pytest.mark.parametrize("key,value", [("main_token", True), ("main_token", 1.0),
+                                     ("publisher_token", 2.0), ("index", False)])
+@pytest.mark.parametrize("poisoned", [False, True])
+def test_equal_value_type_rewrite_rejects_live_and_failed_alias_evidence(release, key, value, poisoned):
+    result = _internal(release, after=f"""
+entry._verify(session)
+import multiprocessing
+session.audit()
+if {poisoned!r}: session.fail(RuntimeError('original failure'))
+session.interpreter_alias_events[0][{key!r}] = {value!r}
+try:
+    session.interpreter_alias_observations()
+except entry.SourceBootstrapError:
+    assert session.failed
+else:
+    raise AssertionError('equal-value type rewrite accepted')
+print('typed_fact_rejected')
+""")
+    assert result[0] == 0, result[2].decode()
+    assert result[1].strip() == b"typed_fact_rejected"
+
+
+@pytest.mark.parametrize("state", ["removed", "none", "initializing_removed", "resolution_only"])
+def test_resolved_but_unobserved_publisher_cannot_complete_audit(release, state):
+    result = _internal(release, after=f"""
+entry._verify(session)
+state = {state!r}
+if state == 'resolution_only':
+    session.finder.find_spec('multiprocessing')
+    session.observe_interpreter_alias('request_entry')  # legitimate pre-publication interval
+else:
+    import multiprocessing
+    assert not session.interpreter_alias_events
+    if state == 'initializing_removed': multiprocessing.__spec__._initializing = True
+    del sys.modules['multiprocessing']
+    del sys.modules['__mp_main__']
+    if state == 'none': sys.modules['multiprocessing'] = None
+assert entry._INTERPRETER_ALIAS_CUSTODY[session][3] is not None
+try:
+    session.audit()
+except entry.SourceBootstrapError:
+    assert session.failed and not session.interpreter_alias_events
+else:
+    raise AssertionError('incomplete publisher completed final audit')
+print('incomplete_publisher_rejected')
+""")
+    assert result[0] == 0, result[2].decode()
+    assert result[1].strip() == b"incomplete_publisher_rejected"

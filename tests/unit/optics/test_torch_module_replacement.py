@@ -1,12 +1,15 @@
 """Production importer with small Python packages/native doubles; no GPU proof."""
 import copy
+import hashlib
 import importlib
 import sys
+from pathlib import Path
 from types import ModuleType
 
 import pytest
 
 from optical_worker.native_bootstrap import SourceBootstrapError
+from optical_worker import native_bootstrap as bootstrap
 from optical_worker.runtime_environment import validate_module_replacement_observations
 from tests.unit.optics.test_runtime_import_admission import importer as importer_fixture
 
@@ -19,7 +22,7 @@ CLASSES = {
 }
 
 
-def _setup(importer, monkeypatch, modify=None):
+def _setup(importer, monkeypatch, modify=None, native_globals=()):
     common = (
         "import sys\nfrom types import ModuleType\n"
         "class PropModule(ModuleType):\n"
@@ -60,7 +63,7 @@ def _setup(importer, monkeypatch, modify=None):
     monkeypatch.setattr(importlib.machinery.ExtensionFileLoader, "exec_module", lambda *args: None)
     admission, _ = importer(sources, native=("torch._C",),
                             packages=("torch", *(name for name in CLASSES if name != "torch._VF")),
-                            replacements=rows, phase="runtime")
+                            replacements=rows, native_globals=native_globals, phase="runtime")
     return admission
 
 
@@ -112,6 +115,71 @@ def test_replacement_identity_drift_fails_closed(importer, monkeypatch, mutation
     assert any(value is exposed for value in admission.retained)
 
 
+@pytest.mark.parametrize("boundary", ["request", "return", "frame", "audit", "malformed", "native_global"])
+def test_available_publication_held_at_first_real_session_termination(importer, monkeypatch, boundary):
+    main = sys.modules["__main__"]
+    monkeypatch.setitem(sys.modules, "__main__", main)
+    def modify(sources):
+        if boundary in {"request", "return", "malformed"}:
+            if boundary == "malformed":
+                sources["torch._VF"] += "sys.modules[__name__] = object()\n"
+            sources["torch._VF"] += "sys.modules['__main__'] = ModuleType('__main__')\n"
+            if boundary == "request":
+                sources["torch._VF"] += "import torch.backends\n"
+    rules = [{"name": "c2global", "observer": "torch._C", "operation": "exec", "phase": "runtime"}]
+    admission = _setup(importer, monkeypatch, modify, native_globals=rules if boundary == "native_global" else ())
+    session = admission.session
+    session.bootstrap_owner = main
+    session.interpreter_alias_events = []
+    path = Path(sys._stdlib_dir).resolve() / "multiprocessing" / "__init__.py"
+    source = path.read_bytes()
+    descriptor = (bootstrap._generated_interpreter_identity(), str(path), source,
+                  hashlib.sha256(source).hexdigest(), main)
+    monkeypatch.setitem(bootstrap._INTERPRETER_ALIAS_CUSTODY, session,
+                        (descriptor, bootstrap._thread.get_ident(), [main], None, None))
+    monkeypatch.setattr(session, "observe_interpreter_alias",
+                        bootstrap._SourceSession.observe_interpreter_alias.__get__(session))
+    observations = []
+    name = "c2global" if boundary == "native_global" else "torch._VF"
+    def terminate_at_entry(**kwargs):
+        value = sys.modules.get(name)
+        observations.append((value, any(owner is value for owner in admission.retained)))
+        admission.controller.termination_evidence = object()
+    admission.controller.termination_evidence = None
+    admission.controller._fail_guard = lambda *args: None
+    admission.controller.terminate = terminate_at_entry
+    monkeypatch.setitem(bootstrap._SOURCE_CUSTODY, session, (admission.controller,))
+    monkeypatch.setattr(session, "fail", bootstrap._SourceSession.fail.__get__(session))
+    if boundary == "native_global":
+        def native_exec(delegate, module):
+            monkeypatch.setitem(sys.modules, name, ModuleType(name))
+            sys.modules["__main__"] = ModuleType("__main__")
+        monkeypatch.setattr(importlib.machinery.ExtensionFileLoader, "exec_module", native_exec)
+    elif boundary == "frame":
+        returning = admission.return_native_call
+        def bad_frame(frame, module):
+            if frame["loader"].name == name and frame["operation"] == "exec":
+                frame["spec"] = object()
+            return returning(frame, module)
+        monkeypatch.setattr(admission, "return_native_call", bad_frame)
+    if boundary == "audit":
+        importlib.import_module("torch")
+        sys.modules[name] = object()
+        sys.modules["__main__"] = ModuleType("__main__")
+    count = len(admission.replacement_events)
+    with pytest.raises(SourceBootstrapError):
+        session.audit() if boundary == "audit" else importlib.import_module("torch")
+    assert observations and observations[0][0] is not None and observations[0][1] is True
+    assert session.failed
+    # The controller endpoint is a CPU double: this proves earliest custody,
+    # not native quiescence or a real process quarantine/reap.
+    after = len(admission.replacement_events)
+    assert after == count
+    session.observe_interpreter_alias("audit", final=True)
+    assert len(admission.replacement_events) == after
+    assert admission.failed and admission.session.failed
+
+
 def test_replay_rejects_replacement_token_substitution(importer, monkeypatch):
     admission = _setup(importer, monkeypatch)
     importlib.import_module("torch")
@@ -120,6 +188,26 @@ def test_replay_rejects_replacement_token_substitution(importer, monkeypatch):
     with pytest.raises(ValueError):
         validate_module_replacement_observations(evidence, admission.environment,
                                                 admission.native_global_observations())
+
+
+@pytest.mark.parametrize("projection", ["event_index", "event_original", "record_token"])
+@pytest.mark.parametrize("poisoned", [False, True])
+def test_equal_value_type_rewrite_rejects_replacement_evidence(importer, monkeypatch, projection, poisoned):
+    admission = _setup(importer, monkeypatch)
+    importlib.import_module("torch")
+    if poisoned:
+        admission.fail(RuntimeError("original failure"), "torch")
+    if projection == "event_index":
+        admission.replacement_events[0]["index"] = False
+    elif projection == "event_original":
+        event = admission.replacement_events[0]
+        event["original"] = float(event["original"])
+    else:
+        tokens = admission.replacement_records["torch._VF"]["tokens"]
+        tokens["original"] = float(tokens["original"])
+    with pytest.raises(SourceBootstrapError):
+        admission.replacement_observations()
+    assert admission.failed and admission.session.failed
 
 
 @pytest.mark.parametrize("mutation", ["original", "spec", "function", "code", "parent", "original_child",

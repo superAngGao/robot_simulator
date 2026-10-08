@@ -147,6 +147,13 @@ def _raw_class(cls):
     return type.__getattribute__(cls, "__dict__")
 
 
+def _same_facts(projection, facts):
+    return (type(projection) is dict and all(type(key) is str for key in projection)
+            and set(projection) == {key for key, _ in facts}
+            and all(type(projection[key]) is type(value) and projection[key] == value
+                    for key, value in facts))
+
+
 def _capture_interpreter_alias(root, paths):
     main = sys.modules.get("__main__")
     _require(type(main) is ModuleType and "__mp_main__" not in sys.modules
@@ -760,7 +767,7 @@ class _ExternalAdmission:
         _require(self.records.get(name) is original_record and original_record["module"] is original
                  and record["original"] is original and record["module"] is exposed
                  and record["frame"] is frame and record["relation"] is relation
-                 and tuple(record["tokens"].items()) == tokens and record["state"] == state,
+                 and _same_facts(record["tokens"], tokens) and record["state"] == state,
                  "replacement binding drift")
         self._check_native_call(frame)
         for key, value in (("original", original), ("replacement", exposed), ("class", relation[0]),
@@ -792,7 +799,7 @@ class _ExternalAdmission:
         _require(len(self.replacement_events) == len(self.replacement_event_bindings),
                  "replacement event history drift")
         for event, binding in zip(self.replacement_events, self.replacement_event_bindings):
-            _require(event is binding[0] and tuple(event.items()) == binding[1]
+            _require(event is binding[0] and _same_facts(event, binding[1])
                      and self.replacement_records.get(event["name"]) is binding[2],
                      "replacement event facts drift")
             self._check_replacement(event["name"], live=not self.failed)
@@ -988,6 +995,7 @@ class _ExternalAdmission:
 
     def enter_import_wrapper(self, checkpoint, request_name=None):
         try:
+            self.session.retain_import_boundary()
             if self.failed:
                 self._retain_native_globals()
                 self._retain_replacements()
@@ -1040,6 +1048,7 @@ class _ExternalAdmission:
         return frame
 
     def return_native_call(self, frame, module):
+        self.session.retain_import_boundary()
         self._check_native_thread()
         _require(self.native_context[-1] is frame, "native return nesting drift")
         self._native_call_state(frame, "returned", module)
@@ -1082,8 +1091,7 @@ class _ExternalAdmission:
                  "native global event history length drift")
         for event, binding in zip(self.native_global_events, self.native_global_event_bindings):
             issued, facts, name, record, module, frame = binding
-            _require(event is issued and type(event) is dict and set(event) == {key for key, _ in facts}
-                     and all(type(event[key]) is type(value) and event[key] == value for key, value in facts),
+            _require(event is issued and _same_facts(event, facts),
                      "native global issued event drift")
             self._check_global_record(name, record, live=live)
             _require(self.native_global_records.get(name) is record and record["module"] is module
@@ -1882,8 +1890,7 @@ class _ExternalAdmission:
 
     def audit(self):
         try:
-            self._retain_replacements()
-            self._retain_native_globals()
+            self.session.retain_import_boundary()
             self.check_live()
             self.session.audit_generated_stdlib()
             self.session.observe_interpreter_alias("audit", final=True)
@@ -2072,10 +2079,33 @@ class _SourceSession:
             return admitted
         raise SourceBootstrapError("invalid CPU source phase")
 
+    def retain_import_boundary(self):
+        # Intake only: no validation, adoption, event or terminal operation.
+        # The registry's actual admission is already part of source custody;
+        # do not trust the mutable session.external projection here.
+        external = _EXTERNAL_CUSTODY.get(self)
+        if external is not None:
+            admission = external[0]
+            raw = vars(admission)
+            if "retained" in raw:
+                if "replacements" in raw:
+                    admission._retain_replacements()
+                if "native_globals" in raw:
+                    admission._retain_native_globals()
+        if self in _INTERPRETER_ALIAS_CUSTODY:
+            self._retain_interpreter_alias()
+
     def fail(self, error):
+        self.retain_import_boundary()
         self.failed = True
         if not any(value is error for value in self.failures):
             self.failures.append(error)
+        external = _EXTERNAL_CUSTODY.get(self)
+        if external is not None and "failures" in vars(external[0]) and not external[0].failed:
+            # Share the existing one-way failure path. Its callback re-enters
+            # here only after admission.failed is set, then terminates once.
+            external[0].fail(error, "source_session")
+            return
         binding = _SOURCE_CUSTODY.get(self)
         if binding is not None:
             controller = binding[0]
@@ -2609,6 +2639,7 @@ class _SourceSession:
 
     def observe_interpreter_alias(self, checkpoint, *, final=False):
         try:
+            self.retain_import_boundary()
             binding = self._retain_interpreter_alias()
             if self.failed:
                 return  # Terminal diagnostics enlarge custody, never observations.
@@ -2621,7 +2652,8 @@ class _SourceSession:
                 return
             spec, loader = resolution
             if publisher is None:
-                _require(not alias_present and observed is None, "interpreter alias publisher disappeared")
+                _require(not final and "multiprocessing" not in sys.modules
+                         and not alias_present and observed is None, "interpreter alias publisher disappeared")
                 return
             _require(type(publisher) is ModuleType, "interpreter alias publisher type")
             raw = _raw_module(publisher)
@@ -2643,7 +2675,7 @@ class _SourceSession:
                 if observed[1] is not None:
                     _require(not initializing and len(self.interpreter_alias_events) == 1
                              and self.interpreter_alias_events[0] is observed[1]
-                             and tuple(observed[1].items()) == observed[2], "interpreter alias facts drift")
+                             and _same_facts(observed[1], observed[2]), "interpreter alias facts drift")
                     return
             if not alias_present:
                 _require(initializing and not final, "completed interpreter publisher lacks alias")
@@ -2681,7 +2713,7 @@ class _SourceSession:
             if observed is not None and observed[1] is not None:
                 _require(len(self.interpreter_alias_events) == 1
                          and self.interpreter_alias_events[0] is observed[1]
-                         and tuple(observed[1].items()) == observed[2], "interpreter alias evidence drift")
+                         and _same_facts(observed[1], observed[2]), "interpreter alias evidence drift")
             else:
                 _require(not self.interpreter_alias_events, "invented interpreter alias evidence")
             identity = list(descriptor[0])
@@ -2822,6 +2854,7 @@ class _SourceSession:
 
     def audit(self):
         try:
+            self.retain_import_boundary()
             self.check_live()
             self.audit_generated_stdlib()
             self.observe_interpreter_alias("audit", final=True)
