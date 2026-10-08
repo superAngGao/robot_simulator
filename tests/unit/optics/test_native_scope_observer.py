@@ -317,7 +317,86 @@ def test_actual_return_hook_keeps_original_owner_before_precondition_failure(war
     assert original_returns == [("runtime_stream", returned)]
     assert value in session.runtime_owners and returned in session.runtime_owners
     assert value.stream is returned and not value.cache_established and not model.getter_calls
-    assert len(value.raw) == (2 if fault == "runtime_scope_success" else 1)
+    assert len(value.raw) == (4 if fault == "runtime_scope_success" else 2)
     summary = value.controller.termination_evidence.lifecycle.to_payload()["summary"]
     assert summary["unknown_device_scope"] and summary["normal_complete_count"] == 0
     assert summary["emergency_sync_attempt_count"] == 0 and summary["release_status"] == "not_authorized"
+
+
+@pytest.mark.parametrize("field", ["_context", "_stream"])
+@pytest.mark.parametrize("missing", [False, True])
+def test_raw_precondition_rejection_preserves_distinguishable_diagnostic(observer, field, missing):
+    import json
+    observer.target = SimpleNamespace(_context=None, _stream=None)
+    if missing:
+        delattr(observer.target, field)
+    else:
+        setattr(observer.target, field, 9000)
+    observer.cache_established = False
+    calls = []
+    observer.error_query = lambda: calls.append(1)
+    with pytest.raises(AssertionError):
+        with observer.controller.segment():
+            _enter(observer.controller)
+            observer._warp_cache_precondition(before=True)
+    diagnostic = json.loads((observer.directory / "native_scope_diagnostic.json").read_bytes())
+    assert len(diagnostic["raw"]) == 1 and not calls and not observer.cache_established
+    raw = diagnostic["raw"][0]
+    assert raw["cache_precondition"] == "before"
+    assert raw["context_present"] is (not missing or field != "_context")
+    assert raw["stream_present"] is (not missing or field != "_stream")
+    assert raw["context"] == (9000 if not missing and field == "_context" else None)
+    assert raw["stream_is_none"] is (missing or field != "_stream")
+    assert observer.session.runtime_observation.journal == []
+    summary = observer.controller.termination_evidence.lifecycle.to_payload()["summary"]
+    assert summary["unknown_device_scope"] and summary["release_status"] == "not_authorized"
+
+
+@pytest.mark.parametrize("bad", ["identity", "context", "handle"])
+def test_postreturn_precondition_records_raw_identity_and_handle_before_rejection(observer, bad):
+    import json
+    returned = SimpleNamespace(cuda_stream=123)
+    observer.held.append(returned)
+    observer.stream = returned
+    observer.target = SimpleNamespace(_context=9000, _stream=returned)
+    observer.cache_established = False
+    if bad == "identity":
+        observer.target._stream = object()
+    elif bad == "context":
+        observer.target._context = None
+    else:
+        returned.cuda_stream = 0
+    calls = []
+    observer.error_query = lambda: calls.append(1)
+    with pytest.raises(AssertionError):
+        with observer.controller.segment():
+            _enter(observer.controller)
+            observer._warp_cache_precondition(before=False)
+    raw = json.loads((observer.directory / "native_scope_diagnostic.json").read_bytes())["raw"][0]
+    assert raw["cache_precondition"] == "after"
+    assert raw["stream_is_returned"] is (bad != "identity")
+    assert raw["context"] == (None if bad == "context" else 9000)
+    assert raw["returned_handle"] == (0 if bad == "handle" else 123)
+    assert raw["returned_handle_present"] and returned in observer.held
+    assert not calls and not observer.cache_established
+
+
+def test_precondition_diagnostics_never_call_properties_or_repr(observer):
+    class Hostile:
+        def __repr__(self):
+            raise RuntimeError("repr must not execute")
+    class Target:
+        @property
+        def _context(self):
+            raise RuntimeError("context property must not execute")
+        @property
+        def _stream(self):
+            raise RuntimeError("stream property must not execute")
+    observer.target = Target()
+    vars(observer.target).update(_context=Hostile(), _stream=Hostile())
+    observer.cache_established = False
+    with pytest.raises(AssertionError):
+        with observer.controller.segment():
+            _enter(observer.controller)
+            observer._warp_cache_precondition(before=True)
+    assert observer.raw[0]["context_type"] == "Hostile" and observer.raw[0]["context"] is None

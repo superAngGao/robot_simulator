@@ -37,6 +37,9 @@ def test_clean_spawn_worker_hello_open_and_single_close(lane, tmp_path):
     assert evidence["object_deserialization_enabled"] is False
     assert evidence["gpu_preparation_enabled"] is False
     assert evidence["cuda_capable_module_names"] == []
+    assert {"optical_worker/lane_contract.py", "optical_worker/native_manifest.py"}.issubset(
+        evidence["repository_module_paths"]
+    )
     assert all(not path.startswith("benchmarks/") for path in evidence["repository_module_paths"])
     assert set(evidence["repository_module_paths"]).issubset(
         {source.relative_path for source in manifest.source_digests}
@@ -51,6 +54,20 @@ def test_clean_spawn_worker_hello_open_and_single_close(lane, tmp_path):
     assert supervisor["abort_watchdog_started"] is False
     assert supervisor["watchdog_killed_worker"] is False
     assert supervisor["no_restart"] is True
+
+
+@pytest.mark.parametrize("removed", ["optical_worker/lane_contract.py", "optical_worker/native_manifest.py"])
+def test_c0_bootstrap_rejects_missing_transitive_cpu_owner_before_import(tmp_path, removed):
+    # Exercise the fixed bootstrap allowlist before any source hash/file import.
+    from tools.optical_closed_worker import _REQUIRED_C4C0_SOURCE_PATHS, _load_and_prevalidate_manifest
+    root = Path(__file__).resolve().parents[3]
+    payload = {"repository_root": str(root), "source_digests": [
+        {"relative_path": path, "sha256": "0" * 64}
+        for path in _REQUIRED_C4C0_SOURCE_PATHS if path != removed]}
+    path = tmp_path / "missing-owner.json"
+    path.write_bytes(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
+    with pytest.raises(RuntimeError, match="frozen C4c0 allowlist"):
+        _load_and_prevalidate_manifest(path)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="reviewed closed-worker launcher is Linux-only")

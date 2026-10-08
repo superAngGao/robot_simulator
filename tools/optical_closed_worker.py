@@ -11,9 +11,11 @@ from pathlib import Path
 _MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 _REQUIRED_C4C0_SOURCE_PATHS = (
     "optical_worker/__init__.py",
+    "optical_worker/lane_contract.py",
     "optical_worker/lifecycle.py",
     "optical_worker/manifest.py",
     "optical_worker/native_contract.py",
+    "optical_worker/native_manifest.py",
     "optical_worker/native_setup.py",
     "optical_worker/protocol.py",
     "optical_worker/worker.py",

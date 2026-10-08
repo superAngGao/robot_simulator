@@ -532,14 +532,34 @@ class _NativeScopeObserver:
         self._ticket()
         try:
             raw = vars(self.target)
+            context = raw.get("_context")
+            stream = raw.get("_stream")
+            # Raw fields only: diagnostics must not discover resources, invoke
+            # properties/repr, or discard the rejected prerequisite itself.
+            diagnostic = {"cache_precondition": "before" if before else "after",
+                          "context_present": "_context" in raw,
+                          "context_type": type(context).__name__,
+                          "context": context if type(context) in (int, bool, str, float, type(None)) else None,
+                          "stream_present": "_stream" in raw,
+                          "stream_is_none": stream is None,
+                          "cache_established": self.cache_established}
+            if not before:
+                returned = vars(self.stream)
+                handle = returned.get("cuda_stream")
+                diagnostic.update(stream_is_returned=stream is self.stream,
+                                  returned_handle_present="cuda_stream" in returned,
+                                  returned_handle_type=type(handle).__name__,
+                                  returned_handle=handle if type(handle) in (int, bool, str, float, type(None)) else None)
+            self.raw.append(diagnostic)
             if before:
-                assert raw["_context"] is None and raw["_stream"] is None
+                assert diagnostic["context_present"] and context is None
+                assert diagnostic["stream_present"] and stream is None
                 assert not self.cache_established
             else:
-                assert raw["_stream"] is self.stream
-                self.target_context = raw["_context"]
+                assert diagnostic["stream_present"] and stream is self.stream
+                self.target_context = context
                 assert type(self.target_context) is int and self.target_context > 0
-                assert type(self.stream.cuda_stream) is int and self.stream.cuda_stream > 0
+                assert type(handle) is int and handle > 0
             result = self._getter("wp_get_error_string", self.error_query)
             assert type(result) is bytes and result == b"", "Warp original initialization has a native error"
             if not before:
