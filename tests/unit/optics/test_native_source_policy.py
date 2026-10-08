@@ -269,7 +269,7 @@ assert not set(sys.modules) & {{'numpy', 'torch', 'warp', 'optics', 'benchmarks'
     subprocess.run([sys.executable, "-I", "-S", "-c", script], check=True, timeout=20)
     assert AST_POLICY["schema_version"].endswith("v1")
     assert AST_POLICY_SHA256 == canonical_sha256(AST_POLICY)
-    assert NATIVE_AST_POLICY_VERSION.endswith("v11")
+    assert NATIVE_AST_POLICY_VERSION.endswith("v12")
     assert NATIVE_AST_POLICY_SHA256 != AST_POLICY_SHA256
     with pytest.raises(ClosedWorkerProtocolError, match="forbidden module"):
         validate_trusted_source_ast(ROOT / RENDERER)

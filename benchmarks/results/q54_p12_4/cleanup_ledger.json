@@ -26,7 +26,11 @@
         "tests/data/runtime_environments/183_warp_synthetic_author_v3.json",
         "tests/data/runtime_environments/183_warp_synthetic_author_v4.json",
         "tests/data/runtime_environments/183_warp_go2_author_v1.json",
-        "tests/data/runtime_environments/183_warp_go2_author_v2.json"
+        "tests/data/runtime_environments/183_warp_go2_author_v2.json",
+        "tests/data/runtime_environments/183_warp_synthetic_author_v5.json",
+        "tests/data/runtime_environments/183_warp_go2_author_v3.json",
+        "tests/unit/optics/test_torch_module_replacement.py",
+        "tests/unit/optics/test_interpreter_alias.py"
       ],
       "symbols": {},
       "temporary_entry_exit": "C2d3 is incomplete until real captured-runtime acceptance and independent code review. Input-validation readback is not B3 delivery. Remove sacrificial validation entry points only after equivalent selected-worker custody/failure tests exist; no activation is granted by this ledger.",
@@ -102,7 +106,8 @@
         "optical_worker/data/native_sources/v7.json",
         "optical_worker/data/native_sources/v8.json",
         "optical_worker/data/native_sources/v9.json",
-        "optical_worker/data/native_sources/v10.json"
+        "optical_worker/data/native_sources/v10.json",
+        "optical_worker/data/native_sources/v11.json"
       ],
       "symbols": {},
       "temporary_entry_exit": "C2d integrated guarded dispatcher replaces the fixed CPU self-check terminal path after independent review; retain isolated source-consumption tests, never a generic callback mode. P12.4e retains only the selected loader/source closure.",

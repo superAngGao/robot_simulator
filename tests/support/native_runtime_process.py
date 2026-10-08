@@ -126,6 +126,10 @@ def child(fault, fd, directory):
                 "native_global_observations": (
                     None if admission is None else admission.native_global_observations()
                 ),
+                "module_replacement_observations": (
+                    None if admission is None else admission.replacement_observations()
+                ),
+                "interpreter_alias_observations": session.interpreter_alias_observations(),
                 "native_module_metadata": native_metadata,
                 "repository_trace": list(session.trace),
                 "sample_submission_count": 0,
@@ -249,6 +253,10 @@ def child(fault, fd, directory):
                         "native_global_observations": (
                             admission.native_global_observations() if "native_calls" in partial else None
                         ),
+                        "module_replacement_observations": (
+                            admission.replacement_observations() if "replacement_records" in partial else None
+                        ),
+                        "interpreter_alias_observations": session.interpreter_alias_observations(),
                         "failed": admission.failed,
                         "failure_metadata": metadata,
                         "unrecorded_modules": _unrecorded_module_observations(admission),

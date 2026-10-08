@@ -13,12 +13,14 @@ import sys
 from dataclasses import dataclass
 from email.parser import BytesParser
 from functools import lru_cache
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from .protocol import canonical_json_bytes, decode_canonical_message
 
-RUNTIME_ENVIRONMENT_VERSION = "q54.p12.4.runtime-environment.v4"
+RUNTIME_ENVIRONMENT_VERSION = "q54.p12.4.runtime-environment.v5"
 NATIVE_GLOBAL_OBSERVATIONS_VERSION = "q54.p12.4.native-global-observations.v1"
+MODULE_REPLACEMENT_OBSERVATIONS_VERSION = "q54.p12.4.module-replacement-observations.v1"
+INTERPRETER_ALIAS_OBSERVATIONS_VERSION = "q54.p12.4.interpreter-alias-observations.v1"
 # Literal policy, not a caller-extensible import denylist. File hashes still
 # belong to the one trusted deployment inventory (not a duplicate hash table).
 _DISABLED_OPTIONAL_ADAPTERS = (
@@ -29,6 +31,15 @@ _DISABLED_OPTIONAL_ADAPTERS = (
 # file identity and version remain solely in the bound deployment inventory.
 _NATIVE_MODULE_NAMES = (
     ("scipy._lib._uarray._uarray", "uarray._uarray"),
+)
+_TORCH_MODULE_REPLACEMENTS = (
+    ("torch._VF", "VFModule", "native_attribute", "torch._C", ("_VariableFunctions",)),
+    ("torch.backends", "GenericModule", "original_backlink", None, ()),
+    ("torch.backends.cudnn", "CudnnModule", "original_backlink", None, ()),
+    ("torch.backends.miopen", "MiopenModule", "original_backlink", None, ()),
+    ("torch.backends.mkldnn", "MkldnnModule", "original_backlink", None, ()),
+    ("torch.backends.opt_einsum", "OptEinsumModule", "original_backlink", None, ()),
+    ("torch.backends.quantized", "QuantizedEngine", "original_backlink", None, ()),
 )
 _PHASES = frozenset({"materialization", "runtime"})
 _FILE_KINDS = frozenset({"python", "extension", "native", "metadata", "data"})
@@ -152,6 +163,7 @@ def _validate(payload: object) -> None:
             "disabled_optional_modules",
             "publications",
             "native_globals",
+            "module_replacements",
             "namespaces",
             "settings",
         },
@@ -304,6 +316,35 @@ def _validate(payload: object) -> None:
         referenced_file(observer["root"], observer["path"], {"extension"})
         _phase(row["phase"])
         native_globals[name] = row
+
+    replacement_policy = {row[0]: row[1:] for row in _TORCH_MODULE_REPLACEMENTS}
+    replacements = {}
+    for row in _rows(
+        p["module_replacements"],
+        lambda r: _fields(r, {"name", "phase", "class_attribute", "relation", "native_root",
+                              "native_attributes"}, "module replacement")["name"],
+        "module replacements",
+    ):
+        name = _module(row["name"])
+        _require(name in replacement_policy and name in modules, "unlisted replacement file")
+        _require(type(row["native_attributes"]) is list, "replacement path must be a list")
+        _require((row["class_attribute"], row["relation"], row["native_root"],
+                  tuple(row["native_attributes"])) == replacement_policy[name],
+                 "replacement differs from literal policy")
+        original = modules[name]
+        _require(row["phase"] == original["phase"] == "runtime"
+                 and original["is_package"] is (name != "torch._VF"), "replacement file phase/package")
+        referenced_file(original["root"], original["path"], {"python"})
+        replacements[name] = row
+    _require(not replacements or set(replacements) == set(replacement_policy),
+             "replacement table must contain all seven or none")
+    if replacements:
+        _require("torch" in modules and modules["torch"]["is_package"]
+                 and modules["torch"]["phase"] == "runtime"
+                 and "torch._C" in modules and not modules["torch._C"]["is_package"]
+                 and modules["torch._C"]["phase"] == "runtime", "replacement runtime roots missing")
+        native = modules["torch._C"]
+        referenced_file(native["root"], native["path"], {"extension"})
 
     def probe_key(row):
         r = _fields(row, {"name", "requester", "phase"}, "absent probe")
@@ -508,6 +549,125 @@ def validate_native_global_observations(payload, environment, *, require_complet
     if require_complete:
         _require(not pending, "native global pending at completed boundary")
     return None
+
+
+def validate_interpreter_alias_observations(payload, *, require_observed=False):
+    """Parse descriptive stdlib observations; confer no import or exec authority.
+
+    Paths are lexical so a CPU reader can inspect either deployment platform.
+    The final custody record must bind this descriptor to its source session.
+    """
+    p = _fields(payload, {"schema_version", "interpreter_identity", "source_path", "source_sha256",
+                          "resolution", "events"}, "interpreter alias observations")
+    _require(p["schema_version"] == INTERPRETER_ALIAS_OBSERVATIONS_VERSION, "interpreter alias version")
+    identity = p["interpreter_identity"]
+    _require(type(identity) is list and len(identity) == 7, "interpreter alias identity")
+    executable, version, abi, platform, multiarch, directory, os_name = identity
+    _require(type(version) is list and len(version) == 5
+             and all(type(v) is int and v >= 0 for v in (*version[:3], version[4]))
+             and version[3] in {"alpha", "beta", "candidate", "final"}, "interpreter alias version facts")
+    _require(all(type(v) is str for v in (executable, abi, platform, multiarch, directory, os_name))
+             and executable and platform and directory and os_name in {"nt", "posix"},
+             "interpreter alias topology facts")
+    path_type = PureWindowsPath if os_name == "nt" else PurePosixPath
+    source = path_type(_text(p["source_path"], "interpreter alias source path"))
+    base = path_type(directory)
+    _require(base.is_absolute() and path_type(executable).is_absolute()
+             and str(source) == p["source_path"] and ".." not in base.parts
+             and source == base / "multiprocessing" / "__init__.py", "interpreter alias source topology")
+    _digest(p["source_sha256"])
+    resolution = p["resolution"]
+    if resolution is not None:
+        r = _fields(resolution, {"name", "origin", "loader", "search_locations"}, "interpreter alias resolution")
+        _require(r == {"name": "multiprocessing", "origin": p["source_path"],
+                       "loader": "SourceFileLoader", "search_locations": [str(source.parent)]},
+                 "interpreter alias resolution differs from source")
+    events = p["events"]
+    _require(type(events) is list and len(events) <= 1, "interpreter alias event count")
+    if events:
+        e = _fields(events[0], {"index", "operation", "checkpoint", "alias", "target", "publisher",
+                               "main_token", "publisher_token"}, "interpreter alias event")
+        _require(resolution is not None and type(e["index"]) is int and e["index"] == 0
+                 and e["operation"] == "interpreter_alias_observed"
+                 and e["checkpoint"] in {"request_entry", "exec_return", "audit"}
+                 and e["alias"] == "__mp_main__" and e["target"] == "__main__"
+                 and e["publisher"] == "multiprocessing"
+                 and type(e["main_token"]) is int and e["main_token"] == 1
+                 and type(e["publisher_token"]) is int and e["publisher_token"] == 2,
+                 "interpreter alias observation relation")
+    _require(not require_observed or len(events) == 1, "interpreter alias observation missing")
+
+
+def validate_module_replacement_observations(payload, environment, import_observations, *, require_complete=False):
+    """Descriptive replacement facts referencing the one actual file-call ledger."""
+    validate_native_global_observations(import_observations, environment, require_complete=require_complete)
+    p = _fields(payload, {"schema_version", "environment_sha256", "events"}, "replacement observations")
+    _require(p["schema_version"] == MODULE_REPLACEMENT_OBSERVATIONS_VERSION
+             and p["environment_sha256"] == environment.sha256, "replacement evidence identity")
+    _require(type(p["events"]) is list, "replacement events must be a list")
+    rules = {row["name"]: row for row in environment.to_payload()["module_replacements"]}
+    calls = import_observations["calls"]
+    keys = {"index", "operation", "name", "phase", "call_sequence", "checkpoint", "request_name",
+            "relation", "original", "replacement", "class", "native_root", "native_value"}
+    pending, admitted, tokens, returned = {}, {}, set(), set()
+    for index, value in enumerate(p["events"]):
+        event = _fields(value, keys, "replacement event")
+        name, sequence = event["name"], event["call_sequence"]
+        _require(type(event["index"]) is int and event["index"] == index and name in rules
+                 and type(sequence) is int and 0 <= sequence < len(calls), "replacement event order/reference")
+        call, rule = calls[sequence], rules[name]
+        _require(call["observer"] == name and call["operation"] == "exec"
+                 and call["phase"] == event["phase"] == rule["phase"] == "runtime"
+                 and event["relation"] == rule["relation"], "replacement own file interval")
+        native = rule["relation"] == "native_attribute"
+        object_fields = ("original", "replacement", "class", * (("native_root", "native_value") if native else ()))
+        values = tuple(event[key] for key in object_fields)
+        _require(all(type(token) is int and token > 0 for token in values)
+                 and len(set(values)) == len(values), "replacement distinct object tokens")
+        if not native:
+            _require(event["native_root"] is None and event["native_value"] is None,
+                     "backlink has invented native owner")
+        else:
+            _require(any(c["observer"] == rule["native_root"] and c["operation"] == "exec"
+                         and c["state"] == "completed" for c in calls[:sequence]),
+                     "replacement native root has no completed file call")
+        parent = call["parent_sequence"]
+        while parent is not None:
+            _require(parent not in returned, "replacement child observed after parent return")
+            parent = calls[parent]["parent_sequence"]
+        checkpoint, request = event["checkpoint"], event["request_name"]
+        _require((checkpoint == "request_entry" and type(request) is str and bool(request)
+                  and sequence not in returned)
+                 or (checkpoint == "exec_return" and request is None
+                     and call["state"] in {"returned", "completed", "failed"}),
+                 "replacement observation checkpoint")
+        if checkpoint == "exec_return":
+            returned.add(sequence)
+        if event["operation"] == "observed_pending":
+            _require(name not in pending and name not in admitted and not tokens.intersection(values),
+                     "replacement duplicate observation/token")
+            pending[name] = event
+            tokens.update(values)
+        elif event["operation"] == "admitted":
+            original = pending.pop(name, None)
+            _require(original is not None and name not in admitted and checkpoint == "exec_return"
+                     and call["state"] == "completed"
+                     and all(original[key] == event[key] for key in keys -
+                             {"index", "operation", "checkpoint", "request_name"}),
+                     "replacement admission differs from observation")
+            for child in pending.values():
+                parent = calls[child["call_sequence"]]["parent_sequence"]
+                while parent is not None:
+                    _require(parent != sequence, "replacement parent admitted with pending child")
+                    parent = calls[parent]["parent_sequence"]
+            admitted[name] = event
+        else:
+            raise ValueError("unknown replacement event")
+    for call in calls:
+        if call["observer"] in rules and call["operation"] == "exec" and call["state"] == "completed":
+            _require(call["observer"] in admitted, "completed file lacks required replacement")
+    if require_complete:
+        _require(not pending, "replacement pending at completed boundary")
 
 
 def _hash_file(path: Path) -> tuple[str, int]:

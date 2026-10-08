@@ -101,6 +101,7 @@ def deployment(tmp_path):
             },
         ],
         "native_globals": [],
+        "module_replacements": [],
         "namespaces": [
             {
                 "name": "vendor",
@@ -247,7 +248,7 @@ def test_active_remote_fixture_version_and_cold_test_digest_move_together():
     # backend, and do not pretend Windows validates POSIX deployment paths.
     root = Path(__file__).resolve().parents[3]
     payload = json.loads(
-        (root / "tests/data/runtime_environments/183_warp_synthetic_author_v4.json").read_bytes()
+        (root / "tests/data/runtime_environments/183_warp_synthetic_author_v5.json").read_bytes()
     )
     tree = ast.parse((root / "tests/gpu/test_native_runtime_cold_warp.py").read_bytes())
     pins = [

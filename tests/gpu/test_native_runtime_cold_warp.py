@@ -26,8 +26,8 @@ from optical_worker.workloads import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-ENVIRONMENT = ROOT / "tests/data/runtime_environments/183_warp_synthetic_author_v4.json"
-ENVIRONMENT_SHA256 = "c01ea90e6c52728a05addd29d081f1accd8e9ff30caae15fd3996a50ce5e6da9"
+ENVIRONMENT = ROOT / "tests/data/runtime_environments/183_warp_synthetic_author_v5.json"
+ENVIRONMENT_SHA256 = "0783cc820dcb738b8ec82586e2d14a12a7b9b81989e67d1ba9f86ce1ea3ed1b7"
 pytestmark = [
     pytest.mark.gpu,
     pytest.mark.skipif(

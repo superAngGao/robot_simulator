@@ -24,7 +24,7 @@ from .protocol import (
 
 NATIVE_SOURCE_CATALOG_VERSION = "q54.p12.4.native-component-source-catalog.v6"
 NATIVE_SOURCE_SNAPSHOT_VERSION = "q54.p12.4.native-component-source-snapshot.v1"
-CATALOG_PATH = "optical_worker/data/native_sources/v10.json"
+CATALOG_PATH = "optical_worker/data/native_sources/v11.json"
 
 # Deliberate literal inventory, not filesystem discovery. Includes eager
 # physics/sensing package initialization, even where the requested leaf is CPU.
@@ -231,6 +231,11 @@ class NativeRepositorySourceSnapshot:
         allowed = {item.relative_path for item in self.sources}
         observed = set()
         for name, module in tuple(sys.modules.items()):
+            # The source-session observer separately authorizes this one stdlib
+            # alias. This byte ledger counts the identical main object once;
+            # it neither admits the alias nor claims a second file execution.
+            if name == "__mp_main__" and module is sys.modules.get("__main__"):
+                name = "__main__"
             repository_name = name.partition(".")[0] in _REPOSITORY_NAMES
             if module is None:
                 if repository_name:

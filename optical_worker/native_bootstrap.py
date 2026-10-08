@@ -7,6 +7,7 @@ inputs. This is not a sandbox for arbitrary code in the same process.
 from __future__ import annotations
 
 import _thread
+import ast
 import hashlib
 import importlib.abc
 import importlib.machinery
@@ -16,11 +17,11 @@ import os
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
-from types import MappingProxyType, ModuleType
+from types import FunctionType, MappingProxyType, ModuleType
 
 _BOOTSTRAP = "optical_worker/native_bootstrap.py"
 _NATIVE_EXEC_OPERATION = "exec"  # Descriptive operation enum, never a dynamic Python callable.
-_CATALOG = "optical_worker/data/native_sources/v10.json"
+_CATALOG = "optical_worker/data/native_sources/v11.json"
 _MAX_BYTES = 4 * 1024 * 1024  # Rechecked against the sole protocol constant.
 _ROOTS = frozenset(
     ("optical_worker", "optics", "physics", "robot", "sensing", "benchmarks", "examples", "tests", "tools")
@@ -126,6 +127,7 @@ _UPLOADED_INPUTS = {}
 _IMPORT_TOPOLOGIES = {}
 _GENERATED_STDLIB_SPECS = {}
 _GENERATED_STDLIB_MODULES = {}
+_INTERPRETER_ALIAS_CUSTODY = {}
 
 
 class SourceBootstrapError(RuntimeError):
@@ -135,6 +137,36 @@ class SourceBootstrapError(RuntimeError):
 def _require(condition, message):
     if not condition:
         raise SourceBootstrapError(message)
+
+
+def _raw_module(module):
+    return ModuleType.__getattribute__(module, "__dict__")
+
+
+def _raw_class(cls):
+    return type.__getattribute__(cls, "__dict__")
+
+
+def _capture_interpreter_alias(root, paths):
+    main = sys.modules.get("__main__")
+    _require(type(main) is ModuleType and "__mp_main__" not in sys.modules
+             and "multiprocessing" not in sys.modules, "interpreter alias/main preloaded or missing")
+    directory = getattr(sys, "_stdlib_dir", None)
+    _require(type(directory) is str and bool(directory), "interpreter stdlib directory missing")
+    base = Path(directory).resolve(strict=True)
+    _require(str(base) in paths and not base.is_relative_to(root)
+             and not {p.lower() for p in base.parts} & {"site-packages", "dist-packages"},
+             "interpreter alias stdlib root drift")
+    source_path = base / "multiprocessing" / "__init__.py"
+    _require(source_path.resolve(strict=True) == source_path and not source_path.is_symlink(),
+             "interpreter alias source redirected")
+    source = source_path.read_bytes()
+    expected = ast.parse("if '__main__' in sys.modules:\n sys.modules['__mp_main__'] = sys.modules['__main__']\n").body[0]
+    matches = [node for node in ast.parse(source).body
+               if ast.dump(node, include_attributes=False) == ast.dump(expected, include_attributes=False)]
+    _require(len(matches) == 1, "interpreter alias statement differs from fixed source relation")
+    return (_generated_interpreter_identity(), str(source_path), source,
+            hashlib.sha256(source).hexdigest(), main)
 
 
 def _generated_interpreter_identity():
@@ -372,6 +404,8 @@ class _CapturedSourceFinder(importlib.abc.MetaPathFinder):
         try:
             if admission is not None and "native_context" in vars(admission):
                 marker = admission.enter_import_wrapper("request_entry", fullname)
+            else:
+                self.session.observe_interpreter_alias("request_entry")
             return self._find_spec(fullname, path, target)
         finally:
             if marker is not None:
@@ -389,6 +423,8 @@ class _CapturedSourceFinder(importlib.abc.MetaPathFinder):
                     spec = method(fullname, path, target)
                     self.session.check_import_topology()
                     if spec is not None:
+                        if fullname == "multiprocessing":
+                            self.session.bind_interpreter_alias_resolution(spec, path, target)
                         return spec
                 return None
         except BaseException as error:
@@ -600,6 +636,10 @@ class _ExternalAdmission:
         self.rules = {r["name"]: r for r in payload["modules"]}
         self.publications = {r["name"]: r for r in payload["publications"]}
         self.native_globals = {r["name"]: r for r in payload["native_globals"]}
+        self.replacements = {r["name"]: r for r in payload["module_replacements"]}
+        self.replacement_rules = tuple((r["name"], r["phase"], r["class_attribute"], r["relation"],
+                                        r["native_root"], tuple(r["native_attributes"]))
+                                       for r in payload["module_replacements"])
         self.native_global_rules = tuple(tuple(r[k] for k in ("name", "observer", "operation", "phase"))
                                          for r in payload["native_globals"])
         self.namespaces = {r["name"]: r for r in payload["namespaces"]}
@@ -616,6 +656,10 @@ class _ExternalAdmission:
         self.native_global_records, self.native_global_bindings = {}, {}
         self.native_global_events, self.native_global_event_bindings = [], []
         self.native_checkpoint_active = False
+        self.replacement_records, self.replacement_bindings = {}, {}
+        self.replacement_events, self.replacement_event_bindings = [], []
+        self.replacement_objects = []
+        self.replacement_checkpoint_active = False
         self.baseline = dict(sys.modules)
         self.failed = False
         _require(
@@ -630,6 +674,274 @@ class _ExternalAdmission:
         controller.adopt_host_owner(
             self, role="runtime_import_custody", operation_id="runtime_import_custody"
         )
+
+    def _retain_replacements(self):
+        values = {name: sys.modules[name] for name in self.replacements if name in sys.modules}
+        for value in values.values():
+            self._retain_replacement_owner(value)
+        return values
+
+    def _retain_replacement_owner(self, value):
+        if not any(owner is value for owner in self.retained):
+            self.retained.append(value)
+
+    def _replacement_token(self, value):
+        for index, original in enumerate(self.replacement_objects):
+            if original is value:
+                return index + 1
+        self.replacement_objects.append(value)
+        return len(self.replacement_objects)
+
+    def _replacement_relation(self, name, original, exposed):
+        # Intake has already retained the exposed object, even when invalid.
+        _require(type(original) is ModuleType, "replacement original must be a file module")
+        rule = self.replacements[name]
+        raw = _raw_module(original)
+        cls = raw.get(rule["class_attribute"])
+        self._retain_replacement_owner(cls)
+        _require(type(cls) is type and type(exposed) is cls and exposed is not original,
+                 "replacement exact class/original mismatch")
+        classes = [(cls, original)]
+        if name not in {"torch._VF", "torch.backends.quantized"}:
+            backend = self.records["torch.backends"]["module"]
+            base = _raw_module(backend).get("PropModule")
+            self._retain_replacement_owner(backend)
+            self._retain_replacement_owner(base)
+            _require(type(base) is type and type.__getattribute__(base, "__bases__") == (ModuleType,),
+                     "replacement PropModule base drift")
+            _require(type.__getattribute__(cls, "__bases__") == (base,), "replacement class base drift")
+            classes.append((base, backend))
+            expected_mro = (cls, base, ModuleType, object)
+        else:
+            _require(type.__getattribute__(cls, "__bases__") == (ModuleType,), "replacement direct base drift")
+            expected_mro = (cls, ModuleType, object)
+        _require(type.__getattribute__(cls, "__mro__") == expected_mro, "replacement MRO drift")
+        functions = []
+        for owner_class, owner_module in classes:
+            class_raw = _raw_class(owner_class)
+            for attribute in ("__init__", "__getattr__"):
+                function = class_raw.get(attribute)
+                if function is None:
+                    continue
+                self._retain_replacement_owner(function)
+                _require(type(function) is FunctionType
+                         and function.__globals__ is _raw_module(owner_module),
+                         "replacement method defining globals drift")
+                functions.append((owner_class, attribute, function, function.__code__, owner_module))
+        exposed_raw = _raw_module(exposed)
+        _require(exposed_raw.get("__name__") == name
+                 and all(key in exposed_raw and exposed_raw[key] is None
+                         for key in ("__loader__", "__spec__", "__package__", "__doc__"))
+                 and not {"__file__", "__path__", "__cached__", "__getattr__", "__getattribute__"}
+                 & exposed_raw.keys(), "replacement raw metadata drift")
+        native_root, native_value = None, None
+        if rule["relation"] == "original_backlink":
+            value = exposed_raw.get("m")
+            self._retain_replacement_owner(value)
+            _require(value is original, "replacement original backlink mismatch")
+        else:
+            native_record = self.records.get(rule["native_root"])
+            _require(native_record is not None, "replacement native root missing")
+            native_root = native_record["module"]
+            self._retain_replacement_owner(native_root)
+            self.check_module(rule["native_root"])
+            native_value = _raw_module(native_root).get(rule["native_attributes"][0])
+            self._retain_replacement_owner(native_value)
+            self._retain_replacement_owner(exposed_raw.get("vf"))
+            _require(native_value is not None and exposed_raw.get("vf") is native_value,
+                     "replacement native value mismatch")
+        return cls, expected_mro, tuple(functions), native_root, native_value
+
+    def _check_replacement(self, name, *, live=True):
+        record = self.replacement_records.get(name)
+        binding = self.replacement_bindings.get(name)
+        _require(binding is not None and binding[0] is record, "replacement record identity drift")
+        _, original_record, original, exposed, frame, relation, tokens, state = binding
+        _require(self.records.get(name) is original_record and original_record["module"] is original
+                 and record["original"] is original and record["module"] is exposed
+                 and record["frame"] is frame and record["relation"] is relation
+                 and tuple(record["tokens"].items()) == tokens and record["state"] == state,
+                 "replacement binding drift")
+        self._check_native_call(frame)
+        for key, value in (("original", original), ("replacement", exposed), ("class", relation[0]),
+                           ("native_root", relation[3]), ("native_value", relation[4])):
+            token = dict(tokens)[key]
+            _require(token is None if value is None else
+                     type(token) is int and 0 < token <= len(self.replacement_objects)
+                     and self.replacement_objects[token - 1] is value, "replacement object token drift")
+        if live:
+            _require(sys.modules.get(name) is exposed, "replacement removed or replaced")
+            current = self._replacement_relation(name, original, exposed)
+            _require(current[0] is relation[0] and current[1] == relation[1]
+                     and current[3] is relation[3] and current[4] is relation[4]
+                     and len(current[2]) == len(relation[2])
+                     and all(a[1] == b[1] and all(a[i] is b[i] for i in (0, 2, 3, 4))
+                             for a, b in zip(current[2], relation[2])), "replacement class/function relation drift")
+        return binding
+
+    def _replacement_event(self, operation, name, checkpoint, request_name):
+        record = self.replacement_records[name]
+        event = {"index": len(self.replacement_events), "operation": operation, "name": name,
+                 "phase": record["frame"]["phase"], "call_sequence": record["frame"]["sequence"],
+                 "checkpoint": checkpoint, "request_name": request_name,
+                 "relation": self.replacements[name]["relation"], **record["tokens"]}
+        self.replacement_event_bindings.append((event, tuple(event.items()), record))
+        self.replacement_events.append(event)
+
+    def _check_replacement_events(self):
+        _require(len(self.replacement_events) == len(self.replacement_event_bindings),
+                 "replacement event history drift")
+        for event, binding in zip(self.replacement_events, self.replacement_event_bindings):
+            _require(event is binding[0] and tuple(event.items()) == binding[1]
+                     and self.replacement_records.get(event["name"]) is binding[2],
+                     "replacement event facts drift")
+            self._check_replacement(event["name"], live=not self.failed)
+
+    def replacement_checkpoint(self, checkpoint, *, request_name=None, returned_frame=None):
+        values = self._retain_replacements()
+        self._check_native_thread()
+        _require(not self.failed and not self.replacement_checkpoint_active,
+                 "replacement checkpoint reentry/failure")
+        self.replacement_checkpoint_active = True
+        try:
+            _require(self.replacements == {r["name"]: r for r in self.payload["module_replacements"]},
+                     "replacement table drift")
+            _require(tuple((r["name"], r["phase"], r["class_attribute"], r["relation"],
+                            r["native_root"], tuple(r["native_attributes"]))
+                           for r in self.replacements.values()) == self.replacement_rules,
+                     "replacement immutable rule drift")
+            frame = returned_frame if returned_frame is not None else (
+                self.native_context[-1] if self.native_context else None)
+            for name, rule in self.replacements.items():
+                previous = self.replacement_records.get(name)
+                original_record = self.records.get(name)
+                if previous is not None:
+                    self._check_replacement(name)
+                    if previous["state"] == "observed_pending":
+                        pending = previous["frame"]
+                        _require(any(value is pending for value in self.native_context)
+                                 or pending is returned_frame
+                                 or (pending["state"] == "returned" and any(
+                                     value is pending["wrapper"] for value in self.native_context)),
+                                 "pending replacement frame disappeared")
+                    continue
+                _require(name not in self.replacement_bindings, "replacement record removed")
+                if name not in values:
+                    _require(original_record is None or original_record["state"] == "created",
+                             "executing replacement key removed")
+                    continue
+                _require(original_record is not None, "replacement key preloaded")
+                original = original_record["module"]
+                if values[name] is original:
+                    continue
+                _require(checkpoint in {"request_entry", "exec_return"} and type(frame) is dict,
+                         "replacement observed outside own Python exec")
+                self._check_native_call(frame)
+                _require(frame["loader"].source is not None and frame["loader"].name == name
+                         and frame["module"] is original and frame["operation"] == "exec"
+                         and frame["phase"] == rule["phase"] == self.phase
+                         and frame["state"] == ("returned" if returned_frame is not None else "started"),
+                         "replacement observed in wrong interval")
+                relation = self._replacement_relation(name, original, values[name])
+                tokens = {key: None if value is None else self._replacement_token(value)
+                          for key, value in (("original", original), ("replacement", values[name]),
+                                             ("class", relation[0]), ("native_root", relation[3]),
+                                             ("native_value", relation[4]))}
+                record = {"original": original, "module": values[name], "frame": frame,
+                          "relation": relation, "tokens": tokens, "state": "observed_pending"}
+                self.replacement_records[name] = record
+                self.replacement_bindings[name] = (
+                    record, original_record, original, values[name], frame, relation,
+                    tuple(tokens.items()), "observed_pending")
+                self.controller.adopt_host_owner(values[name], role="external_import_owner",
+                                                 operation_id="module_replacement_observation")
+                _require(not self.failed, "replacement adoption swallowed failure")
+                self._replacement_event("observed_pending", name, checkpoint, request_name)
+                _require(not self.failed, "replacement observation swallowed failure")
+        finally:
+            self.replacement_checkpoint_active = False
+
+    def complete_replacement(self, frame):
+        name = frame["loader"].name
+        if frame["operation"] != "exec" or name not in self.replacements:
+            return
+        binding = self._check_replacement(name)
+        record = self.replacement_records[name]
+        _require(record["frame"] is frame and record["state"] == "observed_pending",
+                 "required replacement missing or already completed")
+        self._check_replacement_events()
+        self._replacement_event("admitted", name, "exec_return", None)
+        _require(not self.failed, "replacement admission swallowed failure")
+        record["state"] = "admitted"
+        self.replacement_bindings[name] = (*binding[:-1], "admitted")
+
+    def exposed_module(self, name):
+        if name in self.replacement_records:
+            self._check_replacement(name)
+            return self.replacement_records[name]["module"]
+        return self.records[name]["module"]
+
+    def audit_replacements(self):
+        self.replacement_checkpoint("audit")
+        self._check_replacement_events()
+        backend_children = ("cpu", "cuda", "cudnn", "cusparselt", "kleidiai", "mha", "miopen",
+                            "mkl", "mkldnn", "mps", "nnpack", "openmp", "opt_einsum", "quantized")
+        for name in self.replacements:
+            original = self.records.get(name)
+            replacement = self.replacement_records.get(name)
+            if original is None:
+                _require(replacement is None, "unexecuted replacement has evidence")
+                continue
+            _require(original["state"] == "completed" and replacement is not None
+                     and replacement["state"] == "admitted"
+                     and replacement["frame"]["state"] == "completed", "replacement incomplete at audit")
+            self.controller.require_adopted(replacement["module"])
+            parent, _, attribute = name.rpartition(".")
+            _require(_raw_module(self.exposed_module(parent)).get(attribute) is replacement["module"],
+                     "replacement parent binding drift")
+            for child, child_record in self.records.items():
+                if child.rpartition(".")[0] != name or child_record["state"] != "completed":
+                    continue
+                short = child.rpartition(".")[2]
+                exposed = self.exposed_module(child)
+                _require(_raw_module(replacement["module"]).get(short) is exposed,
+                         "replacement child binding drift")
+                if name == "torch.backends" and short in backend_children:
+                    _require(_raw_module(original["module"]).get(short) is exposed,
+                             "replacement original from-import binding drift")
+
+    def replacement_observations(self):
+        try:
+            self._retain_replacements()
+            if not self.failed:
+                if self.native_context:
+                    self.replacement_checkpoint("evidence")
+                else:
+                    self.audit_replacements()
+            _require(set(self.replacement_records) == set(self.replacement_bindings),
+                     "replacement evidence records drift")
+            for name in self.replacement_records:
+                self._check_replacement(name, live=not self.failed)
+            self._check_replacement_events()
+            imports = self._native_global_observations()
+            from optical_worker.runtime_environment import (
+                MODULE_REPLACEMENT_OBSERVATIONS_VERSION,
+                validate_module_replacement_observations,
+            )
+
+            payload = {"schema_version": MODULE_REPLACEMENT_OBSERVATIONS_VERSION,
+                       "environment_sha256": self.expected_sha256,
+                       "events": [dict(event) for event in self.replacement_events]}
+            # As with native-global facts, preserve an immutable failed prefix
+            # even if failure interrupted the admission/call completion commit.
+            # Such a prefix is not a completed custody receipt.
+            if not self.failed:
+                validate_module_replacement_observations(payload, self.environment, imports,
+                                                        require_complete=not self.native_context)
+            return payload
+        except BaseException as error:
+            self.fail(error, "replacement_evidence")
+            raise
 
     def _retain_native_globals(self):
         # Retention is deliberately first and remains usable after poisoning.
@@ -678,7 +990,11 @@ class _ExternalAdmission:
         try:
             if self.failed:
                 self._retain_native_globals()
+                self._retain_replacements()
+                self.session.observe_interpreter_alias(checkpoint)
                 return None  # Terminal stdlib reporting cannot reopen admission.
+            self.session.observe_interpreter_alias(checkpoint)
+            self.replacement_checkpoint(checkpoint, request_name=request_name)
             self.native_global_checkpoint(checkpoint, request_name=request_name)
             marker = object()
             self.native_context.append(marker)
@@ -728,6 +1044,9 @@ class _ExternalAdmission:
         _require(self.native_context[-1] is frame, "native return nesting drift")
         self._native_call_state(frame, "returned", module)
         self.native_context.pop()  # Subsequent wrapper imports are not delegate work.
+        self.session.observe_interpreter_alias("exec_return")
+        self.replacement_checkpoint("exec_return" if frame["operation"] == "exec" else "create_return",
+                                    returned_frame=frame)
         self.native_global_checkpoint("exec_return" if frame["operation"] == "exec" else "create_return",
                                       returned_frame=frame)
 
@@ -853,6 +1172,7 @@ class _ExternalAdmission:
         self._check_native_call(frame)
         _require(not self.failed and frame["state"] == "returned"
                  and self.native_context[-1] is frame["wrapper"], "native call completed out of order")
+        self.complete_replacement(frame)
         self._check_global_events()
         for name in frame["absent"]:
             record = self.native_global_records.get(name)
@@ -965,6 +1285,7 @@ class _ExternalAdmission:
             and self.rules == {r["name"]: r for r in p["modules"]}
             and self.publications == {r["name"]: r for r in p["publications"]}
             and self.native_globals == {r["name"]: r for r in p["native_globals"]}
+            and self.replacements == {r["name"]: r for r in p["module_replacements"]}
             and self.namespaces == {r["name"]: r for r in p["namespaces"]}
             and self.absent == {(r["name"], r["requester"], r["phase"]) for r in p["absent_probes"]},
             "external lookup index drift",
@@ -1024,6 +1345,9 @@ class _ExternalAdmission:
             )
         rule = self.rules.get(parent)
         _require(rule is not None and rule["is_package"], "external parent is not a file package")
+        if parent in self.replacement_records:
+            self._check_replacement(parent)
+            self.check_module(parent)
         return (str((Path(self.roots[rule["root"]]) / rule["path"]).parent),)
 
     def find_spec(self, fullname, path=None, target=None):
@@ -1501,7 +1825,10 @@ class _ExternalAdmission:
 
     def check_module(self, name):
         record = self.records[name]
-        _require(sys.modules.get(name) is record["module"], "external sys.modules identity drift")
+        if name in self.replacement_records:
+            self._check_replacement(name)
+        else:
+            _require(sys.modules.get(name) is record["module"], "external sys.modules identity drift")
         if record["kind"] == "namespace":
             module, spec, loader = record["module"], self.specs[name], self.loaders[name]
             locations = tuple(
@@ -1525,25 +1852,26 @@ class _ExternalAdmission:
         if record["kind"] != "file_module":
             return
         module, spec = record["module"], self.specs[name]
+        raw = _raw_module(module)
         loader = self.loaders[name]
         loader._check_binding()
         self.check_module_name(name)
         expected_package = name if self.rules[name]["is_package"] else name.rpartition(".")[0]
         _require(
-            module.__spec__ is spec
-            and module.__loader__ is loader
+            raw.get("__spec__") is spec
+            and raw.get("__loader__") is loader
             and spec.loader is loader
             and spec.name == name
             and spec.parent == expected_package
-            and module.__package__ == expected_package
-            and module.__file__ == loader.origin
+            and raw.get("__package__") == expected_package
+            and raw.get("__file__") == loader.origin
             and spec.origin == loader.origin,
             "external module metadata drift",
         )
         if self.rules[name]["is_package"]:
             _require(
-                list(module.__path__) == [str(Path(loader.origin).parent)]
-                and list(spec.submodule_search_locations) == list(module.__path__),
+                list(raw.get("__path__", ())) == [str(Path(loader.origin).parent)]
+                and list(spec.submodule_search_locations) == list(raw.get("__path__", ())),
                 "external package drift",
             )
         else:
@@ -1554,10 +1882,14 @@ class _ExternalAdmission:
 
     def audit(self):
         try:
+            self._retain_replacements()
+            self._retain_native_globals()
             self.check_live()
             self.session.audit_generated_stdlib()
+            self.session.observe_interpreter_alias("audit", final=True)
             _require(not self.stack, "external import is still in progress")
             self.audit_native_globals()
+            self.audit_replacements()
             self.environment.verify_files(expected_sha256=self.expected_sha256)
             for name, original in self.baseline.items():
                 _require(sys.modules.get(name) is original, "pre-existing module identity changed")
@@ -1568,10 +1900,11 @@ class _ExternalAdmission:
                     name in self.baseline
                     or name.partition(".")[0] in _ROOTS
                     or self.session.is_interpreter_name(name)
+                    or name == "__mp_main__" and self.session.interpreter_alias_admitted()
                 ):
                     continue
                 _require(
-                    name in self.records and self.records[name]["module"] is module,
+                    name in self.records and self.exposed_module(name) is module,
                     "unlisted module publication",
                 )
             for name, record in self.records.items():
@@ -2229,6 +2562,144 @@ class _SourceSession:
         topology = _IMPORT_TOPOLOGIES[self]
         return _is_interpreter_name(name, topology[5], topology[6])
 
+    def _retain_interpreter_alias(self):
+        binding = _INTERPRETER_ALIAS_CUSTODY.get(self)
+        _require(binding is not None, "interpreter alias custody missing")
+        retained = binding[2]
+        for name in ("__main__", "__mp_main__", "multiprocessing"):
+            if name in sys.modules and not any(value is sys.modules[name] for value in retained):
+                retained.append(sys.modules[name])
+        publisher = sys.modules.get("multiprocessing")
+        if isinstance(publisher, ModuleType):
+            raw = _raw_module(publisher)
+            for value in (raw.get("__spec__"), raw.get("__loader__")):
+                if not any(owner is value for owner in retained):
+                    retained.append(value)
+        return binding
+
+    def _check_interpreter_alias_source(self):
+        binding = self._retain_interpreter_alias()
+        descriptor, thread, _, resolution, observed = binding
+        _require(thread == _thread.get_ident(), "interpreter alias foreign thread")
+        _require(descriptor[0] == _generated_interpreter_identity()
+                 and sys.modules.get("__main__") is descriptor[4]
+                 and self.bootstrap_owner is descriptor[4], "interpreter alias main/identity drift")
+        path = Path(descriptor[1])
+        _require(path.resolve(strict=True) == path and not path.is_symlink()
+                 and path.read_bytes() == descriptor[2]
+                 and hashlib.sha256(descriptor[2]).hexdigest() == descriptor[3],
+                 "interpreter alias source drift")
+        return binding
+
+    def bind_interpreter_alias_resolution(self, spec, path, target):
+        descriptor, thread, retained, resolution, observed = self._check_interpreter_alias_source()
+        retained.append(spec)
+        _require(resolution is None and observed is None and path is None and target is None
+                 and "multiprocessing" not in sys.modules and "__mp_main__" not in sys.modules,
+                 "interpreter alias resolution is not cold/single-use")
+        _require(type(spec) is importlib.machinery.ModuleSpec, "interpreter alias spec type")
+        loader = vars(spec).get("loader")
+        retained.append(loader)
+        _require(type(loader) is importlib.machinery.SourceFileLoader
+                 and spec.name == "multiprocessing" and spec.origin == descriptor[1]
+                 and loader.name == spec.name and loader.path == descriptor[1]
+                 and list(spec.submodule_search_locations) == [str(Path(descriptor[1]).parent)],
+                 "interpreter alias standard resolution drift")
+        _INTERPRETER_ALIAS_CUSTODY[self] = (descriptor, thread, retained, (spec, loader), None)
+
+    def observe_interpreter_alias(self, checkpoint, *, final=False):
+        try:
+            binding = self._retain_interpreter_alias()
+            if self.failed:
+                return  # Terminal diagnostics enlarge custody, never observations.
+            descriptor, thread, retained, resolution, observed = self._check_interpreter_alias_source()
+            publisher = sys.modules.get("multiprocessing")
+            alias_present = "__mp_main__" in sys.modules
+            if resolution is None:
+                _require(publisher is None and not alias_present and observed is None,
+                         "interpreter alias appeared before standard resolution")
+                return
+            spec, loader = resolution
+            if publisher is None:
+                _require(not alias_present and observed is None, "interpreter alias publisher disappeared")
+                return
+            _require(type(publisher) is ModuleType, "interpreter alias publisher type")
+            raw = _raw_module(publisher)
+            retained.extend((raw.get("__spec__"), raw.get("__loader__")))
+            _require(raw.get("__name__") == "multiprocessing" and raw.get("__spec__") is spec
+                     and raw.get("__loader__") is loader and raw.get("__file__") == descriptor[1]
+                     and raw.get("__package__") == "multiprocessing"
+                     and raw.get("__path__") == [str(Path(descriptor[1]).parent)]
+                     and spec.name == "multiprocessing" and spec.origin == descriptor[1]
+                     and spec.loader is loader and loader.name == "multiprocessing"
+                     and loader.path == descriptor[1]
+                     and list(spec.submodule_search_locations) == raw["__path__"],
+                     "interpreter alias publisher metadata drift")
+            initializing = vars(spec).get("_initializing")
+            _require(type(initializing) is bool, "interpreter alias publisher initializing metadata")
+            if observed is not None:
+                _require(observed[0] is publisher and alias_present
+                         and sys.modules["__mp_main__"] is descriptor[4], "interpreter alias identity drift")
+                if observed[1] is not None:
+                    _require(not initializing and len(self.interpreter_alias_events) == 1
+                             and self.interpreter_alias_events[0] is observed[1]
+                             and tuple(observed[1].items()) == observed[2], "interpreter alias facts drift")
+                    return
+            if not alias_present:
+                _require(initializing and not final, "completed interpreter publisher lacks alias")
+                return
+            _require(sys.modules["__mp_main__"] is descriptor[4], "interpreter alias is not cold main")
+            if initializing:
+                _require(not final, "interpreter alias publisher incomplete at audit")
+                _INTERPRETER_ALIAS_CUSTODY[self] = (descriptor, thread, retained, resolution, (publisher, None, None))
+                return
+            _require(checkpoint in {"request_entry", "exec_return", "audit"},
+                     "interpreter alias first observation checkpoint")
+            event = {"index": 0, "operation": "interpreter_alias_observed", "checkpoint": checkpoint,
+                     "alias": "__mp_main__", "target": "__main__", "publisher": "multiprocessing",
+                     "main_token": 1, "publisher_token": 2}
+            _require(not self.interpreter_alias_events, "interpreter alias projection already exists")
+            self.interpreter_alias_events.append(event)
+            _INTERPRETER_ALIAS_CUSTODY[self] = (
+                descriptor, thread, retained, resolution, (publisher, event, tuple(event.items())))
+        except BaseException as error:
+            self.fail(error)
+            raise
+
+    def interpreter_alias_admitted(self):
+        binding = _INTERPRETER_ALIAS_CUSTODY[self]
+        return binding[4] is not None and binding[4][1] is not None
+
+    def interpreter_alias_observations(self):
+        try:
+            # Read-only checkpoint: issuance cannot first observe an alias.
+            # After poison, retain and validate historical facts without
+            # pretending importlib's unwind preserved live module keys.
+            self.observe_interpreter_alias("evidence")
+            descriptor, thread, _, resolution, observed = self._retain_interpreter_alias()
+            _require(thread == _thread.get_ident(), "interpreter alias evidence foreign thread")
+            if observed is not None and observed[1] is not None:
+                _require(len(self.interpreter_alias_events) == 1
+                         and self.interpreter_alias_events[0] is observed[1]
+                         and tuple(observed[1].items()) == observed[2], "interpreter alias evidence drift")
+            else:
+                _require(not self.interpreter_alias_events, "invented interpreter alias evidence")
+            identity = list(descriptor[0])
+            identity[1] = list(identity[1])
+            # Also usable before the external-contract phase. Replay lives in
+            # runtime_environment; issuance must not import that later phase.
+            payload = {"schema_version": "q54.p12.4.interpreter-alias-observations.v1",
+                    "interpreter_identity": identity,
+                    "source_path": descriptor[1], "source_sha256": descriptor[3],
+                    "resolution": None if resolution is None else {
+                        "name": "multiprocessing", "origin": descriptor[1], "loader": "SourceFileLoader",
+                        "search_locations": [str(Path(descriptor[1]).parent)]},
+                    "events": [dict(event) for event in self.interpreter_alias_events]}
+            return payload
+        except BaseException as error:
+            self.fail(error)
+            raise
+
     def _check_generated_source(self):
         descriptor = self.check_import_topology()[6]
         if descriptor[1] is None:
@@ -2353,6 +2824,7 @@ class _SourceSession:
         try:
             self.check_live()
             self.audit_generated_stdlib()
+            self.observe_interpreter_alias("audit", final=True)
             expected = self.admitted_sources()
             if self.phase in _RUNTIME_PHASES:
                 required = _CORE | _CUSTODY_PRELUDE | _SETUP_DEFINITIONS | _EXTERNAL_CONTRACT_DEFINITIONS
@@ -2455,6 +2927,7 @@ def _install(root, revision, lane, catalog_sha256):
     paths, hooks = tuple(sys.path), tuple(sys.path_hooks)
     delegates = tuple((finder, finder.find_spec) for finder in finders)
     generated = _capture_generated_stdlib(root, paths)
+    interpreter_alias = _capture_interpreter_alias(root, paths)
     sources = _capture(root, revision, lane, catalog_sha256)
     _require(
         len(sys.meta_path) == len(finders)
@@ -2464,6 +2937,9 @@ def _install(root, revision, lane, catalog_sha256):
         "cold interpreter topology changed during capture",
     )
     session = _SourceSession(root, revision, lane, catalog_sha256, sources)
+    session.interpreter_alias_events = []
+    _INTERPRETER_ALIAS_CUSTODY[session] = (
+        interpreter_alias, _thread.get_ident(), [interpreter_alias[4]], None, None)
     _ACTIVE_SESSION = session
     chain = [session.finder]
     _IMPORT_TOPOLOGIES[session] = (chain, session.finder, paths, hooks, delegates, names, generated)

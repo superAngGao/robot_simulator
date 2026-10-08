@@ -44,7 +44,7 @@ def importer(tmp_path, monkeypatch):
     original_modules = dict(sys.modules)
 
     def create(sources, *, absent=(), publications=(), namespace=False, disabled=(), packages=(), native=(),
-               native_globals=()):
+               native_globals=(), replacements=(), phase="materialization"):
         root = tmp_path.resolve()
         files, modules = [], []
         for name, source in sources.items():
@@ -74,7 +74,7 @@ def importer(tmp_path, monkeypatch):
                     "root": "site",
                     "path": relative,
                     "is_package": is_package,
-                    "phase": "materialization",
+                    "phase": phase,
                 }
             )
         if namespace:
@@ -96,6 +96,7 @@ def importer(tmp_path, monkeypatch):
             "disabled_optional_modules": list(disabled),
             "publications": list(publications),
             "native_globals": list(native_globals),
+            "module_replacements": list(replacements),
             "namespaces": (
                 [
                     {
@@ -124,6 +125,10 @@ def importer(tmp_path, monkeypatch):
         session.check_live = check
         session.bound_controller = lambda: controller
         session.fail = fail
+        # This fixture deliberately doubles cold source custody. The actual
+        # interpreter alias boundary is exercised by separate cold tests.
+        session.observe_interpreter_alias = lambda *args, **kwargs: None
+        session.interpreter_alias_admitted = lambda: False
         generated = bootstrap._capture_generated_stdlib(root, tuple(sys.path))
         if generated[1] is not None:
             # Before baseline capture: a cold fixture cannot keep an old data
@@ -135,6 +140,7 @@ def importer(tmp_path, monkeypatch):
             (admission, environment, environment.sha256, controller, bootstrap._thread.get_ident())
         )
         admission.__init__(session, environment, environment.sha256)
+        admission.phase = phase
         finder = bootstrap._CapturedSourceFinder(session)
         session.finder = finder
         chain = [finder]
@@ -167,7 +173,7 @@ def importer(tmp_path, monkeypatch):
     sys.meta_path[:] = original_meta_path
     for name in tuple(sys.modules):
         if name.split(".")[0] in {
-            "c2ext", "c2namespace", "c2missing", "trimesh", "embreex", "shapely", "scipy", "uarray",
+            "c2ext", "c2namespace", "c2missing", "trimesh", "embreex", "shapely", "scipy", "uarray", "torch",
         }:
             if name in original_modules:
                 sys.modules[name] = original_modules[name]

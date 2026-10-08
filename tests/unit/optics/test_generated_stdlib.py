@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -23,6 +24,11 @@ pytestmark = pytest.mark.skipif(
 def _fixture_source(tmp_path):
     base = tmp_path / "interpreter_stdlib"
     base.mkdir()
+    # The independent alias descriptor also uses the simulated stdlib root.
+    # Preserve its real source unchanged; only the generated-data file is faulted.
+    package = base / "multiprocessing"
+    package.mkdir()
+    (package / "__init__.py").write_bytes((Path(sys._stdlib_dir) / "multiprocessing/__init__.py").read_bytes())
     name = f"_sysconfigdata_{sys.abiflags}_{sys.platform}_{sys.implementation._multiarch}"
     origin = base / (name + ".py")
     marker = tmp_path / "body_ran"
