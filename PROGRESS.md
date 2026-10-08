@@ -1266,6 +1266,19 @@ Next milestone:
       are documented in torch-captured-import test-evidence v1 for independent
       review. Full native init/upload/readback, both-lane real failure matrix,
       versioned aggregate custody and whole C2d3 review remain required.
+      The cold deployment/profile delta at `e3e6d79` is now independently approved
+      for that prefix only. Deferred first-Stream request v1 received two findings
+      (unarmed post-return observers and an omitted Triton callback); v2 at
+      `e0a3b7a` closes both with fresh independent approval. Its actual captured
+      diagnostic on production `a3d750b` reaches binding adoption inside the
+      original armed segment:logicalTorch0/rawCUDA1/onlycontext1; Triton is resolved
+      without execution, and all80 mapped native paths are in the frozen profile.
+      Intentional UNKNOWN precedes runtime COMPLETE/upload;worker74 is reaped,
+      with no sync/release. Separate real C1 diagnostics show the production
+      nested copy helper avoids foreigncontext0 while the stream-only fault
+      creates it, despite both reporting logical0. See captured-stream and
+      copy-scope test-evidence v1 for raw provenance/limits. No full runtime,
+      a2/input-readback or whole-stage acceptance follows from these diagnostics.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
