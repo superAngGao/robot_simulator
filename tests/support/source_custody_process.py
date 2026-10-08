@@ -102,14 +102,16 @@ def child(fault, fd, directory):
             old_audit = session.audit
 
             def audit():
-                if session.phase == "importing" and len(session.modules) == 12:
+                if session.phase == "importing" and len(session.modules) == 16:
                     raise original
                 return old_audit()
 
             session.audit = audit
         session.import_setup_definitions()
         session.audit()
-        assert len(session.modules) == 12
+        # The approved custody prelude also includes lane_contract,
+        # native_manifest, runtime_environment and runtime_custody.
+        assert len(session.modules) == 16
         assert all(controller.guardian.contains_exact_owner(x[0]) for x in session.modules.values())
         if fault == "source_cleanup_hang":
             # At the real whole-graph release leaf, after terminal ACK; no
