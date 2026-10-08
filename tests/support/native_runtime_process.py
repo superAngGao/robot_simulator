@@ -123,6 +123,9 @@ def child(fault, fd, directory):
                 "schema_version": "q54.c2d3.driver-observation.v0",
                 "phase": phase,
                 "external_events": [] if admission is None else list(admission.events),
+                "native_global_observations": (
+                    None if admission is None else admission.native_global_observations()
+                ),
                 "native_module_metadata": native_metadata,
                 "repository_trace": list(session.trace),
                 "sample_submission_count": 0,
@@ -243,6 +246,9 @@ def child(fault, fd, directory):
                     {
                         "phase": phase,
                         "events": list(events),
+                        "native_global_observations": (
+                            admission.native_global_observations() if "native_calls" in partial else None
+                        ),
                         "failed": admission.failed,
                         "failure_metadata": metadata,
                         "unrecorded_modules": _unrecorded_module_observations(admission),

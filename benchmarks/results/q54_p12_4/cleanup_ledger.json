@@ -21,7 +21,12 @@
         "tests/data/runtime_environments/README.md",
         "tests/unit/optics/test_guarded_runtime_binding.py",
         "tests/unit/optics/test_guarded_native_readback.py",
-        "tests/unit/optics/test_native_upload_core.py"
+        "tests/unit/optics/test_native_upload_core.py",
+        "tests/unit/optics/test_native_global_publication.py",
+        "tests/data/runtime_environments/183_warp_synthetic_author_v3.json",
+        "tests/data/runtime_environments/183_warp_synthetic_author_v4.json",
+        "tests/data/runtime_environments/183_warp_go2_author_v1.json",
+        "tests/data/runtime_environments/183_warp_go2_author_v2.json"
       ],
       "symbols": {},
       "temporary_entry_exit": "C2d3 is incomplete until real captured-runtime acceptance and independent code review. Input-validation readback is not B3 delivery. Remove sacrificial validation entry points only after equivalent selected-worker custody/failure tests exist; no activation is granted by this ledger.",
@@ -92,7 +97,12 @@
         "tests/support/source_custody_process.py",
         "tests/unit/optics/test_native_bootstrap.py",
         "tests/unit/optics/test_native_source_policy.py",
-        "tests/unit/optics/test_native_sources.py"
+        "tests/unit/optics/test_native_sources.py",
+        "optical_worker/data/native_sources/v6.json",
+        "optical_worker/data/native_sources/v7.json",
+        "optical_worker/data/native_sources/v8.json",
+        "optical_worker/data/native_sources/v9.json",
+        "optical_worker/data/native_sources/v10.json"
       ],
       "symbols": {},
       "temporary_entry_exit": "C2d integrated guarded dispatcher replaces the fixed CPU self-check terminal path after independent review; retain isolated source-consumption tests, never a generic callback mode. P12.4e retains only the selected loader/source closure.",
@@ -179,8 +189,12 @@
         "tests/unit/optics/test_guarded_wait_process.py"
       ],
       "symbols": {
-        "optical_worker/wait_protocol.py": ["class GuardWaitClient:"],
-        "optical_worker/wait_supervision.py": ["class GuardSupervisorCore:"]
+        "optical_worker/wait_protocol.py": [
+          "class GuardWaitClient:"
+        ],
+        "optical_worker/wait_supervision.py": [
+          "class GuardSupervisorCore:"
+        ]
       },
       "cuda_selected": {
         "action": "collapse",
@@ -215,7 +229,9 @@
     },
     {
       "entry_id": "warp_optical_executors",
-      "paths": ["optics/warp_execution.py"],
+      "paths": [
+        "optics/warp_execution.py"
+      ],
       "symbols": {
         "optics/warp_execution.py": [
           "class GpuDeviceBvhOpticalExecutor:",
@@ -470,9 +486,13 @@
     },
     {
       "entry_id": "temporary_cuda_comparison_lane",
-      "paths": ["benchmarks/optical/lanes/cuda.py"],
+      "paths": [
+        "benchmarks/optical/lanes/cuda.py"
+      ],
       "symbols": {
-        "benchmarks/optical/lanes/cuda.py": ["class CurrentCudaLanePreflight:"]
+        "benchmarks/optical/lanes/cuda.py": [
+          "class CurrentCudaLanePreflight:"
+        ]
       },
       "cuda_selected": {
         "action": "collapse",

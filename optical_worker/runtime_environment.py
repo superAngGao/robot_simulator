@@ -17,7 +17,8 @@ from pathlib import Path, PurePosixPath
 
 from .protocol import canonical_json_bytes, decode_canonical_message
 
-RUNTIME_ENVIRONMENT_VERSION = "q54.p12.4.runtime-environment.v3"
+RUNTIME_ENVIRONMENT_VERSION = "q54.p12.4.runtime-environment.v4"
+NATIVE_GLOBAL_OBSERVATIONS_VERSION = "q54.p12.4.native-global-observations.v1"
 # Literal policy, not a caller-extensible import denylist. File hashes still
 # belong to the one trusted deployment inventory (not a duplicate hash table).
 _DISABLED_OPTIONAL_ADAPTERS = (
@@ -150,6 +151,7 @@ def _validate(payload: object) -> None:
             "absent_probes",
             "disabled_optional_modules",
             "publications",
+            "native_globals",
             "namespaces",
             "settings",
         },
@@ -286,6 +288,23 @@ def _validate(payload: object) -> None:
             referenced_file(creator["root"], creator["path"], {"extension"})
         publications[name] = row
 
+    native_globals = {}
+    for row in _rows(
+        p["native_globals"],
+        lambda r: _fields(r, {"name", "observer", "operation", "phase"}, "native global")["name"],
+        "native globals",
+    ):
+        name = _module(row["name"])
+        _require(name not in modules and name not in publications and name not in namespaces,
+                 "native global name collision")
+        _require(_module(row["observer"]) in modules, "native global observer missing")
+        observer = modules[row["observer"]]
+        _require(row["operation"] == "exec" and not observer["is_package"]
+                 and row["phase"] == observer["phase"], "invalid native global interval")
+        referenced_file(observer["root"], observer["path"], {"extension"})
+        _phase(row["phase"])
+        native_globals[name] = row
+
     def probe_key(row):
         r = _fields(row, {"name", "requester", "phase"}, "absent probe")
         return _module(r["name"]), _module(r["requester"]), _text(r["phase"], "probe phase")
@@ -293,7 +312,8 @@ def _validate(payload: object) -> None:
     for row in _rows(p["absent_probes"], probe_key, "absent probes"):
         _require(row["requester"] in modules, "absent probe requires an admitted requester")
         _require(
-            row["name"] not in modules and row["name"] not in publications and row["name"] not in namespaces,
+            row["name"] not in modules and row["name"] not in publications
+            and row["name"] not in namespaces and row["name"] not in native_globals,
             "absent probe collides with an admitted module",
         )
         _phase(row["phase"])
@@ -332,6 +352,7 @@ def _validate(payload: object) -> None:
             name not in modules
             and name not in publications
             and name not in namespaces
+            and name not in native_globals
             and name not in absent_names,
             "disabled optional name collides with an import rule",
         )
@@ -353,7 +374,7 @@ def _validate(payload: object) -> None:
         _require(
             not any(
                 n == prerequisite or n.startswith(prerequisite + ".")
-                for n in modules | publications | dict.fromkeys(namespaces)
+                for n in modules | publications | native_globals | dict.fromkeys(namespaces)
             ),
             "disabled prerequisite cannot also be admitted",
         )
@@ -361,7 +382,7 @@ def _validate(payload: object) -> None:
 
     # Any qualified name has an explicitly admitted package parent. Optional
     # probes cannot fabricate parents; creator publications cannot bypass them.
-    present = set(modules) | set(publications) | namespaces
+    present = set(modules) | set(publications) | set(native_globals) | namespaces
     for name in present | absent_names | disabled:
         parent = name.rpartition(".")[0]
         if parent:
@@ -376,6 +397,101 @@ def _validate(payload: object) -> None:
         settings["TORCH_DEVICE_BACKEND_AUTOLOAD"] == "0" and settings["warp_quiet"] is True,
         "unsafe runtime settings",
     )
+
+
+def validate_native_global_observations(payload, environment, *, require_complete=False):
+    """Replay descriptive facts only; never register a live module or frame.
+
+    Whole runtime custody must additionally bind the actual import and guard
+    histories. This component cannot certify a worker's completed execution.
+    """
+    p = _fields(payload, {"schema_version", "environment_sha256", "calls", "events"},
+                "native global observations")
+    _require(p["schema_version"] == NATIVE_GLOBAL_OBSERVATIONS_VERSION, "native global evidence version")
+    _require(type(environment) is RuntimeEnvironmentContract
+             and p["environment_sha256"] == environment.sha256, "native global environment mismatch")
+    config = environment.to_payload()
+    rules = {row["name"]: row for row in config["native_globals"]}
+    modules = {row["name"]: row for row in config["modules"]}
+    _require(type(p["calls"]) is list and type(p["events"]) is list, "native global evidence lists")
+    calls, seen_calls = [], set()
+    for index, value in enumerate(p["calls"]):
+        call = _fields(value, {"sequence", "parent_sequence", "observer", "operation", "phase",
+                               "absent_names", "state"}, "native call")
+        _require(type(call["sequence"]) is int and call["sequence"] == index, "native call order")
+        parent = call["parent_sequence"]
+        _require(parent is None or type(parent) is int and 0 <= parent < index, "native parent order")
+        name, operation = call["observer"], call["operation"]
+        _require(name in modules and operation in {"create", "exec"}
+                 and call["phase"] in _PHASES, "native call relation")
+        _require((name, operation) not in seen_calls, "duplicate native call")
+        if operation == "exec":
+            _require((name, "create") in seen_calls, "native exec before create")
+        seen_calls.add((name, operation))
+        expected = sorted(n for n, rule in rules.items() if rule["observer"] == name and operation == "exec")
+        _require(type(call["absent_names"]) is list and call["absent_names"] == expected,
+                 "native absence facts differ from rule")
+        _require(call["state"] in {"started", "returned", "completed", "failed"}, "native call state")
+        if require_complete:
+            _require(call["state"] == "completed", "incomplete native call")
+        if parent is not None and calls[parent]["state"] == "completed":
+            _require(call["state"] == "completed", "completed parent has incomplete child")
+        calls.append(call)
+    pending, admitted, tokens = {}, {}, set()
+    event_keys = {"index", "operation", "name", "phase", "observer", "observer_call", "call_sequence",
+                  "parent_call_sequence", "absence_checkpoint", "checkpoint", "request_name", "object_token"}
+    for index, value in enumerate(p["events"]):
+        event = _fields(value, event_keys, "native global event")
+        _require(type(event["index"]) is int and event["index"] == index, "native global event order")
+        name, sequence = event["name"], event["call_sequence"]
+        _require(name in rules and type(sequence) is int and 0 <= sequence < len(calls),
+                 "native global event relation")
+        call, rule = calls[sequence], rules[name]
+        _require(event["phase"] == call["phase"] == rule["phase"]
+                 and event["observer"] == call["observer"] == rule["observer"]
+                 and event["observer_call"] == call["operation"] == "exec"
+                 and event["parent_call_sequence"] == call["parent_sequence"]
+                 and event["absence_checkpoint"] == "observer_exec_entry" and name in call["absent_names"],
+                 "native global interval mismatch")
+        token = event["object_token"]
+        _require(type(token) is int and token > 0, "native global object token")
+        if event["operation"] == "observed_pending":
+            _require(name not in pending and name not in admitted and token not in tokens,
+                     "duplicate native global observation")
+            checkpoint, request = event["checkpoint"], event["request_name"]
+            _require((checkpoint == "exec_return" and request is None)
+                     or (checkpoint == "request_entry" and type(request) is str and bool(request)),
+                     "native global observation checkpoint")
+            # An ancestor cannot already have completed admission while a new
+            # descendant publication is still being observed.
+            parent = call["parent_sequence"]
+            while parent is not None:
+                _require(all(old["call_sequence"] != parent for old in admitted.values()),
+                         "parent admission preceded nested child")
+                parent = calls[parent]["parent_sequence"]
+            pending[name] = event
+            tokens.add(token)
+        elif event["operation"] == "admitted":
+            original = pending.pop(name, None)
+            _require(original is not None and original["call_sequence"] == sequence
+                     and original["object_token"] == token and name not in admitted
+                     and event["checkpoint"] == "exec_return" and event["request_name"] is None
+                     and call["state"] == "completed", "invalid native global admission")
+            for child in pending.values():
+                parent = calls[child["call_sequence"]]["parent_sequence"]
+                while parent is not None:
+                    _require(parent != sequence, "parent admitted with pending child")
+                    parent = calls[parent]["parent_sequence"]
+            admitted[name] = event
+        else:
+            raise ValueError("unknown native global event")
+    for call in calls:
+        if call["state"] == "completed":
+            _require(all(name in admitted for name in call["absent_names"]),
+                     "completed native observer lacks admissions")
+    if require_complete:
+        _require(not pending, "native global pending at completed boundary")
+    return None
 
 
 def _hash_file(path: Path) -> tuple[str, int]:

@@ -212,6 +212,7 @@ def _environment(root, fault):
                 }
                 for name, kind in (("c2dep.alias", "module_alias"), ("c2dep.created", "created_module"))
             ],
+            "native_globals": [],
             "namespaces": [],
             "settings": {"TORCH_DEVICE_BACKEND_AUTOLOAD": "0", "warp_quiet": True},
         }

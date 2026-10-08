@@ -16,17 +16,17 @@ from pathlib import Path, PurePosixPath
 from .manifest import AST_POLICY
 from .protocol import ClosedWorkerProtocolError, canonical_sha256
 
-NATIVE_AST_POLICY_VERSION = "q54.p12.4.closed-worker-ast-policy.v10"
+NATIVE_AST_POLICY_VERSION = "q54.p12.4.closed-worker-ast-policy.v11"
 _BOOTSTRAP_PATH = "optical_worker/native_bootstrap.py"
-_BOOTSTRAP_SOURCE_SHA256 = "f68b7740fd42c33267511757b8f001b087c75733d5737217e0054ee7c8d1979a"
+_BOOTSTRAP_SOURCE_SHA256 = "caef6ccb4b3cf2d57f2293e55f9c6f3b0877e1dc2afb3c4b8c6171798b411a7a"
 _BOOTSTRAP_CLASS_PINS = {
     "_CapturedSourceLoader": "cc647d0af05f892513eceea40708734e5a7aafe82c278507d094a65894639ecb",
-    "_CapturedSourceFinder": "04f9bd9a551fe3035d9f31ee1b818c99344f5fa41ff30619efc4d32e7bc59f17",
-    "_ExternalSourceLoader": "a7d367bc79b09c92adbbbe2e3ed208bff7bf4dddbe0035734a63863bc2961929",
-    "_ExternalAdmission": "2ee04d020db4b0b4aebb2ecaaab6d37b0d43a9a0e910e8cb864e60440b946339",
+    "_CapturedSourceFinder": "a9ea7dd7c58092c1e3368273bfc84a3a454a00ad559f55d6cba5ffb449a4aa43",
+    "_ExternalSourceLoader": "17928e3278c8f135481d0bdbd5b2766abffef97c3543f3902a766e8516caa67c",
+    "_ExternalAdmission": "069cdcb926b105ea9ce59a3b817ea3024ab7dd21236f5d11a7c0b98234c138ec",
     "_ExternalNamespaceLoader": "524801ff222139e86fa76fa918b42a20ee61d6bcfe9e783542c880da3cad46bf",
     "_RuntimeSetupBinding": "85bf4bb6a12a3ab17807393c27993ca319e5b614eda9c14d4f1d6c0b042f6112",
-    "_SourceSession": "d0bc921a775cae6f06731887f2c0d4d5e5161280a88c778a1d0cdca0504176c3",
+    "_SourceSession": "eff93df82964a0a8a0ee410151b9896c84c316650b10eef9eb053e7e972079c5",
 }
 _BOOTSTRAP_IMPORTS = frozenset(("importlib.abc", "importlib.machinery", "importlib.util"))
 _BOOTSTRAP_USES = frozenset((

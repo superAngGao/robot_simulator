@@ -43,7 +43,8 @@ def importer(tmp_path, monkeypatch):
     original_meta_path = list(sys.meta_path)
     original_modules = dict(sys.modules)
 
-    def create(sources, *, absent=(), publications=(), namespace=False, disabled=(), packages=(), native=()):
+    def create(sources, *, absent=(), publications=(), namespace=False, disabled=(), packages=(), native=(),
+               native_globals=()):
         root = tmp_path.resolve()
         files, modules = [], []
         for name, source in sources.items():
@@ -94,6 +95,7 @@ def importer(tmp_path, monkeypatch):
             "absent_probes": list(absent),
             "disabled_optional_modules": list(disabled),
             "publications": list(publications),
+            "native_globals": list(native_globals),
             "namespaces": (
                 [
                     {
@@ -129,7 +131,8 @@ def importer(tmp_path, monkeypatch):
             monkeypatch.delitem(sys.modules, generated[1], raising=False)
         admission = object.__new__(bootstrap._ExternalAdmission)
         monkeypatch.setitem(
-            bootstrap._EXTERNAL_CUSTODY, session, (admission, environment, environment.sha256, controller)
+            bootstrap._EXTERNAL_CUSTODY, session,
+            (admission, environment, environment.sha256, controller, bootstrap._thread.get_ident())
         )
         admission.__init__(session, environment, environment.sha256)
         finder = bootstrap._CapturedSourceFinder(session)

@@ -6,6 +6,7 @@ inputs. This is not a sandbox for arbitrary code in the same process.
 
 from __future__ import annotations
 
+import _thread
 import hashlib
 import importlib.abc
 import importlib.machinery
@@ -18,7 +19,8 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType, ModuleType
 
 _BOOTSTRAP = "optical_worker/native_bootstrap.py"
-_CATALOG = "optical_worker/data/native_sources/v9.json"
+_NATIVE_EXEC_OPERATION = "exec"  # Descriptive operation enum, never a dynamic Python callable.
+_CATALOG = "optical_worker/data/native_sources/v10.json"
 _MAX_BYTES = 4 * 1024 * 1024  # Rechecked against the sole protocol constant.
 _ROOTS = frozenset(
     ("optical_worker", "optics", "physics", "robot", "sensing", "benchmarks", "examples", "tests", "tools")
@@ -364,6 +366,18 @@ class _CapturedSourceFinder(importlib.abc.MetaPathFinder):
         self.session = session
 
     def find_spec(self, fullname, path=None, target=None):
+        custody = _EXTERNAL_CUSTODY.get(self.session)
+        admission = None if custody is None else custody[0]
+        marker = None
+        try:
+            if admission is not None and "native_context" in vars(admission):
+                marker = admission.enter_import_wrapper("request_entry", fullname)
+            return self._find_spec(fullname, path, target)
+        finally:
+            if marker is not None:
+                admission.leave_import_wrapper(marker)
+
+    def _find_spec(self, fullname, path=None, target=None):
         try:
             topology = self.session.check_import_topology()
             if self.session.is_interpreter_name(fullname):
@@ -481,13 +495,16 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
         return self.source_to_code(self.source, self.origin)
 
     def create_module(self, spec):
+        marker, frame = None, None
         try:
+            marker = self.admission.enter_import_wrapper("delegate_entry")
             self._check()
             _require(spec is self.admission.specs[self.name], "external spec identity changed")
             _require(self.name not in self.admission.records, "external module recreation")
             self.admission.check_self_alias_absence(self.name, "precreate")
             self.admission.record("create_started", self.name, "file_module")
             self.admission.stack.append(self.name)
+            frame = self.admission.begin_native_call(self, "create", None, marker)
             if type(self.delegate) is importlib.machinery.ExtensionFileLoader:
                 module = self.delegate.create_module(spec)
                 _require(module is not None, "native loader returned no module")
@@ -496,20 +513,28 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
             # This registry is held by the adopted source session before any
             # explicit adoption that can fail. Preserve partial native owners.
             self.admission.records[self.name] = {"module": module, "state": "created", "kind": "file_module"}
+            self.admission.return_native_call(frame, module)
             # Native return is already retained. Importlib has not initialized
             # spec/loader/package yet, so inspect only the raw intrinsic name.
             self.admission.check_module_name(self.name)
             self.admission.check_self_alias_absence(self.name, "postcreate")
             self.admission.hold(module)
             self.admission.record("created", self.name, "file_module")
+            self.admission.complete_native_call(frame)
             self.admission.stack.pop()
             return module
         except BaseException as error:
+            self.admission.fail_native_call(frame)
             self.admission.fail(error, self.name, native_create=self.source is None)
             raise
+        finally:
+            if marker is not None:
+                self.admission.leave_import_wrapper(marker)
 
     def exec_module(self, module):
+        marker, frame = None, None
         try:
+            marker = self.admission.enter_import_wrapper("delegate_entry")
             self._check()
             record = self.admission.records.get(self.name)
             _require(
@@ -528,20 +553,27 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
             record["state"] = "executing"
             self.admission.record("exec_started", self.name, "file_module")
             self.admission.stack.append(self.name)
+            frame = self.admission.begin_native_call(self, _NATIVE_EXEC_OPERATION, module, marker)
             if self.source is None:
                 self.delegate.exec_module(module)
             else:
                 super().exec_module(module)
+            self.admission.return_native_call(frame, module)
             self.admission.check_live()
             self.admission.confirm_disabled_fallbacks(self.name)
             self.admission.reconcile_publications(self.name, admitting=True)
+            self.admission.check_module(self.name)
+            self.admission.complete_native_call(frame)
             self.admission.stack.pop()
             record["state"] = "completed"
-            self.admission.check_module(self.name)
             self.admission.record("completed", self.name, "file_module")
         except BaseException as error:
+            self.admission.fail_native_call(frame)
             self.admission.fail(error, self.name, native_create=self.source is None)
             raise
+        finally:
+            if marker is not None:
+                self.admission.leave_import_wrapper(marker)
 
 
 class _ExternalAdmission:
@@ -567,6 +599,9 @@ class _ExternalAdmission:
         self.files = {(r["root"], r["path"]): r for r in payload["files"]}
         self.rules = {r["name"]: r for r in payload["modules"]}
         self.publications = {r["name"]: r for r in payload["publications"]}
+        self.native_globals = {r["name"]: r for r in payload["native_globals"]}
+        self.native_global_rules = tuple(tuple(r[k] for k in ("name", "observer", "operation", "phase"))
+                                         for r in payload["native_globals"])
         self.namespaces = {r["name"]: r for r in payload["namespaces"]}
         self.absent = {(r["name"], r["requester"], r["phase"]) for r in payload["absent_probes"]}
         self.disabled = {r["name"]: r for r in payload["disabled_optional_modules"]}
@@ -576,10 +611,16 @@ class _ExternalAdmission:
         self.stack, self.events, self.retained, self.failures = [], [], [], []
         self.failure_contexts, self.self_alias_checks = [], {}
         self.loaders, self.loader_bindings, self.specs, self.records = {}, {}, {}, {}
+        self.native_thread = _thread.get_ident()
+        self.native_context, self.native_calls, self.native_call_bindings = [], [], {}
+        self.native_global_records, self.native_global_bindings = {}, {}
+        self.native_global_events = []
+        self.native_checkpoint_active = False
         self.baseline = dict(sys.modules)
         self.failed = False
         _require(
-            not any(name in self.baseline for name in self.rules | self.publications | self.namespaces)
+            not any(name in self.baseline for name in self.rules | self.publications
+                    | self.namespaces | self.native_globals)
             and not any(self._has_module_prefix(name) for name in self.disabled),
             "external dependency was preloaded",
         )
@@ -589,6 +630,256 @@ class _ExternalAdmission:
         controller.adopt_host_owner(
             self, role="runtime_import_custody", operation_id="runtime_import_custody"
         )
+
+    def _retain_native_globals(self):
+        # Retention is deliberately first and remains usable after poisoning.
+        values = {name: sys.modules[name] for name in self.native_globals if name in sys.modules}
+        for value in values.values():
+            if not any(owner is value for owner in self.retained):
+                self.retained.append(value)
+        return values
+
+    def _check_native_thread(self):
+        binding = _EXTERNAL_CUSTODY.get(self.session)
+        _require(binding is not None and binding[0] is self
+                 and _thread.get_ident() == self.native_thread == binding[4], "foreign import thread")
+
+    def _check_native_call(self, frame):
+        sequence = frame["sequence"]
+        binding = self.native_call_bindings.get(sequence)
+        _require(binding is not None and binding[0] is frame
+                 and sequence < len(self.native_calls) and self.native_calls[sequence] is frame,
+                 "native call identity drift")
+        _, loader, module, operation, phase, parent, absent, marker, state = binding
+        _require(frame["loader"] is loader and frame["module"] is module
+                 and frame["operation"] == operation and frame["phase"] == phase
+                 and frame["parent"] is parent and frame["absent"] == absent
+                 and frame["wrapper"] is marker and frame["state"] == state,
+                 "native call binding drift")
+        loader._check_binding()
+        _require(self.specs[loader.name] is frame["spec"], "native call spec drift")
+        if module is not None:
+            _require(self.records[loader.name]["module"] is module, "native call root drift")
+        return binding
+
+    def _native_call_state(self, frame, state, module):
+        binding = self._check_native_call(frame)
+        frame["module"], frame["state"] = module, state
+        self.native_call_bindings[frame["sequence"]] = (
+            binding[0], binding[1], module, *binding[3:8], state
+        )
+
+    def enter_import_wrapper(self, checkpoint, request_name=None):
+        try:
+            if self.failed:
+                self._retain_native_globals()
+                return None  # Terminal stdlib reporting cannot reopen admission.
+            self.native_global_checkpoint(checkpoint, request_name=request_name)
+            marker = object()
+            self.native_context.append(marker)
+            return marker
+        except BaseException as error:
+            self.fail(error, "native_global_checkpoint")
+            raise
+
+    def leave_import_wrapper(self, marker):
+        if self.failed:
+            # Only unwind our own context; custody lives in the separate registry.
+            if any(value is marker for value in self.native_context):
+                index = next(i for i, value in enumerate(self.native_context) if value is marker)
+                del self.native_context[index:]
+            return
+        try:
+            _require(bool(self.native_context) and self.native_context[-1] is marker,
+                     "native wrapper nesting drift")
+            self.native_context.pop()
+        except BaseException as error:
+            self.fail(error, "native_global_checkpoint")
+            raise
+
+    def begin_native_call(self, loader, operation, module, marker):
+        self._check_native_thread()
+        _require(not self.failed and self.native_context[-1] is marker, "native call wrapper drift")
+        parents = [f for f in self.native_context[:-1] if type(f) is dict]
+        parent = parents[-1] if parents else None
+        if parent is not None:
+            self._check_native_call(parent)
+        absent = tuple(sorted(name for name, rule in self.native_globals.items()
+                              if rule["observer"] == loader.name and operation == "exec"))
+        _require(all(name not in sys.modules and name not in self.native_global_records for name in absent),
+                 "native global missing observer-entry absence")
+        frame = {"sequence": len(self.native_calls), "loader": loader, "spec": self.specs[loader.name],
+                 "module": module, "operation": operation, "phase": self.phase, "parent": parent,
+                 "absent": absent, "wrapper": marker, "state": "started"}
+        self.native_calls.append(frame)
+        self.native_call_bindings[frame["sequence"]] = (
+            frame, loader, module, operation, self.phase, parent, absent, marker, "started"
+        )
+        self.native_context.append(frame)
+        return frame
+
+    def return_native_call(self, frame, module):
+        self._check_native_thread()
+        _require(self.native_context[-1] is frame, "native return nesting drift")
+        self._native_call_state(frame, "returned", module)
+        self.native_context.pop()  # Subsequent wrapper imports are not delegate work.
+        self.native_global_checkpoint("exec_return" if frame["operation"] == "exec" else "create_return",
+                                      returned_frame=frame)
+
+    def fail_native_call(self, frame):
+        if frame is None:
+            return
+        # Preserve the frame even if metadata drift prevents a normal state commit.
+        binding = self.native_call_bindings.get(frame.get("sequence"))
+        if binding is not None and binding[0] is frame:
+            frame["state"] = "failed"
+            self.native_call_bindings[frame["sequence"]] = (*binding[:-1], "failed")
+        if self.native_context and self.native_context[-1] is frame:
+            self.native_context.pop()
+
+    def _global_event(self, operation, name, record, checkpoint, request_name):
+        frame = record["frame"]
+        self.native_global_events.append({
+            "index": len(self.native_global_events), "operation": operation, "name": name,
+            "phase": frame["phase"], "observer": frame["loader"].name, "observer_call": "exec",
+            "call_sequence": frame["sequence"],
+            "parent_call_sequence": None if frame["parent"] is None else frame["parent"]["sequence"],
+            "absence_checkpoint": "observer_exec_entry", "checkpoint": checkpoint,
+            "request_name": request_name, "object_token": record["token"],
+        })
+
+    @staticmethod
+    def _check_global_metadata(name, value):
+        _require(type(value) is ModuleType, "native global is not an exact module")
+        raw = vars(value)
+        metadata = ("__file__", "__spec__", "__loader__", "__package__")
+        _require(raw.get("__name__") == name and "__path__" not in raw
+                 and all(raw.get(key) is None for key in metadata),
+                 "native global metadata drift")
+
+    def _check_global_record(self, name, record):
+        binding = self.native_global_bindings.get(name)
+        _require(binding is not None and binding[0] is record
+                 and binding[1] is record["module"] and binding[2] is record["frame"]
+                 and binding[3] == record["token"] and binding[4] == record["state"],
+                 "native global record drift")
+        self._check_native_call(record["frame"])
+        _require(self.records.get(name) is record, "native global admission record drift")
+        _require(sys.modules.get(name) is record["module"], "native global object removed or replaced")
+        self._check_global_metadata(name, record["module"])
+        return binding
+
+    def native_global_checkpoint(self, checkpoint, *, request_name=None, returned_frame=None):
+        values = self._retain_native_globals()
+        self._check_native_thread()
+        _require(not self.failed and not self.native_checkpoint_active,
+                 "native global checkpoint reentry/failure")
+        self.native_checkpoint_active = True
+        try:
+            _require(self.native_globals == {r["name"]: r for r in self.payload["native_globals"]},
+                     "native global table drift")
+            _require(tuple(tuple(r[k] for k in ("name", "observer", "operation", "phase"))
+                           for r in self.native_globals.values()) == self.native_global_rules,
+                     "native global rule binding drift")
+            current = self.native_context[-1] if self.native_context else None
+            frame = returned_frame if returned_frame is not None else current
+            for name, rule in self.native_globals.items():
+                previous = self.native_global_records.get(name)
+                if previous is not None:
+                    self._check_global_record(name, previous)
+                    if previous["state"] == "observed_pending":
+                        pending = previous["frame"]
+                        _require(any(value is pending for value in self.native_context)
+                                 or pending is returned_frame
+                                 or (pending["state"] == "returned" and any(
+                                     value is pending["wrapper"] for value in self.native_context)),
+                                 "pending native interval disappeared")
+                    continue
+                _require(name not in self.native_global_bindings and name not in self.records,
+                         "native global record removed")
+                if name not in values:
+                    continue
+                _require(checkpoint in {"request_entry", "exec_return"} and type(frame) is dict,
+                         "native global observed outside native exec")
+                self._check_native_call(frame)
+                loader = frame["loader"]
+                _require(loader.source is None and loader.name == rule["observer"]
+                         and frame["operation"] == rule["operation"] == "exec"
+                         and frame["phase"] == rule["phase"] == self.phase
+                         and name in frame["absent"]
+                         and frame["state"] == ("returned" if returned_frame is not None else "started"),
+                         "native global observed in wrong interval")
+                value = values[name]
+                self._check_global_metadata(name, value)
+                record = {"kind": "native_global", "state": "observed_pending", "module": value,
+                          "frame": frame, "token": len(self.native_global_bindings) + 1}
+                self.native_global_records[name] = self.records[name] = record
+                self.native_global_bindings[name] = (
+                    record, value, frame, record["token"], "observed_pending")
+                # Already strongly retained above; do not let hold()'s dedup skip guardian adoption.
+                self.controller.adopt_host_owner(value, role="external_import_owner",
+                                                 operation_id="native_global_observation")
+                _require(not self.failed, "native global adoption swallowed failure")
+                self._global_event("observed_pending", name, record, checkpoint, request_name)
+        finally:
+            self.native_checkpoint_active = False
+
+    def complete_native_call(self, frame):
+        self._check_native_thread()
+        self._check_native_call(frame)
+        _require(not self.failed and frame["state"] == "returned"
+                 and self.native_context[-1] is frame["wrapper"], "native call completed out of order")
+        for name in frame["absent"]:
+            record = self.native_global_records.get(name)
+            _require(record is not None and record["frame"] is frame
+                     and record["state"] == "observed_pending", "required native global missing at return")
+            binding = self._check_global_record(name, record)
+            self._global_event("admitted", name, record, "exec_return", None)
+            _require(not self.failed, "native global recording swallowed failure")
+            record["state"] = "completed"
+            self.native_global_bindings[name] = (*binding[:-1], "completed")
+        self._native_call_state(frame, "completed", frame["module"])
+
+    def audit_native_globals(self):
+        self.native_global_checkpoint("audit")
+        _require(not self.native_context, "native import context still active")
+        for name, rule in self.native_globals.items():
+            record = self.native_global_records.get(name)
+            observer = self.records.get(rule["observer"])
+            if observer is None:
+                _require(record is None and name not in sys.modules, "unrequested native global present")
+            else:
+                _require(observer["state"] == "completed" and record is not None
+                         and record["state"] == "completed" and record["frame"]["state"] == "completed",
+                         "native global still pending or missing")
+                self._check_global_record(name, record)
+                self.controller.require_adopted(record["module"])
+
+    def native_global_observations(self):
+        # No admission from serialization. Failure prefixes may include pending calls.
+        if not self.failed:
+            self._check_native_thread()
+            for frame in self.native_calls:
+                self._check_native_call(frame)
+            for name, record in self.native_global_records.items():
+                self._check_global_record(name, record)
+        calls = [{"sequence": frame["sequence"],
+                  "parent_sequence": None if frame["parent"] is None else frame["parent"]["sequence"],
+                  "observer": frame["loader"].name, "operation": frame["operation"],
+                  "phase": frame["phase"], "absent_names": list(frame["absent"]), "state": frame["state"]}
+                 for frame in self.native_calls]
+        from optical_worker.runtime_environment import (
+            NATIVE_GLOBAL_OBSERVATIONS_VERSION,
+            validate_native_global_observations,
+        )
+
+        payload = {"schema_version": NATIVE_GLOBAL_OBSERVATIONS_VERSION,
+                   "environment_sha256": self.expected_sha256, "calls": calls,
+                   "events": [dict(event) for event in self.native_global_events]}
+        if not self.failed:
+            validate_native_global_observations(payload, self.environment,
+                                                require_complete=not self.native_context)
+        return payload
 
     def record(self, operation, name, kind):
         self.events.append(
@@ -636,6 +927,7 @@ class _ExternalAdmission:
             and self.files == {(r["root"], r["path"]): r for r in p["files"]}
             and self.rules == {r["name"]: r for r in p["modules"]}
             and self.publications == {r["name"]: r for r in p["publications"]}
+            and self.native_globals == {r["name"]: r for r in p["native_globals"]}
             and self.namespaces == {r["name"]: r for r in p["namespaces"]}
             and self.absent == {(r["name"], r["requester"], r["phase"]) for r in p["absent_probes"]},
             "external lookup index drift",
@@ -1228,6 +1520,7 @@ class _ExternalAdmission:
             self.check_live()
             self.session.audit_generated_stdlib()
             _require(not self.stack, "external import is still in progress")
+            self.audit_native_globals()
             self.environment.verify_files(expected_sha256=self.expected_sha256)
             for name, original in self.baseline.items():
                 _require(sys.modules.get(name) is original, "pre-existing module identity changed")
@@ -1531,7 +1824,8 @@ class _SourceSession:
                 )
                 admission = object.__new__(_ExternalAdmission)
                 self.external = admission  # Retain partial construction before initialization.
-                _EXTERNAL_CUSTODY[self] = (admission, environment, expected_sha256, controller)
+                _EXTERNAL_CUSTODY[self] = (
+                    admission, environment, expected_sha256, controller, _thread.get_ident())
                 admission.__init__(self, environment, expected_sha256)
                 os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
                 self.audit()
