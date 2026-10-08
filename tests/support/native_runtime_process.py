@@ -210,10 +210,11 @@ def _install_runtime_fault(fault, entry, session, controller, directory):
 
         replace(session, "_observe_runtime_return", returned)
     elif fault == "runtime_terminal_cleanup_hang":
-        def cleanup(authority):
+        def cleanup(guardian, authority):
+            assert guardian is controller.guardian
             trip("guardian.release_whole_graph")
 
-        replace(controller.guardian, "release_whole_graph", cleanup)
+        replace(type(controller.guardian), "release_whole_graph", cleanup)
     return state, trip, replace
 
 

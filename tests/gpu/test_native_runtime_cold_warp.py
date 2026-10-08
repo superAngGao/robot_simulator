@@ -120,7 +120,10 @@ def test_actual_cold_canonical_warp_setup_and_terminal_disposition(tmp_path, fau
 
         raw_record = (tmp_path / "runtime_custody.json").read_bytes()
         selection = json.loads((tmp_path / "runtime_custody_selection.json").read_bytes())
-        validate_runtime_custody_selection(selection, raw_record)
+        validate_runtime_custody_selection(
+            selection, raw_record, observed_lifecycle_event_count=(
+                len(artifact["worker"]["transition_trace"])
+                if artifact["worker"]["record_kind"] == "terminal" else None))
         assert selection["selection"] == "current"
         runtime_record = RuntimeCustodyRecord.from_payload(
             json.loads(raw_record), environment=environment, trusted_launch_inputs=inputs)

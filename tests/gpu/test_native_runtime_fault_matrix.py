@@ -64,8 +64,9 @@ def test_actual_runtime_fault_retains_original_guard_and_reaps(tmp_path, lane, f
     if fault in RUNTIME_SCOPE_FAULTS or fault == "runtime_c1_stream_only_copy":
         mapping = subprocess.check_output(["nvidia-smi", "--query-gpu=index,uuid,driver_version",
                                            "--format=csv,noheader"], text=True, timeout=15)
-        assert "GPU-a4b256c9-c56a-0ef5-19fa-482196cc3274" in mapping
-        assert "GPU-3a3112ff-837c-3b87-38d1-cb203d656589" in mapping
+        rows = [tuple(part.strip() for part in line.split(",")) for line in mapping.splitlines()]
+        assert ("0", "GPU-a4b256c9-c56a-0ef5-19fa-482196cc3274", "595.71.05") in rows
+        assert ("1", "GPU-3a3112ff-837c-3b87-38d1-cb203d656589", "595.71.05") in rows
         (tmp_path / "gpu_mapping.txt").write_text(mapping, encoding="utf-8")
     (tmp_path / "request.json").write_text(json.dumps(request), encoding="utf-8")
     (tmp_path / "runtime_custody_inputs.json").write_text(json.dumps(inputs), encoding="utf-8")
@@ -101,7 +102,10 @@ def test_actual_runtime_fault_retains_original_guard_and_reaps(tmp_path, lane, f
         assert marker["fault"] == fault
         raw = (tmp_path / "runtime_custody.json").read_bytes()
         selection = json.loads((tmp_path / "runtime_custody_selection.json").read_bytes())
-        validate_runtime_custody_selection(selection, raw)
+        validate_runtime_custody_selection(
+            selection, raw, observed_lifecycle_event_count=(
+                len(artifact["worker"]["transition_trace"])
+                if artifact["worker"]["record_kind"] == "terminal" else None))
         record = RuntimeCustodyRecord.from_payload(json.loads(raw), environment=environment, trusted_launch_inputs=inputs)
         assert validate_runtime_custody_attachment(record, environment, inputs, artifact) == "worker_prefix_matched"
         assert record.to_payload()["summary"]["final_execution_readiness_issued"] is False
