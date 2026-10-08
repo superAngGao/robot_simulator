@@ -1296,6 +1296,14 @@ Next milestone:
       by the workload review was separately repaired at `dcece18` and approved:
       fresh review reproduced58pass/2fail, then60pass without skips. This closes
       that fixture defect only. C2d3 and C4 remain active and unaccepted.
+      The reviewed captured CUDA positive ambient run now passes267 observations
+      cross-checked against132 actual helper leaves and original guard sequences,
+      plus42-array CPU-reference readback and worker0/reap. Current Warp's six
+      synthetic/replay normal/terminal cases pass with six live OS identities;
+      an earlier external observer symlink failure is preserved separately.
+      See captured-ambient-and-terminal test-evidence v1 for raw limits/hashes.
+      Formal runtime-custody schema implementation and the full required fault/
+      dual-device/Go2 matrix still precede whole-stage review and acceptance.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
