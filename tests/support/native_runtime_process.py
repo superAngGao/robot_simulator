@@ -357,6 +357,7 @@ class _NativeScopeObserver:
         self.library = None
         self.current_stream_baseline = None
         self.target_context = None
+        self.cache_established = False
         self.scope_depth = 0
         session.runtime_owners.append(self)
         hold, leaf, returned, append = (session._hold_runtime_owner, session._runtime_leaf,
@@ -378,6 +379,8 @@ class _NativeScopeObserver:
             if operation == "indexed_runtime_stream":
                 self.module = sys.modules["torch" if session.lane == "cuda" else "warp"]
                 self._initialize_queries()
+                if session.lane == "warp":
+                    self._warp_cache_precondition(before=True)
                 self.stream_before = self.snapshot("runtime_stream", "before", self._latest_leaf())
             return result
 
@@ -388,9 +391,7 @@ class _NativeScopeObserver:
                 if self.fault == "runtime_scope_after_return_raise":
                     self._fault("after_real_stream_return")
                 if session.lane == "warp":
-                    assert vars(self.target)["_stream"] is owner
-                    self.target_context = vars(self.target)["_context"]
-                    assert type(self.target_context) is int and self.target_context > 0
+                    self._warp_cache_precondition(before=False)
                 self.snapshot("runtime_stream", "after", self.stream_before[1], self.stream_before)
             return result
 
@@ -469,7 +470,7 @@ class _NativeScopeObserver:
                 self.logical = vars(native)["_cuda_getDevice"]
                 self.primary = vars(native)["_cuda_hasPrimaryContext"]
                 self.stream_query = vars(native)["_cuda_getCurrentRawStream"]
-                self.count = vars(native)["_cuda_getDeviceCount"]()
+                self.count = self._getter("_cuda_getDeviceCount", vars(native)["_cuda_getDeviceCount"])
                 state = vars(sys.modules["torch.cuda"])
                 assert state["_initialized"] is False
                 queued = state["_queued_calls"]
@@ -497,6 +498,9 @@ class _NativeScopeObserver:
                     self.devices.append(device.value)
                 assert len(set(self.devices)) == self.count
                 self.stream_query = self.runtime.core.wp_cuda_context_get_stream
+                self.error_query = self.runtime.core.wp_get_error_string
+                self.held.extend((self.stream_query, self.error_query))
+                assert self.error_query.argtypes == [] and self.error_query.restype is ctypes.c_char_p
             assert self.count == 8
             assert not any(name in os.environ for name in ("CUDA_VISIBLE_DEVICES", "LD_PRELOAD", "LD_LIBRARY_PATH"))
         except BaseException as error:
@@ -508,6 +512,41 @@ class _NativeScopeObserver:
         if result != 0:
             raise RuntimeError("native observer getter error: " + name + "=" + str(result))
         return value
+
+    def _getter(self, name, function, *arguments):
+        """Record each real call once, including the prefix before an exception."""
+        try:
+            value = function(*arguments)
+        except BaseException as error:
+            self.held.append(error)
+            self.raw.append({"getter": name, "arguments": list(arguments),
+                             "exception_type": type(error).__name__, "message": str(error)})
+            raise
+        self.raw.append({"getter": name, "arguments": list(arguments),
+                         "value_hex": value.hex()} if type(value) is bytes else
+                        {"getter": name, "arguments": list(arguments), "value": value})
+        return value
+
+    def _warp_cache_precondition(self, *, before):
+        """Prove original cache initialization; never initialize it by observation."""
+        self._ticket()
+        try:
+            raw = vars(self.target)
+            if before:
+                assert raw["_context"] is None and raw["_stream"] is None
+                assert not self.cache_established
+            else:
+                assert raw["_stream"] is self.stream
+                self.target_context = raw["_context"]
+                assert type(self.target_context) is int and self.target_context > 0
+                assert type(self.stream.cuda_stream) is int and self.stream.cuda_stream > 0
+            result = self._getter("wp_get_error_string", self.error_query)
+            assert type(result) is bytes and result == b"", "Warp original initialization has a native error"
+            if not before:
+                self.cache_established = True
+        except BaseException as error:
+            self._fail(error)
+            raise
 
     def _check_cuda_deferred_state(self):
         """Retain the prior reviewed no-Triton-execution acceptance check."""
@@ -542,7 +581,8 @@ class _NativeScopeObserver:
         if self.session.lane == "cuda":
             raw = ctypes.c_int(-1)
             raw_device = self._result("cudaGetDevice", self.raw_device(ctypes.byref(raw)), raw.value)
-            contexts = [{"ordinal": i, "active": self.primary(i)} for i in range(self.count)]
+            contexts = [{"ordinal": i, "active": self._getter("_cuda_hasPrimaryContext", self.primary, i)}
+                        for i in range(self.count)]
             initialized = vars(sys.modules["torch.cuda"])["_initialized"]
             if pristine:
                 # Derived logical0 is conditional. Preserve failed prerequisites
@@ -550,10 +590,11 @@ class _NativeScopeObserver:
                 self.raw.append({"cold_raw_device": raw_device, "primary_contexts": contexts,
                                  "initialized": initialized})
                 assert raw_device == 0 and initialized is False and not any(row["active"] for row in contexts)
-            return {"initialized": initialized, "logical_device": 0 if pristine else self.logical(),
+            return {"initialized": initialized, "logical_device": 0 if pristine else self._getter("_cuda_getDevice", self.logical),
                     "logical_basis": "cold_source_derived" if pristine else "native_return",
                     "raw_device": raw_device, "primary_contexts": contexts,
-                    "target_current_stream": None if pristine else self.stream_query(self.controller.target_device_ordinal),
+                    "target_current_stream": None if pristine else self._getter(
+                        "_cuda_getCurrentRawStream", self.stream_query, self.controller.target_device_ordinal),
                     "held_stream": held}
         context = ctypes.c_void_p()
         current = self._result("cuCtxGetCurrent", self.context_get(ctypes.byref(context)), context.value)
@@ -569,10 +610,14 @@ class _NativeScopeObserver:
                          {"ordinal": index, "flags": flags.value, "active": active.value})
             assert active.value in (0, 1)
             contexts.append({"ordinal": index, "flags": flags.value, "active": active.value == 1})
+        stream = None
+        if not pristine:
+            assert self.cache_established, "original Warp native cache prerequisite is absent"
+            stream = int(self._getter("wp_cuda_context_get_stream", self.stream_query, self.target_context) or 0)
         return {"default_device": self.runtime.default_device.ordinal, "current_context": current,
                 "current_context_device": ordinal, "primary_contexts": contexts,
                 "target_context": None if pristine else self.target_context,
-                "target_current_stream": None if pristine else int(self.stream_query(self.target_context) or 0),
+                "target_current_stream": stream,
                 "held_stream": held}
 
     def snapshot(self, site, edge, operation, before=None):
@@ -611,6 +656,8 @@ class _NativeScopeObserver:
             if not pristine:
                 assert state["held_stream"]["ordinal"] == 1
                 if self.current_stream_baseline is None:
+                    if self.session.lane == "warp":
+                        assert state["target_current_stream"] == state["held_stream"]["handle"]
                     self.current_stream_baseline = state["target_current_stream"]
                 assert state["target_current_stream"] == self.current_stream_baseline
             return index, operation

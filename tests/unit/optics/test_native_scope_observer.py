@@ -91,3 +91,233 @@ def test_failed_getter_emits_no_complete_snapshot_or_retry(observer):
     assert calls == [False]
     assert observer.session.runtime_observation.journal == []
     assert observer.controller.termination_evidence.lifecycle.to_payload()["summary"]["unknown_device_scope"]
+
+
+@pytest.fixture
+def warp_cache_model(observer, monkeypatch):
+    """Exact pinned Device Python methods, modeled C++ only; no backend import."""
+    import ast
+    import ctypes
+    import hashlib
+    import os
+    from pathlib import Path
+    path = Path(os.environ.get("ROBOT_SIM_WARP_CONTEXT_SOURCE",
+        "/home/ang.gao/miniforge3/envs/robot_sim/lib/python3.12/site-packages/warp/_src/context.py"))
+    if not path.is_file():
+        pytest.skip("pinned Warp source text required for exact-Device CPU model")
+    source = path.read_bytes()
+    assert hashlib.sha256(source).hexdigest() == "eb099d908c50effc3cacbf7ecc408be4187ca9a6a6f72e1e85c70676961524ee"
+    device = next(n for n in ast.parse(source).body if isinstance(n, ast.ClassDef) and n.name == "Device")
+    methods = [n for n in device.body if isinstance(n, ast.FunctionDef)
+               and n.name in {"context", "stream", "_init_streams", "set_stream"}]
+    model = SimpleNamespace(error=b"", setter_failure=False, cache={}, getter_calls=[], setters=0)
+    class Core:
+        def wp_cuda_context_get_current(self):
+            return None
+        def wp_cuda_device_get_primary_context(self, ordinal):
+            return 9000
+        def wp_cuda_context_set_current(self, context):
+            assert context is None
+        def wp_cuda_context_set_stream(self, context, stream, sync):
+            model.setters += 1
+            if model.setter_failure:
+                model.error = b"Warp CUDA error 999: modeled original cuCtxGetDevice failure"
+                return
+            model.cache[context] = stream
+        def wp_cuda_context_get_stream(self, context):
+            model.getter_calls.append(context)
+            # Forbidden branch would initialize native cache. It must be unreachable.
+            assert context in model.cache, "observer reached native cache miss"
+            return model.cache[context]
+    core = Core()
+    runtime = SimpleNamespace(core=core, context_map={}, default_device=SimpleNamespace(ordinal=0))
+    def Stream(device, **kwargs):
+        assert device.context == 9000
+        return SimpleNamespace(device=device, cuda_stream=kwargs.get("cuda_stream", 123))
+    namespace = {"runtime": runtime, "Stream": Stream}
+    definition = ast.ClassDef(name="PinnedDevice", bases=[], keywords=[], body=methods, decorator_list=[])
+    module = ast.fix_missing_locations(ast.Module(body=[definition], type_ignores=[]))
+    exec(compile(module, "<pinned Device CPU model>", "exec"), namespace)
+    target = namespace["PinnedDevice"]()
+    target.runtime, target.ordinal = runtime, 1
+    target._context = target._stream = None
+    target.is_primary = target.is_cuda = True
+    observer.target, observer.runtime, observer.ctypes = target, runtime, ctypes
+    observer.cache_established = False
+    observer.error_query = lambda: model.error
+    observer.stream_query = core.wp_cuda_context_get_stream
+    observer.devices = list(range(8))
+    def current(out):
+        out._obj.value = None
+        return 0
+    def primary(device, flags, active):
+        flags._obj.value, active._obj.value = 0, int(device == 1)
+        return 0
+    observer.context_get, observer.primary = current, primary
+    del observer._state  # Use the actual implemented query ordering.
+    return observer, model
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_original_void_setter_cache_precondition(warp_cache_model, failure):
+    value, model = warp_cache_model
+    model.setter_failure = failure
+    try:
+        with value.controller.segment():
+            _enter(value.controller)
+            value._warp_cache_precondition(before=True)
+            value.stream = value.target.stream
+            value.held.append(value.stream)  # original returned owner remains retained
+            assert value.target._stream is value.stream and model.setters == 1
+            value._warp_cache_precondition(before=False)
+            assert not failure
+            state = value._state(False)
+            assert state["target_current_stream"] == state["held_stream"]["handle"] == 123
+            assert model.getter_calls == [9000]
+    except AssertionError as error:
+        if not failure:
+            raise
+        assert "native error" in str(error)
+    if failure:
+        assert value.stream in value.held and not value.cache_established
+        assert not model.getter_calls and model.cache == {}
+        assert value.raw[-1]["value_hex"] == model.error.hex()
+        assert value.session.runtime_observation.journal == []
+        summary = value.controller.termination_evidence.lifecycle.to_payload()["summary"]
+        assert summary["unknown_device_scope"]
+        assert summary["normal_complete_count"] == summary["emergency_sync_attempt_count"] == 0
+        assert summary["release_status"] == "not_authorized"
+
+
+@pytest.mark.parametrize("error", [b"stale error", None, "", b"\xff\x80"])
+def test_stale_or_invalid_error_buffer_prevents_original_stream(warp_cache_model, error):
+    value, model = warp_cache_model
+    model.error = error
+    with pytest.raises(AssertionError, match="native error"):
+        with value.controller.segment():
+            _enter(value.controller)
+            value._warp_cache_precondition(before=True)
+            raise RuntimeError("must not enter original stream creation")
+    assert model.setters == 0 and not model.getter_calls and not value.cache_established
+
+
+def test_unproved_python_stream_metadata_cannot_call_native_getter(warp_cache_model):
+    value, model = warp_cache_model
+    with pytest.raises(AssertionError, match="prerequisite is absent"):
+        with value.controller.segment():
+            _enter(value.controller)
+            value.stream = value.target.stream
+            value.target_context = value.target._context
+            value._state(False)
+    assert not model.getter_calls
+
+
+@pytest.mark.parametrize("handle", [0, 124])
+def test_first_warp_native_stream_must_match_actual_return(observer, monkeypatch, handle):
+    import os
+    from pathlib import Path
+    original = Path.resolve
+    monkeypatch.setattr(Path, "resolve", lambda p, **kw: Path(str(os.getpid()))
+                        if str(p).replace("\\", "/") == "/proc/thread-self" else original(p, **kw))
+    observer.current_stream_baseline = None
+    observer.snapshot_state["target_current_stream"] = handle
+    with pytest.raises(AssertionError):
+        with observer.controller.segment():
+            operation = _enter(observer.controller)
+            observer.snapshot("runtime_stream", "after", operation)
+    assert observer.current_stream_baseline is None
+    assert observer.session.runtime_observation.journal[-1]["details"]["state"]["target_current_stream"] == handle
+    assert observer.controller.termination_evidence.lifecycle.to_payload()["summary"]["unknown_device_scope"]
+
+
+@pytest.mark.parametrize("failed", list(range(8)) + ["logical", "stream"])
+def test_cuda_getter_failure_preserves_ordered_successful_prefix(observer, monkeypatch, failed):
+    import ctypes
+    import sys
+    value = observer
+    value.session.lane = "cuda"
+    value.ctypes = ctypes
+    value.stream = SimpleNamespace(device=SimpleNamespace(index=1), cuda_stream=123)
+    calls = []
+    def invoke(name, result):
+        calls.append(name)
+        if name == failed:
+            raise RuntimeError("modeled C10 error")
+        return result
+    def raw_device(out):
+        out._obj.value = 1
+        return 0
+    value.raw_device = raw_device
+    value.primary = lambda ordinal: invoke(ordinal, ordinal == 1)
+    value.logical = lambda: invoke("logical", 0)
+    value.stream_query = lambda ordinal: invoke("stream", 123)
+    monkeypatch.setitem(sys.modules, "torch.cuda", SimpleNamespace(_initialized=True))
+    del value._state
+    with pytest.raises(RuntimeError, match="modeled C10 error"):
+        with value.controller.segment():
+            operation = _enter(value.controller)
+            value.snapshot("empty", "before", operation)
+    expected = list(range(8)) + ["logical", "stream"]
+    expected = expected[:expected.index(failed) + 1]
+    assert calls == expected
+    raw = value.raw
+    assert raw[0] == {"getter": "cudaGetDevice", "result": 0, "value": 1}
+    assert len(raw) == 1 + len(expected)
+    for actual, name in zip(raw[1:], expected):
+        assert actual["getter"] == ("_cuda_hasPrimaryContext" if type(name) is int else
+                                    "_cuda_getDevice" if name == "logical" else "_cuda_getCurrentRawStream")
+        assert actual["arguments"] == ([name] if type(name) is int else [] if name == "logical" else [1])
+        if name == failed:
+            assert actual["exception_type"] == "RuntimeError" and "value" not in actual
+        else:
+            assert actual["value"] == (name == 1 if type(name) is int else 0)
+    assert value.session.runtime_observation.journal == []
+    summary = value.controller.termination_evidence.lifecycle.to_payload()["summary"]
+    assert summary["unknown_device_scope"] and summary["emergency_sync_attempt_count"] == 0
+    assert summary["release_status"] == "not_authorized"
+
+
+def test_count_getter_exception_is_held_and_named(observer):
+    error = RuntimeError("count failure")
+    calls = []
+    def count():
+        calls.append(1)
+        raise error
+    with pytest.raises(RuntimeError, match="count failure"):
+        observer._getter("_cuda_getDeviceCount", count)
+    assert calls == [1] and error in observer.held
+    assert observer.raw == [{"getter": "_cuda_getDeviceCount", "arguments": [],
+                             "exception_type": "RuntimeError", "message": "count failure"}]
+
+
+@pytest.mark.parametrize("fault", ["runtime_scope_success", "runtime_scope_after_return_raise"])
+def test_actual_return_hook_keeps_original_owner_before_precondition_failure(warp_cache_model, fault):
+    value, model = warp_cache_model
+    model.setter_failure = True
+    resources = {name: getattr(value, name) for name in
+                 ("target", "runtime", "ctypes", "error_query", "stream_query")}
+    session = value.session
+    session.runtime_owners = []
+    original_returns = []
+    session._hold_runtime_owner = lambda *args, **kw: None
+    session._runtime_leaf = lambda *args: None
+    session._observe_runtime_return = lambda producer, owner: original_returns.append((producer, owner))
+    _NativeScopeObserver.__init__(value, session, value.controller, value.directory, {}, fault)
+    for name, resource in resources.items():
+        setattr(value, name, resource)
+    expected = AssertionError if fault == "runtime_scope_success" else RuntimeError
+    with pytest.raises(expected):
+        with value.controller.segment():
+            _enter(value.controller)
+            value._warp_cache_precondition(before=True)
+            returned = value.target.stream
+            # Real bootstrap ordering: retain first, then call its observed-return hook.
+            session.runtime_owners.append(returned)
+            session._observe_runtime_return("runtime_stream", returned)
+    assert original_returns == [("runtime_stream", returned)]
+    assert value in session.runtime_owners and returned in session.runtime_owners
+    assert value.stream is returned and not value.cache_established and not model.getter_calls
+    assert len(value.raw) == (2 if fault == "runtime_scope_success" else 1)
+    summary = value.controller.termination_evidence.lifecycle.to_payload()["summary"]
+    assert summary["unknown_device_scope"] and summary["normal_complete_count"] == 0
+    assert summary["emergency_sync_attempt_count"] == 0 and summary["release_status"] == "not_authorized"

@@ -1337,6 +1337,16 @@ Next milestone:
       c243875). Local v2 codec/readback/fixed-observer work is in progress;
       code/native preflight must precede new positive Warp attempts. These
       proofs and whole independent C2d3 review still block acceptance.
+      Initial code/native preflight at b0f22fb requested changes: native Warp
+      cache presence was not proved on a void-setter failure, and C10 partial
+      query diagnostics lost earlier results. Full report is archived f630f81.
+      Exact candidate CPU regression on183 passed501/one platform skip with
+      real Go2 CPU materialization;65 process identities and43 live ancestry
+      chains are archived with scoped no-owned-residual checks. Bounded cache
+      prerequisite design at083688e is independently approved (report8b655a2).
+      Test-driver repair now checks native error bytes around original stream
+      return and preserves every C10 query result; local focused78pass. Fresh
+      code/native preflight is still required before16 actual observation cases.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
