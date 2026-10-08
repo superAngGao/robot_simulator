@@ -1238,6 +1238,13 @@ Next milestone:
       records that repair and exact narrow evidence. CUDA closure, full failure/
       hang/dual-device matrix and aggregate runtime-custody schema still block
       whole C2d3 acceptance; no later gate opens from these Warp successes.
+      Fresh independent gap-review v4 approved only the final bounded repair at
+      `8bc53bf`:274 focused checks passed, all ten preserved bad-acceptance cases
+      rejected, two cache checks and both historical Go2 observation replays
+      passed. Complete unchanged report is archived separately. This closes the
+      native-global repair loop, not a standalone CPU stage or whole C2d3/C4.
+      Continue CUDA deployment closure, the mandatory real-runtime matrix and
+      final aggregate custody schema under the existing approved design.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
