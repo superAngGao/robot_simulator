@@ -12,6 +12,54 @@ from tests.unit.optics.test_native_sources import release as _release_fixture
 release = _release_fixture
 
 
+@pytest.mark.parametrize("trap", ["class", "getattribute"])
+@pytest.mark.parametrize("entrypoint", ["audit", "fail", "poisoned"])
+def test_invalid_publisher_cannot_call_metadata_or_recover_failure(release, trap, entrypoint):
+    result = _internal(release, after=f"""
+entry._verify(session)
+calls = []
+original = RuntimeError('original failure')
+class BadPublisher:
+    @property
+    def __class__(self):
+        calls.append('class')
+        raise RuntimeError('publisher callback')
+    def __getattribute__(self, name):
+        if {trap!r} == 'getattribute':
+            calls.append(name)
+            raise RuntimeError('publisher callback')
+        return object.__getattribute__(self, name)
+value = BadPublisher()
+if {entrypoint!r} == 'poisoned': session.fail(original)
+sys.modules['multiprocessing'] = value
+if {entrypoint!r} == 'audit':
+    try:
+        session.audit()
+    except entry.SourceBootstrapError as error:
+        original = error
+    else:
+        raise AssertionError('invalid publisher accepted')
+else:
+    session.fail(original)
+    session.observe_interpreter_alias('audit', final=True)
+assert not calls
+assert session.failed and any(error is original for error in session.failures)
+assert any(owner is value for owner in entry._INTERPRETER_ALIAS_CUSTODY[session][2])
+assert not session.interpreter_alias_events
+del sys.modules['multiprocessing']
+try:
+    session.audit()
+except entry.SourceBootstrapError:
+    pass
+else:
+    raise AssertionError('poisoned source session reused')
+assert not calls and not session.interpreter_alias_events
+print('callback_free_sticky_failure')
+""")
+    assert result[0] == 0, result[2].decode()
+    assert result[1].strip() == b"callback_free_sticky_failure"
+
+
 def test_exact_cold_main_alias_is_observed_once(release):
     result = _internal(release, after="""
 entry._verify(session)

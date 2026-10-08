@@ -180,6 +180,71 @@ def test_available_publication_held_at_first_real_session_termination(importer, 
     assert admission.failed and admission.session.failed
 
 
+@pytest.mark.parametrize("trap", ["class", "getattribute"])
+@pytest.mark.parametrize("entrypoint", ["observe", "fail"])
+def test_invalid_alias_publisher_retained_before_single_bound_termination(importer, monkeypatch, trap, entrypoint):
+    admission = _setup(importer, monkeypatch)
+    session, controller = admission.session, admission.controller
+    main = sys.modules["__main__"]
+    session.bootstrap_owner = main
+    session.interpreter_alias_events = []
+    path = Path(sys._stdlib_dir).resolve() / "multiprocessing" / "__init__.py"
+    source = path.read_bytes()
+    descriptor = (bootstrap._generated_interpreter_identity(), str(path), source,
+                  hashlib.sha256(source).hexdigest(), main)
+    held = [main]
+    monkeypatch.setitem(bootstrap._INTERPRETER_ALIAS_CUSTODY, session,
+                        (descriptor, bootstrap._thread.get_ident(), held, None, None))
+    monkeypatch.setattr(session, "observe_interpreter_alias",
+                        bootstrap._SourceSession.observe_interpreter_alias.__get__(session))
+    monkeypatch.setattr(session, "fail", bootstrap._SourceSession.fail.__get__(session))
+    monkeypatch.setitem(bootstrap._SOURCE_CUSTODY, session, (controller,))
+    callbacks, terminations = [], []
+    class BadPublisher:
+        @property
+        def __class__(self):
+            callbacks.append("class")
+            raise RuntimeError("publisher callback")
+        def __getattribute__(self, name):
+            if trap == "getattribute":
+                callbacks.append(name)
+                raise RuntimeError("publisher callback")
+            return object.__getattribute__(self, name)
+    value, replacement = BadPublisher(), object()
+    monkeypatch.setitem(sys.modules, "multiprocessing", value)
+    monkeypatch.setitem(sys.modules, "torch._VF", replacement)
+    controller.termination_evidence = None
+    controller._fail_guard = lambda *args: None
+    def terminate(**kwargs):
+        assert session.failed and admission.failed
+        assert session.failures[0] is admission.failures[0]
+        assert any(owner is value for owner in held)
+        assert any(owner is replacement for owner in admission.retained)
+        assert not callbacks
+        terminations.append(kwargs)
+        controller.termination_evidence = object()
+    controller.terminate = terminate
+    original = RuntimeError("original failure")
+    if entrypoint == "observe":
+        with pytest.raises(SourceBootstrapError) as caught:
+            session.observe_interpreter_alias("audit", final=True)
+        original = caught.value
+    else:
+        session.fail(original)
+    assert session.failures[0] is original and admission.failures[0] is original
+    late = BadPublisher()
+    monkeypatch.setitem(sys.modules, "multiprocessing", late)
+    session.fail(RuntimeError("late failure"))
+    session.observe_interpreter_alias("audit", final=True)
+    assert any(owner is late for owner in held)
+    monkeypatch.delitem(sys.modules, "multiprocessing")
+    with pytest.raises(SourceBootstrapError):
+        session.audit()
+    assert len(terminations) == 1 and not callbacks
+    assert not admission.replacement_events and not admission.native_global_events
+    assert not session.interpreter_alias_events
+
+
 def test_replay_rejects_replacement_token_substitution(importer, monkeypatch):
     admission = _setup(importer, monkeypatch)
     importlib.import_module("torch")

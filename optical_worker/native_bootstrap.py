@@ -2096,10 +2096,12 @@ class _SourceSession:
             self._retain_interpreter_alias()
 
     def fail(self, error):
-        self.retain_import_boundary()
         self.failed = True
         if not any(value is error for value in self.failures):
             self.failures.append(error)
+        # Commit poison and the original error before ancillary intake. The
+        # available graph must still be held before any terminal operation.
+        self.retain_import_boundary()
         external = _EXTERNAL_CUSTODY.get(self)
         if external is not None and "failures" in vars(external[0]) and not external[0].failed:
             # Share the existing one-way failure path. Its callback re-enters
@@ -2600,7 +2602,7 @@ class _SourceSession:
             if name in sys.modules and not any(value is sys.modules[name] for value in retained):
                 retained.append(sys.modules[name])
         publisher = sys.modules.get("multiprocessing")
-        if isinstance(publisher, ModuleType):
+        if type(publisher) is ModuleType:
             raw = _raw_module(publisher)
             for value in (raw.get("__spec__"), raw.get("__loader__")):
                 if not any(owner is value for owner in retained):
