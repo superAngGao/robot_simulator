@@ -1324,6 +1324,19 @@ Next milestone:
       v1 for exact artifacts, hashes, failure history and limits. The next
       test-only24fault/48lane cases are collected but not yet executed; full
       ACK/EOF/dual-device/failure matrix and whole independent review remain.
+      The fixed native/ACK/EOF/cleanup/exit/foreign/publication matrix now has
+      85 distinct actual passes across the documented4435593/bcc1bac/71566e0
+      test revisions, with production unchanged9b5702b. Missed Warp exec and
+      slotted-cleanup injection attempts remain preserved failures. Each actual
+      matrix has live OS identity chains and scoped no-owned-residual checks;
+      see runtime-faults test-evidence v2 for exact archives and prefix limits.
+      Fresh native-scope gap review found missing aggregate observations and
+      Warp readback context restoration. Bounded design v2 at07a76ff, digest
+      9e678c7aaffa1147b49a6f1f3b946619f0c316e3bc68883ff0fa9a4d1ed9a0ad,
+      is independently approved for implementation only (report archived at
+      c243875). Local v2 codec/readback/fixed-observer work is in progress;
+      code/native preflight must precede new positive Warp attempts. These
+      proofs and whole independent C2d3 review still block acceptance.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design

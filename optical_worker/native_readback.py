@@ -94,16 +94,28 @@ def _readback_prepared_native_input(source, prepared, *, lifecycle, runtime, tar
     ):
         raise ValueError("Warp validation stream/target drift")
 
-    import numpy as np
-
-    from .native_input import _validate_native_input_host_observations
-
     # This list is adopted first, and every returned owner goes into it before
     # the more specific registration, which fault injection may reject.
     retained = []
     lifecycle.adopt_host_owner(
         retained, role="validation_readback_custody", operation_id="validation_readback_custody"
     )
+    if cuda:
+        return _readback_held_input(source, prepared, lifecycle, runtime, target, stream, cuda, retained)
+    _leaf(lifecycle, "indexed_validation_scope", "runtime_import_or_init", "warp_scoped_device_v1")
+    # The real Warp D2H helper's native ContextGuard does not restore a prior
+    # null context. Keep its indexed work inside the runtime's restoring scope.
+    # The report remains held on error and is returned only after scope exit.
+    with runtime.ScopedDevice(target):
+        report = _readback_held_input(source, prepared, lifecycle, runtime, target, stream, cuda, retained)
+    return report
+
+
+def _readback_held_input(source, prepared, lifecycle, runtime, target, stream, cuda, retained):
+    import numpy as np
+
+    from .native_input import _validate_native_input_host_observations
+
     observations = []
     retained.append(observations)
     for manifest in source.manifest.arrays:

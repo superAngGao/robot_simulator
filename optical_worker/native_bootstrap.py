@@ -2166,7 +2166,7 @@ class _RuntimeObservation:
         external = [e["details"]["event"] for e in self.journal if e["kind"] == "external"]
         kinds = {e["kind"] for e in self.journal}
         return {
-            "schema_version": "q54.p12.4.runtime-custody.v1",
+            "schema_version": "q54.p12.4.runtime-custody.v2",
             "source": {"revision": session.revision, "catalog_sha256": session.catalog_sha256,
                        "snapshot_sha256": session.snapshot.sha256},
             "environment_sha256": self.environment.sha256 if "environment_bound" in kinds else None,

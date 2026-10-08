@@ -147,7 +147,7 @@ def test_actual_cold_canonical_warp_setup_and_terminal_disposition(tmp_path, fau
             "event_create": 2,
             "event_record": 2,
             "event_wait": 2,
-            "runtime_import_or_init": 5,
+            "runtime_import_or_init": 6,
         }
         report = json.loads((tmp_path / "input_validation_report.json").read_text())
         assert report["final_execution_readiness_issued"] is False

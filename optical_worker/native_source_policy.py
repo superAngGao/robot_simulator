@@ -18,9 +18,9 @@ from .protocol import ClosedWorkerProtocolError, canonical_sha256
 
 NATIVE_AST_POLICY_VERSION = "q54.p12.4.closed-worker-ast-policy.v13"
 _BOOTSTRAP_PATH = "optical_worker/native_bootstrap.py"
-_BOOTSTRAP_SOURCE_SHA256 = "ed75faa62611bd5e21a152b76ba2c5d44ddcde0c494aebc09b28f0c52b7d7c89"
+_BOOTSTRAP_SOURCE_SHA256 = "4a36bcc2df0d91aa6cdc39e2c8268959035799e771314908791dcab7cec8a027"
 _BOOTSTRAP_CLASS_PINS = {
-    "_RuntimeObservation": "d42c97b159803f230f3d530f4a6c28e690eb9ea884d844e75ba14f2f6a26d562",
+    "_RuntimeObservation": "31902e1e26f85bb71c07aca4229ca54bd76969710d4757e3df9c2115cd35a716",
     "_CapturedSourceLoader": "cc647d0af05f892513eceea40708734e5a7aafe82c278507d094a65894639ecb",
     "_CapturedSourceFinder": "60a50b7ec134a0f3b535af6760d7ba1c482eac0c6d7178fb92149d6401ba4d78",
     "_ExternalSourceLoader": "09217cee94f7c4fa1d72af29be87c809299c9da43ef9c1d164b6d2a288982201",

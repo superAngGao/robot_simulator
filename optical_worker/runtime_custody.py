@@ -20,13 +20,22 @@ from .runtime_environment import (
 )
 from .wait_protocol import GuardConfiguration, GuardProtocolError, exact_fields
 
-RUNTIME_CUSTODY_VERSION = "q54.p12.4.runtime-custody.v1"
+RUNTIME_CUSTODY_VERSION = "q54.p12.4.runtime-custody.v2"
+RUNTIME_CUSTODY_VERSIONS = ("q54.p12.4.runtime-custody.v1", RUNTIME_CUSTODY_VERSION)
 RUNTIME_CUSTODY_INPUTS_VERSION = "q54.p12.4.runtime-custody-inputs.v1"
 RUNTIME_CUSTODY_SELECTION_VERSION = "q54.p12.4.runtime-custody-selection.v1"
 PHASES = (
     "setup_definitions", "external_environment", "canonical_materialization",
     "runtime_initialization", "native_upload", "input_validation",
 )
+
+NATIVE_SCOPE_HELPERS = {
+    "empty": ("allocation", "torch_empty_explicit_device_v1", "warp_empty_explicit_device_v1"),
+    "copy": (None, "torch_copy_explicit_stream_v1", "warp_copy_explicit_stream_v1"),
+    "event_create": ("event_create", "torch_cuda_event_v1", "warp_event_explicit_device_v1"),
+    "event_record": ("event_record", "torch_event_record_indexed_stream_v1", "warp_stream_record_event_v1"),
+    "event_wait": ("event_wait", "torch_event_synchronize_v1", "warp_synchronize_event_v1"),
+}
 
 _DETAIL_FIELDS = {
     "source_bound": {"session_token", "bootstrap_token", "controller_token"},
@@ -47,6 +56,9 @@ _DETAIL_FIELDS = {
     "phase_completed": {"phase", "disarmed_event_index", "materialization_case_id"},
     "failure": {"source", "exception_token"},
     "returned_owner": {"producer", "call_sequence", "leaf_event_index", "object_token"},
+    "native_scope": {"site", "edge", "before_index", "operation_event_index", "worker_pid", "thread_id",
+                     "module_token", "runtime_token", "target_token", "stream_token", "binding_token",
+                     "libraries", "state"},
 }
 
 
@@ -77,6 +89,58 @@ def _source(value):
     _digest(p["catalog_sha256"])
     _digest(p["snapshot_sha256"])
     return p
+
+
+def _ordinal(value):
+    _require(_integer(value) <= 1023, "native ordinal range")
+    return value
+
+
+def _native_scope_state(value, lane, *, pristine):
+    """Validate observed representation, not ambient restoration or authority."""
+    common = {"primary_contexts", "target_current_stream", "held_stream"}
+    fields = ({"initialized", "logical_device", "logical_basis", "raw_device"} if lane == "cuda"
+              else {"default_device", "current_context", "current_context_device", "target_context"})
+    s = exact_fields(value, common | fields)
+    contexts = s["primary_contexts"]
+    _require(type(contexts) is list and 0 < len(contexts) <= 1024, "native primary context count")
+    for ordinal, raw in enumerate(contexts):
+        row = exact_fields(raw, {"ordinal", "active"} | ({"flags"} if lane == "warp" else set()))
+        _require(_ordinal(row["ordinal"]) == ordinal and type(row["active"]) is bool,
+                 "native primary context order/type")
+        if lane == "warp":
+            _require(_integer(row["flags"]) <= 0xffffffff, "native primary flags range")
+    if pristine:
+        _require(s["target_current_stream"] is None and s["held_stream"] is None,
+                 "native prestream invented a stream")
+    else:
+        _integer(s["target_current_stream"])
+        stream = exact_fields(s["held_stream"], {"ordinal", "handle"})
+        _require(_ordinal(stream["ordinal"]) < len(contexts), "native held stream ordinal")
+        _integer(stream["handle"])
+    if lane == "cuda":
+        _require(type(s["initialized"]) is bool, "native initialized type")
+        _require(_ordinal(s["logical_device"]) < len(contexts)
+                 and _ordinal(s["raw_device"]) < len(contexts), "native device count mismatch")
+        if pristine:
+            _require(s["logical_basis"] == "cold_source_derived" and s["initialized"] is False
+                     and s["logical_device"] == s["raw_device"] == 0
+                     and not any(row["active"] for row in contexts), "native cold derivation category")
+        else:
+            _require(s["logical_basis"] == "native_return" and s["initialized"] is True,
+                     "native observed category")
+    else:
+        _require(_ordinal(s["default_device"]) < len(contexts), "native default device count")
+        if s["current_context"] is None:
+            _require(s["current_context_device"] is None, "native null context has a device")
+        else:
+            _integer(s["current_context"], 1)
+            _require(_ordinal(s["current_context_device"]) < len(contexts), "native current context device")
+        if pristine:
+            _require(s["target_context"] is None, "native prestream invented target context")
+        else:
+            _integer(s["target_context"], 1)
+    return s
 
 
 def validate_runtime_custody_inputs(value, environment):
@@ -162,7 +226,7 @@ def validate_runtime_custody_selection(value, record_bytes, *, observed_lifecycl
     _require(hashlib.sha256(record_bytes).hexdigest() == p["runtime_record_sha256"],
              "runtime durable record digest mismatch")
     record = decode_canonical_message(record_bytes, max_bytes=len(record_bytes))
-    _require(record.get("schema_version") == RUNTIME_CUSTODY_VERSION, "runtime durable record version")
+    _require(record.get("schema_version") in RUNTIME_CUSTODY_VERSIONS, "runtime durable record version")
     lifecycle = GuardedLifecycleEvidence.from_payload(record["lifecycle"]).to_payload()
     count = _integer(p["selected_lifecycle_event_count"], 1)
     _require(count == len(lifecycle["transition_trace"])
@@ -184,16 +248,19 @@ class _RuntimeReplay:
                  and self.lifecycle["lane_id"] == self.lane, "runtime lifecycle identity mismatch")
         self.trace = self.lifecycle["transition_trace"]
         self.normal_guards = [e["guard"] for e in self.trace if e["operation"] == "normal_arm_started"]
-        self.leaf_operations = {}
-        operation = None
+        self.leaf_operations, self.leaf_descriptors = {}, {}
+        operation = descriptor = None
         for event in self.trace:
-            if event["operation"] == "setup_operation_started":
+            if event["operation"] == "descriptor_observed":
+                descriptor = event["details"]["descriptor"]
+            elif event["operation"] == "setup_operation_started":
                 operation = event["details"]["operation_id"]
             elif event["operation"] == "low_level_leaf_entered":
                 self.leaf_operations[event["index"]] = operation
+                self.leaf_descriptors[event["index"]] = descriptor
         self.adoptions = {e["details"]["sequence"]: e for e in self.trace if e["operation"] == "owner_adopted"}
         replay = _LifecycleReplay(self.config, self.lane)
-        self.guards = []
+        self.guards, self.native_emergency = [], []
         for event in self.trace:
             replay.apply(event)
             try:
@@ -202,6 +269,11 @@ class _RuntimeReplay:
             except GuardProtocolError:
                 active = False
             self.guards.append((None if replay.guard is None else dict(replay.guard), active))
+            self.native_emergency.append(
+                replay.guard_state == "ARMED" and replay.guard is not None
+                and replay.guard["role"] == "emergency" and replay.sync_outcome == "started"
+                and not replay.failed and not replay.terminal_failed and not replay.compromised
+                and replay.release == "not_authorized")
         self.objects, self.first = {}, {}
         previous, sequences = 0, set()
         _require(type(root["objects"]) is list, "runtime objects must be an array")
@@ -237,6 +309,8 @@ class _RuntimeReplay:
         self.file_states, self.file_owners, self.file_resolutions = {}, {}, {}
         self.self_absences, self.publications, self.namespaces, self.disabled = {}, {}, {}, {}
         self.returned_files, self.returned_runtime = {}, {}
+        self.native_pairs, self.native_seen, self.native_rows = [], set(), []
+        self.native_identity = None
         self.external_count, self.last_lifecycle, self.index, self.lci, self.guard = 0, -1, -1, -1, None
         ep = environment.to_payload()
         self.env = ep
@@ -576,7 +650,8 @@ class _RuntimeReplay:
             _require(type(d["event"]) is dict, "external event must be an object")
         failed_fact = (kind == "failure" or kind == "file_call" and d["state"] == "failed"
                        or kind == "external" and d["event"].get("kind") == "failure")
-        if kind not in {"source_bound", "phase_completed"} and not failed_fact:
+        terminal_native = kind == "native_scope" and d["site"] == "terminal_sync"
+        if kind not in {"source_bound", "phase_completed"} and not failed_fact and not terminal_native:
             _require(not self.failed and self.guards[self.lci][1], "runtime success outside original armed setup")
             _require(len(self.phases) < len(self.normal_guards)
                      and self.guard == self.normal_guards[len(self.phases)], "runtime observation transplanted between phase guards")
@@ -608,6 +683,8 @@ class _RuntimeReplay:
             self.returned_owner(d)
         elif kind == "runtime_binding":
             self.runtime_binding(d)
+        elif kind == "native_scope":
+            self.native_scope(d)
         elif kind == "binding_consumed":
             self.at_phase(4)
             _require(self.binding is not None and not self.consumed
@@ -629,6 +706,128 @@ class _RuntimeReplay:
             self.validated = True
         elif kind == "phase_completed":
             self.phase_completed(d)
+
+    def native_scope(self, d):
+        _require(self.root["schema_version"] == RUNTIME_CUSTODY_VERSION and not self.failed,
+                 "native scope version or failed predecessor")
+        site, edge = _text(d["site"]), _text(d["edge"])
+        helpers = NATIVE_SCOPE_HELPERS
+        _require(site in {*helpers, "runtime_stream", "runtime_binding", "upload_scope", "readback_scope", "terminal_sync"},
+                 "native scope site")
+        _require(edge == "point" if site == "runtime_binding" else edge in {"before", "after"},
+                 "native scope edge")
+        operation = _integer(d["operation_event_index"])
+        _require(operation <= self.lci and self.trace[operation]["guard"] == self.guard,
+                 "native operation beyond lifecycle cut or wrong guard")
+        identity = (_integer(d["worker_pid"], 1), _integer(d["thread_id"], 1))
+        _require(identity[0] == identity[1] and self.native_identity in (None, identity),
+                 "native worker/thread changed")
+        self.native_identity = identity
+        phase = len(self.phases)
+        if site == "terminal_sync":
+            _require(phase == 6 and self.validated and self.native_emergency[self.lci]
+                     and self.trace[operation]["operation"] == "emergency_sync_started",
+                     "native terminal observation outside original sync interval")
+        elif site in {"runtime_stream", "runtime_binding"}:
+            self.at_phase(3)
+        elif site in {"upload_scope", "readback_scope"}:
+            _require(self.lane == "warp", "native outer scope belongs only to Warp")
+            self.at_phase(4 if site == "upload_scope" else 5)
+        else:
+            _require(phase in {4, 5} and (site != "empty" or phase == 4), "native helper phase")
+        if site not in {"runtime_binding", "terminal_sync"}:
+            _require(operation in self.leaf_descriptors, "native operation lacks entered leaf")
+            descriptor = self.leaf_descriptors[operation]
+            if site == "runtime_stream":
+                expected = ("indexed_runtime_stream", "allocation" if self.lane == "cuda" else "runtime_import_or_init",
+                            "frozen_runtime_environment_v2")
+            elif site in {"upload_scope", "readback_scope"}:
+                expected = ("indexed_upload_scope" if site == "upload_scope" else "indexed_validation_scope",
+                            "runtime_import_or_init", "frozen_runtime_environment_v2" if site == "upload_scope"
+                            else "warp_scoped_device_v1")
+            else:
+                kind, cuda_identity, warp_identity = helpers[site]
+                if site == "copy":
+                    kind = "host_to_device_copy" if phase == 4 else "device_to_host_copy"
+                expected = (descriptor["operation_id"], kind, cuda_identity if self.lane == "cuda" else warp_identity)
+            _require((descriptor["operation_id"], descriptor["leaf_kind"], descriptor["runtime_identity"]) == expected,
+                     "native site differs from actual descriptor")
+            latest = max(index for index in self.leaf_descriptors if index <= self.lci)
+            if edge == "before" or site not in {"upload_scope", "readback_scope"}:
+                _require(operation == latest, "native snapshot references stale entered leaf")
+        key = (site, operation)
+        if edge == "after":
+            before = _integer(d["before_index"])
+            _require(self.native_pairs and self.native_pairs[-1] == (key, before),
+                     "native pair crossing, duplicate or missing before")
+            opening = self.root["journal"][before]
+            _require(opening["guard"] == self.guard and before < self.index,
+                     "native pair changed guard or order")
+            for field in ("module_token", "runtime_token", "target_token", "binding_token", "libraries"):
+                _require(d[field] == opening["details"][field], "native pair owner/library drift")
+            if site != "runtime_stream":
+                _require(d["stream_token"] == opening["details"]["stream_token"], "native pair stream drift")
+            self.native_pairs.pop()
+        else:
+            _require(d["before_index"] is None and key not in self.native_seen,
+                     "native repeated occurrence or spurious before reference")
+            self.native_seen.add(key)
+            if edge == "before":
+                _require(not self.native_pairs or self.native_pairs[-1][0][0] in {"upload_scope", "readback_scope"},
+                         "native helper pair was not closed")
+                self.native_pairs.append((key, self.index))
+        module, runtime, target = (self.token(d[k]) for k in ("module_token", "runtime_token", "target_token"))
+        stream = self.token(d["stream_token"], nullable=True)
+        binding = self.token(d["binding_token"], nullable=True)
+        _require(module == self.file_owners.get("torch" if self.lane == "cuda" else "warp"),
+                 "native module substitution")
+        self.adopted(module, roles={"external_import_owner"}, scope=HOST_OWNER)
+        if self.lane == "cuda":
+            _require(runtime == self.file_owners.get("torch._C"), "native CUDA root substitution")
+            self.adopted(runtime, roles={"external_import_owner"}, scope=HOST_OWNER)
+            self.adopted(target, roles={"torch_target_descriptor"}, scope=HOST_OWNER)
+        else:
+            self.adopted(runtime, roles={"warp_runtime_root"}, scope=HOST_OWNER)
+            self.adopted(target, roles={"warp_runtime_target"}, scope=self.config.device_ordinal)
+            _require(target == self.returned_runtime.get("runtime_target"), "native Warp target substitution")
+        pristine = site == "runtime_stream" and edge == "before"
+        _require((stream is None) == pristine, "native stream before return")
+        if pristine:
+            _require("runtime_stream" not in self.returned_runtime, "native pristine snapshot follows stream return")
+        if not pristine:
+            _require(stream == self.returned_runtime.get("runtime_stream"), "native stream return substitution")
+        if site == "runtime_stream" and edge == "after":
+            previous = self.root["journal"][self.index - 1]
+            _require(previous["kind"] == "returned_owner" and previous["details"]["producer"] == "runtime_stream"
+                     and previous["details"]["object_token"] == stream, "native stream after lacks immediate retained return")
+        if site == "runtime_stream":
+            _require(binding is None and self.binding is None, "native stream observation after binding")
+        else:
+            _require(self.binding is not None and binding == self.binding["binding_token"], "native binding substitution")
+            for field in ("module_token", "runtime_token", "target_token", "stream_token"):
+                _require(d[field] == self.binding[field], "native owner differs from runtime binding")
+        if site == "runtime_binding":
+            adoption = self.adopted(binding, roles={"runtime_setup_binding"}, scope=HOST_OWNER)
+            previous = self.root["journal"][self.index - 1]
+            _require(operation == adoption["index"] and previous["kind"] == "runtime_binding"
+                     and previous["details"]["binding_token"] == binding
+                     and not any(operation < index <= self.lci for index in self.leaf_operations),
+                     "native binding point lacks exact preceding binding/adoption")
+        libraries = d["libraries"]
+        _require(type(libraries) is list and len(libraries) == 1, "native library coverage")
+        library = exact_fields(libraries[0], {"root", "path", "sha256"})
+        expected_library = (("site", "nvidia/cuda_runtime/lib/libcudart.so.12") if self.lane == "cuda"
+                            else ("os_native", "libcuda.so.595.71.05"))
+        _require((library["root"], library["path"]) == expected_library, "native observer library path")
+        file = self.files.get(expected_library)
+        _require(file is not None and file["kind"] == "native" and library["sha256"] == file["sha256"],
+                 "native observer library differs from pinned environment")
+        state = _native_scope_state(d["state"], self.lane, pristine=pristine)
+        _require(self.config.device_ordinal < len(state["primary_contexts"]), "native target outside observed devices")
+        if self.binding is not None:
+            _require(state["held_stream"] == dict(zip(("ordinal", "handle"), self.binding["stream_identity"])),
+                     "native held stream metadata differs from binding")
+        self.native_rows.append(d)
 
     def returned_owner(self, d):
         token = self.token(d["object_token"])
@@ -655,6 +854,9 @@ class _RuntimeReplay:
 
     def runtime_binding(self, d):
         self.at_phase(3)
+        for row in self.native_rows:
+            for field in ("module_token", "runtime_token", "target_token", "stream_token"):
+                _require(row[field] is None or row[field] == d[field], "runtime binding differs from prior native owner")
         _require(self.binding is None, "duplicate runtime binding")
         for name in _DETAIL_FIELDS["runtime_binding"] - {"stream_identity"}:
             self.token(d[name])
@@ -680,6 +882,10 @@ class _RuntimeReplay:
         _require(d["module_token"] == self.file_owners.get(module_name)
                  and self.file_states.get(module_name) == "completed", "runtime module lacks completed admission")
         identity = d["stream_identity"]
+        for row in self.native_rows:
+            if row["state"]["held_stream"] is not None:
+                _require(row["state"]["held_stream"] == dict(zip(("ordinal", "handle"), identity)),
+                         "runtime stream identity differs from native return observation")
         _require(type(identity) is list and len(identity) == 2, "runtime stream identity shape")
         _require(_integer(identity[0]) == self.config.device_ordinal, "runtime stream device mismatch")
         _integer(identity[1])
@@ -713,6 +919,7 @@ class _RuntimeReplay:
         self.prepared, self.manifest = dict(d), manifest
 
     def phase_completed(self, d):
+        _require(not self.native_pairs, "normal phase completed with an unfinished native observation pair")
         _require(not self.failed and len(self.phases) < len(PHASES)
                  and d["phase"] == PHASES[len(self.phases)], "runtime phase completion order")
         index = _integer(d["disarmed_event_index"])
@@ -738,6 +945,10 @@ class _RuntimeReplay:
         self.phase_guards.append(sequence)
 
     def finish(self):
+        for (site, operation), _ in self.native_pairs:
+            if site == "terminal_sync":
+                _require(not any(e["operation"] == "emergency_sync_succeeded" for e in self.trace[operation + 1:]),
+                         "terminal sync succeeded with an unfinished native observation pair")
         _require(set(self.first) == set(self.objects), "runtime table contains unreferenced object")
         for token, index in self.first.items():
             _require(self.objects[token]["first_journal_index"] == index, "runtime token first occurrence mismatch")
@@ -777,7 +988,7 @@ class RuntimeCustodyRecord:
         validate_runtime_custody_inputs(trusted_launch_inputs, environment)
         p = exact_fields(value, {"schema_version", "source", "environment_sha256", "configuration", "lane_id",
                                  "observation_cut", "journal", "objects", "components", "lifecycle", "summary"})
-        _require(p["schema_version"] == RUNTIME_CUSTODY_VERSION, "runtime custody version")
+        _require(p["schema_version"] in RUNTIME_CUSTODY_VERSIONS, "runtime custody version")
         _source(p["source"])
         for key in ("source", "configuration", "lane_id"):
             _require(canonical_json_bytes(p[key]) == canonical_json_bytes(trusted_launch_inputs[key]),

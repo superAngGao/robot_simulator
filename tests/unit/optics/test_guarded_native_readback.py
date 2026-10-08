@@ -84,7 +84,8 @@ def readback_case(request, monkeypatch):
     lifecycle = NativeGuardedSetupLifecycle(lane_id=lane, channel=peer.channel, configuration=peer.config)
     target = SimpleNamespace(type="cuda", index=1, ordinal=1, is_cuda=True)
     stream = SimpleNamespace(device=target)
-    state = SimpleNamespace(trace=[], pending=[], views=[], hosts=[], fault=None, event=None)
+    state = SimpleNamespace(trace=[], pending=[], views=[], hosts=[], fault=None, event=None,
+                            scope_entries=0, scope_exits=0, current_context=None)
     source = CanonicalNativeInput.from_arrays(
         case_id="asymmetric_synthetic_7x3_v1",
         materializer_id="readback_unit_not_result_capable",
@@ -110,6 +111,8 @@ def readback_case(request, monkeypatch):
 
     def mark(operation):
         lifecycle._require_setup()
+        if lane == "warp":
+            assert state.current_context is target
         trace = lifecycle.evidence().to_payload()["transition_trace"]
         assert trace[-1]["operation"] == "low_level_leaf_entered"
         state.trace.append(operation)
@@ -174,7 +177,25 @@ def readback_case(request, monkeypatch):
         state.event = weakref.ref(value)
         return value
 
+    class Scope:
+        def __init__(self, device):
+            assert device is target
+
+        def __enter__(self):
+            lifecycle._require_setup()
+            assert lifecycle._guard_events[-1]["operation"] == "low_level_leaf_entered"
+            state.scope_entries += 1
+            self.previous = state.current_context
+            state.current_context = target
+
+        def __exit__(self, exc_type, exc, traceback):
+            state.scope_exits += 1
+            state.current_context = self.previous
+            if state.fault == "scope_exit":
+                raise RuntimeError("scope restore failed")
+
     runtime = SimpleNamespace(
+        ScopedDevice=Scope,
         from_numpy=host_view,
         cuda=SimpleNamespace(
             device=lambda value: nullcontext(), stream=lambda value: nullcontext(), Event=event
@@ -274,6 +295,8 @@ def test_actual_shared_validator_sees_only_completed_explicit_host_buffers(readb
         case.lifecycle.require_adopted(reference())
     assert case.lifecycle.evidence().to_payload()["summary"]["normal_complete_count"] == 1
     assert not hasattr(report, "warmup_frames_completed")
+    assert case.state.scope_entries == case.state.scope_exits == (1 if case.prepared.backend == "warp" else 0)
+    assert case.state.current_context is None
 
 
 @pytest.mark.parametrize(
@@ -294,8 +317,28 @@ def test_failed_readback_retains_operands_without_second_sync_or_complete(readba
     assert summary["emergency_sync_attempt_count"] == 0
     assert case.lifecycle.guardian.state == "TRANSFERRED_TO_QUARANTINE"
     assert case.state.trace.count("wait") <= 1
+    assert case.state.current_context is None
+    assert case.state.scope_entries == case.state.scope_exits
     if fault in {"copy", "event", "record", "adopt_view", "adopt_event"}:
         assert "wait" not in case.state.trace
+
+
+def test_scope_restore_error_prevents_returning_the_retained_report(readback_case):
+    case = readback_case
+    case.state.fault = "scope_exit"
+    if case.prepared.backend == "cuda":
+        with case.lifecycle.segment():
+            assert _run(case).content_sha256 == case.source.manifest.content_sha256
+        assert case.state.scope_entries == 0
+    else:
+        with pytest.raises(RuntimeError, match="scope restore failed"):
+            with case.lifecycle.segment():
+                _run(case)
+        summary = case.lifecycle.termination_evidence.lifecycle.to_payload()["summary"]
+        assert summary["normal_complete_count"] == summary["emergency_sync_attempt_count"] == 0
+        assert summary["release_status"] == "not_authorized"
+        assert any(row.role == "native_input_validation_report" for row in case.lifecycle.guardian._records)
+        assert case.state.scope_entries == case.state.scope_exits == 1
 
 
 def test_readback_cannot_start_outside_an_armed_segment(readback_case):

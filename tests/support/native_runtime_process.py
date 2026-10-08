@@ -41,8 +41,12 @@ RUNTIME_SCOPE_FAULTS = ("runtime_foreign_stream_return", "runtime_unknown_stream
 RUNTIME_GLOBAL_FAULTS = ("runtime_native_global_pending_raise", "runtime_native_global_admitted_raise")
 RUNTIME_CUDA_ONLY_FAULTS = ("runtime_c1_stream_only_copy", "runtime_module_replacement_pending_raise",
                             "runtime_interpreter_alias_after_raise")
+RUNTIME_OBSERVATION_FAULTS = ("runtime_scope_success", "runtime_scope_getter_error",
+                            "runtime_scope_after_return_raise", "runtime_scope_after_append_raise",
+                            "runtime_scope_missing_warp_scope", "runtime_scope_c1_copy")
 RUNTIME_FAULTS = (RUNTIME_NATIVE_FAULTS + RUNTIME_ACK_FAULTS + RUNTIME_PARENT_FAULTS
-                  + RUNTIME_SCOPE_FAULTS + RUNTIME_GLOBAL_FAULTS + RUNTIME_CUDA_ONLY_FAULTS)
+                  + RUNTIME_SCOPE_FAULTS + RUNTIME_GLOBAL_FAULTS + RUNTIME_CUDA_ONLY_FAULTS
+                  + RUNTIME_OBSERVATION_FAULTS)
 
 
 def _install_runtime_fault(fault, entry, session, controller, directory):
@@ -51,7 +55,7 @@ def _install_runtime_fault(fault, entry, session, controller, directory):
     All wrappers and their real return values are retained by the already held
     source session. The production source closure has no fault selector.
     """
-    if fault in {"runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang"} or fault in RUNTIME_ACK_FAULTS:
+    if fault in {"runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang"} or fault in RUNTIME_ACK_FAULTS + RUNTIME_OBSERVATION_FAULTS:
         return None
     state = {"fired": False, "returned": [], "originals": []}
     session.runtime_owners.append(state)
@@ -338,6 +342,349 @@ def _stall():
         time.sleep(0.02)
 
 
+class _NativeScopeObserver:
+    """Fixed sacrificial observations; never an import/resource authority.
+
+    Native calls run only under the original ticket. The production collector
+    receives held primitive results and never invokes this object.
+    """
+
+    def __init__(self, session, controller, directory, environment, fault):
+        self.session, self.controller, self.directory = session, controller, directory
+        self.environment, self.fault = environment, fault
+        self.held, self.raw, self.originals = [], [], []
+        self.module = self.runtime = self.target = self.stream = self.binding = None
+        self.library = None
+        self.current_stream_baseline = None
+        self.target_context = None
+        self.scope_depth = 0
+        session.runtime_owners.append(self)
+        hold, leaf, returned, append = (session._hold_runtime_owner, session._runtime_leaf,
+                                       session._observe_runtime_return, session.runtime_observation.append)
+        self.originals.extend((hold, leaf, returned, append))
+
+        def observed_hold(owner, role, *, device_ordinal=None):
+            result = hold(owner, role, device_ordinal=device_ordinal)
+            if role in {"torch_runtime_root", "warp_runtime_root"}:
+                self.runtime = owner
+            elif role in {"torch_target_descriptor", "warp_runtime_target"}:
+                self.target = owner
+            elif role == "runtime_setup_binding":
+                self.binding = owner
+            return result
+
+        def observed_leaf(operation, kind):
+            result = leaf(operation, kind)
+            if operation == "indexed_runtime_stream":
+                self.module = sys.modules["torch" if session.lane == "cuda" else "warp"]
+                self._initialize_queries()
+                self.stream_before = self.snapshot("runtime_stream", "before", self._latest_leaf())
+            return result
+
+        def observed_return(producer, owner):
+            result = returned(producer, owner)
+            if producer == "runtime_stream":
+                self.stream = owner  # already held by production before this hook
+                if self.fault == "runtime_scope_after_return_raise":
+                    self._fault("after_real_stream_return")
+                if session.lane == "warp":
+                    assert vars(self.target)["_stream"] is owner
+                    self.target_context = vars(self.target)["_context"]
+                    assert type(self.target_context) is int and self.target_context > 0
+                self.snapshot("runtime_stream", "after", self.stream_before[1], self.stream_before)
+            return result
+
+        def observed_append(kind, details):
+            result = append(kind, details)
+            if kind == "runtime_binding":
+                assert self.binding is not None
+                self.snapshot("runtime_binding", "point", len(controller._guard_events) - 1)
+                if session.lane == "cuda":
+                    self._check_cuda_deferred_state()
+                self._wrap_helpers()
+            return result
+
+        session._hold_runtime_owner = observed_hold
+        session._runtime_leaf = observed_leaf
+        session._observe_runtime_return = observed_return
+        session.runtime_observation.append = observed_append
+
+    def _ticket(self):
+        c = self.controller
+        c._guard_client.require_live_ticket(c._guard_ticket, role="emergency" if c._terminating else "setup")
+
+    def _fail(self, error):
+        self.held.append(error)
+        c = self.controller
+        if not c._terminating and not c._replay.unknown:
+            c.mark_unknown_device_scope(source="native_scope_observer", reason="native_observation_failed")
+        try:
+            _write(self.directory, "native_scope_diagnostic.json", {
+                "schema_version": "q54.c2d3.native-scope-diagnostic.v0", "validating": False,
+                "raw": self.raw, "exception_type": type(error).__name__, "message": str(error)})
+        except BaseException as diagnostic_error:
+            self.held.append(diagnostic_error)
+
+    def _fault(self, boundary):
+        _write(self.directory, "fault_entered.json", {
+            "fault": self.fault, "boundary": boundary,
+            "guard": self.controller._guard_reference,
+            "lifecycle_event_count": len(self.controller._guard_events)})
+        error = RuntimeError("fixed native observation fault: " + boundary)
+        self._fail(error)
+        raise error
+
+    def _latest_leaf(self):
+        return next(e["index"] for e in reversed(self.controller._guard_events)
+                    if e["operation"] == "low_level_leaf_entered")
+
+    def _initialize_queries(self):
+        self._ticket()
+        try:
+            import ctypes
+            import hashlib
+            self.ctypes = ctypes
+            cuda = self.session.lane == "cuda"
+            key = ("site", "nvidia/cuda_runtime/lib/libcudart.so.12") if cuda else ("os_native", "libcuda.so.595.71.05")
+            descriptor = next(f for f in self.environment["files"] if (f["root"], f["path"]) == key)
+            root = next(r["path"] for r in self.environment["roots"] if r["id"] == key[0])
+            path = Path(root) / key[1]
+            assert hashlib.sha256(path.read_bytes()).hexdigest() == descriptor["sha256"]
+            mapped = {line.split()[-1] for line in Path("/proc/self/maps").read_text().splitlines()
+                      if len(line.split()) >= 6 and line.split()[-1].startswith("/")}
+            assert str(path.resolve(strict=True)) in mapped
+            library = ctypes.CDLL(str(path), mode=os.RTLD_NOLOAD | os.RTLD_LOCAL)
+            self.held.append(library)
+            self.library = {name: descriptor[name] for name in ("root", "path", "sha256")}
+
+            def function(name, arguments):
+                value = getattr(library, name)
+                self.held.append(value)
+                value.argtypes, value.restype = arguments, ctypes.c_int
+                return value
+
+            if cuda:
+                self.raw_device = function("cudaGetDevice", [ctypes.POINTER(ctypes.c_int)])
+                native = vars(self.module)["_C"]
+                self.logical = vars(native)["_cuda_getDevice"]
+                self.primary = vars(native)["_cuda_hasPrimaryContext"]
+                self.stream_query = vars(native)["_cuda_getCurrentRawStream"]
+                self.count = vars(native)["_cuda_getDeviceCount"]()
+                state = vars(sys.modules["torch.cuda"])
+                assert state["_initialized"] is False
+                queued = state["_queued_calls"]
+                assert type(queued) is list and len(queued) == 3
+                assert [item[0] for item in queued] == [state[name] for name in
+                    ("_check_capability", "_check_cubins", "_register_triton_kernels")]
+                tracker = state["_lazy_seed_tracker"]
+                assert type(tracker) is vars(sys.modules["torch._utils"])["_LazySeedTracker"]
+                assert vars(tracker) == {"manual_seed_all_cb": None, "manual_seed_cb": None, "call_order": []}
+            else:
+                pointer = ctypes.POINTER
+                self.device_count = function("cuDeviceGetCount", [pointer(ctypes.c_int)])
+                self.device_get = function("cuDeviceGet", [pointer(ctypes.c_int), ctypes.c_int])
+                self.primary = function("cuDevicePrimaryCtxGetState", [ctypes.c_int, pointer(ctypes.c_uint), pointer(ctypes.c_int)])
+                self.context_get = function("cuCtxGetCurrent", [pointer(ctypes.c_void_p)])
+                self.context_device = function("cuCtxGetDevice", [pointer(ctypes.c_int)])
+                count = ctypes.c_int(-1)
+                self._result("cuDeviceGetCount", self.device_count(ctypes.byref(count)), count.value)
+                self.count = count.value
+                assert self.count == 8
+                self.devices = []
+                for ordinal in range(self.count):
+                    device = ctypes.c_int(-1)
+                    self._result("cuDeviceGet", self.device_get(ctypes.byref(device), ordinal), device.value)
+                    self.devices.append(device.value)
+                assert len(set(self.devices)) == self.count
+                self.stream_query = self.runtime.core.wp_cuda_context_get_stream
+            assert self.count == 8
+            assert not any(name in os.environ for name in ("CUDA_VISIBLE_DEVICES", "LD_PRELOAD", "LD_LIBRARY_PATH"))
+        except BaseException as error:
+            self._fail(error)
+            raise
+
+    def _result(self, name, result, value):
+        self.raw.append({"getter": name, "result": result, "value": value if result == 0 else None})
+        if result != 0:
+            raise RuntimeError("native observer getter error: " + name + "=" + str(result))
+        return value
+
+    def _check_cuda_deferred_state(self):
+        """Retain the prior reviewed no-Triton-execution acceptance check."""
+        try:
+            self._ticket()
+            admission = self.session.external
+            admission.audit()
+            events = [e for e in admission.events if e["name"] == "triton"]
+            assert len(events) == 1 and events[0]["operation"] == "file_resolved"
+            assert "triton" not in sys.modules and "triton" not in admission.records
+            spec, loader = admission.specs["triton"], admission.loaders["triton"]
+            loader._check_binding()
+            assert spec.loader is loader and spec.name == "triton"
+            assert spec.origin == "/home/ang.gao/miniforge3/envs/robot_sim/lib/python3.12/site-packages/triton/__init__.py"
+            assert list(spec.submodule_search_locations) == [str(Path(spec.origin).parent)]
+            assert type(loader.delegate) is importlib.machinery.SourceFileLoader
+            assert loader.delegate.name == "triton" and loader.delegate.path == spec.origin
+            operations = vars(vars(self.module)["_TritonLibrary"])["ops_table"]
+            assert set(operations) == {("_triton_bsr_dense_mm_out", "SparseCsrCUDA"),
+                                       ("_triton_bsr_dense_addmm_out", "SparseCsrCUDA")}
+            assert all(vars(kernel)["kernel_invoked"] is False for kernel in operations.values())
+            self.raw.append({"triton_events": events, "triton_executed": False})
+        except BaseException as error:
+            self._fail(error)
+            raise
+
+    def _state(self, pristine):
+        ctypes = self.ctypes
+        held = None if pristine else {"ordinal": int(self.stream.device.index if self.session.lane == "cuda"
+                                                    else self.stream.device.ordinal),
+                                     "handle": int(self.stream.cuda_stream)}
+        if self.session.lane == "cuda":
+            raw = ctypes.c_int(-1)
+            raw_device = self._result("cudaGetDevice", self.raw_device(ctypes.byref(raw)), raw.value)
+            contexts = [{"ordinal": i, "active": self.primary(i)} for i in range(self.count)]
+            initialized = vars(sys.modules["torch.cuda"])["_initialized"]
+            if pristine:
+                # Derived logical0 is conditional. Preserve failed prerequisites
+                # as raw facts; do not fabricate a complete derived snapshot.
+                self.raw.append({"cold_raw_device": raw_device, "primary_contexts": contexts,
+                                 "initialized": initialized})
+                assert raw_device == 0 and initialized is False and not any(row["active"] for row in contexts)
+            return {"initialized": initialized, "logical_device": 0 if pristine else self.logical(),
+                    "logical_basis": "cold_source_derived" if pristine else "native_return",
+                    "raw_device": raw_device, "primary_contexts": contexts,
+                    "target_current_stream": None if pristine else self.stream_query(self.controller.target_device_ordinal),
+                    "held_stream": held}
+        context = ctypes.c_void_p()
+        current = self._result("cuCtxGetCurrent", self.context_get(ctypes.byref(context)), context.value)
+        ordinal = None
+        if current is not None:
+            device = ctypes.c_int(-1)
+            handle = self._result("cuCtxGetDevice", self.context_device(ctypes.byref(device)), device.value)
+            ordinal = self.devices.index(handle)
+        contexts = []
+        for index, device in enumerate(self.devices):
+            flags, active = ctypes.c_uint(), ctypes.c_int(-1)
+            self._result("cuDevicePrimaryCtxGetState", self.primary(device, ctypes.byref(flags), ctypes.byref(active)),
+                         {"ordinal": index, "flags": flags.value, "active": active.value})
+            assert active.value in (0, 1)
+            contexts.append({"ordinal": index, "flags": flags.value, "active": active.value == 1})
+        return {"default_device": self.runtime.default_device.ordinal, "current_context": current,
+                "current_context_device": ordinal, "primary_contexts": contexts,
+                "target_context": None if pristine else self.target_context,
+                "target_current_stream": None if pristine else int(self.stream_query(self.target_context) or 0),
+                "held_stream": held}
+
+    def snapshot(self, site, edge, operation, before=None):
+        self._ticket()
+        try:
+            if self.fault == "runtime_scope_getter_error" and site == "empty" and edge == "before":
+                self._fault("before_allocation_observer_getter")
+            pristine = site == "runtime_stream" and edge == "before"
+            state = self._state(pristine)
+            observation = self.session.runtime_observation
+            self.raw.append({"site": site, "edge": edge, "state": state})
+            details = {"site": site, "edge": edge, "before_index": None if before is None else before[0],
+                       "operation_event_index": operation, "worker_pid": os.getpid(),
+                       "thread_id": int(Path("/proc/thread-self").resolve(strict=True).name),
+                       "module_token": observation.token(self.module), "runtime_token": observation.token(self.runtime),
+                       "target_token": observation.token(self.target),
+                       "stream_token": None if pristine else observation.token(self.stream),
+                       "binding_token": None if site == "runtime_stream" else observation.token(self.binding),
+                       "libraries": [self.library], "state": state}
+            index = len(observation.journal)
+            observation.append("native_scope", details)
+            if self.fault == "runtime_scope_after_append_raise" and site == "empty" and edge == "after":
+                self._fault("after_returned_allocation_snapshot_append")
+            expected_contexts = [False] * self.count
+            if not pristine:
+                expected_contexts[self.controller.target_device_ordinal] = True
+            assert [row["active"] for row in state["primary_contexts"]] == expected_contexts
+            if self.session.lane == "cuda":
+                assert state["logical_device"] == 0 and state["raw_device"] == (0 if pristine else 1)
+                assert state["initialized"] is (not pristine)
+            else:
+                interior = self.scope_depth > 0
+                assert state["default_device"] == (1 if interior else 0)
+                assert state["current_context"] == (self.target_context if interior else None)
+                assert state["current_context_device"] == (1 if interior else None)
+            if not pristine:
+                assert state["held_stream"]["ordinal"] == 1
+                if self.current_stream_baseline is None:
+                    self.current_stream_baseline = state["target_current_stream"]
+                assert state["target_current_stream"] == self.current_stream_baseline
+            return index, operation
+        except BaseException as error:
+            self._fail(error)
+            raise
+
+    def _wrap_helpers(self):
+        setup = self.session.modules["optical_worker.native_setup"][0]
+        prefix = "_torch_" if self.session.lane == "cuda" else "_warp_"
+        for suffix, site in (("empty_exact", "empty"), ("copy_exact", "copy"), ("event_exact", "event_create"),
+                             ("record_event_exact", "event_record"), ("wait_event_host_exact", "event_wait")):
+            name = prefix + suffix
+            original = vars(setup)[name]
+            self.originals.append(original)
+            if self.fault == "runtime_scope_c1_copy" and site == "copy":
+                assert self.session.lane == "cuda"
+                def stream_only_copy(module, destination, source, stream):
+                    _write(self.directory, "fault_entered.json", {
+                        "fault": self.fault, "boundary": "copy_without_outer_indexed_device"})
+                    with module.cuda.stream(stream):
+                        destination.copy_(source, non_blocking=True)
+                original = stream_only_copy
+            def wrapper(*args, _original=original, _site=site, **kwargs):
+                opening = self.snapshot(_site, "before", self._latest_leaf())
+                result = _original(*args, **kwargs)
+                if result is not None:
+                    self.held.append(result)
+                self.snapshot(_site, "after", opening[1], opening)
+                return result
+            setattr(setup, name, wrapper)
+        if self.session.lane == "warp":
+            original_scope = self.module.ScopedDevice
+            self.originals.append(original_scope)
+            observer = self
+            class Scope:
+                def __init__(self, target):
+                    assert target is observer.target
+                    self.original = original_scope(target)
+                    observer.held.append(self.original)
+                    self.site = "upload_scope" if observer.session.phase == "uploading" else "readback_scope"
+                    self.omit = observer.fault == "runtime_scope_missing_warp_scope" and self.site == "readback_scope"
+                def __enter__(self):
+                    self.before = observer.snapshot(self.site, "before", observer._latest_leaf())
+                    if self.omit:
+                        _write(observer.directory, "fault_entered.json", {"fault": observer.fault,
+                               "boundary": "omit_readback_scope_for_negative_control"})
+                        return observer.target
+                    result = self.original.__enter__()
+                    observer.scope_depth += 1
+                    return result
+                def __exit__(self, exc_type, exc, traceback):
+                    result = None if self.omit else self.original.__exit__(exc_type, exc, traceback)
+                    if not self.omit:
+                        observer.scope_depth -= 1
+                    if exc_type is None and not observer.session.failed and not observer.controller._replay.failed:
+                        observer.snapshot(self.site, "after", self.before[1], self.before)
+                    return result
+            def scoped(target):
+                if observer.controller._terminating:
+                    return original_scope(target)
+                result = Scope(target)
+                observer.held.append(result)
+                return result
+            self.module.ScopedDevice = scoped
+
+    def synchronize(self, original):
+        operation = self.controller._guard_events[-1]["index"]
+        assert self.controller._guard_events[-1]["operation"] == "emergency_sync_started"
+        opening = self.snapshot("terminal_sync", "before", operation)
+        original()
+        self.snapshot("terminal_sync", "after", operation, opening)
+
+
 def _unrecorded_module_observations(admission):
     """Bounded failure diagnostics, not classification or admission authority.
 
@@ -460,6 +807,8 @@ def child(fault, fd, directory):
         session.configure_runtime_custody(environment_payload, trusted_inputs)
         observe()
         injection = _install_runtime_fault(fault, entry, session, controller, directory)
+        scope_observer = (_NativeScopeObserver(session, controller, directory, environment_payload, fault)
+                          if fault in RUNTIME_OBSERVATION_FAULTS else None)
         phase = "setup_definitions"
         session.import_setup_definitions()
         observe()
@@ -510,10 +859,13 @@ def child(fault, fd, directory):
                 _warp_synchronize_target_exact(binding.module, binding.target)
 
         session.runtime_observation.freeze_adoptions()
+        def observed_synchronize():
+            scope_observer.synchronize(synchronize)
+
         terminal = controller.terminate(
             fault="setup_failure",
             detection_phase="fixed_runtime_driver",
-            emergency_target_synchronize=synchronize,
+            emergency_target_synchronize=synchronize if scope_observer is None else observed_synchronize,
         )
         result = terminal.lifecycle.to_payload()
         _write(directory, "worker.json", result)
