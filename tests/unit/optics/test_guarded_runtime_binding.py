@@ -35,8 +35,12 @@ def runtime_session(monkeypatch):
     session.failed, session.failures = False, []
     session.runtime_owners = []
     session.canonical_input = object()
+    materialization_steps = []
     session.external = SimpleNamespace(
-        audit=lambda: None, phase="materialization", records={"torch": {"module": module}}
+        audit=lambda: None, phase="materialization", records={"torch": {"module": module}},
+        materialization_steps=materialization_steps,
+        bind_materialization_case=lambda case: materialization_steps.append(("bind", case)),
+        finish_materialization=lambda: materialization_steps.append(("finish", None)),
     )
 
     def check():
@@ -334,6 +338,7 @@ def test_session_materializes_actual_canonical_source_without_readiness(runtime_
     manifest = session.materialize_native_source(case_id)
     expected = frozen_workload_content(case_id)
     assert session.phase == "materialized"
+    assert session.external.materialization_steps == [("bind", case_id), ("finish", None)]
     assert manifest is session.canonical_input.manifest
     assert manifest.scene_contract_sha256 == expected.scene_contract_sha256
     assert session.render_source.packed_scene is session.canonical_input.packed_scene_owner
@@ -352,6 +357,7 @@ def test_shipping_or_unknown_case_cannot_enter_materialization(runtime_session, 
     with pytest.raises(bootstrap.SourceBootstrapError, match="outside C2d3"):
         session.materialize_native_source(case_id)
     assert session.canonical_input is original_source
+    assert session.external.materialization_steps == []
     trace = controller.evidence().to_payload()["transition_trace"]
     assert not any(event["operation"] == "descriptor_observed" for event in trace)
 
