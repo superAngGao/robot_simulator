@@ -90,7 +90,7 @@ SOURCE_FAULTS = tuple(
 )
 
 # Fixed sacrificial C2d3 driver only. Not product IPC or an arbitrary callback.
-from tests.support.native_runtime_process import RUNTIME_FAULTS
+from tests.support.native_runtime_process import RUNTIME_ACK_FAULTS, RUNTIME_FAULTS
 
 
 def configuration():
@@ -374,13 +374,22 @@ def supervise(fault, liveness_fd, directory):
                 except OSError:
                     core.record_kill_failure("other_os_error")
             pending = core.pending_response
-            if pending is not None and not injected:
+            targeted_ack = (fault in RUNTIME_ACK_FAULTS and pending is not None
+                            and pending["sequence"] == (6 if fault.startswith("runtime_terminal_") else 3)
+                            and pending["operation"] == ("DISARMED" if fault.endswith("stalled_disarm") else "ARMED"))
+            if pending is not None and not injected and (fault not in RUNTIME_ACK_FAULTS or targeted_ack):
+                if targeted_ack:
+                    mark(directory, "protocol_fault_entered.json", json.dumps({"fault": fault, "pending": pending}))
                 if fault.endswith("wrong_ack"):
                     wrong = dict(pending, session="d" * 32)
                     channel.send(encode_framed_message(wrong, max_bytes=MAX_BODY_BYTES))
                     injected = True
                 elif fault.endswith("ack_eof"):
                     channel.shutdown(socket.SHUT_WR)
+                    injected = True
+                elif targeted_ack:
+                    # Drop exactly the selected real ACK. The original core's
+                    # pending-ACK clock remains armed and is never refreshed.
                     injected = True
                 elif (
                     fault in {"normal_stalled_disarm", "source_stalled_disarm"}
@@ -397,7 +406,8 @@ def supervise(fault, liveness_fd, directory):
             if parent_alive:
                 readers.append(liveness_fd)
             writers = [channel] if transport.wants_write else []
-            if fault.endswith(("no_ack", "wrong_ack", "ack_eof")):
+            if ((fault not in RUNTIME_ACK_FAULTS and fault.endswith(("no_ack", "wrong_ack", "ack_eof")))
+                    or targeted_ack):
                 writers = []
             readable, writable, _ = select.select(readers, writers, [], 0.01)
             if parent_alive and liveness_fd in readable and os.read(liveness_fd, 1) == b"":

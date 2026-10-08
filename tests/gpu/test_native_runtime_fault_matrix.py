@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,7 @@ from optical_worker.runtime_custody import (
     RuntimeCustodyRecord, validate_runtime_custody_attachment, validate_runtime_custody_selection,
 )
 from optical_worker.runtime_environment import RuntimeEnvironmentContract
-from tests.support.native_runtime_process import RUNTIME_FAULTS
+from tests.support.native_runtime_process import RUNTIME_ACK_FAULTS, RUNTIME_NATIVE_FAULTS, RUNTIME_PARENT_FAULTS
 from tests.support.runtime_custody_launch import capture_runtime_custody_inputs
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,7 +32,7 @@ pytestmark = [pytest.mark.gpu, pytest.mark.skipif(
 
 
 @pytest.mark.parametrize("lane", ["warp", "cuda"])
-@pytest.mark.parametrize("fault", RUNTIME_FAULTS[3:])
+@pytest.mark.parametrize("fault", RUNTIME_NATIVE_FAULTS[3:] + RUNTIME_ACK_FAULTS + RUNTIME_PARENT_FAULTS)
 def test_actual_runtime_fault_retains_original_guard_and_reaps(tmp_path, lane, fault):
     filename, digest, deadline = PROFILES[lane]
     environment_path = ROOT / "tests/data/runtime_environments" / filename
@@ -58,6 +59,16 @@ def test_actual_runtime_fault_retains_original_guard_and_reaps(tmp_path, lane, f
     ], pass_fds=(read_fd,), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     os.close(read_fd)
     try:
+        if fault in RUNTIME_PARENT_FAULTS:
+            # Close the actual inherited liveness pipe only after the original
+            # controller's real ARMED response admits the selected phase.
+            until = time.monotonic() + 10 * deadline / 1000 + 30
+            while not (tmp_path / "fault_entered.json").exists():
+                assert supervisor.poll() is None, "worker exited before the selected armed phase"
+                assert time.monotonic() < until, "selected phase marker did not arrive"
+                time.sleep(0.01)
+            os.close(write_fd)
+            write_fd = None
         output, error = supervisor.communicate(timeout=10 * deadline / 1000 + 45)
         (tmp_path / "supervisor_stdout.json").write_text(output, encoding="utf-8")
         (tmp_path / "supervisor_stderr.txt").write_text(error, encoding="utf-8")
@@ -66,9 +77,10 @@ def test_actual_runtime_fault_retains_original_guard_and_reaps(tmp_path, lane, f
         artifact = result["artifact"]
         (tmp_path / "custody_artifact.json").write_text(json.dumps(artifact), encoding="utf-8")
         assert result["stderr"] == error == ""
-        assert result["parent_alive"] is True
+        assert result["parent_alive"] is (fault not in RUNTIME_PARENT_FAULTS)
         assert not (tmp_path / "ordinary_atexit.json").exists()
-        marker = json.loads((tmp_path / "fault_entered.json").read_bytes())
+        marker = json.loads((tmp_path / ("protocol_fault_entered.json" if fault in RUNTIME_ACK_FAULTS
+                                        else "fault_entered.json")).read_bytes())
         assert marker["fault"] == fault
         raw = (tmp_path / "runtime_custody.json").read_bytes()
         selection = json.loads((tmp_path / "runtime_custody_selection.json").read_bytes())
@@ -78,7 +90,27 @@ def test_actual_runtime_fault_retains_original_guard_and_reaps(tmp_path, lane, f
         assert record.to_payload()["summary"]["final_execution_readiness_issued"] is False
         control, worker = artifact["supervisor"]["summary"], artifact["worker"]["summary"]
         assert control["complete"] and control["state"] == "EXITED"
-        if fault.endswith("hang"):
+        if fault in RUNTIME_ACK_FAULTS:
+            assert result["injected"] is True
+            target_sequence = 6 if fault.startswith("runtime_terminal_") else 3
+            target_operation = "DISARMED" if fault.endswith("stalled_disarm") else "ARMED"
+            assert marker["pending"]["sequence"] == target_sequence
+            assert marker["pending"]["operation"] == target_operation
+            assert not [e for e in artifact["supervisor"]["trace"] if e["operation"] == "ack_written"
+                        and e["details"]["sequence"] == target_sequence
+                        and e["details"]["operation"] == target_operation]
+            assert result["worker_returncode"] in (74, -9)
+            if result["worker_returncode"] == -9:
+                assert control["kill_requested"] and control["deadline_expired"]
+            assert worker["emergency_sync_attempt_count"] == 0
+            assert worker["release_status"] == "not_authorized"
+            assert not (tmp_path / "terminal_sync_entered.json").exists()
+        elif fault in RUNTIME_PARENT_FAULTS:
+            assert result["worker_returncode"] == -9
+            assert control["deadline_expired"] and control["kill_requested"]
+            assert control["terminal_reason"] == "parent_lost"
+            assert marker["guard"]["sequence"] == RUNTIME_PARENT_FAULTS.index(fault)
+        elif fault.endswith("hang"):
             assert result["worker_returncode"] == -9
             assert control["deadline_expired"] and control["kill_requested"]
             assert control["terminal_reason"] == "deadline_expired"
@@ -86,7 +118,7 @@ def test_actual_runtime_fault_retains_original_guard_and_reaps(tmp_path, lane, f
             assert result["worker_returncode"] == 74
             assert not control["kill_requested"] and not control["deadline_expired"]
             assert worker["custody"] == "full_quarantine"
-        if not fault.startswith("runtime_terminal_"):
+        if not fault.startswith("runtime_terminal_") and fault not in RUNTIME_ACK_FAULTS:
             assert worker["emergency_sync_attempt_count"] == worker["terminal_arm_attempt_count"] == 0
             assert worker["release_status"] == "not_authorized"
             after = artifact["worker"]["transition_trace"][marker["lifecycle_event_count"]:]
@@ -97,7 +129,8 @@ def test_actual_runtime_fault_retains_original_guard_and_reaps(tmp_path, lane, f
                           "supervisor_pid": supervisor.pid, "worker_returncode": result["worker_returncode"],
                           "selection": selection["selection"]}))
     finally:
-        os.close(write_fd)
+        if write_fd is not None:
+            os.close(write_fd)
         if supervisor.poll() is None:
             # Real parent EOF goes through the original supervisor deadline.
             supervisor.communicate(timeout=deadline / 1000 + 15)

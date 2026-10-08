@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 
-RUNTIME_FAULTS = (
+RUNTIME_NATIVE_FAULTS = (
     "runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang",
     "runtime_numpy_create_before_raise", "runtime_numpy_create_after_raise",
     "runtime_numpy_exec_before_raise", "runtime_numpy_exec_after_raise", "runtime_numpy_create_hang",
@@ -31,6 +31,13 @@ RUNTIME_FAULTS = (
     "runtime_owner_register_raise", "runtime_storage_audit_raise", "runtime_readback_copy_after_raise",
     "runtime_terminal_cleanup_hang", "runtime_terminal_exit_hang",
 )
+RUNTIME_PHASES = ("setup_definitions", "external_environment", "canonical_materialization",
+                  "runtime_initialization", "native_upload", "input_validation")
+RUNTIME_ACK_FAULTS = tuple("runtime_" + phase + "_" + failure
+                          for phase in ("init", "terminal")
+                          for failure in ("no_ack", "wrong_ack", "ack_eof")) + ("runtime_init_stalled_disarm",)
+RUNTIME_PARENT_FAULTS = tuple("runtime_" + phase + "_parent_eof" for phase in RUNTIME_PHASES)
+RUNTIME_FAULTS = RUNTIME_NATIVE_FAULTS + RUNTIME_ACK_FAULTS + RUNTIME_PARENT_FAULTS
 
 
 def _install_runtime_fault(fault, entry, session, controller, directory):
@@ -39,7 +46,7 @@ def _install_runtime_fault(fault, entry, session, controller, directory):
     All wrappers and their real return values are retained by the already held
     source session. The production source closure has no fault selector.
     """
-    if fault in {"runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang"}:
+    if fault in {"runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang"} or fault in RUNTIME_ACK_FAULTS:
         return None
     state = {"fired": False, "returned": [], "originals": []}
     session.runtime_owners.append(state)
@@ -55,7 +62,7 @@ def _install_runtime_fault(fault, entry, session, controller, directory):
             "lifecycle_event_count": len(controller._guard_events),
             "returned_owner_held": returned is not None,
         })
-        if fault.endswith("hang"):
+        if fault.endswith(("hang", "parent_eof")):
             _stall()
         raise RuntimeError("fixed actual runtime fault: " + fault)
 
@@ -63,13 +70,36 @@ def _install_runtime_fault(fault, entry, session, controller, directory):
         state["originals"].append(getattr(owner, name))
         setattr(owner, name, replacement)
 
-    if fault.startswith(("runtime_numpy_", "runtime_backend_")):
+    if fault in RUNTIME_PARENT_FAULTS:
+        sequence = RUNTIME_PARENT_FAULTS.index(fault)
+        original = controller.segment
+
+        def segment(role="setup"):
+            actual = original(role)
+
+            class ObservedSegment:
+                def __enter__(self):
+                    result = actual.__enter__()
+                    if controller._guard_reference["sequence"] == sequence:
+                        trip("armed_phase." + RUNTIME_PHASES[sequence])
+                    return result
+
+                def __exit__(self, kind, value, traceback):
+                    return actual.__exit__(kind, value, traceback)
+
+            return ObservedSegment()
+
+        replace(controller, "segment", segment)
+    elif fault.startswith(("runtime_numpy_", "runtime_backend_")):
         numpy = fault.startswith("runtime_numpy_")
         target = "numpy._core._multiarray_umath" if numpy else (
             "torch._C" if session.lane == "cuda" else "warp._src.context")
         create = "_create_" in fault
+        # Captured Python bodies execute through super().exec_module on the
+        # actual SourceLoader wrapper, not the retained SourceFileLoader
+        # delegate (which is used only for pinned resolution/metadata).
         loader_type = (importlib.machinery.ExtensionFileLoader if numpy or session.lane == "cuda"
-                       else importlib.machinery.SourceFileLoader)
+                       else importlib.abc.SourceLoader)
         name = "create_module" if create else "exec_module"
         original = getattr(loader_type, name)
 
