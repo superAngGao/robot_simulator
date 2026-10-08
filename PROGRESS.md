@@ -1347,6 +1347,20 @@ Next milestone:
       Test-driver repair now checks native error bytes around original stream
       return and preserves every C10 query result; local focused78pass. Fresh
       code/native preflight is still required before16 actual observation cases.
+      Fresh preflightv2 closed F1/F2 but found missing raw prerequisite
+      diagnostics. The e585956 repair preserves those facts before rejection
+      and fixes the old C0 literal allowlist for the two extracted CPU owners.
+      Fresh independent preflightv3 approves that bounded delta; its unchanged
+      report is archived atfb2297c. Exact e585956 foundation regression passes
+      637tests with no skips, including the five previously failing C0 cases.
+      All16 actual native-scope cases now pass: eight both-lane normal inputs
+      (asymmetric/replay/both Go2 sizes), eight intended negative paths, and16
+      same-run external live process chains. All34 owned PID references are
+      absent afterward from OS/GPU records. Actual v2 replay passes56 native
+      mutations; detailed artifacts/hashes/limits are in native-scope-aggregate
+      test-evidence v1. The complete85 fault rerun on this same frozen candidate
+      is running; no result or whole-C2d3 approval is claimed. Required final
+      evidence and fresh whole independent review still precede acceptance.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
