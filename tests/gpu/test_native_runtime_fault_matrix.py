@@ -18,7 +18,10 @@ from optical_worker.runtime_custody import (
     RuntimeCustodyRecord, validate_runtime_custody_attachment, validate_runtime_custody_selection,
 )
 from optical_worker.runtime_environment import RuntimeEnvironmentContract
-from tests.support.native_runtime_process import RUNTIME_ACK_FAULTS, RUNTIME_NATIVE_FAULTS, RUNTIME_PARENT_FAULTS
+from tests.support.native_runtime_process import (
+    RUNTIME_ACK_FAULTS, RUNTIME_NATIVE_FAULTS, RUNTIME_PARENT_FAULTS, RUNTIME_SCOPE_FAULTS,
+    RUNTIME_GLOBAL_FAULTS, RUNTIME_CUDA_ONLY_FAULTS,
+)
 from tests.support.runtime_custody_launch import capture_runtime_custody_inputs
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,15 +29,22 @@ PROFILES = {
     "cuda": ("183_cuda_stream_author_v1.json", "b4e47505a751377d48336beba5508cdbe2a2adcccdd10ae0e463e0767a537a47", 120000),
     "warp": ("183_warp_synthetic_author_v5.json", "0783cc820dcb738b8ec82586e2d14a12a7b9b81989e67d1ba9f86ce1ea3ed1b7", 30000),
 }
+GO2_PROFILES = {
+    "cuda": ("183_cuda_go2_author_v1.json", "79c3580baff1ef3a019c97a07177558808918b7e133caa430239e25b82853919", 120000),
+    "warp": ("183_warp_go2_author_v3.json", "88d295b90bc4047b2f2cd4c3d0e48c33ead1a1050919b47d526b4576159146e8", 120000),
+}
 pytestmark = [pytest.mark.gpu, pytest.mark.skipif(
     os.name != "posix" or os.environ.get("ROBOT_SIM_TEST_C2D3_FAULTS") != "1",
     reason="explicit matching 183 deployment required; skipped faults are not validation")]
 
 
-@pytest.mark.parametrize("lane", ["warp", "cuda"])
-@pytest.mark.parametrize("fault", RUNTIME_NATIVE_FAULTS[3:] + RUNTIME_ACK_FAULTS + RUNTIME_PARENT_FAULTS)
+@pytest.mark.parametrize("fault,lane", [
+    (fault, lane) for fault in (RUNTIME_NATIVE_FAULTS[3:] + RUNTIME_ACK_FAULTS + RUNTIME_PARENT_FAULTS
+                               + RUNTIME_SCOPE_FAULTS + RUNTIME_GLOBAL_FAULTS) for lane in ("warp", "cuda")
+] + [(fault, "cuda") for fault in RUNTIME_CUDA_ONLY_FAULTS])
 def test_actual_runtime_fault_retains_original_guard_and_reaps(tmp_path, lane, fault):
-    filename, digest, deadline = PROFILES[lane]
+    go2 = fault in RUNTIME_GLOBAL_FAULTS
+    filename, digest, deadline = (GO2_PROFILES if go2 else PROFILES)[lane]
     environment_path = ROOT / "tests/data/runtime_environments" / filename
     environment = RuntimeEnvironmentContract.from_payload(json.loads(environment_path.read_bytes()))
     assert environment.sha256 == digest
@@ -44,12 +54,19 @@ def test_actual_runtime_fault_retains_original_guard_and_reaps(tmp_path, lane, f
         "root": str(ROOT), "revision": revision, "lane": lane,
         "catalog_sha256": hashlib.sha256((ROOT / CATALOG_PATH).read_bytes()).hexdigest(),
         "environment_path": str(environment_path), "environment_sha256": digest,
-        "case_id": "asymmetric_synthetic_7x3_v1", "go2_model_dir": None,
+        "case_id": "go2_static_960x640_v1" if go2 else "asymmetric_synthetic_7x3_v1",
+        "go2_model_dir": "/data2/shared/ang.gao/c2d2_frozen_assets/mujoco_menagerie/unitree_go2" if go2 else None,
         "guard_configuration": {"protocol_version": "q54.closed-worker.guarded-wait.v1",
                                 "session": "9" * 32, "device_ordinal": 1,
                                 "ack_timeout_ms": 1000, "operation_timeout_ms": deadline},
     }
     inputs = capture_runtime_custody_inputs(request)
+    if fault in RUNTIME_SCOPE_FAULTS or fault == "runtime_c1_stream_only_copy":
+        mapping = subprocess.check_output(["nvidia-smi", "--query-gpu=index,uuid,driver_version",
+                                           "--format=csv,noheader"], text=True, timeout=15)
+        assert "GPU-a4b256c9-c56a-0ef5-19fa-482196cc3274" in mapping
+        assert "GPU-3a3112ff-837c-3b87-38d1-cb203d656589" in mapping
+        (tmp_path / "gpu_mapping.txt").write_text(mapping, encoding="utf-8")
     (tmp_path / "request.json").write_text(json.dumps(request), encoding="utf-8")
     (tmp_path / "runtime_custody_inputs.json").write_text(json.dumps(inputs), encoding="utf-8")
     read_fd, write_fd = os.pipe()
@@ -90,6 +107,19 @@ def test_actual_runtime_fault_retains_original_guard_and_reaps(tmp_path, lane, f
         assert record.to_payload()["summary"]["final_execution_readiness_issued"] is False
         control, worker = artifact["supervisor"]["summary"], artifact["worker"]["summary"]
         assert control["complete"] and control["state"] == "EXITED"
+        if fault in RUNTIME_SCOPE_FAULTS:
+            scope = json.loads((tmp_path / "foreign_work.json").read_bytes())
+            assert scope["configured_target"] == 1 and scope["actual_stream_device"] == 0
+            assert scope["foreign_context_present"] is True
+            assert scope["guard"] == {"sequence": 3, "role": "setup"}
+            assert worker["unknown_device_scope"] is True
+            if fault == "runtime_foreign_stream_return":
+                assert 0 in worker["possible_dirty_device_ordinals"]
+        if fault == "runtime_c1_stream_only_copy":
+            scope = json.loads((tmp_path / "c1_scope.json").read_bytes())
+            assert scope["before"]["logical"] == scope["after"]["logical"] == 0
+            assert scope["before"]["contexts"][0] is False and scope["after"]["contexts"][0] is True
+            assert worker["unknown_device_scope"] is True
         if fault in RUNTIME_ACK_FAULTS:
             assert result["injected"] is True
             target_sequence = 6 if fault.startswith("runtime_terminal_") else 3

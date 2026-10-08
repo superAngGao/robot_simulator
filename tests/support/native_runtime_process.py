@@ -37,7 +37,12 @@ RUNTIME_ACK_FAULTS = tuple("runtime_" + phase + "_" + failure
                           for phase in ("init", "terminal")
                           for failure in ("no_ack", "wrong_ack", "ack_eof")) + ("runtime_init_stalled_disarm",)
 RUNTIME_PARENT_FAULTS = tuple("runtime_" + phase + "_parent_eof" for phase in RUNTIME_PHASES)
-RUNTIME_FAULTS = RUNTIME_NATIVE_FAULTS + RUNTIME_ACK_FAULTS + RUNTIME_PARENT_FAULTS
+RUNTIME_SCOPE_FAULTS = ("runtime_foreign_stream_return", "runtime_unknown_stream_raise")
+RUNTIME_GLOBAL_FAULTS = ("runtime_native_global_pending_raise", "runtime_native_global_admitted_raise")
+RUNTIME_CUDA_ONLY_FAULTS = ("runtime_c1_stream_only_copy", "runtime_module_replacement_pending_raise",
+                            "runtime_interpreter_alias_after_raise")
+RUNTIME_FAULTS = (RUNTIME_NATIVE_FAULTS + RUNTIME_ACK_FAULTS + RUNTIME_PARENT_FAULTS
+                  + RUNTIME_SCOPE_FAULTS + RUNTIME_GLOBAL_FAULTS + RUNTIME_CUDA_ONLY_FAULTS)
 
 
 def _install_runtime_fault(fault, entry, session, controller, directory):
@@ -51,7 +56,7 @@ def _install_runtime_fault(fault, entry, session, controller, directory):
     state = {"fired": False, "returned": [], "originals": []}
     session.runtime_owners.append(state)
 
-    def trip(boundary, returned=None):
+    def mark_fault(boundary, returned=None):
         assert not state["fired"]
         state["fired"] = True
         if returned is not None:
@@ -62,6 +67,9 @@ def _install_runtime_fault(fault, entry, session, controller, directory):
             "lifecycle_event_count": len(controller._guard_events),
             "returned_owner_held": returned is not None,
         })
+
+    def trip(boundary, returned=None):
+        mark_fault(boundary, returned)
         if fault.endswith(("hang", "parent_eof")):
             _stall()
         raise RuntimeError("fixed actual runtime fault: " + fault)
@@ -70,7 +78,26 @@ def _install_runtime_fault(fault, entry, session, controller, directory):
         state["originals"].append(getattr(owner, name))
         setattr(owner, name, replacement)
 
-    if fault in RUNTIME_PARENT_FAULTS:
+    if fault in RUNTIME_GLOBAL_FAULTS or fault in RUNTIME_CUDA_ONLY_FAULTS[1:]:
+        original = session.runtime_observation.append
+
+        def append(kind, details):
+            result = original(kind, details)
+            selected = False
+            if kind == "native_global" and fault in RUNTIME_GLOBAL_FAULTS:
+                row = session.external.native_global_events[details["event_index"]]
+                selected = row["operation"] == ("observed_pending" if "pending" in fault else "admitted")
+            elif kind == "module_replacement" and fault == "runtime_module_replacement_pending_raise":
+                row = session.external.replacement_events[details["event_index"]]
+                selected = row["operation"] == "observed_pending"
+            elif kind == "interpreter_alias" and fault == "runtime_interpreter_alias_after_raise":
+                selected = True
+            if selected and not state["fired"]:
+                trip(kind + ".after_original_observation")
+            return result
+
+        replace(session.runtime_observation, "append", append)
+    elif fault in RUNTIME_PARENT_FAULTS:
         sequence = RUNTIME_PARENT_FAULTS.index(fault)
         original = controller.segment
 
@@ -112,6 +139,57 @@ def _install_runtime_fault(fault, entry, session, controller, directory):
             trip(target + "." + name + ".after", returned if create else subject)
 
         replace(loader_type, name, native)
+    elif fault in RUNTIME_SCOPE_FAULTS:
+        original = session._runtime_leaf
+
+        def leaf(operation, kind):
+            result = original(operation, kind)
+            if operation == "indexed_runtime_stream":
+                module = sys.modules["torch" if session.lane == "cuda" else "warp"]
+                stream_owner = module.cuda if session.lane == "cuda" else module
+                stream_name = "Stream" if session.lane == "cuda" else "get_stream"
+                make_stream = getattr(stream_owner, stream_name)
+
+                def foreign_stream(*args, **kwargs):
+                    # Deliberate negative only: the already-entered real helper
+                    # returns/touches device0 against configured target1. This
+                    # cannot be used as a normal target-only observation.
+                    if session.lane == "cuda":
+                        target = module.device("cuda", 0)
+                        stream = make_stream(device=target)
+                        ordinal = stream.device.index
+                        handle = int(stream.cuda_stream)
+                        context_present = vars(module._C)["_cuda_hasPrimaryContext"](0)
+                        device_uuid = None  # external fixed observer records UUID mapping
+                    else:
+                        target = module.get_device("cuda:0")
+                        stream = make_stream(target)
+                        ordinal = stream.device.ordinal
+                        handle = int(stream.cuda_stream or 0)
+                        context_present = vars(target)["_context"] is not None
+                        device_uuid = target.uuid
+                    state["returned"].append(target)
+                    state["returned"].append(stream)
+                    _write(directory, "foreign_work.json", {
+                        "lane": session.lane, "configured_target": controller.target_device_ordinal,
+                        "actual_stream_device": ordinal, "stream_handle": handle,
+                        "foreign_context_present": context_present, "device_uuid": device_uuid,
+                        "guard": controller._guard_reference,
+                        "scope_establishment": "intentional foreign stream/context after original helper entry",
+                    })
+                    assert ordinal == 0 and context_present
+                    if fault == "runtime_unknown_stream_raise":
+                        # The unchanged production initialization exception
+                        # handler must establish UNKNOWN; this injector does
+                        # not call mark_unknown_device_scope on its behalf.
+                        trip("foreign_stream.before_return_raise", stream)
+                    mark_fault("foreign_stream.returned_to_production", stream)
+                    return stream
+
+                replace(stream_owner, stream_name, foreign_stream)
+            return result
+
+        replace(session, "_runtime_leaf", leaf)
     elif fault == "runtime_init_hang":
         original = session._runtime_leaf
 
@@ -139,7 +217,7 @@ def _install_runtime_fault(fault, entry, session, controller, directory):
     return state, trip, replace
 
 
-def _install_upload_fault(fault, session, controller, injection):
+def _install_upload_fault(fault, session, controller, injection, directory):
     if injection is None:
         return
     state, trip, replace = injection
@@ -153,7 +231,28 @@ def _install_upload_fault(fault, session, controller, injection):
         "runtime_ready_wait_before_raise": "wait_event_host_exact",
         "runtime_ready_wait_after_raise": "wait_event_host_exact", "runtime_ready_wait_hang": "wait_event_host_exact",
     }
-    if fault in names:
+    if fault == "runtime_c1_stream_only_copy":
+        assert session.lane == "cuda"
+
+        def stream_only(module, destination, source, stream):
+            native = module._C
+            before = {"logical": vars(native)["_cuda_getDevice"](),
+                      "contexts": [vars(native)["_cuda_hasPrimaryContext"](i) for i in range(8)]}
+            assert before == {"logical": 0, "contexts": [False, True, False, False, False, False, False, False]}
+            # The already-known C1 counterexample, deliberately substituted at
+            # one helper only. No allocation/copy loop or fallback is added.
+            with module.cuda.stream(stream):
+                destination.copy_(source, non_blocking=True)
+            after = {"logical": vars(native)["_cuda_getDevice"](),
+                     "contexts": [vars(native)["_cuda_hasPrimaryContext"](i) for i in range(8)]}
+            _write(directory, "c1_scope.json", {"before": before, "after": after,
+                    "guard": controller._guard_reference, "lifecycle_event_count": len(controller._guard_events)})
+            assert after["logical"] == 0 and after["contexts"][0] is True
+            controller.mark_unknown_device_scope(source="fixed_c1_observer", reason="observed_foreign_context")
+            trip("c1_stream_only_copy.observed_foreign_context")
+
+        replace(setup, "_torch_copy_exact", stream_only)
+    elif fault in names:
         name = prefix + names[fault]
         original = getattr(setup, name)
 
@@ -372,7 +471,7 @@ def child(fault, fd, directory):
         phase = "runtime_initialization"
         binding = session.initialize_native_runtime()
         observe()
-        _install_upload_fault(fault, session, controller, injection)
+        _install_upload_fault(fault, session, controller, injection, directory)
         phase = "native_upload"
         session.upload_native_input(binding)
         observe()
