@@ -1279,6 +1279,23 @@ Next milestone:
       creates it, despite both reporting logical0. See captured-stream and
       copy-scope test-evidence v1 for raw provenance/limits. No full runtime,
       a2/input-readback or whole-stage acceptance follows from these diagnostics.
+      Subsequent bounded native-scope/workload reviews approved the exact normal
+      CUDA attempts, preserving environment enforcement and process-terminal
+      release semantics. Actual production `a3d750b` now passes captured a2
+      upload and real D2H/content validation for asymmetric fixed input,
+      120-frame canonical replay and both real Go2 sizes; each ends with one
+      supervised target sync, guardian table release and worker0/reap. These
+      results are recorded in cuda-asym-upload and cuda-normal-workloads
+      test-evidence v1. All use unchanged120s operation bounds and exact pinned
+      profiles, with no final execution readiness or performance claim.
+      Replay/Go2 have live OS process-start/ancestry evidence; the first asym
+      run's missing worker start ticks remain explicit. Full logical/raw/stream/
+      context observations, both-lane fault/hang/ACK/EOF/dual-GPU/terminal matrix,
+      final versioned runtime-custody aggregate and whole independent C2d3
+      review remain required. The stale materialization unit fixture identified
+      by the workload review was separately repaired at `dcece18` and approved:
+      fresh review reproduced58pass/2fail, then60pass without skips. This closes
+      that fixture defect only. C2d3 and C4 remain active and unaccepted.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
