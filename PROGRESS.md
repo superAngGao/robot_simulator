@@ -1243,6 +1243,15 @@ Next milestone:
       rejected, two cache checks and both historical Go2 observation replays
       passed. Complete unchanged report is archived separately. This closes the
       native-global repair loop, not a standalone CPU stage or whole C2d3/C4.
+      Continuing CUDA closure, ordinary supervised UNKNOWN/quarantine diagnostics
+      and pinned source inspection found seven Torch same-name replacements and
+      the exact CPython __mp_main__ alias. Fresh gap scan G1/G2/G3 is archived;
+      torch-publication design v1 at `2928111` was independently approved for
+      bounded implementation (report SHA a66e44486d37c78d5389fe47b86f62fe2b33df27b098c15faa4aab8c22b3b908).
+      It preserves original execution objects separately from exposed wrappers,
+      including pending backend parents and the distinct non-module VF value.
+      This is not captured Torch success, a2 upload, or C2d3 acceptance; the
+      both-lane real matrix, aggregate schema and whole independent review remain.
       Continue CUDA deployment closure, the mandatory real-runtime matrix and
       final aggregate custody schema under the existing approved design.
       C4c2 runtime, C4c3-c4,
