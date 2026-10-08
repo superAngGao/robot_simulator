@@ -455,3 +455,108 @@ def test_unrelated_observer_returns_do_not_close_sibling_intervals(importer, mon
     admission.audit()
     validate_native_global_observations(admission.native_global_observations(), admission.environment,
                                         require_complete=True)
+
+
+@pytest.mark.parametrize("failure", ["issuance", "audit", "import"])
+@pytest.mark.parametrize("drift", ["tokens", "erase", "order", "frame"])
+def test_poisoned_reporting_never_exports_compromised_issued_history(importer, monkeypatch, failure, drift):
+    def execute(admission, name):
+        if name.endswith("_child"):
+            raise ValueError("unrelated import failed")
+        _publish()
+
+    admission = _setup(importer, monkeypatch, execute)
+    importlib.import_module("c2ext._parent")
+    if failure == "import":
+        with pytest.raises(ValueError, match="unrelated"):
+            importlib.import_module("c2ext._child")
+    if drift == "tokens":
+        for event in admission.native_global_events:
+            event["object_token"] += 100
+    elif drift == "erase":
+        admission.native_global_events.clear()
+    elif drift == "order":
+        admission.native_global_events.reverse()
+    else:
+        admission.native_global_records["c2ext.shared"]["frame"]["phase"] = "runtime"
+    if failure != "import":
+        with pytest.raises(SourceBootstrapError):
+            (admission.audit if failure == "audit" else admission.native_global_observations)()
+    count = len(admission.native_global_events)
+    for _ in range(2):
+        with pytest.raises(SourceBootstrapError):
+            admission.native_global_observations()
+    assert admission.failed and admission.session.failed
+    assert len(admission.native_global_events) == count
+    assert admission.session.finder.find_spec("fractions") is not None
+    assert any(owner is sys.modules["c2ext.shared"] for owner in admission.retained)
+
+
+@pytest.mark.parametrize("after_return", [False, True])
+def test_legitimate_failed_prefix_survives_importlib_unwind(importer, monkeypatch, after_return):
+    def execute(admission, name):
+        _publish()
+        if not after_return:
+            admission.session.finder.find_spec("fractions")
+            raise ValueError("failed before return")
+
+    admission = _setup(importer, monkeypatch, execute)
+    if after_return:
+        original = admission.reconcile_publications
+
+        def fail_after_return(name, **kwargs):
+            if name == "c2ext._parent":
+                raise ValueError("failed after return")
+            return original(name, **kwargs)
+
+        monkeypatch.setattr(admission, "reconcile_publications", fail_after_return)
+    with pytest.raises(ValueError, match="failed"):
+        importlib.import_module("c2ext._parent")
+    assert "c2ext._parent" not in sys.modules
+    owner = sys.modules.pop("c2ext.shared")
+    for _ in range(2):
+        payload = admission.native_global_observations()
+        validate_native_global_observations(payload, admission.environment)
+        assert (payload["events"][0]["object_token"]
+                == admission.native_global_records["c2ext.shared"]["token"])
+        assert [e["operation"] for e in payload["events"]] == ["observed_pending"]
+    assert any(value is owner for value in admission.retained)
+    assert admission.session.finder.find_spec("fractions") is not None
+
+
+@pytest.mark.parametrize("prefix", [False, True])
+@pytest.mark.parametrize("checkpoint", ["return", "request", "mixed"])
+def test_two_globals_in_one_interval_have_consistent_return_facts(importer, monkeypatch, prefix, checkpoint):
+    def execute(admission, name):
+        _publish()
+        if checkpoint == "mixed":
+            admission.session.finder.find_spec("fractions")
+        _publish("c2ext.shared_two")
+        if checkpoint == "request":
+            admission.session.finder.find_spec("fractions")
+
+    row = {"name": "c2ext.shared_two", "observer": "c2ext._parent",
+           "operation": "exec", "phase": "materialization"}
+    admission = _setup(importer, monkeypatch, execute, extra=[row])
+    importlib.import_module("c2ext._parent")
+    payload = admission.native_global_observations()
+    sequence = payload["events"][0]["call_sequence"]
+    if prefix:
+        payload["events"] = payload["events"][:2]
+        payload["calls"][sequence]["state"] = "failed"
+    validate_native_global_observations(payload, admission.environment, require_complete=not prefix)
+    # Contradict the same delegate's known return without changing ancestry.
+    payload["events"][0]["checkpoint"], payload["events"][0]["request_name"] = "exec_return", None
+    payload["events"][1]["checkpoint"], payload["events"][1]["request_name"] = "request_entry", "fractions"
+    with pytest.raises(ValueError, match="after return"):
+        validate_native_global_observations(payload, admission.environment, require_complete=not prefix)
+
+
+def test_return_observation_cannot_describe_a_still_started_call(importer, monkeypatch):
+    admission = _setup(importer, monkeypatch, lambda admission, name: _publish())
+    importlib.import_module("c2ext._parent")
+    payload = admission.native_global_observations()
+    payload["events"] = payload["events"][:1]
+    payload["calls"][payload["events"][0]["call_sequence"]]["state"] = "started"
+    with pytest.raises(ValueError, match="started call"):
+        validate_native_global_observations(payload, admission.environment)

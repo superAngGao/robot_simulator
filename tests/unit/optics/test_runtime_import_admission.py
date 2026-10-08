@@ -1112,3 +1112,18 @@ def test_file_metadata_and_rule_index_drift_poison(importer, drift):
     with pytest.raises(bootstrap.SourceBootstrapError):
         admission.audit()
     assert admission.failed
+
+
+def test_coherent_mutable_config_and_index_drift_cannot_poison_cached_original(importer):
+    admission, _ = importer({"c2ext": "value = 1\n"})
+    # Warm the immutable metadata cache, then move both mutable projections
+    # together. Comparing them only to each other would accept this change.
+    admission.check_live()
+    row = admission.payload["modules"][0]
+    assert admission.rules["c2ext"] is row
+    row["phase"] = "runtime"
+    admission.phase = "runtime"
+    with pytest.raises(bootstrap.SourceBootstrapError, match="rule table drift"):
+        importlib.import_module("c2ext")
+    assert admission.failed and "c2ext" not in sys.modules
+    assert admission.environment.to_payload()["modules"][0]["phase"] == "materialization"

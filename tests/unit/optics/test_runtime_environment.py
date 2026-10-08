@@ -132,6 +132,29 @@ def test_environment_is_canonical_detached_and_never_executes_inventory(deployme
         contract.encoded = b"{}"
 
 
+def test_cached_configuration_copies_and_rebound_bytes_cannot_share_permission(deployment):
+    _, payload = deployment
+    contract = RuntimeEnvironmentContract.from_payload(payload)
+    other = RuntimeEnvironmentContract(contract.encoded)
+    first, second = contract.to_payload(), other.to_payload()
+    first["roots"][0]["path"] = "invented"
+    first["interpreter"]["version"][0] = 999
+    first["files"].clear()
+    assert second == payload and contract.to_payload() == payload
+    original = contract.encoded
+    # A previously validated object's mutated encoding must not inherit its
+    # former metadata cache entry, even when the JSON itself is canonical.
+    from optical_worker.protocol import canonical_json_bytes
+
+    changed = copy.deepcopy(payload)
+    changed["modules"][0]["phase"] = "invented"
+    object.__setattr__(contract, "encoded", canonical_json_bytes(changed))
+    with pytest.raises(ValueError):
+        contract.to_payload()
+    object.__setattr__(contract, "encoded", original)
+    assert contract.to_payload() == other.to_payload() == payload
+
+
 def _self_alias_payload(deployment):
     _, payload = deployment
     payload["publications"] = [

@@ -1221,6 +1221,15 @@ Next milestone:
       bound; supervisor reaped worker4118680 (-9), no upload/readback succeeded.
       CPU subsets do not replace actual both-lane/Go2/dual-device/failure evidence
       or the still-required aggregate runtime-custody schema. C4 remains open.
+      Repair candidate `9d1d7d0` closed the original four counterexamples, but
+      fresh gap-review v2 requested two further failure-evidence/replay fixes.
+      Its isolated uninstrumented Go2 v10 also timed out at120s. A separate
+      stack-diagnostic launch on that revision completed real Warp Go2 input
+      upload/readback (42 arrays), sole target sync/release and worker exit0;
+      diagnostic startup is perturbed and is not acceptance. Seven of12 stack
+      samples locate repeated immutable configuration decoding. Implementation
+      note v2 records exact evidence and the bounded immutable-config cache plus
+      remaining evidence repairs; fresh review and uninstrumented rerun follow.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design

@@ -463,7 +463,11 @@ def validate_native_global_observations(payload, environment, *, require_complet
         while parent is not None:
             _require(parent not in returned, "parent return preceded nested event")
             parent = calls[parent]["parent_sequence"]
+        if event["checkpoint"] == "request_entry":
+            _require(sequence not in returned, "native request observation after return")
         if event["checkpoint"] == "exec_return":
+            _require(call["state"] in {"returned", "completed", "failed"},
+                     "native return observation in started call")
             returned.add(sequence)
         if event["operation"] == "observed_pending":
             _require(name not in pending and name not in admitted and token not in tokens,
@@ -526,6 +530,37 @@ def _contained(root: str, relative: str, *, directory: bool = False) -> Path:
     return candidate
 
 
+def _freeze_environment_value(value):
+    if type(value) is dict:
+        return ("object", tuple((key, _freeze_environment_value(item)) for key, item in value.items()))
+    if type(value) is list:
+        return ("array", tuple(_freeze_environment_value(item) for item in value))
+    return value
+
+
+def _copy_environment_value(value):
+    if type(value) is not tuple:
+        return value
+    kind, entries = value
+    if kind == "object":
+        return {key: _copy_environment_value(item) for key, item in entries}
+    return [_copy_environment_value(item) for item in entries]
+
+
+@lru_cache(maxsize=1)
+def _immutable_environment_payload(encoded: bytes):
+    """Cache only validated immutable configuration, keyed by complete bytes.
+
+    No mutable dictionary/list escapes this cache. File verification, live
+    admission indexes, object identity, execution and custody are never cached.
+    Changing encoded via object.__setattr__ still selects/revalidates new bytes.
+    """
+    _require(type(encoded) is bytes, "environment encoding must be bytes")
+    payload = decode_canonical_message(encoded, max_bytes=len(encoded))
+    _validate(payload)
+    return _freeze_environment_value(payload)
+
+
 @dataclass(frozen=True)
 class RuntimeEnvironmentContract:
     """Immutable canonical configuration; not a runtime capability.
@@ -540,7 +575,7 @@ class RuntimeEnvironmentContract:
 
     def __post_init__(self) -> None:
         _require(type(self.encoded) is bytes, "environment encoding must be bytes")
-        _validate(decode_canonical_message(self.encoded, max_bytes=len(self.encoded)))
+        _immutable_environment_payload(self.encoded)
 
     @classmethod
     def from_payload(cls, payload: object) -> RuntimeEnvironmentContract:
@@ -548,7 +583,7 @@ class RuntimeEnvironmentContract:
         return cls(canonical_json_bytes(payload))
 
     def to_payload(self) -> dict:
-        return decode_canonical_message(self.encoded, max_bytes=len(self.encoded))
+        return _copy_environment_value(_immutable_environment_payload(self.encoded))
 
     @property
     def sha256(self) -> str:

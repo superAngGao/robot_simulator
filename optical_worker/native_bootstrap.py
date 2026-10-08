@@ -758,7 +758,7 @@ class _ExternalAdmission:
             (event, tuple(event.items()), name, record, record["module"], frame))
         self.native_global_events.append(event)
 
-    def _check_global_events(self):
+    def _check_global_events(self, *, live=True):
         _require(len(self.native_global_events) == len(self.native_global_event_bindings),
                  "native global event history length drift")
         for event, binding in zip(self.native_global_events, self.native_global_event_bindings):
@@ -766,7 +766,7 @@ class _ExternalAdmission:
             _require(event is issued and type(event) is dict and set(event) == {key for key, _ in facts}
                      and all(type(event[key]) is type(value) and event[key] == value for key, value in facts),
                      "native global issued event drift")
-            self._check_global_record(name, record)
+            self._check_global_record(name, record, live=live)
             _require(self.native_global_records.get(name) is record and record["module"] is module
                      and record["frame"] is frame and event["object_token"] == record["token"]
                      and event["call_sequence"] == frame["sequence"], "native global event root drift")
@@ -780,7 +780,7 @@ class _ExternalAdmission:
                  and all(raw.get(key) is None for key in metadata),
                  "native global metadata drift")
 
-    def _check_global_record(self, name, record):
+    def _check_global_record(self, name, record, *, live=True):
         binding = self.native_global_bindings.get(name)
         _require(binding is not None and binding[0] is record
                  and binding[1] is record["module"] and binding[2] is record["frame"]
@@ -788,8 +788,9 @@ class _ExternalAdmission:
                  "native global record drift")
         self._check_native_call(record["frame"])
         _require(self.records.get(name) is record, "native global admission record drift")
-        _require(sys.modules.get(name) is record["module"], "native global object removed or replaced")
-        self._check_global_metadata(name, record["module"])
+        if live:
+            _require(sys.modules.get(name) is record["module"], "native global object removed or replaced")
+            self._check_global_metadata(name, record["module"])
         return binding
 
     def native_global_checkpoint(self, checkpoint, *, request_name=None, returned_frame=None):
@@ -890,14 +891,15 @@ class _ExternalAdmission:
             raise
 
     def _native_global_observations(self):
-        # No admission from serialization. Failure prefixes may include pending calls.
-        if not self.failed:
-            self._check_native_thread()
-            for frame in self.native_calls:
-                self._check_native_call(frame)
-            for name, record in self.native_global_records.items():
-                self._check_global_record(name, record)
-            self._check_global_events()
+        # Issued facts remain checked after poison. Importlib may have removed
+        # live module keys during unwind; that does not rewrite held history.
+        self._check_native_thread()
+        _require(len(self.native_calls) == len(self.native_call_bindings), "native call history drift")
+        for frame in self.native_calls:
+            self._check_native_call(frame)
+        for name, record in self.native_global_records.items():
+            self._check_global_record(name, record, live=not self.failed)
+        self._check_global_events(live=not self.failed)
         calls = [{"sequence": frame["sequence"],
                   "parent_sequence": None if frame["parent"] is None else frame["parent"]["sequence"],
                   "observer": frame["loader"].name, "operation": frame["operation"],
