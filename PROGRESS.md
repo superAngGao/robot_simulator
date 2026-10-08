@@ -1315,6 +1315,15 @@ Next milestone:
       required mutation/fault matrix are still outstanding. See runtime-custody
       implementation-note v1 for exact local checks and remaining work. This
       code has not received independent implementation or whole-C2d3 approval.
+      Actual v1 aggregate executions at `9b5702b` now cover both lanes' four
+      canonical inputs (including both real Go2 resolutions), plus Warp's six
+      normal/terminal cases: six pytest passes and six additional normal runs.
+      All twelve attach to actual custody evidence; scoped OS/GPU checks find
+      no owned residual process. CPU/POSIX57passed; actual-record mutation v3
+      170passed/13explicit occurrence skips. See runtime-custody test-evidence
+      v1 for exact artifacts, hashes, failure history and limits. The next
+      test-only24fault/48lane cases are collected but not yet executed; full
+      ACK/EOF/dual-device/failure matrix and whole independent review remain.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design

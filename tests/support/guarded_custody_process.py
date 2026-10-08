@@ -90,7 +90,7 @@ SOURCE_FAULTS = tuple(
 )
 
 # Fixed sacrificial C2d3 driver only. Not product IPC or an arbitrary callback.
-RUNTIME_FAULTS = ("runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang")
+from tests.support.native_runtime_process import RUNTIME_FAULTS
 
 
 def configuration():

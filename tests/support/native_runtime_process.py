@@ -18,6 +18,145 @@ import time
 from pathlib import Path
 
 
+RUNTIME_FAULTS = (
+    "runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang",
+    "runtime_numpy_create_before_raise", "runtime_numpy_create_after_raise",
+    "runtime_numpy_exec_before_raise", "runtime_numpy_exec_after_raise", "runtime_numpy_create_hang",
+    "runtime_backend_exec_before_raise", "runtime_backend_exec_after_raise",
+    "runtime_init_hang", "runtime_stream_return_before_adopt",
+    "runtime_allocate_before_raise", "runtime_allocate_after_raise",
+    "runtime_copy_before_raise", "runtime_copy_after_raise", "runtime_copy_hang",
+    "runtime_event_create_after_raise", "runtime_event_record_after_raise",
+    "runtime_ready_wait_before_raise", "runtime_ready_wait_after_raise", "runtime_ready_wait_hang",
+    "runtime_owner_register_raise", "runtime_storage_audit_raise", "runtime_readback_copy_after_raise",
+    "runtime_terminal_cleanup_hang", "runtime_terminal_exit_hang",
+)
+
+
+def _install_runtime_fault(fault, entry, session, controller, directory):
+    """Fault real fixed entrypoints; never substitute an uploader or guard.
+
+    All wrappers and their real return values are retained by the already held
+    source session. The production source closure has no fault selector.
+    """
+    if fault in {"runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang"}:
+        return None
+    state = {"fired": False, "returned": [], "originals": []}
+    session.runtime_owners.append(state)
+
+    def trip(boundary, returned=None):
+        assert not state["fired"]
+        state["fired"] = True
+        if returned is not None:
+            state["returned"].append(returned)
+        _write(directory, "fault_entered.json", {
+            "fault": fault, "boundary": boundary,
+            "guard": controller._guard_reference,
+            "lifecycle_event_count": len(controller._guard_events),
+            "returned_owner_held": returned is not None,
+        })
+        if fault.endswith("hang"):
+            _stall()
+        raise RuntimeError("fixed actual runtime fault: " + fault)
+
+    def replace(owner, name, replacement):
+        state["originals"].append(getattr(owner, name))
+        setattr(owner, name, replacement)
+
+    if fault.startswith(("runtime_numpy_", "runtime_backend_")):
+        numpy = fault.startswith("runtime_numpy_")
+        target = "numpy._core._multiarray_umath" if numpy else (
+            "torch._C" if session.lane == "cuda" else "warp._src.context")
+        create = "_create_" in fault
+        loader_type = (importlib.machinery.ExtensionFileLoader if numpy or session.lane == "cuda"
+                       else importlib.machinery.SourceFileLoader)
+        name = "create_module" if create else "exec_module"
+        original = getattr(loader_type, name)
+
+        def native(loader, subject):
+            if loader.name != target:
+                return original(loader, subject)
+            if "_before_" in fault or fault.endswith("hang"):
+                trip(target + "." + name + ".before")
+            returned = original(loader, subject)
+            trip(target + "." + name + ".after", returned if create else subject)
+
+        replace(loader_type, name, native)
+    elif fault == "runtime_init_hang":
+        original = session._runtime_leaf
+
+        def leaf(operation, kind):
+            result = original(operation, kind)
+            if operation == "indexed_runtime_stream":
+                trip(operation)
+            return result
+
+        replace(session, "_runtime_leaf", leaf)
+    elif fault == "runtime_stream_return_before_adopt":
+        original = session._observe_runtime_return
+
+        def returned(producer, owner):
+            original(producer, owner)
+            if producer == "runtime_stream":
+                trip(producer + ".returned_before_adopt", owner)
+
+        replace(session, "_observe_runtime_return", returned)
+    elif fault == "runtime_terminal_cleanup_hang":
+        def cleanup(authority):
+            trip("guardian.release_whole_graph")
+
+        replace(controller.guardian, "release_whole_graph", cleanup)
+    return state, trip, replace
+
+
+def _install_upload_fault(fault, session, controller, injection):
+    if injection is None:
+        return
+    state, trip, replace = injection
+    setup = session.modules["optical_worker.native_setup"][0]
+    prefix = "_torch_" if session.lane == "cuda" else "_warp_"
+    names = {
+        "runtime_allocate_before_raise": "empty_exact", "runtime_allocate_after_raise": "empty_exact",
+        "runtime_copy_before_raise": "copy_exact", "runtime_copy_after_raise": "copy_exact",
+        "runtime_copy_hang": "copy_exact", "runtime_readback_copy_after_raise": "copy_exact",
+        "runtime_event_create_after_raise": "event_exact", "runtime_event_record_after_raise": "record_event_exact",
+        "runtime_ready_wait_before_raise": "wait_event_host_exact",
+        "runtime_ready_wait_after_raise": "wait_event_host_exact", "runtime_ready_wait_hang": "wait_event_host_exact",
+    }
+    if fault in names:
+        name = prefix + names[fault]
+        original = getattr(setup, name)
+
+        def helper(*args, **kwargs):
+            # D2H uses the same original copy helper under the readback phase.
+            if fault == "runtime_readback_copy_after_raise" and session.phase != "validating_input":
+                return original(*args, **kwargs)
+            if "_before_" in fault or fault.endswith("hang"):
+                trip(name + ".before")
+            returned = original(*args, **kwargs)
+            trip(name + ".after", returned)
+
+        replace(setup, name, helper)
+    elif fault == "runtime_owner_register_raise":
+        original = controller.adopt_returned_device_owner
+
+        def adopt(owner, **kwargs):
+            if kwargs["role"] == session.lane + "_a2_device_array":
+                trip("array.returned_before_adopt", owner)
+            return original(owner, **kwargs)
+
+        replace(controller, "adopt_returned_device_owner", adopt)
+    elif fault == "runtime_storage_audit_raise":
+        contract = session.modules["optical_worker.native_contract"][0]
+        original = contract.observe_prepared_storage
+
+        def audit(prepared):
+            original(prepared)
+            trip("prepared_storage.after_actual_audit", prepared)
+
+        replace(contract, "observe_prepared_storage", audit)
+
+
 def _write(directory, name, payload):
     data = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     _write_bytes(directory, name, data)
@@ -98,7 +237,7 @@ def _unrecorded_module_observations(admission):
 
 
 def child(fault, fd, directory):
-    if fault not in {"runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang"}:
+    if fault not in RUNTIME_FAULTS:
         raise ValueError("not a fixed runtime fault selector")
     request = json.loads((directory / "request.json").read_text(encoding="utf-8"))
     if set(request) != {
@@ -190,6 +329,7 @@ def child(fault, fd, directory):
         controller = session.bound_controller()
         session.configure_runtime_custody(environment_payload, trusted_inputs)
         observe()
+        injection = _install_runtime_fault(fault, entry, session, controller, directory)
         phase = "setup_definitions"
         session.import_setup_definitions()
         observe()
@@ -202,6 +342,7 @@ def child(fault, fd, directory):
         phase = "runtime_initialization"
         binding = session.initialize_native_runtime()
         observe()
+        _install_upload_fault(fault, session, controller, injection)
         phase = "native_upload"
         session.upload_native_input(binding)
         observe()
@@ -247,6 +388,8 @@ def child(fault, fd, directory):
         result = terminal.lifecycle.to_payload()
         _write(directory, "worker.json", result)
         _persist_final_runtime_custody(directory, session)
+        if fault == "runtime_terminal_exit_hang":
+            injection[1]("after_terminal_evidence_before_hard_exit")
         os._exit(0 if result["summary"]["disposition"] == "aborted_synced_exit" else 74)
     except BaseException as error:
         # Use the SAME source/controller failure policy. Do not retry sync or
