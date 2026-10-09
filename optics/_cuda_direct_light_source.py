@@ -285,21 +285,21 @@ __device__ __forceinline__ bool intersect_aabb_axis(
     float direction,
     float lower,
     float upper,
-    float* t_min,
-    float* t_max) {
+    double* t_min,
+    double* t_max) {
   if (fabsf(direction) <= kDirEps) {
     return origin >= lower && origin <= upper;
   }
-  float inv_d = 1.0f / direction;
-  float t0 = (lower - origin) * inv_d;
-  float t1 = (upper - origin) * inv_d;
+  // Widen before subtraction; direct division avoids float reciprocal rounding.
+  double t0 = (double(lower) - double(origin)) / double(direction);
+  double t1 = (double(upper) - double(origin)) / double(direction);
   if (t0 > t1) {
-    float tmp = t0;
+    double tmp = t0;
     t0 = t1;
     t1 = tmp;
   }
-  *t_min = fmaxf(*t_min, t0);
-  *t_max = fminf(*t_max, t1);
+  *t_min = fmax(*t_min, t0);
+  *t_max = fmin(*t_max, t1);
   return *t_min <= *t_max;
 }
 
@@ -315,8 +315,8 @@ __device__ __forceinline__ bool intersect_aabb(
     int node,
     float max_distance,
     float* entry_t) {
-  float t_min = 0.0f;
-  float t_max = max_distance;
+  double t_min = 0.0;
+  double t_max = max_distance;
   bool hit = intersect_aabb_axis(ox, dx, bounds_min[node * 3 + 0], bounds_max[node * 3 + 0], &t_min, &t_max);
   if (hit) {
     hit = intersect_aabb_axis(oy, dy, bounds_min[node * 3 + 1], bounds_max[node * 3 + 1], &t_min, &t_max);
@@ -324,7 +324,12 @@ __device__ __forceinline__ bool intersect_aabb(
   if (hit) {
     hit = intersect_aabb_axis(oz, dz, bounds_min[node * 3 + 2], bounds_max[node * 3 + 2], &t_min, &t_max);
   }
-  *entry_t = t_min;
+  // Preserve the nonnegative lower bound when quantizing the traversal stack.
+  float entry = static_cast<float>(t_min);
+  if (double(entry) > t_min) {
+    entry = nextafterf(entry, 0.0f);
+  }
+  *entry_t = entry;
   return hit;
 }
 
@@ -345,39 +350,41 @@ __device__ __forceinline__ bool intersect_triangle(
     float* out_nx,
     float* out_ny,
     float* out_nz) {
-  float v0x = triangle_v0[tri * 3 + 0];
-  float v0y = triangle_v0[tri * 3 + 1];
-  float v0z = triangle_v0[tri * 3 + 2];
-  float e1x = triangle_e1[tri * 3 + 0];
-  float e1y = triangle_e1[tri * 3 + 1];
-  float e1z = triangle_e1[tri * 3 + 2];
-  float e2x = triangle_e2[tri * 3 + 0];
-  float e2y = triangle_e2[tri * 3 + 1];
-  float e2z = triangle_e2[tri * 3 + 2];
+  // Native storage/output stays float32; evaluate cancellation-prone predicates in double.
+  const double rdx = dx, rdy = dy, rdz = dz;
+  double v0x = triangle_v0[tri * 3 + 0];
+  double v0y = triangle_v0[tri * 3 + 1];
+  double v0z = triangle_v0[tri * 3 + 2];
+  double e1x = triangle_e1[tri * 3 + 0];
+  double e1y = triangle_e1[tri * 3 + 1];
+  double e1z = triangle_e1[tri * 3 + 2];
+  double e2x = triangle_e2[tri * 3 + 0];
+  double e2y = triangle_e2[tri * 3 + 1];
+  double e2z = triangle_e2[tri * 3 + 2];
 
-  float pvec_x = dy * e2z - dz * e2y;
-  float pvec_y = dz * e2x - dx * e2z;
-  float pvec_z = dx * e2y - dy * e2x;
-  float det = pvec_x * e1x + pvec_y * e1y + pvec_z * e1z;
-  if (fabsf(det) <= kBuildEps) {
+  double pvec_x = rdy * e2z - rdz * e2y;
+  double pvec_y = rdz * e2x - rdx * e2z;
+  double pvec_z = rdx * e2y - rdy * e2x;
+  double det = pvec_x * e1x + pvec_y * e1y + pvec_z * e1z;
+  if (fabs(det) <= kBuildEps) {
     return false;
   }
-  float inv_det = 1.0f / det;
-  float tvec_x = ox - v0x;
-  float tvec_y = oy - v0y;
-  float tvec_z = oz - v0z;
-  float u = (pvec_x * tvec_x + pvec_y * tvec_y + pvec_z * tvec_z) * inv_det;
+  double inv_det = 1.0 / det;
+  double tvec_x = double(ox) - v0x;
+  double tvec_y = double(oy) - v0y;
+  double tvec_z = double(oz) - v0z;
+  double u = (pvec_x * tvec_x + pvec_y * tvec_y + pvec_z * tvec_z) * inv_det;
   if (u < 0.0f) {
     return false;
   }
-  float qvec_x = tvec_y * e1z - tvec_z * e1y;
-  float qvec_y = tvec_z * e1x - tvec_x * e1z;
-  float qvec_z = tvec_x * e1y - tvec_y * e1x;
-  float v = (qvec_x * dx + qvec_y * dy + qvec_z * dz) * inv_det;
+  double qvec_x = tvec_y * e1z - tvec_z * e1y;
+  double qvec_y = tvec_z * e1x - tvec_x * e1z;
+  double qvec_z = tvec_x * e1y - tvec_y * e1x;
+  double v = (qvec_x * rdx + qvec_y * rdy + qvec_z * rdz) * inv_det;
   if (v < 0.0f || u + v > 1.0f) {
     return false;
   }
-  float t = (qvec_x * e2x + qvec_y * e2y + qvec_z * e2z) * inv_det;
+  double t = (qvec_x * e2x + qvec_y * e2y + qvec_z * e2z) * inv_det;
   if (t < 0.0f || t > max_t) {
     return false;
   }
@@ -390,7 +397,7 @@ __device__ __forceinline__ bool intersect_triangle(
     ny = -ny;
     nz = -nz;
   }
-  *out_t = t;
+  *out_t = static_cast<float>(t);
   *out_nx = nx;
   *out_ny = ny;
   *out_nz = nz;
@@ -511,7 +518,7 @@ __global__ void first_hit_rays_kernel(
   if (num_bvh_nodes > 0) {
     float root_t = 0.0f;
     if (intersect_aabb(
-            ox, oy, oz, dx, dy, dz, bvh_bounds_min, bvh_bounds_max, 0, best_t, &root_t)) {
+            ox, oy, oz, dx, dy, dz, bvh_bounds_min, bvh_bounds_max, 0, max_distance, &root_t)) {
       stack[0] = 0;
       stack_t[0] = root_t;
       stack_size = 1;
@@ -523,7 +530,8 @@ __global__ void first_hit_rays_kernel(
     --stack_size;
     int node = stack[stack_size];
     float node_t = stack_t[stack_size];
-    if (node_t > best_t) {
+    // Match the float32 comparator's difference, not a rounded sum bound.
+    if (node_t > best_t && node_t - best_t > kTEps) {
       continue;
     }
     int leaf_count = bvh_count[node];
@@ -538,6 +546,8 @@ __global__ void first_hit_rays_kernel(
         float nx = 0.0f;
         float ny = 0.0f;
         float nz = 0.0f;
+        // Keep the precise physical cutoff separate from rounded tie pruning.
+        // The returned float distance is then tested by the existing comparator.
         if (!intersect_triangle(
                 ox,
                 oy,
@@ -550,7 +560,7 @@ __global__ void first_hit_rays_kernel(
                 triangle_e1,
                 triangle_e2,
                 triangle_normal,
-                best_t,
+                max_distance,
                 &t,
                 &nx,
                 &ny,
@@ -581,11 +591,11 @@ __global__ void first_hit_rays_kernel(
       float right_t = 0.0f;
       if (left >= 0) {
         left_hit = intersect_aabb(
-            ox, oy, oz, dx, dy, dz, bvh_bounds_min, bvh_bounds_max, left, best_t, &left_t);
+            ox, oy, oz, dx, dy, dz, bvh_bounds_min, bvh_bounds_max, left, max_distance, &left_t);
       }
       if (right >= 0) {
         right_hit = intersect_aabb(
-            ox, oy, oz, dx, dy, dz, bvh_bounds_min, bvh_bounds_max, right, best_t, &right_t);
+            ox, oy, oz, dx, dy, dz, bvh_bounds_min, bvh_bounds_max, right, max_distance, &right_t);
       }
 
       int first = left;
