@@ -209,6 +209,7 @@ class _Toolchain:
                  "compiler environment shape")
         required = {"CUDA_HOME": _CONDA, "CXX": self.payload["tools"]["cxx"], "CC": self.payload["tools"]["cc"],
                     "TORCH_CUDA_ARCH_LIST": "9.0", "MAX_JOBS": "1", "TORCH_DEVICE_BACKEND_AUTOLOAD": "0",
+                    "SETUPTOOLS_USE_DISTUTILS": "local",
                     "TMPDIR": str(self.root / "tmp"), "TORCH_EXTENSIONS_DIR": str(self.root / "torch"),
                     "PATH": _TOOLCHAIN_PATH}
         _require(all(environment.get(key) == value for key, value in required.items())
@@ -282,6 +283,7 @@ class _Compilation:
         self.observation = session.runtime_observation
         self.toolchain = None
         self.dependency = self.original_hook = self.original_load_inline = None
+        self.initialization = None
         self.hook = None
         self.index = None
         self.owners = []
@@ -305,6 +307,16 @@ class _Compilation:
     def _bind_dependency(self):
         _require(self.dependency is None, "build dependency binds once")
         _require(self.toolchain.inventory_checked, "compiler inventory must precede dependency import")
+        self.initialization = self.session.begin_setuptools_initialization(self.toolchain.root)
+        try:
+            self._import_dependency()
+            self.initialization.complete(self.dependency)
+            self.audit()
+        except BaseException as error:
+            self.initialization.fail(error)
+            raise
+
+    def _import_dependency(self):
         from torch.utils import cpp_extension
 
         self.dependency = cpp_extension
@@ -323,7 +335,6 @@ class _Compilation:
         self.function_codes = self.original_hook.__code__, self.original_load_inline.__code__
         self.observation.token(cpp_extension)
         self.toolchain.audit()
-        self.audit()
 
     def install_hook(self):
         global _ACTIVE_HOOK
@@ -352,6 +363,8 @@ class _Compilation:
             _require(self.dependency.load_inline is self.original_load_inline
                      and (self.original_hook.__code__, self.original_load_inline.__code__) == self.function_codes,
                      "build function code identity changed")
+            _require(self.initialization is self.session.setuptools_owner(), "compiler initialization owner changed")
+            self.initialization.audit_completed()
 
     def _retain(self, owner):
         return self.observation.token(owner)

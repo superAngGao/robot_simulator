@@ -872,6 +872,24 @@ def child(fault, fd, directory, *, compilation=False):
         fields |= {"compilation_deployment_path", "compilation_deployment_sha256"}
     if set(request) != fields or compilation and request["lane"] != "cuda":
         raise ValueError("unexpected fixed runtime configuration field")
+    deployment_bytes = None
+    if compilation:
+        import hashlib
+        import stat
+
+        deployment_bytes = Path(request["compilation_deployment_path"]).read_bytes()
+        if hashlib.sha256(deployment_bytes).hexdigest() != request["compilation_deployment_sha256"]:
+            raise ValueError("fixed compilation deployment changed before bootstrap")
+        run_root = Path(json.loads(deployment_bytes)["run_root"])
+        info = run_root.lstat()
+        if (not run_root.is_absolute() or run_root.resolve(strict=True) != run_root
+                or not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700
+                or info.st_uid != os.getuid() or os.path.lexists(run_root / "pybuilddir.txt")):
+            raise ValueError("compiler worker needs its private run directory before bootstrap")
+        os.chdir(run_root)
+        current = Path.cwd().stat()
+        if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+            raise ValueError("compiler worker directory changed during entry")
     root = Path(request["root"])
     trusted_inputs = json.loads((directory / "runtime_custody_inputs.json").read_bytes())
     environment_payload = json.loads(Path(request["environment_path"]).read_bytes())
@@ -995,8 +1013,7 @@ def child(fault, fd, directory, *, compilation=False):
             import hashlib
 
             phase = "cuda_compilation"
-            deployment_bytes = Path(request["compilation_deployment_path"]).read_bytes()
-            if hashlib.sha256(deployment_bytes).hexdigest() != request["compilation_deployment_sha256"]:
+            if Path(request["compilation_deployment_path"]).read_bytes() != deployment_bytes:
                 raise ValueError("fixed compilation deployment changed")
             contract = session.modules["optical_worker.compilation_contract"][0]
             if contract.INPUT_PHASES != RUNTIME_PHASES:

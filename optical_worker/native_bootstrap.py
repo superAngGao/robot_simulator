@@ -48,6 +48,7 @@ _CUSTODY_PRELUDE = MappingProxyType(
         "optical_worker.runtime_environment": "optical_worker/runtime_environment.py",
         "optical_worker.runtime_custody": "optical_worker/runtime_custody.py",
         "optical_worker.compilation_contract": "optical_worker/compilation_contract.py",
+        "optical_worker.setuptools_admission": "optical_worker/setuptools_admission.py",
     }
 )
 _SETUP_DEFINITIONS = MappingProxyType(
@@ -155,6 +156,7 @@ _GENERATED_STDLIB_SPECS = {}
 _GENERATED_STDLIB_MODULES = {}
 _INTERPRETER_ALIAS_CUSTODY = {}
 _CUDA_COMPILATIONS = {}
+_SETUPTOOLS_CUSTODY = {}
 
 
 class SourceBootstrapError(RuntimeError):
@@ -431,6 +433,13 @@ class _CapturedSourceFinder(importlib.abc.MetaPathFinder):
     def __init__(self, session):
         self.session = session
 
+    def find_distributions(self, context=None):
+        owner = self.session.setuptools_owner()
+        if (owner is None or getattr(owner, "state", "NEW") in {"NEW", "COMPLETE", "FAILED"}
+                or getattr(context, "name", None) != "setuptools"):
+            return ()
+        return owner.find_distributions(context)
+
     def find_spec(self, fullname, path=None, target=None):
         custody = _EXTERNAL_CUSTODY.get(self.session)
         admission = None if custody is None else custody[0]
@@ -454,7 +463,11 @@ class _CapturedSourceFinder(importlib.abc.MetaPathFinder):
                 # Terminal reporting may need unloaded stdlib modules after
                 # poison. Topology integrity does not reopen session liveness.
                 for owner, method in topology[4]:
-                    spec = method(fullname, path, target)
+                    search = path
+                    initialization = self.session.setuptools_owner()
+                    if owner is importlib.machinery.PathFinder and path is None:
+                        search = topology[2] if initialization is None else initialization.original_paths
+                    spec = method(fullname, search, target)
                     self.session.check_import_topology()
                     if spec is not None:
                         if fullname == "multiprocessing":
@@ -515,6 +528,7 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
     def __init__(self, admission, name, delegate, origin, source):
         self.admission, self.name = admission, name
         self.delegate, self.origin, self.source = delegate, origin, source
+        self.compiled_code = None
 
     def _check(self):
         self.admission.check_live()
@@ -562,7 +576,15 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
             and sys.modules.get(fullname) is record["module"],
             "external code requested outside exact execution",
         )
-        return self.source_to_code(self.source, self.origin)
+        _require(self.compiled_code is None, "external source compilation repeated")
+        self.compiled_code = self.source_to_code(self.source, self.origin)
+        return self.compiled_code
+
+    def get_resource_reader(self, fullname):
+        owner = self.admission.session.setuptools_owner()
+        if owner is None or self.name != "jaraco.text":
+            return None
+        return owner.resource_reader(fullname, self)
 
     def create_module(self, spec):
         marker, frame = None, None
@@ -605,7 +627,7 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
                 self.admission.leave_import_wrapper(marker)
 
     def exec_module(self, module):
-        marker, frame = None, None
+        marker, frame, failure = None, None, None
         try:
             marker = self.admission.enter_import_wrapper("delegate_entry")
             self._check()
@@ -640,13 +662,22 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
             self.admission.stack.pop()
             record["state"] = "completed"
             self.admission.record("completed", self.name, "file_module")
+            owner = self.admission.session.setuptools_owner()
+            if owner is not None:
+                owner.after_file_complete(self.name, module, self)
         except BaseException as error:
+            failure = error
             self.admission.fail_native_call(frame)
             self.admission.fail(error, self.name, native_create=self.source is None)
             raise
         finally:
-            if marker is not None:
-                self.admission.leave_import_wrapper(marker)
+            try:
+                owner = self.admission.session.setuptools_owner()
+                if owner is not None:
+                    owner.finish_file(self.name, failure)
+            finally:
+                if marker is not None:
+                    self.admission.leave_import_wrapper(marker)
 
 
 class _ExternalAdmission:
@@ -668,7 +699,7 @@ class _ExternalAdmission:
         payload = environment.to_payload()
         self.payload = payload
         self.roots = {r["id"]: r["path"] for r in payload["roots"]}
-        self.search_roots = tuple(str(Path(r["path"])) for r in payload["roots"] if r["kind"] == "site")
+        self.search_roots = environment.external_search_roots()
         self.files = {(r["root"], r["path"]): r for r in payload["files"]}
         self.rules = {r["name"]: r for r in payload["modules"]}
         self.publications = {r["name"]: r for r in payload["publications"]}
@@ -1383,7 +1414,9 @@ class _ExternalAdmission:
         p = self.payload
         _require(
             self.roots == {r["id"]: r["path"] for r in p["roots"]}
-            and self.search_roots == tuple(str(Path(r["path"])) for r in p["roots"] if r["kind"] == "site")
+            and self.search_roots == self.environment.external_search_roots(
+                setuptools_active=self.session.setuptools_owner() is not None
+                and self.session.setuptools_owner().vendor_active)
             and self.files == {(r["root"], r["path"]): r for r in p["files"]}
             and self.rules == {r["name"]: r for r in p["modules"]}
             and self.publications == {r["name"]: r for r in p["publications"]}
@@ -1440,6 +1473,10 @@ class _ExternalAdmission:
         parent = fullname.rpartition(".")[0]
         if not parent:
             return self.search_roots
+        if parent == "distutils" and self.environment.setuptools_initialization is not None:
+            owner = self.session.setuptools_owner()
+            _require(owner is not None, "setuptools alias parent outside initialization custody")
+            return owner.alias_path()
         _require(parent in self.records, "external parent was not admitted")
         parent_record = self.records[parent]
         if parent_record["kind"] == "namespace":
@@ -1459,6 +1496,18 @@ class _ExternalAdmission:
         try:
             self.check_live()
             _require(target is None and fullname not in self.records, "external reload or duplicate import")
+            if self.environment.setuptools_initialization is not None:
+                owner = self.session.setuptools_owner()
+                rule = self.rules.get(fullname)
+                namespace = self.namespaces.get(fullname)
+                reserved = fullname.partition(".")[0] in {"setuptools", "_distutils_hack", "distutils", "backports"}
+                vendor = rule is not None and rule["root"] == "setuptools_vendor"
+                vendor = vendor or namespace is not None and any(r["root"] == "setuptools_vendor" for r in namespace["locations"])
+                if reserved or vendor:
+                    _require(owner is not None, "setuptools dependency outside initialization custody")
+                    owner.check_import()
+                if fullname == "distutils":
+                    return owner.alias_specification(path, target)
             expected_paths = self._paths(fullname)
             _require(
                 path is None if not fullname.rpartition(".")[0] else tuple(path or ()) == expected_paths,
@@ -1924,6 +1973,10 @@ class _ExternalAdmission:
         record = self.records[name]
         _require(record["kind"] == "file_module", "intrinsic name requires a file record")
         actual = vars(record["module"]).get("__name__")
+        owner = self.session.setuptools_owner()
+        if name == "setuptools._distutils" and owner is not None and owner.source is record["module"] and owner.state != "SHIM_ACTIVE":
+            owner.check_source_metadata(intermediate=owner.state == "ALIAS_CREATED" and vars(record["module"]).get("__spec__") is owner.source_spec)
+            return
         expected = self.environment.expected_file_module_name(name)
         _require(type(actual) is str and actual == expected, "external intrinsic module name drift")
 
@@ -1933,6 +1986,14 @@ class _ExternalAdmission:
             self._check_replacement(name)
         else:
             _require(sys.modules.get(name) is record["module"], "external sys.modules identity drift")
+        owner = self.session.setuptools_owner()
+        if name == "distutils" and record["kind"] == "python_package_alias":
+            _require(owner is not None and record["module"] is owner.source, "setuptools alias owner changed")
+            owner.alias_path()
+            return
+        if name == "setuptools._distutils" and owner is not None and owner.source is record["module"] and owner.state != "SHIM_ACTIVE":
+            owner.check_source_metadata(intermediate=owner.state == "ALIAS_CREATED" and vars(record["module"]).get("__spec__") is owner.source_spec)
+            return
         if record["kind"] == "namespace":
             module, spec, loader = record["module"], self.specs[name], self.loaders[name]
             locations = tuple(
@@ -2428,6 +2489,70 @@ class _SourceSession:
             return admitted
         raise SourceBootstrapError("invalid CPU source phase")
 
+    def setuptools_owner(self):
+        binding = _SETUPTOOLS_CUSTODY.get(self)
+        if binding is None:
+            return None
+        owner, owner_type = binding[:2]
+        _require(type(owner) is owner_type, "setuptools issued owner type changed")
+        return owner
+
+    def setuptools_binding(self, owner):
+        binding = _SETUPTOOLS_CUSTODY.get(self)
+        _require(binding is not None and binding[0] is owner and type(owner) is binding[1],
+                 "setuptools owner was not issued by this session")
+        _, _, root, admission, controller, thread, paths, path_object = binding
+        external = _EXTERNAL_CUSTODY.get(self)
+        _require(_compiler_root(self) is root and external is not None and external[0] is admission
+                 and external[3] is controller and self.bound_controller() is controller,
+                 "setuptools source/compilation custody changed")
+        if "original_paths" in vars(owner):
+            _require(owner.original_paths == paths and owner.path_object is path_object,
+                     "setuptools original topology changed")
+        return root, admission, controller, thread
+
+    def begin_setuptools_initialization(self, run_root):
+        self.check_live()
+        root = _compiler_root(self)
+        _require(root is not None and root.collector is not None and root.collector.toolchain.inventory_checked,
+                 "setuptools requires the inventoried compilation root")
+        controller = self.bound_controller()
+        controller._require_setup()
+        _require(controller._guard_reference == {"sequence": 6, "role": "setup"}
+                 and self not in _SETUPTOOLS_CUSTODY, "setuptools initialization is single-use at guard6")
+        from optical_worker.setuptools_admission import _SetuptoolsInitialization
+
+        owner = object.__new__(_SetuptoolsInitialization)
+        # The existing token path holds even an uninitialized or unadopted owner.
+        self.runtime_observation.token(owner)
+        _SETUPTOOLS_CUSTODY[self] = (owner, _SetuptoolsInitialization, root,
+                                    _EXTERNAL_CUSTODY[self][0], controller, _thread.get_ident(),
+                                    tuple(sys.path), sys.path)
+        try:
+            _SetuptoolsInitialization.__init__(owner, self, run_root)
+            controller.adopt_host_owner(owner, role="setuptools_initialization", operation_id="setuptools_initialization")
+            self.runtime_observation.freeze_adoptions()
+            owner.begin()
+            return owner
+        except BaseException as error:
+            if "state" in vars(owner):
+                owner.fail(error)
+            else:
+                self.fail(error)
+            raise
+
+    def activate_setuptools_vendor(self, owner):
+        self.setuptools_binding(owner)
+        topology = self.check_import_topology()
+        _require(owner.state == "NEW" and not owner.vendor_active and owner.original_paths == topology[2]
+                 and sys.path is owner.path_object and owner.vendor_path not in sys.path,
+                 "setuptools topology transition repeated or changed")
+        sys.path.append(owner.vendor_path)
+        _IMPORT_TOPOLOGIES[self] = topology[:2] + (owner.active_paths,) + topology[3:]
+        owner.vendor_active = True
+        owner.admission.search_roots = owner.admission.environment.external_search_roots(setuptools_active=True)
+        self.check_import_topology()
+
     def retain_import_boundary(self):
         # Intake only: no validation, adoption, event or terminal operation.
         # The registry's actual admission is already part of source custody;
@@ -2448,6 +2573,9 @@ class _SourceSession:
         self.failed = True
         if not any(value is error for value in self.failures):
             self.failures.append(error)
+        initialization = self.setuptools_owner()
+        if initialization is not None and "state" in vars(initialization):
+            initialization.fail(error)
         if _SOURCE_CUSTODY.get(self) is not None:
             try:
                 observation = self.runtime_observation
@@ -3154,6 +3282,14 @@ class _SourceSession:
         topology = _IMPORT_TOPOLOGIES.get(self)
         _require(topology is not None, "source import topology was not installed")
         chain, finder, paths, hooks, delegates, names, generated = topology
+        initialization = _SETUPTOOLS_CUSTODY.get(self)
+        if initialization is not None:
+            owner, owner_type, _, _, _, _, original_paths, path_object = initialization
+            _require(type(owner) is owner_type and sys.path is path_object,
+                     "setuptools import path object changed")
+            if "original_paths" in vars(owner):
+                _require(owner.original_paths == original_paths and owner.path_object is path_object,
+                         "setuptools interpreter search path changed")
         _require("_PYTHON_SYSCONFIGDATA_NAME" not in os.environ, "sysconfig name override forbidden")
         _require(generated[0] == _generated_interpreter_identity(), "generated interpreter identity drift")
         _require(

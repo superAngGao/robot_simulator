@@ -26,7 +26,7 @@ CUDA_COMPILATION_SELECTION_VERSION = "q54.p12.4.cuda-compilation-selection.v1"
 COMPILER_JOB_VERSION = "q54.p12.4.compiler-job.v1"
 CUDA_CONTINUATION_SOURCE_MODULES = (
     "optical_worker.cuda_compilation", "optical_worker.cuda_compilation_evidence",
-    "optical_worker.compilation_contract", "optics.cuda_extension_recipes",
+    "optical_worker.compilation_contract", "optical_worker.setuptools_admission", "optics.cuda_extension_recipes",
     "optics._cuda_scene_source", "optics._cuda_lbvh_source", "optics._cuda_direct_light_source",
 )
 CUDA_NATIVE_SITES = ("cuda_compile", "cuda_extension_create", "cuda_extension_exec")

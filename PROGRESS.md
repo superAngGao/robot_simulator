@@ -1481,10 +1481,14 @@ Next milestone:
       implementation-note v1 for exact evidence and limits. Environment v6 now
       validates the pinned descriptor, alias/namespace parent layout and inert
       site-before-vendor projection, preserving v5; the broader CPU regression
-      passed112. See implementation-note v2. Actual initialization, record grammar,
-      complete closure and dedicated CPU preflight remain next, then the original
-      real compilation/native evidence. No isolated
-      import exemptions or completed transaction are claimed by this partial code.
+      passed112. See implementation-note v2. Initialization-owner/bootstrap/compiler
+      wiring is now WIP, including bounded resource/metadata helpers, shim restoration,
+      vendor/alias resolution and pre-bootstrap worker cwd validation. The local
+      CPU helper/regression suite passed159; see implementation-note v3 for the
+      command, actual production boundaries and explicit stand-in limits. Record-v2
+      replay, complete installed closure, source pins, dependency-only CPU preflight
+      and real compilation/native evidence remain unfinished. No real dependency
+      transaction, complete same-object alias integration or speed result is claimed.
       Owner follow-up (2026-10-09): after functional implementation and required
       real verification, perform a systematic refactor of the whole C4 structure
       before final acceptance, covering accumulated hotfixes, ownership boundaries,

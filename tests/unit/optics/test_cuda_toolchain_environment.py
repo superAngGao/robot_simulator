@@ -14,6 +14,7 @@ def toolchain(tmp_path, monkeypatch):
         "CUDA_HOME": compilation._CONDA, "CXX": "/usr/bin/x86_64-linux-gnu-g++-13",
         "CC": "/usr/bin/x86_64-linux-gnu-gcc-13", "TORCH_CUDA_ARCH_LIST": "9.0",
         "MAX_JOBS": "1", "TORCH_DEVICE_BACKEND_AUTOLOAD": "0",
+        "SETUPTOOLS_USE_DISTUTILS": "local",
         "TMPDIR": str(tmp_path / "tmp"), "TORCH_EXTENSIONS_DIR": str(tmp_path / "torch"),
         "PATH": compilation._TOOLCHAIN_PATH, "LD_LIBRARY_PATH": None,
     }
@@ -46,5 +47,15 @@ def test_unfrozen_build_overrides_reject_before_dependency_use(toolchain, monkey
 
 def test_absent_library_path_is_distinct_from_present_empty_path(toolchain, monkeypatch):
     monkeypatch.setenv("LD_LIBRARY_PATH", "")
+    with pytest.raises(RuntimeError, match="environment changed"):
+        toolchain.audit()
+
+
+@pytest.mark.parametrize("selection", [None, "stdlib", ""])
+def test_distutils_selection_cannot_change_after_deployment(toolchain, monkeypatch, selection):
+    if selection is None:
+        monkeypatch.delenv("SETUPTOOLS_USE_DISTUTILS")
+    else:
+        monkeypatch.setenv("SETUPTOOLS_USE_DISTUTILS", selection)
     with pytest.raises(RuntimeError, match="environment changed"):
         toolchain.audit()
