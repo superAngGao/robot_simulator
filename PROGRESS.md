@@ -1789,6 +1789,15 @@ Next milestone:
       preserving earlier evidence/history; new fixed CUDA compilation and
       supervised full-frame Go2 validation are underway at the frozen source.
       Native optical closure, speed evidence and whole C4 remain unproved.
+      All three new fixed CUDA recipes now compile normally at a42dbe0;
+      build archive SHA256c90fc21deb24556f1021c32be5f74dbc9550e765e5d5bf6c2aaf29195a948c34.
+      First render launch stopped in CPU preflight on omitted release hashes,
+      before supervisor/GPU work. The bounded pin/catalog follow-up812ca29 has
+      independent release-reviewv4 approval (232 passed, four declared skips),
+      both Linux cold preflights pass, and unchanged CUDA source bytes verify
+      against the original build. Full report is archived verbatim. The existing
+      four-case Go2 runner is now executing at frozen812ca29 in new outputs;
+      failed first-launch evidence and original build provenance are preserved.
       Fixed R0 storage native-reviewv1 approves the14-case campaign at3d6692b:
       eight positives, four guarded raises and two deadline kills independently
       replayed; all29 author PIDs absent. Raw archive SHA256 is
