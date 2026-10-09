@@ -1727,6 +1727,9 @@ Next milestone:
       report is archived unchanged. Independent tests passed422, plus281 source/
       bootstrap checks with13 platform/asset skips. Real recording/event checks
       and optical execution remain pending; there is no image or speed result.
+      Positive graph native-driver support has independent approval at50143c6;
+      full support reviewv1 is archived unchanged. Its real dual-lane Go2
+      recording/event campaign is now running at that isolated revision.
       The owner-requested systematic whole-C4 refactor is still required.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
