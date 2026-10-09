@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import signal
 import socket
 import stat
 import subprocess
@@ -20,7 +21,7 @@ from types import SimpleNamespace
 
 PROFILE = "tests/data/runtime_environments/183_cuda_compilation_author_v1.json"
 CATALOG = "optical_worker/data/native_sources/v13.json"
-PROFILE_SHA256 = "1725bfd714059d60010644e9160ef9022d27ce4d32ee89e2bae229979cb8dea8"
+PROFILE_SHA256 = "0cb6288345fc3a2644e61bb01dc6e5897ee58d52eb71050c31b2e76f8ea60753"
 CATALOG_SHA256 = "17387af6b8188c40707da7e1835f639e87d1464ffa664b7cdcdb301eedd9d399"
 
 
@@ -28,11 +29,32 @@ def _write(path, value):
     path.write_text(json.dumps(value, ensure_ascii=True, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
-def _cpu_only(event, args):
-    if event == "import" and args[0].split(".")[0] in {"torch", "warp", "numpy", "scipy", "trimesh"}:
-        raise RuntimeError("dependency-only driver forbids backend import")
-    if event in {"subprocess.Popen", "os.system", "os.fork", "os.posix_spawn", "ctypes.dlopen"}:
-        raise RuntimeError("dependency-only driver forbids process/library execution")
+def _cpu_only(root, revision):
+    commands = (("git", "rev-parse", "HEAD"), ("git", "show", f"{revision}:{CATALOG}"))
+
+    def audit(event, args):
+        if event == "import" and args[0].split(".")[0] in {"torch", "warp", "numpy", "scipy", "trimesh"}:
+            raise RuntimeError("dependency-only driver forbids backend import")
+        if event == "subprocess.Popen":
+            executable, argv, cwd, env = args
+            if (executable == "git" and type(argv) is list and tuple(argv) in commands
+                    and cwd == str(root) and env is None):
+                return  # Exact read-only source revalidation; still owned descendants.
+            raise RuntimeError("dependency-only driver forbids this process")
+        if event in {"os.system", "os.fork", "os.posix_spawn", "ctypes.dlopen"}:
+            raise RuntimeError("dependency-only driver forbids process/library execution")
+
+    return audit
+
+
+def _reap_cpu_group(process):
+    # Caller created this child's private session/group with start_new_session.
+    # Include its synchronous read-only Git children on timeout or early death.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait(timeout=10)
 
 
 def child(fd, directory):
@@ -64,9 +86,9 @@ def child(fd, directory):
     try:
         session = entry._install(root, request["revision"], "cuda", CATALOG_SHA256)
         entry._verify(session)
-        # After source capture's legitimate git subprocesses, prohibit all
-        # subprocess and third-party native/backend operations in the child.
-        sys.addaudithook(_cpu_only)
+        # Keep the two fixed Git source-audit commands available at every audit;
+        # no compiler or arbitrary subprocess/library operation is admitted.
+        sys.addaudithook(_cpu_only(root, request["revision"]))
         session.bind_guarded_custody(socket.socket(fileno=fd), request["guard_configuration"])
         controller = session.bound_controller()
         observation = session.runtime_observation
@@ -192,27 +214,29 @@ def parent(root, directory):
     _write(directory / "request.json", {"root": str(root), "revision": revision,
                                         "guard_configuration": config.to_payload()})
     process = None
+    group_reaped = False
     try:
         with (directory / "stdout.log").open("wb") as out, (directory / "stderr.log").open("wb") as err:
             process = subprocess.Popen([sys.executable, "-I", "-S", "-B", str(Path(__file__).resolve()),
                                         "child", str(peer.channel.fileno()), str(directory)],
-                                       pass_fds=(peer.channel.fileno(),), stdout=out, stderr=err)
+                                       pass_fds=(peer.channel.fileno(),), stdout=out, stderr=err,
+                                       start_new_session=True)
             timed_out = False
             try:
                 code = process.wait(timeout=150)
             except subprocess.TimeoutExpired:
                 timed_out = True
-                process.kill()  # Exact CPU child only; no descendants can launch.
-                code = process.wait(timeout=10)
+                _reap_cpu_group(process)
+                group_reaped = True
+                code = process.returncode
         _write(directory / "parent.json", {"child_pid": process.pid, "returncode": code,
                                            "timed_out": timed_out, "waited": True})
         assert not timed_out and code == 0, (code, str(directory))
         assert (directory / "dependency.json").is_file() and not (directory / "failure.json").exists()
         print(json.dumps({"directory": str(directory), "child_pid": process.pid, "returncode": code}))
     finally:
-        if process is not None and process.poll() is None:
-            process.kill()
-            process.wait(timeout=10)
+        if process is not None and not group_reaped:
+            _reap_cpu_group(process)
         peer.close()
 
 
