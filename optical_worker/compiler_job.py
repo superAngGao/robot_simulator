@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .compilation_contract import COMPILER_JOB_VERSION, CUDA_COMPILE_SEQUENCES
+from .compilation_contract import COMPILER_JOB_VERSION, CUDA_COMPILE_SEQUENCES, cuda_foundation_phase
 from .protocol import MAX_RESPONSE_BYTES, canonical_json_bytes, canonical_sha256, decode_canonical_message
 from .wait_protocol import GuardConfiguration, GuardProtocolError, bounded_integer, checked_add, exact_fields
 from .wait_supervision import GuardSupervisorCore, GuardSupervisorEvidence, _State, _transition
@@ -285,6 +285,13 @@ class CompilerJobRecord:
         replay = _JobReplay(config, p["supervisor"], p["worker"], states)
         for event in p["events"]:
             replay.event(event)
+        for event in guard_payload["trace"]:
+            if event["operation"] in {"arm_committed", "normal_complete_received"}:
+                cuda_foundation_phase(event["details"]["sequence"], event["details"]["role"])
+        if replay.state != "NEW":
+            last = max(index for index, (_, event) in states.items() if event["operation"] != "process_exited")
+            _require(replay.snapshot is not None and replay.snapshot["guard_event_index"] == last,
+                     "compiler record omitted a core transition snapshot")
         _require(p["summary"] == replay.summary()
                  and canonical_json_bytes(p["summary"]) == canonical_json_bytes(replay.summary()),
                  "compiler job summary differs from replay")

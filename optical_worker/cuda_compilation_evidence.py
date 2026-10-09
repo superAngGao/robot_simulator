@@ -10,12 +10,12 @@ from pathlib import PurePosixPath
 from optics.cuda_extension_recipes import CUDA_EXTENSION_RECIPES
 
 from .compilation_contract import (
-    CUDA_COMPILATION_VERSION, CUDA_COMPILE_SEQUENCES, CUDA_COMPILE_STEPS,
+    CUDA_COMPILATION_VERSION, CUDA_COMPILATION_SELECTION_VERSION, CUDA_COMPILE_SEQUENCES, CUDA_COMPILE_STEPS,
     CUDA_CONTINUATION_SOURCE_MODULES, CUDA_NATIVE_SITES, CUDA_TERMINAL_SEQUENCE,
     cuda_native_operation, cuda_role_anchor,
 )
 from .lifecycle import HOST_OWNER
-from .protocol import canonical_json_bytes
+from .protocol import canonical_json_bytes, decode_canonical_message
 from .runtime_custody import (
     PHASES, RUNTIME_CUSTODY_VERSION, RuntimeCustodyRecord, _DETAIL_FIELDS,
     _RuntimeReplay, _digest, _integer, _require,
@@ -271,7 +271,7 @@ class CudaCompilationRecord:
     _encoded: bytes
 
     @classmethod
-    def from_payload(cls, value, *, input_record, environment, trusted_launch_inputs, toolchain_sha256):
+    def from_payload(cls, value, *, input_record, input_source_trace, environment, trusted_launch_inputs, toolchain_sha256):
         _require(type(input_record) is RuntimeCustodyRecord, "exact immutable input record required")
         upstream = RuntimeCustodyRecord.from_payload(input_record.to_payload(), environment=environment,
                                                      trusted_launch_inputs=trusted_launch_inputs).to_payload()
@@ -298,6 +298,7 @@ class CudaCompilationRecord:
                  and p["lifecycle"]["transition_trace"][:l] == upstream["lifecycle"]["transition_trace"]
                  and cut["lifecycle_event_count"] == len(p["lifecycle"]["transition_trace"]), "compilation input/lifecycle cut drift")
         _require(type(p["input_source_trace"]) is list and cut["input_source_trace_length"] == len(p["input_source_trace"])
+                 and canonical_json_bytes(p["input_source_trace"]) == canonical_json_bytes(input_source_trace)
                  and type(p["source_trace"]) is list and cut["source_trace_length"] == len(p["source_trace"])
                  and p["source_trace"][:cut["input_source_trace_length"]] == p["input_source_trace"], "source trace cut mismatch")
         input_names = {row[1] for row in p["input_source_trace"] if type(row) is list and len(row) == 2}
@@ -356,6 +357,9 @@ class CudaCompilationRecord:
                          and PurePosixPath(directory).name == recipe.name, "compiler directory recipe binding")
                 for file in row["source_files"]:
                     _file(file)
+                _require(len(row["source_files"]) == 1 and PurePosixPath(row["source_files"][0]["path"]).parts[-2:]
+                         == ("optics", recipe.source_module.__name__.split(".")[-1] + ".py"),
+                         "compiler source file does not bind its sole recipe owner")
                 for file in row["generated_files"]:
                     _file(file, directory=directory)
                 if row["artifact"] is not None:
@@ -387,3 +391,27 @@ class CudaCompilationRecord:
     @property
     def sha256(self):
         return hashlib.sha256(self._encoded).hexdigest()
+
+
+def validate_cuda_compilation_selection(value, record_bytes, *, observed_lifecycle_event_count):
+    p = exact_fields(value, {"schema_version", "selection", "record_sha256", "selected_lifecycle_event_count",
+                             "observed_lifecycle_event_count", "failure_diagnostic_present"})
+    _require(p["schema_version"] == CUDA_COMPILATION_SELECTION_VERSION
+             and p["selection"] in {"current", "prior_validated_cut", "unavailable"}
+             and type(p["failure_diagnostic_present"]) is bool, "compiler evidence selection schema")
+    observed = _integer(p["observed_lifecycle_event_count"])
+    _require(observed == _integer(observed_lifecycle_event_count), "compiler selection observed cut mismatch")
+    if p["selection"] == "unavailable":
+        _require(record_bytes is None and p["record_sha256"] is None and p["selected_lifecycle_event_count"] is None,
+                 "unavailable compilation invented a record")
+        return
+    _require(type(record_bytes) is bytes, "compiler selection lacks durable record bytes")
+    record = decode_canonical_message(record_bytes, max_bytes=len(record_bytes))
+    _require(record["schema_version"] == CUDA_COMPILATION_VERSION
+             and hashlib.sha256(record_bytes).hexdigest() == _digest(p["record_sha256"]), "compiler selection record mismatch")
+    selected = _integer(p["selected_lifecycle_event_count"])
+    _require(selected == record["observation_cut"]["lifecycle_event_count"] <= observed, "compiler selected lifecycle cut")
+    if p["selection"] == "current":
+        _require(selected == observed, "current compilation names an older lifecycle cut")
+    else:
+        _require(p["failure_diagnostic_present"], "prior compiler cut lacks failure diagnostic")

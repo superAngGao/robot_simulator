@@ -77,6 +77,9 @@ class _Toolchain:
         paths = set()
         for row in p["files"]:
             exact_fields(row, {"path", "size", "sha256"})
+            _require(type(row["path"]) is str and type(row["size"]) is int and row["size"] >= 0
+                     and type(row["sha256"]) is str and len(row["sha256"]) == 64
+                     and all(c in "0123456789abcdef" for c in row["sha256"]), "compiler inventory file shape")
             path = Path(row["path"])
             _require(path.is_absolute() and path not in paths and path.resolve(strict=True) == path
                      and any(path.is_relative_to(root) for root in roots), "compiler inventory file escaped roots")
@@ -84,7 +87,7 @@ class _Toolchain:
             data, observed = _regular_bytes(path)
             _require(observed == row, "compiler inventory file changed")
         tools = exact_fields(p["tools"], {"nvcc", "ninja", "cxx", "cc", "cc1plus", "collect2", "as", "ld"})
-        _require(tools["nvcc"] == _CONDA + "/bin/nvcc"
+        _require(all(type(path) is str for path in tools.values()) and tools["nvcc"] == _CONDA + "/bin/nvcc"
                  and tools["cxx"] == "/usr/bin/x86_64-linux-gnu-g++-13"
                  and tools["cc"] == "/usr/bin/x86_64-linux-gnu-gcc-13"
                  and all(Path(path) in paths for path in tools.values()), "compiler tools differ from fixed deployment")
@@ -280,7 +283,8 @@ class _Compilation:
         source_bytes = held[1].source
         row["source_files"] = [{"path": held[1].origin, "size": len(source_bytes), "sha256": hashlib.sha256(source_bytes).hexdigest()}]
         self.live.append({"source": source, "source_bytes": source_bytes, "generated": {}, "module": None,
-                          "delegate": None, "spec": None, "wrapper": None, "entries": (), "create_returned": False})
+                          "delegate": None, "spec": None, "wrapper": None, "entries": (), "create_returned": False,
+                          "publication": "direct"})
         self._step("build_entered")
         kwargs = cuda_extension_kwargs(recipe.name)
         kwargs["build_directory"] = str(directory)
@@ -382,6 +386,7 @@ class _Compilation:
         module, spec, delegate, wrapper = (live[key] for key in ("module", "spec", "delegate", "wrapper"))
         recipe, row = CUDA_EXTENSION_RECIPES[index], self.rows[index]
         _require(type(module) is ModuleType and vars(module).get("__name__") == recipe.name
+                 and live["publication"] == "direct"
                  and vars(module).get("__spec__") is spec and vars(module).get("__loader__") is wrapper
                  and spec.loader is wrapper and wrapper.delegate is delegate and wrapper.compiler is self
                  and spec.name == recipe.name and spec.origin == row["artifact"]["path"]
@@ -442,6 +447,7 @@ class _Compilation:
 
     def checkpoint(self):
         record = CudaCompilationRecord.from_payload(self.payload(), input_record=self.root.input_record,
+                    input_source_trace=[list(row) for row in self.root.input_trace],
                     environment=self.observation.environment, trusted_launch_inputs=self.observation.inputs,
                     toolchain_sha256=self.toolchain.sha256)
         self.last_validated = record
