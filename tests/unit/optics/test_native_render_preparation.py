@@ -158,10 +158,25 @@ def graph_session(fixed_storage_session, monkeypatch, diagnostic):
         module = NS(**{name: forbidden for name in ('pinhole_camera_rays_out', 'first_hit_rays_out',
             'shade_direct_light_no_shadow_out', 'shade_direct_light_no_shadow_diagnostics_out',
             'shade_direct_light_with_shadows_out', 'shade_direct_light_with_shadows_diagnostics_out')})
-        context = NS(device=p.device, stream=f.stream)
+        from optics import cuda_timeline
+        monkeypatch.setattr(cuda_timeline, 'torch', p.runtime)
+        context = object.__new__(cuda_timeline.CudaOpticalExecutionContext)
+        context.device, context.stream, context.stream_handle = p.device, f.stream, f.stream.cuda_stream
+        extension_set = object.__new__(setup.CudaExtensionSet)
+        object.__setattr__(extension_set, 'session', session)
+        binding = NS(session=session, target=p.device, stream=f.stream,
+                     stream_identity=(1, f.stream.cuda_stream))
+        monkeypatch.setitem(setup._CUDA_EXTENSION_SETS, session, (extension_set, (binding,)))
+        session.cuda_extensions = lambda: extension_set
+        def require_extension(owner, recipe):
+            assert owner is extension_set and recipe == 'robot_sim_cuda_direct_light_v8'
+            return module
+        session.require_cuda_extension = require_extension
         factory = cuda.CudaDirectLightNativeRenderer(context=context, module=module,
                                                      _prepared_extension_token=cuda._PREPARED_EXTENSION_TOKEN)
         session.cuda_factories = (context, object(), object(), factory)
+        for owner in (context, factory, session.cuda_factories):
+            session._hold_runtime_owner(owner, 'fixture_cuda_factory')
     else:
         # The Warp native ABI is covered by its existing command tests and the
         # later native round. This double checks helper wiring and frame views.
@@ -221,6 +236,83 @@ def test_provisional_graph_binds_ten_frames_without_render_or_final_readiness(gr
         session.prepare_fixed_render_graph(profile=profile, shadows=shadows,
                                           pass_mode='primary_unprofiled')
     assert len(g.actions) == before
+
+
+@pytest.mark.parametrize('fixed_inputs', ['cuda'], indirect=True)
+@pytest.mark.parametrize('fail_at', [None])
+@pytest.mark.parametrize('diagnostic', [False])
+@pytest.mark.parametrize('attack', ['module', 'context', 'factory', 'factory_tuple', 'stream', 'handle', 'device'])
+def test_cuda_graph_rejects_rebound_factory_before_binding(graph_session, monkeypatch, attack):
+    from optics import cuda_direct_light as cuda
+    g = graph_session
+    session, controller = g.f.session, g.f.controller
+    context, scene, lbvh, factory = session.cuda_factories
+    if attack == 'module':
+        factory.module = NS(**vars(factory.module))
+    elif attack == 'context':
+        factory.context = NS(device=context.device, stream=context.stream)
+    elif attack == 'factory':
+        replacement = cuda.CudaDirectLightNativeRenderer(context=context, module=factory.module,
+            _prepared_extension_token=cuda._PREPARED_EXTENSION_TOKEN)
+        session.cuda_factories = (context, scene, lbvh, replacement)
+    elif attack == 'factory_tuple':
+        session.cuda_factories = tuple(list(session.cuda_factories))
+    elif attack == 'stream':
+        context.stream = NS(device=context.device, cuda_stream=context.stream_handle)
+    elif attack == 'handle':
+        context.stream_handle += 1
+    else:
+        context.device = object()
+    def forbidden(*args, **kwargs):
+        pytest.fail('foreign factory reached frame binding')
+    monkeypatch.setattr(cuda.CudaDirectLightNativeRenderer, 'bind_direct_light', forbidden)
+    with pytest.raises((ValueError, RuntimeError)) as caught:
+        session.prepare_fixed_render_graph(profile='direct_light_full', shadows=True,
+                                          pass_mode='primary_unprofiled')
+    assert session.failures[-1] is caught.value
+    assert not g.events and not g.actions
+    assert controller.guardian.state == 'TRANSFERRED_TO_QUARANTINE'
+    assert controller.termination_evidence.lifecycle.to_payload()['summary']['emergency_sync_attempt_count'] == 0
+    assert controller.guardian.contains_exact_owner(factory)
+    assert g.f.state.device == 0 and g.f.state.stream is None
+
+
+@pytest.mark.parametrize('fixed_inputs', ['cuda'], indirect=True)
+@pytest.mark.parametrize('fail_at', [None])
+@pytest.mark.parametrize('diagnostic', [False])
+@pytest.mark.parametrize('attack', ['entry', 'renderer', 'context'])
+def test_cuda_graph_checks_returned_stages_before_events(graph_session, monkeypatch, attack):
+    from optics import cuda_direct_light as cuda
+    g = graph_session
+    session = g.f.session
+    original = cuda.CudaDirectLightNativeRenderer.bind_direct_light
+    returned = []
+    def bind(self, **kwargs):
+        if not returned and attack == 'entry':
+            module = self.module
+            self.module = NS(**{name: (lambda *args: None) for name in vars(module)})
+            try:
+                stage = original(self, **kwargs)
+            finally:
+                self.module = module
+        elif not returned and attack == 'renderer':
+            other = cuda.CudaDirectLightNativeRenderer(context=self.context, module=self.module,
+                _prepared_extension_token=cuda._PREPARED_EXTENSION_TOKEN)
+            stage = original(other, **kwargs)
+        else:
+            stage = original(self, **kwargs)
+        returned.append(stage)
+        if len(returned) == 10 and attack == 'context':
+            self.context.stream = NS(device=self.context.device, cuda_stream=self.context.stream_handle)
+        return stage
+    monkeypatch.setattr(cuda.CudaDirectLightNativeRenderer, 'bind_direct_light', bind)
+    with pytest.raises(ValueError) as caught:
+        session.prepare_fixed_render_graph(profile='direct_light_full', shadows=True,
+                                          pass_mode='primary_unprofiled')
+    assert session.failures[-1] is caught.value
+    assert len(returned) == 10 and not g.events
+    assert all(g.f.controller.guardian.contains_exact_owner(stage) for stage in returned)
+    assert g.f.controller.guardian.state == 'TRANSFERRED_TO_QUARANTINE'
 
 
 @pytest.mark.parametrize('allocation', ['warp'], indirect=True)

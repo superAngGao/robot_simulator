@@ -115,6 +115,22 @@ def _prepare_cuda_factory_owners(session, prepared, torch, target, stream, exten
         return factories
 
 
+def _require_cuda_render_factory(session, extensions):
+    """Resolve the retained renderer through the existing extension/binding checks."""
+    from optics.cuda_direct_light import CudaDirectLightNativeRenderer
+
+    factories = session.cuda_factories
+    session.bound_controller().require_adopted(factories)
+    context, _scene, _lbvh, renderer = factories
+    session.bound_controller().require_adopted(context, renderer)
+    if type(renderer) is not CudaDirectLightNativeRenderer or renderer.context is not context:
+        raise ValueError("CUDA render factory differs from its retained context")
+    module = _require_cuda_extension(extensions, "robot_sim_cuda_direct_light_v8", context)
+    if renderer.module is not module:
+        raise ValueError("CUDA render factory differs from its issued module")
+    return renderer, context
+
+
 def _prepare_fixed_render_storage(session, runtime, target, stream, *, traversal_diagnostics):
     """Connect retained R0 inputs to one set of existing render outputs."""
     from optical_worker.cases import get_case
@@ -265,7 +281,7 @@ def _prepare_fixed_render_graph(session, runtime, target, stream, *, readiness, 
             else:
                 from optics.cuda_direct_light import CudaCameraParameters
                 compiled_owner = session.cuda_extensions()
-                factory = session.cuda_factories[3]
+                factory, cuda_context = _require_cuda_render_factory(session, compiled_owner)
             session._hold_runtime_owner(factory, "provisional_render_factory")
             for index in range(10):
                 parameters = bind_render_parameters(sequence, sample_index=index, profile=profile,
@@ -312,6 +328,14 @@ def _prepare_fixed_render_graph(session, runtime, target, stream, *, readiness, 
                     bundle.validate_resolved_parameters(parameters)
                 else:
                     bundle._cuda_transaction_stage_evidence().validate_render_parameters(payload)
+            if session.lane == "cuda":
+                actual_factory, actual_context = _require_cuda_render_factory(session, compiled_owner)
+                if actual_factory is not factory or actual_context is not cuda_context:
+                    raise ValueError("CUDA render factory changed during frame binding")
+                for _, bundle in frames:
+                    if bundle.renderer is not factory:
+                        raise ValueError("CUDA render stage differs from its retained factory")
+                    bundle._validate_cuda_transaction_stage(cuda_context)
             completion, events = _prepare_render_events(runtime, target, stream, lane=session.lane,
                 diagnostic=diagnostic, context=_create_upload_context(controller, runtime, target, stream))
             return _FixedRenderPreparation(readiness, compiled_owner, factory, tuple(frames), completion, events,
