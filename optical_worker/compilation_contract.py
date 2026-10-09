@@ -21,14 +21,18 @@ CUDA_COMPILE_STEPS = (
     "exec_completed", "entries_bound", "owner_registered", "hook_restored",
     "guard_completed",
 )
-CUDA_COMPILATION_VERSION = "q54.p12.4.cuda-compilation.v1"
-CUDA_COMPILATION_SELECTION_VERSION = "q54.p12.4.cuda-compilation-selection.v1"
+CUDA_COMPILATION_LEGACY_VERSION = "q54.p12.4.cuda-compilation.v1"
+CUDA_COMPILATION_VERSION = "q54.p12.4.cuda-compilation.v2"
+CUDA_COMPILATION_LEGACY_SELECTION_VERSION = "q54.p12.4.cuda-compilation-selection.v1"
+CUDA_COMPILATION_SELECTION_VERSION = "q54.p12.4.cuda-compilation-selection.v2"
 COMPILER_JOB_VERSION = "q54.p12.4.compiler-job.v1"
 CUDA_CONTINUATION_SOURCE_MODULES = (
     "optical_worker.cuda_compilation", "optical_worker.cuda_compilation_evidence",
     "optical_worker.compilation_contract", "optical_worker.setuptools_admission", "optics.cuda_extension_recipes",
     "optics._cuda_scene_source", "optics._cuda_lbvh_source", "optics._cuda_direct_light_source",
 )
+CUDA_LEGACY_CONTINUATION_SOURCE_MODULES = tuple(
+    name for name in CUDA_CONTINUATION_SOURCE_MODULES if name != "optical_worker.setuptools_admission")
 CUDA_NATIVE_SITES = ("cuda_compile", "cuda_extension_create", "cuda_extension_exec")
 
 # Pinned dependency grammar. These inert facts are shared by collection/replay;
@@ -68,6 +72,8 @@ SETUPTOOLS_ACTION_FIELDS = (
     ("completed", ("setuptools_module_token", "build_ext_module_token", "cpp_extension_module_token")),
     ("failed", ("exception_token",)),
 )
+SETUPTOOLS_ORDERED_ACTIONS = tuple(action for action, _ in SETUPTOOLS_ACTION_FIELDS
+                                 if action not in {"metadata_read", "resource_read", "failed"})
 SETUPTOOLS_HELPER_BINDINGS = (
     ("hooked", "finder_token", "setuptools_initialization.finder"),
     ("hooked", "producer_token", "setuptools_initialization.spec_producer"),

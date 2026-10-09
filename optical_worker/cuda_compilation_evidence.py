@@ -12,7 +12,9 @@ from optics.cuda_extension_recipes import CUDA_EXTENSION_RECIPES
 from .compilation_contract import (
     CUDA_COMPILATION_VERSION, CUDA_COMPILATION_SELECTION_VERSION, CUDA_COMPILE_SEQUENCES, CUDA_COMPILE_STEPS,
     CUDA_CONTINUATION_SOURCE_MODULES, CUDA_NATIVE_SITES, CUDA_TERMINAL_SEQUENCE,
-    cuda_native_operation, cuda_role_anchor,
+    CUDA_COMPILATION_LEGACY_VERSION, CUDA_COMPILATION_LEGACY_SELECTION_VERSION,
+    CUDA_LEGACY_CONTINUATION_SOURCE_MODULES, SETUPTOOLS_ORDERED_ACTIONS,
+    cuda_native_operation, cuda_role_anchor, setuptools_event_fields, setuptools_role_anchor,
 )
 from .lifecycle import HOST_OWNER
 from .protocol import canonical_json_bytes, decode_canonical_message
@@ -93,14 +95,27 @@ class _CompilationReplay(_RuntimeReplay):
         self.completed = 0
         self.failure_tokens = set()
         self.compile_native = []
+        self.setuptools_token = None
+        self.setuptools_actions, self.setuptools_helpers = [], {}
+        self.setuptools_reads = {"metadata_read": 0, "resource_read": 0}
+        self.setuptools_alias = None
+        self.setuptools_failed = False
+        self.setuptools_required = compilation["schema_version"] == CUDA_COMPILATION_VERSION
+
+    @property
+    def setuptools_complete(self):
+        return self.setuptools_actions == list(SETUPTOOLS_ORDERED_ACTIONS) and not self.setuptools_failed
 
     def apply_continuation(self, value):
         kind, details = self._begin_observation(value)
-        _require(kind in _COMMON or kind in _FIELDS, "unknown compilation suffix kind")
-        d = exact_fields(details, (_DETAIL_FIELDS if kind in _COMMON else _FIELDS)[kind])
+        _require(kind in _COMMON or kind in _FIELDS or kind == "setuptools_initialization", "unknown compilation suffix kind")
+        fields = (setuptools_event_fields(details.get("action")) if kind == "setuptools_initialization"
+                  else (_DETAIL_FIELDS if kind in _COMMON else _FIELDS)[kind])
+        d = exact_fields(details, fields)
         failed_fact = (kind == "failure" or kind == "file_call" and d["state"] == "failed"
                        or kind == "external" and type(d["event"]) is dict and d["event"].get("kind") == "failure"
-                       or kind == "compile_step" and d["operation"] == "failed")
+                       or kind == "compile_step" and d["operation"] == "failed"
+                       or kind == "setuptools_initialization" and d["action"] == "failed")
         retention = kind == "compile_owner_retained"
         completed = kind == "compile_step" and d["operation"] == "guard_completed"
         terminal = kind == "native_scope" and d["site"] == "terminal_sync"
@@ -133,11 +148,17 @@ class _CompilationReplay(_RuntimeReplay):
                 self.retained.append(token)
             elif kind == "compile_step":
                 self.step(d)
+            elif kind == "setuptools_initialization":
+                self.setuptools_initialization(d)
             elif kind == "failure":
                 _require(d["source"] in {"source_session", "external_admission", "observer"}, "failure source")
                 self.failed = True
             elif kind == "external":
                 self.external(d)
+                if self.setuptools_required and d["event"]["kind"] != "failure":
+                    forbidden = set(self.setuptools_helpers.values()) | {self.setuptools_token}
+                    _require(not _references(d["provenance"]) & forbidden,
+                             "setuptools helper reused as an ordinary source owner")
             elif kind == "file_call":
                 self.file_call(d)
             elif kind in {"native_global", "module_replacement", "interpreter_alias"}:
@@ -147,6 +168,134 @@ class _CompilationReplay(_RuntimeReplay):
                 self.returned_owner(d)
             elif kind == "native_scope":
                 self.compilation_native_scope(d)
+
+    def _setuptools_retained(self, token):
+        token = self.token(token)
+        row = self.exported.get(token)
+        _require(row is not None and row["origin"] == "continuation" and token in self.retained
+                 and row["retention_event_index"] < self.index,
+                 "setuptools owner lacks prior continuation retention")
+        return row
+
+    def _setuptools_adopted(self, token, role, operation):
+        row = self._setuptools_retained(token)
+        adoption = self.adopted(token, roles={role}, operation=operation, scope=HOST_OWNER)
+        _require(adoption["guard"] == {"sequence": 6, "role": "setup"}
+                 and self.root["journal"][row["retention_event_index"]]["lifecycle_event_index"] < adoption["index"],
+                 "setuptools adoption guard or retention order")
+
+    def _setuptools_helper(self, action, field, token, index=None):
+        role, operation = setuptools_role_anchor(action, field, index)
+        self._setuptools_adopted(token, role, operation)
+        ordinary = set(self.file_owners.values()) | set(self.namespaces.values())
+        ordinary.update(token for row in self.file_resolutions.values() for token in row[:2])
+        _require(token != self.setuptools_token and token not in ordinary,
+                 "setuptools helper aliases initialization or ordinary source")
+        if operation in self.setuptools_helpers:
+            _require(self.setuptools_helpers[operation] == token, "setuptools helper changed between actions")
+        else:
+            _require(token not in self.setuptools_helpers.values(), "setuptools helper slots share an object")
+            self.setuptools_helpers[operation] = token
+
+    def _setuptools_source(self, name, token, *, executing=False, spec=None, loader=None):
+        call = self.calls[self.call_keys[name, "exec"]] if (name, "exec") in self.call_keys else None
+        _require(call is not None and call["guard"] == {"sequence": 6, "role": "setup"}
+                 and call["start_journal"] >= self.cut and self.file_owners.get(name) == token,
+                 "setuptools ordinary source identity/guard/origin")
+        if executing:
+            _require(call["state"] == "started" and self.file_states.get(name) == "exec_started"
+                     and self.delegate_stack and self.delegate_stack[-1] == call["sequence"],
+                     "setuptools helper outside exact executing source")
+        else:
+            _require(call["state"] == "completed" and self.file_states.get(name) == "completed",
+                     "setuptools ordinary source has not completed")
+        self._setuptools_adopted(token, "external_import_owner", "external_import_owner")
+        if spec is not None or loader is not None:
+            _require((spec, loader) == self.file_resolutions[name][:2], "setuptools source spec/delegate substituted")
+            for value in (spec, loader):
+                self._setuptools_adopted(value, "external_import_owner", "external_import_owner")
+
+    def setuptools_initialization(self, d):
+        _require(self.setuptools_required and self.environment.setuptools_initialization is not None,
+                 "setuptools action outside compilation v2 deployment")
+        action, token = d["action"], d["initialization_token"]
+        self._setuptools_retained(token)
+        _require(self.setuptools_token in (None, token), "setuptools initialization owner changed")
+        self.setuptools_token = token
+        if action == "failed":
+            _require(not self.setuptools_failed, "setuptools failed action repeated")
+            self._setuptools_retained(d["exception_token"])
+            self.setuptools_failed = self.failed = True
+            return
+        _require(not self.failed and not self.setuptools_failed
+                 and self.guard == {"sequence": 6, "role": "setup"}, "setuptools success after failure or outside guard6")
+        self._setuptools_adopted(token, "setuptools_initialization", "setuptools_initialization")
+        descriptor = self.environment.setuptools_initialization
+        if action in self.setuptools_reads:
+            _require(self.setuptools_actions and not self.setuptools_complete, "setuptools read outside initialization")
+            index = _integer(d["read_index"])
+            _require(index == self.setuptools_reads[action], "setuptools read occurrence skipped/reused")
+            metadata = action == "metadata_read"
+            file = descriptor["metadata" if metadata else "resource"]
+            row = self.files[file["root"], file["path"]]
+            _require((d["file_root"], d["file_path"], d["sha256"]) == (row["root"], row["path"], row["sha256"]),
+                     "setuptools read changed frozen file binding")
+            if metadata:
+                _require(d["version"] == "83.0.0", "setuptools parsed version mismatch")
+                self._setuptools_source("setuptools.version", self.file_owners.get("setuptools.version"), executing=True)
+                fields = ("distribution_token", "bytes_token")
+            else:
+                self._setuptools_source("jaraco.text", d["package_token"], executing=True)
+                fields = ("reader_token", "bytes_token", "handle_token")
+            for field in fields:
+                self._setuptools_helper(action, field, d[field], index)
+            self.setuptools_reads[action] += 1
+            return
+        _require(len(self.setuptools_actions) < len(SETUPTOOLS_ORDERED_ACTIONS)
+                 and action == SETUPTOOLS_ORDERED_ACTIONS[len(self.setuptools_actions)],
+                 "setuptools action skipped, duplicated or reordered")
+        if action == "begun":
+            _require(self.steps[0] and self.steps[0][-1][0] == "build_entered"
+                     and self.compile_native == [(0, "cuda_compile", "before")],
+                     "setuptools initialization outside first observed compile leaf")
+            paths = d["original_paths"]
+            vendor = self.roots[descriptor["vendor_root"]]
+            _require(d["vendor_root"] == descriptor["vendor_root"] and type(paths) is list and paths
+                     and all(type(path) is str and PurePosixPath(path).is_absolute()
+                             and str(PurePosixPath(path)) == path and ".." not in PurePosixPath(path).parts
+                             and not {"site-packages", "dist-packages"} & set(PurePosixPath(path).parts) for path in paths)
+                     and len(paths) == len(set(paths)) and vendor not in paths
+                     and d["active_paths"] == paths + [vendor], "setuptools path transition mismatch")
+        elif action == "hooked":
+            self._setuptools_source("_distutils_hack", d["hack_module_token"])
+            for field in ("finder_token", "producer_token", "insert_original_token", "remove_original_token",
+                          "insert_wrapper_token", "remove_wrapper_token"):
+                self._setuptools_helper(action, field, d[field])
+        elif action == "shim_entered":
+            self._setuptools_source("_distutils_hack.override", d["override_module_token"], executing=True)
+        elif action in {"alias_spec", "alias_created", "alias_executed", "alias_published"}:
+            self._setuptools_source("_distutils_hack.override", self.file_owners.get("_distutils_hack.override"), executing=True)
+            self._setuptools_source("setuptools._distutils", d["source_module_token"],
+                                    spec=d.get("source_spec_token"), loader=d.get("source_loader_token"))
+            bindings = {field: d[field] for field in ("source_module_token", "alias_spec_token", "delegate_token", "wrapper_token")}
+            _require(self.setuptools_alias is None or self.setuptools_alias == bindings, "setuptools alias identities changed")
+            for field in ("alias_spec_token", "delegate_token", "wrapper_token"):
+                self._setuptools_helper(action, field, d[field])
+            self.setuptools_alias = bindings
+        elif action == "shim_left":
+            self._setuptools_source("_distutils_hack.override", self.file_owners.get("_distutils_hack.override"), executing=True)
+        elif action == "hooks_restored":
+            self._setuptools_source("_distutils_hack.override", self.file_owners.get("_distutils_hack.override"))
+        elif action == "completed":
+            _require(all(self.setuptools_reads.values()) and not self.delegate_stack
+                     and all(call["state"] == "completed" for call in self.calls)
+                     and all(state in {"file_resolved", "completed"} for state in self.file_states.values()),
+                     "setuptools completion lacks reads or closed import stack")
+            for field, name in (("setuptools_module_token", "setuptools"),
+                                ("build_ext_module_token", "setuptools.command.build_ext"),
+                                ("cpp_extension_module_token", "torch.utils.cpp_extension")):
+                self._setuptools_source(name, d[field])
+        self.setuptools_actions.append(action)
 
     def _role(self, token, recipe, field, entry=None):
         token = self.token(token)
@@ -182,6 +331,10 @@ class _CompilationReplay(_RuntimeReplay):
         _require(not self.failed and len(steps) < len(CUDA_COMPILE_STEPS)
                  and operation == CUDA_COMPILE_STEPS[len(steps)] and d["exception_token"] is None,
                  "compiled step skipped, duplicated or follows failure")
+        if self.setuptools_required and operation != "build_entered":
+            _require(self.setuptools_complete, "compiler success before setuptools completion")
+        if self.setuptools_required and index > 0:
+            _require(self.setuptools_complete, "later recipe before setuptools completion")
         expected = dict(bindings)
         if operation == "create_entered":
             for field in ("spec_token", "loader_token"):
@@ -281,13 +434,18 @@ class CudaCompilationRecord:
         p = exact_fields(value, {"schema_version", "session", "input_evidence_sha256", "source_sha256", "environment_sha256",
                                  "toolchain_sha256", "target_ordinal", "observation_cut", "recipes", "journal", "objects",
                                  "components", "lifecycle", "input_source_trace", "source_trace", "summary"})
-        _require(p["schema_version"] == CUDA_COMPILATION_VERSION and p["session"] == upstream["configuration"]["session"]
+        _require(p["schema_version"] in {CUDA_COMPILATION_LEGACY_VERSION, CUDA_COMPILATION_VERSION}
+                 and p["session"] == upstream["configuration"]["session"]
                  and p["input_evidence_sha256"] == input_record.sha256
                  and p["source_sha256"] == upstream["source"]["snapshot_sha256"]
                  and p["environment_sha256"] == environment.sha256
                  and _digest(p["toolchain_sha256"]) == _digest(toolchain_sha256)
                  and _integer(p["target_ordinal"]) == upstream["configuration"]["device_ordinal"],
                  "compilation upstream identity mismatch")
+        current = p["schema_version"] == CUDA_COMPILATION_VERSION
+        _require((environment.setuptools_initialization is not None) == current,
+                 "compiler record version differs from setuptools deployment")
+        continuation_sources = CUDA_CONTINUATION_SOURCE_MODULES if current else CUDA_LEGACY_CONTINUATION_SOURCE_MODULES
         cut = exact_fields(p["observation_cut"], {"input_journal_length", "input_lifecycle_event_count", "input_source_trace_length",
                                                 "journal_length", "lifecycle_event_count", "source_trace_length"})
         for key, number in cut.items():
@@ -303,7 +461,7 @@ class CudaCompilationRecord:
                  and p["source_trace"][:cut["input_source_trace_length"]] == p["input_source_trace"], "source trace cut mismatch")
         input_names = {row[1] for row in p["input_source_trace"] if type(row) is list and len(row) == 2}
         _source_trace(p["input_source_trace"], allowed=input_names, complete=True)
-        source_states = _source_trace(p["source_trace"], allowed=input_names | set(CUDA_CONTINUATION_SOURCE_MODULES), complete=False)
+        source_states = _source_trace(p["source_trace"], allowed=input_names | set(continuation_sources), complete=False)
         for key in ("native_globals", "module_replacements", "interpreter_alias"):
             old, new = upstream["components"][key], p["components"][key]
             _require(type(old) is dict and type(new) is dict and set(old) == set(new), "compiler component shape changed")
@@ -375,7 +533,7 @@ class CudaCompilationRecord:
         complete = replay.completed == 3 and not replay.failed
         if complete:
             _require(all(s == "completed" for s in source_states.values())
-                     and set(CUDA_CONTINUATION_SOURCE_MODULES) <= set(source_states), "compiled source closure incomplete")
+                     and set(continuation_sources) <= set(source_states), "compiled source closure incomplete")
         expected = {"completed_recipes": replay.completed, "failed": replay.failed,
                     "boundary": "compiled_cuda" if complete else "incomplete"}
         _require(canonical_json_bytes(p["summary"]) == canonical_json_bytes(expected), "compiler summary differs from replay")
@@ -396,7 +554,9 @@ class CudaCompilationRecord:
 def validate_cuda_compilation_selection(value, record_bytes, *, observed_lifecycle_event_count):
     p = exact_fields(value, {"schema_version", "selection", "record_sha256", "selected_lifecycle_event_count",
                              "observed_lifecycle_event_count", "failure_diagnostic_present"})
-    _require(p["schema_version"] == CUDA_COMPILATION_SELECTION_VERSION
+    versions = {CUDA_COMPILATION_LEGACY_SELECTION_VERSION: CUDA_COMPILATION_LEGACY_VERSION,
+                CUDA_COMPILATION_SELECTION_VERSION: CUDA_COMPILATION_VERSION}
+    _require(p["schema_version"] in versions
              and p["selection"] in {"current", "prior_validated_cut", "unavailable"}
              and type(p["failure_diagnostic_present"]) is bool, "compiler evidence selection schema")
     observed = _integer(p["observed_lifecycle_event_count"])
@@ -407,7 +567,7 @@ def validate_cuda_compilation_selection(value, record_bytes, *, observed_lifecyc
         return
     _require(type(record_bytes) is bytes, "compiler selection lacks durable record bytes")
     record = decode_canonical_message(record_bytes, max_bytes=len(record_bytes))
-    _require(record["schema_version"] == CUDA_COMPILATION_VERSION
+    _require(record["schema_version"] == versions[p["schema_version"]]
              and hashlib.sha256(record_bytes).hexdigest() == _digest(p["record_sha256"]), "compiler selection record mismatch")
     selected = _integer(p["selected_lifecycle_event_count"])
     _require(selected == record["observation_cut"]["lifecycle_event_count"] <= observed, "compiler selected lifecycle cut")

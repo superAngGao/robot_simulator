@@ -1,4 +1,4 @@
-"""Production parser attacks with an archived input and SYNTHETIC continuation.
+"""Historical v1 parser attacks with an archived input and SYNTHETIC continuation.
 
 No synthetic row is a new native observation or live-owner issuance. The archive
 is read without extraction or modification; the input cut is explicitly derived.
@@ -15,7 +15,11 @@ from pathlib import Path
 import pytest
 
 from optics.cuda_extension_recipes import CUDA_EXTENSION_RECIPES
-from optical_worker.compilation_contract import CUDA_COMPILATION_VERSION, CUDA_CONTINUATION_SOURCE_MODULES, cuda_role_anchor, cuda_native_operation
+from optical_worker.compilation_contract import (
+    CUDA_COMPILATION_LEGACY_VERSION as CUDA_COMPILATION_VERSION,
+    CUDA_LEGACY_CONTINUATION_SOURCE_MODULES as CUDA_CONTINUATION_SOURCE_MODULES,
+    cuda_role_anchor, cuda_native_operation,
+)
 from optical_worker.cuda_compilation_evidence import CudaCompilationRecord
 from optical_worker.guarded_evidence import replay_lifecycle
 from optical_worker.lifecycle import HOST_OWNER, DeviceScopeDescriptor
