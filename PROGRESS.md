@@ -1508,6 +1508,16 @@ Next milestone:
       source/profile checks passed180/skipped1. This is read-only CPU evidence;
       actual dependency execution, native compilation and their fresh independent
       preflights still remain. No readiness or performance result is claimed.
+      CPU dependency preflight v1 requested changes (released-profile newline
+      digest and blocked source-audit Git calls); both were fixed. Fresh v2
+      approved one exact dependency-only run at311f16f, independently verifying
+      393tests/1platformskip and1,791files. That actual run exited before any
+      dependency import: shared-parent setgid made mkdir0700 produce2700 and
+      the strict0700 child check rejected it. PID597340 exited1, was waited and
+      verified absent. Evidence is preserved in setuptools-cpu-preflight
+      test-evidence v1. The next candidate fixes only new-directory creation and
+      adds a real Linux setgid regression; a fresh preflight precedes another
+      single run. Actual setuptools initialization/compilation remain unproved.
       Owner follow-up (2026-10-09): after functional implementation and required
       real verification, perform a systematic refactor of the whole C4 structure
       before final acceptance, covering accumulated hotfixes, ownership boundaries,

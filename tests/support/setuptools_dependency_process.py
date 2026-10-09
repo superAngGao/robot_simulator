@@ -29,6 +29,23 @@ def _write(path, value):
     path.write_text(json.dumps(value, ensure_ascii=True, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
+def _create_run_directory(directory):
+    assert directory.is_absolute() and directory.resolve() == directory
+    directory.mkdir(mode=0o700)  # Never reuse a previous run directory.
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        assert stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+        # mkdir inherits a shared parent's setgid bit even with mode0700.
+        # Set the exact mode on the newly owned directory's open descriptor.
+        os.fchmod(fd, 0o700)
+        current = directory.lstat()
+        assert (current.st_dev, current.st_ino) == (info.st_dev, info.st_ino)
+        assert stat.S_IMODE(current.st_mode) == 0o700
+    finally:
+        os.close(fd)
+
+
 def _cpu_only(root, revision):
     commands = (("git", "rev-parse", "HEAD"), ("git", "show", f"{revision}:{CATALOG}"))
 
@@ -200,7 +217,7 @@ def child(fd, directory):
 def parent(root, directory):
     assert os.name == "posix" and sys.version_info[:3] == (3, 12, 13)
     root, directory = root.resolve(strict=True), directory.absolute()
-    directory.mkdir(mode=0o700)  # Never reuse a previous run directory.
+    _create_run_directory(directory)
     assert not subprocess.check_output(["git", "status", "--porcelain"], cwd=root).strip()
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
     # Parent-only CPU guard transport; it never loads backend packages.

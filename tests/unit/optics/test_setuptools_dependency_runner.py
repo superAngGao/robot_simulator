@@ -3,13 +3,16 @@
 import hashlib
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import time
 
 import pytest
 
-from tests.support.setuptools_dependency_process import CATALOG, PROFILE, PROFILE_SHA256, _cpu_only, _reap_cpu_group
+from tests.support.setuptools_dependency_process import (
+    CATALOG, PROFILE, PROFILE_SHA256, _cpu_only, _create_run_directory, _reap_cpu_group,
+)
 from tests.unit.optics.test_native_bootstrap import _internal
 from tests.unit.optics.test_native_sources import ROOT, release
 
@@ -19,6 +22,25 @@ def test_profile_pin_is_exact_git_release_bytes():
     assert hashlib.sha256(data).hexdigest() == PROFILE_SHA256
     if os.name == "posix":
         assert (ROOT / PROFILE).read_bytes() == data
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="actual Linux setgid inheritance required")
+def test_new_run_directory_removes_inherited_setgid_and_refuses_reuse(tmp_path):
+    parent = tmp_path / "shared"
+    parent.mkdir()
+    parent.chmod(0o2700)
+    witness = parent / "inherited"
+    witness.mkdir(mode=0o700)
+    assert stat.S_IMODE(witness.stat().st_mode) == 0o2700
+    directory = parent / "run"
+    _create_run_directory(directory)
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+    marker = directory / "retained"
+    marker.write_text("existing run must not be touched")
+    with pytest.raises(FileExistsError):
+        _create_run_directory(directory)
+    assert marker.read_text() == "existing run must not be touched"
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o2700
 
 
 def test_cpu_hook_allows_only_exact_source_git_commands(tmp_path):
