@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 
 from ._cuda_lbvh_source import CPP_SOURCE, CUDA_SOURCE
+from .cuda_extension_recipes import cuda_extension_kwargs
 from .cuda_scene import CudaWorldSceneBuffers
 from .device_bvh import DeviceBvhBuildStats, DeviceOpticalBvh
 from .device_scene import DeviceOpticalSceneSnapshot
@@ -1111,15 +1112,7 @@ def build_cuda_lbvh_from_snapshot(
 @lru_cache(maxsize=1)
 def _load_cuda_lbvh_extension():
     _require_torch_cuda_lbvh()
-    return load_inline(
-        name="robot_sim_cuda_lbvh_native_v3",
-        cpp_sources=[CPP_SOURCE],
-        cuda_sources=[CUDA_SOURCE],
-        with_cuda=True,
-        extra_cflags=["-O2"],
-        extra_cuda_cflags=["-O2"],
-        verbose=False,
-    )
+    return load_inline(**cuda_extension_kwargs('robot_sim_cuda_lbvh_native_v3'))
 
 
 def _require_torch_cuda_lbvh() -> None:

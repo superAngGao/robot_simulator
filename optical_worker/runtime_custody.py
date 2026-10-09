@@ -7,6 +7,7 @@ import json
 from dataclasses import dataclass
 from pathlib import PurePosixPath, PureWindowsPath
 
+from .compilation_contract import INPUT_PHASES as PHASES
 from .guarded_evidence import GuardedLifecycleEvidence, _Replay as _LifecycleReplay, validate_custody_artifact
 from .lifecycle import HOST_OWNER, _array_operation_id
 from .native_manifest import CANONICAL_DTYPE_METADATA, NativeInputManifest
@@ -24,10 +25,6 @@ RUNTIME_CUSTODY_VERSION = "q54.p12.4.runtime-custody.v2"
 RUNTIME_CUSTODY_VERSIONS = ("q54.p12.4.runtime-custody.v1", RUNTIME_CUSTODY_VERSION)
 RUNTIME_CUSTODY_INPUTS_VERSION = "q54.p12.4.runtime-custody-inputs.v1"
 RUNTIME_CUSTODY_SELECTION_VERSION = "q54.p12.4.runtime-custody-selection.v1"
-PHASES = (
-    "setup_definitions", "external_environment", "canonical_materialization",
-    "runtime_initialization", "native_upload", "input_validation",
-)
 
 NATIVE_SCOPE_HELPERS = {
     "empty": ("allocation", "torch_empty_explicit_device_v1", "warp_empty_explicit_device_v1"),
@@ -630,7 +627,7 @@ class _RuntimeReplay:
                  "disabled optional resolution/error/fallback facts mismatch")
         self.disabled[name] = operation
 
-    def apply(self, value):
+    def _begin_observation(self, value):
         e = exact_fields(value, {"index", "kind", "guard", "lifecycle_event_index", "details"})
         self.index += 1
         _require(_integer(e["index"]) == self.index, "noncontiguous runtime journal")
@@ -644,8 +641,12 @@ class _RuntimeReplay:
             _text(self.guard["role"])
         _require(self.guard == self.guards[self.lci][0], "runtime observation guard differs from lifecycle")
         kind = _text(e["kind"])
+        return kind, e["details"]
+
+    def apply(self, value):
+        kind, details = self._begin_observation(value)
         _require(kind in _DETAIL_FIELDS, "unknown runtime observation")
-        d = exact_fields(e["details"], _DETAIL_FIELDS[kind])
+        d = exact_fields(details, _DETAIL_FIELDS[kind])
         if kind == "external":
             _require(type(d["event"]) is dict, "external event must be an object")
         failed_fact = (kind == "failure" or kind == "file_call" and d["state"] == "failed"
@@ -776,6 +777,11 @@ class _RuntimeReplay:
                 _require(not self.native_pairs or self.native_pairs[-1][0][0] in {"upload_scope", "readback_scope"},
                          "native helper pair was not closed")
                 self.native_pairs.append((key, self.index))
+        self._native_scope_objects(d)
+
+    def _native_scope_objects(self, d):
+        """Shared native owner/library/state validation, without extending old sites."""
+        site, edge, operation = d["site"], d["edge"], d["operation_event_index"]
         module, runtime, target = (self.token(d[k]) for k in ("module_token", "runtime_token", "target_token"))
         stream = self.token(d["stream_token"], nullable=True)
         binding = self.token(d["binding_token"], nullable=True)
@@ -949,7 +955,7 @@ class _RuntimeReplay:
         self.phases.append(d["phase"])
         self.phase_guards.append(sequence)
 
-    def finish(self):
+    def _finish_common(self):
         for (site, operation), _ in self.native_pairs:
             if site == "terminal_sync":
                 _require(not any(e["operation"] == "emergency_sync_succeeded" for e in self.trace[operation + 1:]),
@@ -969,6 +975,8 @@ class _RuntimeReplay:
                     _require(call[name] == component[name], "runtime call differs from native component")
         _require(self.root["environment_sha256"] == (self.environment.sha256 if self.bound_environment else None),
                  "runtime environment digest does not reflect binding")
+    def finish(self):
+        self._finish_common()
         summary = {
             "last_completed_phase": self.phases[-1] if self.phases else None,
             "external_event_count": self.external_count,

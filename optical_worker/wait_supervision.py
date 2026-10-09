@@ -576,12 +576,19 @@ class GuardSupervisorCore:
 class GuardSupervisorTransport:
     """One nonblocking socket and bounded input/output; process loop stays outside."""
 
-    def __init__(self, channel, core: GuardSupervisorCore) -> None:
+    def __init__(self, channel, core: GuardSupervisorCore, *, compiler_job=None) -> None:
         _require(
             type(channel) is socket.socket and type(core) is GuardSupervisorCore,
             "exact private socket and supervisor core required",
         )
         core._check_thread()
+        if compiler_job is not None:
+            # The fixed Linux owner is never imported by the captured worker
+            # or ordinary transport. No arbitrary callback boundary is exposed.
+            from .compiler_supervision import _registered_compiler_job
+
+            _registered_compiler_job(compiler_job, core)
+        self._compiler_job = compiler_job
         core._bind_output_channel(channel)
         self.channel = channel
         self.core = core
@@ -610,6 +617,8 @@ class GuardSupervisorTransport:
     def _service(self, *, readable: bool, writable: bool) -> None:
         self.core._check_thread()
         self.core.tick()
+        if self._compiler_job is not None:
+            self._compiler_job.after_core_transition()
         try:
             if self.core.state in {"TERMINATING", "EXITED"}:
                 return
@@ -634,7 +643,11 @@ class GuardSupervisorTransport:
                         if self.core.pending_response is not None:
                             self.core.fault("request_out_of_order")
                             raise GuardProtocolError("request arrived before ACK write commit")
+                        if self._compiler_job is not None:
+                            self._compiler_job.before_message(message)
                         self.core.accept(message)
+                        if self._compiler_job is not None:
+                            self._compiler_job.after_core_transition()
             if writable and self.core.pending_response is not None:
                 if self._response is None:
                     self._response = self.core.pending_response
@@ -656,6 +669,8 @@ class GuardSupervisorTransport:
                 self._offset += sent
                 if self._offset == len(self._output):
                     self.core.acknowledge_written(self._response)
+                    if self._compiler_job is not None:
+                        self._compiler_job.after_core_transition()
                     self._response, self._output, self._offset = None, b"", 0
         except BaseException:
             if self.core.state not in {"TERMINATING", "EXITED"}:
@@ -665,5 +680,7 @@ class GuardSupervisorTransport:
             raise
         finally:
             self.core.tick()
+            if self._compiler_job is not None:
+                self._compiler_job.after_core_transition()
             if self.core.state in {"TERMINATING", "EXITED"}:
                 self._response, self._output, self._offset = None, b"", 0
