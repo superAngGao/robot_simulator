@@ -152,11 +152,14 @@ def run_case(repository, revision, environment_path, environment, directory, lan
             if result["worker_returncode"] == 0 or not (directory / "fault_entered.json").is_file():
                 raise RuntimeError("fixed fault did not reach its intended real boundary")
             marker = json.loads((directory / "fault_entered.json").read_bytes())
-            from tests.support.native_runtime_process import RUNTIME_WARP_IDLE_FAULTS
+            from tests.support.native_runtime_process import RUNTIME_WARP_IDLE_FAULTS, RUNTIME_WARP_COMPILE_FAULTS
             idle_fault = fault in RUNTIME_WARP_IDLE_FAULTS
+            compile_fault = fault in RUNTIME_WARP_COMPILE_FAULTS
             idle_synced = fault in {"runtime_warp_modules_entry_raise", "runtime_warp_modules_issuance_raise"}
+            compile_guard = 6 if fault == "runtime_warp_modules_import_raise" else 7
             expected_guard = None if idle_fault else {
-                "sequence": 10 if fault.startswith("runtime_warp_modules_") else (6 if "factory" in fault else 3),
+                "sequence": compile_guard if compile_fault else (
+                    10 if fault.startswith("runtime_warp_modules_") else (6 if "factory" in fault else 3)),
                 "role": "setup"}
             if marker["fault"] != fault or marker["guard"] != expected_guard:
                 raise RuntimeError("fixed fault occurred in another guard or case")
@@ -165,7 +168,62 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                     raise RuntimeError("factory hang was not terminated by the original guard deadline")
             elif worker is None or worker["summary"]["emergency_sync_attempt_count"] != int(idle_synced):
                 raise RuntimeError("fixed failure has an unexpected synchronization count")
-            if fault.startswith("runtime_warp_modules_"):
+            if compile_fault:
+                if control["normal_complete_count"] != compile_guard or control["arm_count"] != compile_guard + 1:
+                    raise RuntimeError("failed Warp segment completed or started another guard")
+                imports = json.loads((directory / "warp_import_armed.json").read_bytes())["imports"]
+                expected_imports = ["optics.device_scene", "optics.device_bvh", "optics.warp_native_render"]
+                if compile_guard == 6:
+                    expected_imports = expected_imports[:1]
+                if ([row["module"] for row in imports] != expected_imports
+                        or any(row["guard"] != {"sequence": 6, "role": "setup"}
+                               or row["state"] != "ARMED" or row["started"] != "started" for row in imports)):
+                    raise RuntimeError("Warp optical import did not begin under its original ARMED guard")
+                if fault.endswith("hang"):
+                    if (result["worker_returncode"] != -9 or (directory / "worker.json").exists()
+                            or (directory / "failure.json").exists()
+                            or not marker["mapping_guardian_owned"]):
+                        raise RuntimeError("Warp load hang lacks original-deadline kill or preheld mapping")
+                else:
+                    failure = json.loads((directory / "failure.json").read_bytes())
+                    if (result["worker_returncode"] != 74 or failure["type"] != "RuntimeError"
+                            or failure["message"] != "fixed Warp guarded compilation failure: " + fault
+                            or worker["summary"]["custody"] != "full_quarantine"):
+                        raise RuntimeError("Warp failed segment lost its original exception or custody")
+                    events = worker["transition_trace"]
+                    failed = [row for row in events if row["operation"] == "guard_failed"]
+                    if (len(failed) != 1 or failed[0]["guard"] != expected_guard
+                            or any(row["operation"] == "low_level_leaf_entered"
+                                   for row in events[marker["lifecycle_event_count"]:])):
+                        raise RuntimeError("Warp failure changed guards or entered another native leaf")
+                    roots = json.loads((directory / "warp_failure_roots.json").read_bytes())
+                    if (not roots["python_module_guardian_owned"] or roots["completed_records"] != 0
+                            or roots["module_set_issued"] or roots["guardian_state"] != "TRANSFERRED_TO_QUARANTINE"):
+                        raise RuntimeError("Warp failure lost its partial module graph")
+                    if compile_guard == 6:
+                        if roots["load_attempts"] or roots["python_module_id"] != marker["module_id"]:
+                            raise RuntimeError("failed import proceeded to native loading")
+                    else:
+                        observation = json.loads((directory / "warp_compile_failure_scope.json").read_bytes())
+                        if (observation["before"] != observation["after"]
+                                or observation["after"]["default_device"] != 0
+                                or observation["after"]["current_context"] is not None
+                                or observation["guard"] != expected_guard):
+                            raise RuntimeError("failed Warp compile did not restore its ambient context")
+                        if (not roots["module_guardian_owned"] or not roots["mapping_guardian_owned"]
+                                or len(roots["load_attempts"]) != 1):
+                            raise RuntimeError("failed Warp load lost its preheld module or mapping")
+                        published = fault != "runtime_warp_modules_load_before_raise"
+                        if (published and (roots["executable_id"] != marker["executable_id"]
+                                           or len(roots["calls"]) != 1)):
+                            raise RuntimeError("published Warp executable was not retained after failure")
+                        if not published and (roots["executable_id"] is not None or roots["calls"]):
+                            raise RuntimeError("before-load failure nevertheless published an executable")
+                        if fault == "runtime_warp_modules_adoption_raise" and not roots["executable_session_owned"]:
+                            raise RuntimeError("returned executable was not retained before failed adoption")
+                if (directory / "warp_module_binding.json").exists():
+                    raise RuntimeError("failed Warp preparation issued a successful binding")
+            elif fault.startswith("runtime_warp_modules_"):
                 failure = json.loads((directory / "failure.json").read_bytes())
                 issuance = "issuance" in fault
                 completed = 10 if not idle_fault or issuance else 6

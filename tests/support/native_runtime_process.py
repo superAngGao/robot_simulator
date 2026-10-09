@@ -50,9 +50,11 @@ RUNTIME_ARTIFACT_FAULTS = ("runtime_artifacts_success", "runtime_artifacts_creat
 RUNTIME_WARP_IDLE_FAULTS = tuple("runtime_warp_modules_" + name for name in (
     "unknown_entry", "unknown_issuance", "entry_raise", "issuance_raise",
     "incomplete_entry", "incomplete_issuance"))
+RUNTIME_WARP_COMPILE_FAULTS = tuple("runtime_warp_modules_" + name for name in (
+    "import_raise", "load_before_raise", "load_after_raise", "adoption_raise", "load_hang"))
 RUNTIME_WARP_MODULE_FAULTS = ("runtime_warp_modules_success", "runtime_warp_modules_abi_dtype",
                              "runtime_warp_modules_abi_ndim", "runtime_warp_modules_entry_hash",
-                             *RUNTIME_WARP_IDLE_FAULTS)
+                             *RUNTIME_WARP_IDLE_FAULTS, *RUNTIME_WARP_COMPILE_FAULTS)
 RUNTIME_FAULTS = (RUNTIME_NATIVE_FAULTS + RUNTIME_ACK_FAULTS + RUNTIME_PARENT_FAULTS
                   + RUNTIME_SCOPE_FAULTS + RUNTIME_GLOBAL_FAULTS + RUNTIME_CUDA_ONLY_FAULTS
                   + RUNTIME_OBSERVATION_FAULTS + RUNTIME_ARTIFACT_FAULTS + RUNTIME_WARP_MODULE_FAULTS)
@@ -998,14 +1000,62 @@ def child(fault, fd, directory):
             from optical_worker import warp_setup
 
             original_compile = warp_setup.compile_module
-            calls, scopes = [], []
-            session.runtime_owners.extend((original_load, original_compile, calls, scopes))
+            calls, scopes, imports, load_attempts = [], [], [], []
+            session.runtime_owners.extend((original_load, original_compile, calls, scopes, imports, load_attempts))
+
+            def compile_fault(boundary, **facts):
+                scope_observer._ticket()
+                _write(directory, "fault_entered.json", {
+                    "fault": fault, "boundary": boundary, "guard": dict(controller._guard_reference),
+                    "lifecycle_event_count": len(controller._guard_events), **facts})
+                if fault.endswith("hang"):
+                    _stall()
+                raise RuntimeError("fixed Warp guarded compilation failure: " + fault)
+
+            original_adopt = controller.adopt_host_owner
+            session.runtime_owners.append(original_adopt)
+            def observed_import(owner, *, role, operation_id):
+                result = original_adopt(owner, role=role, operation_id=operation_id)
+                if role == "captured_repository_module" and vars(owner).get("__name__") in {
+                        name for name, *_ in warp_setup._DEFINITIONS}:
+                    scope_observer._ticket()
+                    imports.append({"module": owner.__name__, "guard": dict(controller._guard_reference),
+                                    "state": controller._guard_client.state,
+                                    "started": session.modules[owner.__name__][2]})
+                    _write(directory, "warp_import_armed.json", {"imports": imports})
+                    if fault == "runtime_warp_modules_import_raise":
+                        compile_fault("captured_module_before_execution", module=owner.__name__,
+                                      module_id=id(owner), guardian_owned=controller.guardian.contains_exact_owner(owner))
+                return result
+            controller.adopt_host_owner = observed_import
+
+            if fault == "runtime_warp_modules_adoption_raise":
+                original_device_adopt = controller.adopt_returned_device_owner
+                session.runtime_owners.append(original_device_adopt)
+                def before_exec_adoption(owner, *, actual_device_ordinal, role, operation_id):
+                    if role == "warp_compiled_module_exec":
+                        compile_fault("compiled_executable_before_adoption", executable_id=id(owner),
+                                      retained_by_session=any(value is owner for value in session.runtime_owners))
+                    return original_device_adopt(owner, actual_device_ordinal=actual_device_ordinal,
+                                                 role=role, operation_id=operation_id)
+                controller.adopt_returned_device_owner = before_exec_adoption
 
             def observed_compile(*args):
                 scope_observer._ticket()
                 before = scope_observer._state(False)
-                result = original_compile(*args)
-                session.runtime_owners.append(result)
+                try:
+                    result = original_compile(*args)
+                except BaseException as error:
+                    # Observe after the real contexts unwind, while their original
+                    # guard is still active. A diagnostic error cannot replace it.
+                    try:
+                        after = scope_observer._state(False)
+                        _write(directory, "warp_compile_failure_scope.json", {
+                            "before": before, "after": after, "guard": dict(controller._guard_reference),
+                            "error_type": type(error).__name__, "error": str(error)})
+                    except BaseException as diagnostic:
+                        session.runtime_owners.append(diagnostic)
+                    raise
                 after = scope_observer._state(False)
                 assert before == after and after["default_device"] == 0
                 assert after["current_context"] is None and after["current_context_device"] is None
@@ -1016,15 +1066,25 @@ def child(fault, fd, directory):
             def observed_load(*args, **kwargs):
                 scope_observer._ticket()
                 before = scope_observer._state(False)
+                module = kwargs["module"]
+                load_attempts.append({"module": module.name, "guard": dict(controller._guard_reference)})
+                if fault == "runtime_warp_modules_load_before_raise":
+                    compile_fault("before_public_load", module_id=id(module), mapping_id=id(module.execs),
+                                  mapping_guardian_owned=controller.guardian.contains_exact_owner(module.execs))
                 result = original_load(*args, **kwargs)
-                executable = kwargs["module"].execs[(binding.target.context, 256)]
-                session.runtime_owners.append(executable)
+                executable = module.execs[(binding.target.context, 256)]
                 after = scope_observer._state(False)
                 assert before == after and before["default_device"] == 1
                 assert before["current_context_device"] == 1
                 assert before["target_current_stream"] == int(binding.stream.cuda_stream)
                 calls.append({"module": kwargs["module"].name, "before": before, "after": after,
                               "guard": dict(controller._guard_reference), "executable_id": id(executable)})
+                if fault in {"runtime_warp_modules_load_after_raise", "runtime_warp_modules_load_hang"}:
+                    # Do not add an observer executable owner to the retention
+                    # list: verify production's already adopted execs mapping.
+                    compile_fault("published_before_public_return", module_id=id(module),
+                                  mapping_id=id(module.execs), executable_id=id(executable),
+                                  mapping_guardian_owned=controller.guardian.contains_exact_owner(module.execs))
                 return result
 
             binding.module.load_module = observed_load
@@ -1066,9 +1126,37 @@ def child(fault, fd, directory):
                     warp_setup.issue_module_set = observed_issue
                 else:
                     idle_fault()
-            owners = session.prepare_warp_modules()
+            try:
+                owners = session.prepare_warp_modules()
+            except BaseException:
+                if fault in RUNTIME_WARP_COMPILE_FAULTS:
+                    # CPU-only post-failure inspection; no native call, adoption
+                    # or owner repair after the original guard fails.
+                    name, kernels, *_ = warp_setup._DEFINITIONS[0]
+                    python_module = session.modules[name][0]
+                    kernel = vars(python_module).get(kernels[0])
+                    module = None if kernel is None else kernel.module
+                    mapping = None if module is None else module.execs
+                    executable = None if mapping is None else mapping.get((binding.target.context, 256))
+                    _write(directory, "warp_failure_roots.json", {
+                        "python_module_id": id(python_module),
+                        "python_module_guardian_owned": controller.guardian.contains_exact_owner(python_module),
+                        "module_id": None if module is None else id(module),
+                        "module_guardian_owned": module is not None and controller.guardian.contains_exact_owner(module),
+                        "mapping_id": None if mapping is None else id(mapping),
+                        "mapping_guardian_owned": mapping is not None and controller.guardian.contains_exact_owner(mapping),
+                        "executable_id": None if executable is None else id(executable),
+                        "executable_session_owned": executable is not None and any(
+                            owner is executable for owner in session.runtime_owners),
+                        "completed_records": len(warp_setup._CACHES[session].records),
+                        "module_set_issued": session in warp_setup._MODULE_SETS,
+                        "load_attempts": load_attempts, "calls": calls,
+                        "guardian_state": controller.guardian.state})
+                raise
             if fault in RUNTIME_WARP_IDLE_FAULTS:
                 raise AssertionError("fixed Warp IDLE fault was admitted")
+            if fault in RUNTIME_WARP_COMPILE_FAULTS:
+                raise AssertionError("fixed Warp guarded fault was admitted")
 
             with controller.segment("setup"):
                 session._validate_runtime_binding_record(binding, entry._UPLOADED_INPUTS[session][0])
