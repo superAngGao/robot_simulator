@@ -1440,6 +1440,22 @@ Next milestone:
       and compiler-descendant gap by design and independent review, then continue
       the parent setup/graph/warmup stages. No compilation or later activation
       follows from this evidence-only archive; C4 remains the active objective.
+      **Compilation design closure (2026-10-09): bounded CUDA admission v3
+      is independently approved, design only.** Fresh reviewer
+      /root/compilation_admission_design_v3 inspected clean b3c4110cbf34aaf7512aceb722609fade69f85f0
+      against base4597d51 and approved the exact v3 design (SHA256
+      028b52c466ef46433235d4ec2495cd47d00200822cc64dfaea95614fd5bf26a2).
+      Full design-review v3 is archived unchanged (SHA256
+      53008826bebaa80b4aa0155873b8617c4f4eec6c5493cdeab36fd022fcff7723).
+      Prior wire/deadline findings and successful-role custody ambiguity are
+      closed at design level. Implementation now covers the fixed three CUDA
+      recipes, direct loading, continuation custody and owned compiler-tree
+      supervision; Warp compilation requires its separate bounded definition.
+      CPU design probes are not production collector/parser or Linux process
+      proof. Exact source/policy/catalog, fixed runners and observer/ABI preflight
+      remain required before new native execution, followed by real cold builds,
+      failure matrices and fresh whole-checkpoint review. No compilation,
+      implementation acceptance, readiness or later gate is claimed here.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
