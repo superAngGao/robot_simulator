@@ -1518,6 +1518,16 @@ Next milestone:
       test-evidence v1. The next candidate fixes only new-directory creation and
       adds a real Linux setgid regression; a fresh preflight precedes another
       single run. Actual setuptools initialization/compilation remain unproved.
+      The next exact0177a86 run, approved by fresh CPU preflight v3, succeeded:
+      actual installed setuptools83.0.0/build_ext reached RESTORED, with the
+      same-object distutils alias, restored hooks, closed resource read and
+      actual version metadata. All75 ordinary file records completed. Parent
+      PID650402/child650414 exited0 and are absent; host-only cancellation
+      released the guardian without device work. Exact command/archive/hash
+      and outer-fixture limitations are in setuptools-cpu-preflight test-evidence
+      v2. This closes positive CPU dependency loading only. Actual failure
+      integration, CUDA compilation/native preflight and real builds remain;
+      no COMPLETE, readiness, performance or whole-C4 acceptance is claimed.
       Owner follow-up (2026-10-09): after functional implementation and required
       real verification, perform a systematic refactor of the whole C4 structure
       before final acceptance, covering accumulated hotfixes, ownership boundaries,
