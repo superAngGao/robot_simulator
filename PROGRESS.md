@@ -1839,7 +1839,18 @@ Next milestone:
       replaces per-face source vertex duplication with original indexed mesh
       blocks so R0 can use unchanged mesh-wide CPU composition/transformation;
       a CPU feasibility probe reproduces all original world vertices and396778
-      admitted faces. Fresh independent design review precedes implementation.
+      admitted faces. Fresh independent design-review v4 now approves this bounded
+      amendment with comments; the complete report is archived at8b6cb26.
+      Implementation checkpoint c055303 preserves all398432 Go2 source faces,
+      reproduces original R0 world edges/normals and all20 crossing cases, and
+      migrates both scene-update sources plus Warp double queries. Actual Warp
+      kernels on CPU resolve all ten channels at279 selected previous-failure
+      pixels; CUDA scene v3 compiles under the existing isolated build service.
+      This is not native GPU or whole-amendment acceptance. Input-precision
+      implementation-note v1 records evidence and the mandatory continuation:
+      CUDA rendering, scalar/identity/source-pin migration, full native matrix
+      and fresh independent code review. Work remains on implementation/c4-input-precision;
+      no later gate is opened and the original812ca29 oracle is unchanged.
       No native intensity or
       performance result is available. Whole C4 remains incomplete.
       Fixed R0 storage native-reviewv1 approves the14-case campaign at3d6692b:
