@@ -1528,6 +1528,17 @@ Next milestone:
       v2. This closes positive CPU dependency loading only. Actual failure
       integration, CUDA compilation/native preflight and real builds remain;
       no COMPLETE, readiness, performance or whole-C4 acceptance is claimed.
+      Actual dependency failure campaign at427c90a now passes33/33: one installed
+      positive and32 fixed denials, after fresh independent preflight v2 closed
+      wrong-terminal and post-return-injection counterexamples. No production
+      code changed for this matrix. All33 lifecycle records replay through the
+      production parser; all67 recorded campaign/parent/child PIDs and the
+      separate inspector are absent. Denials retain the original error and
+      quarantine until process exit, without device work or successful action
+      after poison. Raw archive, commands, hashes and fixture limits are in
+      setuptools-failures test-evidence v1. This is the actual dependency CPU
+      prerequisite only; compiler-tree OS proof, full compilation integration,
+      exact native preflight and three cold builds remain next. C4 stays active.
       Owner follow-up (2026-10-09): after functional implementation and required
       real verification, perform a systematic refactor of the whole C4 structure
       before final acceptance, covering accumulated hotfixes, ownership boundaries,
