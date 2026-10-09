@@ -1547,6 +1547,23 @@ Next milestone:
       rerun affected success/failure checks and obtain fresh independent review.
       See systematic-refactor implementation-note v1 for the exact owner request
       and scope. Earlier bounded reviews remain mandatory; C4 stays active.
+      **Owner complexity correction (2026-10-09):** after the owner asked whether
+      the accumulating machinery is necessary, new process/ABI verification was
+      stopped while scope is reassessed. Actual code92a8ac6 remains unapproved
+      for a new native campaign; fresh preflightv3 ended with no verdict and its
+      partial report is archived unchanged. The earlier approved0497573 campaign
+      failed its first constructor before worker launch because this Conda Python
+      omits os.pidfd_open; all four owned PIDs exited. The fixed-libc repair has
+      only52 local CPU passes, not actual OS proof. See compiler-process evidencev1.
+      Scope-convergence proposalv1 now maps the actual missing worker preparation,
+      Warp timeline/arena, warmup/final graph and downstream C4 work. It recommends
+      a bounded replacement of worker JIT with deployment-built fixed artifacts,
+      reusing existing file admission and factories and deleting superseded worker
+      dependency/compilation wiring. Deployment process cleanup still needs proof;
+      this is a draft recommendation, not changed authority or execution approval.
+      Next work is the concrete simplification design, not another isolated pidfd
+      campaign. Product requirements, independent checkpoints and full C4 objective
+      remain; no early benchmark/activation or automatic removal is authorized.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
