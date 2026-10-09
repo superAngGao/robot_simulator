@@ -104,3 +104,50 @@ def test_transport_rejects_unregistered_arbitrary_callback_owner():
     finally:
         parent.close()
         child.close()
+
+
+def test_process_fixture_withholds_real_pending_ack_before_worker_exit(transport, tmp_path):
+    from tests.support.compiler_process_cases import Observer, read
+
+    input_prefix(transport)
+    config, core, job, channel, worker = transport
+    observer = object.__new__(Observer)
+    observer.job, observer.directory, observer.case = job, tmp_path, "leader_ack_exit"
+    observer.exited_core = None
+    worker.sendall(encode_framed_message(config.message("ARM", 6, "setup"), max_bytes=MAX_BODY_BYTES))
+    channel.service(readable=True, writable=False)
+    response = dict(core.pending_response)
+    deadline = core.effective_deadline_ns
+    assert observer.output_ready(True) is False
+    channel.service(readable=False, writable=observer.output_ready(True))
+    assert core.pending_response == response and read(tmp_path / 'ack-pending.json') == response
+    assert not any(e[1]['operation'] == 'ack_written' and e[1]['details']['sequence'] == 6
+                   for e in core._records.values())
+    from optical_worker.compiler_job import identity_payload
+
+    job.obligation.reaped(identity_payload(job.obligation.replay.worker), 0)
+    observer.observe()
+    assert core.state == 'EXITED' and job.obligation.replay.deadline_source == 'ack'
+    assert job.obligation.replay.deadline == deadline
+    observer.observe()
+
+
+def test_invalid_process_fixture_rejected_before_native_job(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
+    from tests.support import cuda_compilation_process as driver
+    from tests.support.compiler_process_cases import LIBC, SCHEMA
+
+    config = GuardConfiguration('a' * 32, 1, 1000, 120_000)  # Not the OS fixture policy.
+    request = {'schema_version': SCHEMA, 'root': str(Path(driver.__file__).resolve().parents[2]),
+               'revision': 'a' * 40, 'lane': 'cuda', 'guard_configuration': config.to_payload(),
+               'process_case': 'normal'}
+    (tmp_path / 'request.json').write_text(json.dumps(request))
+    policy = {'schema_version': 'q54.p12.4.compiler-supervisor-launch.v1', 'libc_file': LIBC,
+              'worker_environment': {}}
+    (tmp_path / 'policy.json').write_text(json.dumps(policy))
+    def native_forbidden(*args, **kwargs):
+        pytest.fail('malformed fixture reached native policy')
+    monkeypatch.setattr(_CompilerJob, '__init__', native_forbidden)
+    with pytest.raises(AssertionError):
+        driver.supervise(-1, tmp_path / 'request.json', tmp_path, tmp_path / 'policy.json')

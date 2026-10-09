@@ -31,7 +31,14 @@ def _request_path(request_path, directory):
 
 
 def worker(fd, request_path, directory):
-    _, directory = _request_path(request_path, directory)
+    request_path, directory = _request_path(request_path, directory)
+    request = json.loads(request_path.read_bytes())
+    if "process_case" in request:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from tests.support.compiler_process_cases import worker as process_worker
+
+        process_worker(fd, directory, request)
+        raise AssertionError("process fixture returned without hard exit")
     _runtime_driver().child("runtime_scope_success", fd, directory, compilation=True)
     raise AssertionError("sacrificial worker returned without hard exit")
 
@@ -50,6 +57,12 @@ def supervise(liveness_fd, request_path, directory, policy_path):
     # Only the dedicated supervisor imports OS process ownership. The worker
     # continues through the cold captured bootstrap without this sys.path edit.
     sys.path.insert(0, str(root))
+    fixture_type = None
+    if "process_case" in request:
+        from tests.support.compiler_process_cases import Observer, validate
+
+        validate(request)  # Reject malformed fixtures before native policy setup.
+        fixture_type = Observer
     from optical_worker.compiler_supervision import _CompilerJob
     from optical_worker.wait_protocol import GuardConfiguration, GuardProtocolError
     from optical_worker.wait_supervision import GuardSupervisorCore, GuardSupervisorTransport
@@ -58,6 +71,7 @@ def supervise(liveness_fd, request_path, directory, policy_path):
     driver = _runtime_driver()
     core = GuardSupervisorCore(GuardConfiguration.from_payload(request["guard_configuration"]))
     job = _CompilerJob(core, libc_file=policy["libc_file"])
+    fixture = fixture_type(job, directory, request) if fixture_type is not None else None
     parent_alive = True
     diagnostics = []
     transport = None
@@ -87,6 +101,8 @@ def supervise(liveness_fd, request_path, directory, policy_path):
     while job.obligation.replay.state != "CLOSED":
         try:
             job.service_processes()
+            if fixture is not None:
+                fixture.observe()
             if job.obligation.replay.state == "CLOSED":
                 break
             readers = [channel] if core.state not in {"TERMINATING", "EXITED"} else []
@@ -101,7 +117,10 @@ def supervise(liveness_fd, request_path, directory, policy_path):
                     if job.obligation.replay.state != "NEW":
                         job.after_core_transition()
             if transport is not None and core.state != "EXITED":
-                transport.service(readable=channel in readable, writable=channel in writable)
+                ready = channel in writable
+                if fixture is not None:
+                    ready = fixture.output_ready(ready)
+                transport.service(readable=channel in readable, writable=ready)
         except BaseException as error:
             # Retain ownership after process/proc/transport failure. The same
             # frozen deadline and unique pidfd attempts continue; no broad kill,
@@ -134,6 +153,8 @@ def supervise(liveness_fd, request_path, directory, policy_path):
         "sampled_processes": list(job.observed_members.values()),
         "diagnostics": [{"type": type(error).__name__, "message": str(error)[:512]} for error in diagnostics],
     }
+    if fixture is not None:
+        result["process_fixture"] = fixture.finish()
     driver._write(directory, "supervisor.json", result)
     return result
 
