@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import uuid
@@ -31,6 +32,43 @@ ASSETS = "/data2/shared/ang.gao/c2d2_frozen_assets/mujoco_menagerie/unitree_go2"
 def write(directory, name, value):
     with (directory / name).open("x", encoding="utf-8") as handle:
         json.dump(value, handle, sort_keys=True, separators=(",", ":"))
+
+
+def check_bad_artifact_copies(repository, environment, output):
+    """Alter private copies of real outputs; never touch the selected deployment."""
+    from tools.optical_cuda_artifacts import MANIFEST_NAME, verify_deployment
+    from tools.optical_cuda_build_recipe import _create_directory
+
+    payload = environment.to_payload()
+    original = Path(next(row["path"] for row in payload["roots"] if row["id"] == "cuda_artifacts"))
+    digest = next(row["sha256"] for row in payload["files"]
+                  if row["root"] == "cuda_artifacts" and row["path"] == MANIFEST_NAME)
+    platform = json.loads((repository / "tests/data/cuda_artifacts/183_platform_v1.json").read_bytes())
+    manifest = verify_deployment(original, digest, repository=repository, expected_platform=platform)
+    paths = {MANIFEST_NAME, *(row["path"] for row in manifest["artifacts"])}
+    for build in manifest["builds"]:
+        paths.update(row["path"] for row in (build["stdout"], build["stderr"], build["termination"]["record"], *build["inputs"]))
+    for case in ("missing", "changed", "partial"):
+        copied = _create_directory(output / ("artifact_" + case))
+        omitted = {row["path"] for row in manifest["artifacts"][1:]} if case == "partial" else set()
+        if case == "missing":
+            omitted.add(manifest["artifacts"][0]["path"])
+        for relative in sorted(paths - omitted):
+            target = copied / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(original / relative, target)
+        if case == "changed":
+            with (copied / manifest["artifacts"][0]["path"]).open("r+b") as handle:
+                first = handle.read(1)
+                handle.seek(0)
+                handle.write(bytes([first[0] ^ 1]))
+        try:
+            verify_deployment(copied, digest, repository=repository, expected_platform=platform)
+        except (ValueError, FileNotFoundError) as error:
+            write(copied, "rejected.json", {"case": case, "error": str(error), "worker_launched": False})
+        else:
+            raise RuntimeError("invalid real artifact copy passed cold admission: " + case)
+    verify_deployment(original, digest, repository=repository, expected_platform=platform)
 
 
 def run_case(repository, revision, environment_path, environment, directory, lane, case, fault):
@@ -162,6 +200,7 @@ def main():
     warp = RuntimeEnvironmentContract.from_payload(json.loads(warp_path.read_bytes()))
     warp.verify_files(expected_sha256=warp.sha256)
     output = _create_directory(args.output)
+    check_bad_artifact_copies(repository, cuda, output)
     results = []
     for name, lane, case, fault in CASES:
         directory = _create_directory(output / name)

@@ -192,3 +192,26 @@ def test_cold_composer_rejects_wrong_selection_without_writing_inventory(artifac
     ], capture_output=True, text=True, timeout=30)
     assert result.returncode != 0 and not output.exists()
     assert ("selected digest" if attack == "base_digest" else "cold launcher ABI") in result.stderr
+
+
+def test_acceptance_file_faults_use_private_copies_and_preserve_selected_set(artifact, monkeypatch):
+    from types import SimpleNamespace
+    from tools import optical_cuda_build_recipe
+    from tests.support.cuda_artifact_runtime_acceptance import check_bad_artifact_copies
+
+    root, payload = artifact
+    digest = _publish_fixture(root, payload)
+    environment = SimpleNamespace(to_payload=lambda: {
+        "roots": [{"id": "cuda_artifacts", "path": str(root)}],
+        "files": [{"root": "cuda_artifacts", "path": MANIFEST_NAME, "sha256": digest}],
+    })
+    def create(path):
+        path.mkdir()
+        return path
+    monkeypatch.setattr(optical_cuda_build_recipe, "_create_directory", create)
+    output = create(root / "private-faults")
+    check_bad_artifact_copies(REPOSITORY, environment, output)
+    assert verify_deployment(root, digest, repository=REPOSITORY, expected_platform=payload["platform"]) == payload
+    for case in ("missing", "changed", "partial"):
+        row = json.loads((output / ("artifact_" + case) / "rejected.json").read_bytes())
+        assert row["case"] == case and row["worker_launched"] is False
