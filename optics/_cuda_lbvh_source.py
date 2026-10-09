@@ -41,6 +41,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
 
 CUDA_SOURCE = r"""
+#include <torch/types.h>
 #include <torch/extension.h>
 
 #include <ATen/cuda/CUDAContext.h>

@@ -197,10 +197,22 @@ void shade_direct_light_with_shadows_diagnostics_out(
     torch::Tensor traversal_counter_6,
     torch::Tensor traversal_counter_7,
     torch::Tensor traversal_counter_8);
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("pinhole_camera_rays_out", torch::wrap_pybind_function(pinhole_camera_rays_out), "pinhole_camera_rays_out");
+  m.def("first_hit_rays_out", torch::wrap_pybind_function(first_hit_rays_out), "first_hit_rays_out");
+  m.def("shade_direct_light_no_shadow_out", torch::wrap_pybind_function(shade_direct_light_no_shadow_out), "shade_direct_light_no_shadow_out");
+  m.def("shade_direct_light_no_shadow_diagnostics_out", torch::wrap_pybind_function(shade_direct_light_no_shadow_diagnostics_out), "shade_direct_light_no_shadow_diagnostics_out");
+  m.def("shade_direct_light_with_shadows_out", torch::wrap_pybind_function(shade_direct_light_with_shadows_out), "shade_direct_light_with_shadows_out");
+  m.def("shade_direct_light_with_shadows_diagnostics_out", torch::wrap_pybind_function(shade_direct_light_with_shadows_diagnostics_out), "shade_direct_light_with_shadows_diagnostics_out");
+}
 """
 
 
 CUDA_SOURCE = r"""
+#include <torch/types.h>
+#include <cuda.h>
+#include <cuda_runtime.h>
 #include <torch/extension.h>
 
 #include <ATen/cuda/CUDAContext.h>

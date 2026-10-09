@@ -1561,9 +1561,21 @@ Next milestone:
       reusing existing file admission and factories and deleting superseded worker
       dependency/compilation wiring. Deployment process cleanup still needs proof;
       this is a draft recommendation, not changed authority or execution approval.
-      Next work is the concrete simplification design, not another isolated pidfd
-      campaign. Product requirements, independent checkpoints and full C4 objective
-      remain; no early benchmark/activation or automatic removal is authorized.
+      **Fixed-artifact replacement design accepted (2026-10-09):** fresh reviewer
+      /root/fixed_artifacts_design_v2 approves designv2 at3e31778, digest4f7cca3d,
+      unchanged report archived atdcfa7a7. The design replaces worker JIT with
+      standard deployment builds and ordinary guard3 file admission, and specifies
+      removal of the superseded live setuptools/compiler machinery. Original v1
+      findings about normal main exit, builder availability probing and named
+      adoption joins are closed at design level. Implementation has started with
+      explicit source bindings and standard build/status leaves;30 local CPU
+      source/contract checks pass. No real build/service/GPU run or code acceptance
+      is claimed. Launcher/publication, worker loading, factory binding, net deletion
+      and source/profile refresh are unfinished; see fixed-cuda-artifacts
+      implementation-notev1. Finish and preflight the whole replacement packet,
+      then continue all parent C4 work. Do not resume the isolated pidfd campaign.
+      Product requirements and independent checkpoints remain; no early benchmark
+      or activation is authorized. C4 remains active and incomplete.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design

@@ -15,6 +15,8 @@ class CudaExtensionRecipe:
     source_module: object
     entries: tuple[str, ...]
     generate_bindings: bool
+    cflags: tuple[str, ...] = ("-O2",)
+    cuda_cflags: tuple[str, ...] = ("-O2",)
 
 
 CUDA_EXTENSION_RECIPES = (
@@ -41,7 +43,7 @@ CUDA_EXTENSION_RECIPES = (
             "shade_direct_light_with_shadows_out",
             "shade_direct_light_with_shadows_diagnostics_out",
         ),
-        True,
+        False,
     ),
 )
 
@@ -64,8 +66,8 @@ def cuda_extension_kwargs(recipe_id: str) -> dict:
         "with_cuda": True,
         "is_python_module": True,
         "use_pch": False,
-        "extra_cflags": ["-O2"],
-        "extra_cuda_cflags": ["-O2"],
+        "extra_cflags": list(recipe.cflags),
+        "extra_cuda_cflags": list(recipe.cuda_cflags),
         "verbose": False,
     }
     if recipe.generate_bindings:

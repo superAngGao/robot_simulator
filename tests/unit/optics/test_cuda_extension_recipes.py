@@ -24,7 +24,18 @@ def test_original_kernel_bytes_and_entry_abis_are_preserved():
     )
     for recipe, hashes in zip(CUDA_EXTENSION_RECIPES, expected, strict=True):
         cpp, cuda = recipe.source_module.CPP_SOURCE, recipe.source_module.CUDA_SOURCE
-        assert tuple(hashlib.sha256(s.encode()).hexdigest() for s in (cpp, cuda)) == hashes
+        # Strip only the explicitly migrated headers/binding body. Keep the
+        # original hashes as an independent check that no kernel/declaration
+        # body changed while moving from load_inline to standard BuildExtension.
+        original_cpp = cpp
+        original_cuda = cuda.replace("#include <torch/types.h>\n", "", 1)
+        if recipe.name == "robot_sim_cuda_direct_light_v8":
+            original_cpp, binding = cpp.split("\nPYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {", 1)
+            original_cuda = original_cuda.replace("#include <cuda.h>\n", "", 1)
+            original_cuda = original_cuda.replace("#include <cuda_runtime.h>\n", "", 1)
+            wrapped = re.findall(r'm\.def\("([^"]+)", torch::wrap_pybind_function\((\w+)\), "([^"]+)"\);', binding)
+            assert wrapped == [(name, name, name) for name in recipe.entries]
+        assert tuple(hashlib.sha256(s.encode()).hexdigest() for s in (original_cpp, original_cuda)) == hashes
         for name in recipe.entries:
             assert name in cpp and name in cuda
         if not recipe.generate_bindings:
