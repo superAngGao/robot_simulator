@@ -323,7 +323,7 @@ def _output_array_allocation(runtime, target, *, lane, stream=None, context=None
     The optional context is the existing single-use preparation context, not a
     callback. The guarded caller supplies it from its validated runtime binding.
     Every returned array is retained before metadata inspection or adoption.
-    Exceptions propagate through the caller's original setup guard.
+    Native failures remain fatal even when caught within the original guard.
     """
     lifecycle = None
     if lane not in {"cuda", "warp"}:
@@ -335,6 +335,7 @@ def _output_array_allocation(runtime, target, *, lane, stream=None, context=None
         if type(lifecycle) is not NativeGuardedSetupLifecycle:
             raise TypeError("guarded output allocation requires its guarded lifecycle")
         lifecycle._require_setup()
+        ticket = lifecycle._guard_ticket
         if (runtime is not held_runtime or lifecycle._lane_id != lane
                 or (target != held_target if lane == "cuda" else target is not held_target)
                 or (stream is not None and stream is not held_stream)):
@@ -352,29 +353,33 @@ def _output_array_allocation(runtime, target, *, lane, stream=None, context=None
     def empty(name, shape, dtype):
         if not active:
             raise ValueError("output allocator is outside its original scope")
-        if lifecycle is not None:
-            lifecycle._require_setup()
-            _enter_device_leaf(lifecycle, _descriptor(lifecycle,
-                operation_id=_array_operation_id("slot_allocate", name), leaf_kind="allocation",
-                runtime_identity=lane + "_empty_explicit_device_v1"))
-        result = runtime.empty(shape, dtype=dtype, device=target)
-        if lifecycle is not None:
-            owners.append(result)
-            ordinal = int(result.device.index if lane == "cuda" else result.device.ordinal)
-            lifecycle.adopt_returned_device_owner(result, actual_device_ordinal=ordinal,
-                role="slot_device_array", operation_id=_array_operation_id("slot_allocate", name))
-        return result
+        with lifecycle._observe_public_operation() if lifecycle is not None else nullcontext():
+            if lifecycle is not None:
+                lifecycle._require_setup()
+                if lifecycle._guard_ticket is not ticket:
+                    raise ValueError("output allocator is outside its original guard")
+                _enter_device_leaf(lifecycle, _descriptor(lifecycle,
+                    operation_id=_array_operation_id("slot_allocate", name), leaf_kind="allocation",
+                    runtime_identity=lane + "_empty_explicit_device_v1"))
+            result = runtime.empty(shape, dtype=dtype, device=target)
+            if lifecycle is not None:
+                owners.append(result)
+                ordinal = int(result.device.index if lane == "cuda" else result.device.ordinal)
+                lifecycle.adopt_returned_device_owner(result, actual_device_ordinal=ordinal,
+                    role="slot_device_array", operation_id=_array_operation_id("slot_allocate", name))
+            return result
 
-    device_scope = runtime.cuda.device(target) if lane == "cuda" else runtime.ScopedDevice(target)
-    with device_scope:
-        stream_scope = (runtime.cuda.stream(stream) if lane == "cuda" else runtime.ScopedStream(stream)) \
-            if stream is not None else nullcontext()
-        with stream_scope:
-            active = True
-            try:
-                yield empty
-            finally:
-                active = False
+    with lifecycle._observe_public_operation() if lifecycle is not None else nullcontext():
+        device_scope = runtime.cuda.device(target) if lane == "cuda" else runtime.ScopedDevice(target)
+        with device_scope:
+            stream_scope = (runtime.cuda.stream(stream) if lane == "cuda" else runtime.ScopedStream(stream)) \
+                if stream is not None else nullcontext()
+            with stream_scope:
+                active = True
+                try:
+                    yield empty
+                finally:
+                    active = False
 
 
 def _upload_cuda_native_input(source, *, context):
