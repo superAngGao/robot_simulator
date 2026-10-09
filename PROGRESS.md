@@ -1695,6 +1695,14 @@ Next milestone:
       Fresh support reviewv2 approves552d1b7 (60 tests passed), full report
       archived unchanged. Their native execution is now underway; code approval
       does not establish native failure restoration, timeout cleanup or whole C4.
+      That five-case native batch has now completed at552d1b7: four original
+      guard failures preserve roots/exception and quarantine without sync; the
+      load hang is killed/reaped at its original deadline. All11 owned PIDs are
+      absent. Raw archive SHA and CPU source/preexisting-state checks are in
+      test-evidencev5. Fresh warp-admission-support code-reviewv1 approves4fe6b3a
+      for the next15 admission selectors; no production delta or new manager.
+      Native admission/regression acceptance and actual graph/render work remain
+      pending; the owner-requested whole-C4 refactor is still required.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
