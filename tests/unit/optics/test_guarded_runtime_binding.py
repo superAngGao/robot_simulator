@@ -49,6 +49,14 @@ def runtime_session(monkeypatch):
         controller._check_running()
 
     session.check_live, session.audit = check, check
+    # This fixture isolates runtime-binding ownership with a simulated Torch;
+    # it has no inventoried extension files or canonical input. Artifact file
+    # loading is exercised by test_cuda_artifact_replay and real cold acceptance.
+    def artifact_boundary():
+        assert session.phase == "initializing_runtime"
+        assert bootstrap._RUNTIME_BINDINGS[session][0].stream is not None
+        controller._require_setup()
+    session._bind_cuda_artifacts = artifact_boundary
     monkeypatch.setitem(
         bootstrap._SOURCE_CUSTODY,
         session,
@@ -97,6 +105,48 @@ def test_initialization_mints_exact_adopted_single_use_binding(runtime_session):
     assert (
         controller.termination_evidence.lifecycle.to_payload()["summary"]["emergency_sync_attempt_count"] == 0
     )
+
+
+@pytest.mark.parametrize("failure", (False, True))
+def test_parent_factory_entry_uses_original_guard_and_retains_partial_graph(runtime_session, monkeypatch, failure):
+    session, controller, module, _ = runtime_session
+    binding = session.initialize_native_runtime()
+    prepared, extensions, factory = object(), object(), object()
+    controller.adopt_host_owner(prepared, role="unit_prepared", operation_id="unit_prepared")
+    runtime_record = bootstrap._RUNTIME_BINDINGS[session]
+    monkeypatch.setitem(bootstrap._UPLOADED_INPUTS, session, (runtime_record, prepared))
+    session.prepared_input, session.validation_report, session.phase = prepared, object(), "input_validated"
+    session.cuda_extensions = lambda: extensions
+    checkpoints = []
+    monkeypatch.setattr(session.runtime_observation, "checkpoint", lambda: checkpoints.append(True))
+    before = controller.evidence().to_payload()["summary"]["normal_complete_count"]
+    original_error = RuntimeError("partial factory construction")
+
+    def prepare(actual_session, actual_prepared, actual_module, target, stream, actual_extensions):
+        assert actual_session is session and actual_prepared is prepared and actual_module is module
+        assert target is binding.target and stream is binding.stream and actual_extensions is extensions
+        controller._require_setup()
+        session._runtime_leaf("cuda_lbvh_factory", "runtime_import_or_init")
+        session._hold_runtime_owner(factory, "cuda_lbvh_factory")
+        if failure:
+            raise original_error
+        return factory
+
+    monkeypatch.setattr(native_setup, "_prepare_cuda_factory_owners", prepare)
+    if failure:
+        with pytest.raises(RuntimeError) as caught:
+            session.prepare_cuda_factories()
+        assert caught.value is original_error and any(owner is factory for owner in session.runtime_owners)
+        evidence = controller.termination_evidence.lifecycle.to_payload()["summary"]
+        assert evidence["normal_complete_count"] == before and evidence["emergency_sync_attempt_count"] == 0
+        assert controller.guardian.state == "TRANSFERRED_TO_QUARANTINE" and checkpoints == []
+    else:
+        assert session.prepare_cuda_factories() is factory and session.phase == "cuda_factories_ready"
+        assert checkpoints == [True]
+        assert controller.evidence().to_payload()["summary"]["normal_complete_count"] == before + 1
+        with pytest.raises(bootstrap.SourceBootstrapError, match="once"):
+            session.prepare_cuda_factories()
+        assert checkpoints == [True]
 
 
 @pytest.mark.parametrize(

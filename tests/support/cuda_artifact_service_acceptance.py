@@ -110,8 +110,8 @@ def accept_case(case, directory, repository, manager, sentinel):
     deadline = time.monotonic() + 20
     with (directory / "waiter.log").open("xb") as log:
         waiter = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
-        write_record(directory, "waiter.json", {"pid": waiter.pid})
         try:
+            write_record(directory, "waiter.json", {"pid": waiter.pid})
             if case in {"descendant", "timeout", "launcher_loss"}:
                 until(lambda: (directory / "expected-output.json").is_file(), deadline, "main output absent")
                 main = json.loads((directory / "main.json").read_bytes())

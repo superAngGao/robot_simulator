@@ -1,0 +1,1 @@
+{"cuda_arch_list":"9.0","cxx11_abi":true,"ext_suffix":".cpython-312-x86_64-linux-gnu.so","machine":"x86_64","python_version":[3,12,13],"soabi":"cpython-312-x86_64-linux-gnu","system":"Linux","torch_cuda_version":"12.8","torch_version":"2.9.1+cu128"}

@@ -117,6 +117,8 @@ _RUNTIME_PHASES = frozenset(
         "uploaded",
         "validating_input",
         "input_validated",
+        "preparing_cuda_factories",
+        "cuda_factories_ready",
     }
 )
 _VALIDATION_SOURCES = MappingProxyType(
@@ -129,6 +131,19 @@ _CUDA_ARTIFACT_SOURCES = MappingProxyType(
         "optics._cuda_scene_source": "optics/_cuda_scene_source.py",
         "optics._cuda_lbvh_source": "optics/_cuda_lbvh_source.py",
         "optics._cuda_direct_light_source": "optics/_cuda_direct_light_source.py",
+    }
+)
+_CUDA_FACTORY_SOURCES = MappingProxyType(
+    {
+        "optics.cuda_scene": "optics/cuda_scene.py",
+        "optics.cuda_lbvh": "optics/cuda_lbvh.py",
+        "optics.cuda_direct_light": "optics/cuda_direct_light.py",
+        "optics.cuda_timeline": "optics/cuda_timeline.py",
+        "optics.native_arena": "optics/native_arena.py",
+        "optics.device_channel": "optics/device_channel.py",
+        "optics.execution": "optics/execution.py",
+        "optics.output_contract": "optics/output_contract.py",
+        "optics.scene": "optics/scene.py",
     }
 )
 # One-shot trusted-process identities, never reconstructed from a receipt.
@@ -2316,10 +2331,12 @@ class _SourceSession:
                 | _EXTERNAL_CONTRACT_DEFINITIONS
                 | _MATERIALIZATION_SOURCES
             )
-            if self.phase in {"validating_input", "input_validated"}:
+            if self.phase in {"validating_input", "input_validated", "preparing_cuda_factories", "cuda_factories_ready"}:
                 admitted = admitted | _VALIDATION_SOURCES
             if self.lane == "cuda" and self.phase not in {"materializing", "materialized"}:
                 admitted = admitted | _CUDA_ARTIFACT_SOURCES
+            if self.lane == "cuda" and self.phase in {"preparing_cuda_factories", "cuda_factories_ready"}:
+                admitted = admitted | _CUDA_FACTORY_SOURCES
             return admitted
         raise SourceBootstrapError("invalid CPU source phase")
 
@@ -3119,6 +3136,47 @@ class _SourceSession:
             raise
 
 
+
+    def prepare_cuda_factories(self):
+        """Parent setup foundation only: no slots, warmups or execution readiness."""
+        try:
+            self.check_live()
+            _require(self.lane == "cuda" and self.phase == "input_validated",
+                     "CUDA factory preparation requires this session's validated input, once")
+            controller = self.bound_controller()
+            with controller.segment("setup"):
+                self.phase = "preparing_cuda_factories"
+                record = _UPLOADED_INPUTS.get(self)
+                _require(record is not None and record[1] is self.prepared_input
+                         and self.validation_report is not None,
+                         "CUDA factories require the original uploaded and validated input")
+                runtime_record, prepared = record
+                module, target, stream = self._validate_runtime_binding_record(runtime_record[0], runtime_record)
+                controller.require_adopted(prepared)
+                extensions = self.cuda_extensions()
+                from optical_worker.native_setup import _prepare_cuda_factory_owners
+
+                try:
+                    factories = _prepare_cuda_factory_owners(self, prepared, module, target, stream, extensions)
+                except BaseException:
+                    if not controller._terminating and not controller._replay.unknown:
+                        try:
+                            controller.mark_unknown_device_scope(
+                                source="partial_cuda_factory_preparation", reason="cuda_factories_not_completed")
+                        except BaseException as scope_error:
+                            self.runtime_owners.append(scope_error)
+                    raise
+                self.cuda_factories = factories
+                self.audit()
+                self.external.audit()
+            self.phase = "cuda_factories_ready"
+            # The six input phases remain unchanged. This is a later parent
+            # setup guard, not another input phase or a final readiness record.
+            self.runtime_observation.checkpoint()
+            return factories
+        except BaseException as error:
+            self.fail(error)
+            raise
 
     def check_import_topology(self):
         """Pure CPU integrity, also usable by terminal stdlib after poison."""

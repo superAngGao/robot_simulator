@@ -44,9 +44,12 @@ RUNTIME_CUDA_ONLY_FAULTS = ("runtime_c1_stream_only_copy", "runtime_module_repla
 RUNTIME_OBSERVATION_FAULTS = ("runtime_scope_success", "runtime_scope_getter_error",
                             "runtime_scope_after_return_raise", "runtime_scope_after_append_raise",
                             "runtime_scope_missing_warp_scope", "runtime_scope_c1_copy")
+RUNTIME_ARTIFACT_FAULTS = ("runtime_artifacts_success", "runtime_artifacts_create_after_raise",
+                         "runtime_artifacts_exec_after_raise", "runtime_artifacts_entry_adoption_raise",
+                         "runtime_artifacts_factory_after_raise", "runtime_artifacts_factory_hang")
 RUNTIME_FAULTS = (RUNTIME_NATIVE_FAULTS + RUNTIME_ACK_FAULTS + RUNTIME_PARENT_FAULTS
                   + RUNTIME_SCOPE_FAULTS + RUNTIME_GLOBAL_FAULTS + RUNTIME_CUDA_ONLY_FAULTS
-                  + RUNTIME_OBSERVATION_FAULTS)
+                  + RUNTIME_OBSERVATION_FAULTS + RUNTIME_ARTIFACT_FAULTS)
 
 
 def _install_runtime_fault(fault, entry, session, controller, directory):
@@ -55,7 +58,7 @@ def _install_runtime_fault(fault, entry, session, controller, directory):
     All wrappers and their real return values are retained by the already held
     source session. The production source closure has no fault selector.
     """
-    if fault in {"runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang"} or fault in RUNTIME_ACK_FAULTS + RUNTIME_OBSERVATION_FAULTS:
+    if fault in {"runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang", "runtime_artifacts_success"} or fault in RUNTIME_ACK_FAULTS + RUNTIME_OBSERVATION_FAULTS:
         return None
     state = {"fired": False, "returned": [], "originals": []}
     session.runtime_owners.append(state)
@@ -82,7 +85,30 @@ def _install_runtime_fault(fault, entry, session, controller, directory):
         state["originals"].append(getattr(owner, name))
         setattr(owner, name, replacement)
 
-    if fault in RUNTIME_GLOBAL_FAULTS or fault in RUNTIME_CUDA_ONLY_FAULTS[1:]:
+    if fault in RUNTIME_ARTIFACT_FAULTS:
+        if fault in {"runtime_artifacts_create_after_raise", "runtime_artifacts_exec_after_raise"}:
+            method = "_create_cuda_artifact" if "create" in fault else "_exec_cuda_artifact"
+            original = getattr(session, method)
+            def after_native(*args):
+                result = original(*args)
+                trip(method + ".after_original", result)
+            replace(session, method, after_native)
+        elif fault == "runtime_artifacts_entry_adoption_raise":
+            original = controller.adopt_host_owner
+            def before_adoption(owner, *, role, operation_id):
+                if role == "cuda_artifact_entry":
+                    trip("cuda_artifact_entry.before_adoption", owner)
+                return original(owner, role=role, operation_id=operation_id)
+            replace(controller, "adopt_host_owner", before_adoption)
+        else:
+            original = session._hold_runtime_owner
+            def after_factory(owner, role, *, device_ordinal=None):
+                result = original(owner, role, device_ordinal=device_ordinal)
+                if role == "cuda_lbvh_factory":
+                    trip("cuda_lbvh_factory.after_adoption", owner)
+                return result
+            replace(session, "_hold_runtime_owner", after_factory)
+    elif fault in RUNTIME_GLOBAL_FAULTS or fault in RUNTIME_CUDA_ONLY_FAULTS[1:]:
         original = session.runtime_observation.append
 
         def append(kind, details):
@@ -719,6 +745,37 @@ class _NativeScopeObserver:
                 self.snapshot(_site, "after", opening[1], opening)
                 return result
             setattr(setup, name, wrapper)
+        if self.fault in RUNTIME_ARTIFACT_FAULTS:
+            original = setup._prepare_cuda_factory_owners
+            self.originals.append(original)
+            def observed_factories(*args):
+                self._ticket()
+                before = self._state(False)
+                result = original(*args)
+                self.held.append(result)
+                after = self._state(False)
+                assert before == after, "factory preparation did not restore ambient device/stream"
+                assert before["logical_device"] == 0 and before["raw_device"] == 1
+                assert before["held_stream"] == {"ordinal": 1, "handle": self.stream.cuda_stream}
+                assert [row["ordinal"] for row in after["primary_contexts"] if row["active"]] == [1]
+                context, scene, lbvh, renderer = result
+                extensions = self.session.cuda_extensions()
+                modules = tuple(row[1] for row in extensions.recipes)
+                assert (scene.module is modules[0] and lbvh.module is modules[1] and renderer.module is modules[2])
+                assert all(owner.context is context for owner in (scene, lbvh, renderer))
+                assert context.stream is self.stream and context.device == self.target
+                assert scene._triangle_entry is modules[0].update_triangles_world_aabb_out
+                assert scene._plane_entry is modules[0].update_planes_world_out
+                assert lbvh._entry is modules[1].cuda_lbvh_rebuild_out
+                assert lbvh.requirements.device_ordinal == 1 and lbvh.requirements.primitive_count == lbvh.primitive_count
+                self.controller.require_adopted(*result, result)
+                _write(self.directory, "cuda_factory_binding.json", {
+                    "before": before, "after": after, "guard": self.controller._guard_reference,
+                    "module_names": [row[0] for row in extensions.recipes],
+                    "requirements": lbvh.requirements.to_payload(), "exact_factory_bindings": True,
+                    "sample_submission_count": 0, "final_execution_readiness_issued": False})
+                return result
+            setup._prepare_cuda_factory_owners = observed_factories
         if self.session.lane == "warp":
             original_scope = self.module.ScopedDevice
             self.originals.append(original_scope)
@@ -807,6 +864,8 @@ def child(fault, fd, directory):
     }
     if set(request) != fields:
         raise ValueError("unexpected fixed runtime configuration field")
+    if fault in RUNTIME_ARTIFACT_FAULTS and request["lane"] != "cuda":
+        raise ValueError("fixed CUDA artifact case requires the CUDA lane")
     root = Path(request["root"])
     trusted_inputs = json.loads((directory / "runtime_custody_inputs.json").read_bytes())
     environment_payload = json.loads(Path(request["environment_path"]).read_bytes())
@@ -889,7 +948,7 @@ def child(fault, fd, directory):
         observe()
         injection = _install_runtime_fault(fault, entry, session, controller, directory)
         scope_observer = (_NativeScopeObserver(session, controller, directory, environment_payload, fault)
-                          if fault in RUNTIME_OBSERVATION_FAULTS else None)
+                          if fault in RUNTIME_OBSERVATION_FAULTS + RUNTIME_ARTIFACT_FAULTS else None)
         phase = "setup_definitions"
         session.import_setup_definitions()
         observe()
@@ -920,6 +979,10 @@ def child(fault, fd, directory):
                 "final_execution_readiness_issued": False,
             },
         )
+        if fault in RUNTIME_ARTIFACT_FAULTS:
+            phase = "cuda_factory_preparation"
+            session.prepare_cuda_factories()
+            observe()
         phase = "terminal_disposal"
 
         def synchronize():

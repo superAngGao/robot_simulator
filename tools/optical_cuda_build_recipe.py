@@ -114,6 +114,31 @@ def _create_directory(path: Path) -> Path:
     return _private_directory(path)
 
 
+def _observe_builder_driver_state(stage: str, torch=None) -> dict:
+    """Read this builder's OS facts without calling CUDA or NVML.
+
+These checkpoints accompany the fixed installed-source/environment proof; they
+are not a syscall history or an assertion about another process's past activity.
+"""
+    mapped = sorted({line.split()[-1] for line in Path("/proc/self/maps").read_text().splitlines()
+                     if "/libcuda.so" in line or "/libnvidia-ml.so" in line})
+    gpu_fds = []
+    for path in Path("/proc/self/fd").iterdir():
+        try:
+            target = os.readlink(path)
+        except FileNotFoundError:
+            continue  # The directory iterator's own descriptor may have closed.
+        if target.startswith(("/dev/nvidia", "/dev/dri/")):
+            gpu_fds.append(target)
+    initialized = None if torch is None else torch.cuda.is_initialized()
+    record = {"stage": stage, "mapped_driver_libraries": mapped,
+              "gpu_device_fds": sorted(gpu_fds), "torch_initialized": initialized}
+    print(json.dumps({"builder_driver_observation": record}, sort_keys=True, separators=(",", ":")), flush=True)
+    if mapped or gpu_fds or initialized not in (None, False):
+        raise RuntimeError("fixed CPU builder acquired a driver/GPU runtime")
+    return record
+
+
 def build_recipe(name: str, job: Path, unit: str) -> None:
     _check_environment()
     job = _private_directory(job)
@@ -140,10 +165,13 @@ def build_recipe(name: str, job: Path, unit: str) -> None:
 
     # -S avoids .pth/sitecustomize execution. Only the selected deployment's
     # installed packages are added, and setuptools handles its ordinary alias.
+    _observe_builder_driver_state("before_dependencies")
     sys.path.append(str(_PREFIX / "lib/python3.12/site-packages"))
     import setuptools
     import torch
     from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+
+    _observe_builder_driver_state("after_dependencies", torch)
 
     if str(torch.__version__) != "2.9.1+cu128" or torch.version.cuda != "12.8":
         raise RuntimeError("builder Torch/CUDA ABI differs from the deployment")
@@ -161,6 +189,7 @@ def build_recipe(name: str, job: Path, unit: str) -> None:
         cmdclass={"build_ext": BuildExtension.with_options(use_ninja=True)},
         script_args=["--no-user-cfg", "build_ext", "--build-temp", str(temporary), "--build-lib", str(output)],
     )
+    _observe_builder_driver_state("after_build", torch)
     suffix = sysconfig.get_config_var("EXT_SUFFIX")
     if type(suffix) is not str or not suffix.endswith(".so"):
         raise RuntimeError("deployment extension suffix is not a Python shared object")

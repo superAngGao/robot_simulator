@@ -85,6 +85,35 @@ def _cuda_artifact_exec_exact(torch, target, stream, delegate, module):
             delegate.exec_module(module)
 
 
+def _prepare_cuda_factory_owners(session, prepared, torch, target, stream, extensions):
+    """Reuse ordinary factories and retain each return inside its device scope."""
+    session._runtime_leaf("cuda_factory_definitions", "runtime_import_or_init")
+    from optics.cuda_timeline import CudaOpticalExecutionContext
+    from optics.cuda_direct_light import CudaDirectLightNativeRenderer
+    from optical_worker.native_input import (
+        build_prepared_cuda_scene_update_factory, build_prepared_cuda_lbvh_rebuild_factory,
+    )
+    from optical_worker.native_contract import assert_prepared_storage_registered
+
+    session._runtime_leaf("cuda_factory_context", "runtime_import_or_init")
+    with torch.cuda.device(target), torch.cuda.stream(stream):
+        context = CudaOpticalExecutionContext(device=target, stream=stream)
+        session._hold_runtime_owner(context, "cuda_factory_context")
+        session._runtime_leaf("cuda_scene_factory", "runtime_import_or_init")
+        assert_prepared_storage_registered(prepared)
+        scene = build_prepared_cuda_scene_update_factory(prepared, context=context, extensions=extensions)
+        session._hold_runtime_owner(scene, "cuda_scene_factory")
+        session._runtime_leaf("cuda_lbvh_factory", "runtime_import_or_init")
+        lbvh = build_prepared_cuda_lbvh_rebuild_factory(prepared, context=context, extensions=extensions)
+        session._hold_runtime_owner(lbvh, "cuda_lbvh_factory")
+        session._runtime_leaf("cuda_render_factory", "runtime_import_or_init")
+        renderer = CudaDirectLightNativeRenderer.prepare(context, extensions=extensions)
+        session._hold_runtime_owner(renderer, "cuda_render_factory")
+        factories = (context, scene, lbvh, renderer)
+        session._hold_runtime_owner(factories, "cuda_factory_owners")
+        return factories
+
+
 class NativeWorkerPreparationAborted(RuntimeError):
     """A setup exception reached its required terminal resource disposition."""
 

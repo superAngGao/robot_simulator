@@ -3,6 +3,8 @@
 import copy
 import hashlib
 import json
+import subprocess
+import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -14,6 +16,7 @@ from tools.optical_cuda_artifacts import (
     MANIFEST_NAME, SOURCE_FILES, VERSION, extend_runtime_environment, file_row, recipe_rows, validate_manifest, verify_deployment,
 )
 from tools.optical_cuda_build_recipe import _BUILD_ENVIRONMENT, build_service_argv
+from tests.unit.optics.test_runtime_environment import deployment
 
 
 REPOSITORY = Path(__file__).resolve().parents[3]
@@ -167,3 +170,25 @@ def test_existing_v5_environment_binds_exact_files_without_compilation_profile(a
     with pytest.raises(ValueError, match="already exists"):
         extend_runtime_environment(derived, deployment=root, manifest_sha256=digest,
                                    repository=REPOSITORY, expected_platform=payload["platform"])
+
+
+@pytest.mark.parametrize("attack", ("base_digest", "launcher_abi"))
+def test_cold_composer_rejects_wrong_selection_without_writing_inventory(artifact, deployment, attack):
+    root, payload = artifact
+    _, base_payload = deployment
+    base = RuntimeEnvironmentContract.from_payload(base_payload)
+    base_path, platform_path, output = root / "base.json", root / "platform.json", root / "derived.json"
+    base_path.write_bytes(base.encoded)
+    selected_platform = copy.deepcopy(payload["platform"])
+    # Deliberately impossible ABI on every host, including the actual Linux target.
+    selected_platform["soabi"] = "wrong-reviewed-platform"
+    platform_path.write_bytes(canonical_json_bytes(selected_platform))
+    digest = _publish_fixture(root, payload)
+    result = subprocess.run([
+        sys.executable, "-I", "-S", "-B", str(REPOSITORY / "tools/optical_cuda_environment.py"),
+        "--base-profile", str(base_path), "--base-sha256", "0" * 64 if attack == "base_digest" else base.sha256,
+        "--deployment", str(root), "--manifest-sha256", digest,
+        "--expected-platform", str(platform_path), "--output", str(output),
+    ], capture_output=True, text=True, timeout=30)
+    assert result.returncode != 0 and not output.exists()
+    assert ("selected digest" if attack == "base_digest" else "cold launcher ABI") in result.stderr

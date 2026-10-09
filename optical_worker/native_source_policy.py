@@ -18,7 +18,7 @@ from .protocol import ClosedWorkerProtocolError, canonical_sha256
 
 NATIVE_AST_POLICY_VERSION = "q54.p12.4.closed-worker-ast-policy.v15"
 _BOOTSTRAP_PATH = "optical_worker/native_bootstrap.py"
-_BOOTSTRAP_SOURCE_SHA256 = "c71f20e7c982b8f336ecfb8b25444b1d0e9b5fcb9bb7f88951a8ab59b86be7ec"
+_BOOTSTRAP_SOURCE_SHA256 = "89add784517eb43986a72f2531722556a025d44d1d6d0441f71578009717bac3"
 _BOOTSTRAP_CLASS_PINS = {
     "_RuntimeObservation": "cfb64f25a4bf1774a5e67128ac7e1b3b5a06ab9800ddd2f9b51d39e2b9537b3e",
     "_CapturedSourceLoader": "cc647d0af05f892513eceea40708734e5a7aafe82c278507d094a65894639ecb",
@@ -27,7 +27,7 @@ _BOOTSTRAP_CLASS_PINS = {
     "_ExternalAdmission": "b0f10b81a78f0ed470edb01d0ad982c1c70be35fb06530bfa565142ec2c77773",
     "_ExternalNamespaceLoader": "524801ff222139e86fa76fa918b42a20ee61d6bcfe9e783542c880da3cad46bf",
     "_RuntimeSetupBinding": "85bf4bb6a12a3ab17807393c27993ca319e5b614eda9c14d4f1d6c0b042f6112",
-    "_SourceSession": "eb0df970e922fb344b3e3bcc5c51497887bd50ffd713778ebef77d19b6928895",
+    "_SourceSession": "86cab4b1585c2c26cfc34ea74c109cfd9f5c666b3b7a03c7f8afcc7d25a73564",
 }
 _BOOTSTRAP_IMPORTS = frozenset(("importlib.abc", "importlib.machinery", "importlib.util"))
 _BOOTSTRAP_USES = frozenset((

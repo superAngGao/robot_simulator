@@ -11,11 +11,96 @@ from types import SimpleNamespace
 import pytest
 
 from optical_worker.guarded_lifecycle import NativeGuardedSetupLifecycle
-from optical_worker.native_bootstrap import _ExternalSourceLoader, _RuntimeObservation
+from optical_worker.native_bootstrap import _ExternalSourceLoader, _RuntimeObservation, _SourceSession
 from optical_worker.native_setup import _cuda_artifact_create_exact, _cuda_artifact_exec_exact
 from optical_worker.runtime_custody import PHASES, RUNTIME_CUSTODY_VERSION, _RuntimeReplay
 from optics.cuda_extension_recipes import CUDA_EXTENSION_RECIPES
 from tests.support.guarded_peer import Peer
+
+
+@pytest.mark.parametrize("failure", (None, "scene", "lbvh", "renderer", "adoption", "stream_exit"))
+def test_factory_preparation_keeps_partial_returns_before_scope_unwind(monkeypatch, failure):
+    from optical_worker import native_setup, native_input, native_contract
+    from optics import cuda_timeline, cuda_direct_light
+
+    context, scene, lbvh, renderer, prepared, extensions = (object() for _ in range(6))
+    target, stream = object(), object()
+    held, events = [], []
+    error = RuntimeError("factory boundary failure")
+
+    @contextmanager
+    def scope(name, actual, expected):
+        assert actual is expected
+        events.append(name + "_enter")
+        try:
+            yield
+        finally:
+            # Every successful return must already be in session-owned storage.
+            for label, owner in (("context", context), ("scene", scene), ("lbvh", lbvh), ("renderer", renderer)):
+                if label + "_returned" in events:
+                    assert any(value is owner for value in held)
+            events.append(name + "_exit")
+            if failure == name + "_exit":
+                raise error
+
+    def make_context(*, device, stream):
+        assert device is target and stream is torch_stream
+        events.append("context_returned")
+        return context
+
+    def factory(label, owner, value, *, context, extensions):
+        assert value is prepared and context is expected_context and extensions is expected_extensions
+        events.append(label)
+        if failure == label:
+            raise error
+        events.append(label + "_returned")
+        return owner
+
+    def render(value, *, extensions):
+        assert value is context
+        return factory("renderer", renderer, prepared, context=context, extensions=extensions)
+
+    def hold(owner, role):
+        held.append(owner)
+        if failure == "adoption" and role == "cuda_lbvh_factory":
+            raise error
+
+    torch_stream, expected_context, expected_extensions = stream, context, extensions
+    torch = SimpleNamespace(cuda=SimpleNamespace(device=lambda value: scope("device", value, target),
+                                                 stream=lambda value: scope("stream", value, stream)))
+    session = SimpleNamespace(_runtime_leaf=lambda operation, kind: events.append(operation), _hold_runtime_owner=hold)
+    def audit(value):
+        assert value is prepared
+        events.append("storage_audit")
+    monkeypatch.setattr(native_contract, "assert_prepared_storage_registered", audit)
+    monkeypatch.setattr(cuda_timeline, "CudaOpticalExecutionContext", make_context)
+    monkeypatch.setattr(native_input, "build_prepared_cuda_scene_update_factory",
+                        lambda value, **kwargs: factory("scene", scene, value, **kwargs))
+    monkeypatch.setattr(native_input, "build_prepared_cuda_lbvh_rebuild_factory",
+                        lambda value, **kwargs: factory("lbvh", lbvh, value, **kwargs))
+    monkeypatch.setattr(cuda_direct_light.CudaDirectLightNativeRenderer, "prepare", render)
+    if failure:
+        with pytest.raises(RuntimeError) as caught:
+            native_setup._prepare_cuda_factory_owners(session, prepared, torch, target, stream, extensions)
+        assert caught.value is error
+    else:
+        result = native_setup._prepare_cuda_factory_owners(session, prepared, torch, target, stream, extensions)
+        assert result == (context, scene, lbvh, renderer) and held[-1] is result
+    assert events[-2:] == ["stream_exit", "device_exit"]
+    assert events.index("storage_audit") < events.index("scene")
+    if failure in {"lbvh", "adoption"}:
+        assert "renderer" not in events
+
+
+@pytest.mark.parametrize("phase", ("runtime_ready", "uploaded", "input_validated", "preparing_cuda_factories", "cuda_factories_ready"))
+def test_factory_source_admission_begins_only_in_parent_preparation(phase):
+    session = object.__new__(_SourceSession)
+    session.phase, session.lane = phase, "cuda"
+    sources = session.admitted_sources()
+    allowed = phase in {"preparing_cuda_factories", "cuda_factories_ready"}
+    assert ("optics.cuda_timeline" in sources) is allowed
+    assert ("optics.cuda_lbvh" in sources) is allowed
+    assert "optics.cuda_extension_compatibility" not in sources
 
 
 @pytest.mark.parametrize("failure", (None, "stream_exit", "device_exit", "journal"))
