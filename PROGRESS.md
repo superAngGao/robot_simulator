@@ -1361,6 +1361,20 @@ Next milestone:
       test-evidence v1. The complete85 fault rerun on this same frozen candidate
       is running; no result or whole-C2d3 approval is claimed. Required final
       evidence and fresh whole independent review still precede acceptance.
+      The exact e585956 full85 fault rerun subsequently passed in4488.89s:
+      85live identity chains, no observer error/outer timeout, all172 owned
+      PID references absent from OS/GPU records. Raw archive and limitations
+      are recorded in runtime-faults test-evidence v3. Full actual-record CPU
+      mutation execution yielded451pass/1fail/36inapplicable skips; the failure
+      was a legal singleton-axis stride edit mislabelled invalid. Test-only
+      candidate7cde887 changes a nondegenerate axis instead: all96 affected
+      storage mutations pass on the same8 actual records, unchanged original
+      file hashes. Fresh terminal-matrix preflightv1 independently reproduced
+      96passes and approved this bounded test/ledger delta plus the next12
+      both-lane terminal cases. Their success/sync-raise/sync-hang coverage is
+      separate from the85 matrix, which excludes those selectors. No terminal
+      outcome or whole-C2d3 approval follows from this preflight; C4 remains
+      active and the candidate production still equals e585956.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
