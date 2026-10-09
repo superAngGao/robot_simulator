@@ -1121,6 +1121,9 @@ def _run_observed_render_warmups(session, controller, binding, observer, directo
             _write(directory, 'warmup_rgb.json', {'width': width, 'height': height, 'channels': 3,
                 'dtype': 'float32', 'frame_id': parameters['frame_id'], 'sha256': hashlib.sha256(encoded).hexdigest(),
                 'bytes': len(encoded), 'guard': dict(controller._guard_reference)})
+    # The diagnostic copy is a later completed guard than the production
+    # warmup checkpoint; observe() must consume this current validated cut.
+    session.runtime_observation.checkpoint()
     return evidence
 
 

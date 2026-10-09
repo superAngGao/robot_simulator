@@ -14,6 +14,9 @@ def test_warmup_observer_readback_and_tamper_replay(executable_graph, diagnostic
     from tests.support.native_runtime_process import _run_observed_render_warmups
     from tests.support.cuda_artifact_runtime_acceptance import _validate_render_warmups
     x = executable_graph
+    checkpoints = []
+    monkeypatch.setattr(x.session.runtime_observation, 'checkpoint',
+                        lambda: checkpoints.append(x.controller.evidence().to_payload()))
     for _ in range((13 if x.p.lane == 'warp' else 9) - x.initial_completes):
         with x.controller.segment('setup'):
             pass
@@ -45,6 +48,7 @@ def test_warmup_observer_readback_and_tamper_replay(executable_graph, diagnostic
     result = _run_observed_render_warmups(x.session, x.controller,
         NS(module=x.p.runtime, target=x.p.device, stream=x.f.stream), NS(_state=state), tmp_path)
     assert result is x.session.fixed_render_warmups and native_setup._native_resource_scope is original
+    assert checkpoints[-1] == x.controller.evidence().to_payload()
     assert (tmp_path / 'warmup_rgb.f32').read_bytes() == rgb.data.tobytes()
     fault = 'runtime_render_warmup_' + ('diagnostics' if diagnostic else 'success')
     def validate(trace=None):
