@@ -1386,8 +1386,11 @@ Next milestone:
       Actual-record mutations pass500/36explicitly inapplicable skips; all113
       originals still replay and all8 original missing-completion counterexamples
       now reject. No old GPU evidence is relabelled as repaired execution.
-      The approved repaired16 native-scope rerun is now running;85fault and12
-      terminal reruns plus fresh whole review still precede C2d3 acceptance.
+      The approved repaired16 native-scope rerun passed1183.04s: eight both-lane
+      normal inputs and eight intended failures,16 live identity chains, all34
+      owned PID references absent afterward. Exact artifacts/limitations are in
+      native-scope-aggregate test-evidence v2. The85fault rerun is now running;
+      its result,12terminal rerun and fresh whole review still precede acceptance.
       See whole-review-repairs test-evidence/code-preflight-review v1 for hashes,
       limitations and unchanged full report. C4 remains the active objective.
       C4c2 runtime, C4c3-c4,
