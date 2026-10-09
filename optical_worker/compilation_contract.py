@@ -31,6 +31,74 @@ CUDA_CONTINUATION_SOURCE_MODULES = (
 )
 CUDA_NATIVE_SITES = ("cuda_compile", "cuda_extension_create", "cuda_extension_exec")
 
+# Pinned dependency grammar. These inert facts are shared by collection/replay;
+# they neither construct an initialization owner nor grant import permission.
+SETUPTOOLS_INITIALIZATION_POLICY = "setuptools_83_conda_cuda_g1_v1"
+SETUPTOOLS_ALIAS_ACTIONS = ("alias_created", "alias_executed", "alias_published")
+_SETUPTOOLS_ALIAS_FIELDS = ("source_module_token", "alias_spec_token", "delegate_token", "wrapper_token")
+SETUPTOOLS_ACTION_FIELDS = (
+    ("begun", ("vendor_root", "original_paths", "active_paths")),
+    ("hooked", ("hack_module_token", "finder_token", "insert_original_token", "remove_original_token",
+                "insert_wrapper_token", "remove_wrapper_token", "producer_token")),
+    ("shim_entered", ("override_module_token",)),
+    ("alias_spec", ("source_module_token", "source_spec_token", "source_loader_token",
+                    "alias_spec_token", "delegate_token", "wrapper_token")),
+    *((action, _SETUPTOOLS_ALIAS_FIELDS) for action in SETUPTOOLS_ALIAS_ACTIONS),
+    ("shim_left", ()),
+    ("hooks_restored", ()),
+    ("metadata_read", ("read_index", "distribution_token", "bytes_token", "file_root", "file_path",
+                       "sha256", "version")),
+    ("resource_read", ("read_index", "package_token", "reader_token", "bytes_token", "handle_token",
+                       "file_root", "file_path", "sha256")),
+    ("completed", ("setuptools_module_token", "build_ext_module_token", "cpp_extension_module_token")),
+    ("failed", ("exception_token",)),
+)
+SETUPTOOLS_HELPER_BINDINGS = (
+    ("hooked", "finder_token", "setuptools_initialization.finder"),
+    ("hooked", "producer_token", "setuptools_initialization.spec_producer"),
+    ("hooked", "insert_original_token", "setuptools_initialization.insert_original"),
+    ("hooked", "remove_original_token", "setuptools_initialization.remove_original"),
+    ("hooked", "insert_wrapper_token", "setuptools_initialization.insert_wrapper"),
+    ("hooked", "remove_wrapper_token", "setuptools_initialization.remove_wrapper"),
+    ("alias_spec", "alias_spec_token", "setuptools_initialization.alias_spec"),
+    ("alias_spec", "delegate_token", "setuptools_initialization.alias_delegate"),
+    ("alias_spec", "wrapper_token", "setuptools_initialization.alias_wrapper"),
+    ("metadata_read", "distribution_token", "setuptools_initialization.metadata_distribution"),
+    ("metadata_read", "bytes_token", "setuptools_initialization.metadata_bytes"),
+    ("resource_read", "reader_token", "setuptools_initialization.resource_reader"),
+    ("resource_read", "bytes_token", "setuptools_initialization.resource_bytes"),
+)
+
+
+def setuptools_event_fields(action: str) -> frozenset[str]:
+    if type(action) is str:
+        for name, fields in SETUPTOOLS_ACTION_FIELDS:
+            if action == name:
+                return frozenset(("action", "initialization_token", *fields))
+    raise ValueError("unknown setuptools initialization action")
+
+
+def setuptools_role_anchor(action: str, field: str, read_index: int | None = None) -> tuple[str, str]:
+    """Closed successful-helper roles; ordinary file owners have separate joins."""
+    fields = setuptools_event_fields(action)
+    if type(field) is not str or field not in fields:
+        raise ValueError("unknown setuptools initialization field")
+    reading = action in {"metadata_read", "resource_read"}
+    if reading:
+        if type(read_index) is not int or read_index < 0:
+            raise ValueError("invalid setuptools read occurrence")
+    elif read_index is not None:
+        raise ValueError("unexpected setuptools read occurrence")
+    if field == "initialization_token":
+        return "setuptools_initialization", "setuptools_initialization"
+    if action == "resource_read" and field == "handle_token":
+        return "external_import_owner", f"setuptools_initialization.resource_handle.{read_index}"
+    binding_action = "alias_spec" if action in SETUPTOOLS_ALIAS_ACTIONS else action
+    for name, slot, operation in SETUPTOOLS_HELPER_BINDINGS:
+        if (binding_action, field) == (name, slot):
+            return "external_import_owner", operation
+    raise ValueError("setuptools field requires an ordinary-source or failed-owner join")
+
 
 def cuda_native_operation(recipe_id: str, site: str) -> tuple[str, str]:
     for name, suffix, runtime_identity in (

@@ -1472,10 +1472,16 @@ Next milestone:
       review at758950c confirmed these blockers (Approve with comments for gap
       assessment only). Target Python3.12 stand-in CPU probes reproduce alias,
       metadata and resource conflicts; no actual dependency/native import ran.
-      See setuptools-admission gap-scan/gap-review/test-evidence v1. Next is a
-      bounded design amendment and independent approval before adapting these
-      behaviors. Do not keep adding isolated import exemptions or claim the
-      earlier design approval already covers the new initialization transaction.
+      See setuptools-admission gap-scan/gap-review/test-evidence v1. The bounded
+      amendment v2 atd62da69 now has fresh independent design approval after R1
+      required field-specific helper operation anchors. Full report is archived
+      unchanged at2a745c6. Shared inert vocabulary/anchors are implemented WIP;
+      local actual guardian/join tests plus existing root tests passed18, while
+      11POSIX codec tests were skipped on Windows. See setuptools-admission
+      implementation-note v1 for exact evidence and limits. Actual initialization,
+      environment/record schemas, complete closure and dedicated CPU preflight
+      remain next, then the original real compilation/native evidence. No isolated
+      import exemptions or completed transaction are claimed by this partial code.
       Owner follow-up (2026-10-09): after functional implementation and required
       real verification, perform a systematic refactor of the whole C4 structure
       before final acceptance, covering accumulated hotfixes, ownership boundaries,
