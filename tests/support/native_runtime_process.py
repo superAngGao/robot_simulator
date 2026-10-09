@@ -52,8 +52,25 @@ RUNTIME_WARP_IDLE_FAULTS = tuple("runtime_warp_modules_" + name for name in (
     "incomplete_entry", "incomplete_issuance"))
 RUNTIME_WARP_COMPILE_FAULTS = tuple("runtime_warp_modules_" + name for name in (
     "import_raise", "load_before_raise", "load_after_raise", "adoption_raise", "load_hang"))
-RUNTIME_WARP_MODULE_FAULTS = ("runtime_warp_modules_success", "runtime_warp_modules_abi_dtype",
-                             "runtime_warp_modules_abi_ndim", "runtime_warp_modules_entry_hash",
+RUNTIME_WARP_ADMISSION_ERRORS = {
+    "abi_dtype": ("ValueError", "Warp executable or kernel ABI changed"),
+    "abi_ndim": ("ValueError", "Warp executable or kernel ABI changed"),
+    "entry_hash": ("ValueError", "Warp executable or kernel ABI changed"),
+    "config": ("ValueError", "Warp compilation configuration drift"),
+    "options": ("ValueError", "Warp module compilation options drift"),
+    "cache_permissions": ("ValueError", "Warp cache directory changed"),
+    "artifact_bytes": ("ValueError", "Warp compiled artifact bytes changed"),
+    "artifact_redirect": ("ValueError", "Warp artifact redirects outside its cache"),
+    "mapping": ("ValueError", "Warp executable mapping changed or a new variant appeared"),
+    "copied_set": ("ValueError", "Warp module set is copied, foreign or unregistered"),
+    "foreign_set": ("ValueError", "Warp module set identity drift"),
+    "copied_record": ("ValueError", "Warp compilation record registry changed"),
+    "target": ("SourceBootstrapError", "runtime binding resource identity drift"),
+    "stream": ("SourceBootstrapError", "runtime binding resource identity drift"),
+    "source_cache": ("SourceBootstrapError", "captured source linecache changed"),
+}
+RUNTIME_WARP_ADMISSION_FAULTS = tuple("runtime_warp_modules_" + name for name in RUNTIME_WARP_ADMISSION_ERRORS)
+RUNTIME_WARP_MODULE_FAULTS = ("runtime_warp_modules_success", *RUNTIME_WARP_ADMISSION_FAULTS,
                              *RUNTIME_WARP_IDLE_FAULTS, *RUNTIME_WARP_COMPILE_FAULTS)
 RUNTIME_FAULTS = (RUNTIME_NATIVE_FAULTS + RUNTIME_ACK_FAULTS + RUNTIME_PARENT_FAULTS
                   + RUNTIME_SCOPE_FAULTS + RUNTIME_GLOBAL_FAULTS + RUNTIME_CUDA_ONLY_FAULTS
@@ -1166,20 +1183,65 @@ def child(fault, fd, directory):
             with controller.segment("setup"):
                 session._validate_runtime_binding_record(binding, entry._UPLOADED_INPUTS[session][0])
                 records = warp_setup.validate_module_set(session, owners)
-                if fault != "runtime_warp_modules_success":
+                if fault in RUNTIME_WARP_ADMISSION_FAULTS:
                     kernel = records[0].definitions[0]
                     _write(directory, "fault_entered.json", {
-                        "fault": fault, "boundary": "compiled_kernel_before_reuse",
+                        "fault": fault, "boundary": "compiled_modules_before_reuse",
                         "guard": dict(controller._guard_reference), "kernel": kernel.key,
-                        "executable_id": id(records[0].executable)})
-                    if fault == "runtime_warp_modules_abi_dtype":
+                        "executable_id": id(records[0].executable),
+                        "lifecycle_event_count": len(controller._guard_events)})
+                    change = fault.removeprefix("runtime_warp_modules_")
+                    cache = warp_setup._CACHES[session]
+                    if change == "abi_dtype":
                         kernel.adj.args[0].type.dtype = binding.module.float64
-                    elif fault == "runtime_warp_modules_abi_ndim":
+                    elif change == "abi_ndim":
                         kernel.adj.args[0].type.ndim += 1
-                    else:
+                    elif change == "entry_hash":
                         kernel.hash = b"fixed changed kernel entry"
+                    elif change == "config":
+                        binding.module.config.llvm_cuda = True
+                    elif change == "options":
+                        records[0].module.options["fast_math"] = True
+                    elif change == "cache_permissions":
+                        cache.path.chmod(0o755)
+                    elif change in {"artifact_bytes", "artifact_redirect"}:
+                        # Only this worker's generated file; preserve original
+                        # bytes in the raw evidence directory before mutation.
+                        artifact = cache.path / records[0].artifacts[0][0]
+                        original = artifact.read_bytes()
+                        saved = directory / "original_compiled.cubin"
+                        with saved.open("xb") as handle:
+                            handle.write(original)
+                        if change == "artifact_bytes":
+                            artifact.write_bytes(original + b"fixed changed artifact")
+                        else:
+                            artifact.unlink()
+                            artifact.symlink_to(saved)
+                    elif change == "mapping":
+                        records[0].module.execs = dict(records[0].mapping)
+                    elif change == "copied_set":
+                        copied = object.__new__(type(owners))
+                        for name in ("session", "binding", "modules"):
+                            object.__setattr__(copied, name, getattr(owners, name))
+                        owners = copied
+                    elif change == "foreign_set":
+                        object.__setattr__(owners, "session", object())
+                    elif change == "copied_record":
+                        cache.records[0] = records[0]._replace()
+                    elif change in {"target", "stream"}:
+                        object.__setattr__(binding, change, object())
+                    elif change == "source_cache":
+                        loader = session.modules[records[0].python_module.__name__][1]
+                        loader.source_cache[2].append("# changed captured source\n")
+                    else:
+                        raise AssertionError("unimplemented Warp admission fault")
+                    # The same composed admission as recording: exact binding,
+                    # held source/environment, then the issued compilation set.
+                    session._validate_runtime_binding_record(binding, entry._UPLOADED_INPUTS[session][0])
+                    session.audit()
+                    session.external.audit()
                     warp_setup.validate_module_set(session, owners)
-                    raise AssertionError("changed kernel ABI or entry was admitted")
+                    raise AssertionError("changed Warp compilation authority was admitted")
                 session._runtime_leaf("warp_module_reuse", "runtime_import_or_init")
                 with binding.module.ScopedDevice(binding.target), binding.module.ScopedStream(binding.stream):
                     for record in records:

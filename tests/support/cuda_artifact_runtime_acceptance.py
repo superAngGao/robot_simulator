@@ -152,7 +152,10 @@ def run_case(repository, revision, environment_path, environment, directory, lan
             if result["worker_returncode"] == 0 or not (directory / "fault_entered.json").is_file():
                 raise RuntimeError("fixed fault did not reach its intended real boundary")
             marker = json.loads((directory / "fault_entered.json").read_bytes())
-            from tests.support.native_runtime_process import RUNTIME_WARP_IDLE_FAULTS, RUNTIME_WARP_COMPILE_FAULTS
+            from tests.support.native_runtime_process import (
+                RUNTIME_WARP_IDLE_FAULTS, RUNTIME_WARP_COMPILE_FAULTS,
+                RUNTIME_WARP_ADMISSION_FAULTS, RUNTIME_WARP_ADMISSION_ERRORS,
+            )
             idle_fault = fault in RUNTIME_WARP_IDLE_FAULTS
             compile_fault = fault in RUNTIME_WARP_COMPILE_FAULTS
             idle_synced = fault in {"runtime_warp_modules_entry_raise", "runtime_warp_modules_issuance_raise"}
@@ -229,6 +232,8 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                 completed = 10 if not idle_fault or issuance else 6
                 arms = completed + (int(idle_synced) if idle_fault else 1)
                 expected_error = ("ValueError", "Warp executable or kernel ABI changed")
+                if fault in RUNTIME_WARP_ADMISSION_FAULTS:
+                    expected_error = RUNTIME_WARP_ADMISSION_ERRORS[fault.removeprefix("runtime_warp_modules_")]
                 if idle_fault:
                     if "unknown" in fault:
                         expected_error = (("ValueError", "Warp module issuance requires healthy IDLE target scope")
@@ -242,6 +247,15 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                         or control["arm_count"] != arms
                         or (failure["type"], failure["message"]) != expected_error):
                     raise RuntimeError("Warp fault did not reject at the intended production boundary")
+                if fault in RUNTIME_WARP_ADMISSION_FAULTS:
+                    events = worker["transition_trace"]
+                    failed = [row for row in events if row["operation"] == "guard_failed"]
+                    if (worker["summary"]["custody"] != "full_quarantine"
+                            or len(failed) != 1 or failed[0]["guard"] != expected_guard
+                            or any(row["operation"] == "low_level_leaf_entered"
+                                   for row in events[marker["lifecycle_event_count"]:])
+                            or (directory / "warp_module_binding.json").exists()):
+                        raise RuntimeError("Warp admission failure proceeded to reuse or lost custody")
                 if idle_fault:
                     if any(event["operation"] == "guard_failed" for event in worker["transition_trace"]):
                         raise RuntimeError("IDLE fault fabricated a failed guard")
