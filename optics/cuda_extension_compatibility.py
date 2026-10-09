@@ -65,8 +65,8 @@ def load_cuda_extension(recipe_name):
                 or spec.name != name or spec.loader.name != name or spec.loader.path != origin):
             raise ValueError("CUDA extension resolution differs from selected deployment")
         _LOADED[name] = (None, None, None, None)
-        if name == "robot_sim_cuda_scene_v1":
-            import robot_sim_cuda_scene_v1 as module
+        if name == "robot_sim_cuda_scene_v3":
+            import robot_sim_cuda_scene_v3 as module
         elif name == "robot_sim_cuda_lbvh_native_v3":
             import robot_sim_cuda_lbvh_native_v3 as module
         else:

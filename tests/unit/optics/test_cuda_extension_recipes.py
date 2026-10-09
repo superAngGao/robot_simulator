@@ -13,20 +13,21 @@ import pytest
 from optics.cuda_extension_recipes import CUDA_EXTENSION_RECIPES
 
 
-def test_original_kernel_bytes_and_entry_abis_are_preserved():
+def test_fixed_recipe_kernel_bytes_and_entry_abis():
     expected = (
-        ("7bec3f1f2ec03fa441924a699a7d276795fa2ec10dd845002ed7a03a0cd7c5b6",
-         "b8f33c61b8c68ae5072aa298523eec3557f12c69bf24d307b474a988fd0b5831"),
+        ("baebdb1d67ea644ccc0b23709a145acbd5c0248dc4b0f660316279d0180ebced",
+         "9f54e05e7d1b49af61d6fd0d5ac3fe57afb68b9947cc04b84c6e31855d73da9f"),
         ("65783ded7966b45f71c4dd4330530c3f20817622d86710a9ac9a3d72511c354c",
          "3643883860c27fbff71e54817855015890753e454628976e0cf4c05fc518f79e"),
         ("2f9b088f191936092412a908137e767c906f3b0fcfe7505ef0f88709af55b0b0",
-         "9c321f37665ae1fbb589f44e6170f588e90835532347523fc757fa315df79f4c"),
+         "7aff022dc043000c8b723df89716611ceb50bc4f5bab4c23f1b0868262234fdf"),
     )
     for recipe, hashes in zip(CUDA_EXTENSION_RECIPES, expected, strict=True):
         cpp, cuda = recipe.source_module.CPP_SOURCE, recipe.source_module.CUDA_SOURCE
-        # Strip only the explicitly migrated headers/binding body. Keep the
-        # original hashes as an independent check that no kernel/declaration
-        # body changed while moving from load_inline to standard BuildExtension.
+        # Scene v3 intentionally changes geometry/indices and binary64 arithmetic
+        # under input-precision design v4. LBVH and renderer stay at 812ca29;
+        # the old renderer expectation predated that intersection repair.
+        # These pins detect drift; they do not prove numerical correctness.
         original_cpp = cpp
         original_cuda = cuda.replace("#include <torch/types.h>\n", "", 1)
         if recipe.name == "robot_sim_cuda_direct_light_v8":

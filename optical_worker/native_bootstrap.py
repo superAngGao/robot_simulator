@@ -78,6 +78,8 @@ _MATERIALIZATION_SOURCES = MappingProxyType(
         "optics.host_bvh": "optics/host_bvh.py",
         "optics.mjcf_visual": "optics/mjcf_visual.py",
         "optics.registry": "optics/registry.py",
+        "optics.query_numerics": "optics/query_numerics.py",
+        "optics.scene": "optics/scene.py",
         "optics.scene_contract": "optics/scene_contract.py",
         "physics": "physics/__init__.py",
         "physics._robot_tree_base": "physics/_robot_tree_base.py",
@@ -2961,11 +2963,11 @@ class _SourceSession:
             self._cuda_artifact_runtime(recipe.name)
             _require(recipe.name not in sys.modules and recipe.name not in self.external.records,
                      "CUDA artifact was preloaded")
-        import robot_sim_cuda_scene_v1
+        import robot_sim_cuda_scene_v3
         import robot_sim_cuda_lbvh_native_v3
         import robot_sim_cuda_direct_light_v8
 
-        modules = (robot_sim_cuda_scene_v1, robot_sim_cuda_lbvh_native_v3, robot_sim_cuda_direct_light_v8)
+        modules = (robot_sim_cuda_scene_v3, robot_sim_cuda_lbvh_native_v3, robot_sim_cuda_direct_light_v8)
         controller, admission = self.bound_controller(), self.external
         runtime_record = _RUNTIME_BINDINGS[self]
         owner = object.__new__(CudaExtensionSet)
@@ -3040,7 +3042,7 @@ class _SourceSession:
         self.check_live()
         registered = _CUDA_EXTENSION_SETS.get(self)
         _require(registered is not None, "this session has no issued CUDA extension set")
-        self.require_cuda_extension(registered[0], "robot_sim_cuda_scene_v1")
+        self.require_cuda_extension(registered[0], "robot_sim_cuda_scene_v3")
         return registered[0]
 
     def _consume_runtime_binding(self, binding):

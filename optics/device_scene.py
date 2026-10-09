@@ -12,7 +12,8 @@ from physics.publish import GpuPublishedFrame
 
 from .host_bvh import _canonical_sha256 as _canonical_sha256
 from .registry import OpticalWorldRegistry
-from .scene_contract import PackedOpticalSceneHost
+from .scene_contract import PackedOpticalSceneHost, validate_indexed_geometry
+from .query_numerics import BUILD_EPS
 
 try:  # pragma: no cover - exercised in GPU environments.
     import warp as wp
@@ -22,7 +23,6 @@ except Exception:  # pragma: no cover - keeps CPU-only imports working.
     wp = None
     _HAS_WARP = False
 
-_BUILD_EPS_F32 = 1.0e-8
 _MAX_INT64_ROLE_BITS = 63
 WARP_SCENE_UPDATE_OPERATION_ID = "warp_local_scene_transform_and_aabb_out_v1"
 WARP_SCENE_COMMAND_SCHEMA_VERSION = "q54.p12.4.warp-scene-command.v1"
@@ -32,7 +32,9 @@ _DEVICE_SCENE_ARRAY_NAMES = (
     "light_position_or_direction_world",
     "light_intensity",
     "light_color_rgb",
-    "triangle_vertices_local",
+    "geometry_vertices_local",
+    "geometry_vertex_offsets",
+    "triangle_vertex_indices",
     "triangle_instance_index",
     "triangle_primitive_global_id",
     "triangle_primitive_index_within_instance",
@@ -120,7 +122,9 @@ class DeviceOpticalScene:
     light_position_or_direction_world: object
     light_intensity: object
     light_color_rgb: object
-    triangle_vertices_local: object
+    geometry_vertices_local: object
+    geometry_vertex_offsets: object
+    triangle_vertex_indices: object
     triangle_instance_index: object
     triangle_primitive_global_id: object
     triangle_primitive_index_within_instance: object
@@ -510,7 +514,8 @@ class WarpSceneUpdateCommandFactory:
                     _update_triangles_derived_aabb_world_kernel,
                     dim=scene.num_triangles,
                     inputs=(
-                        scene.triangle_vertices_local,
+                        scene.geometry_vertices_local,
+                        scene.triangle_vertex_indices,
                         scene.triangle_instance_index,
                         scene.instance_body_index,
                         scene.instance_X_body_geometry_R,
@@ -630,7 +635,7 @@ def allocate_warp_world_scene_buffers(
 
     with _output_array_allocation(wp, scene.device, lane="warp", stream=stream, context=_context) as empty:
         arrays = {
-            name: empty(name, (count, 3), wp.float32)
+            name: empty(name, (count, 3), wp.float64 if name in ('triangle_v0_world', 'triangle_e1_world', 'triangle_e2_world', 'plane_normal_world', 'plane_point_world') else wp.float32)
             for name, count in (
                 ("triangle_v0_world", scene.num_triangles), ("triangle_e1_world", scene.num_triangles),
                 ("triangle_e2_world", scene.num_triangles), ("triangle_normal_world", scene.num_triangles),
@@ -763,7 +768,7 @@ def _validate_warp_world_scene_buffers(
         _validate_warp_array(
             getattr(outputs, name),
             name=name,
-            dtype=wp.float32,
+            dtype=wp.float64 if name in ('triangle_v0_world', 'triangle_e1_world', 'triangle_e2_world', 'plane_normal_world', 'plane_point_world') else wp.float32,
             ndim=2,
             shape=(count, 3),
             device=scene.device,
@@ -806,7 +811,8 @@ def _warp_scene_command_inputs(
     transforms: WarpSceneTransformInputs,
 ) -> tuple[tuple[str, object], ...]:
     return (
-        ("triangle_vertices_local", scene.triangle_vertices_local),
+        ("geometry_vertices_local", scene.geometry_vertices_local),
+        ("triangle_vertex_indices", scene.triangle_vertex_indices),
         ("triangle_instance_index", scene.triangle_instance_index),
         ("plane_normal_local", scene.plane_normal_local),
         ("plane_point_local", scene.plane_point_local),
@@ -937,6 +943,7 @@ def build_device_optical_scene_from_packed(
 ) -> DeviceOpticalScene:
     """Upload one canonical host contract into Warp-owned CUDA arrays."""
     _require_warp()
+    validate_indexed_geometry(packed_scene)
     wp.init()
     resolved_device = wp.get_device("cuda:0" if device is None else device)
     arrays: dict[str, object] = {}
@@ -965,6 +972,7 @@ def device_optical_scene_from_arrays(
     """Wrap exact caller-owned Warp arrays without allocating or copying."""
     _require_warp()
     resolved_device = wp.get_device(device)
+    validate_indexed_geometry(packed_scene)
     if set(arrays) != set(packed_scene.arrays):
         raise ValueError("Warp scene arrays do not match the packed scene contract")
     for name, host in packed_scene.arrays.items():
@@ -1006,17 +1014,17 @@ def update_device_optical_scene_from_gpu_frame(
     _wait_on_event(frame.ready_event, stream=stream, device=scene.device)
 
     with _scoped_stream(stream):
-        triangle_v0_world = wp.zeros((scene.num_triangles, 3), dtype=wp.float32, device=scene.device)
-        triangle_e1_world = wp.zeros((scene.num_triangles, 3), dtype=wp.float32, device=scene.device)
-        triangle_e2_world = wp.zeros((scene.num_triangles, 3), dtype=wp.float32, device=scene.device)
+        triangle_v0_world = wp.zeros((scene.num_triangles, 3), dtype=wp.float64, device=scene.device)
+        triangle_e1_world = wp.zeros((scene.num_triangles, 3), dtype=wp.float64, device=scene.device)
+        triangle_e2_world = wp.zeros((scene.num_triangles, 3), dtype=wp.float64, device=scene.device)
         triangle_normal_world = wp.zeros((scene.num_triangles, 3), dtype=wp.float32, device=scene.device)
         triangle_aabb_min = None
         triangle_aabb_max = None
         if include_aabb:
             triangle_aabb_min = wp.zeros((scene.num_triangles, 3), dtype=wp.float32, device=scene.device)
             triangle_aabb_max = wp.zeros((scene.num_triangles, 3), dtype=wp.float32, device=scene.device)
-        plane_normal_world = wp.zeros((scene.num_planes, 3), dtype=wp.float32, device=scene.device)
-        plane_point_world = wp.zeros((scene.num_planes, 3), dtype=wp.float32, device=scene.device)
+        plane_normal_world = wp.zeros((scene.num_planes, 3), dtype=wp.float64, device=scene.device)
+        plane_point_world = wp.zeros((scene.num_planes, 3), dtype=wp.float64, device=scene.device)
 
         if scene.num_triangles > 0:
             wp.launch(
@@ -1025,7 +1033,8 @@ def update_device_optical_scene_from_gpu_frame(
                 else _update_triangles_derived_world_kernel,
                 dim=scene.num_triangles,
                 inputs=[
-                    scene.triangle_vertices_local,
+                    scene.geometry_vertices_local,
+                    scene.triangle_vertex_indices,
                     scene.triangle_instance_index,
                     scene.instance_body_index,
                     scene.instance_X_body_geometry_R,
@@ -1148,756 +1157,176 @@ def _require_warp() -> None:
 
 
 if _HAS_WARP:
+    wp.set_module_options({"fuse_fp": False})
+    _QUERY_BUILD_EPS = wp.constant(wp.float64(BUILD_EPS))
 
     @wp.func
-    def _compose_R_component(
-        Rwb00: float,
-        Rwb01: float,
-        Rwb02: float,
-        Rwb10: float,
-        Rwb11: float,
-        Rwb12: float,
-        Rwb20: float,
-        Rwb21: float,
-        Rwb22: float,
-        Rbg: wp.array2d(dtype=wp.float32),
-        instance_index: int,
-        row: int,
-        col: int,
+    def _compose_world_transform(
+        instance: int, instance_body_index: wp.array(dtype=wp.int32),
+        instance_R: wp.array2d(dtype=wp.float64), instance_r: wp.array2d(dtype=wp.float64),
+        frame_R: wp.array4d(dtype=wp.float32), frame_r: wp.array3d(dtype=wp.float32), env: int,
     ):
-        out = wp.float32(0.0)
-        if row == 0:
-            out = (
-                Rwb00 * Rbg[instance_index, col]
-                + Rwb01 * Rbg[instance_index, 3 + col]
-                + Rwb02 * Rbg[instance_index, 6 + col]
-            )
-        elif row == 1:
-            out = (
-                Rwb10 * Rbg[instance_index, col]
-                + Rwb11 * Rbg[instance_index, 3 + col]
-                + Rwb12 * Rbg[instance_index, 6 + col]
-            )
-        else:
-            out = (
-                Rwb20 * Rbg[instance_index, col]
-                + Rwb21 * Rbg[instance_index, 3 + col]
-                + Rwb22 * Rbg[instance_index, 6 + col]
-            )
-        return out
+        Rwb = wp.mat33d()
+        for axis in range(3):
+            Rwb[axis, axis] = wp.float64(1.0)
+        rwb = wp.vec3d()
+        body = instance_body_index[instance]
+        if body >= 0:
+            for row in range(3):
+                rwb[row] = wp.float64(frame_r[env, body, row])
+                for col in range(3):
+                    Rwb[row, col] = wp.float64(frame_R[env, body, row, col])
+        R = wp.mat33d()
+        r = wp.vec3d()
+        for row in range(3):
+            for col in range(3):
+                R[row, col] = ((Rwb[row, 0] * instance_R[instance, col]
+                               + Rwb[row, 1] * instance_R[instance, 3 + col])
+                               + Rwb[row, 2] * instance_R[instance, 6 + col])
+            r[row] = ((Rwb[row, 0] * instance_r[instance, 0]
+                       + Rwb[row, 1] * instance_r[instance, 1])
+                       + Rwb[row, 2] * instance_r[instance, 2]) + rwb[row]
+        return R, r
+
+    @wp.func
+    def _transform_source_point(R: wp.mat33d, r: wp.vec3d, p: wp.vec3d):
+        result = wp.vec3d()
+        for row in range(3):
+            result[row] = ((R[row, 0] * p[0] + R[row, 1] * p[1]) + R[row, 2] * p[2]) + r[row]
+        return result
+
+    @wp.func
+    def _indexed_world_triangle(
+        primitive: int, vertices: wp.array2d(dtype=wp.float64), indices: wp.array2d(dtype=wp.int64),
+        triangle_instance: wp.array(dtype=wp.int32), instance_body: wp.array(dtype=wp.int32),
+        instance_R: wp.array2d(dtype=wp.float64), instance_r: wp.array2d(dtype=wp.float64),
+        frame_R: wp.array4d(dtype=wp.float32), frame_r: wp.array3d(dtype=wp.float32), env: int,
+    ):
+        R, r = _compose_world_transform(triangle_instance[primitive], instance_body,
+                                        instance_R, instance_r, frame_R, frame_r, env)
+        i0 = indices[primitive, 0]
+        i1 = indices[primitive, 1]
+        i2 = indices[primitive, 2]
+        p0 = _transform_source_point(R, r, wp.vec3d(vertices[i0, 0], vertices[i0, 1], vertices[i0, 2]))
+        p1 = _transform_source_point(R, r, wp.vec3d(vertices[i1, 0], vertices[i1, 1], vertices[i1, 2]))
+        p2 = _transform_source_point(R, r, wp.vec3d(vertices[i2, 0], vertices[i2, 1], vertices[i2, 2]))
+        return p0, p1, p2
+
+    @wp.func
+    def _write_triangle_world(
+        primitive: int, p0: wp.vec3d, p1: wp.vec3d, p2: wp.vec3d,
+        v0_world: wp.array2d(dtype=wp.float64), e1_world: wp.array2d(dtype=wp.float64),
+        e2_world: wp.array2d(dtype=wp.float64), normal_world: wp.array2d(dtype=wp.float32),
+    ):
+        e1 = p1 - p0
+        e2 = p2 - p0
+        normal = wp.cross(e1, e2)
+        norm = wp.sqrt((normal[0]*normal[0] + normal[1]*normal[1]) + normal[2]*normal[2])
+        unit = wp.vec3d()
+        if norm > _QUERY_BUILD_EPS:
+            unit = normal / norm
+        for axis in range(3):
+            v0_world[primitive, axis] = p0[axis]
+            e1_world[primitive, axis] = e1[axis]
+            e2_world[primitive, axis] = e2[axis]
+            normal_world[primitive, axis] = wp.float32(unit[axis])
+
+    @wp.func
+    def _outward_bound(value: wp.float64, upper: int):
+        rounded = wp.float32(value)
+        if upper == 0 and wp.float64(rounded) > value:
+            if rounded == wp.float32(0.0):
+                rounded = wp.cast(wp.int32(-2147483647), wp.float32)
+            elif rounded > wp.float32(0.0):
+                rounded = wp.cast(wp.cast(rounded, wp.int32) - wp.int32(1), wp.float32)
+            else:
+                rounded = wp.cast(wp.cast(rounded, wp.int32) + wp.int32(1), wp.float32)
+        elif upper == 1 and wp.float64(rounded) < value:
+            if rounded == wp.float32(0.0):
+                rounded = wp.cast(wp.int32(1), wp.float32)
+            elif rounded > wp.float32(0.0):
+                rounded = wp.cast(wp.cast(rounded, wp.int32) + wp.int32(1), wp.float32)
+            else:
+                rounded = wp.cast(wp.cast(rounded, wp.int32) - wp.int32(1), wp.float32)
+        return rounded
 
     @wp.kernel
     def _update_triangles_derived_aabb_world_kernel(
-        triangle_vertices_local: wp.array2d(dtype=wp.float32),
+        geometry_vertices_local: wp.array2d(dtype=wp.float64),
+        triangle_vertex_indices: wp.array2d(dtype=wp.int64),
         triangle_instance_index: wp.array(dtype=wp.int32),
         instance_body_index: wp.array(dtype=wp.int32),
-        instance_X_body_geometry_R: wp.array2d(dtype=wp.float32),
-        instance_X_body_geometry_r: wp.array2d(dtype=wp.float32),
+        instance_X_body_geometry_R: wp.array2d(dtype=wp.float64),
+        instance_X_body_geometry_r: wp.array2d(dtype=wp.float64),
         frame_x_world_R: wp.array4d(dtype=wp.float32),
-        frame_x_world_r: wp.array3d(dtype=wp.float32),
-        env_idx: int,
-        triangle_v0_world: wp.array2d(dtype=wp.float32),
-        triangle_e1_world: wp.array2d(dtype=wp.float32),
-        triangle_e2_world: wp.array2d(dtype=wp.float32),
+        frame_x_world_r: wp.array3d(dtype=wp.float32), env_idx: int,
+        triangle_v0_world: wp.array2d(dtype=wp.float64),
+        triangle_e1_world: wp.array2d(dtype=wp.float64),
+        triangle_e2_world: wp.array2d(dtype=wp.float64),
         triangle_normal_world: wp.array2d(dtype=wp.float32),
         triangle_aabb_min: wp.array2d(dtype=wp.float32),
         triangle_aabb_max: wp.array2d(dtype=wp.float32),
     ):
         primitive = wp.tid()
-        instance_index = triangle_instance_index[primitive]
-        body_index = instance_body_index[instance_index]
-        Rwb00 = wp.float32(1.0)
-        Rwb01 = wp.float32(0.0)
-        Rwb02 = wp.float32(0.0)
-        Rwb10 = wp.float32(0.0)
-        Rwb11 = wp.float32(1.0)
-        Rwb12 = wp.float32(0.0)
-        Rwb20 = wp.float32(0.0)
-        Rwb21 = wp.float32(0.0)
-        Rwb22 = wp.float32(1.0)
-        rwbx = wp.float32(0.0)
-        rwby = wp.float32(0.0)
-        rwbz = wp.float32(0.0)
-        if body_index >= 0:
-            Rwb00 = frame_x_world_R[env_idx, body_index, 0, 0]
-            Rwb01 = frame_x_world_R[env_idx, body_index, 0, 1]
-            Rwb02 = frame_x_world_R[env_idx, body_index, 0, 2]
-            Rwb10 = frame_x_world_R[env_idx, body_index, 1, 0]
-            Rwb11 = frame_x_world_R[env_idx, body_index, 1, 1]
-            Rwb12 = frame_x_world_R[env_idx, body_index, 1, 2]
-            Rwb20 = frame_x_world_R[env_idx, body_index, 2, 0]
-            Rwb21 = frame_x_world_R[env_idx, body_index, 2, 1]
-            Rwb22 = frame_x_world_R[env_idx, body_index, 2, 2]
-            rwbx = frame_x_world_r[env_idx, body_index, 0]
-            rwby = frame_x_world_r[env_idx, body_index, 1]
-            rwbz = frame_x_world_r[env_idx, body_index, 2]
-
-        rbgx = instance_X_body_geometry_r[instance_index, 0]
-        rbgy = instance_X_body_geometry_r[instance_index, 1]
-        rbgz = instance_X_body_geometry_r[instance_index, 2]
-        rwgx = rwbx + Rwb00 * rbgx + Rwb01 * rbgy + Rwb02 * rbgz
-        rwgy = rwby + Rwb10 * rbgx + Rwb11 * rbgy + Rwb12 * rbgz
-        rwgz = rwbz + Rwb20 * rbgx + Rwb21 * rbgy + Rwb22 * rbgz
-
-        Rwg00 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            0,
-            0,
-        )
-        Rwg01 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            0,
-            1,
-        )
-        Rwg02 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            0,
-            2,
-        )
-        Rwg10 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            1,
-            0,
-        )
-        Rwg11 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            1,
-            1,
-        )
-        Rwg12 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            1,
-            2,
-        )
-        Rwg20 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            2,
-            0,
-        )
-        Rwg21 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            2,
-            1,
-        )
-        Rwg22 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            2,
-            2,
-        )
-
-        v0x = triangle_vertices_local[primitive, 0]
-        v0y = triangle_vertices_local[primitive, 1]
-        v0z = triangle_vertices_local[primitive, 2]
-        v1x = triangle_vertices_local[primitive, 3]
-        v1y = triangle_vertices_local[primitive, 4]
-        v1z = triangle_vertices_local[primitive, 5]
-        v2x = triangle_vertices_local[primitive, 6]
-        v2y = triangle_vertices_local[primitive, 7]
-        v2z = triangle_vertices_local[primitive, 8]
-
-        e1x = v1x - v0x
-        e1y = v1y - v0y
-        e1z = v1z - v0z
-        e2x = v2x - v0x
-        e2y = v2y - v0y
-        e2z = v2z - v0z
-
-        v0wx = Rwg00 * v0x + Rwg01 * v0y + Rwg02 * v0z + rwgx
-        v0wy = Rwg10 * v0x + Rwg11 * v0y + Rwg12 * v0z + rwgy
-        v0wz = Rwg20 * v0x + Rwg21 * v0y + Rwg22 * v0z + rwgz
-
-        e1wx = Rwg00 * e1x + Rwg01 * e1y + Rwg02 * e1z
-        e1wy = Rwg10 * e1x + Rwg11 * e1y + Rwg12 * e1z
-        e1wz = Rwg20 * e1x + Rwg21 * e1y + Rwg22 * e1z
-
-        e2wx = Rwg00 * e2x + Rwg01 * e2y + Rwg02 * e2z
-        e2wy = Rwg10 * e2x + Rwg11 * e2y + Rwg12 * e2z
-        e2wz = Rwg20 * e2x + Rwg21 * e2y + Rwg22 * e2z
-
-        triangle_v0_world[primitive, 0] = v0wx
-        triangle_v0_world[primitive, 1] = v0wy
-        triangle_v0_world[primitive, 2] = v0wz
-        triangle_e1_world[primitive, 0] = e1wx
-        triangle_e1_world[primitive, 1] = e1wy
-        triangle_e1_world[primitive, 2] = e1wz
-        triangle_e2_world[primitive, 0] = e2wx
-        triangle_e2_world[primitive, 1] = e2wy
-        triangle_e2_world[primitive, 2] = e2wz
-
-        v1wx = v0wx + e1wx
-        v1wy = v0wy + e1wy
-        v1wz = v0wz + e1wz
-        v2wx = v0wx + e2wx
-        v2wy = v0wy + e2wy
-        v2wz = v0wz + e2wz
-        min_x = v0wx
-        min_y = v0wy
-        min_z = v0wz
-        max_x = v0wx
-        max_y = v0wy
-        max_z = v0wz
-        if v1wx < min_x:
-            min_x = v1wx
-        if v2wx < min_x:
-            min_x = v2wx
-        if v1wy < min_y:
-            min_y = v1wy
-        if v2wy < min_y:
-            min_y = v2wy
-        if v1wz < min_z:
-            min_z = v1wz
-        if v2wz < min_z:
-            min_z = v2wz
-        if v1wx > max_x:
-            max_x = v1wx
-        if v2wx > max_x:
-            max_x = v2wx
-        if v1wy > max_y:
-            max_y = v1wy
-        if v2wy > max_y:
-            max_y = v2wy
-        if v1wz > max_z:
-            max_z = v1wz
-        if v2wz > max_z:
-            max_z = v2wz
-        triangle_aabb_min[primitive, 0] = min_x
-        triangle_aabb_min[primitive, 1] = min_y
-        triangle_aabb_min[primitive, 2] = min_z
-        triangle_aabb_max[primitive, 0] = max_x
-        triangle_aabb_max[primitive, 1] = max_y
-        triangle_aabb_max[primitive, 2] = max_z
-
-        nx = e1y * e2z - e1z * e2y
-        ny = e1z * e2x - e1x * e2z
-        nz = e1x * e2y - e1y * e2x
-        normal_norm = wp.sqrt(nx * nx + ny * ny + nz * nz)
-        if normal_norm > _BUILD_EPS_F32:
-            nx = nx / normal_norm
-            ny = ny / normal_norm
-            nz = nz / normal_norm
-            triangle_normal_world[primitive, 0] = Rwg00 * nx + Rwg01 * ny + Rwg02 * nz
-            triangle_normal_world[primitive, 1] = Rwg10 * nx + Rwg11 * ny + Rwg12 * nz
-            triangle_normal_world[primitive, 2] = Rwg20 * nx + Rwg21 * ny + Rwg22 * nz
+        p0, p1, p2 = _indexed_world_triangle(primitive, geometry_vertices_local, triangle_vertex_indices,
+            triangle_instance_index, instance_body_index, instance_X_body_geometry_R,
+            instance_X_body_geometry_r, frame_x_world_R, frame_x_world_r, env_idx)
+        _write_triangle_world(primitive, p0, p1, p2, triangle_v0_world, triangle_e1_world,
+                              triangle_e2_world, triangle_normal_world)
+        for axis in range(3):
+            triangle_aabb_min[primitive, axis] = _outward_bound(wp.min(p0[axis], wp.min(p1[axis], p2[axis])), 0)
+            triangle_aabb_max[primitive, axis] = _outward_bound(wp.max(p0[axis], wp.max(p1[axis], p2[axis])), 1)
 
     @wp.kernel
     def _update_triangles_derived_world_kernel(
-        triangle_vertices_local: wp.array2d(dtype=wp.float32),
+        geometry_vertices_local: wp.array2d(dtype=wp.float64),
+        triangle_vertex_indices: wp.array2d(dtype=wp.int64),
         triangle_instance_index: wp.array(dtype=wp.int32),
         instance_body_index: wp.array(dtype=wp.int32),
-        instance_X_body_geometry_R: wp.array2d(dtype=wp.float32),
-        instance_X_body_geometry_r: wp.array2d(dtype=wp.float32),
+        instance_X_body_geometry_R: wp.array2d(dtype=wp.float64),
+        instance_X_body_geometry_r: wp.array2d(dtype=wp.float64),
         frame_x_world_R: wp.array4d(dtype=wp.float32),
-        frame_x_world_r: wp.array3d(dtype=wp.float32),
-        env_idx: int,
-        triangle_v0_world: wp.array2d(dtype=wp.float32),
-        triangle_e1_world: wp.array2d(dtype=wp.float32),
-        triangle_e2_world: wp.array2d(dtype=wp.float32),
+        frame_x_world_r: wp.array3d(dtype=wp.float32), env_idx: int,
+        triangle_v0_world: wp.array2d(dtype=wp.float64),
+        triangle_e1_world: wp.array2d(dtype=wp.float64),
+        triangle_e2_world: wp.array2d(dtype=wp.float64),
         triangle_normal_world: wp.array2d(dtype=wp.float32),
     ):
         primitive = wp.tid()
-        instance_index = triangle_instance_index[primitive]
-        body_index = instance_body_index[instance_index]
-        Rwb00 = wp.float32(1.0)
-        Rwb01 = wp.float32(0.0)
-        Rwb02 = wp.float32(0.0)
-        Rwb10 = wp.float32(0.0)
-        Rwb11 = wp.float32(1.0)
-        Rwb12 = wp.float32(0.0)
-        Rwb20 = wp.float32(0.0)
-        Rwb21 = wp.float32(0.0)
-        Rwb22 = wp.float32(1.0)
-        rwbx = wp.float32(0.0)
-        rwby = wp.float32(0.0)
-        rwbz = wp.float32(0.0)
-        if body_index >= 0:
-            Rwb00 = frame_x_world_R[env_idx, body_index, 0, 0]
-            Rwb01 = frame_x_world_R[env_idx, body_index, 0, 1]
-            Rwb02 = frame_x_world_R[env_idx, body_index, 0, 2]
-            Rwb10 = frame_x_world_R[env_idx, body_index, 1, 0]
-            Rwb11 = frame_x_world_R[env_idx, body_index, 1, 1]
-            Rwb12 = frame_x_world_R[env_idx, body_index, 1, 2]
-            Rwb20 = frame_x_world_R[env_idx, body_index, 2, 0]
-            Rwb21 = frame_x_world_R[env_idx, body_index, 2, 1]
-            Rwb22 = frame_x_world_R[env_idx, body_index, 2, 2]
-            rwbx = frame_x_world_r[env_idx, body_index, 0]
-            rwby = frame_x_world_r[env_idx, body_index, 1]
-            rwbz = frame_x_world_r[env_idx, body_index, 2]
-
-        rbgx = instance_X_body_geometry_r[instance_index, 0]
-        rbgy = instance_X_body_geometry_r[instance_index, 1]
-        rbgz = instance_X_body_geometry_r[instance_index, 2]
-        rwgx = rwbx + Rwb00 * rbgx + Rwb01 * rbgy + Rwb02 * rbgz
-        rwgy = rwby + Rwb10 * rbgx + Rwb11 * rbgy + Rwb12 * rbgz
-        rwgz = rwbz + Rwb20 * rbgx + Rwb21 * rbgy + Rwb22 * rbgz
-
-        Rwg00 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            0,
-            0,
-        )
-        Rwg01 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            0,
-            1,
-        )
-        Rwg02 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            0,
-            2,
-        )
-        Rwg10 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            1,
-            0,
-        )
-        Rwg11 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            1,
-            1,
-        )
-        Rwg12 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            1,
-            2,
-        )
-        Rwg20 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            2,
-            0,
-        )
-        Rwg21 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            2,
-            1,
-        )
-        Rwg22 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            2,
-            2,
-        )
-
-        v0x = triangle_vertices_local[primitive, 0]
-        v0y = triangle_vertices_local[primitive, 1]
-        v0z = triangle_vertices_local[primitive, 2]
-        e1x = triangle_vertices_local[primitive, 3] - v0x
-        e1y = triangle_vertices_local[primitive, 4] - v0y
-        e1z = triangle_vertices_local[primitive, 5] - v0z
-        e2x = triangle_vertices_local[primitive, 6] - v0x
-        e2y = triangle_vertices_local[primitive, 7] - v0y
-        e2z = triangle_vertices_local[primitive, 8] - v0z
-
-        triangle_v0_world[primitive, 0] = Rwg00 * v0x + Rwg01 * v0y + Rwg02 * v0z + rwgx
-        triangle_v0_world[primitive, 1] = Rwg10 * v0x + Rwg11 * v0y + Rwg12 * v0z + rwgy
-        triangle_v0_world[primitive, 2] = Rwg20 * v0x + Rwg21 * v0y + Rwg22 * v0z + rwgz
-        triangle_e1_world[primitive, 0] = Rwg00 * e1x + Rwg01 * e1y + Rwg02 * e1z
-        triangle_e1_world[primitive, 1] = Rwg10 * e1x + Rwg11 * e1y + Rwg12 * e1z
-        triangle_e1_world[primitive, 2] = Rwg20 * e1x + Rwg21 * e1y + Rwg22 * e1z
-        triangle_e2_world[primitive, 0] = Rwg00 * e2x + Rwg01 * e2y + Rwg02 * e2z
-        triangle_e2_world[primitive, 1] = Rwg10 * e2x + Rwg11 * e2y + Rwg12 * e2z
-        triangle_e2_world[primitive, 2] = Rwg20 * e2x + Rwg21 * e2y + Rwg22 * e2z
-
-        nx = e1y * e2z - e1z * e2y
-        ny = e1z * e2x - e1x * e2z
-        nz = e1x * e2y - e1y * e2x
-        normal_norm = wp.sqrt(nx * nx + ny * ny + nz * nz)
-        if normal_norm > _BUILD_EPS_F32:
-            nx = nx / normal_norm
-            ny = ny / normal_norm
-            nz = nz / normal_norm
-            triangle_normal_world[primitive, 0] = Rwg00 * nx + Rwg01 * ny + Rwg02 * nz
-            triangle_normal_world[primitive, 1] = Rwg10 * nx + Rwg11 * ny + Rwg12 * nz
-            triangle_normal_world[primitive, 2] = Rwg20 * nx + Rwg21 * ny + Rwg22 * nz
+        p0, p1, p2 = _indexed_world_triangle(primitive, geometry_vertices_local, triangle_vertex_indices,
+            triangle_instance_index, instance_body_index, instance_X_body_geometry_R,
+            instance_X_body_geometry_r, frame_x_world_R, frame_x_world_r, env_idx)
+        _write_triangle_world(primitive, p0, p1, p2, triangle_v0_world, triangle_e1_world,
+                              triangle_e2_world, triangle_normal_world)
 
     @wp.kernel
     def _update_planes_world_kernel(
-        plane_normal_local: wp.array2d(dtype=wp.float32),
-        plane_point_local: wp.array2d(dtype=wp.float32),
-        plane_instance_index: wp.array(dtype=wp.int32),
-        instance_body_index: wp.array(dtype=wp.int32),
-        instance_X_body_geometry_R: wp.array2d(dtype=wp.float32),
-        instance_X_body_geometry_r: wp.array2d(dtype=wp.float32),
-        frame_x_world_R: wp.array4d(dtype=wp.float32),
-        frame_x_world_r: wp.array3d(dtype=wp.float32),
-        env_idx: int,
-        plane_normal_world: wp.array2d(dtype=wp.float32),
-        plane_point_world: wp.array2d(dtype=wp.float32),
+        plane_normal_local: wp.array2d(dtype=wp.float64),
+        plane_point_local: wp.array2d(dtype=wp.float64),
+        plane_instance_index: wp.array(dtype=wp.int32), instance_body_index: wp.array(dtype=wp.int32),
+        instance_X_body_geometry_R: wp.array2d(dtype=wp.float64),
+        instance_X_body_geometry_r: wp.array2d(dtype=wp.float64),
+        frame_x_world_R: wp.array4d(dtype=wp.float32), frame_x_world_r: wp.array3d(dtype=wp.float32),
+        env_idx: int, plane_normal_world: wp.array2d(dtype=wp.float64),
+        plane_point_world: wp.array2d(dtype=wp.float64),
     ):
         primitive = wp.tid()
-        instance_index = plane_instance_index[primitive]
-        body_index = instance_body_index[instance_index]
-        Rwb00 = wp.float32(1.0)
-        Rwb01 = wp.float32(0.0)
-        Rwb02 = wp.float32(0.0)
-        Rwb10 = wp.float32(0.0)
-        Rwb11 = wp.float32(1.0)
-        Rwb12 = wp.float32(0.0)
-        Rwb20 = wp.float32(0.0)
-        Rwb21 = wp.float32(0.0)
-        Rwb22 = wp.float32(1.0)
-        rwbx = wp.float32(0.0)
-        rwby = wp.float32(0.0)
-        rwbz = wp.float32(0.0)
-        if body_index >= 0:
-            Rwb00 = frame_x_world_R[env_idx, body_index, 0, 0]
-            Rwb01 = frame_x_world_R[env_idx, body_index, 0, 1]
-            Rwb02 = frame_x_world_R[env_idx, body_index, 0, 2]
-            Rwb10 = frame_x_world_R[env_idx, body_index, 1, 0]
-            Rwb11 = frame_x_world_R[env_idx, body_index, 1, 1]
-            Rwb12 = frame_x_world_R[env_idx, body_index, 1, 2]
-            Rwb20 = frame_x_world_R[env_idx, body_index, 2, 0]
-            Rwb21 = frame_x_world_R[env_idx, body_index, 2, 1]
-            Rwb22 = frame_x_world_R[env_idx, body_index, 2, 2]
-            rwbx = frame_x_world_r[env_idx, body_index, 0]
-            rwby = frame_x_world_r[env_idx, body_index, 1]
-            rwbz = frame_x_world_r[env_idx, body_index, 2]
-
-        rbgx = instance_X_body_geometry_r[instance_index, 0]
-        rbgy = instance_X_body_geometry_r[instance_index, 1]
-        rbgz = instance_X_body_geometry_r[instance_index, 2]
-        rwgx = rwbx + Rwb00 * rbgx + Rwb01 * rbgy + Rwb02 * rbgz
-        rwgy = rwby + Rwb10 * rbgx + Rwb11 * rbgy + Rwb12 * rbgz
-        rwgz = rwbz + Rwb20 * rbgx + Rwb21 * rbgy + Rwb22 * rbgz
-
-        Rwg00 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            0,
-            0,
-        )
-        Rwg01 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            0,
-            1,
-        )
-        Rwg02 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            0,
-            2,
-        )
-        Rwg10 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            1,
-            0,
-        )
-        Rwg11 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            1,
-            1,
-        )
-        Rwg12 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            1,
-            2,
-        )
-        Rwg20 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            2,
-            0,
-        )
-        Rwg21 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            2,
-            1,
-        )
-        Rwg22 = _compose_R_component(
-            Rwb00,
-            Rwb01,
-            Rwb02,
-            Rwb10,
-            Rwb11,
-            Rwb12,
-            Rwb20,
-            Rwb21,
-            Rwb22,
-            instance_X_body_geometry_R,
-            instance_index,
-            2,
-            2,
-        )
-
-        px = plane_point_local[primitive, 0]
-        py = plane_point_local[primitive, 1]
-        pz = plane_point_local[primitive, 2]
-        plane_point_world[primitive, 0] = Rwg00 * px + Rwg01 * py + Rwg02 * pz + rwgx
-        plane_point_world[primitive, 1] = Rwg10 * px + Rwg11 * py + Rwg12 * pz + rwgy
-        plane_point_world[primitive, 2] = Rwg20 * px + Rwg21 * py + Rwg22 * pz + rwgz
-
-        nx = plane_normal_local[primitive, 0]
-        ny = plane_normal_local[primitive, 1]
-        nz = plane_normal_local[primitive, 2]
-        outx = Rwg00 * nx + Rwg01 * ny + Rwg02 * nz
-        outy = Rwg10 * nx + Rwg11 * ny + Rwg12 * nz
-        outz = Rwg20 * nx + Rwg21 * ny + Rwg22 * nz
-        norm = wp.sqrt(outx * outx + outy * outy + outz * outz)
-        if norm > 0.0:
-            outx = outx / norm
-            outy = outy / norm
-            outz = outz / norm
-        plane_normal_world[primitive, 0] = outx
-        plane_normal_world[primitive, 1] = outy
-        plane_normal_world[primitive, 2] = outz
+        R, r = _compose_world_transform(plane_instance_index[primitive], instance_body_index,
+            instance_X_body_geometry_R, instance_X_body_geometry_r, frame_x_world_R, frame_x_world_r, env_idx)
+        point = _transform_source_point(R, r, wp.vec3d(plane_point_local[primitive, 0],
+            plane_point_local[primitive, 1], plane_point_local[primitive, 2]))
+        normal = _transform_source_point(R, wp.vec3d(), wp.vec3d(plane_normal_local[primitive, 0],
+            plane_normal_local[primitive, 1], plane_normal_local[primitive, 2]))
+        norm = wp.sqrt((normal[0]*normal[0] + normal[1]*normal[1]) + normal[2]*normal[2])
+        if norm > _QUERY_BUILD_EPS:
+            normal = normal / norm
+        else:
+            normal = wp.vec3d()
+        for axis in range(3):
+            plane_point_world[primitive, axis] = point[axis]
+            plane_normal_world[primitive, axis] = normal[axis]
 
 else:
-
     def _update_triangles_derived_world_kernel(*args, **kwargs):  # pragma: no cover
         raise ImportError("DeviceOpticalSceneCache requires the optional warp package")
 

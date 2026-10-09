@@ -27,14 +27,14 @@ except Exception:  # pragma: no cover - keeps CPU-only imports working.
     wp = None
     _HAS_WARP = False
 
-_BUILD_EPS = 1.0e-8
-_DIR_EPS = 1.0e-8
-_T_EPS = 1.0e-5
+from .query_numerics import BUILD_EPS as _BUILD_EPS, DIR_EPS as _DIR_EPS, TIE_EPS as _T_EPS
+
+_SHADING_DIR_EPS = 1.0e-8
 _ATTENUATION_EPS = 1.0e-12
 _MAX_BVH_STACK = 32
 
-WARP_RENDER_COMMAND_SCHEMA = "q54.p12.4.warp-render-command.v1"
-WARP_RENDER_ABI = "warp_bvh_direct_light_recorded_v1"
+WARP_RENDER_COMMAND_SCHEMA = "q54.p12.4.warp-render-command.v3"
+WARP_RENDER_ABI = "warp_bvh_direct_light_recorded_v3"
 
 
 def _render_digest(payload: object) -> str:
@@ -59,6 +59,18 @@ def _render_f32(value: object) -> float:
     if not math.isfinite(normalized):
         raise ValueError("render scalar must be a finite float32 value")
     return normalized
+
+
+def _render_f64(value: object) -> float:
+    if isinstance(value, bool):
+        raise ValueError("render scalar must be finite binary64")
+    try:
+        result = float(value)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError("render scalar must be finite binary64") from exc
+    if not math.isfinite(result):
+        raise ValueError("render scalar must be finite binary64")
+    return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,10 +100,10 @@ class WarpRenderQueryParameters:
             raise ValueError("sim_time must be a finite nonnegative float")
         if (
             type(self.max_distance) is not float
-            or _render_f32(self.max_distance) != self.max_distance
+            or _render_f64(self.max_distance) != self.max_distance
             or self.max_distance <= 0
         ):
-            raise ValueError("max_distance must be a positive finite normalized float32")
+            raise ValueError("max_distance must be a positive finite normalized binary64")
         if type(self.sensor_role_mask) is not int or not 0 <= self.sensor_role_mask <= 9223372036854775807:
             raise ValueError("sensor_role_mask must be a nonnegative int64")
 
@@ -135,8 +147,8 @@ class WarpCameraParameters:
         if type(self.rotation) is not tuple or len(self.rotation) != 9:
             raise ValueError("camera rotation must be an exact nine-scalar tuple")
         for value in (self.fx, self.fy, self.cx, self.cy, *self.origin, *self.rotation):
-            if type(value) is not float or _render_f32(value) != value:
-                raise ValueError("camera scalars must be normalized finite float32")
+            if type(value) is not float or _render_f64(value) != value:
+                raise ValueError("camera scalars must be normalized finite binary64")
         if self.fx <= 0 or self.fy <= 0:
             raise ValueError("camera focal lengths must be positive")
 
@@ -157,18 +169,18 @@ class WarpCameraParameters:
                 sim_time=float(camera.sim_time),
                 env_idx=camera.env_idx,
                 sensor_id=camera.sensor_id,
-                max_distance=_render_f32(camera.max_distance),
+                max_distance=_render_f64(camera.max_distance),
                 sensor_role=camera.sensor_role,
                 sensor_role_mask=role_table.mask_for(camera.sensor_role),
             ),
             width=camera.width,
             height=camera.height,
-            fx=_render_f32(camera.fx),
-            fy=_render_f32(camera.fy),
-            cx=_render_f32(camera.cx),
-            cy=_render_f32(camera.cy),
-            origin=tuple(_render_f32(v) for v in camera.X_world_camera.r),
-            rotation=tuple(_render_f32(v) for row in camera.X_world_camera.R for v in row),
+            fx=_render_f64(camera.fx),
+            fy=_render_f64(camera.fy),
+            cx=_render_f64(camera.cx),
+            cy=_render_f64(camera.cy),
+            origin=tuple(_render_f64(v) for v in camera.X_world_camera.r),
+            rotation=tuple(_render_f64(v) for row in camera.X_world_camera.R for v in row),
         )
 
     @property
@@ -319,8 +331,8 @@ class WarpDirectLightRenderCommandEvidence:
 # Ordered physical render ABI. Profiles filter channels, not this storage graph.
 # (semantic, scalar dtype name, per-ray flag, trailing or scalar shape)
 WARP_DIRECT_LIGHT_BUFFER_SPECS = (
-    ("origins", "float32", True, (3,)),
-    ("directions", "float32", True, (3,)),
+    ("origins", "float64", True, (3,)),
+    ("directions", "float64", True, (3,)),
     ("hit_mask", "int32", True, ()),
     ("range_m", "float32", True, ()),
     ("position_world", "float32", True, (3,)),
@@ -583,68 +595,64 @@ def _render_intervals_overlap(first: tuple, second: tuple) -> bool:
 
 
 if _HAS_WARP:
+    wp.set_module_options({"fuse_fp": False})
+    _NO_HIT_SOURCE_KEY = wp.constant(wp.int64(9223372036854775807))
+    # Typed constants avoid Warp first encoding Python float globals as float32.
+    _QUERY_BUILD_EPS = wp.constant(wp.float64(_BUILD_EPS))
+    _QUERY_DIR_EPS = wp.constant(wp.float64(_DIR_EPS))
+    _QUERY_TIE_EPS = wp.constant(wp.float64(_T_EPS))
 
     @wp.kernel
     def _pinhole_camera_raygen_kernel(
         width: int,
         height: int,
-        fx: float,
-        fy: float,
-        cx: float,
-        cy: float,
-        origin_x: float,
-        origin_y: float,
-        origin_z: float,
-        R00: float,
-        R01: float,
-        R02: float,
-        R10: float,
-        R11: float,
-        R12: float,
-        R20: float,
-        R21: float,
-        R22: float,
-        origins: wp.array2d(dtype=wp.float32),
-        directions: wp.array2d(dtype=wp.float32),
+        fx: wp.float64,
+        fy: wp.float64,
+        cx: wp.float64,
+        cy: wp.float64,
+        origin_x: wp.float64,
+        origin_y: wp.float64,
+        origin_z: wp.float64,
+        R00: wp.float64,
+        R01: wp.float64,
+        R02: wp.float64,
+        R10: wp.float64,
+        R11: wp.float64,
+        R12: wp.float64,
+        R20: wp.float64,
+        R21: wp.float64,
+        R22: wp.float64,
+        origins: wp.array2d(dtype=wp.float64),
+        directions: wp.array2d(dtype=wp.float64),
     ):
         ray = wp.tid()
         px = ray - (ray / width) * width
         py = ray / width
         if py < height:
-            camera_x = (wp.float32(px) - wp.float32(cx)) / wp.float32(fx)
-            camera_y = (wp.float32(py) - wp.float32(cy)) / wp.float32(fy)
-            camera_z = wp.float32(1.0)
-            inv_norm = wp.float32(1.0) / wp.sqrt(
-                camera_x * camera_x + camera_y * camera_y + camera_z * camera_z
-            )
-            camera_x = camera_x * inv_norm
-            camera_y = camera_y * inv_norm
-            camera_z = camera_z * inv_norm
-
-            origins[ray, 0] = wp.float32(origin_x)
-            origins[ray, 1] = wp.float32(origin_y)
-            origins[ray, 2] = wp.float32(origin_z)
-            directions[ray, 0] = (
-                wp.float32(R00) * camera_x + wp.float32(R01) * camera_y + wp.float32(R02) * camera_z
-            )
-            directions[ray, 1] = (
-                wp.float32(R10) * camera_x + wp.float32(R11) * camera_y + wp.float32(R12) * camera_z
-            )
-            directions[ray, 2] = (
-                wp.float32(R20) * camera_x + wp.float32(R21) * camera_y + wp.float32(R22) * camera_z
-            )
+            x = (wp.float64(px) - cx) / fx
+            y = (wp.float64(py) - cy) / fy
+            wx = (R00*x + R01*y) + R02
+            wy = (R10*x + R11*y) + R12
+            wz = (R20*x + R21*y) + R22
+            length = wp.sqrt((wx*wx + wy*wy) + wz*wz)
+            origins[ray, 0] = origin_x
+            origins[ray, 1] = origin_y
+            origins[ray, 2] = origin_z
+            directions[ray, 0] = wx / length
+            directions[ray, 1] = wy / length
+            directions[ray, 2] = wz / length
 
     @wp.kernel
     def _brute_force_first_hit_kernel(
-        origins: wp.array2d(dtype=wp.float32),
-        directions: wp.array2d(dtype=wp.float32),
-        max_distance: float,
-        plane_normals: wp.array2d(dtype=wp.float32),
-        plane_points: wp.array2d(dtype=wp.float32),
+        origins: wp.array2d(dtype=wp.float64),
+        directions: wp.array2d(dtype=wp.float64),
+        max_distance: wp.float64,
+        plane_normals: wp.array2d(dtype=wp.float64),
+        plane_points: wp.array2d(dtype=wp.float64),
         plane_numeric_ids: wp.array(dtype=wp.int32),
         plane_source_keys: wp.array(dtype=wp.int64),
         num_planes: int,
-        triangles: wp.array2d(dtype=wp.float32),
+        triangles: wp.array2d(dtype=wp.float64),
         triangle_numeric_ids: wp.array(dtype=wp.int32),
         triangle_source_keys: wp.array(dtype=wp.int64),
         num_triangles: int,
@@ -662,14 +670,14 @@ if _HAS_WARP:
         dy = directions[ray, 1]
         dz = directions[ray, 2]
 
-        best_t = wp.float32(max_distance)
-        best_key = wp.int64(9223372036854775807)
-        best_px = wp.float32(0.0)
-        best_py = wp.float32(0.0)
-        best_pz = wp.float32(0.0)
-        best_nx = wp.float32(0.0)
-        best_ny = wp.float32(0.0)
-        best_nz = wp.float32(0.0)
+        best_t = wp.float64(max_distance)
+        best_key = _NO_HIT_SOURCE_KEY
+        best_px = wp.float64(0.0)
+        best_py = wp.float64(0.0)
+        best_pz = wp.float64(0.0)
+        best_nx = wp.float64(0.0)
+        best_ny = wp.float64(0.0)
+        best_nz = wp.float64(0.0)
         best_id = wp.int32(0)
         found = wp.int32(0)
 
@@ -681,10 +689,10 @@ if _HAS_WARP:
             py = plane_points[plane_idx, 1]
             pz = plane_points[plane_idx, 2]
             denom = dx * nx + dy * ny + dz * nz
-            if wp.abs(denom) > _DIR_EPS:
+            if wp.abs(denom) > _QUERY_DIR_EPS:
                 numer = (px - ox) * nx + (py - oy) * ny + (pz - oz) * nz
                 t = numer / denom
-                if t >= 0.0 and t <= max_distance:
+                if t >= wp.float64(0.0) and t <= max_distance:
                     key = plane_source_keys[plane_idx]
                     if _is_better_hit(t, key, best_t, best_key):
                         best_t = t
@@ -721,7 +729,7 @@ if _HAS_WARP:
             fnz = e1x * e2y - e1y * e2x
             normal_norm = wp.sqrt(fnx * fnx + fny * fny + fnz * fnz)
 
-            if normal_norm > _BUILD_EPS:
+            if normal_norm > _QUERY_BUILD_EPS:
                 fnx = fnx / normal_norm
                 fny = fny / normal_norm
                 fnz = fnz / normal_norm
@@ -730,24 +738,24 @@ if _HAS_WARP:
                 pvec_y = dz * e2x - dx * e2z
                 pvec_z = dx * e2y - dy * e2x
                 det = pvec_x * e1x + pvec_y * e1y + pvec_z * e1z
-                if wp.abs(det) > _BUILD_EPS:
-                    inv_det = 1.0 / det
+                if wp.abs(det) > _QUERY_BUILD_EPS:
+                    inv_det = wp.float64(1.0) / det
                     tvec_x = ox - v0x
                     tvec_y = oy - v0y
                     tvec_z = oz - v0z
                     u = (pvec_x * tvec_x + pvec_y * tvec_y + pvec_z * tvec_z) * inv_det
-                    if u >= 0.0:
+                    if u >= wp.float64(0.0):
                         qvec_x = tvec_y * e1z - tvec_z * e1y
                         qvec_y = tvec_z * e1x - tvec_x * e1z
                         qvec_z = tvec_x * e1y - tvec_y * e1x
                         v = (qvec_x * dx + qvec_y * dy + qvec_z * dz) * inv_det
-                        if v >= 0.0 and u + v <= 1.0:
+                        if v >= wp.float64(0.0) and u + v <= wp.float64(1.0):
                             t = (qvec_x * e2x + qvec_y * e2y + qvec_z * e2z) * inv_det
-                            if t >= 0.0 and t <= max_distance:
+                            if t >= wp.float64(0.0) and t <= max_distance:
                                 key = triangle_source_keys[tri_idx]
                                 if _is_better_hit(t, key, best_t, best_key):
                                     ndotd = fnx * dx + fny * dy + fnz * dz
-                                    if ndotd > 0.0:
+                                    if ndotd > wp.float64(0.0):
                                         fnx = -fnx
                                         fny = -fny
                                         fnz = -fnz
@@ -764,33 +772,33 @@ if _HAS_WARP:
 
         if found != 0:
             hit_mask[ray] = wp.int32(1)
-            range_m[ray] = best_t
-            position_world[ray, 0] = best_px
-            position_world[ray, 1] = best_py
-            position_world[ray, 2] = best_pz
-            normal_world[ray, 0] = best_nx
-            normal_world[ray, 1] = best_ny
-            normal_world[ray, 2] = best_nz
+            range_m[ray] = wp.float32(best_t)
+            position_world[ray, 0] = wp.float32(best_px)
+            position_world[ray, 1] = wp.float32(best_py)
+            position_world[ray, 2] = wp.float32(best_pz)
+            normal_world[ray, 0] = wp.float32(best_nx)
+            normal_world[ray, 1] = wp.float32(best_ny)
+            normal_world[ray, 2] = wp.float32(best_nz)
             numeric_instance_id[ray] = best_id
 
     @wp.func
-    def _is_better_hit(t: float, key: wp.int64, best_t: float, best_key: wp.int64):
+    def _is_better_hit(t: wp.float64, key: wp.int64, best_t: wp.float64, best_key: wp.int64):
         better = bool(False)
-        if t < best_t - _T_EPS:
+        if t < best_t - _QUERY_TIE_EPS:
             better = True
-        elif wp.abs(t - best_t) <= _T_EPS and key < best_key:
+        elif wp.abs(t - best_t) <= _QUERY_TIE_EPS and key < best_key:
             better = True
         return better
 
     @wp.func
     def _intersect_aabb_axis(
-        origin: float, direction: float, lower: float, upper: float, t_min: wp.float64, t_max: wp.float64
+        origin: wp.float64, direction: wp.float64, lower: float, upper: float, t_min: wp.float64, t_max: wp.float64
     ):
         hit = bool(True)
         out_min = t_min
         out_max = t_max
-        if wp.abs(direction) <= _DIR_EPS:
-            if origin < lower - _T_EPS or origin > upper + _T_EPS:
+        if wp.abs(direction) <= _QUERY_DIR_EPS:
+            if origin < wp.float64(lower) - _QUERY_TIE_EPS or origin > wp.float64(upper) + _QUERY_TIE_EPS:
                 hit = False
         else:
             # Slab and triangle predicates use the same intermediate precision.
@@ -811,19 +819,19 @@ if _HAS_WARP:
 
     @wp.func
     def _intersect_aabb_for_ray(
-        ox: float,
-        oy: float,
-        oz: float,
-        dx: float,
-        dy: float,
-        dz: float,
+        ox: wp.float64,
+        oy: wp.float64,
+        oz: wp.float64,
+        dx: wp.float64,
+        dy: wp.float64,
+        dz: wp.float64,
         min_x: float,
         min_y: float,
         min_z: float,
         max_x: float,
         max_y: float,
         max_z: float,
-        max_t: float,
+        max_t: wp.float64,
     ):
         hit, _out_min, _out_max = _intersect_aabb_for_ray_with_interval(
             ox,
@@ -844,19 +852,19 @@ if _HAS_WARP:
 
     @wp.func
     def _intersect_aabb_for_ray_with_interval(
-        ox: float,
-        oy: float,
-        oz: float,
-        dx: float,
-        dy: float,
-        dz: float,
+        ox: wp.float64,
+        oy: wp.float64,
+        oz: wp.float64,
+        dx: wp.float64,
+        dy: wp.float64,
+        dz: wp.float64,
         min_x: float,
         min_y: float,
         min_z: float,
         max_x: float,
         max_y: float,
         max_z: float,
-        max_t: float,
+        max_t: wp.float64,
     ):
         t_min = wp.float64(0.0)
         t_max = wp.float64(max_t)
@@ -866,37 +874,29 @@ if _HAS_WARP:
             hit, t_min, t_max = _intersect_aabb_axis(oy, dy, min_y, max_y, t_min, t_max)
         if hit:
             hit, t_min, t_max = _intersect_aabb_axis(oz, dz, min_z, max_z, t_min, t_max)
-        # A lower bound must stay a lower bound when stored in the float32
-        # traversal stack. Nearest rounding can move a half-ULP entry past a
-        # valid triangle distance. t_min is nonnegative, so decrementing its
-        # positive IEEE representation is the exact next float toward zero.
-        entry = wp.float32(t_min)
-        if wp.float64(entry) > t_min:
-            entry = wp.cast(wp.cast(entry, wp.int32) - wp.int32(1), wp.float32)
-        return hit, entry, wp.float32(t_max)
+        return hit, t_min, t_max
 
     @wp.func
     def _intersect_device_triangle_for_ray(
-        ox: float,
-        oy: float,
-        oz: float,
-        dx: float,
-        dy: float,
-        dz: float,
+        ox: wp.float64,
+        oy: wp.float64,
+        oz: wp.float64,
+        dx: wp.float64,
+        dy: wp.float64,
+        dz: wp.float64,
         triangle_index: int,
-        triangle_v0: wp.array2d(dtype=wp.float32),
-        triangle_e1: wp.array2d(dtype=wp.float32),
-        triangle_e2: wp.array2d(dtype=wp.float32),
+        triangle_v0: wp.array2d(dtype=wp.float64),
+        triangle_e1: wp.array2d(dtype=wp.float64),
+        triangle_e2: wp.array2d(dtype=wp.float64),
         triangle_normal: wp.array2d(dtype=wp.float32),
-        max_t: float,
+        max_t: wp.float64,
     ):
         hit = bool(False)
-        out_t = wp.float32(0.0)
-        out_nx = wp.float32(0.0)
-        out_ny = wp.float32(0.0)
-        out_nz = wp.float32(0.0)
+        out_t = wp.float64(0.0)
+        out_nx = wp.float64(0.0)
+        out_ny = wp.float64(0.0)
+        out_nz = wp.float64(0.0)
 
-        # Keep the native float32 ABI; avoid cancellation in edge predicates.
         rdx = wp.float64(dx)
         rdy = wp.float64(dy)
         rdz = wp.float64(dz)
@@ -913,7 +913,11 @@ if _HAS_WARP:
         pvec_y = rdz * e2x - rdx * e2z
         pvec_z = rdx * e2y - rdy * e2x
         det = pvec_x * e1x + pvec_y * e1y + pvec_z * e1z
-        if wp.abs(det) > wp.float64(wp.float32(_BUILD_EPS)):
+        nx = e1y*e2z - e1z*e2y
+        ny = e1z*e2x - e1x*e2z
+        nz = e1x*e2y - e1y*e2x
+        area = wp.sqrt((nx*nx + ny*ny) + nz*nz)
+        if area > _QUERY_BUILD_EPS and wp.abs(det) > _QUERY_BUILD_EPS:
             inv_det = wp.float64(1.0) / det
             tvec_x = wp.float64(ox) - v0x
             tvec_y = wp.float64(oy) - v0y
@@ -927,12 +931,12 @@ if _HAS_WARP:
                 if v >= wp.float64(0.0) and u + v <= wp.float64(1.0):
                     t = (qvec_x * e2x + qvec_y * e2y + qvec_z * e2z) * inv_det
                     if t >= wp.float64(0.0) and t <= wp.float64(max_t):
-                        out_t = wp.float32(t)
-                        out_nx = triangle_normal[triangle_index, 0]
-                        out_ny = triangle_normal[triangle_index, 1]
-                        out_nz = triangle_normal[triangle_index, 2]
+                        out_t = wp.float64(t)
+                        out_nx = wp.float64(triangle_normal[triangle_index, 0])
+                        out_ny = wp.float64(triangle_normal[triangle_index, 1])
+                        out_nz = wp.float64(triangle_normal[triangle_index, 2])
                         ndotd = out_nx * dx + out_ny * dy + out_nz * dz
-                        if ndotd > 0.0:
+                        if ndotd > wp.float64(0.0):
                             out_nx = -out_nx
                             out_ny = -out_ny
                             out_nz = -out_nz
@@ -941,18 +945,18 @@ if _HAS_WARP:
 
     @wp.kernel
     def _device_scene_first_hit_kernel(
-        origins: wp.array2d(dtype=wp.float32),
-        directions: wp.array2d(dtype=wp.float32),
-        max_distance: float,
-        plane_normals: wp.array2d(dtype=wp.float32),
-        plane_points: wp.array2d(dtype=wp.float32),
+        origins: wp.array2d(dtype=wp.float64),
+        directions: wp.array2d(dtype=wp.float64),
+        max_distance: wp.float64,
+        plane_normals: wp.array2d(dtype=wp.float64),
+        plane_points: wp.array2d(dtype=wp.float64),
         plane_numeric_ids: wp.array(dtype=wp.int32),
         plane_source_keys: wp.array(dtype=wp.int64),
         plane_role_masks: wp.array(dtype=wp.int64),
         num_planes: int,
-        triangle_v0: wp.array2d(dtype=wp.float32),
-        triangle_e1: wp.array2d(dtype=wp.float32),
-        triangle_e2: wp.array2d(dtype=wp.float32),
+        triangle_v0: wp.array2d(dtype=wp.float64),
+        triangle_e1: wp.array2d(dtype=wp.float64),
+        triangle_e2: wp.array2d(dtype=wp.float64),
         triangle_normal: wp.array2d(dtype=wp.float32),
         triangle_numeric_ids: wp.array(dtype=wp.int32),
         triangle_source_keys: wp.array(dtype=wp.int64),
@@ -973,14 +977,14 @@ if _HAS_WARP:
         dy = directions[ray, 1]
         dz = directions[ray, 2]
 
-        best_t = wp.float32(max_distance)
-        best_key = wp.int64(9223372036854775807)
-        best_px = wp.float32(0.0)
-        best_py = wp.float32(0.0)
-        best_pz = wp.float32(0.0)
-        best_nx = wp.float32(0.0)
-        best_ny = wp.float32(0.0)
-        best_nz = wp.float32(0.0)
+        best_t = wp.float64(max_distance)
+        best_key = _NO_HIT_SOURCE_KEY
+        best_px = wp.float64(0.0)
+        best_py = wp.float64(0.0)
+        best_pz = wp.float64(0.0)
+        best_nx = wp.float64(0.0)
+        best_ny = wp.float64(0.0)
+        best_nz = wp.float64(0.0)
         best_id = wp.int32(0)
         found = wp.int32(0)
 
@@ -993,10 +997,10 @@ if _HAS_WARP:
                 py = plane_points[plane_idx, 1]
                 pz = plane_points[plane_idx, 2]
                 denom = dx * nx + dy * ny + dz * nz
-                if wp.abs(denom) > _DIR_EPS:
+                if wp.abs(denom) > _QUERY_DIR_EPS:
                     numer = (px - ox) * nx + (py - oy) * ny + (pz - oz) * nz
                     t = numer / denom
-                    if t >= 0.0 and t <= max_distance:
+                    if t >= wp.float64(0.0) and t <= max_distance:
                         key = plane_source_keys[plane_idx]
                         if _is_better_hit(t, key, best_t, best_key):
                             best_t = t
@@ -1012,79 +1016,48 @@ if _HAS_WARP:
 
         for tri_idx in range(num_triangles):
             if (triangle_role_masks[tri_idx] & sensor_role_mask) != wp.int64(0):
-                v0x = triangle_v0[tri_idx, 0]
-                v0y = triangle_v0[tri_idx, 1]
-                v0z = triangle_v0[tri_idx, 2]
-                e1x = triangle_e1[tri_idx, 0]
-                e1y = triangle_e1[tri_idx, 1]
-                e1z = triangle_e1[tri_idx, 2]
-                e2x = triangle_e2[tri_idx, 0]
-                e2y = triangle_e2[tri_idx, 1]
-                e2z = triangle_e2[tri_idx, 2]
-                pvec_x = dy * e2z - dz * e2y
-                pvec_y = dz * e2x - dx * e2z
-                pvec_z = dx * e2y - dy * e2x
-                det = pvec_x * e1x + pvec_y * e1y + pvec_z * e1z
-                if wp.abs(det) > _BUILD_EPS:
-                    inv_det = 1.0 / det
-                    tvec_x = ox - v0x
-                    tvec_y = oy - v0y
-                    tvec_z = oz - v0z
-                    u = (pvec_x * tvec_x + pvec_y * tvec_y + pvec_z * tvec_z) * inv_det
-                    if u >= 0.0:
-                        qvec_x = tvec_y * e1z - tvec_z * e1y
-                        qvec_y = tvec_z * e1x - tvec_x * e1z
-                        qvec_z = tvec_x * e1y - tvec_y * e1x
-                        v = (qvec_x * dx + qvec_y * dy + qvec_z * dz) * inv_det
-                        if v >= 0.0 and u + v <= 1.0:
-                            t = (qvec_x * e2x + qvec_y * e2y + qvec_z * e2z) * inv_det
-                            if t >= 0.0 and t <= max_distance:
-                                key = triangle_source_keys[tri_idx]
-                                if _is_better_hit(t, key, best_t, best_key):
-                                    fnx = triangle_normal[tri_idx, 0]
-                                    fny = triangle_normal[tri_idx, 1]
-                                    fnz = triangle_normal[tri_idx, 2]
-                                    ndotd = fnx * dx + fny * dy + fnz * dz
-                                    if ndotd > 0.0:
-                                        fnx = -fnx
-                                        fny = -fny
-                                        fnz = -fnz
-                                    best_t = t
-                                    best_key = key
-                                    best_px = ox + dx * t
-                                    best_py = oy + dy * t
-                                    best_pz = oz + dz * t
-                                    best_nx = fnx
-                                    best_ny = fny
-                                    best_nz = fnz
-                                    best_id = triangle_numeric_ids[tri_idx]
-                                    found = wp.int32(1)
+                tri_hit, t, fnx, fny, fnz = _intersect_device_triangle_for_ray(
+                    ox, oy, oz, dx, dy, dz, tri_idx, triangle_v0, triangle_e1,
+                    triangle_e2, triangle_normal, max_distance)
+                if tri_hit:
+                    key = triangle_source_keys[tri_idx]
+                    if _is_better_hit(t, key, best_t, best_key):
+                        best_t = t
+                        best_key = key
+                        best_px = ox + dx*t
+                        best_py = oy + dy*t
+                        best_pz = oz + dz*t
+                        best_nx = fnx
+                        best_ny = fny
+                        best_nz = fnz
+                        best_id = triangle_numeric_ids[tri_idx]
+                        found = wp.int32(1)
 
         if found != 0:
             hit_mask[ray] = wp.int32(1)
-            range_m[ray] = best_t
-            position_world[ray, 0] = best_px
-            position_world[ray, 1] = best_py
-            position_world[ray, 2] = best_pz
-            normal_world[ray, 0] = best_nx
-            normal_world[ray, 1] = best_ny
-            normal_world[ray, 2] = best_nz
+            range_m[ray] = wp.float32(best_t)
+            position_world[ray, 0] = wp.float32(best_px)
+            position_world[ray, 1] = wp.float32(best_py)
+            position_world[ray, 2] = wp.float32(best_pz)
+            normal_world[ray, 0] = wp.float32(best_nx)
+            normal_world[ray, 1] = wp.float32(best_ny)
+            normal_world[ray, 2] = wp.float32(best_nz)
             numeric_instance_id[ray] = best_id
 
     @wp.kernel
     def _device_scene_first_hit_aabb_kernel(
-        origins: wp.array2d(dtype=wp.float32),
-        directions: wp.array2d(dtype=wp.float32),
-        max_distance: float,
-        plane_normals: wp.array2d(dtype=wp.float32),
-        plane_points: wp.array2d(dtype=wp.float32),
+        origins: wp.array2d(dtype=wp.float64),
+        directions: wp.array2d(dtype=wp.float64),
+        max_distance: wp.float64,
+        plane_normals: wp.array2d(dtype=wp.float64),
+        plane_points: wp.array2d(dtype=wp.float64),
         plane_numeric_ids: wp.array(dtype=wp.int32),
         plane_source_keys: wp.array(dtype=wp.int64),
         plane_role_masks: wp.array(dtype=wp.int64),
         num_planes: int,
-        triangle_v0: wp.array2d(dtype=wp.float32),
-        triangle_e1: wp.array2d(dtype=wp.float32),
-        triangle_e2: wp.array2d(dtype=wp.float32),
+        triangle_v0: wp.array2d(dtype=wp.float64),
+        triangle_e1: wp.array2d(dtype=wp.float64),
+        triangle_e2: wp.array2d(dtype=wp.float64),
         triangle_normal: wp.array2d(dtype=wp.float32),
         triangle_aabb_min: wp.array2d(dtype=wp.float32),
         triangle_aabb_max: wp.array2d(dtype=wp.float32),
@@ -1107,14 +1080,14 @@ if _HAS_WARP:
         dy = directions[ray, 1]
         dz = directions[ray, 2]
 
-        best_t = wp.float32(max_distance)
-        best_key = wp.int64(9223372036854775807)
-        best_px = wp.float32(0.0)
-        best_py = wp.float32(0.0)
-        best_pz = wp.float32(0.0)
-        best_nx = wp.float32(0.0)
-        best_ny = wp.float32(0.0)
-        best_nz = wp.float32(0.0)
+        best_t = wp.float64(max_distance)
+        best_key = _NO_HIT_SOURCE_KEY
+        best_px = wp.float64(0.0)
+        best_py = wp.float64(0.0)
+        best_pz = wp.float64(0.0)
+        best_nx = wp.float64(0.0)
+        best_ny = wp.float64(0.0)
+        best_nz = wp.float64(0.0)
         best_id = wp.int32(0)
         found = wp.int32(0)
 
@@ -1127,10 +1100,10 @@ if _HAS_WARP:
                 py = plane_points[plane_idx, 1]
                 pz = plane_points[plane_idx, 2]
                 denom = dx * nx + dy * ny + dz * nz
-                if wp.abs(denom) > _DIR_EPS:
+                if wp.abs(denom) > _QUERY_DIR_EPS:
                     numer = (px - ox) * nx + (py - oy) * ny + (pz - oz) * nz
                     t = numer / denom
-                    if t >= 0.0 and t <= max_distance:
+                    if t >= wp.float64(0.0) and t <= max_distance:
                         key = plane_source_keys[plane_idx]
                         if _is_better_hit(t, key, best_t, best_key):
                             best_t = t
@@ -1146,81 +1119,38 @@ if _HAS_WARP:
 
         for tri_idx in range(num_triangles):
             if (triangle_role_masks[tri_idx] & sensor_role_mask) != wp.int64(0):
-                v0x = triangle_v0[tri_idx, 0]
-                v0y = triangle_v0[tri_idx, 1]
-                v0z = triangle_v0[tri_idx, 2]
-                e1x = triangle_e1[tri_idx, 0]
-                e1y = triangle_e1[tri_idx, 1]
-                e1z = triangle_e1[tri_idx, 2]
-                e2x = triangle_e2[tri_idx, 0]
-                e2y = triangle_e2[tri_idx, 1]
-                e2z = triangle_e2[tri_idx, 2]
-
-                should_test_triangle = _intersect_aabb_for_ray(
-                    ox,
-                    oy,
-                    oz,
-                    dx,
-                    dy,
-                    dz,
-                    triangle_aabb_min[tri_idx, 0],
-                    triangle_aabb_min[tri_idx, 1],
-                    triangle_aabb_min[tri_idx, 2],
-                    triangle_aabb_max[tri_idx, 0],
-                    triangle_aabb_max[tri_idx, 1],
-                    triangle_aabb_max[tri_idx, 2],
-                    best_t,
-                )
-
-                if should_test_triangle:
-                    pvec_x = dy * e2z - dz * e2y
-                    pvec_y = dz * e2x - dx * e2z
-                    pvec_z = dx * e2y - dy * e2x
-                    det = pvec_x * e1x + pvec_y * e1y + pvec_z * e1z
-                    if wp.abs(det) > _BUILD_EPS:
-                        inv_det = 1.0 / det
-                        tvec_x = ox - v0x
-                        tvec_y = oy - v0y
-                        tvec_z = oz - v0z
-                        u = (pvec_x * tvec_x + pvec_y * tvec_y + pvec_z * tvec_z) * inv_det
-                        if u >= 0.0:
-                            qvec_x = tvec_y * e1z - tvec_z * e1y
-                            qvec_y = tvec_z * e1x - tvec_x * e1z
-                            qvec_z = tvec_x * e1y - tvec_y * e1x
-                            v = (qvec_x * dx + qvec_y * dy + qvec_z * dz) * inv_det
-                            if v >= 0.0 and u + v <= 1.0:
-                                t = (qvec_x * e2x + qvec_y * e2y + qvec_z * e2z) * inv_det
-                                if t >= 0.0 and t <= max_distance:
-                                    key = triangle_source_keys[tri_idx]
-                                    if _is_better_hit(t, key, best_t, best_key):
-                                        fnx = triangle_normal[tri_idx, 0]
-                                        fny = triangle_normal[tri_idx, 1]
-                                        fnz = triangle_normal[tri_idx, 2]
-                                        ndotd = fnx * dx + fny * dy + fnz * dz
-                                        if ndotd > 0.0:
-                                            fnx = -fnx
-                                            fny = -fny
-                                            fnz = -fnz
-                                        best_t = t
-                                        best_key = key
-                                        best_px = ox + dx * t
-                                        best_py = oy + dy * t
-                                        best_pz = oz + dz * t
-                                        best_nx = fnx
-                                        best_ny = fny
-                                        best_nz = fnz
-                                        best_id = triangle_numeric_ids[tri_idx]
-                                        found = wp.int32(1)
+                box_hit = _intersect_aabb_for_ray(
+                    ox, oy, oz, dx, dy, dz,
+                    triangle_aabb_min[tri_idx, 0], triangle_aabb_min[tri_idx, 1], triangle_aabb_min[tri_idx, 2],
+                    triangle_aabb_max[tri_idx, 0], triangle_aabb_max[tri_idx, 1], triangle_aabb_max[tri_idx, 2],
+                    max_distance)
+                if box_hit:
+                    tri_hit, t, fnx, fny, fnz = _intersect_device_triangle_for_ray(
+                        ox, oy, oz, dx, dy, dz, tri_idx, triangle_v0, triangle_e1,
+                        triangle_e2, triangle_normal, max_distance)
+                    if tri_hit:
+                        key = triangle_source_keys[tri_idx]
+                        if _is_better_hit(t, key, best_t, best_key):
+                            best_t = t
+                            best_key = key
+                            best_px = ox + dx*t
+                            best_py = oy + dy*t
+                            best_pz = oz + dz*t
+                            best_nx = fnx
+                            best_ny = fny
+                            best_nz = fnz
+                            best_id = triangle_numeric_ids[tri_idx]
+                            found = wp.int32(1)
 
         if found != 0:
             hit_mask[ray] = wp.int32(1)
-            range_m[ray] = best_t
-            position_world[ray, 0] = best_px
-            position_world[ray, 1] = best_py
-            position_world[ray, 2] = best_pz
-            normal_world[ray, 0] = best_nx
-            normal_world[ray, 1] = best_ny
-            normal_world[ray, 2] = best_nz
+            range_m[ray] = wp.float32(best_t)
+            position_world[ray, 0] = wp.float32(best_px)
+            position_world[ray, 1] = wp.float32(best_py)
+            position_world[ray, 2] = wp.float32(best_pz)
+            normal_world[ray, 0] = wp.float32(best_nx)
+            normal_world[ray, 1] = wp.float32(best_ny)
+            normal_world[ray, 2] = wp.float32(best_nz)
             numeric_instance_id[ray] = best_id
 
     @wp.kernel
@@ -1232,19 +1162,19 @@ if _HAS_WARP:
 
     @wp.kernel
     def _device_scene_bvh_first_hit_kernel(
-        origins: wp.array2d(dtype=wp.float32),
-        directions: wp.array2d(dtype=wp.float32),
-        max_distance: float,
-        plane_normals: wp.array2d(dtype=wp.float32),
-        plane_points: wp.array2d(dtype=wp.float32),
+        origins: wp.array2d(dtype=wp.float64),
+        directions: wp.array2d(dtype=wp.float64),
+        max_distance: wp.float64,
+        plane_normals: wp.array2d(dtype=wp.float64),
+        plane_points: wp.array2d(dtype=wp.float64),
         plane_numeric_ids: wp.array(dtype=wp.int32),
         plane_source_keys: wp.array(dtype=wp.int64),
         plane_role_masks: wp.array(dtype=wp.int64),
         plane_material_indices: wp.array(dtype=wp.int32),
         num_planes: int,
-        triangle_v0: wp.array2d(dtype=wp.float32),
-        triangle_e1: wp.array2d(dtype=wp.float32),
-        triangle_e2: wp.array2d(dtype=wp.float32),
+        triangle_v0: wp.array2d(dtype=wp.float64),
+        triangle_e1: wp.array2d(dtype=wp.float64),
+        triangle_e2: wp.array2d(dtype=wp.float64),
         triangle_normal: wp.array2d(dtype=wp.float32),
         triangle_numeric_ids: wp.array(dtype=wp.int32),
         triangle_source_keys: wp.array(dtype=wp.int64),
@@ -1288,14 +1218,14 @@ if _HAS_WARP:
         dy = directions[ray, 1]
         dz = directions[ray, 2]
 
-        best_t = wp.float32(max_distance)
-        best_key = wp.int64(9223372036854775807)
-        best_px = wp.float32(0.0)
-        best_py = wp.float32(0.0)
-        best_pz = wp.float32(0.0)
-        best_nx = wp.float32(0.0)
-        best_ny = wp.float32(0.0)
-        best_nz = wp.float32(0.0)
+        best_t = wp.float64(max_distance)
+        best_key = _NO_HIT_SOURCE_KEY
+        best_px = wp.float64(0.0)
+        best_py = wp.float64(0.0)
+        best_pz = wp.float64(0.0)
+        best_nx = wp.float64(0.0)
+        best_ny = wp.float64(0.0)
+        best_nz = wp.float64(0.0)
         best_id = wp.int32(0)
         best_material_index = wp.int32(0)
         found = wp.int32(0)
@@ -1309,10 +1239,10 @@ if _HAS_WARP:
                 py = plane_points[plane_idx, 1]
                 pz = plane_points[plane_idx, 2]
                 denom = dx * nx + dy * ny + dz * nz
-                if wp.abs(denom) > _DIR_EPS:
+                if wp.abs(denom) > _QUERY_DIR_EPS:
                     numer = (px - ox) * nx + (py - oy) * ny + (pz - oz) * nz
                     t = numer / denom
-                    if t >= 0.0 and t <= max_distance:
+                    if t >= wp.float64(0.0) and t <= max_distance:
                         key = plane_source_keys[plane_idx]
                         if _is_better_hit(t, key, best_t, best_key):
                             best_t = t
@@ -1327,10 +1257,9 @@ if _HAS_WARP:
                             best_material_index = plane_material_indices[plane_idx]
                             found = wp.int32(1)
 
-        # Box validity uses physical range; node pruning uses the same float32
-        # distance difference as the hit comparator, without a rounded sum cap.
+        # Physical box limits and nearest-hit pruning both use double distances.
         stack = wp.zeros(shape=_MAX_BVH_STACK, dtype=wp.int32)
-        stack_t = wp.zeros(shape=_MAX_BVH_STACK, dtype=wp.float32)
+        stack_t = wp.zeros(shape=_MAX_BVH_STACK, dtype=wp.float64)
         stack_size = wp.int32(0)
         local_max_stack = wp.int32(0)
         if num_bvh_nodes > 0:
@@ -1359,16 +1288,14 @@ if _HAS_WARP:
             stack_size = stack_size - wp.int32(1)
             node_index = stack[stack_size]
             node_t = stack_t[stack_size]
-            if node_t <= best_t or node_t - best_t <= _T_EPS:
+            if node_t <= best_t or node_t - best_t <= _QUERY_TIE_EPS:
                 leaf_count = bvh_count[node_index]
                 if leaf_count > 0:
                     leaf_start = bvh_start[node_index]
                     for offset in range(leaf_count):
                         tri_idx = bvh_prim_ids[leaf_start + offset]
                         if (triangle_role_masks[tri_idx] & sensor_role_mask) != wp.int64(0):
-                            # The precise physical cutoff differs from the rounded
-                            # best-hit search bound. Let the float32 comparator
-                            # decide ties after the helper validates physical range.
+                            # Apply the physical cutoff before the source-key tie rule.
                             tri_hit, t, fnx, fny, fnz = _intersect_device_triangle_for_ray(
                                 ox,
                                 oy,
@@ -1402,10 +1329,10 @@ if _HAS_WARP:
                     right = bvh_right[node_index]
                     left_hit = bool(False)
                     right_hit = bool(False)
-                    left_t = wp.float32(0.0)
-                    right_t = wp.float32(0.0)
-                    _left_exit_t = wp.float32(0.0)
-                    _right_exit_t = wp.float32(0.0)
+                    left_t = wp.float64(0.0)
+                    right_t = wp.float64(0.0)
+                    _left_exit_t = wp.float64(0.0)
+                    _right_exit_t = wp.float64(0.0)
                     if left >= 0:
                         left_hit, left_t, _left_exit_t = _intersect_aabb_for_ray_with_interval(
                             ox,
@@ -1474,13 +1401,13 @@ if _HAS_WARP:
 
         if found != 0:
             hit_mask[ray] = wp.int32(1)
-            range_m[ray] = best_t
-            position_world[ray, 0] = best_px
-            position_world[ray, 1] = best_py
-            position_world[ray, 2] = best_pz
-            normal_world[ray, 0] = best_nx
-            normal_world[ray, 1] = best_ny
-            normal_world[ray, 2] = best_nz
+            range_m[ray] = wp.float32(best_t)
+            position_world[ray, 0] = wp.float32(best_px)
+            position_world[ray, 1] = wp.float32(best_py)
+            position_world[ray, 2] = wp.float32(best_pz)
+            normal_world[ray, 0] = wp.float32(best_nx)
+            normal_world[ray, 1] = wp.float32(best_ny)
+            normal_world[ray, 2] = wp.float32(best_nz)
             numeric_instance_id[ray] = best_id
             material_index[ray] = best_material_index
 
@@ -1524,20 +1451,20 @@ if _HAS_WARP:
 
     @wp.func
     def _is_occluded_for_ray(
-        ox: float,
-        oy: float,
-        oz: float,
-        dx: float,
-        dy: float,
-        dz: float,
-        max_distance: float,
-        plane_normals: wp.array2d(dtype=wp.float32),
-        plane_points: wp.array2d(dtype=wp.float32),
+        ox: wp.float64,
+        oy: wp.float64,
+        oz: wp.float64,
+        dx: wp.float64,
+        dy: wp.float64,
+        dz: wp.float64,
+        max_distance: wp.float64,
+        plane_normals: wp.array2d(dtype=wp.float64),
+        plane_points: wp.array2d(dtype=wp.float64),
         plane_role_masks: wp.array(dtype=wp.int64),
         num_planes: int,
-        triangle_v0: wp.array2d(dtype=wp.float32),
-        triangle_e1: wp.array2d(dtype=wp.float32),
-        triangle_e2: wp.array2d(dtype=wp.float32),
+        triangle_v0: wp.array2d(dtype=wp.float64),
+        triangle_e1: wp.array2d(dtype=wp.float64),
+        triangle_e2: wp.array2d(dtype=wp.float64),
         triangle_normal: wp.array2d(dtype=wp.float32),
         triangle_role_masks: wp.array(dtype=wp.int64),
         bvh_bounds_min: wp.array2d(dtype=wp.float32),
@@ -1552,7 +1479,7 @@ if _HAS_WARP:
     ):
         trace = _ShadowTrace()
         occluded = bool(False)
-        if max_distance <= 0.0:
+        if max_distance <= wp.float64(0.0):
             return trace
 
         stack = wp.zeros(shape=_MAX_BVH_STACK, dtype=wp.int32)
@@ -1673,10 +1600,10 @@ if _HAS_WARP:
                 py = plane_points[plane_idx, 1]
                 pz = plane_points[plane_idx, 2]
                 denom = dx * nx + dy * ny + dz * nz
-                if wp.abs(denom) > _DIR_EPS:
+                if wp.abs(denom) > _QUERY_DIR_EPS:
                     numer = (px - ox) * nx + (py - oy) * ny + (pz - oz) * nz
                     t = numer / denom
-                    if t >= 0.0 and t <= max_distance:
+                    if t >= wp.float64(0.0) and t <= max_distance:
                         occluded = True
 
         trace.occluded = wp.int32(occluded)
@@ -1740,7 +1667,7 @@ if _HAS_WARP:
             distance_sq = lx * lx + ly * ly + lz * lz
             distance = wp.sqrt(distance_sq)
             sample.shadow_limit = distance - wp.float32(shadow_bias)
-            if distance > _DIR_EPS:
+            if distance > _SHADING_DIR_EPS:
                 inv_distance = 1.0 / distance
                 lx = lx * inv_distance
                 ly = ly * inv_distance
@@ -1750,7 +1677,7 @@ if _HAS_WARP:
                 attenuation = wp.float32(0.0)
         else:
             light_norm = wp.sqrt(lx * lx + ly * ly + lz * lz)
-            if light_norm > _DIR_EPS:
+            if light_norm > _SHADING_DIR_EPS:
                 inv_light_norm = 1.0 / light_norm
                 lx = lx * inv_light_norm
                 ly = ly * inv_light_norm
@@ -1864,13 +1791,13 @@ if _HAS_WARP:
         background_r: float,
         background_g: float,
         background_b: float,
-        plane_normals: wp.array2d(dtype=wp.float32),
-        plane_points: wp.array2d(dtype=wp.float32),
+        plane_normals: wp.array2d(dtype=wp.float64),
+        plane_points: wp.array2d(dtype=wp.float64),
         plane_role_masks: wp.array(dtype=wp.int64),
         num_planes: int,
-        triangle_v0: wp.array2d(dtype=wp.float32),
-        triangle_e1: wp.array2d(dtype=wp.float32),
-        triangle_e2: wp.array2d(dtype=wp.float32),
+        triangle_v0: wp.array2d(dtype=wp.float64),
+        triangle_e1: wp.array2d(dtype=wp.float64),
+        triangle_e2: wp.array2d(dtype=wp.float64),
         triangle_normal: wp.array2d(dtype=wp.float32),
         triangle_role_masks: wp.array(dtype=wp.int64),
         bvh_bounds_min: wp.array2d(dtype=wp.float32),
@@ -1909,13 +1836,13 @@ if _HAS_WARP:
                     visible = bool(True)
                     if sample.shadow_limit > 0.0:
                         trace = _is_occluded_for_ray(
-                            surface.position[0] + surface.normal[0] * wp.float32(shadow_bias),
-                            surface.position[1] + surface.normal[1] * wp.float32(shadow_bias),
-                            surface.position[2] + surface.normal[2] * wp.float32(shadow_bias),
-                            sample.direction[0],
-                            sample.direction[1],
-                            sample.direction[2],
-                            sample.shadow_limit,
+                            wp.float64(surface.position[0] + surface.normal[0] * wp.float32(shadow_bias)),
+                            wp.float64(surface.position[1] + surface.normal[1] * wp.float32(shadow_bias)),
+                            wp.float64(surface.position[2] + surface.normal[2] * wp.float32(shadow_bias)),
+                            wp.float64(sample.direction[0]),
+                            wp.float64(sample.direction[1]),
+                            wp.float64(sample.direction[2]),
+                            wp.float64(sample.shadow_limit),
                             plane_normals,
                             plane_points,
                             plane_role_masks,
@@ -2066,13 +1993,13 @@ if _HAS_WARP:
         normal_world: wp.array2d(dtype=wp.float32),
         material_index: wp.array(dtype=wp.int32),
         material_albedo_rgb: wp.array2d(dtype=wp.float32),
-        plane_normals: wp.array2d(dtype=wp.float32),
-        plane_points: wp.array2d(dtype=wp.float32),
+        plane_normals: wp.array2d(dtype=wp.float64),
+        plane_points: wp.array2d(dtype=wp.float64),
         plane_role_masks: wp.array(dtype=wp.int64),
         num_planes: int,
-        triangle_v0: wp.array2d(dtype=wp.float32),
-        triangle_e1: wp.array2d(dtype=wp.float32),
-        triangle_e2: wp.array2d(dtype=wp.float32),
+        triangle_v0: wp.array2d(dtype=wp.float64),
+        triangle_e1: wp.array2d(dtype=wp.float64),
+        triangle_e2: wp.array2d(dtype=wp.float64),
         triangle_normal: wp.array2d(dtype=wp.float32),
         triangle_role_masks: wp.array(dtype=wp.int64),
         bvh_bounds_min: wp.array2d(dtype=wp.float32),
@@ -2151,13 +2078,13 @@ if _HAS_WARP:
         normal_world: wp.array2d(dtype=wp.float32),
         material_index: wp.array(dtype=wp.int32),
         material_albedo_rgb: wp.array2d(dtype=wp.float32),
-        plane_normals: wp.array2d(dtype=wp.float32),
-        plane_points: wp.array2d(dtype=wp.float32),
+        plane_normals: wp.array2d(dtype=wp.float64),
+        plane_points: wp.array2d(dtype=wp.float64),
         plane_role_masks: wp.array(dtype=wp.int64),
         num_planes: int,
-        triangle_v0: wp.array2d(dtype=wp.float32),
-        triangle_e1: wp.array2d(dtype=wp.float32),
-        triangle_e2: wp.array2d(dtype=wp.float32),
+        triangle_v0: wp.array2d(dtype=wp.float64),
+        triangle_e1: wp.array2d(dtype=wp.float64),
+        triangle_e2: wp.array2d(dtype=wp.float64),
         triangle_normal: wp.array2d(dtype=wp.float32),
         triangle_role_masks: wp.array(dtype=wp.int64),
         bvh_bounds_min: wp.array2d(dtype=wp.float32),
@@ -3033,7 +2960,10 @@ def _render_launch_snapshot(command, descriptor, device) -> tuple:
                     raise ValueError("recorded array descriptor differs from exact bound storage")
             else:
                 scalar_type = (
-                    ctypes.c_float
+                    (ctypes.c_double if descriptor.argument_names[index - 1] in (
+                        "fx", "fy", "cx", "cy", "origin_x", "origin_y", "origin_z",
+                        "R00", "R01", "R02", "R10", "R11", "R12", "R20", "R21", "R22",
+                        "max_distance") else ctypes.c_float)
                     if type(expected) is float
                     else (
                         ctypes.c_int64
@@ -3044,8 +2974,8 @@ def _render_launch_snapshot(command, descriptor, device) -> tuple:
                 # Initial sealing must prove physical bits, not numeric equality:
                 # binary32 -0.0 compares equal to +0.0 but is a different ABI value.
                 if type(parameter) is not scalar_type or (
-                    bytes(parameter) != struct.pack("<f", expected)
-                    if scalar_type is ctypes.c_float
+                    bytes(parameter) != struct.pack("<d" if scalar_type is ctypes.c_double else "<f", expected)
+                    if scalar_type in (ctypes.c_float, ctypes.c_double)
                     else parameter.value != expected
                 ):
                     raise ValueError("recorded scalar differs from normalized binding")

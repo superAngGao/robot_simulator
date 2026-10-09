@@ -1,10 +1,13 @@
 """Sole CUDA scene kernel source literals; no backend imports."""
 
+from .query_numerics import BUILD_EPS
+
 CPP_SOURCE = r"""
 #include <torch/extension.h>
 
 void update_triangles_world_aabb_out(
-    torch::Tensor triangle_vertices_local,
+    torch::Tensor geometry_vertices_local,
+    torch::Tensor triangle_vertex_indices,
     torch::Tensor triangle_instance_index,
     torch::Tensor instance_body_index,
     torch::Tensor instance_X_body_geometry_R,
@@ -53,11 +56,11 @@ CUDA_SOURCE = r"""
 namespace {
 
 constexpr int kThreads = 256;
-constexpr float kNormalEpsilon = 1.0e-8f;
+constexpr double kNormalEpsilon = __BUILD_EPS__;
 
 struct RigidTransform {
-  float R[9];
-  float r[3];
+  double R[9];
+  double r[3];
 };
 
 void check_cuda_tensor(
@@ -109,16 +112,16 @@ __device__ __forceinline__ RigidTransform compose_transform(
     int env_idx,
     int body_count,
     const int32_t* instance_body_index,
-    const float* instance_R,
-    const float* instance_r,
+    const double* instance_R,
+    const double* instance_r,
     const float* frame_R,
     const float* frame_r) {
   RigidTransform result;
-  float Rwb[9] = {
+  double Rwb[9] = {
       1.0f, 0.0f, 0.0f,
       0.0f, 1.0f, 0.0f,
       0.0f, 0.0f, 1.0f};
-  float rwb[3] = {0.0f, 0.0f, 0.0f};
+  double rwb[3] = {0.0f, 0.0f, 0.0f};
   const int body_index = instance_body_index[instance_index];
   if (body_index >= 0 && body_index < body_count) {
     const int body_offset = (env_idx * body_count + body_index) * 9;
@@ -133,8 +136,8 @@ __device__ __forceinline__ RigidTransform compose_transform(
     }
   }
 
-  const float* Rbg = instance_R + instance_index * 9;
-  const float* rbg = instance_r + instance_index * 3;
+  const double* Rbg = instance_R + instance_index * 9;
+  const double* rbg = instance_r + instance_index * 3;
   #pragma unroll
   for (int row = 0; row < 3; ++row) {
     #pragma unroll
@@ -145,42 +148,51 @@ __device__ __forceinline__ RigidTransform compose_transform(
           Rwb[row * 3 + 2] * Rbg[2 * 3 + col];
     }
     result.r[row] =
-        rwb[row] +
-        Rwb[row * 3 + 0] * rbg[0] +
-        Rwb[row * 3 + 1] * rbg[1] +
-        Rwb[row * 3 + 2] * rbg[2];
+        ((Rwb[row * 3 + 0] * rbg[0] +
+          Rwb[row * 3 + 1] * rbg[1]) +
+          Rwb[row * 3 + 2] * rbg[2]) + rwb[row];
   }
   return result;
 }
 
 __device__ __forceinline__ void transform_point(
     const RigidTransform& transform,
-    const float* point,
-    float* output) {
+    const double* point,
+    double* output) {
   #pragma unroll
   for (int row = 0; row < 3; ++row) {
     output[row] =
-        transform.r[row] +
-        transform.R[row * 3 + 0] * point[0] +
-        transform.R[row * 3 + 1] * point[1] +
-        transform.R[row * 3 + 2] * point[2];
+        ((transform.R[row * 3 + 0] * point[0] +
+          transform.R[row * 3 + 1] * point[1]) +
+          transform.R[row * 3 + 2] * point[2]) + transform.r[row];
   }
+}
+
+__device__ __forceinline__ float outward_bound(double value, bool upper) {
+  float result = static_cast<float>(value);
+  if (upper && static_cast<double>(result) < value) {
+    result = nextafterf(result, INFINITY);
+  } else if (!upper && static_cast<double>(result) > value) {
+    result = nextafterf(result, -INFINITY);
+  }
+  return result;
 }
 
 __global__ void update_triangles_kernel(
     int triangle_count,
     int env_idx,
     int body_count,
-    const float* triangle_vertices_local,
+    const double* geometry_vertices_local,
+    const int64_t* triangle_vertex_indices,
     const int32_t* triangle_instance_index,
     const int32_t* instance_body_index,
-    const float* instance_R,
-    const float* instance_r,
+    const double* instance_R,
+    const double* instance_r,
     const float* frame_R,
     const float* frame_r,
-    float* triangle_v0_world,
-    float* triangle_e1_world,
-    float* triangle_e2_world,
+    double* triangle_v0_world,
+    double* triangle_e1_world,
+    double* triangle_e2_world,
     float* triangle_normal_world,
     float* triangle_aabb_min,
     float* triangle_aabb_max) {
@@ -198,15 +210,14 @@ __global__ void update_triangles_kernel(
       instance_r,
       frame_R,
       frame_r);
-  const float* local = triangle_vertices_local + primitive * 9;
-  float p0[3];
-  float p1[3];
-  float p2[3];
-  transform_point(transform, local + 0, p0);
-  transform_point(transform, local + 3, p1);
-  transform_point(transform, local + 6, p2);
-  float e1[3];
-  float e2[3];
+  double p0[3];
+  double p1[3];
+  double p2[3];
+  transform_point(transform, geometry_vertices_local + triangle_vertex_indices[primitive * 3 + 0] * 3, p0);
+  transform_point(transform, geometry_vertices_local + triangle_vertex_indices[primitive * 3 + 1] * 3, p1);
+  transform_point(transform, geometry_vertices_local + triangle_vertex_indices[primitive * 3 + 2] * 3, p2);
+  double e1[3];
+  double e2[3];
   #pragma unroll
   for (int axis = 0; axis < 3; ++axis) {
     e1[axis] = p1[axis] - p0[axis];
@@ -214,14 +225,14 @@ __global__ void update_triangles_kernel(
     triangle_v0_world[primitive * 3 + axis] = p0[axis];
     triangle_e1_world[primitive * 3 + axis] = e1[axis];
     triangle_e2_world[primitive * 3 + axis] = e2[axis];
-    triangle_aabb_min[primitive * 3 + axis] = fminf(p0[axis], fminf(p1[axis], p2[axis]));
-    triangle_aabb_max[primitive * 3 + axis] = fmaxf(p0[axis], fmaxf(p1[axis], p2[axis]));
+    triangle_aabb_min[primitive * 3 + axis] = outward_bound(fmin(p0[axis], fmin(p1[axis], p2[axis])), false);
+    triangle_aabb_max[primitive * 3 + axis] = outward_bound(fmax(p0[axis], fmax(p1[axis], p2[axis])), true);
   }
-  float normal[3] = {
+  double normal[3] = {
       e1[1] * e2[2] - e1[2] * e2[1],
       e1[2] * e2[0] - e1[0] * e2[2],
       e1[0] * e2[1] - e1[1] * e2[0]};
-  const float length = sqrtf(
+  const double length = sqrt(
       normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
   #pragma unroll
   for (int axis = 0; axis < 3; ++axis) {
@@ -234,16 +245,16 @@ __global__ void update_planes_kernel(
     int plane_count,
     int env_idx,
     int body_count,
-    const float* plane_normal_local,
-    const float* plane_point_local,
+    const double* plane_normal_local,
+    const double* plane_point_local,
     const int32_t* plane_instance_index,
     const int32_t* instance_body_index,
-    const float* instance_R,
-    const float* instance_r,
+    const double* instance_R,
+    const double* instance_r,
     const float* frame_R,
     const float* frame_r,
-    float* plane_normal_world,
-    float* plane_point_world) {
+    double* plane_normal_world,
+    double* plane_point_world) {
   const int primitive = blockIdx.x * blockDim.x + threadIdx.x;
   if (primitive >= plane_count) {
     return;
@@ -258,11 +269,11 @@ __global__ void update_planes_kernel(
       instance_r,
       frame_R,
       frame_r);
-  const float* local_normal = plane_normal_local + primitive * 3;
-  const float* local_point = plane_point_local + primitive * 3;
-  float point[3];
+  const double* local_normal = plane_normal_local + primitive * 3;
+  const double* local_point = plane_point_local + primitive * 3;
+  double point[3];
   transform_point(transform, local_point, point);
-  float normal[3];
+  double normal[3];
   #pragma unroll
   for (int row = 0; row < 3; ++row) {
     normal[row] =
@@ -270,19 +281,20 @@ __global__ void update_planes_kernel(
         transform.R[row * 3 + 1] * local_normal[1] +
         transform.R[row * 3 + 2] * local_normal[2];
   }
-  const float length = sqrtf(
+  const double length = sqrt(
       normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
   #pragma unroll
   for (int axis = 0; axis < 3; ++axis) {
     plane_point_world[primitive * 3 + axis] = point[axis];
-    plane_normal_world[primitive * 3 + axis] = length > 0.0f ? normal[axis] / length : 0.0f;
+    plane_normal_world[primitive * 3 + axis] = length > kNormalEpsilon ? normal[axis] / length : 0.0f;
   }
 }
 
 }  // namespace
 
 void update_triangles_world_aabb_out(
-    torch::Tensor triangle_vertices_local,
+    torch::Tensor geometry_vertices_local,
+    torch::Tensor triangle_vertex_indices,
     torch::Tensor triangle_instance_index,
     torch::Tensor instance_body_index,
     torch::Tensor instance_X_body_geometry_R,
@@ -299,26 +311,30 @@ void update_triangles_world_aabb_out(
   TORCH_CHECK(triangle_v0_world.is_cuda(), "triangle_v0_world must be CUDA");
   const c10::cuda::CUDAGuard device_guard(triangle_v0_world.device());
   const torch::Device device = triangle_v0_world.device();
-  check_cuda_tensor(triangle_vertices_local, device, torch::kFloat32, "triangle_vertices_local");
+  check_cuda_tensor(geometry_vertices_local, device, torch::kFloat64, "geometry_vertices_local");
+  check_cuda_tensor(triangle_vertex_indices, device, torch::kInt64, "triangle_vertex_indices");
   check_cuda_tensor(triangle_instance_index, device, torch::kInt32, "triangle_instance_index");
   check_cuda_tensor(instance_body_index, device, torch::kInt32, "instance_body_index");
-  check_cuda_tensor(instance_X_body_geometry_R, device, torch::kFloat32, "instance_X_body_geometry_R");
-  check_cuda_tensor(instance_X_body_geometry_r, device, torch::kFloat32, "instance_X_body_geometry_r");
+  check_cuda_tensor(instance_X_body_geometry_R, device, torch::kFloat64, "instance_X_body_geometry_R");
+  check_cuda_tensor(instance_X_body_geometry_r, device, torch::kFloat64, "instance_X_body_geometry_r");
   check_cuda_tensor(frame_x_world_R, device, torch::kFloat32, "frame_x_world_R");
   check_cuda_tensor(frame_x_world_r, device, torch::kFloat32, "frame_x_world_r");
-  check_cuda_tensor(triangle_v0_world, device, torch::kFloat32, "triangle_v0_world");
-  check_cuda_tensor(triangle_e1_world, device, torch::kFloat32, "triangle_e1_world");
-  check_cuda_tensor(triangle_e2_world, device, torch::kFloat32, "triangle_e2_world");
+  check_cuda_tensor(triangle_v0_world, device, torch::kFloat64, "triangle_v0_world");
+  check_cuda_tensor(triangle_e1_world, device, torch::kFloat64, "triangle_e1_world");
+  check_cuda_tensor(triangle_e2_world, device, torch::kFloat64, "triangle_e2_world");
   check_cuda_tensor(triangle_normal_world, device, torch::kFloat32, "triangle_normal_world");
   check_cuda_tensor(triangle_aabb_min, device, torch::kFloat32, "triangle_aabb_min");
   check_cuda_tensor(triangle_aabb_max, device, torch::kFloat32, "triangle_aabb_max");
 
-  const int64_t triangle_count = triangle_vertices_local.size(0);
+  const int64_t triangle_count = triangle_vertex_indices.size(0);
   const int64_t instance_count = instance_body_index.size(0);
   TORCH_CHECK(instance_body_index.dim() == 1, "instance_body_index shape");
   TORCH_CHECK(
-      triangle_vertices_local.dim() == 2 && triangle_vertices_local.size(1) == 9,
-      "triangle_vertices_local shape");
+      geometry_vertices_local.dim() == 2 && geometry_vertices_local.size(1) == 3
+          && geometry_vertices_local.size(0) <= INT32_MAX,
+      "geometry_vertices_local shape");
+  TORCH_CHECK(triangle_vertex_indices.dim() == 2 && triangle_vertex_indices.size(1) == 3,
+      "triangle_vertex_indices shape");
   TORCH_CHECK(
       triangle_instance_index.dim() == 1 &&
           triangle_instance_index.size(0) == triangle_count,
@@ -349,8 +365,9 @@ void update_triangles_world_aabb_out(
           frame_x_world_R.size(0) <= INT32_MAX &&
           frame_x_world_R.size(1) <= INT32_MAX,
       "CUDA scene count exceeds int32");
-  const torch::Tensor* const inputs[7] = {
-      &triangle_vertices_local,
+  const torch::Tensor* const inputs[8] = {
+      &geometry_vertices_local,
+      &triangle_vertex_indices,
       &triangle_instance_index,
       &instance_body_index,
       &instance_X_body_geometry_R,
@@ -381,16 +398,17 @@ void update_triangles_world_aabb_out(
       static_cast<int>(triangle_count),
       static_cast<int>(env_idx),
       static_cast<int>(frame_x_world_R.size(1)),
-      triangle_vertices_local.data_ptr<float>(),
+      geometry_vertices_local.data_ptr<double>(),
+      triangle_vertex_indices.data_ptr<int64_t>(),
       triangle_instance_index.data_ptr<int32_t>(),
       instance_body_index.data_ptr<int32_t>(),
-      instance_X_body_geometry_R.data_ptr<float>(),
-      instance_X_body_geometry_r.data_ptr<float>(),
+      instance_X_body_geometry_R.data_ptr<double>(),
+      instance_X_body_geometry_r.data_ptr<double>(),
       frame_x_world_R.data_ptr<float>(),
       frame_x_world_r.data_ptr<float>(),
-      triangle_v0_world.data_ptr<float>(),
-      triangle_e1_world.data_ptr<float>(),
-      triangle_e2_world.data_ptr<float>(),
+      triangle_v0_world.data_ptr<double>(),
+      triangle_e1_world.data_ptr<double>(),
+      triangle_e2_world.data_ptr<double>(),
       triangle_normal_world.data_ptr<float>(),
       triangle_aabb_min.data_ptr<float>(),
       triangle_aabb_max.data_ptr<float>());
@@ -412,16 +430,16 @@ void update_planes_world_out(
   TORCH_CHECK(plane_normal_world.is_cuda(), "plane_normal_world must be CUDA");
   const c10::cuda::CUDAGuard device_guard(plane_normal_world.device());
   const torch::Device device = plane_normal_world.device();
-  check_cuda_tensor(plane_normal_local, device, torch::kFloat32, "plane_normal_local");
-  check_cuda_tensor(plane_point_local, device, torch::kFloat32, "plane_point_local");
+  check_cuda_tensor(plane_normal_local, device, torch::kFloat64, "plane_normal_local");
+  check_cuda_tensor(plane_point_local, device, torch::kFloat64, "plane_point_local");
   check_cuda_tensor(plane_instance_index, device, torch::kInt32, "plane_instance_index");
   check_cuda_tensor(instance_body_index, device, torch::kInt32, "instance_body_index");
-  check_cuda_tensor(instance_X_body_geometry_R, device, torch::kFloat32, "instance_X_body_geometry_R");
-  check_cuda_tensor(instance_X_body_geometry_r, device, torch::kFloat32, "instance_X_body_geometry_r");
+  check_cuda_tensor(instance_X_body_geometry_R, device, torch::kFloat64, "instance_X_body_geometry_R");
+  check_cuda_tensor(instance_X_body_geometry_r, device, torch::kFloat64, "instance_X_body_geometry_r");
   check_cuda_tensor(frame_x_world_R, device, torch::kFloat32, "frame_x_world_R");
   check_cuda_tensor(frame_x_world_r, device, torch::kFloat32, "frame_x_world_r");
-  check_cuda_tensor(plane_normal_world, device, torch::kFloat32, "plane_normal_world");
-  check_cuda_tensor(plane_point_world, device, torch::kFloat32, "plane_point_world");
+  check_cuda_tensor(plane_normal_world, device, torch::kFloat64, "plane_normal_world");
+  check_cuda_tensor(plane_point_world, device, torch::kFloat64, "plane_point_world");
 
   const int64_t plane_count = plane_normal_local.size(0);
   const int64_t instance_count = instance_body_index.size(0);
@@ -490,16 +508,16 @@ void update_planes_world_out(
       static_cast<int>(plane_count),
       static_cast<int>(env_idx),
       static_cast<int>(frame_x_world_R.size(1)),
-      plane_normal_local.data_ptr<float>(),
-      plane_point_local.data_ptr<float>(),
+      plane_normal_local.data_ptr<double>(),
+      plane_point_local.data_ptr<double>(),
       plane_instance_index.data_ptr<int32_t>(),
       instance_body_index.data_ptr<int32_t>(),
-      instance_X_body_geometry_R.data_ptr<float>(),
-      instance_X_body_geometry_r.data_ptr<float>(),
+      instance_X_body_geometry_R.data_ptr<double>(),
+      instance_X_body_geometry_r.data_ptr<double>(),
       frame_x_world_R.data_ptr<float>(),
       frame_x_world_r.data_ptr<float>(),
-      plane_normal_world.data_ptr<float>(),
-      plane_point_world.data_ptr<float>());
+      plane_normal_world.data_ptr<double>(),
+      plane_point_world.data_ptr<double>());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
-"""
+""".replace("__BUILD_EPS__", repr(BUILD_EPS))

@@ -25,6 +25,7 @@ SOURCE_FILES = tuple(sorted((
     "tools/optical_cuda_build_status.py", "tools/optical_cuda_artifacts.py",
     "tools/optical_cuda_toolchain_inventory.py", "optics/cuda_extension_recipes.py",
     "optics/_cuda_scene_source.py", "optics/_cuda_lbvh_source.py", "optics/_cuda_direct_light_source.py",
+    "optics/query_numerics.py",
 )))
 _PLATFORM_FIELDS = {
     "system", "machine", "python_version", "soabi", "ext_suffix", "torch_version",

@@ -31,7 +31,12 @@ from optical_worker.native_manifest import (
     _sha256_payload,
 )
 from optics.host_bvh import DeviceBvhBuildStats, build_host_median_bvh
-from optics.scene_contract import SCENE_CONTRACT_SCHEMA_VERSION, PackedOpticalSceneHost
+from optics.scene_contract import (
+    SCENE_CONTRACT_SCHEMA_VERSION, PackedOpticalSceneHost, validate_indexed_geometry,
+)
+from optics.query_numerics import BUILD_EPS, outward_float32_bounds
+from optics.scene import transform_directions, transform_points
+from physics.spatial import SpatialTransform
 
 from .cases import get_case
 from .lane_contract import (
@@ -44,7 +49,7 @@ from .timing import assert_operation_allowed, assert_outside_timed_boundary
 from .workload_contract import frozen_workload_content
 
 TRANSFORM_REPLAY_SCHEMA_VERSION = "q54.p12.4.transform-replay.v1"
-FIXED_RENDER_FIXTURE_SCHEMA_VERSION = "q54.p12.4.fixed-render-fixture.v1"
+FIXED_RENDER_FIXTURE_SCHEMA_VERSION = "q54.p12.4.fixed-render-fixture.v3"
 
 
 _REPLAY_SEMANTICS = MappingProxyType(
@@ -193,8 +198,10 @@ class CanonicalFixedRenderFixtureHost:
             raise ValueError("fixed render fixtures require a static canonical case")
         if not isinstance(fixed_transform_id, str) or not fixed_transform_id:
             raise ValueError("fixed_transform_id must be non-empty")
-        rotation = np.array(x_world_R, dtype=np.float32, copy=True, order="C")
-        translation = np.array(x_world_r, dtype=np.float32, copy=True, order="C")
+        rotation = np.array(x_world_R, dtype=np.float64, copy=True, order="C")
+        translation = np.array(x_world_r, dtype=np.float64, copy=True, order="C")
+        if not np.all(np.isfinite(rotation)) or not np.all(np.isfinite(translation)):
+            raise ValueError("fixed transforms must be finite")
         if rotation.ndim != 3 or rotation.shape[1:] != (3, 3):
             raise ValueError("fixed x_world_R must have shape (bodies, 3, 3)")
         if translation.ndim != 2 or translation.shape[1:] != (3,):
@@ -1158,6 +1165,7 @@ def _validate_packed_scene_case(packed_scene: PackedOpticalSceneHost):
         raise ValueError("packed scene scene_id does not match the canonical case")
     if packed_scene.scene_contract_schema_version != SCENE_CONTRACT_SCHEMA_VERSION:
         raise ValueError("packed scene schema version is not current")
+    validate_indexed_geometry(packed_scene)
     return case
 
 
@@ -1216,51 +1224,58 @@ def _derive_fixed_fixture(
     x_world_r: np.ndarray,
 ) -> tuple[dict[str, np.ndarray], DeviceBvhBuildStats]:
     packed = packed_scene.arrays
-    triangle_vertices = np.asarray(packed["triangle_vertices_local"], dtype=np.float32).reshape(-1, 3, 3)
+    validate_indexed_geometry(packed_scene)
+    vertices = packed["geometry_vertices_local"]
+    offsets = packed["geometry_vertex_offsets"]
+    indices = packed["triangle_vertex_indices"]
     triangle_instance = packed["triangle_instance_index"]
-    triangle_v0 = np.empty((packed_scene.num_triangles, 3), dtype=np.float32)
+    triangle_v0 = np.empty((packed_scene.num_triangles, 3), dtype=np.float64)
     triangle_e1 = np.empty_like(triangle_v0)
     triangle_e2 = np.empty_like(triangle_v0)
-    triangle_normal = np.empty_like(triangle_v0)
-    triangle_aabb_min = np.empty_like(triangle_v0)
-    triangle_aabb_max = np.empty_like(triangle_v0)
+    triangle_normal = np.zeros(triangle_v0.shape, dtype=np.float32)
+    triangle_aabb_min = np.empty(triangle_v0.shape, dtype=np.float32)
+    triangle_aabb_max = np.empty_like(triangle_aabb_min)
 
-    for primitive in range(packed_scene.num_triangles):
-        R_world_geometry, r_world_geometry = _fixed_instance_transform(
-            packed_scene,
-            int(triangle_instance[primitive]),
-            x_world_R,
-            x_world_r,
-        )
-        world = triangle_vertices[primitive] @ R_world_geometry.T + r_world_geometry
-        edge1 = world[1] - world[0]
-        edge2 = world[2] - world[0]
-        normal = np.cross(edge1, edge2)
-        norm = float(np.linalg.norm(normal))
-        if norm <= 1.0e-8:
-            raise ValueError("fixed fixture unexpectedly produced a degenerate triangle")
-        triangle_v0[primitive] = world[0]
-        triangle_e1[primitive] = edge1
-        triangle_e2[primitive] = edge2
-        triangle_normal[primitive] = normal / norm
-        triangle_aabb_min[primitive] = np.min(world, axis=0)
-        triangle_aabb_max[primitive] = np.max(world, axis=0)
+    for instance in np.unique(triangle_instance):
+        rows = np.flatnonzero(triangle_instance == instance)
+        geometry = int(packed["triangle_geometry_index"][rows[0]])
+        begin, end = offsets[geometry:geometry + 2]
+        transform = _fixed_instance_transform(packed_scene, int(instance), x_world_R, x_world_r)
+        # Preserve the CPU oracle's whole-mesh matrix operation, including
+        # unused vertices. Transforming each face changes boundary decisions.
+        world_vertices = transform_points(transform, vertices[begin:end])
+        world_faces = world_vertices[indices[rows] - begin]
+        triangle_aabb_min[rows], triangle_aabb_max[rows] = outward_float32_bounds(world_faces)
+        for primitive, world in zip(rows, world_faces):
+            edge1 = world[1] - world[0]
+            edge2 = world[2] - world[0]
+            normal = np.cross(edge1, edge2)
+            norm = float(np.linalg.norm(normal))
+            if not np.isfinite(norm):
+                raise ValueError("fixed fixture triangle normal must be finite")
+            triangle_v0[primitive] = world[0]
+            triangle_e1[primitive] = edge1
+            triangle_e2[primitive] = edge2
+            if norm > BUILD_EPS:
+                triangle_normal[primitive] = normal / norm
 
-    plane_normal = np.empty((packed_scene.num_planes, 3), dtype=np.float32)
+    plane_normal = np.empty((packed_scene.num_planes, 3), dtype=np.float64)
     plane_point = np.empty_like(plane_normal)
     for plane in range(packed_scene.num_planes):
-        R_world_geometry, r_world_geometry = _fixed_instance_transform(
+        transform = _fixed_instance_transform(
             packed_scene,
             int(packed["plane_instance_index"][plane]),
             x_world_R,
             x_world_r,
         )
-        normal = R_world_geometry @ packed["plane_normal_local"][plane]
+        normal = transform_directions(transform, packed["plane_normal_local"][plane][None, :])[0]
         norm = float(np.linalg.norm(normal))
-        if norm <= 1.0e-8:
+        if not np.isfinite(norm) or norm <= BUILD_EPS:
             raise ValueError("fixed fixture unexpectedly produced a degenerate plane normal")
         plane_normal[plane] = normal / norm
-        plane_point[plane] = R_world_geometry @ packed["plane_point_local"][plane] + r_world_geometry
+        plane_point[plane] = transform_points(transform, packed["plane_point_local"][plane][None, :])[0]
+        if not np.all(np.isfinite(plane_point[plane])):
+            raise ValueError("fixed fixture plane point must be finite")
 
     host_bvh = build_host_median_bvh(
         triangle_aabb_min,
@@ -1295,21 +1310,16 @@ def _fixed_instance_transform(
     instance_index: int,
     x_world_R: np.ndarray,
     x_world_r: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> SpatialTransform:
     packed = packed_scene.arrays
     body_index = int(packed["instance_body_index"][instance_index])
     if body_index < 0:
-        R_world_body = np.eye(3, dtype=np.float32)
-        r_world_body = np.zeros(3, dtype=np.float32)
+        world_body = SpatialTransform.identity()
     else:
-        R_world_body = x_world_R[body_index]
-        r_world_body = x_world_r[body_index]
+        world_body = SpatialTransform(x_world_R[body_index], x_world_r[body_index])
     R_body_geometry = packed["instance_X_body_geometry_R"][instance_index].reshape(3, 3)
     r_body_geometry = packed["instance_X_body_geometry_r"][instance_index]
-    return (
-        np.asarray(R_world_body @ R_body_geometry, dtype=np.float32),
-        np.asarray(r_world_body + R_world_body @ r_body_geometry, dtype=np.float32),
-    )
+    return world_body @ SpatialTransform(R_body_geometry, r_body_geometry)
 
 
 def _freeze_array_mapping(arrays: Mapping[str, object]) -> dict[str, np.ndarray]:

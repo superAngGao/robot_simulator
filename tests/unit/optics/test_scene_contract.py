@@ -29,14 +29,14 @@ def test_packed_scene_is_stable_read_only_and_semantically_complete():
     assert set(first.arrays) == set(SCENE_ARRAY_SEMANTICS)
     assert len(set(first.array_semantics.values())) == len(first.array_semantics)
     assert first.num_instances == 2
-    assert first.num_triangles == 1  # the degenerate source triangle is filtered
+    assert first.num_triangles == 2  # retain source faces; world queries reject degeneracy
     assert first.num_planes == 1
     assert first.num_lights == 1  # disabled lights are not materialized
     assert first.max_body_index == 2
     assert first.role_to_mask == {"depth": 1, "rgb": 2}
     np.testing.assert_array_equal(
         first.arrays["triangle_source_order_key"],
-        [pack_source_order_key(0, 0)],
+        [pack_source_order_key(0, 0), pack_source_order_key(0, 1)],
     )
     np.testing.assert_array_equal(
         first.arrays["plane_source_order_key"],

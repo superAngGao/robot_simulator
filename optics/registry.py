@@ -95,19 +95,27 @@ class OpticalTriangleMeshGeometry:
 
     def __post_init__(self) -> None:
         vertices = np.asarray(self.vertices_local, dtype=np.float64)
-        triangles = np.asarray(self.triangles, dtype=np.int64)
         if vertices.ndim != 2 or vertices.shape[1] != 3:
             raise ValueError("vertices_local must have shape (num_vertices, 3)")
-        if triangles.ndim != 2 or triangles.shape[1] != 3:
-            raise ValueError("triangles must have shape (num_triangles, 3)")
+        triangles = _validated_triangle_indices(self.triangles, len(vertices))
         if vertices.shape[0] == 0:
             raise ValueError("vertices_local must not be empty")
         if triangles.shape[0] == 0:
             raise ValueError("triangles must not be empty")
-        if np.any(triangles < 0) or np.any(triangles >= vertices.shape[0]):
-            raise ValueError("triangles contain out-of-range vertex indices")
         object.__setattr__(self, "vertices_local", vertices.copy())
         object.__setattr__(self, "triangles", triangles.copy())
+
+
+def _validated_triangle_indices(value: object, vertex_count: int) -> np.ndarray:
+    """Check original indices before any potentially lossy integer conversion."""
+    indices = np.asarray(value)
+    if indices.ndim != 2 or indices.shape[1] != 3:
+        raise ValueError("triangles must have shape (num_triangles, 3)")
+    if indices.dtype.kind not in "iu":
+        raise ValueError("triangle indices must have integer dtype")
+    if np.any(indices < 0) or np.any(indices >= vertex_count):
+        raise ValueError("triangles contain out-of-range vertex indices")
+    return np.asarray(indices, dtype=np.int64)
 
 
 @dataclass(frozen=True)

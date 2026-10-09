@@ -12,12 +12,12 @@ from .execution import OpticalComputeResult
 from .output_contract import (
     DIRECT_LIGHT_FULL_PRIMARY_HOST_CHANNEL_SPECS,
 )
+from .query_numerics import BUILD_EPS
 from .registry import OpticalPlaneGeometry, OpticalTriangleMeshGeometry
 from .scene import OpticalSceneSnapshot, transform_directions, transform_points
 
 MAX_PRIMITIVES_PER_INSTANCE = 2**32
 DEVICE_FLOAT32_RECOMMENDED_SCENE_SCALE_M = 1000.0
-_BUILD_EPS_F32 = 1e-8
 
 
 _CANONICAL_HOST_DTYPE_BY_CHANNEL = {
@@ -74,8 +74,8 @@ def build_host_optical_primitive_workload(
                 np.asarray(geometry.normal_local)[None, :],
             )[0]
             normal_world = normal_world / np.linalg.norm(normal_world)
-            plane_point_world.append(point_world.astype(np.float32))
-            plane_normal_world.append(normal_world.astype(np.float32))
+            plane_point_world.append(point_world)
+            plane_normal_world.append(normal_world)
             plane_numeric_instance_id.append(int(instance.numeric_instance_id))
             plane_source_order_key.append(pack_source_order_key(instance_index, 0))
             continue
@@ -88,20 +88,23 @@ def build_host_optical_primitive_workload(
                 edge2 = tri_world[2] - tri_world[0]
                 normal = np.cross(edge1, edge2)
                 normal_norm = np.linalg.norm(normal)
-                if normal_norm <= _BUILD_EPS_F32:
-                    continue
-                triangles_world.append(tri_world.astype(np.float32))
-                triangle_normals_world.append((normal / normal_norm).astype(np.float32))
+                if not np.isfinite(normal_norm):
+                    raise ValueError("world triangle normal must be finite")
+                triangles_world.append(tri_world)
+                triangle_normals_world.append(
+                    (normal / normal_norm).astype(np.float32)
+                    if normal_norm > BUILD_EPS else np.zeros(3, dtype=np.float32)
+                )
                 triangle_numeric_instance_id.append(int(instance.numeric_instance_id))
                 triangle_source_order_key.append(pack_source_order_key(instance_index, primitive_index))
 
     return HostOpticalPrimitiveWorkload(
-        triangles_world=_array_or_empty(triangles_world, shape=(0, 3, 3), dtype=np.float32),
+        triangles_world=_array_or_empty(triangles_world, shape=(0, 3, 3), dtype=np.float64),
         triangle_normals_world=_array_or_empty(triangle_normals_world, shape=(0, 3), dtype=np.float32),
         triangle_numeric_instance_id=np.asarray(triangle_numeric_instance_id, dtype=np.int32),
         triangle_source_order_key=np.asarray(triangle_source_order_key, dtype=np.int64),
-        plane_normal_world=_array_or_empty(plane_normal_world, shape=(0, 3), dtype=np.float32),
-        plane_point_world=_array_or_empty(plane_point_world, shape=(0, 3), dtype=np.float32),
+        plane_normal_world=_array_or_empty(plane_normal_world, shape=(0, 3), dtype=np.float64),
+        plane_point_world=_array_or_empty(plane_point_world, shape=(0, 3), dtype=np.float64),
         plane_numeric_instance_id=np.asarray(plane_numeric_instance_id, dtype=np.int32),
         plane_source_order_key=np.asarray(plane_source_order_key, dtype=np.int64),
     )

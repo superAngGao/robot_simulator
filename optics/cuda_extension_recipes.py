@@ -21,10 +21,11 @@ class CudaExtensionRecipe:
 
 CUDA_EXTENSION_RECIPES = (
     CudaExtensionRecipe(
-        "robot_sim_cuda_scene_v1",
+        "robot_sim_cuda_scene_v3",
         _cuda_scene_source,
         ("update_triangles_world_aabb_out", "update_planes_world_out"),
         False,
+        cuda_cflags=("-O2", "--fmad=false"),
     ),
     CudaExtensionRecipe(
         "robot_sim_cuda_lbvh_native_v3",

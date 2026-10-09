@@ -14,7 +14,7 @@ import numpy as np
 from ._cuda_scene_source import CPP_SOURCE as _CPP_SOURCE, CUDA_SOURCE as _CUDA_SOURCE
 from .cuda_extension_loading import load_cuda_extension
 
-from .scene_contract import PackedOpticalSceneHost
+from .scene_contract import PackedOpticalSceneHost, validate_indexed_geometry
 
 CUDA_SCENE_UPDATE_OPERATION_ID = "torch_cuda_local_scene_transform_and_aabb_out_v1"
 CUDA_SCENE_UPDATE_STAGE_SCHEMA_VERSION = "q54.p12.4.cuda-scene-update-stage.v1"
@@ -122,6 +122,7 @@ def build_cuda_optical_scene(
 
     import torch
 
+    validate_indexed_geometry(packed_scene)
     target = torch.device(device)
     if target.type != "cuda":
         raise ValueError("CUDA optical scene requires a CUDA device")
@@ -158,6 +159,7 @@ def cuda_optical_scene_from_arrays(
 
     import torch
 
+    validate_indexed_geometry(packed_scene)
     if not isinstance(device_ordinal, int) or isinstance(device_ordinal, bool) or device_ordinal < 0:
         raise ValueError("device_ordinal must be a non-negative integer")
     if set(arrays) != set(packed_scene.arrays):
@@ -252,7 +254,7 @@ def allocate_cuda_world_scene_buffers(
     with _output_array_allocation(torch, device, lane="cuda", context=_context) as empty:
         values = {
             name: empty(name, (scene.num_planes if name.startswith("plane_") else scene.num_triangles, 3),
-                        torch.float32)
+                        torch.float64 if name in ('triangle_v0_world', 'triangle_e1_world', 'triangle_e2_world', 'plane_normal_world', 'plane_point_world') else torch.float32)
             for name in _WORLD_OUTPUT_NAMES
         }
     return CudaWorldSceneBuffers(
@@ -576,7 +578,8 @@ def _triangle_abi_arguments(
     outputs: CudaWorldSceneBuffers,
 ) -> tuple[object, ...]:
     return (
-        scene.arrays["triangle_vertices_local"],
+        scene.arrays["geometry_vertices_local"],
+        scene.arrays["triangle_vertex_indices"],
         scene.arrays["triangle_instance_index"],
         scene.arrays["instance_body_index"],
         scene.arrays["instance_X_body_geometry_R"],
@@ -702,14 +705,15 @@ def _validate_scene_stage_evidence(stage: CudaSceneUpdateStage) -> None:
 def _validate_local_scene(scene: CudaOpticalLocalScene, device: object) -> None:
     torch = _torch_module()
     expected = {
-        "triangle_vertices_local": (torch.float32, (scene.num_triangles, 9)),
+        "geometry_vertices_local": (torch.float64, (int(scene.arrays["geometry_vertices_local"].shape[0]), 3)),
+        "triangle_vertex_indices": (torch.int64, (scene.num_triangles, 3)),
         "triangle_instance_index": (torch.int32, (scene.num_triangles,)),
-        "plane_normal_local": (torch.float32, (scene.num_planes, 3)),
-        "plane_point_local": (torch.float32, (scene.num_planes, 3)),
+        "plane_normal_local": (torch.float64, (scene.num_planes, 3)),
+        "plane_point_local": (torch.float64, (scene.num_planes, 3)),
         "plane_instance_index": (torch.int32, (scene.num_planes,)),
         "instance_body_index": (torch.int32, (scene.num_instances,)),
-        "instance_X_body_geometry_R": (torch.float32, (scene.num_instances, 9)),
-        "instance_X_body_geometry_r": (torch.float32, (scene.num_instances, 3)),
+        "instance_X_body_geometry_R": (torch.float64, (scene.num_instances, 9)),
+        "instance_X_body_geometry_r": (torch.float64, (scene.num_instances, 3)),
     }
     if scene.num_triangles > _INT32_MAX or scene.num_planes > _INT32_MAX or scene.num_instances > _INT32_MAX:
         raise ValueError("CUDA scene count exceeds int32 kernel range")
@@ -789,7 +793,7 @@ def _validate_world_outputs(
             getattr(outputs, name),
             name=name,
             device=device,
-            dtype=torch.float32,
+            dtype=torch.float64 if name in ('triangle_v0_world', 'triangle_e1_world', 'triangle_e2_world', 'plane_normal_world', 'plane_point_world') else torch.float32,
             exact=(rows, 3),
         )
 
@@ -922,7 +926,7 @@ def _torch_module():
 def _load_cuda_scene_extension(*, extensions=None, context=None):
     if extensions is None:
         _torch_module()
-    return load_cuda_extension("robot_sim_cuda_scene_v1", extensions=extensions, context=context)
+    return load_cuda_extension("robot_sim_cuda_scene_v3", extensions=extensions, context=context)
 
 
 def _torch_dtype_numpy(torch: Any, dtype: Any) -> np.dtype[Any]:

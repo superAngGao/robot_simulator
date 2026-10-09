@@ -120,7 +120,8 @@ def _assert_cuda_arena_c3_binding_authority(
 # DeviceOpticalSceneSnapshot, DeviceOpticalBvh, CudaFirstHitInputs, and
 # CudaShadeInputs.  The tuple order is part of the contract.
 DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES = (
-    "triangle_vertices_local",
+    "geometry_vertices_local",
+    "triangle_vertex_indices",
     "triangle_instance_index",
     "plane_normal_local",
     "plane_point_local",

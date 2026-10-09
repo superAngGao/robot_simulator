@@ -39,8 +39,8 @@ _SHADOW_TRAVERSAL_COUNTER_CHANNELS = SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES
 class GpuBruteForceOpticalExecutor:
     """Warp brute-force first-hit executor for robot-scale optical scenes.
 
-    L5A uses float32 device buffers and is intended for robot-scale scenes
-    below roughly 1000 meters. It is a correctness-first device result path:
+    Queries preserve binary64 geometry and rays, with float32 output channels.
+    This is a correctness-first device result path:
     no GPU BVH, no direct lighting, no shadows, and no string id channels.
     """
 
@@ -68,18 +68,18 @@ class GpuBruteForceOpticalExecutor:
 
         with _scoped_stream(self.stream):
             origins = wp.array(
-                np.asarray(spec.origins_world, dtype=np.float32),
-                dtype=wp.float32,
+                np.asarray(spec.origins_world, dtype=np.float64),
+                dtype=wp.float64,
                 device=self.device,
             )
             directions = wp.array(
-                np.asarray(spec.directions_world, dtype=np.float32),
-                dtype=wp.float32,
+                np.asarray(spec.directions_world, dtype=np.float64),
+                dtype=wp.float64,
                 device=self.device,
             )
             triangles = wp.array(
                 workload.triangles_world.reshape((-1, 9)),
-                dtype=wp.float32,
+                dtype=wp.float64,
                 device=self.device,
             )
             triangle_numeric_ids = wp.array(
@@ -92,8 +92,8 @@ class GpuBruteForceOpticalExecutor:
                 dtype=wp.int64,
                 device=self.device,
             )
-            plane_normals = wp.array(workload.plane_normal_world, dtype=wp.float32, device=self.device)
-            plane_points = wp.array(workload.plane_point_world, dtype=wp.float32, device=self.device)
+            plane_normals = wp.array(workload.plane_normal_world, dtype=wp.float64, device=self.device)
+            plane_points = wp.array(workload.plane_point_world, dtype=wp.float64, device=self.device)
             plane_numeric_ids = wp.array(
                 workload.plane_numeric_instance_id,
                 dtype=wp.int32,
@@ -219,13 +219,13 @@ class GpuDeviceSceneOpticalExecutor:
         with _scoped_stream(self.stream):
             _wait_on_event(snapshot.ready_event, stream=self.stream, device=self.device)
             origins = wp.array(
-                np.asarray(spec.origins_world, dtype=np.float32),
-                dtype=wp.float32,
+                np.asarray(spec.origins_world, dtype=np.float64),
+                dtype=wp.float64,
                 device=self.device,
             )
             directions = wp.array(
-                np.asarray(spec.directions_world, dtype=np.float32),
-                dtype=wp.float32,
+                np.asarray(spec.directions_world, dtype=np.float64),
+                dtype=wp.float64,
                 device=self.device,
             )
             hit_mask = wp.array(np.zeros(num_rays, dtype=np.int32), dtype=wp.int32, device=self.device)
@@ -394,13 +394,13 @@ class GpuDeviceBvhOpticalExecutor:
         with _scoped_stream(self.stream):
             start = time.perf_counter()
             origins = wp.array(
-                np.asarray(spec.origins_world, dtype=np.float32),
-                dtype=wp.float32,
+                np.asarray(spec.origins_world, dtype=np.float64),
+                dtype=wp.float64,
                 device=self.device,
             )
             directions = wp.array(
-                np.asarray(spec.directions_world, dtype=np.float32),
-                dtype=wp.float32,
+                np.asarray(spec.directions_world, dtype=np.float64),
+                dtype=wp.float64,
                 device=self.device,
             )
             _add_profile_ms(render_profile, "host_ray_upload_ms", start)
@@ -435,14 +435,14 @@ class GpuDeviceBvhOpticalExecutor:
         self._validate_camera(snapshot, bvh, camera)
         num_rays = int(camera.width * camera.height)
         start = time.perf_counter()
-        R = np.asarray(camera.X_world_camera.R, dtype=np.float32)
-        r = np.asarray(camera.X_world_camera.r, dtype=np.float32)
+        R = np.asarray(camera.X_world_camera.R, dtype=np.float64)
+        r = np.asarray(camera.X_world_camera.r, dtype=np.float64)
         _add_profile_ms(render_profile, "raygen_camera_params_ms", start)
 
         with _scoped_stream(self.stream):
             start = time.perf_counter()
-            origins = wp.empty((num_rays, 3), dtype=wp.float32, device=self.device)
-            directions = wp.empty((num_rays, 3), dtype=wp.float32, device=self.device)
+            origins = wp.empty((num_rays, 3), dtype=wp.float64, device=self.device)
+            directions = wp.empty((num_rays, 3), dtype=wp.float64, device=self.device)
             _add_profile_ms(render_profile, "raygen_buffer_alloc_ms", start)
             start = time.perf_counter()
             wp.launch(

@@ -40,7 +40,8 @@ _DEFINITIONS = (
     ("optics.device_scene", (
         "_update_triangles_derived_aabb_world_kernel", "_update_triangles_derived_world_kernel",
         "_update_planes_world_kernel",
-    ), ("_compose_R_component",), ()),
+    ), ("_compose_world_transform", "_transform_source_point", "_indexed_world_triangle",
+        "_write_triangle_world", "_outward_bound"), ()),
     ("optics.device_bvh", (
         "_refit_bvh_leaf_bounds_kernel", "_refit_bvh_internal_bounds_kernel",
     ), (), ()),
@@ -207,7 +208,10 @@ def definition_owners(session, index):
     for key, value in zip(struct_names, structs):
         _require(value.module is module and value.cls.__name__ == key and value.cls.__module__ == name,
                  "Warp struct source identity drift")
-    _require(_matches(module.options, _MODULE_OPTIONS), "Warp module compilation options drift")
+    expected_options = dict(_MODULE_OPTIONS)
+    if name in ("optics.device_scene", "optics.warp_native_render"):
+        expected_options["fuse_fp"] = False
+    _require(_matches(module.options, expected_options), "Warp module compilation options drift")
     return python_module, module, kernels + functions + structs
 
 

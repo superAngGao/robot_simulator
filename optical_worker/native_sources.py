@@ -74,6 +74,7 @@ _COMMON = (
     "optics/registry.py",
     "optics/scene.py",
     "optics/scene_contract.py",
+    "optics/query_numerics.py",
     "physics/__init__.py",
     "physics/_robot_tree_base.py",
     "physics/collision.py",
