@@ -11,6 +11,44 @@ from tests.unit.optics.test_native_render_preparation import graph_session
 from tests.unit.optics.test_prepared_fixed_render_inputs import fixed_inputs, fixed_storage_session
 
 
+@pytest.mark.parametrize('fail_at', [None])
+@pytest.mark.parametrize('diagnostic', [False])
+def test_warmup_does_not_reimport_the_process_bootstrap(executable_graph, monkeypatch):
+    import builtins
+    from optical_worker.native_bootstrap import SourceBootstrapError
+
+    # In the real child the bootstrap is __main__, not an importable source.
+    # Normal unit imports cache that module and used to hide a second import.
+    original_import = builtins.__import__
+    def process_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if (name == 'optical_worker.native_bootstrap'
+                or name == 'native_bootstrap' and level == 1
+                and globals is not None and globals.get('__package__') == 'optical_worker'):
+            raise SourceBootstrapError('repository import outside CPU core or reload')
+        return original_import(name, globals, locals, fromlist, level)
+    monkeypatch.setattr(builtins, '__import__', process_import)
+    evidence = executable_graph.session.run_fixed_render_warmups()
+    assert len(evidence.completions) == 10
+    assert sum(kind == 'launch' for kind, _, _ in executable_graph.calls) == (
+        50 if executable_graph.p.lane == 'warp' else 30)
+
+
+@pytest.mark.parametrize('fail_at', [None])
+@pytest.mark.parametrize('diagnostic', [False])
+@pytest.mark.parametrize('attack', ['missing_upload', 'replaced_input'])
+def test_warmup_entry_requires_original_uploaded_input(executable_graph, monkeypatch, attack):
+    from optical_worker import native_bootstrap, warmup
+    x = executable_graph
+    if attack == 'missing_upload':
+        monkeypatch.delitem(native_bootstrap._UPLOADED_INPUTS, x.session)
+    else:
+        monkeypatch.setattr(x.session, 'prepared_input', object())
+    with pytest.raises(native_bootstrap.SourceBootstrapError, match='original uploaded'):
+        x.session.run_fixed_render_warmups()
+    assert x.calls == [] and x.session not in warmup._COMPLETED_WARMUPS
+    assert x.controller.guardian.state == 'TRANSFERRED_TO_QUARANTINE'
+
+
 @pytest.fixture
 def executable_graph(graph_session, monkeypatch, diagnostic, request):
     from optical_worker import warmup, warp_setup

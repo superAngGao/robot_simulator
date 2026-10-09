@@ -111,8 +111,7 @@ def _prepare_cuda_transaction(bundle, context, graph):
     return _CudaSetupTransaction(_template=template)
 
 
-def _prepare_fixed_render_warmups(session):
-    from .native_bootstrap import _UPLOADED_INPUTS
+def _prepare_fixed_render_warmups(session, runtime, target, stream):
     from .native_setup import (_FixedRenderPreparation, _create_upload_context,
                                _native_resource_scope, _require_cuda_render_factory)
 
@@ -127,10 +126,7 @@ def _prepare_fixed_render_warmups(session):
     session._hold_runtime_owner(tickets, "setup_warmup_guards")
     # Reserve one-shot issuance before any preparation can fail.
     _SETUP_WARMUPS[session] = None
-    record, prepared = _UPLOADED_INPUTS[session]
-    if prepared is not session.prepared_input:
-        raise ValueError("warmup differs from the original uploaded input")
-    runtime, target, stream = session._validate_runtime_binding_record(record[0], record)
+    prepared = session.prepared_input
     controller.require_adopted(graph, graph.readiness, prepared)
     session.audit()
     session.external.audit()

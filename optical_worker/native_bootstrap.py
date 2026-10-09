@@ -3435,9 +3435,14 @@ class _SourceSession:
             _require(self.phase == "fixed_render_graph_ready", "fixed render warmups require their graph, once")
             with self.bound_controller().segment("setup"):
                 self.phase = "warming_fixed_render_graph"
+                uploaded = _UPLOADED_INPUTS.get(self)
+                _require(uploaded is not None and uploaded[1] is self.prepared_input,
+                         "warmup requires the original uploaded input")
+                record, prepared = uploaded
+                runtime, target, stream = self._validate_runtime_binding_record(record[0], record)
                 from optical_worker.warmup import _prepare_fixed_render_warmups, _run_fixed_render_warmups
 
-                authority = _prepare_fixed_render_warmups(self)
+                authority = _prepare_fixed_render_warmups(self, runtime, target, stream)
             evidence = _run_fixed_render_warmups(authority)
             self.fixed_render_warmups = evidence
             self.phase = "fixed_render_warmups_ready"
