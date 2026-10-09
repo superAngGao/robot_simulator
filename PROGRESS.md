@@ -1734,7 +1734,17 @@ Next milestone:
       import closure and original profile-enum mismatch are repaired at6300531.
       Fresh independent native-repair code-reviewv1 approves that bounded fix
       (488 passed,13 platform/asset skips); its report is archived unchanged.
-      The repaired native graph campaign is running at exact6300531.
+      The repaired native graph campaign completed at exact6300531. Fresh
+      native-reviewv1 approves only its eight positive Go2 graph cases: both
+      lanes/resolutions/diagnostic modes; eight raw replays and88 altered-copy
+      rejections passed. Archive SHA256:
+      585cebd270937e04593f19e8cb0797c7d4cf9f3908ca5a7ae28249dcc86bcb78.
+      No optical kernel was launched in that graph-only campaign.
+      Fixed R0 warmup code-reviewv2 approves exact3a3cd3a, closing the mutable
+      Warp execution-plan finding and covering positive native-driver RGB
+      readback support (489 passed,22 environment skips). Both complete reports
+      are archived unchanged. Real warmup/output validation remains pending;
+      there is still no image correctness or performance conclusion.
       Fixed R0 storage native-reviewv1 approves the14-case campaign at3d6692b:
       eight positives, four guarded raises and two deadline kills independently
       replayed; all29 author PIDs absent. Raw archive SHA256 is
