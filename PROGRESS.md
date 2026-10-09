@@ -1635,6 +1635,21 @@ Next milestone:
       Test-evidencev2 records terminal results and the matching local/remote raw
       archive. This closes fixed-artifact replacement only; whole C2d3/C4,
       numerical rendering and performance remain unproved.
+      Remaining Warp compilation policy now has independent design approval:
+      warp-module-preparation design-request v2 at524f5d5, SHA256
+      194b3c25130df77954f5b2de2b556da81009b98f94efb861848ae06566a41a5b.
+      Fresh reviewv2 closes v1 F1 (guarded imports and actual-IDLE disposal),
+      report SHA25645a4e117b9722985be1ed951507cd8cf292b473449562be967ac007437008434.
+      Implementation must adapt new-phase failure routing; SourceSession.fail
+      currently marks a failed guard unconditionally. Approved route reuses
+      in-process Warp compilation, one fresh private cache and actual ModuleExec
+      holds. No compiler service or alternate renderer. Offline wheel inventory
+      c4-warp-compilation-wheel-inventory-v1.json (remote shared root/local
+      c4_assets), SHA2569371a533fb0e5b273609cb60ab2a603ba9f0f6b09fbea8749f8ad36cd6c00ab6,
+      includes47 copied/hash-verified headers missing from the current profile.
+      Source-only linecache reproduction passed local3.14 and remote3.12.13;
+      these are authoring facts, not runtime admission or native compilation.
+      Code, real-device acceptance and whole-C4 work remain outstanding.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
