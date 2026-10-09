@@ -1,6 +1,9 @@
 """Real lifecycle/entry tests; simulated Warp leaves do not prove GPU behavior."""
 
+import ast
 import sys
+from contextlib import nullcontext
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -9,6 +12,22 @@ from optical_worker import native_bootstrap as bootstrap, native_setup, warp_set
 from optical_worker.guarded_lifecycle import NativeGuardedSetupLifecycle
 from optical_worker.wait_protocol import GuardConfiguration
 from tests.support.guarded_peer import Peer
+
+compile_warp_module = warp_setup.compile_module
+
+
+def test_compilation_inventory_covers_actual_kernel_function_and_struct_declarations():
+    root = Path(__file__).resolve().parents[3]
+    for module, kernels, functions, structs in warp_setup._DEFINITIONS:
+        tree = ast.parse((root / (module.replace(".", "/") + ".py")).read_text(encoding="utf-8"))
+        actual = {kind: [] for kind in ("kernel", "func", "struct")}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                for decorator in node.decorator_list:
+                    if (isinstance(decorator, ast.Attribute) and isinstance(decorator.value, ast.Name)
+                            and decorator.value.id == "wp" and decorator.attr in actual):
+                        actual[decorator.attr].append(node.name)
+        assert actual == {"kernel": list(kernels), "func": list(functions), "struct": list(structs)}
 
 
 @pytest.fixture
@@ -184,3 +203,84 @@ def test_guarded_failure_preserves_original_error_and_partial_roots(prepared_ses
     assert p.controller.guardian.state == "TRANSFERRED_TO_QUARANTINE" and p.syncs == []
     assert p.checkpoints == [] and p.session not in warp_setup._MODULE_SETS
     assert all(any(owner is record for owner in p.session.runtime_owners) for record in p.records)
+
+
+@pytest.mark.parametrize("fault", [None, "load_before", "load_after_publication", "adoption", "metadata"])
+def test_actual_compile_helper_holds_mapping_and_executable_across_failures(
+        prepared_session, monkeypatch, tmp_path, fault):
+    p = prepared_session
+    failure = RuntimeError("fixed compile failure")
+    target, wp = p.binding.target, p.binding.module
+    target.arch, target.context = 90, 42
+    wp.ScopedDevice = wp.ScopedStream = lambda owner: nullcontext(owner)
+    identifier = "wp_optics.device_scene_abc1234"
+    module_hash = b"module hash"
+    module = SimpleNamespace(
+        execs={}, failed_builds={}, get_module_hash=lambda block_dim: module_hash,
+        get_module_identifier=lambda: identifier,
+        _get_compile_output_name=lambda target: identifier + ".sm90.cubin",
+        _get_meta_name=lambda: identifier + ".meta")
+    python_module = ModuleType("optics.device_scene")
+    loader = SimpleNamespace(relative="optics/device_scene.py")
+    p.session.modules[python_module.__name__] = (python_module, loader, "complete")
+    p.session.sources = {loader.relative: (b"held source", "a" * 64)}
+    cache = SimpleNamespace(path=tmp_path, context=SimpleNamespace(ModuleExec=SimpleNamespace), records=[])
+    monkeypatch.setattr(warp_setup, "validate_warp_cache", lambda *args: cache)
+    monkeypatch.setattr(warp_setup, "definition_owners", lambda *args: (python_module, module, ()))
+    returned = []
+
+    def load(**kwargs):
+        # Ownership precedes both publication and the potentially raising call.
+        p.controller.require_adopted(module, module.execs)
+        assert kwargs == dict(module=module, device=target, recursive=False, block_dim=256, max_workers=0)
+        if fault == "load_before":
+            raise failure
+        executable = SimpleNamespace(device=target, handle=99, module_hash=module_hash,
+                                     meta={"value": 2 if fault == "metadata" else 1})
+        module.execs[(target.context, 256)] = executable
+        returned.append(executable)
+        if fault == "load_after_publication":
+            raise failure
+        directory = tmp_path / identifier
+        directory.mkdir()
+        (directory / (identifier + ".sm90.cubin")).write_bytes(b"\x7fELF\x02\x01\x01unit binary")
+        (directory / (identifier + ".meta")).write_bytes(b'{"value":1}')
+        (directory / (identifier + ".cu")).write_bytes(b"generated source")
+
+    wp.load_module = load
+    if fault == "adoption":
+        def reject_adoption(owner, **kwargs):
+            assert any(value is owner for value in p.session.runtime_owners)
+            raise failure
+        monkeypatch.setattr(p.controller, "adopt_returned_device_owner", reject_adoption)
+    if fault is None:
+        with p.controller.segment():
+            record = compile_warp_module(p.session, p.binding, 0)
+        assert record.executable is returned[0] and cache.records == [record]
+        assert record.mapping is module.execs and len(record.artifacts) == 3
+        p.controller.require_adopted(record, record.executable, module.execs)
+    else:
+        with pytest.raises((RuntimeError, ValueError)) as caught:
+            with p.controller.segment():
+                compile_warp_module(p.session, p.binding, 0)
+        if fault != "metadata":
+            assert caught.value is failure
+        assert cache.records == []
+        assert any(value is module.execs for value in p.session.runtime_owners)
+        if returned:
+            assert module.execs[(target.context, 256)] is returned[0]
+        assert p.controller.guardian.state == "TRANSFERRED_TO_QUARANTINE"
+        assert p.controller.termination_evidence.lifecycle.to_payload()["summary"]["emergency_sync_attempt_count"] == 0
+
+
+def test_aggregate_cannot_issue_from_copied_compilation_records(prepared_session, monkeypatch):
+    p = prepared_session
+    original = warp_setup.issue_module_set
+    def copied(session, binding, records):
+        copies = tuple(SimpleNamespace(guard=record.guard) for record in records)
+        return original(session, binding, copies)
+    monkeypatch.setattr(warp_setup, "issue_module_set", copied)
+    with pytest.raises(ValueError, match="copied"):
+        p.session.prepare_warp_modules()
+    assert p.session not in warp_setup._MODULE_SETS
+    assert p.controller.termination_evidence.lifecycle.to_payload()["summary"]["emergency_sync_attempt_count"] == 1

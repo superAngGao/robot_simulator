@@ -10,7 +10,7 @@ Related Files: warp-module-preparation design-request/design-review v2; implemen
 Owner Summary: Connected the existing source session to the private Warp cache,
   guarded imports, three serial module loads and retained executable set. Reused
   the existing supervisor and native driver for author verification. Native
-  execution, integrated independent code review and whole C4 remain unproved.
+  success, integrated independent code review and whole C4 remain unproved.
 
 Base: 179f247d2c40984bb0c7e23b2556c8fdc346afc6. This pending candidate continues
 the approved design v2; no new process manager, renderer, source loader, resource
@@ -45,14 +45,31 @@ Local Python3.14 author checks:
 - Focused rerun:11 passed,40 deselected in2.09s. Tests cover import/compile order,
   retained partial roots, original guarded failures, CPU entry/issuance/repeat
   failures, unknown scope, missing guardian owner and changed binding identity.
-- Broader session42604 is still running at this record's creation. Do not infer
-  completion or native behavior from these CPU tests.
+- Broader session42604 completed exit0:145 passed,9 skipped in276.36s, covering
+  the new entry tests plus guarded runtime binding, captured bootstrap and source
+  custody regressions. Skips and doubles establish no native behavior.
+- Direct production compile-helper tests exercise failure before loading, after
+  executable publication, during adoption and at metadata checking; all partial
+  mappings remain held and failed guards never start an emergency sync. With
+  copied aggregate rejection,16 tests passed (session33866,9.21s).
 
 The existing sacrificial driver has a Warp compilation case that observes real
 module loading and same-session reuse. It extends the existing acceptance runner;
 it creates no alternate upload/compiler/supervisor implementation. Input-phase
 custody retains its original meaning; compilation observations are downstream
-raw evidence only. This native case has not yet executed at this record cut.
+raw evidence only.
+
+First actual Go2 attempt used frozen9a3e472 on the new isolated remote worktree
+/data2/shared/ang.gao/robot_sim_warp_modules_wip (the CUDA acceptance worktree
+remains unchanged). Tool88571 completed exit1 after the existing runner rejected
+the positive case. Raw evidence is /data2/shared/ang.gao/c4-warp-module-author-v1.
+It reached input validation and failed inside guarded optical preparation with
+ValueError("Warp definition inventory drift"). The authored inventory omitted
+the renderer's four existing @wp.struct definitions. No successful compilation
+or rendering is claimed. Added those literal definitions, their original class/
+module/field/native-layout identities and a test comparing the inventory to the
+actual production source decorators. This correction does not grant new module
+execution or broaden the approved three-module compilation scope.
 
 Pending: real Go2 at both resolutions, target1/ambient0 restoration, compiler
 input/flag verification, cache and executable negatives, partial-publication/

@@ -40,10 +40,10 @@ _DEFINITIONS = (
     ("optics.device_scene", (
         "_update_triangles_derived_aabb_world_kernel", "_update_triangles_derived_world_kernel",
         "_update_planes_world_kernel",
-    ), ("_compose_R_component",)),
+    ), ("_compose_R_component",), ()),
     ("optics.device_bvh", (
         "_refit_bvh_leaf_bounds_kernel", "_refit_bvh_internal_bounds_kernel",
-    ), ()),
+    ), (), ()),
     ("optics.warp_native_render", (
         "_pinhole_camera_raygen_kernel", "_brute_force_first_hit_kernel",
         "_device_scene_first_hit_kernel", "_device_scene_first_hit_aabb_kernel",
@@ -57,7 +57,7 @@ _DEFINITIONS = (
         "_intersect_aabb_for_ray_with_interval", "_intersect_device_triangle_for_ray",
         "_is_occluded_for_ray", "_direct_light_begin", "_direct_light_sample",
         "_direct_light_accumulate", "_direct_light_write", "_shade_unshadowed_ray", "_shade_shadowed_ray",
-    )),
+    ), ("_ShadowTrace", "_ShadowTotals", "_DirectLightSurface", "_DirectLightSample")),
 )
 # Installed include inputs are explicit data files, never permission to scan/import.
 _HEADERS = (
@@ -182,33 +182,47 @@ def validate_compilation_inputs(session):
 
 
 def definition_owners(session, index):
-    name, kernel_names, function_names = _DEFINITIONS[index]
+    name, kernel_names, function_names, struct_names = _DEFINITIONS[index]
     python_module = session.modules[name][0]
     kernels = tuple(getattr(python_module, key) for key in kernel_names)
     functions = tuple(getattr(python_module, key) for key in function_names)
+    structs = tuple(getattr(python_module, key) for key in struct_names)
     module = kernels[0].module
     context = session.external.records["warp._src.context"]["module"]
+    codegen = session.external.records["warp._src.codegen"]["module"]
     _require(type(module) is context.Module and module.name == name, "unexpected Warp module definition")
     _require(all(type(value) is context.Kernel for value in kernels)
-             and all(type(value) is context.Function for value in functions), "unexpected Warp definition type")
+             and all(type(value) is context.Function for value in functions)
+             and all(type(value) is codegen.Struct for value in structs), "unexpected Warp definition type")
     _require(len(module.kernels) == len(kernels) and len(module.functions) == len(functions)
-             and not module.structs, "Warp definition inventory drift")
+             and len(module.structs) == len(structs), "Warp definition inventory drift")
     _require(all(module.kernels.get(value.key) is value for value in kernels)
-             and all(module.functions.get(value.key) is value for value in functions), "Warp registry identity drift")
+             and all(module.functions.get(value.key) is value for value in functions)
+             and all(module.structs.get(value.key) is value for value in structs), "Warp registry identity drift")
     _require(all(type(value.options) is dict and not value.options for value in kernels),
              "Warp kernel compilation options drift")
     for key, value in zip(kernel_names + function_names, kernels + functions):
         _require(value.module is module and value.func.__name__ == key and value.func.__module__ == name,
                  "Warp definition source identity drift")
+    for key, value in zip(struct_names, structs):
+        _require(value.module is module and value.cls.__name__ == key and value.cls.__module__ == name,
+                 "Warp struct source identity drift")
     _require(_matches(module.options, _MODULE_OPTIONS), "Warp module compilation options drift")
-    return python_module, module, kernels + functions
+    return python_module, module, kernels + functions + structs
 
 
 def _definition_facts(definitions):
-    return tuple((value, value.func, value.func.__code__, value.adj,
-                  tuple((arg.label, arg.type) for arg in value.adj.args),
-                  _json(value.options) if hasattr(value, "options") else None)
-                 for value in definitions)
+    facts = []
+    for value in definitions:
+        if hasattr(value, "func"):
+            facts.append((value, value.func, value.func.__code__, value.adj,
+                          tuple((arg.label, arg.type) for arg in value.adj.args),
+                          _json(value.options) if hasattr(value, "options") else None))
+        else:
+            facts.append((value, value.cls, value.module, value.ctype, value.instance_type,
+                          tuple((name, var.type) for name, var in value.vars.items()),
+                          value.hash, value.native_name))
+    return tuple(facts)
 
 
 def _artifact_bytes(root, relative):
