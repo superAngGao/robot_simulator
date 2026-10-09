@@ -1578,8 +1578,9 @@ Next milestone:
       drivers are deleted. Historical CPU readers moved out of worker admission.
       Affected CPU checks pass494 with9 skips; prospective LF source validation
       covers83 files under policyv15/catalogv14. See implementation-notev3 for
-      test limits, the fixed historical fixture failure and remaining cold release,
-      full v3 replay and bounded native acceptance work. No real build/service/GPU
+      test limits and the fixed historical fixture failure. Committed cold release
+      checks at1ff696a pass275 with13 skips (167.95s, exit0); full v3 replay and
+      bounded native acceptance remain. No real build/service/GPU
       run or code acceptance is claimed. Finish and preflight the whole replacement packet,
       then continue all parent C4 work. Do not resume the isolated pidfd campaign.
       Product requirements and independent checkpoints remain; no early benchmark

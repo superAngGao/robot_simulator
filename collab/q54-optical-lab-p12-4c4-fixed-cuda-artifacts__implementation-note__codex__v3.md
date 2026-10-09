@@ -100,7 +100,19 @@ access was not added to captured factory permissions. All83 prospective LF sourc
 then passed the actual production source validator. Catalog v14 SHA256 is
 `c915a489b67641bdbee7ea3b36379ffed79e574461365e396a1f362eae1bbcbe`.
 This authoring check validates proposed LF release bytes; it is not an installed
-source-custody run. Cold release tests still need a committed candidate.
+source-custody run. The subsequent committed-candidate cold release check at
+`1ff696a8bb3f5f5415994d007098ce96769d6abd` completed with **275 passed, 13 skipped
+in 167.95s**, exit 0:
+
+```text
+C:/Python314/python.exe -B -m pytest -q
+  tests/unit/optics/test_native_source_policy.py
+  tests/unit/optics/test_native_sources.py
+  tests/unit/optics/test_native_bootstrap.py
+```
+
+This exercises committed release/source snapshots on CPU; it does not load the
+native CUDA artifacts. The command completed and its exec session is terminal.
 
 `git diff --check` found two trailing blank lines after old helper/test removal;
 these were removed and the source catalog refreshed. The subsequent check passed.
@@ -109,8 +121,7 @@ getter, fault campaign or reviewer was launched in this work.
 
 ## Remaining before preflight and parent completion
 
-Run affected cold release/source checks against the committed candidate and fix
-actual failures. Complete full v3 file-call/native-pair replay attacks and the
+Complete full v3 file-call/native-pair replay attacks and the
 bounded installed-manager/build/loading acceptance commands, including real factory
 binding under the approved preparation scope. Verify exact installed dependency
 closure and the derived v5 launch selection. Then freeze the whole replacement
