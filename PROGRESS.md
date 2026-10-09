@@ -1375,6 +1375,21 @@ Next milestone:
       separate from the85 matrix, which excludes those selectors. No terminal
       outcome or whole-C2d3 approval follows from this preflight; C4 remains
       active and the candidate production still equals e585956.
+      The old7cde887 terminal matrix finished12passed950.62s with12 live
+      identity chains and26 owned PID references absent afterward. Whole C2d3
+      review nevertheless requested changes for upload ready-event actual
+      device checks, aggregate external-admission completion, and12 broken
+      CPU regressions. Candidatefc86182 repairs all three; fresh independent
+      preflight approves that bounded delta with an execution-isolation comment.
+      Local684pass/3platformskip; Linux combined1058pass/45cold-fixture preload
+      failures are retained, followed by complete isolated cold-trio262pass.
+      Actual-record mutations pass500/36explicitly inapplicable skips; all113
+      originals still replay and all8 original missing-completion counterexamples
+      now reject. No old GPU evidence is relabelled as repaired execution.
+      The approved repaired16 native-scope rerun is now running;85fault and12
+      terminal reruns plus fresh whole review still precede C2d3 acceptance.
+      See whole-review-repairs test-evidence/code-preflight-review v1 for hashes,
+      limitations and unchanged full report. C4 remains the active objective.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
