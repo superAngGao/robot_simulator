@@ -1743,8 +1743,16 @@ Next milestone:
       Fixed R0 warmup code-reviewv2 approves exact3a3cd3a, closing the mutable
       Warp execution-plan finding and covering positive native-driver RGB
       readback support (489 passed,22 environment skips). Both complete reports
-      are archived unchanged. Real warmup/output validation remains pending;
-      there is still no image correctness or performance conclusion.
+      are archived unchanged. Native warmup bring-up exposed a reverse bootstrap
+      import, repaired/independently approved at0ede8d0. That real rerun produced
+      the first Warp Go2 960x640 frame10 RGB after50 launches and ten terminal
+      waits, then failed a stale diagnostic-readback custody checkpoint check.
+      Raw failure/image archive SHA256:
+      0b7e668a1717f52683874ea831624e2aae0b38849d4b0b27cc3d7e78c115b8b1.
+      This is an actual diagnostic image, not a successful whole native case.
+      The support-only checkpoint repair is independently approved at7fe32a5
+      (44 fresh tests plus original-artifact replay); its full report is archived.
+      Positive native rerun, image correctness and performance remain unproved.
       Fixed R0 storage native-reviewv1 approves the14-case campaign at3d6692b:
       eight positives, four guarded raises and two deadline kills independently
       replayed; all29 author PIDs absent. Raw archive SHA256 is
