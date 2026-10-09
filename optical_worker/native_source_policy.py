@@ -48,7 +48,7 @@ _SNAPSHOT_FUNCTION_SHA256 = "725c7f315fdba4ad6df78e31a149865fd97e26da3c95df24678
 # exception release-pinned; do not generally admit arbitrary obj.compile().
 _REGEX_SOURCE_PINS = {
     "optical_worker/protocol.py": "38ff7919ee1b41656a50cf1d6c4fa3280a1f867aac07baaf4a4adbc4189a6470",
-    "optical_worker/lifecycle.py": "2770a0aff05c899f830890edcd4bb14297bd198c87d0936c1808d86067362a43",
+    "optical_worker/lifecycle.py": "2ca76eac3b72fc99f22d6c671e51a9a86724609575b0d61c5b101d3f7a6334dc",
 }
 _CTYPES_ATTRIBUTES = frozenset(("addressof", "c_float", "c_int64", "c_int32"))
 _FORBIDDEN_IMPORTS = frozenset(AST_POLICY["forbidden_import_roots"]) | {

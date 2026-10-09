@@ -1399,6 +1399,19 @@ Next milestone:
       seal order, missing slot custody and C2e graph dependencies. This is no
       C2d3 rejection/acceptance or later implementation approval; its complete
       report is archived unchanged. Current85/12 and whole review still lead.
+      Whole reviewv2 found a named-array token/adoption mismatch accepted on
+      all8 new positives. Repair edba56a joins the existing named allocation
+      operation;16 new and113 historical originals replay,8 original attacks
+      reject, and48 targeted actual-record tests pass. Whole reviewv3 then
+      found its helper relocation omitted the separate lifecycle regex-source
+      pin, so actual cold entry fails. Both complete reports remain unchanged.
+      The follow-up repins only that existing exception and derived policy/
+      catalog metadata. Exact committed cold-source regression and fresh whole
+      re-review are pending; the earlier684-pass run was precommit and its
+      Git-HEAD policy check read the old release, not edba. Currentfc86182 GPU
+      matrix stays on its original clean checkout. See array-adoption-join
+      implementation-notev2 for raw evidence and precise provenance. No
+      C2d3/C4 acceptance or later-stage activation follows from parser tests.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
