@@ -1716,6 +1716,10 @@ Next milestone:
       entry. The full fixed-render-storage code-reviewv1 is archived unchanged;
       reviewer independently ran572 tests with13 host/asset skips. Real native
       storage/scope/failure validation and command/event/render graph work remain.
+      Fixed native-storage support has fresh independent code approval at3d6692b
+      (150 passed,41 unavailable source/POSIX skips); full support code-reviewv1
+      is archived unchanged. The real dual-lane Go2 allocation matrix is now
+      running in an isolated3d6692b checkout, using the original supervisor.
       The owner-requested systematic whole-C4 refactor is still required.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
