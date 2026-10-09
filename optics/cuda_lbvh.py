@@ -200,15 +200,19 @@ def cuda_lbvh_workspace_requirements(
 
 
 def _validate_workspace_request(primitive_count, device_ordinal):
-    _require_torch_cuda_lbvh()
     _validate_primitive_count(primitive_count)
     if not isinstance(device_ordinal, int) or isinstance(device_ordinal, bool):
         raise TypeError("device_ordinal must be an integer")
-    if device_ordinal < 0 or device_ordinal >= torch.cuda.device_count():
+    if device_ordinal < 0:
         raise ValueError("device_ordinal is out of range")
 
 
 def _query_workspace_requirements(module, primitive_count, device_ordinal):
+    # Captured preparation must verify the issued set/context before making any
+    # CUDA availability or device query. Both callers resolve that module first.
+    _require_torch_cuda_lbvh()
+    if device_ordinal >= torch.cuda.device_count():
+        raise ValueError("device_ordinal is out of range")
     with torch.cuda.device(device_ordinal):
         reduction_bytes, radix_bytes, alignment_bytes = module.cuda_lbvh_workspace_requirements(
             primitive_count, device_ordinal

@@ -24,6 +24,23 @@ def test_normal_exit_is_necessary_but_does_not_assert_group_closure():
     assert require_normal_exit(_status(), unit=UNIT, waiter_returncode=0) == _status()
 
 
+def test_manager_fixture_keeps_production_service_boundary():
+    from pathlib import PurePosixPath
+    from tests.support.cuda_artifact_service_acceptance import fixture_argv
+
+    repository, job = PurePosixPath("/data/repo"), PurePosixPath("/data/acceptance/descendant")
+    argv = fixture_argv(repository, job, UNIT)
+    assert argv[:6] == ["/usr/bin/systemd-run", "--user", "--no-ask-password", "--wait", "--collect", "--service-type=exec"]
+    for setting in ("ExitType=cgroup", "Restart=no", "RemainAfterExit=no", "KillMode=control-group",
+                    "SendSIGKILL=yes", "Delegate=no", "RuntimeMaxSec=6s", "TimeoutStartSec=6s", "TimeoutStopSec=1s"):
+        assert "--property=" + setting in argv
+    assert next(value for value in argv if value.startswith("--property=ExecStopPost=")).endswith(
+        f"/data/repo/tools/optical_cuda_build_status.py --output {job}/termination.json --unit {UNIT}")
+    assert argv[-5:] == [str(repository / "tests/support/cuda_artifact_service_acceptance.py"),
+                         "--fixture", "descendant", "--output", str(job)]
+    assert str(repository / "tools/optical_cuda_build_recipe.py") not in argv
+
+
 @pytest.mark.parametrize("signal", ["TERM", "HUP", "INT", "PIPE"])
 def test_systemd_clean_signal_cannot_become_completed_build(signal):
     record = {**_status(), "exit_code": "killed", "exit_status": signal}

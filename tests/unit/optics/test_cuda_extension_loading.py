@@ -141,6 +141,26 @@ def test_direct_light_rejects_bare_module_construction():
         CudaDirectLightNativeRenderer(context=object(), module=object())
 
 
+def test_lbvh_rejects_unregistered_set_before_cuda_query(monkeypatch):
+    from optical_worker.native_setup import CudaExtensionSet
+    from optics import cuda_lbvh as lbvh
+
+    calls = []
+    def unavailable():
+        calls.append("cuda")
+        raise AssertionError("invalid captured authority reached a CUDA query")
+
+    monkeypatch.setattr(lbvh, "_require_torch_cuda_lbvh", unavailable)
+    owner = object.__new__(CudaExtensionSet)
+    object.__setattr__(owner, "session", object())
+    context = SimpleNamespace(device=SimpleNamespace(index=1))
+    with pytest.raises(ValueError, match="unregistered"):
+        lbvh.CudaLbvhRebuildStageFactory.prepare(
+            context=context, primitive_count=4, native_input_manifest_sha256="a" * 64,
+            scene_contract_sha256="b" * 64, input_contract="canonical_native_replay_v1", extensions=owner)
+    assert calls == []
+
+
 def test_copied_or_unregistered_captured_set_never_uses_compatibility_fallback(monkeypatch):
     from optical_worker.native_setup import CudaExtensionSet
     from optics.cuda_extension_loading import load_cuda_extension
