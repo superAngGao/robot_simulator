@@ -11,10 +11,49 @@ import time
 import pytest
 
 from tests.support.setuptools_dependency_process import (
-    CATALOG, PROFILE, PROFILE_SHA256, _cpu_only, _create_run_directory, _reap_cpu_group,
+    CATALOG, PROFILE, PROFILE_SHA256, _assert_negative_terminal, _cpu_only, _create_run_directory, _reap_cpu_group,
 )
 from tests.unit.optics.test_native_bootstrap import _internal
 from tests.unit.optics.test_native_sources import ROOT, release
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_negative_terminal_validator_uses_real_failed_guard_quarantine(failed):
+    # Regression for independent review v1 R1: a healthy host cancellation
+    # must not be accepted as evidence of a failure inside guard6.
+    from optical_worker.guarded_lifecycle import NativeGuardedSetupLifecycle
+    from tests.support.guarded_peer import Peer
+
+    peer = Peer()
+    controller = NativeGuardedSetupLifecycle(lane_id="cuda", channel=peer.channel, configuration=peer.config)
+    original = RuntimeError("source failure inside guard6")
+    held = object()
+    try:
+        for _ in range(6):
+            with controller.segment():
+                pass
+        try:
+            with controller.segment():
+                controller.adopt_host_owner(held, role="cpu_owner", operation_id="cpu_setup")
+                if failed:
+                    # The actual controller operations called by SourceSession.fail.
+                    controller._fail_guard("operation", original)
+                    controller.terminate(fault="setup_failure", detection_phase="captured_source_failure",
+                                         emergency_target_synchronize=None)
+                    raise original
+        except RuntimeError as caught:
+            assert failed and caught is original
+        if failed:
+            _assert_negative_terminal(controller)
+            assert controller.guardian.contains_exact_owner(held)
+        else:
+            controller.terminate(fault="setup_failure", detection_phase="cpu_dependency_end",
+                                 emergency_target_synchronize=None)
+            assert controller.guardian.state == "RELEASED"
+            with pytest.raises(AssertionError):
+                _assert_negative_terminal(controller)
+    finally:
+        peer.close()
 
 
 def test_profile_pin_is_exact_git_release_bytes():

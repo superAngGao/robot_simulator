@@ -304,6 +304,81 @@ def test_recompiled_lookalike_function_is_not_from_held_code_tree(initialization
     assert owner.state == "FAILED" and owner.installed == []
 
 
+@pytest.mark.parametrize("case", ["partial_create", "partial_exec"])
+def test_driver_partial_alias_fault_precedes_real_shim_unwind(initialization, monkeypatch, case):
+    # Adapted from the preserved independent preflight v1 R2 counterexample.
+    # Actual owner/loader/importlib operations; descriptive alias/source fixture,
+    # not installed-source integration or another successful package importer.
+    from tests.support.setuptools_dependency_process import _DependencyFault
+
+    owner = initialization
+    hack, loader = _hook_module()
+    owner.after_file_complete("_distutils_hack", hack, loader)
+    _executing(owner, "_distutils_hack.override", monkeypatch)
+    owner.enter_shim()
+    monkeypatch.setattr(owner.session, "retain_import_boundary", lambda: None, raising=False)
+    source = ModuleType("setuptools._distutils")
+    source.__package__ = "setuptools._distutils"
+    source.__file__ = "/fixture/setuptools/_distutils/__init__.py"
+    source.__path__ = [str(Path(source.__file__).parent)]
+    source_loader = SimpleNamespace(origin=source.__file__, delegate=object(), _check_binding=lambda: None)
+    source.__loader__ = source_loader
+    source.__spec__ = importlib.machinery.ModuleSpec("setuptools._distutils", source_loader,
+                                                 origin=source.__file__, is_package=True)
+    source.__spec__.submodule_search_locations = source.__path__
+    monkeypatch.setitem(sys.modules, "setuptools._distutils", source)
+    monkeypatch.delitem(sys.modules, "distutils", raising=False)
+    calls = []
+
+    class Delegate:
+        def create_module(self, spec):
+            calls.append("create")
+            source.__name__ = "distutils"
+            return source
+
+        def exec_module(self, module):
+            assert module is source
+            calls.append("exec")
+
+    delegate = Delegate()
+    wrapper = admission_helpers._AliasLoader(owner, delegate)
+    spec = importlib.machinery.ModuleSpec("distutils", wrapper, origin=source.__file__)
+    owner.source, owner.source_spec, owner.source_loader = source, source.__spec__, source_loader
+    owner.delegate, owner.alias_wrapper, owner.alias_spec = delegate, wrapper, spec
+    owner.alias_methods = Delegate.create_module, Delegate.exec_module
+    owner.alias_bindings()
+    fault = _DependencyFault(case)
+    fault.install(owner)
+
+    class Shim:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            # Installed shim does not forward the active exception to remove.
+            hack._remove_shim()
+
+    with pytest.raises(RuntimeError) as caught:
+        with Shim():
+            module = importlib.util.module_from_spec(spec)
+            monkeypatch.setitem(sys.modules, "distutils", module)
+            try:
+                wrapper.exec_module(module)
+            except BaseException:
+                del sys.modules["distutils"]
+                raise
+    assert caught.value is fault.injected and owner.errors[0] is fault.injected
+    assert calls == (["create"] if case == "partial_create" else ["create", "exec"])
+    assert owner.observation.owners[id(source)][1] is source
+    owner.finish_file("_distutils_hack.override", caught.value)
+    assert owner.state == "FAILED" and owner.restore_attempted == set(owner.installed)
+    assert all(vars(hack)[name] is owner.originals[name] for name in owner.installed)
+    actions = [e["details"]["action"] for e in owner.observation.journal if e["kind"] == "setuptools_initialization"]
+    assert actions.count("failed") == 1 and actions[actions.index("failed"):] == ["failed"]
+    assert ("alias_created" in actions) == (case == "partial_exec")
+    assert "alias_executed" not in actions
+
+
 @pytest.mark.parametrize("after_assignment", [False, True])
 def test_partial_installation_restores_each_attempt_and_retains_original_error(initialization, monkeypatch, after_assignment):
     owner = initialization

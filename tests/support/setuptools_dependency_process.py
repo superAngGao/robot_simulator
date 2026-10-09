@@ -169,7 +169,26 @@ class _DependencyFault:
                 setattr(target, attribute, value)
 
             self.helper.setattr = assign
-        elif name in {"partial_create", "alias_spec", "alias_closure", "late_publication"}:
+        elif name in {"partial_create", "partial_exec"}:
+            original = owner.check_source_metadata
+            exec_checks = 0
+
+            def metadata(*, intermediate=False):
+                nonlocal exec_checks
+                original(intermediate=intermediate)
+                if name == "partial_create" and intermediate:
+                    self.mark("actual_create_return_before_success")
+                    raise self.injected
+                if name == "partial_exec" and not intermediate and owner.state == "ALIAS_CREATED":
+                    exec_checks += 1
+                    if exec_checks == 2:
+                        self.mark("actual_exec_return_before_success")
+                        raise self.injected
+
+            # The real alias methods call this after the actual delegate and
+            # inside their try/except, before their successful journal action.
+            owner.check_source_metadata = metadata
+        elif name in {"alias_spec", "alias_closure", "late_publication"}:
             original = owner.alias_create
 
             def create(wrapper, spec):
@@ -182,27 +201,23 @@ class _DependencyFault:
                     return original(wrapper, spec)
                 module = original(wrapper, spec)
                 assert module is owner.source and owner.state == "ALIAS_CREATED"
-                if name == "late_publication":
-                    owner.fail(self.injected)
-                    sys.modules["distutils"] = module
-                    owner.leave_shim()  # The real failed-path intake retains it.
-                    self.mark("publication_after_poison")
+                assert name == "late_publication"
+                owner.fail(self.injected)
+                sys.modules["distutils"] = module
+                owner.leave_shim()  # The real failed-path intake retains it.
+                self.mark("publication_after_poison")
                 raise self.injected
 
             owner.alias_create = create
-        elif name in {"partial_exec", "alias_module", "alias_loader"}:
+        elif name in {"alias_module", "alias_loader"}:
             original = owner.alias_exec
 
             def execute(wrapper, module):
                 self.mark("actual_alias_exec")
                 if name == "alias_module":
                     return original(wrapper, ModuleType("distutils"))
-                if name == "alias_loader":
-                    wrapper.delegate = object()
-                    return original(wrapper, module)
-                original(wrapper, module)
-                assert owner.state == "ALIAS_EXECUTED"
-                raise self.injected
+                wrapper.delegate = object()
+                return original(wrapper, module)
 
             owner.alias_exec = execute
         elif name == "missing_alias":
@@ -269,12 +284,9 @@ class _DependencyFault:
             assert first is self.injected
         assert any(error is first for error in owner.session.failures)
         assert owner.controller.termination_evidence is not None
-        terminal = owner.controller.termination_evidence.lifecycle.to_payload()["summary"]
-        assert terminal["disposition"] == "cancelled_before_submission_exit"
-        assert terminal["guardian_state"] == "RELEASED" and terminal["release_status"] == "completed"
-        assert terminal["setup_operation_count"] == terminal["entered_leaf_count"] == 0
-        assert terminal["emergency_sync_attempt_count"] == 0
-        assert terminal["possible_dirty_device_ordinals"] == [] and not terminal["unknown_device_scope"]
+        _assert_negative_terminal(owner.controller)
+        assert owner.controller.guardian.contains_exact_owner(owner)
+        assert owner.controller.guardian.contains_exact_owner(owner.root)
         assert self.thread is None or not self.thread.is_alive()
         assert owner.restore_attempted == set(owner.installed)
         if self.name != "restoration_before":
@@ -302,12 +314,28 @@ class _DependencyFault:
                    if event["kind"] == "setuptools_initialization"]
         assert actions.count("failed") == 1 and actions[actions.index("failed"):] == ["failed"]
         assert "completed" not in actions
+        if self.name == "partial_create":
+            assert "alias_spec" in actions and "alias_created" not in actions
+        if self.name == "partial_exec":
+            assert "alias_created" in actions and "alias_executed" not in actions
         if self.name == "resource_caught":
             assert "denial_caught" in self.reached
         return {"case": self.name, "reached": self.reached, "first_error": str(first),
                 "caught_error": str(caught), "state": owner.state, "actions": actions,
                 "restore_attempted": sorted(owner.restore_attempted), "subsequent_denials": denials,
                 "foreign_thread_joined": self.thread is not None and not self.thread.is_alive()}
+
+
+def _assert_negative_terminal(controller):
+    terminal = controller.termination_evidence.lifecycle.to_payload()["summary"]
+    assert terminal["disposition"] == "quarantined_process_exit"
+    assert terminal["guardian_state"] == "TRANSFERRED_TO_QUARANTINE"
+    assert terminal["release_status"] == "not_authorized" and terminal["custody"] == "full_quarantine"
+    assert terminal["guarded_segment_failed"] and terminal["normal_complete_count"] == 6
+    assert terminal["guard_ref"] == {"role": "setup", "sequence": 6}
+    assert terminal["setup_operation_count"] == terminal["entered_leaf_count"] == 0
+    assert terminal["emergency_sync_attempt_count"] == terminal["terminal_arm_attempt_count"] == 0
+    assert terminal["possible_dirty_device_ordinals"] == [] and not terminal["unknown_device_scope"]
 
 
 def _write(path, value):
