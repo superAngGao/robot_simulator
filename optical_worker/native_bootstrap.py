@@ -21,7 +21,7 @@ from types import FunctionType, MappingProxyType, ModuleType
 
 _BOOTSTRAP = "optical_worker/native_bootstrap.py"
 _NATIVE_EXEC_OPERATION = "exec"  # Descriptive operation enum, never a dynamic Python callable.
-_CATALOG = "optical_worker/data/native_sources/v12.json"
+_CATALOG = "optical_worker/data/native_sources/v13.json"
 _MAX_BYTES = 4 * 1024 * 1024  # Rechecked against the sole protocol constant.
 _ROOTS = frozenset(
     ("optical_worker", "optics", "physics", "robot", "sensing", "benchmarks", "examples", "tests", "tools")
@@ -48,7 +48,6 @@ _CUSTODY_PRELUDE = MappingProxyType(
         "optical_worker.runtime_environment": "optical_worker/runtime_environment.py",
         "optical_worker.runtime_custody": "optical_worker/runtime_custody.py",
         "optical_worker.compilation_contract": "optical_worker/compilation_contract.py",
-        "optical_worker.setuptools_admission": "optical_worker/setuptools_admission.py",
     }
 )
 _SETUP_DEFINITIONS = MappingProxyType(
@@ -134,6 +133,7 @@ _CUDA_COMPILATION_SOURCES = MappingProxyType(
         "optical_worker.cuda_compilation": "optical_worker/cuda_compilation.py",
         "optical_worker.cuda_compilation_evidence": "optical_worker/cuda_compilation_evidence.py",
         "optical_worker.compilation_contract": "optical_worker/compilation_contract.py",
+        "optical_worker.setuptools_admission": "optical_worker/setuptools_admission.py",
         "optics.cuda_extension_recipes": "optics/cuda_extension_recipes.py",
         "optics._cuda_scene_source": "optics/_cuda_scene_source.py",
         "optics._cuda_lbvh_source": "optics/_cuda_lbvh_source.py",

@@ -1498,6 +1498,16 @@ Next milestone:
       tree is clean detached553038f. No actual dependency/backend/compiler ran;
       full installed closure, source pins, real integration and independent
       execution preflights still remain before native proof.
+      Next author candidate (setuptools implementation-note v5/test-evidence v3)
+      adds catalogv13/ASTpolicyv14 and fixes the initialization helper's placement
+      from shared prelude to CUDA compilation only. The v6 installed profile
+      preserves the predecessor input rules and adds84 runtime modules, including
+      source-audited lazy _core_metadata and hipify imports. Target production
+      schema/file verification plus source/absence checks passed:1,791files,
+      4,701,253,155bytes; PID397061 exited and was verified absent. Local focused
+      source/profile checks passed180/skipped1. This is read-only CPU evidence;
+      actual dependency execution, native compilation and their fresh independent
+      preflights still remain. No readiness or performance result is claimed.
       Owner follow-up (2026-10-09): after functional implementation and required
       real verification, perform a systematic refactor of the whole C4 structure
       before final acceptance, covering accumulated hotfixes, ownership boundaries,

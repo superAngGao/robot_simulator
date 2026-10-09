@@ -41,6 +41,23 @@ def test_cold_bootstrap_and_production_contract_select_the_same_catalog():
     assert (ROOT / selections[0]).is_file()
 
 
+def test_compilation_import_closure_is_deferred_to_cuda_and_matches_catalog():
+    from optical_worker.compilation_contract import CUDA_CONTINUATION_SOURCE_MODULES
+    from optical_worker.native_sources import native_source_paths
+
+    tree = ast.parse((ROOT / "optical_worker/native_bootstrap.py").read_bytes())
+    tables = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+            if name in {"_CORE", "_CUSTODY_PRELUDE", "_CUDA_COMPILATION_SOURCES"}:
+                tables[name] = ast.literal_eval(node.value.args[0])
+    assert set(tables["_CUDA_COMPILATION_SOURCES"]) == set(CUDA_CONTINUATION_SOURCE_MODULES)
+    assert set(tables["_CUDA_COMPILATION_SOURCES"].values()) <= set(native_source_paths("cuda"))
+    assert "optical_worker.setuptools_admission" not in tables["_CORE"] | tables["_CUSTODY_PRELUDE"]
+    assert "optical_worker/setuptools_admission.py" not in native_source_paths("warp")
+
+
 def _check(source: bytes, path="optical_worker/future_module.py"):
     return validate_native_source_bytes(path, source, expected_sha256=hashlib.sha256(source).hexdigest())
 
@@ -56,6 +73,38 @@ def test_real_reviewed_renderer_passes_without_importing_it(renderer_release):
     before = set(sys.modules)
     assert _check(renderer_release, RENDERER) is None
     assert set(sys.modules) == before
+
+
+@pytest.fixture(scope="module")
+def setuptools_release():
+    return subprocess.check_output([
+        "git", "show", "HEAD:optical_worker/setuptools_admission.py"], cwd=ROOT, timeout=20)
+
+
+def test_pinned_setuptools_helpers_are_checked_without_importing_dependencies(setuptools_release):
+    before = set(sys.modules)
+    assert _check(setuptools_release, "optical_worker/setuptools_admission.py") is None
+    assert set(sys.modules) == before
+    with pytest.raises(ClosedWorkerProtocolError):
+        _check(setuptools_release, "optical_worker/other_dependency.py")
+
+
+@pytest.mark.parametrize("mutation", ["comment", "alias", "metadata_scanner", "closure_write", "state"])
+def test_rehashed_setuptools_source_cannot_expand_pinned_exception(setuptools_release, mutation):
+    source = setuptools_release
+    if mutation == "comment":
+        source += b"\n# changed release\n"
+    elif mutation == "alias":
+        source = source.replace(b"import importlib.metadata\n", b"import importlib.metadata as alternate\n")
+    elif mutation == "metadata_scanner":
+        source += b"\nscanner = importlib.metadata.PathDistribution\n"
+    elif mutation == "closure_write":
+        source += b"\nfunction.__closure__ = ()\n"
+    else:
+        source = source.replace(b'self.state = "COMPLETE"', b'self.state = "FAILED"')
+    assert source != setuptools_release
+    with pytest.raises(ClosedWorkerProtocolError):
+        _check(source, "optical_worker/setuptools_admission.py")
 
 
 @pytest.mark.parametrize("path", [
@@ -269,7 +318,7 @@ assert not set(sys.modules) & {{'numpy', 'torch', 'warp', 'optics', 'benchmarks'
     subprocess.run([sys.executable, "-I", "-S", "-c", script], check=True, timeout=20)
     assert AST_POLICY["schema_version"].endswith("v1")
     assert AST_POLICY_SHA256 == canonical_sha256(AST_POLICY)
-    assert NATIVE_AST_POLICY_VERSION.endswith("v13")
+    assert NATIVE_AST_POLICY_VERSION.endswith("v14")
     assert NATIVE_AST_POLICY_SHA256 != AST_POLICY_SHA256
     with pytest.raises(ClosedWorkerProtocolError, match="forbidden module"):
         validate_trusted_source_ast(ROOT / RENDERER)

@@ -84,9 +84,15 @@ def test_literal_lane_catalogs_have_no_losing_optical_modules():
     assert cuda == tuple(sorted(set(cuda)))
     assert set(warp) - set(cuda) == {"optics/warp_native_render.py"}
     assert set(cuda) - set(warp) == {
+        "optical_worker/cuda_compilation.py", "optical_worker/cuda_compilation_evidence.py",
+        "optical_worker/setuptools_admission.py", "optics/cuda_extension_recipes.py",
+        "optics/_cuda_scene_source.py", "optics/_cuda_direct_light_source.py",
         "optics/_cuda_lbvh_source.py", "optics/cuda_arena.py", "optics/cuda_direct_light.py",
         "optics/cuda_lbvh.py", "optics/cuda_scene.py", "optics/cuda_timeline.py",
     }
+    assert "optical_worker/compilation_contract.py" in set(warp) & set(cuda)
+    assert not set(paths for paths in warp + cuda) & {
+        "optical_worker/compiler_job.py", "optical_worker/compiler_supervision.py"}
     for paths in (warp, cuda):
         assert not any(p.startswith(("benchmarks/", "examples/", "tests/")) for p in paths)
         for p in paths:
