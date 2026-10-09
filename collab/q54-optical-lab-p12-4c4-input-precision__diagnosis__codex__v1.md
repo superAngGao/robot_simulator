@@ -20,6 +20,10 @@ evidence and narrows the required repair.
 
 The scripts and exact JSON results are retained in both
 `C:/Users/AG/新建文件夹/c4_assets` and `/data2/shared/ang.gao` on tileops-dev.
+The six scripts/results are additionally retained in
+`c4-input-precision-diagnostics-v1.zip`, SHA256
+`0a864fe19809dc7c2386593173fc508f6cc3406eaf9519fd9626a5f071b76c99`,
+with matching local and remote archive digests.
 
 ## All-triangle source-normal experiment
 

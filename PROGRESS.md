@@ -1807,8 +1807,13 @@ Next milestone:
       avoidable loss from vertex rounding before normal calculation and a
       face-selection change from rounding camera rays to float32. A coherent
       representation amendment is required; no tolerance/oracle changes or
-      new native representation have been admitted. Independent native/gap
-      review is in progress. Full CPU acceptance, speed and whole C4 remain open.
+      new native representation have been admitted. Fresh independent native/gap
+      review v1 approves the bounded native execution evidence with comments,
+      and requests numerical changes for both source-normal loss and ray
+      rounding. It independently reproduces the source-normal census and
+      authoritative-camera counterexample. Full report is archived verbatim;
+      full CPU acceptance, speed and whole C4 remain open. Next is one reviewed
+      numerical-input representation amendment covering R0/R1 consistently.
       Fixed R0 storage native-reviewv1 approves the14-case campaign at3d6692b:
       eight positives, four guarded raises and two deadline kills independently
       replayed; all29 author PIDs absent. Raw archive SHA256 is
