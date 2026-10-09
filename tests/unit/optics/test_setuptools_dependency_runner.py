@@ -91,16 +91,22 @@ if not {parent_exits!r}:
     descendant.wait()
 """
     process = subprocess.Popen([sys.executable, "-I", "-S", "-B", "-c", child_code], start_new_session=True)
+    cleaned = False
     try:
         deadline = time.monotonic() + 5
-        while not identity.exists() and time.monotonic() < deadline:
+        published = ""
+        while time.monotonic() < deadline:
+            published = identity.read_text() if identity.exists() else ""
+            if published.isdecimal():
+                break
             time.sleep(0.01)
-        assert identity.exists()
-        descendant = int(identity.read_text())
+        assert published.isdecimal()
+        descendant = int(published)
         assert os.getpgid(descendant) == process.pid
         if parent_exits:
             assert process.wait(timeout=5) == 0
         _reap_cpu_group(process)
+        cleaned = True
         assert process.poll() is not None
         # A grandchild belongs to the OS reaper after its parent exits; this
         # CPU helper claims termination, not compiler subreaper/wait ownership.
@@ -116,5 +122,5 @@ if not {parent_exits!r}:
             time.sleep(0.01)
         assert not status.exists() or status.read_text().rsplit(")", 1)[1].split()[0] == "Z"
     finally:
-        if process.poll() is None:
+        if not cleaned:
             _reap_cpu_group(process)
