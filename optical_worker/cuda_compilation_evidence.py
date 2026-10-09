@@ -89,7 +89,7 @@ class _CompilationReplay(_RuntimeReplay):
         self.root_token = None
         self.retained = []
         self.steps = [[] for _ in CUDA_EXTENSION_RECIPES]
-        self.bindings = [dict.fromkeys(_BINDINGS) | {"entry_tokens": []} for _ in CUDA_EXTENSION_RECIPES]
+        self.recipe_bindings = [dict.fromkeys(_BINDINGS) | {"entry_tokens": []} for _ in CUDA_EXTENSION_RECIPES]
         self.completed = 0
         self.failure_tokens = set()
         self.compile_native = []
@@ -166,7 +166,7 @@ class _CompilationReplay(_RuntimeReplay):
         index = ids.index(d["recipe_id"])
         recipe = CUDA_EXTENSION_RECIPES[index]
         _require(index == self.completed, "compiler recipe order/repeated build")
-        steps, bindings = self.steps[index], self.bindings[index]
+        steps, bindings = self.steps[index], self.recipe_bindings[index]
         operation = d["operation"]
         current = {key: d[key] for key in (*_BINDINGS, "entry_tokens")}
         _require(type(d["entry_tokens"]) is list, "entry bindings must be an array")
@@ -347,8 +347,8 @@ class CudaCompilationRecord:
                                      "artifact", "entries", "object_bindings"})
             _require(row["recipe_id"] == recipe.name and _integer(row["guard_sequence"]) == CUDA_COMPILE_SEQUENCES[index],
                      "compiler recipe identity/order")
-            _require(row["object_bindings"] == {k: replay.bindings[index][k] for k in _BINDINGS}
-                     and row["entries"] == replay.bindings[index]["entry_tokens"], "derived compiler bindings differ from journal")
+            _require(row["object_bindings"] == {k: replay.recipe_bindings[index][k] for k in _BINDINGS}
+                     and row["entries"] == replay.recipe_bindings[index]["entry_tokens"], "derived compiler bindings differ from journal")
             _require(type(row["source_files"]) is list and type(row["generated_files"]) is list, "compiler files must be arrays")
             if replay.steps[index]:
                 directory = row["build_directory"]
