@@ -243,23 +243,52 @@ def test_intrinsic_metadata_cache_does_not_cache_identity_or_file_verification(d
         original.verify_files(expected_sha256=original.sha256)
 
 
-def test_active_remote_fixture_version_and_cold_test_digest_move_together():
-    # CPU-only packaging check: do not import the GPU test or initialize a
-    # backend, and do not pretend Windows validates POSIX deployment paths.
+def _assert_active_terminal_profile_pins(profile_source, consumer_source):
     root = Path(__file__).resolve().parents[3]
-    payload = json.loads(
-        (root / "tests/data/runtime_environments/183_warp_synthetic_author_v5.json").read_bytes()
-    )
-    tree = ast.parse((root / "tests/gpu/test_native_runtime_cold_warp.py").read_bytes())
-    pins = [
-        node.value.value
-        for node in tree.body
+    profiles = [
+        ast.literal_eval(node.value)
+        for node in ast.parse(profile_source).body
         if isinstance(node, ast.Assign)
-        and any(isinstance(t, ast.Name) and t.id == "ENVIRONMENT_SHA256" for t in node.targets)
-        and isinstance(node.value, ast.Constant)
+        and any(isinstance(t, ast.Name) and t.id == "PROFILES" for t in node.targets)
     ]
-    assert payload["schema_version"] == RUNTIME_ENVIRONMENT_VERSION
-    assert pins == [canonical_sha256(payload)]
+    assert len(profiles) == 1 and set(profiles[0]) == {"warp", "cuda"}
+    for filename, digest, _ in profiles[0].values():
+        payload = json.loads((root / "tests/data/runtime_environments" / filename).read_bytes())
+        assert payload["schema_version"] == RUNTIME_ENVIRONMENT_VERSION
+        assert digest == canonical_sha256(payload)
+    consumer = ast.parse(consumer_source)
+    assert any(isinstance(node, ast.ImportFrom)
+               and node.module == "tests.gpu.test_native_runtime_fault_matrix"
+               and any(alias.name == "PROFILES" and alias.asname is None for alias in node.names)
+               for node in consumer.body)
+    selection = ast.parse("filename, environment_sha256, deadline = PROFILES[lane]").body[0]
+    assert any(ast.dump(node) == ast.dump(selection) for node in ast.walk(consumer))
+
+
+def test_active_remote_fixture_version_and_cold_test_digest_move_together():
+    # Read the sole shared table and its actual consumer without importing a
+    # GPU test or pretending Windows can verify POSIX deployment files.
+    root = Path(__file__).resolve().parents[3]
+    _assert_active_terminal_profile_pins(
+        (root / "tests/gpu/test_native_runtime_fault_matrix.py").read_bytes(),
+        (root / "tests/gpu/test_native_runtime_cold_warp.py").read_bytes(),
+    )
+
+
+@pytest.mark.parametrize("drift", ["filename", "digest", "consumer"])
+def test_active_terminal_profile_pin_drift_is_not_hidden_by_shared_table(drift):
+    root = Path(__file__).resolve().parents[3]
+    profiles = (root / "tests/gpu/test_native_runtime_fault_matrix.py").read_text(encoding="utf-8")
+    consumer = (root / "tests/gpu/test_native_runtime_cold_warp.py").read_text(encoding="utf-8")
+    if drift == "filename":
+        profiles = profiles.replace("183_warp_synthetic_author_v5.json", "183_warp_go2_author_v3.json")
+    elif drift == "digest":
+        payload = json.loads((root / "tests/data/runtime_environments/183_warp_synthetic_author_v5.json").read_bytes())
+        profiles = profiles.replace(canonical_sha256(payload), "0" * 64)
+    else:
+        consumer = consumer.replace("PROFILES[lane]", "OTHER_PROFILES[lane]")
+    with pytest.raises(AssertionError):
+        _assert_active_terminal_profile_pins(profiles, consumer)
 
 
 @pytest.mark.parametrize(

@@ -98,7 +98,7 @@ def test_missing_guardian_hold_is_not_upload_admission():
 
 @pytest.mark.parametrize("lane", ["cuda", "warp"])
 def test_upload_body_matches_approved_pre_extraction_ast(lane):
-    """Freeze old mechanics apart from the explicit operation-ID encoding fix."""
+    """Preserve the extraction except operation IDs and event-scope validation."""
     root = Path(__file__).resolve().parents[3]
     old_text = subprocess.run(
         ["git", "show", "956d1fa8d51b85c25ac17825adef17640f0e69b5:optical_worker/native_setup.py"],
@@ -154,8 +154,39 @@ def test_upload_body_matches_approved_pre_extraction_ast(lane):
         i for i, n in enumerate(new.body) if isinstance(n, ast.Import) and n.names[0].name == "numpy"
     )
     new_body = new.body[new_start:]
+    # Normalize only the four explicit custody/check statements and the one
+    # actual-device argument added by the whole-review event repair. Behavioral
+    # fault tests below verify those new checks; all other mechanics stay equal.
+    cuda = lane == "cuda"
+    additions = [ast.dump(ast.parse(code).body[0]) for code in (
+        "ready_owners = []",
+        'lifecycle.adopt_host_owner(ready_owners, role="ready_event_custody", operation_id="ready_event_custody")',
+        "ready_owners.append(ready_event)",
+        f"_require_ready_event_target(ready_event, cuda={cuda}, lifecycle=lifecycle)",
+    )]
+    class EventValidation(ast.NodeTransformer):
+        removed = 0
+        ordinal = 0
+
+        def visit(self, node):
+            if isinstance(node, ast.stmt) and ast.dump(node) in additions:
+                additions.remove(ast.dump(node))
+                self.removed += 1
+                return None
+            return super().visit(node)
+
+        def visit_keyword(self, node):
+            if node.arg == "actual_device_ordinal" and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and node.value.func.id == "_event_ordinal":
+                expected = f"_event_ordinal(ready_event, cuda={cuda}, lifecycle=lifecycle" + (", allow_unbound=True)" if cuda else ")")
+                assert ast.dump(node.value) == ast.dump(ast.parse(expected, mode="eval").body)
+                node.value = ast.parse("lifecycle.target_device_ordinal" if cuda else "int(target.ordinal)", mode="eval").body
+                self.ordinal += 1
+            return node
+    normalization = EventValidation()
+    normalized = normalization.visit(ast.Module(body=new_body, type_ignores=[]))
+    assert not additions and normalization.removed == 4 and normalization.ordinal == 1
     assert ast.dump(ast.Module(body=old_body, type_ignores=[]), include_attributes=False) == ast.dump(
-        ast.Module(body=new_body, type_ignores=[]),
+        normalized,
         include_attributes=False,
     )
     # C0's wrapper must call the sole core, not retain an allocation loop.
@@ -232,3 +263,132 @@ def test_array_operation_ids_preserve_case_distinction_and_are_guardian_valid(pr
 def test_invalid_array_operation_ids_fail_before_resource_registration(prefix, name):
     with pytest.raises(ValueError):
         native_setup._array_operation_id(prefix, name)
+
+
+@pytest.fixture(params=[(lane, mode) for lane in ("cuda", "warp") for mode in ("guarded", "c0")])
+def upload_event_case(request, monkeypatch):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    import weakref
+    import numpy as np
+    from optical_worker.guarded_lifecycle import NativeGuardedSetupLifecycle
+    from optical_worker.native_input import CanonicalNativeInput
+    from tests.support.guarded_peer import Peer
+    from tests.unit.optics.test_guarded_native_readback import _CudaArray, _WarpArray
+
+    lane, mode = request.param
+    peer = Peer() if mode == "guarded" else None
+    syncs, notices = [], []
+    lifecycle = (NativeGuardedSetupLifecycle(lane_id=lane, channel=peer.channel, configuration=peer.config)
+                 if peer else NativeWorkerSetupLifecycle(lane_id=lane, target_device_ordinal=1,
+                     emergency_sync_notifier=lambda target: notices.append(target), session_identity="event_scope_unit"))
+    target = SimpleNamespace(type="cuda", index=1, ordinal=1, is_cuda=True)
+    foreign = SimpleNamespace(type="cuda", index=0, ordinal=0, is_cuda=True)
+    stream = SimpleNamespace(device=target)
+    state = SimpleNamespace(fault=None, event=None, records=0, waits=[], syncs=syncs, notices=notices, terminal=None)
+    source = CanonicalNativeInput.from_arrays(case_id="asymmetric_synthetic_7x3_v1",
+        materializer_id="upload_event_cpu_double", arrays={"a": np.array([1, 2], dtype=np.float32)},
+        array_semantics={"a": "unit.a"}, topology_arrays=("a",), semantics={})
+
+    class Event:
+        def __init__(self):
+            self.recorded = False
+            self.actual = None if lane == "cuda" else target
+            if state.fault == "foreign_create":
+                self.actual = foreign
+            state.event = weakref.ref(self)
+
+        @property
+        def device(self):
+            # The returned owner must already be held before metadata access,
+            # even when that very access throws before ordinary adoption.
+            assert any(type(owner) is list and any(item is self for item in owner)
+                       for owner in lifecycle.guardian._owners)
+            if state.fault == ("unknown_record" if self.recorded else "unknown_create"):
+                raise RuntimeError("event metadata unavailable")
+            return self.actual
+
+        def record(self, actual_stream):
+            assert actual_stream is stream
+            self.recorded = True
+            state.records += 1
+            self.actual = target
+            if state.fault == "foreign_record":
+                self.actual = foreign
+            elif state.fault == "unbound_record":
+                self.actual = None
+            elif state.fault == "boolean_record":
+                self.actual = SimpleNamespace(type="cuda", index=True, ordinal=True, is_cuda=True)
+
+        def synchronize(self):
+            state.waits.append(self.actual)
+
+    stream.record_event = lambda event: event.record(stream)
+    array_type = _CudaArray if lane == "cuda" else _WarpArray
+    runtime = SimpleNamespace(from_numpy=lambda host: host.view(),
+        empty=lambda shape, dtype, device: array_type(np.empty(shape, dtype=dtype), device),
+        cuda=SimpleNamespace(Event=lambda **kwargs: Event()), ScopedDevice=lambda device: nullcontext(),
+        array=lambda host, **kwargs: host.view(), Event=lambda **kwargs: Event(),
+        synchronize_event=lambda event: event.synchronize())
+    for dtype in ("bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64",
+                  "float16", "float32", "float64"):
+        setattr(runtime, dtype, np.dtype(dtype))
+    for owner in (source, runtime, target, stream):
+        lifecycle.adopt_host_owner(owner, role="unit_upload_owner", operation_id="unit_upload_owner")
+    monkeypatch.setattr(native_setup, "_torch_copy_exact", lambda *args: None)
+    monkeypatch.setattr(native_setup, "_warp_copy_exact", lambda *args: None)
+
+    def run():
+        try:
+            with lifecycle.segment("setup") if peer else nullcontext():
+                context = native_setup._create_upload_context(lifecycle, runtime, target, stream)
+                return getattr(native_setup, "_upload_" + lane + "_native_input")(source, context=context)
+        except BaseException as error:
+            if not peer:
+                state.terminal = native_setup._abort(lifecycle, exception=error, sync=lambda: syncs.append(1)).evidence
+            raise
+    try:
+        yield SimpleNamespace(run=run, lifecycle=lifecycle, state=state, target=target, mode=mode)
+    finally:
+        if (lifecycle.termination_evidence is None if peer else state.terminal is None):
+            lifecycle.terminate(fault="setup_failure", detection_phase="unit_end",
+                                emergency_target_synchronize=lambda: syncs.append(1))
+        if peer:
+            peer.close()
+
+
+def test_upload_ready_event_actual_target_allows_single_wait(upload_event_case):
+    case = upload_event_case
+    prepared = case.run()
+    assert prepared.ready_event is case.state.event()
+    assert case.state.records == 1 and case.state.waits == [case.target]
+    assert not case.state.syncs and not case.state.notices
+    if case.mode == "guarded":
+        assert case.lifecycle.evidence().to_payload()["summary"]["normal_complete_count"] == 1
+
+
+@pytest.mark.parametrize("fault", ["foreign_create", "foreign_record", "unknown_create", "unknown_record",
+                                  "unbound_record", "boolean_record"])
+def test_upload_event_scope_failure_never_waits_or_releases(upload_event_case, fault):
+    import gc
+    case = upload_event_case
+    case.state.fault = fault
+    with pytest.raises((RuntimeError, ValueError, AttributeError)):
+        case.run()
+    gc.collect()
+    assert case.state.event() is not None
+    assert case.state.records == (0 if fault.endswith("create") else 1)
+    assert case.state.waits == case.state.syncs == case.state.notices == []
+    summary = (case.lifecycle.termination_evidence.lifecycle.to_payload()["summary"]
+               if case.mode == "guarded" else case.state.terminal.to_payload())
+    if case.mode == "guarded":
+        assert summary["release_status"] == "not_authorized"
+    else:
+        assert summary["resource_release_authorized"] is summary["ordinary_cleanup_started"] is False
+    assert summary["emergency_sync_attempt_count"] == 0
+    if fault.startswith("foreign"):
+        assert 0 in summary["possible_dirty_device_ordinals"]
+    else:
+        assert summary["unknown_device_scope"] is True
+    if case.mode == "guarded":
+        assert summary["normal_complete_count"] == summary["terminal_arm_attempt_count"] == 0

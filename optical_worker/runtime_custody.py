@@ -935,6 +935,10 @@ class _RuntimeReplay:
                     self.prepared is not None, self.validated)[count]
         _require(expected and not self.delegate_stack and all(c["state"] == "completed" for c in self.calls),
                  "phase completed with missing outcome or incomplete native call")
+        # A completed delegate is not the adapter's final admission/audit.
+        # Resolution-only probes (for example deferred Triton) execute no body.
+        _require(all(state in {"file_resolved", "completed"} for state in self.file_states.values()),
+                 "phase completed with incomplete external file admission")
         if count == 2:
             _require(d["materialization_case_id"] == self.inputs["case_id"], "completed case differs from trusted launch")
             self.materialization_case = d["materialization_case_id"]

@@ -141,13 +141,12 @@ def test_available_publication_held_at_first_real_session_termination(importer, 
                         bootstrap._SourceSession.observe_interpreter_alias.__get__(session))
     observations = []
     name = "c2global" if boundary == "native_global" else "torch._VF"
+    original_terminate = admission.controller.terminate
     def terminate_at_entry(**kwargs):
         value = sys.modules.get(name)
         observations.append((value, any(owner is value for owner in admission.retained)))
-        admission.controller.termination_evidence = object()
-    admission.controller.termination_evidence = None
-    admission.controller._fail_guard = lambda *args: None
-    admission.controller.terminate = terminate_at_entry
+        return original_terminate(**kwargs)
+    monkeypatch.setattr(admission.controller, "terminate", terminate_at_entry)
     monkeypatch.setitem(bootstrap._SOURCE_CUSTODY, session, (admission.controller,))
     monkeypatch.setattr(session, "fail", bootstrap._SourceSession.fail.__get__(session))
     if boundary == "native_global":
@@ -169,10 +168,11 @@ def test_available_publication_held_at_first_real_session_termination(importer, 
     count = len(admission.replacement_events)
     with pytest.raises(SourceBootstrapError):
         session.audit() if boundary == "audit" else importlib.import_module("torch")
-    assert observations and observations[0][0] is not None and observations[0][1] is True
+    assert len(observations) == 1 and observations[0][0] is not None and observations[0][1] is True
     assert session.failed
-    # The controller endpoint is a CPU double: this proves earliest custody,
-    # not native quiescence or a real process quarantine/reap.
+    assert admission.controller.termination_evidence.lifecycle.to_payload()["summary"]["custody"] == "full_quarantine"
+    # Real CPU guard/controller termination proves earliest custody; it does
+    # not establish native quiescence or actual process quarantine/reap.
     after = len(admission.replacement_events)
     assert after == count
     session.observe_interpreter_alias("audit", final=True)
@@ -213,8 +213,7 @@ def test_invalid_alias_publisher_retained_before_single_bound_termination(import
     value, replacement = BadPublisher(), object()
     monkeypatch.setitem(sys.modules, "multiprocessing", value)
     monkeypatch.setitem(sys.modules, "torch._VF", replacement)
-    controller.termination_evidence = None
-    controller._fail_guard = lambda *args: None
+    original_terminate = controller.terminate
     def terminate(**kwargs):
         assert session.failed and admission.failed
         assert session.failures[0] is admission.failures[0]
@@ -222,8 +221,8 @@ def test_invalid_alias_publisher_retained_before_single_bound_termination(import
         assert any(owner is replacement for owner in admission.retained)
         assert not callbacks
         terminations.append(kwargs)
-        controller.termination_evidence = object()
-    controller.terminate = terminate
+        return original_terminate(**kwargs)
+    monkeypatch.setattr(controller, "terminate", terminate)
     original = RuntimeError("original failure")
     if entrypoint == "observe":
         with pytest.raises(SourceBootstrapError) as caught:
@@ -241,6 +240,7 @@ def test_invalid_alias_publisher_retained_before_single_bound_termination(import
     with pytest.raises(SourceBootstrapError):
         session.audit()
     assert len(terminations) == 1 and not callbacks
+    assert controller.termination_evidence.lifecycle.to_payload()["summary"]["custody"] == "full_quarantine"
     assert not admission.replacement_events and not admission.native_global_events
     assert not session.interpreter_alias_events
 

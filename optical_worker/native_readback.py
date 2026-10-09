@@ -19,6 +19,7 @@ from .native_setup import (
     _array_operation_id,
     _descriptor,
     _enter_device_leaf,
+    _event_ordinal,
     _torch_copy_exact,
     _torch_event_exact,
     _torch_record_event_exact,
@@ -35,30 +36,6 @@ def _leaf(lifecycle, operation, kind, runtime_identity):
         lifecycle,
         _descriptor(lifecycle, operation_id=operation, leaf_kind=kind, runtime_identity=runtime_identity),
     )
-
-
-def _event_ordinal(event, *, cuda, lifecycle, allow_unbound=False):
-    try:
-        device = event.device
-        if cuda and device is None and allow_unbound:
-            # Torch Event has no native allocation until the first record.
-            # Its prospective scope is the exact stream passed below; actual
-            # bound metadata is mandatory after record, before any wait.
-            return lifecycle.target_device_ordinal
-        ordinal = device.index if cuda else device.ordinal
-        if (
-            type(ordinal) is not int
-            or not 0 <= ordinal <= 1023
-            or (cuda and device.type != "cuda")
-            or (not cuda and not device.is_cuda)
-        ):
-            raise ValueError("readback event has no valid indexed CUDA device")
-        return ordinal
-    except BaseException:
-        lifecycle.mark_unknown_device_scope(
-            source="readback_event_metadata", reason="event_device_unavailable"
-        )
-        raise
 
 
 def _readback_prepared_native_input(source, prepared, *, lifecycle, runtime, target, stream):

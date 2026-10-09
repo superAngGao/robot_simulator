@@ -127,6 +127,35 @@ def _warp_synchronize_target_exact(wp: Any, target: Any) -> None:
         wp.synchronize_device(target)
 
 
+def _event_ordinal(event, *, cuda, lifecycle, allow_unbound=False):
+    """Read held event metadata; only an unrecorded CUDA event may be unbound."""
+    try:
+        device = event.device
+        if cuda and device is None and allow_unbound:
+            return lifecycle.target_device_ordinal
+        ordinal = device.index if cuda else device.ordinal
+        if (type(ordinal) is not int or not 0 <= ordinal <= 1023
+                or (cuda and device.type != "cuda") or (not cuda and not device.is_cuda)):
+            raise ValueError("event has no valid indexed CUDA device")
+        return ordinal
+    except BaseException:
+        lifecycle.mark_unknown_device_scope(source="event_device_metadata", reason="event_device_unavailable")
+        raise
+
+
+def _require_ready_event_target(event, *, cuda, lifecycle):
+    actual = _event_ordinal(event, cuda=cuda, lifecycle=lifecycle)
+    if actual != lifecycle.target_device_ordinal:
+        # Register the observed foreign scope before any native wait. The
+        # existing lifecycle rejects this descriptor without admitting work.
+        _enter_device_leaf(lifecycle, DeviceScopeDescriptor.exact_target(
+            operation_id="foreign_ready_event_wait", leaf_kind="event_wait",
+            device_ordinal=actual, scope_source="returned_ready_event",
+            runtime_identity="observed_event_device_v1",
+        ))
+        raise ValueError("foreign ready event scope was unexpectedly accepted")
+
+
 def _abort(
     lifecycle: NativeWorkerSetupLifecycle,
     *,
@@ -274,6 +303,8 @@ def _upload_cuda_native_input(source, *, context):
         _torch_copy_exact(torch, destination, host_tensor, stream)
         prepared[manifest.name] = destination
 
+    ready_owners = []
+    lifecycle.adopt_host_owner(ready_owners, role="ready_event_custody", operation_id="ready_event_custody")
     _enter_device_leaf(
         lifecycle,
         _descriptor(
@@ -284,9 +315,10 @@ def _upload_cuda_native_input(source, *, context):
         ),
     )
     ready_event = _torch_event_exact(torch)
+    ready_owners.append(ready_event)
     lifecycle.adopt_returned_device_owner(
         ready_event,
-        actual_device_ordinal=lifecycle.target_device_ordinal,
+        actual_device_ordinal=_event_ordinal(ready_event, cuda=True, lifecycle=lifecycle, allow_unbound=True),
         role="cuda_a2_ready_event",
         operation_id="cuda_ready_event_create",
     )
@@ -301,6 +333,7 @@ def _upload_cuda_native_input(source, *, context):
         ),
     )
     _torch_record_event_exact(ready_event, stream)
+    _require_ready_event_target(ready_event, cuda=True, lifecycle=lifecycle)
     _enter_device_leaf(
         lifecycle,
         _descriptor(
@@ -388,6 +421,8 @@ def _upload_warp_native_input(source, *, context):
             _warp_copy_exact(wp, destination, host_array, stream)
             prepared[manifest.name] = destination
 
+        ready_owners = []
+        lifecycle.adopt_host_owner(ready_owners, role="ready_event_custody", operation_id="ready_event_custody")
         _enter_device_leaf(
             lifecycle,
             _descriptor(
@@ -398,9 +433,10 @@ def _upload_warp_native_input(source, *, context):
             ),
         )
         ready_event = _warp_event_exact(wp, target=target)
+        ready_owners.append(ready_event)
         lifecycle.adopt_returned_device_owner(
             ready_event,
-            actual_device_ordinal=int(target.ordinal),
+            actual_device_ordinal=_event_ordinal(ready_event, cuda=False, lifecycle=lifecycle),
             role="warp_a2_ready_event",
             operation_id="warp_ready_event_create",
         )
@@ -415,6 +451,7 @@ def _upload_warp_native_input(source, *, context):
             ),
         )
         _warp_record_event_exact(stream, ready_event)
+        _require_ready_event_target(ready_event, cuda=False, lifecycle=lifecycle)
         _enter_device_leaf(
             lifecycle,
             _descriptor(

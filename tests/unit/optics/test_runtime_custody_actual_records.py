@@ -166,6 +166,30 @@ def test_success_observation_cannot_be_omitted(execution, kind):
         parse(payload, environment, inputs)
 
 
+@pytest.mark.parametrize("module", ["numpy", "backend"])
+@pytest.mark.parametrize("operation", ["completed", "exec_started", "created"])
+def test_successful_phase_requires_external_admission_progression(execution, module, operation):
+    from tests.unit.optics.test_runtime_native_scope_codec import _reindex
+
+    original, environment, inputs, _ = execution
+    payload = copy.deepcopy(original)
+    name = module if module == "numpy" else ("torch" if inputs["lane_id"] == "cuda" else "warp")
+    row = next(row for row in payload["journal"] if row["kind"] == "external"
+               and row["details"]["event"]["name"] == name
+               and row["details"]["event"]["operation"] == operation)
+    payload["journal"].remove(row)
+    for index, event_row in enumerate(row for row in payload["journal"] if row["kind"] == "external"):
+        event_row["details"]["event"]["index"] = index
+    payload["summary"]["external_event_count"] -= 1
+    if operation == "completed":
+        payload["summary"]["completed_file_count"] -= 1
+    _reindex(payload)
+    # Keep the real lifecycle and trusted launch facts fixed while correcting
+    # descriptive indices/counts. Delegate completion is still insufficient.
+    with pytest.raises(ValueError):
+        parse(payload, environment, inputs)
+
+
 @pytest.mark.parametrize("field", ["source_sha256", "source_path", "interpreter_identity"])
 def test_alias_descriptor_transplant_rejected_with_launch_inputs_fixed(execution, field):
     original, environment, inputs, _ = execution

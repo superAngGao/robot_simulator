@@ -349,9 +349,16 @@ def test_historical_gate_and_closed_product_source_boundary_are_preserved():
     historical = json.loads((ROOT / "tests/unit/benchmarks/data/render_migration_v12.json").read_text())
     assert historical["gate"] == json.loads(_base_source("benchmarks/results/q54_p12_4/gate.json"))
     # The complete v12 -> v13 field/preimage migration is checked independently
-    # in test_optical_render_migration; product admission remains byte-frozen.
+    # in test_optical_render_migration. The approved C0 CPU-owner extraction
+    # extends only its literal source list; every other contract field is fixed.
+    contract_path = "benchmarks/results/q54_p12_4/closed_worker_runtime_contract.json"
+    original = json.loads(_base_source(contract_path))
+    current = json.loads((ROOT / contract_path).read_text(encoding="utf-8"))
+    original["trusted_source_paths"] = sorted(original["trusted_source_paths"] + [
+        "optical_worker/lane_contract.py", "optical_worker/native_manifest.py",
+    ])
+    assert current == original
     paths = [
-        "benchmarks/results/q54_p12_4/closed_worker_runtime_contract.json",
         "optical_worker/worker.py",
         "optical_worker/manifest.py",
         "optical_worker/protocol.py",
