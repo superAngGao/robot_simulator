@@ -1585,6 +1585,14 @@ Next milestone:
       then continue all parent C4 work. Do not resume the isolated pidfd campaign.
       Product requirements and independent checkpoints remain; no early benchmark
       or activation is authorized. C4 remains active and incomplete.
+      Further replacement work at3912a27 adds full v3 aggregate replay with real
+      CPU lifecycle/adoptions and modeled native facts (12 passes), plus the six
+      fixed installed-manager cases as an unexecuted acceptance command. LBVH
+      now validates captured authority before CUDA device queries; the affected
+      artifact/factory CPU selection passes85. See implementation-notev4 for exact
+      commands, limitations and remaining whole-packet work. Committed source
+      checks pass206 with4 skips (43.85s, exit0). Read-only target
+      inspection still finds clean92a8ac6; no service/build/GPU campaign was run.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
