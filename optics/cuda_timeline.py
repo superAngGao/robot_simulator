@@ -1022,6 +1022,35 @@ class CudaOpticalTransaction:
                 self._poison_reason = reason
 
 
+class _CudaSetupTransaction(CudaOpticalTransaction):
+    def _require_execution_authority(self, *, operation):
+        from optical_worker.warmup import _require_warmup_transaction
+        _require_warmup_transaction(self)
+
+    def record_diagnostic_start(self, name):
+        from optical_worker.warmup import _warmup_leaf
+        if self.has_diagnostic_phase(name):
+            with _warmup_leaf(self, "warmup_phase_start", "event_record"):
+                super().record_diagnostic_start(name)
+        # The original stage calls this immediately before each native
+        # entry, also with diagnostics off. Declare possible submission
+        # before returning to that entry; enqueue_stage observes failures.
+        with _warmup_leaf(self, "warmup_cuda_launch", "warmup_launch"):
+            pass
+
+    def record_diagnostic_end(self, name):
+        from optical_worker.warmup import _require_warmup_transaction, _warmup_leaf
+        _require_warmup_transaction(self)
+        if self.has_diagnostic_phase(name):
+            with _warmup_leaf(self, "warmup_phase_end", "event_record"):
+                super().record_diagnostic_end(name)
+
+    def finish(self):
+        from optical_worker.warmup import _warmup_leaf
+        with _warmup_leaf(self, "warmup_terminal_record", "event_record"):
+            return super().finish()
+
+
 def _validate_cuda_event(event: object, *, device: Any, name: str) -> None:
     if not isinstance(event, torch.cuda.Event):
         raise TypeError(f"{name} must be a Torch CUDA event")

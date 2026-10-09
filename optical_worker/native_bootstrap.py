@@ -22,7 +22,7 @@ from types import FunctionType, MappingProxyType, ModuleType
 
 _BOOTSTRAP = "optical_worker/native_bootstrap.py"
 _NATIVE_EXEC_OPERATION = "exec"  # Descriptive operation enum, never a dynamic Python callable.
-_CATALOG = "optical_worker/data/native_sources/v15.json"
+_CATALOG = "optical_worker/data/native_sources/v16.json"
 _MAX_BYTES = 4 * 1024 * 1024  # Rechecked against the sole protocol constant.
 _ROOTS = frozenset(
     ("optical_worker", "optics", "physics", "robot", "sensing", "benchmarks", "examples", "tests", "tools")
@@ -126,6 +126,8 @@ _RUNTIME_PHASES = frozenset(
         "fixed_render_storage_ready",
         "preparing_fixed_render_graph",
         "fixed_render_graph_ready",
+        "warming_fixed_render_graph",
+        "fixed_render_warmups_ready",
     }
 )
 _VALIDATION_SOURCES = MappingProxyType(
@@ -2378,22 +2380,30 @@ class _SourceSession:
             if self.phase in {"validating_input", "input_validated", "preparing_cuda_factories", "cuda_factories_ready",
                               "preparing_warp_modules", "warp_modules_ready",
                               "preparing_fixed_render_storage", "fixed_render_storage_ready",
-                              "preparing_fixed_render_graph", "fixed_render_graph_ready"}:
+                              "preparing_fixed_render_graph", "fixed_render_graph_ready",
+                              "warming_fixed_render_graph", "fixed_render_warmups_ready"}:
                 admitted = admitted | _VALIDATION_SOURCES
             if self.lane == "cuda" and self.phase not in {"materializing", "materialized"}:
                 admitted = admitted | _CUDA_ARTIFACT_SOURCES
             if self.lane == "cuda" and self.phase in {"preparing_cuda_factories", "cuda_factories_ready",
                                                     "preparing_fixed_render_storage", "fixed_render_storage_ready",
-                                                    "preparing_fixed_render_graph", "fixed_render_graph_ready"}:
+                                                    "preparing_fixed_render_graph", "fixed_render_graph_ready",
+                                                    "warming_fixed_render_graph", "fixed_render_warmups_ready"}:
                 admitted = admitted | _CUDA_FACTORY_SOURCES
             if self.lane == "warp" and self.phase not in {"materializing", "materialized"}:
                 admitted = admitted | _WARP_SETUP_SOURCES
             if self.lane == "warp" and self.phase in {"preparing_warp_modules", "warp_modules_ready",
                                                     "preparing_fixed_render_storage", "fixed_render_storage_ready",
-                                                    "preparing_fixed_render_graph", "fixed_render_graph_ready"}:
+                                                    "preparing_fixed_render_graph", "fixed_render_graph_ready",
+                                                    "warming_fixed_render_graph", "fixed_render_warmups_ready"}:
                 admitted = admitted | _WARP_MODULE_SOURCES
-            if self.lane == "warp" and self.phase in {"preparing_fixed_render_graph", "fixed_render_graph_ready"}:
+            if self.lane == "warp" and self.phase in {"preparing_fixed_render_graph", "fixed_render_graph_ready",
+                                                    "warming_fixed_render_graph", "fixed_render_warmups_ready"}:
                 admitted = admitted | _WARP_RENDER_SOURCES
+            if self.phase in {"warming_fixed_render_graph", "fixed_render_warmups_ready"}:
+                admitted = admitted | {"optical_worker.warmup": "optical_worker/warmup.py"}
+                if self.lane == "warp":
+                    admitted = admitted | {"optics.warp_timeline": "optics/warp_timeline.py"}
             return admitted
         raise SourceBootstrapError("invalid CPU source phase")
 
@@ -3414,6 +3424,25 @@ class _SourceSession:
             self.phase = "fixed_render_graph_ready"
             self.runtime_observation.checkpoint()
             return graph
+        except BaseException as error:
+            self.fail(error)
+            raise
+
+    def run_fixed_render_warmups(self):
+        """Execute and observe ten setup-only frames; no final/sample authority."""
+        try:
+            self.check_live()
+            _require(self.phase == "fixed_render_graph_ready", "fixed render warmups require their graph, once")
+            with self.bound_controller().segment("setup"):
+                self.phase = "warming_fixed_render_graph"
+                from optical_worker.warmup import _prepare_fixed_render_warmups, _run_fixed_render_warmups
+
+                authority = _prepare_fixed_render_warmups(self)
+            evidence = _run_fixed_render_warmups(authority)
+            self.fixed_render_warmups = evidence
+            self.phase = "fixed_render_warmups_ready"
+            self.runtime_observation.checkpoint()
+            return evidence
         except BaseException as error:
             self.fail(error)
             raise

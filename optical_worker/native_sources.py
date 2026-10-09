@@ -22,9 +22,9 @@ from .protocol import (
     decode_canonical_message,
 )
 
-NATIVE_SOURCE_CATALOG_VERSION = "q54.p12.4.native-component-source-catalog.v7"
+NATIVE_SOURCE_CATALOG_VERSION = "q54.p12.4.native-component-source-catalog.v8"
 NATIVE_SOURCE_SNAPSHOT_VERSION = "q54.p12.4.native-component-source-snapshot.v1"
-CATALOG_PATH = "optical_worker/data/native_sources/v15.json"
+CATALOG_PATH = "optical_worker/data/native_sources/v16.json"
 
 # Deliberate literal inventory, not filesystem discovery. Includes eager
 # physics/sensing package initialization, even where the requested leaf is CPU.
@@ -60,6 +60,7 @@ _COMMON = (
     "optical_worker/worker.py",
     "optical_worker/workload_contract.py",
     "optical_worker/workloads.py",
+    "optical_worker/warmup.py",
     "optics/__init__.py",
     "optics/camera_presets.py",
     "optics/device_bvh.py",
@@ -103,7 +104,7 @@ _COMMON = (
     "tools/optical_closed_worker.py",
     "tools/optical_closed_worker_supervisor.py",
 )
-_WARP = ("optical_worker/warp_setup.py", "optics/warp_native_render.py")
+_WARP = ("optical_worker/warp_setup.py", "optics/warp_native_render.py", "optics/warp_timeline.py")
 _CUDA = (
     "optics/_cuda_direct_light_source.py",
     "optics/_cuda_lbvh_source.py",
