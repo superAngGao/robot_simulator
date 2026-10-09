@@ -370,6 +370,7 @@ def validate_result(directory):
     adopted_pids = {e['details']['identity']['pid'] for e in events if e['operation'] == 'child_adopted'}
     assert adopted_pids == reaped_pids - {worker['pid']}
     assert all(any(row['pid'] == pid for row in result['process_fixture']['pidfds']) for pid in reaped_pids)
+    _validate_case_exits(directory, case, events, members, worker, worker_wait, result)
     if case == 'separate_pgid':
         assert len(child_members) == 1 and worker_wait is not None
         assert any(row['identity']['pid'] == worker_wait['pid'] for row in result['sampled_processes'])
@@ -413,6 +414,55 @@ def validate_result(directory):
     write(directory, 'validated.json', {'case': case, 'closed': True, 'member_count': len(members),
                                       'reaped_count': len(reaped), 'attempt_count': len(attempts),
                                       'scope': 'OS fixtures only; no compilation or readiness'})
+
+
+def _validate_case_exits(directory, case, events, members, worker, worker_wait, result):
+    """Fixture exit expectations are stronger than general production replay.
+
+    A legal CLOSED record can follow an ineffective signal and natural exit.
+    Such a record must fail fixtures that require real SIGKILL termination.
+    """
+    from optical_worker.compiler_job import wait_status_returncode
+
+    roles = {role: [m['pid'] for m in members if m['role'] == role]
+             for role in ('worker', 'child', 'grandchild')}
+    expected_roles = ['worker']
+    if case in {'separate_pgid', 'leader_exit', 'leader_ack_exit', 'pipe_hang', 'residual_complete'}:
+        expected_roles.append('child')
+    elif case in {'double_fork', 'fork_during_cleanup'}:
+        expected_roles += ['child', 'grandchild']
+    assert sorted(m['role'] for m in members) == sorted(expected_roles), 'fixture process topology changed'
+    assert roles['worker'] == [worker['pid']]
+    wait_cases = {'separate_pgid', 'double_fork'}
+    assert (worker_wait is not None) == (case in wait_cases), 'unexpected worker-owned reap'
+    if worker_wait is not None:
+        assert roles['child'] == [worker_wait['pid']] and worker_wait['wait_status'] == 0
+
+    worker_exit = {'missing_complete': -9, 'proc_failure': -9, 'parent_lost': -9,
+                   'handle_failure': 74, 'stale_identity': 74, 'disappearing_identity': 74,
+                   'residual_complete': 74}.get(case, 0)
+    expected = {worker['pid']: worker_exit}
+    for pid in roles['child']:
+        if case not in wait_cases:
+            expected[pid] = 0 if case == 'fork_during_cleanup' else -9
+    expected.update((pid, -9) for pid in roles['grandchild'])
+    reaps = {e['details']['identity']['pid']: e for e in events if e['operation'] == 'child_reaped'}
+    actual = {pid: wait_status_returncode(e['details']['wait_status']) for pid, e in reaps.items()}
+    assert actual == expected, 'fixture wait status differs from required exit mechanism'
+    assert result['worker_returncode'] == worker_exit
+
+    attempts = {e['details']['identity']['pid']: e for e in events if e['operation'] == 'signal_attempted'}
+    expected_attempts = {pid for pid, code in expected.items() if code == -9}
+    if case == 'signal_failure':
+        expected_attempts.add(worker['pid'])
+    assert set(attempts) == expected_attempts, 'fixture termination target set changed'
+    for pid, attempt in attempts.items():
+        assert attempt['index'] < reaps[pid]['index'], 'termination attempt follows reap'
+    failures = [e['details']['identity']['pid'] for e in events if e['operation'] == 'signal_failed']
+    assert failures == ([worker['pid']] if case == 'signal_failure' else []), 'unexpected signal failure'
+    natural = sorted(p.name for p in directory.glob('natural-exit-*.json'))
+    assert natural == ([f"natural-exit-{worker['pid']}.json"] if case == 'signal_failure' else []), 'unexpected natural fallback'
+    assert (directory / 'worker-fixture-error.json').exists() == (worker_exit == 74)
 
 
 if __name__ == '__main__':
