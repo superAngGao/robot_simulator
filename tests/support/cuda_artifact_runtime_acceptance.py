@@ -1,7 +1,7 @@
 """Fixed Go2 artifact acceptance through the existing captured worker supervisor.
 
 Uses the existing supervised worker, including its fixed Warp compilation cases.
-No timings, warmups, renderer launch, product activation or new process manager.
+Private setup render diagnostics use the same worker; no performance/product entry.
 """
 
 from __future__ import annotations
@@ -124,7 +124,7 @@ def _validate_fixed_storage(directory, lane, case, fault, *, successful):
 
 def _validate_render_graph(directory, lane, fault, *, trace):
     data = json.loads((directory / "render_graph_binding.json").read_bytes())
-    diagnostic = fault == "runtime_render_graph_diagnostics"
+    diagnostic = fault.endswith("diagnostics")
     guard = {"sequence": 12 if lane == "warp" else 8, "role": "setup"}
     kinds = [row["details"]["descriptor"]["leaf_kind"] for row in trace
              if row["guard"] == guard and row["operation"] == "descriptor_observed"]
@@ -174,6 +174,83 @@ def _validate_render_graph(directory, lane, fault, *, trace):
             raise RuntimeError("render command/event was prepared outside its held target scope")
 
 
+def _validate_render_warmups(directory, lane, case, fault, *, trace, request):
+    import math
+    import struct
+    from optical_worker.cases import get_case
+
+    data = json.loads((directory / 'warmup_completion.json').read_bytes())
+    evidence = data['evidence']
+    graph = json.loads((directory / 'render_graph_binding.json').read_bytes())
+    validated = json.loads((directory / 'input_validation_report.json').read_bytes())
+    first = 14 if lane == 'warp' else 10
+    guards = list(range(first, first + 10))
+    if (evidence['schema_version'] != 'q54.p12.4.setup-warmup-completion.v1'
+            or evidence['session'] != request['guard_configuration']['session']
+            or evidence['target_device_ordinal'] != 1 or evidence['completion_count'] != 10
+            or evidence['source_catalog_sha256'] != request['catalog_sha256']
+            or evidence['prepared_manifest_sha256'] != validated['manifest_sha256']
+            or evidence['provisional_readiness_sha256'] != graph['readiness_sha256']
+            or evidence['compiled_modules_identity'] != graph['compiled_modules_identity']
+            or evidence['profile'] != graph['profile'] or evidence['shadows'] is not graph['shadows']
+            or evidence['pass_mode'] != graph['pass_mode'] or evidence['frame_indices'] != list(range(10))
+            or evidence['completed_guard_sequences'] != guards
+            or evidence['terminal_event_identities'] != [graph['event_ids'][0]] * 10
+            or any(len(evidence[name]) != 10 or len(set(evidence[name])) != 10
+                   for name in ('transaction_identities', 'terminal_identities'))
+            or data['bundle_ids'] != [row['bundle_id'] for row in graph['frames']]
+            or data['provisional_warmup_count'] != 0 or data['sample_submission_count'] != 0
+            or data['final_execution_readiness_issued'] is not False or len(data['frames']) != 10):
+        raise RuntimeError('warmup observations differ from their original graph, input or completed guards')
+    launch, record, wait = 'warmup_launch', 'event_record', 'event_wait'
+    if fault.endswith('diagnostics'):
+        kinds = ([record,launch,record,record,launch,launch,record,record,launch,launch,record]
+                 if lane == 'warp' else [record,launch,record] * 3) + [record,wait]
+    else:
+        kinds = [launch] * (5 if lane == 'warp' else 3) + [record,wait]
+    for sequence, row in zip(guards, data['frames'], strict=True):
+        guard = {'sequence': sequence, 'role': 'setup'}
+        if (row['guard'] != guard or row['before'] != row['after']
+                or [leaf['kind'] for leaf in row['leaves']] != kinds
+                or any(leaf['returned'] is not True for leaf in row['leaves'])):
+            raise RuntimeError('warmup frame lacks exact leaf order, returned wait or ambient restoration')
+        ambient = row['before']
+        if (ambient['default_device'] != 0 or ambient['current_context'] is not None
+                if lane == 'warp' else ambient['logical_device'] != 0 or ambient['raw_device'] != 1):
+            raise RuntimeError('warmup ambient scope was not the expected foreign default')
+        for leaf in row['leaves']:
+            state = leaf['state']
+            if (state['held_stream']['ordinal'] != 1
+                    or state['target_current_stream'] != state['held_stream']['handle']
+                    or [r['ordinal'] for r in state['primary_contexts'] if r['active']] != [1]
+                    or (state['default_device'] != 1 or state['current_context_device'] != 1
+                        if lane == 'warp' else state['logical_device'] != 1 or state['raw_device'] != 1)):
+                raise RuntimeError('warmup leaf was outside its actual target stream')
+        observed = [r for r in trace if r['guard'] == guard]
+        declared = [r['details']['descriptor']['leaf_kind'] for r in observed
+                    if r['operation'] == 'descriptor_observed'
+                    and r['details']['descriptor']['operation_id'].startswith('warmup_')]
+        if declared != kinds or not any(r['operation'] == 'normal_disarmed' for r in observed):
+            raise RuntimeError('warmup raw operations do not match the successful original guard')
+    rgb = json.loads((directory / 'warmup_rgb.json').read_bytes())
+    encoded = (directory / 'warmup_rgb.f32').read_bytes()
+    workload = get_case(case)
+    if ((rgb['width'], rgb['height'], rgb['channels'], rgb['dtype'], rgb['frame_id']) !=
+            (workload.width, workload.height, 3, 'float32', 10)
+            or rgb['guard'] != {'sequence': first + 10, 'role': 'setup'}
+            or rgb['bytes'] != len(encoded) or len(encoded) != workload.width * workload.height * 12
+            or rgb['sha256'] != hashlib.sha256(encoded).hexdigest()
+            or not all(math.isfinite(value) for (value,) in struct.iter_unpack('<f', encoded))):
+        raise RuntimeError('diagnostic RGB is not the finite, exact final-frame readback')
+    readback_trace = [row for row in trace if row['guard'] == rgb['guard']]
+    copies = [row['details']['descriptor'] for row in readback_trace
+              if row['operation'] == 'descriptor_observed'
+              and row['details']['descriptor']['leaf_kind'] == 'device_to_host_copy']
+    if (len(copies) != 1 or copies[0]['operation_id'] != 'warmup_rgb_readback'
+            or not any(row['operation'] == 'normal_disarmed' for row in readback_trace)):
+        raise RuntimeError('diagnostic RGB lacks its actual completed readback guard')
+
+
 def run_case(repository, revision, environment_path, environment, directory, lane, case, fault):
     from optical_worker.guarded_evidence import validate_custody_artifact
     from optical_worker.native_sources import CATALOG_PATH
@@ -181,7 +258,8 @@ def run_case(repository, revision, environment_path, environment, directory, lan
         RuntimeCustodyRecord, validate_runtime_custody_selection, validate_runtime_custody_attachment,
     )
     from tests.support.runtime_custody_launch import capture_runtime_custody_inputs
-    from tests.support.native_runtime_process import RUNTIME_FIXED_STORAGE_FAULTS, RUNTIME_RENDER_GRAPH_CASES
+    from tests.support.native_runtime_process import (RUNTIME_FIXED_STORAGE_FAULTS, RUNTIME_RENDER_GRAPH_CASES,
+                                                      RUNTIME_RENDER_WARMUP_CASES)
 
     request = {"root": str(repository), "revision": revision, "lane": lane,
                "catalog_sha256": hashlib.sha256((repository / CATALOG_PATH).read_bytes()).hexdigest(),
@@ -223,6 +301,7 @@ def run_case(repository, revision, environment_path, environment, directory, lan
         if (directory / "ordinary_atexit.json").exists():
             raise RuntimeError("worker performed ordinary Python cleanup")
         graph_case = fault in RUNTIME_RENDER_GRAPH_CASES
+        warmup_case = fault in RUNTIME_RENDER_WARMUP_CASES
         storage_case = fault in RUNTIME_FIXED_STORAGE_FAULTS or graph_case
         successful = fault in {"runtime_artifacts_success", "runtime_scope_success", "runtime_warp_modules_success",
                                "runtime_fixed_storage_success", "runtime_fixed_storage_diagnostics"} or graph_case
@@ -230,6 +309,7 @@ def run_case(repository, revision, environment_path, environment, directory, lan
             expected_phases = (12 if lane == "warp" else 8) if storage_case else (
                 11 if fault == "runtime_warp_modules_success" else (7 if lane == "cuda" else 6))
             expected_phases += int(graph_case)
+            expected_phases += 12 * int(warmup_case)  # prepare, ten completions, diagnostic readback
             if (result["worker_returncode"] != 0 or error or result["stderr"]
                     or control["normal_complete_count"] != expected_phases
                     or control["arm_count"] != expected_phases + 1
@@ -404,6 +484,8 @@ def run_case(repository, revision, environment_path, environment, directory, lan
             _validate_fixed_storage(directory, lane, case, storage_fault, successful=successful)
         if graph_case:
             _validate_render_graph(directory, lane, fault, trace=worker["transition_trace"])
+        if warmup_case:
+            _validate_render_warmups(directory, lane, case, fault, trace=worker["transition_trace"], request=request)
         raw_path = directory / "runtime_custody.json"
         if raw_path.exists():
             raw = raw_path.read_bytes()

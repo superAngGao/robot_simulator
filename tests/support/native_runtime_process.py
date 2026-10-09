@@ -3,7 +3,7 @@
 Guardian/source custody precedes all third-party imports. The existing session
 owns canonical materialization, the sole upload loops and explicit readback.
 This driver only sequences them and exits under the production guard supervisor.
-No user callback, sample execution, final readiness, renderer or result export.
+Private setup rendering is diagnostic only; no sample/result product entry.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import os
 import socket
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -74,7 +75,9 @@ RUNTIME_WARP_MODULE_FAULTS = ("runtime_warp_modules_success", *RUNTIME_WARP_ADMI
                              *RUNTIME_WARP_IDLE_FAULTS, *RUNTIME_WARP_COMPILE_FAULTS)
 RUNTIME_FIXED_STORAGE_FAULTS = tuple("runtime_fixed_storage_" + name for name in (
     "success", "diagnostics", "allocate_raise", "adoption_raise", "allocate_hang"))
-RUNTIME_RENDER_GRAPH_CASES = ("runtime_render_graph_success", "runtime_render_graph_diagnostics")
+RUNTIME_RENDER_WARMUP_CASES = ("runtime_render_warmup_success", "runtime_render_warmup_diagnostics")
+RUNTIME_RENDER_GRAPH_CASES = ("runtime_render_graph_success", "runtime_render_graph_diagnostics",
+                            *RUNTIME_RENDER_WARMUP_CASES)
 RUNTIME_FAULTS = (RUNTIME_NATIVE_FAULTS + RUNTIME_ACK_FAULTS + RUNTIME_PARENT_FAULTS
                   + RUNTIME_SCOPE_FAULTS + RUNTIME_GLOBAL_FAULTS + RUNTIME_CUDA_ONLY_FAULTS
                   + RUNTIME_OBSERVATION_FAULTS + RUNTIME_ARTIFACT_FAULTS + RUNTIME_WARP_MODULE_FAULTS
@@ -836,7 +839,8 @@ class _NativeScopeObserver:
                 if observer.controller._terminating or observer.session.phase in {
                         "preparing_warp_modules", "warp_modules_ready",
                         "preparing_fixed_render_storage", "fixed_render_storage_ready",
-                        "preparing_fixed_render_graph", "fixed_render_graph_ready"}:
+                        "preparing_fixed_render_graph", "fixed_render_graph_ready",
+                        "warming_fixed_render_graph", "fixed_render_warmups_ready"}:
                     # Compilation gets downstream raw observations, never an
                     # input-phase readback receipt with a different meaning.
                     return original_scope(target)
@@ -1027,6 +1031,7 @@ def _prepare_observed_render_graph(session, controller, binding, observer, direc
             "frames": rows, "adoptions": adoptions, "event_ids": [id(event) for event in events],
             "diagnostic_phases": [name for name, _, _ in result.diagnostic_events],
             "warmup_frames_completed": result.readiness.warmup_frames_completed,
+            "readiness_sha256": result.readiness.sha256, "compiled_modules_identity": id(result.compiled_modules),
             "profile": result.profile, "shadows": result.shadows, "pass_mode": result.pass_mode,
             "sample_submission_count": 0, "final_execution_readiness_issued": False})
         return result
@@ -1039,6 +1044,84 @@ def _prepare_observed_render_graph(session, controller, binding, observer, direc
     finally:
         native_setup._prepare_fixed_render_graph = original_prepare
         controller.adopt_returned_device_owner = original_adopt
+
+
+def _run_observed_render_warmups(session, controller, binding, observer, directory):
+    """Exercise production execution, observe native scope and save diagnostic RGB."""
+    import hashlib
+    from optical_worker import native_setup
+
+    original_scope = native_setup._native_resource_scope
+    frames = []
+
+    @contextmanager
+    def scope(*args, **kwargs):
+        if kwargs['scope_id'] != 'setup_warmup_frame_scope':
+            with original_scope(*args, **kwargs) as value:
+                yield value
+            return
+        before = observer._state(False)
+        row = {'guard': dict(controller._guard_reference), 'before': before, 'leaves': []}
+        frames.append(row)
+        with original_scope(*args, **kwargs) as (lifecycle, owners, original_operation):
+            @contextmanager
+            def operation(name, kind):
+                with original_operation(name, kind):
+                    leaf = {'name': name, 'kind': kind, 'state': observer._state(False), 'returned': False}
+                    row['leaves'].append(leaf)
+                    yield
+                    leaf['returned'] = True
+            yield lifecycle, owners, operation
+        # Only a successful original scope permits a further native query.
+        row['after'] = observer._state(False)
+        assert row['after'] == before
+
+    native_setup._native_resource_scope = scope
+    try:
+        evidence = session.run_fixed_render_warmups()
+    except BaseException:
+        try:
+            _write(directory, 'warmup_partial.json', {'frames': frames})
+        except BaseException:
+            pass  # Optional diagnostics must not replace the original failure.
+        raise
+    finally:
+        native_setup._native_resource_scope = original_scope
+    from optical_worker.warmup import require_observed_warmups
+    assert require_observed_warmups(session, evidence) is evidence
+    graph = session.fixed_render_graph
+    controller.require_adopted(evidence, *evidence.transactions, *evidence.completions)
+    assert all(tx.completion is completion and completion.event is graph.completion_event
+               for tx, completion in zip(evidence.transactions, evidence.completions, strict=True))
+    _write(directory, 'warmup_completion.json', {'evidence': evidence.to_payload(), 'frames': frames,
+        'bundle_ids': [id(tx.bundle if session.lane == 'warp' else tx._stages[0]) for tx in evidence.transactions],
+        'provisional_warmup_count': graph.readiness.warmup_frames_completed,
+        'sample_submission_count': 0, 'final_execution_readiness_issued': False})
+
+    # Untimed correctness diagnostic after the last physical completion. This
+    # is not R2, a delivered product payload or part of a performance sample.
+    with controller.segment('setup'):
+        context = native_setup._create_upload_context(controller, binding.module, binding.target, binding.stream)
+        with original_scope(binding.module, binding.target, lane=session.lane, stream=binding.stream,
+                context=context, owner_role='warmup_rgb_host_custody', scope_id='warmup_rgb_readback_scope') as (_, owners, operation):
+            rgb = session.fixed_render_storage[3].rgb
+            with operation('warmup_rgb_readback', 'device_to_host_copy'):
+                host = rgb.numpy() if session.lane == 'warp' else rgb.detach().cpu()
+                owners.append(host)
+                controller.adopt_host_owner(host, role='warmup_rgb_host', operation_id='warmup_rgb_readback')
+                if session.lane == 'cuda':
+                    host = host.numpy()
+                    owners.append(host)
+                parameters = graph.frames[-1][0].to_payload()
+                width, height = parameters['width'], parameters['height']
+                assert host.dtype.name == 'float32' and host.shape == (width * height, 3)
+                encoded = host.tobytes(order='C')
+                owners.append(encoded)
+            (directory / 'warmup_rgb.f32').write_bytes(encoded)
+            _write(directory, 'warmup_rgb.json', {'width': width, 'height': height, 'channels': 3,
+                'dtype': 'float32', 'frame_id': parameters['frame_id'], 'sha256': hashlib.sha256(encoded).hexdigest(),
+                'bytes': len(encoded), 'guard': dict(controller._guard_reference)})
+    return evidence
 
 
 def _unrecorded_module_observations(admission):
@@ -1469,6 +1552,10 @@ def child(fault, fd, directory):
                 binding.module.load_module = original_load
                 warp_setup.compile_module = original_compile
             _prepare_observed_render_graph(session, controller, binding, scope_observer, directory, fault)
+            observe()
+        if fault in RUNTIME_RENDER_WARMUP_CASES:
+            phase = "fixed_render_warmups"
+            _run_observed_render_warmups(session, controller, binding, scope_observer, directory)
             observe()
         phase = "terminal_disposal"
 

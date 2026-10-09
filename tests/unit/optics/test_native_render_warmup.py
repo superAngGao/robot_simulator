@@ -3,6 +3,7 @@
 These do not prove optical numerical output or native packed command execution.
 """
 from dataclasses import replace
+from copy import copy
 from types import SimpleNamespace as NS
 import pytest
 
@@ -124,8 +125,7 @@ def test_rebinding_or_copying_prepared_warmup_cannot_execute(executable_graph, m
         if attack == 'copied_authority':
             return original(replace(authority))
         if attack == 'copied_transaction':
-            copied = object.__new__(type(transaction))
-            copied.__dict__.update(vars(transaction))
+            copied = copy(transaction)
             with pytest.raises(ValueError, match='registered'):
                 warmup._require_warmup_transaction(copied)
             raise x.failure
@@ -135,10 +135,42 @@ def test_rebinding_or_copying_prepared_warmup_cannot_execute(executable_graph, m
             transaction._completion_event = object()
         return original(authority)
     monkeypatch.setattr(warmup, '_run_fixed_render_warmups', run)
-    with pytest.raises((ValueError, RuntimeError)):
+    with pytest.raises((ValueError, RuntimeError, AttributeError)):
         x.session.run_fixed_render_warmups()
     assert x.calls == []
     assert x.session not in warmup._COMPLETED_WARMUPS
+
+
+@pytest.mark.parametrize('fixed_inputs', ['warp'], indirect=True)
+@pytest.mark.parametrize('fail_at', [None])
+@pytest.mark.parametrize('diagnostic', [False, True])
+def test_warp_actual_execution_plan_and_cursor_are_frozen(executable_graph, monkeypatch):
+    from dataclasses import FrozenInstanceError
+    from optical_worker import warmup
+    x = executable_graph
+    original = warmup._run_fixed_render_warmups
+    def run(authority):
+        transactions = warmup._SETUP_WARMUPS[x.session][1]
+        for index, transaction in enumerate(transactions):
+            for name, value in (('_groups', ((), (), ())),
+                                ('_groups', tuple(reversed(transaction._groups))),
+                                ('_groups', transactions[(index + 1) % 10]._groups),
+                                ('_groups', tuple(tuple(object() for _ in group) for group in transaction._groups)),
+                                ('_next_phase', 3), ('_state', 'enqueuing'),
+                                ('bundle', object()), ('_terminal', object()), ('stream', object())):
+                with pytest.raises(FrozenInstanceError):
+                    setattr(transaction, name, value)
+                with pytest.raises(FrozenInstanceError):
+                    delattr(transaction, name)
+            with pytest.raises(RuntimeError, match='initialized again'):
+                transaction.__init__(bundle=None, parameters=None, runtime=None, target=None,
+                    stream=None, completion_event=None, diagnostic_events=())
+        return original(authority)
+    monkeypatch.setattr(warmup, '_run_fixed_render_warmups', run)
+    evidence = x.session.run_fixed_render_warmups()
+    assert warmup.require_observed_warmups(x.session, evidence) is evidence
+    assert sum(kind == 'launch' for kind, _, _ in x.calls) == 50
+    assert sum(kind == 'wait' for kind, _, _ in x.calls) == 10
 
 
 @pytest.mark.parametrize('fail_at', [None])

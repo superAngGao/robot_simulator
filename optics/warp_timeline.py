@@ -13,13 +13,28 @@ class _WarpSetupCompletion:
     bundle: object
 
 
+@dataclass(frozen=True, eq=False, init=False, slots=True, repr=False)
 class _WarpSetupTransaction:
     """One ordered render and one terminal record; no waits or kernel copies."""
+
+    bundle: object
+    parameters: object
+    runtime: object
+    target: object
+    stream: object
+    _stream_handle: int
+    _groups: tuple
+    _next_phase: int
+    _diagnostics: tuple
+    _terminal: _WarpSetupCompletion
+    _state: str
 
     def __init__(self, *, bundle, parameters, runtime, target, stream,
                  completion_event, diagnostic_events):
         from .warp_native_render import WarpDirectLightRenderCommandBundle
 
+        if hasattr(self, '_state'):
+            raise RuntimeError('Warp setup transaction cannot be initialized again')
         if type(bundle) is not WarpDirectLightRenderCommandBundle:
             raise TypeError("Warp setup requires an exact recorded render bundle")
         bundle.validate_resolved_parameters(parameters)
@@ -46,14 +61,14 @@ class _WarpSetupTransaction:
                                          "_reset_shadow_diagnostic_counters_kernel"}:
                 phase = 2
             groups[phase].append(command)
-        self.bundle, self.parameters = bundle, parameters
-        self.runtime, self.target, self.stream = runtime, target, stream
-        self._stream_handle = stream.cuda_stream
-        self._groups = tuple(tuple(group) for group in groups)
-        self._next_phase = 0
-        self._diagnostics = diagnostic_events
-        self._terminal = _WarpSetupCompletion(completion_event, self, bundle)
-        self._state = "validated_open"
+        for name, value in (
+                ('bundle', bundle), ('parameters', parameters), ('runtime', runtime),
+                ('target', target), ('stream', stream), ('_stream_handle', stream.cuda_stream),
+                ('_groups', tuple(tuple(group) for group in groups)), ('_next_phase', 0),
+                ('_diagnostics', diagnostic_events),
+                ('_terminal', _WarpSetupCompletion(completion_event, self, bundle)),
+                ('_state', 'validated_open')):
+            object.__setattr__(self, name, value)
 
     @property
     def state(self):
@@ -71,7 +86,7 @@ class _WarpSetupTransaction:
         _require_warmup_transaction(self)
         if self._state != "validated_open":
             if self._state != "finished":
-                self._state = "poisoned"
+                object.__setattr__(self, '_state', 'poisoned')
             raise RuntimeError("Warp setup transaction cannot enqueue again")
         try:
             if self.stream.device is not self.target or self.stream.cuda_stream != self._stream_handle:
@@ -79,7 +94,7 @@ class _WarpSetupTransaction:
             # Setup is untimed. Check actual packed parameters immediately before
             # using these commands; final measured transactions will use C3 seal.
             self.bundle.validate_resolved_parameters(self.parameters)
-            self._state = "enqueuing"
+            object.__setattr__(self, '_state', 'enqueuing')
             for index, commands in enumerate(self._groups):
                 pair = self._diagnostics[index] if self._diagnostics else None
                 if pair is not None:
@@ -91,9 +106,9 @@ class _WarpSetupTransaction:
                 if pair is not None:
                     with _warmup_leaf(self, "warmup_phase_end", "event_record"):
                         self.stream.record_event(pair[2])
-                self._next_phase += 1
+                object.__setattr__(self, '_next_phase', self._next_phase + 1)
         except BaseException:
-            self._state = "poisoned"
+            object.__setattr__(self, '_state', 'poisoned')
             raise
 
     def finish(self):
@@ -102,13 +117,13 @@ class _WarpSetupTransaction:
         _require_warmup_transaction(self)
         if self._state != "enqueuing" or self._next_phase != len(self._groups):
             if self._state != "finished":
-                self._state = "poisoned"
+                object.__setattr__(self, '_state', 'poisoned')
             raise RuntimeError("Warp setup finish requires one complete enqueue")
         try:
             with _warmup_leaf(self, "warmup_terminal_record", "event_record"):
                 self.stream.record_event(self._terminal.event)
         except BaseException:
-            self._state = "poisoned"
+            object.__setattr__(self, '_state', 'poisoned')
             raise
-        self._state = "finished"
+        object.__setattr__(self, '_state', 'finished')
         return self._terminal
