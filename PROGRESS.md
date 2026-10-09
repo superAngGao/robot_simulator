@@ -1489,6 +1489,15 @@ Next milestone:
       replay, complete installed closure, source pins, dependency-only CPU preflight
       and real compilation/native evidence remain unfinished. No real dependency
       transaction, complete same-object alias integration or speed result is claimed.
+      At553038f, compilation record/selection v2 now validates initialization
+      action order and source/retention/guard/adoption joins while preserving
+      historical v1 descriptive parsing. Local regression passed179 with11POSIX
+      skips; the target Python3.12 CPU suite passed190, including those11 archived
+      input codec tests. See implementation-note v4 and test-evidence v2 for exact
+      code, runner, hashes, stand-in limits and PID290532 absence. Remote isolated
+      tree is clean detached553038f. No actual dependency/backend/compiler ran;
+      full installed closure, source pins, real integration and independent
+      execution preflights still remain before native proof.
       Owner follow-up (2026-10-09): after functional implementation and required
       real verification, perform a systematic refactor of the whole C4 structure
       before final acceptance, covering accumulated hotfixes, ownership boundaries,
