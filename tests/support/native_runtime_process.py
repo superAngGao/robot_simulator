@@ -72,9 +72,12 @@ RUNTIME_WARP_ADMISSION_ERRORS = {
 RUNTIME_WARP_ADMISSION_FAULTS = tuple("runtime_warp_modules_" + name for name in RUNTIME_WARP_ADMISSION_ERRORS)
 RUNTIME_WARP_MODULE_FAULTS = ("runtime_warp_modules_success", *RUNTIME_WARP_ADMISSION_FAULTS,
                              *RUNTIME_WARP_IDLE_FAULTS, *RUNTIME_WARP_COMPILE_FAULTS)
+RUNTIME_FIXED_STORAGE_FAULTS = tuple("runtime_fixed_storage_" + name for name in (
+    "success", "diagnostics", "allocate_raise", "adoption_raise", "allocate_hang"))
 RUNTIME_FAULTS = (RUNTIME_NATIVE_FAULTS + RUNTIME_ACK_FAULTS + RUNTIME_PARENT_FAULTS
                   + RUNTIME_SCOPE_FAULTS + RUNTIME_GLOBAL_FAULTS + RUNTIME_CUDA_ONLY_FAULTS
-                  + RUNTIME_OBSERVATION_FAULTS + RUNTIME_ARTIFACT_FAULTS + RUNTIME_WARP_MODULE_FAULTS)
+                  + RUNTIME_OBSERVATION_FAULTS + RUNTIME_ARTIFACT_FAULTS + RUNTIME_WARP_MODULE_FAULTS
+                  + RUNTIME_FIXED_STORAGE_FAULTS)
 
 
 def _install_runtime_fault(fault, entry, session, controller, directory):
@@ -83,7 +86,7 @@ def _install_runtime_fault(fault, entry, session, controller, directory):
     All wrappers and their real return values are retained by the already held
     source session. The production source closure has no fault selector.
     """
-    if fault in {"runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang", "runtime_artifacts_success"} or fault in RUNTIME_ACK_FAULTS + RUNTIME_OBSERVATION_FAULTS + RUNTIME_WARP_MODULE_FAULTS:
+    if fault in {"runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang", "runtime_artifacts_success"} or fault in RUNTIME_ACK_FAULTS + RUNTIME_OBSERVATION_FAULTS + RUNTIME_WARP_MODULE_FAULTS + RUNTIME_FIXED_STORAGE_FAULTS:
         return None
     state = {"fired": False, "returned": [], "originals": []}
     session.runtime_owners.append(state)
@@ -770,7 +773,7 @@ class _NativeScopeObserver:
                 self.snapshot(_site, "after", opening[1], opening)
                 return result
             setattr(setup, name, wrapper)
-        if self.fault in RUNTIME_ARTIFACT_FAULTS:
+        if self.fault in RUNTIME_ARTIFACT_FAULTS + RUNTIME_FIXED_STORAGE_FAULTS and self.session.lane == "cuda":
             original = setup._prepare_cuda_factory_owners
             self.originals.append(original)
             def observed_factories(*args):
@@ -829,7 +832,9 @@ class _NativeScopeObserver:
                         observer.snapshot(self.site, "after", self.before[1], self.before)
                     return result
             def scoped(target):
-                if observer.controller._terminating or observer.session.phase in {"preparing_warp_modules", "warp_modules_ready"}:
+                if observer.controller._terminating or observer.session.phase in {
+                        "preparing_warp_modules", "warp_modules_ready",
+                        "preparing_fixed_render_storage", "fixed_render_storage_ready"}:
                     # Compilation gets downstream raw observations, never an
                     # input-phase readback receipt with a different meaning.
                     return original_scope(target)
@@ -844,6 +849,119 @@ class _NativeScopeObserver:
         opening = self.snapshot("terminal_sync", "before", operation)
         original()
         self.snapshot("terminal_sync", "after", operation, opening)
+
+
+def _prepare_observed_fixed_storage(session, controller, binding, observer, directory, fault):
+    """Exercise the production storage entry; observations own no output arrays."""
+    from optical_worker import native_setup
+
+    original_prepare = native_setup._prepare_fixed_render_storage
+    original_empty = binding.module.empty
+    original_adopt = controller.adopt_returned_device_owner
+    calls, arrays = [], []
+    session.runtime_owners.extend((original_prepare, original_empty, original_adopt, calls, arrays))
+
+    def retained_ids():
+        # The allocator adopts this list before entering either native scope.
+        # Inspect its actual contents; do not add an observer owner for arrays.
+        return sorted({id(value) for owner in controller.guardian._owners
+                       if type(owner) is list for value in owner
+                       if id(value) in {row["id"] for row in arrays}})
+
+    def injected(boundary):
+        _write(directory, "fault_entered.json", {
+            "fault": fault, "boundary": boundary, "guard": dict(controller._guard_reference),
+            "lifecycle_event_count": len(controller._guard_events),
+            "calls": calls, "arrays": arrays, "retained_ids": retained_ids()})
+        if fault.endswith("hang"):
+            _stall()
+        raise RuntimeError("fixed render storage failure: " + fault)
+
+    def empty(*args, **kwargs):
+        observer._ticket()
+        state = observer._state(False)
+        assert state["target_current_stream"] == int(binding.stream.cuda_stream)
+        assert [row["ordinal"] for row in state["primary_contexts"] if row["active"]] == [1]
+        if session.lane == "cuda":
+            assert state["logical_device"] == state["raw_device"] == 1
+        else:
+            assert state["default_device"] == state["current_context_device"] == 1
+        calls.append({"guard": dict(controller._guard_reference), "state": state})
+        if len(calls) == 2 and fault in {
+                "runtime_fixed_storage_allocate_raise", "runtime_fixed_storage_allocate_hang"}:
+            injected("second_allocation_before_native_return")
+        # No observation/getter between native return and production retention.
+        return original_empty(*args, **kwargs)
+
+    def adopt(owner, *, actual_device_ordinal, role, operation_id):
+        if role == "slot_device_array":
+            observer._ticket()
+            arrays.append({"id": id(owner), "shape": list(owner.shape),
+                           "dtype": str(owner.dtype), "device_ordinal": actual_device_ordinal,
+                           "operation_id": operation_id})
+            assert id(owner) in retained_ids(), "output was not retained before adoption"
+            assert actual_device_ordinal == 1
+            if len(arrays) == 2 and fault == "runtime_fixed_storage_adoption_raise":
+                injected("second_returned_array_before_adoption")
+        return original_adopt(owner, actual_device_ordinal=actual_device_ordinal,
+                              role=role, operation_id=operation_id)
+
+    def prepare(*args, **kwargs):
+        observer._ticket()
+        before = observer._state(False)
+        try:
+            result = original_prepare(*args, **kwargs)
+        except BaseException as error:
+            try:
+                # Production has already failed the guard. Only inspect held
+                # Python roots here; no native getter may use a failed ticket.
+                _write(directory, "fixed_storage_failure.json", {
+                    "before": before,
+                    "guard": dict(controller._guard_reference), "calls": calls, "arrays": arrays,
+                    "retained_ids": retained_ids(), "error_type": type(error).__name__, "error": str(error)})
+            except BaseException as diagnostic:
+                session.runtime_owners.append(diagnostic)
+            raise
+        after = observer._state(False)
+        assert before == after, "render allocation changed ambient device or stream"
+        scene, first, second, outputs = result
+        prepared = session.prepared_input
+        assert scene.resources[0] is prepared
+        if session.lane == "warp":
+            from optics.device_scene import _warp_world_scene_arrays
+            inputs = list(_warp_world_scene_arrays(first)) + [
+                ("bvh_" + name, getattr(second, name)) for name in (
+                    "bounds_min", "bounds_max", "left", "right", "start", "count",
+                    "node_depth", "level_ranges", "prim_ids")]
+            assert second.stats is prepared.source.fixed_fixture_owner.bvh_stats
+            assert second.ready_event is prepared.ready_event and second.topology_origin_id is None
+            output_items = outputs.arrays
+        else:
+            inputs = first.tensor_items() + second.tensor_items()
+            output_items = outputs.tensor_items()
+        assert all(array is prepared.arrays[name] for name, array in inputs)
+        assert sorted(id(array) for _, array in output_items) == sorted(row["id"] for row in arrays)
+        assert retained_ids() == sorted(row["id"] for row in arrays)
+        _write(directory, "fixed_storage_binding.json", {
+            "before": before, "after": after, "guard": dict(controller._guard_reference),
+            "calls": calls, "arrays": arrays, "retained_ids": retained_ids(),
+            "input_ids": [{"name": name, "view_id": id(array), "prepared_id": id(prepared.arrays[name])}
+                          for name, array in inputs],
+            "outputs": [{"name": name, "id": id(array)} for name, array in output_items],
+            "traversal_diagnostics": kwargs["traversal_diagnostics"],
+            "sample_submission_count": 0, "final_execution_readiness_issued": False})
+        return result
+
+    native_setup._prepare_fixed_render_storage = prepare
+    binding.module.empty = empty
+    controller.adopt_returned_device_owner = adopt
+    try:
+        return session.prepare_fixed_render_storage(
+            traversal_diagnostics=fault == "runtime_fixed_storage_diagnostics")
+    finally:
+        native_setup._prepare_fixed_render_storage = original_prepare
+        binding.module.empty = original_empty
+        controller.adopt_returned_device_owner = original_adopt
 
 
 def _unrecorded_module_observations(admission):
@@ -975,7 +1093,7 @@ def child(fault, fd, directory):
         observe()
         injection = _install_runtime_fault(fault, entry, session, controller, directory)
         scope_observer = (_NativeScopeObserver(session, controller, directory, environment_payload, fault)
-                          if fault in RUNTIME_OBSERVATION_FAULTS + RUNTIME_ARTIFACT_FAULTS + RUNTIME_WARP_MODULE_FAULTS else None)
+                          if fault in RUNTIME_OBSERVATION_FAULTS + RUNTIME_ARTIFACT_FAULTS + RUNTIME_WARP_MODULE_FAULTS + RUNTIME_FIXED_STORAGE_FAULTS else None)
         phase = "setup_definitions"
         session.import_setup_definitions()
         observe()
@@ -1006,11 +1124,11 @@ def child(fault, fd, directory):
                 "final_execution_readiness_issued": False,
             },
         )
-        if fault in RUNTIME_ARTIFACT_FAULTS:
+        if fault in RUNTIME_ARTIFACT_FAULTS or (fault in RUNTIME_FIXED_STORAGE_FAULTS and request["lane"] == "cuda"):
             phase = "cuda_factory_preparation"
             session.prepare_cuda_factories()
             observe()
-        if fault in RUNTIME_WARP_MODULE_FAULTS:
+        if fault in RUNTIME_WARP_MODULE_FAULTS or (fault in RUNTIME_FIXED_STORAGE_FAULTS and request["lane"] == "warp"):
             assert request["lane"] == "warp"
             phase = "warp_module_preparation"
             original_load = binding.module.load_module
@@ -1258,6 +1376,10 @@ def child(fault, fd, directory):
                              "artifacts": record.artifacts, "source_sha256": record.source_sha256,
                              "compile_guard": record.guard} for record in records],
                 "final_execution_readiness_issued": False, "sample_submission_count": 0})
+            observe()
+        if fault in RUNTIME_FIXED_STORAGE_FAULTS:
+            phase = "fixed_render_storage"
+            _prepare_observed_fixed_storage(session, controller, binding, scope_observer, directory, fault)
             observe()
         phase = "terminal_disposal"
 

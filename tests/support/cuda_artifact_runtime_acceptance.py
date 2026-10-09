@@ -71,6 +71,57 @@ def check_bad_artifact_copies(repository, environment, output):
     verify_deployment(original, digest, repository=repository, expected_platform=platform)
 
 
+def _validate_fixed_storage(directory, lane, case, fault, *, successful):
+    """Check raw production-boundary observations, in addition to custody replay."""
+    from optical_worker.cases import get_case
+
+    hanging = fault.endswith("hang")
+    name = "fixed_storage_binding.json" if successful else (
+        "fault_entered.json" if hanging else "fixed_storage_failure.json")
+    data = json.loads((directory / name).read_bytes())
+    guard = {"sequence": 11 if lane == "warp" else 7, "role": "setup"}
+    diagnostics = fault == "runtime_fixed_storage_diagnostics"
+    count = (23 if diagnostics else 14) if successful else (2 if "adoption" in fault else 1)
+    if (data["guard"] != guard or len(data["arrays"]) != count
+            or len(data["calls"]) != (count if successful else 2)):
+        raise RuntimeError("fixed storage did not reach its exact allocation boundary")
+    ids = [row["id"] for row in data["arrays"]]
+    if len(set(ids)) != count or sorted(ids) != data["retained_ids"]:
+        raise RuntimeError("fixed storage partial arrays lost their production retention")
+    for row in data["arrays"]:
+        if row["device_ordinal"] != 1:
+            raise RuntimeError("fixed storage allocated a foreign array")
+    for row in data["calls"]:
+        state = row["state"]
+        if (row["guard"] != guard or state["held_stream"]["ordinal"] != 1
+                or state["target_current_stream"] != state["held_stream"]["handle"]
+                or [r["ordinal"] for r in state["primary_contexts"] if r["active"]] != [1]):
+            raise RuntimeError("fixed storage allocated outside the held target stream")
+        if lane == "warp":
+            if state["default_device"] != 1 or state["current_context_device"] != 1:
+                raise RuntimeError("Warp allocation was outside its target context")
+        elif state["logical_device"] != 1 or state["raw_device"] != 1:
+            raise RuntimeError("CUDA allocation was outside its target device")
+    if successful:
+        before, after = data["before"], data["after"]
+        if before != after or (before["default_device"] != 0 or before["current_context"] is not None
+                              if lane == "warp" else before["logical_device"] != 0 or before["raw_device"] != 1):
+            raise RuntimeError("fixed storage did not restore its original ambient scope")
+    if successful:
+        workload = get_case(case)
+        if (data["traversal_diagnostics"] is not diagnostics or data["sample_submission_count"] != 0
+                or data["final_execution_readiness_issued"] is not False
+                or sorted(row["id"] for row in data["outputs"]) != sorted(ids)
+                or len({row["name"] for row in data["outputs"]}) != count
+                or data["arrays"][0]["shape"] != [workload.width * workload.height, 3]
+                or not data["input_ids"]
+                or any(row["view_id"] != row["prepared_id"] for row in data["input_ids"])):
+            raise RuntimeError("fixed storage binding differs from its prepared inputs or outputs")
+    elif not hanging and (data["error_type"], data["error"]) != (
+            "RuntimeError", "fixed render storage failure: " + fault):
+        raise RuntimeError("fixed storage replaced the original failure")
+
+
 def run_case(repository, revision, environment_path, environment, directory, lane, case, fault):
     from optical_worker.guarded_evidence import validate_custody_artifact
     from optical_worker.native_sources import CATALOG_PATH
@@ -78,6 +129,7 @@ def run_case(repository, revision, environment_path, environment, directory, lan
         RuntimeCustodyRecord, validate_runtime_custody_selection, validate_runtime_custody_attachment,
     )
     from tests.support.runtime_custody_launch import capture_runtime_custody_inputs
+    from tests.support.native_runtime_process import RUNTIME_FIXED_STORAGE_FAULTS
 
     request = {"root": str(repository), "revision": revision, "lane": lane,
                "catalog_sha256": hashlib.sha256((repository / CATALOG_PATH).read_bytes()).hexdigest(),
@@ -118,9 +170,12 @@ def run_case(repository, revision, environment_path, environment, directory, lan
             raise RuntimeError("owned worker PID still exists; inspect without broad signaling")
         if (directory / "ordinary_atexit.json").exists():
             raise RuntimeError("worker performed ordinary Python cleanup")
-        successful = fault in {"runtime_artifacts_success", "runtime_scope_success", "runtime_warp_modules_success"}
+        storage_case = fault in RUNTIME_FIXED_STORAGE_FAULTS
+        successful = fault in {"runtime_artifacts_success", "runtime_scope_success", "runtime_warp_modules_success",
+                               "runtime_fixed_storage_success", "runtime_fixed_storage_diagnostics"}
         if successful:
-            expected_phases = 11 if fault == "runtime_warp_modules_success" else (7 if lane == "cuda" else 6)
+            expected_phases = (12 if lane == "warp" else 8) if storage_case else (
+                11 if fault == "runtime_warp_modules_success" else (7 if lane == "cuda" else 6))
             if (result["worker_returncode"] != 0 or error or result["stderr"]
                     or control["normal_complete_count"] != expected_phases
                     or control["arm_count"] != expected_phases + 1
@@ -132,7 +187,7 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                 raise RuntimeError("positive case did not finish its original terminal disposal")
             if lane == "cuda" and not (directory / "cuda_factory_binding.json").is_file():
                 raise RuntimeError("captured CUDA factory bindings were not observed")
-            if fault == "runtime_warp_modules_success":
+            if fault == "runtime_warp_modules_success" or (storage_case and lane == "warp"):
                 compiled = json.loads((directory / "warp_module_binding.json").read_bytes())
                 if len(compiled["modules"]) != 3 or len(compiled["calls"]) != 6:
                     raise RuntimeError("Warp compile and same-session reuse observations are incomplete")
@@ -162,7 +217,8 @@ def run_case(repository, revision, environment_path, environment, directory, lan
             compile_guard = 6 if fault == "runtime_warp_modules_import_raise" else 7
             expected_guard = None if idle_fault else {
                 "sequence": compile_guard if compile_fault else (
-                    10 if fault.startswith("runtime_warp_modules_") else (6 if "factory" in fault else 3)),
+                    (11 if lane == "warp" else 7) if storage_case else (
+                        10 if fault.startswith("runtime_warp_modules_") else (6 if "factory" in fault else 3))),
                 "role": "setup"}
             if marker["fault"] != fault or marker["guard"] != expected_guard:
                 raise RuntimeError("fixed fault occurred in another guard or case")
@@ -171,7 +227,28 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                     raise RuntimeError("factory hang was not terminated by the original guard deadline")
             elif worker is None or worker["summary"]["emergency_sync_attempt_count"] != int(idle_synced):
                 raise RuntimeError("fixed failure has an unexpected synchronization count")
-            if compile_fault:
+            if storage_case:
+                completed = expected_guard["sequence"]
+                if control["normal_complete_count"] != completed or control["arm_count"] != completed + 1:
+                    raise RuntimeError("fixed storage failure completed or replaced its original guard")
+                if (directory / "fixed_storage_binding.json").exists():
+                    raise RuntimeError("failed storage issued a successful binding")
+                if fault.endswith("hang") and (result["worker_returncode"] != -9
+                        or (directory / "worker.json").exists() or (directory / "failure.json").exists()):
+                    raise RuntimeError("fixed storage hang lacks original-deadline kill with honest partial evidence")
+                if not fault.endswith("hang"):
+                    failure = json.loads((directory / "failure.json").read_bytes())
+                    events = worker["transition_trace"]
+                    failed = [row for row in events if row["operation"] == "guard_failed"]
+                    if (result["worker_returncode"] != 74
+                            or (failure["type"], failure["message"]) != (
+                                "RuntimeError", "fixed render storage failure: " + fault)
+                            or worker["summary"]["custody"] != "full_quarantine"
+                            or len(failed) != 1 or failed[0]["guard"] != expected_guard
+                            or any(row["operation"] == "low_level_leaf_entered"
+                                   for row in events[marker["lifecycle_event_count"]:])):
+                        raise RuntimeError("fixed storage failure lost custody or continued native work")
+            elif compile_fault:
                 if control["normal_complete_count"] != compile_guard or control["arm_count"] != compile_guard + 1:
                     raise RuntimeError("failed Warp segment completed or started another guard")
                 imports = json.loads((directory / "warp_import_armed.json").read_bytes())["imports"]
@@ -267,6 +344,8 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                         raise RuntimeError("healthy IDLE fault did not complete bounded terminal disposal")
                     if not idle_synced and summary["custody"] != "full_quarantine":
                         raise RuntimeError("unprovable IDLE custody did not retain the graph")
+        if storage_case:
+            _validate_fixed_storage(directory, lane, case, fault, successful=successful)
         raw_path = directory / "runtime_custody.json"
         if raw_path.exists():
             raw = raw_path.read_bytes()

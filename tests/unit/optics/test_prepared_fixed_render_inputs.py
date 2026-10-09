@@ -120,9 +120,8 @@ def test_fixed_views_reject_lost_identity_before_scene_construction(fixed_inputs
         p.build(prepared)
 
 
-@pytest.mark.parametrize('diagnostics', [False, True])
-@pytest.mark.parametrize('fail_at', [None, 2])
-def test_fixed_storage_connects_real_builders_under_existing_guard(fixed_inputs, monkeypatch, diagnostics, fail_at):
+@pytest.fixture
+def fixed_storage_session(fixed_inputs, monkeypatch, fail_at):
     from optical_worker.native_bootstrap import _SourceSession, _UPLOADED_INPUTS, SourceBootstrapError
     from optical_worker.guarded_lifecycle import NativeGuardedSetupLifecycle
     from optical_worker import warp_setup
@@ -132,7 +131,7 @@ def test_fixed_storage_connects_real_builders_under_existing_guard(fixed_inputs,
     p = fixed_inputs
     peer = Peer()
     controller = NativeGuardedSetupLifecycle(lane_id=p.lane, channel=peer.channel, configuration=peer.config)
-    stream = NS(device=p.device)
+    stream = NS(device=p.device, cuda_stream=123)
     state = NS(device=0, stream=None, arrays=[], calls=0)
     failure = RuntimeError('fixed output allocation failure')
 
@@ -209,38 +208,48 @@ def test_fixed_storage_connects_real_builders_under_existing_guard(fixed_inputs,
     for owner in (session, p.prepared, p.runtime, p.device, stream):
         controller.adopt_host_owner(owner, role='fixture', operation_id='fixture')
     try:
-        def build():
-            return session.prepare_fixed_render_storage(traversal_diagnostics=diagnostics)
-
-        if fail_at:
-            with pytest.raises(RuntimeError) as caught:
-                build()
-            assert caught.value is failure and state.calls == fail_at
-            assert controller.guardian.state == 'TRANSFERRED_TO_QUARANTINE'
-            summary = controller.termination_evidence.lifecycle.to_payload()['summary']
-            assert summary['normal_complete_count'] == summary['emergency_sync_attempt_count'] == 0
-        else:
-            result = build()
-            assert session.phase == 'fixed_render_storage_ready'
-            assert result is session.fixed_render_storage
-            assert len(result) == 4 and result[0].resources[0] is p.prepared
-            outputs = result[3]
-            assert outputs.origins.shape == (21, 3)
-            count = len(outputs.traversal_counters if p.lane == 'warp' else outputs.shadow_traversal_counters)
-            assert count == (9 if diagnostics else 0)
-            before = state.calls
-            with pytest.raises(SourceBootstrapError, match='once'):
-                build()
-            assert state.calls == before
-        assert state.device == 0 and state.stream is None
-        for array in state.arrays:
-            assert any(type(owner) is list and any(value is array for value in owner)
-                       for owner in controller.guardian._owners)
+        yield NS(p=p, session=session, controller=controller, stream=stream, state=state, failure=failure)
     finally:
         if controller.termination_evidence is None:
             controller.terminate(fault='setup_failure', detection_phase='fixture_exit',
                                  emergency_target_synchronize=lambda: None)
         peer.close()
+
+
+@pytest.mark.parametrize('diagnostics', [False, True])
+@pytest.mark.parametrize('fail_at', [None, 2])
+def test_fixed_storage_connects_real_builders_under_existing_guard(fixed_storage_session, diagnostics, fail_at):
+    from optical_worker.native_bootstrap import SourceBootstrapError
+
+    f = fixed_storage_session
+    p, session, controller, state, failure = f.p, f.session, f.controller, f.state, f.failure
+    def build():
+        return session.prepare_fixed_render_storage(traversal_diagnostics=diagnostics)
+
+    if fail_at:
+        with pytest.raises(RuntimeError) as caught:
+            build()
+        assert caught.value is failure and state.calls == fail_at
+        assert controller.guardian.state == 'TRANSFERRED_TO_QUARANTINE'
+        summary = controller.termination_evidence.lifecycle.to_payload()['summary']
+        assert summary['normal_complete_count'] == summary['emergency_sync_attempt_count'] == 0
+    else:
+        result = build()
+        assert session.phase == 'fixed_render_storage_ready'
+        assert result is session.fixed_render_storage
+        assert len(result) == 4 and result[0].resources[0] is p.prepared
+        outputs = result[3]
+        assert outputs.origins.shape == (21, 3)
+        count = len(outputs.traversal_counters if p.lane == 'warp' else outputs.shadow_traversal_counters)
+        assert count == (9 if diagnostics else 0)
+        before = state.calls
+        with pytest.raises(SourceBootstrapError, match='once'):
+            build()
+        assert state.calls == before
+    assert state.device == 0 and state.stream is None
+    for array in state.arrays:
+        assert any(type(owner) is list and any(value is array for value in owner)
+                   for owner in controller.guardian._owners)
 
 
 @pytest.mark.parametrize('lane', ['warp', 'cuda'])
@@ -255,3 +264,84 @@ def test_fixed_storage_source_closure_remains_lane_specific(lane, phase):
     assert ('optics.warp_native_render' in admitted) is (ready and lane == 'warp')
     assert ('optics.cuda_direct_light' in admitted) is (ready and lane == 'cuda')
     assert not any(name.startswith(('benchmarks', 'tests', 'tools')) for name in admitted)
+
+
+@pytest.mark.parametrize('fail_at', [None])
+@pytest.mark.parametrize('selector,diagnostic_failure', [
+    ('success', False), ('diagnostics', False), ('allocate_raise', False), ('adoption_raise', False),
+    ('allocate_raise', True), ('adoption_raise', True)])
+def test_fixed_storage_native_support_hits_production_boundary(
+        fixed_storage_session, selector, diagnostic_failure, tmp_path, monkeypatch):
+    import json
+    from tests.support.native_runtime_process import _prepare_observed_fixed_storage
+    from tests.support.cuda_artifact_runtime_acceptance import _validate_fixed_storage
+
+    f = fixed_storage_session
+    p, session, c, stream, state = f.p, f.session, f.controller, f.stream, f.state
+    fault = 'runtime_fixed_storage_' + selector
+    binding = NS(module=p.runtime, target=p.device, stream=stream)
+
+    def ticket():
+        c._guard_client.require_live_ticket(c._guard_ticket, role='setup')
+
+    def native_state(pristine):
+        ticket()
+        interior = state.device is p.device
+        result = {'primary_contexts': [{'ordinal': 0, 'active': False}, {'ordinal': 1, 'active': True}],
+                  'target_current_stream': stream.cuda_stream if state.stream is stream else 0,
+                  'held_stream': {'ordinal': 1, 'handle': stream.cuda_stream}}
+        if p.lane == 'cuda':
+            result.update(logical_device=int(interior), raw_device=1)
+        else:
+            result.update(default_device=int(interior), current_context=123 if interior else None,
+                          current_context_device=1 if interior else None)
+        return result
+
+    observer = NS(_ticket=ticket, _state=native_state)
+    for _ in range(11 if p.lane == 'warp' else 7):
+        with c.segment('setup'):
+            pass
+    original_empty, original_adopt = p.runtime.empty, c.adopt_returned_device_owner
+    if diagnostic_failure:
+        from tests.support import native_runtime_process as driver
+        original_write = driver._write
+
+        def write(directory, name, value):
+            if name == 'fixed_storage_failure.json':
+                raise OSError('fixed diagnostic write failure')
+            return original_write(directory, name, value)
+
+        monkeypatch.setattr(driver, '_write', write)
+    successful = selector in {'success', 'diagnostics'}
+    if successful:
+        _prepare_observed_fixed_storage(session, c, binding, observer, tmp_path, fault)
+    else:
+        with pytest.raises(RuntimeError, match='fixed render storage failure: ' + fault):
+            _prepare_observed_fixed_storage(session, c, binding, observer, tmp_path, fault)
+        assert state.calls == (2 if selector == 'adoption_raise' else 1)
+        assert c.guardian.state == 'TRANSFERRED_TO_QUARANTINE'
+    assert p.runtime.empty is original_empty
+    assert c.adopt_returned_device_owner.__func__ is original_adopt.__func__
+    assert c.adopt_returned_device_owner.__self__ is original_adopt.__self__
+    if diagnostic_failure:
+        assert any(type(owner) is OSError and str(owner) == 'fixed diagnostic write failure'
+                   for owner in session.runtime_owners)
+        assert not (tmp_path / 'fixed_storage_failure.json').exists()
+        return
+    _validate_fixed_storage(tmp_path, p.lane, 'asymmetric_synthetic_7x3_v1', fault, successful=successful)
+    path = tmp_path / ('fixed_storage_binding.json' if successful else 'fixed_storage_failure.json')
+    original = json.loads(path.read_bytes())
+    for attack in ('retention', 'stream', 'scope') + (('restoration',) if successful else ()):
+        data = json.loads(json.dumps(original))
+        if attack == 'retention':
+            data['retained_ids'].pop()
+        elif attack == 'stream':
+            data['calls'][0]['state']['target_current_stream'] += 1
+        elif attack == 'scope':
+            data['calls'][0]['state']['primary_contexts'][0]['active'] = True
+        else:
+            data['after']['target_current_stream'] += 1
+        path.write_text(json.dumps(data), encoding='utf-8')
+        with pytest.raises(RuntimeError):
+            _validate_fixed_storage(tmp_path, p.lane, 'asymmetric_synthetic_7x3_v1', fault,
+                                    successful=successful)
