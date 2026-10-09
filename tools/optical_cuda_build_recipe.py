@@ -7,6 +7,7 @@ This command is not a rendering-worker entrypoint or a standalone publisher.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -115,7 +116,7 @@ def _create_directory(path: Path) -> Path:
 
 
 def _observe_builder_driver_state(stage: str, torch=None) -> dict:
-    """Read this builder's OS facts without calling CUDA or NVML.
+    """Observe this builder without initializing CUDA or loading a driver.
 
 These checkpoints accompany the fixed installed-source/environment proof; they
 are not a syscall history or an assertion about another process's past activity.
@@ -131,10 +132,25 @@ are not a syscall history or an assertion about another process's past activity.
         if target.startswith(("/dev/nvidia", "/dev/dri/")):
             gpu_fds.append(target)
     initialized = None if torch is None else torch.cuda.is_initialized()
+    drivers = [path for path in mapped if "/libcuda.so" in path]
+    driver_status, current_context = None, None
+    if len(drivers) == 1:
+        # Torch may map libcuda without calling cuInit. RTLD_NOLOAD reuses that
+        # mapping; this getter returns CUDA_ERROR_NOT_INITIALIZED (3) before
+        # driver initialization. CUDA_SUCCESS with a null context is NOT enough.
+        library = ctypes.CDLL(drivers[0], mode=os.RTLD_NOLOAD | os.RTLD_LOCAL)
+        query = library.cuCtxGetCurrent
+        query.argtypes, query.restype = [ctypes.POINTER(ctypes.c_void_p)], ctypes.c_int
+        context = ctypes.c_void_p()
+        driver_status = query(ctypes.byref(context))
+        current_context = context.value
     record = {"stage": stage, "mapped_driver_libraries": mapped,
-              "gpu_device_fds": sorted(gpu_fds), "torch_initialized": initialized}
+              "gpu_device_fds": sorted(gpu_fds), "torch_initialized": initialized,
+              "driver_status": driver_status, "current_context": current_context}
     print(json.dumps({"builder_driver_observation": record}, sort_keys=True, separators=(",", ":")), flush=True)
-    if mapped or gpu_fds or initialized not in (None, False):
+    if (len(drivers) > 1 or any("/libnvidia-ml.so" in path for path in mapped)
+            or (drivers and (driver_status != 3 or current_context is not None))
+            or gpu_fds or initialized not in (None, False)):
         raise RuntimeError("fixed CPU builder acquired a driver/GPU runtime")
     return record
 

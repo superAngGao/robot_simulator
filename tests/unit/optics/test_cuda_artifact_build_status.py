@@ -41,29 +41,43 @@ def test_manager_fixture_keeps_production_service_boundary():
     assert str(repository / "tools/optical_cuda_build_recipe.py") not in argv
 
 
-@pytest.mark.parametrize("fault", (None, "driver", "nvml", "device_fd", "torch"))
-def test_builder_os_observation_rejects_driver_use_without_a_native_probe(monkeypatch, capsys, fault):
+@pytest.mark.parametrize("fault", (None, "mapped_only", "driver", "driver_error", "nvml", "device_fd", "torch"))
+def test_builder_observation_distinguishes_mapping_from_initialization(monkeypatch, capsys, fault):
     import json
     from types import SimpleNamespace
     from tools import optical_cuda_build_recipe as builder
 
     maps = "1000-2000 r-xp 0000 00:00 0 /usr/lib/libc.so.6\n"
-    if fault in {"driver", "nvml"}:
-        maps += "2000-3000 r-xp 0000 00:00 0 /usr/lib/" + ("libcuda.so.1" if fault == "driver" else "libnvidia-ml.so.1") + "\n"
+    driver_mapped = fault in {"mapped_only", "driver", "driver_error"}
+    if driver_mapped or fault == "nvml":
+        maps += "2000-3000 r-xp 0000 00:00 0 /usr/lib/" + ("libcuda.so.1" if driver_mapped else "libnvidia-ml.so.1") + "\n"
     files = {"/proc/self/maps": SimpleNamespace(read_text=lambda: maps),
              "/proc/self/fd": SimpleNamespace(iterdir=lambda: iter(("fd",)))}
     monkeypatch.setattr(builder, "Path", lambda path: files[path])
     monkeypatch.setattr(builder.os, "readlink", lambda path: "/dev/nvidiactl" if fault == "device_fd" else "/dev/null")
+    monkeypatch.setattr(builder.os, "RTLD_NOLOAD", 4, raising=False)
+    monkeypatch.setattr(builder.os, "RTLD_LOCAL", 0, raising=False)
+    queries = []
+    def query(context):
+        queries.append(context)
+        return 3 if fault == "mapped_only" else 0 if fault == "driver" else 999
+    def existing_library(path, mode):
+        assert path == "/usr/lib/libcuda.so.1" and mode == 4
+        return SimpleNamespace(cuCtxGetCurrent=query)
+    monkeypatch.setattr(builder.ctypes, "CDLL", existing_library)
     torch = SimpleNamespace(cuda=SimpleNamespace(is_initialized=lambda: fault == "torch"))
-    if fault:
+    if fault not in (None, "mapped_only"):
         with pytest.raises(RuntimeError, match="acquired a driver"):
             builder._observe_builder_driver_state("after_build", torch)
     else:
         builder._observe_builder_driver_state("after_build", torch)
     record = json.loads(capsys.readouterr().out)["builder_driver_observation"]
     assert record["stage"] == "after_build"
-    assert bool(record["mapped_driver_libraries"]) is (fault in {"driver", "nvml"})
+    assert bool(record["mapped_driver_libraries"]) is (driver_mapped or fault == "nvml")
     assert bool(record["gpu_device_fds"]) is (fault == "device_fd")
+    assert len(queries) == int(driver_mapped)
+    if fault == "mapped_only":
+        assert record["driver_status"] == 3 and record["current_context"] is None
 
 
 @pytest.mark.parametrize("signal", ["TERM", "HUP", "INT", "PIPE"])
