@@ -1,7 +1,7 @@
 """Fixed Go2 artifact acceptance through the existing captured worker supervisor.
 
-Requires exact whole-packet preflight. No compilation, timings, warmups, renderer
-launch, product activation or new process-management implementation lives here.
+Uses the existing supervised worker, including its fixed Warp compilation cases.
+No timings, warmups, renderer launch, product activation or new process manager.
 """
 
 from __future__ import annotations
@@ -152,8 +152,10 @@ def run_case(repository, revision, environment_path, environment, directory, lan
             if result["worker_returncode"] == 0 or not (directory / "fault_entered.json").is_file():
                 raise RuntimeError("fixed fault did not reach its intended real boundary")
             marker = json.loads((directory / "fault_entered.json").read_bytes())
-            unknown_entry = fault == "runtime_warp_modules_unknown_entry"
-            expected_guard = None if unknown_entry else {
+            from tests.support.native_runtime_process import RUNTIME_WARP_IDLE_FAULTS
+            idle_fault = fault in RUNTIME_WARP_IDLE_FAULTS
+            idle_synced = fault in {"runtime_warp_modules_entry_raise", "runtime_warp_modules_issuance_raise"}
+            expected_guard = None if idle_fault else {
                 "sequence": 10 if fault.startswith("runtime_warp_modules_") else (6 if "factory" in fault else 3),
                 "role": "setup"}
             if marker["fault"] != fault or marker["guard"] != expected_guard:
@@ -161,18 +163,38 @@ def run_case(repository, revision, environment_path, environment, directory, lan
             if fault.endswith("hang"):
                 if not control["deadline_expired"] or not control["kill_requested"]:
                     raise RuntimeError("factory hang was not terminated by the original guard deadline")
-            elif worker is None or worker["summary"]["emergency_sync_attempt_count"] != 0:
-                raise RuntimeError("failed armed setup attempted another synchronization")
+            elif worker is None or worker["summary"]["emergency_sync_attempt_count"] != int(idle_synced):
+                raise RuntimeError("fixed failure has an unexpected synchronization count")
             if fault.startswith("runtime_warp_modules_"):
                 failure = json.loads((directory / "failure.json").read_bytes())
-                if (result["worker_returncode"] != 74 or control["normal_complete_count"] != (6 if unknown_entry else 10)
-                        or control["arm_count"] != (6 if unknown_entry else 11)
-                        or failure["type"] != ("SourceBootstrapError" if unknown_entry else "ValueError")
-                        or failure["message"] != ("Warp module preparation requires healthy IDLE target scope"
-                                                  if unknown_entry else "Warp executable or kernel ABI changed")):
-                    raise RuntimeError("Warp ABI fault did not reject at the actual guarded validator")
-                if unknown_entry and any(event["operation"] == "guard_failed" for event in worker["transition_trace"]):
-                    raise RuntimeError("unknown IDLE scope fabricated a failed guard")
+                issuance = "issuance" in fault
+                completed = 10 if not idle_fault or issuance else 6
+                arms = completed + (int(idle_synced) if idle_fault else 1)
+                expected_error = ("ValueError", "Warp executable or kernel ABI changed")
+                if idle_fault:
+                    if "unknown" in fault:
+                        expected_error = (("ValueError", "Warp module issuance requires healthy IDLE target scope")
+                                          if issuance else ("SourceBootstrapError",
+                                          "Warp module preparation requires healthy IDLE target scope"))
+                    elif issuance:
+                        expected_error = ("RuntimeError", "fixed Warp CPU issuance failure")
+                    else:
+                        expected_error = ("SourceBootstrapError", "Warp modules require the original uploaded and validated input")
+                if (result["worker_returncode"] != 74 or control["normal_complete_count"] != completed
+                        or control["arm_count"] != arms
+                        or (failure["type"], failure["message"]) != expected_error):
+                    raise RuntimeError("Warp fault did not reject at the intended production boundary")
+                if idle_fault:
+                    if any(event["operation"] == "guard_failed" for event in worker["transition_trace"]):
+                        raise RuntimeError("IDLE fault fabricated a failed guard")
+                    if marker["held_compilation_records"] != (3 if issuance else 0):
+                        raise RuntimeError("IDLE fault lost its previously compiled records")
+                    summary = worker["summary"]
+                    if (idle_synced and (summary["disposition"] != "aborted_synced_exit"
+                                         or summary["release_status"] != "completed")):
+                        raise RuntimeError("healthy IDLE fault did not complete bounded terminal disposal")
+                    if not idle_synced and summary["custody"] != "full_quarantine":
+                        raise RuntimeError("unprovable IDLE custody did not retain the graph")
         raw_path = directory / "runtime_custody.json"
         if raw_path.exists():
             raw = raw_path.read_bytes()

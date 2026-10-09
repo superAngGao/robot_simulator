@@ -192,6 +192,36 @@ def test_idle_failure_with_unprovable_custody_quarantines_without_sync(prepared_
     assert summary["normal_complete_count"] == 1 and not p.records
 
 
+@pytest.mark.parametrize("compromised", ["unknown", "missing_owner"])
+def test_actual_idle_issuer_preserves_completed_guards_on_scope_failure(prepared_session, monkeypatch, compromised):
+    p = prepared_session
+    original = warp_setup.issue_module_set
+
+    def issue(session, binding, records):
+        assert p.controller._guard_client.state == "IDLE" and p.controller._guard_reference is None
+        if compromised == "unknown":
+            p.controller.mark_unknown_device_scope(source="unit_issuance_fault", reason="unknown_device_scope")
+        else:
+            # Keep all actual roots held, but invalidate required guardian coverage.
+            owners = p.controller.guardian._owners
+            index = next(i for i, value in enumerate(owners) if value is p.binding.stream)
+            owners[index] = object()
+            raise RuntimeError("CPU issuance failed with incomplete custody")
+        return original(session, binding, records)
+
+    monkeypatch.setattr(warp_setup, "issue_module_set", issue)
+    with pytest.raises((ValueError, RuntimeError)):
+        p.session.prepare_warp_modules()
+    assert len(p.records) == 3 and not p.syncs and not p.checkpoints
+    assert p.session not in warp_setup._MODULE_SETS
+    assert all(any(owner is record for owner in p.session.runtime_owners) for record in p.records)
+    assert not any(e["operation"] == "guard_failed" for e in p.controller._guard_events)
+    summary = p.controller.termination_evidence.lifecycle.to_payload()["summary"]
+    assert summary["normal_complete_count"] == 5 and summary["guard_state"] == "IDLE"
+    assert summary["emergency_sync_attempt_count"] == 0
+    assert p.controller.guardian.state == "TRANSFERRED_TO_QUARANTINE"
+
+
 @pytest.mark.parametrize("stage", ["import", "first_compile", "last_compile"])
 def test_guarded_failure_preserves_original_error_and_partial_roots(prepared_session, monkeypatch, stage):
     p = prepared_session

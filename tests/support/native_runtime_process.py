@@ -47,9 +47,12 @@ RUNTIME_OBSERVATION_FAULTS = ("runtime_scope_success", "runtime_scope_getter_err
 RUNTIME_ARTIFACT_FAULTS = ("runtime_artifacts_success", "runtime_artifacts_create_after_raise",
                          "runtime_artifacts_exec_after_raise", "runtime_artifacts_entry_adoption_raise",
                          "runtime_artifacts_factory_after_raise", "runtime_artifacts_factory_hang")
+RUNTIME_WARP_IDLE_FAULTS = tuple("runtime_warp_modules_" + name for name in (
+    "unknown_entry", "unknown_issuance", "entry_raise", "issuance_raise",
+    "incomplete_entry", "incomplete_issuance"))
 RUNTIME_WARP_MODULE_FAULTS = ("runtime_warp_modules_success", "runtime_warp_modules_abi_dtype",
                              "runtime_warp_modules_abi_ndim", "runtime_warp_modules_entry_hash",
-                             "runtime_warp_modules_unknown_entry")
+                             *RUNTIME_WARP_IDLE_FAULTS)
 RUNTIME_FAULTS = (RUNTIME_NATIVE_FAULTS + RUNTIME_ACK_FAULTS + RUNTIME_PARENT_FAULTS
                   + RUNTIME_SCOPE_FAULTS + RUNTIME_GLOBAL_FAULTS + RUNTIME_CUDA_ONLY_FAULTS
                   + RUNTIME_OBSERVATION_FAULTS + RUNTIME_ARTIFACT_FAULTS + RUNTIME_WARP_MODULE_FAULTS)
@@ -1026,14 +1029,46 @@ def child(fault, fd, directory):
 
             binding.module.load_module = observed_load
             warp_setup.compile_module = observed_compile
-            if fault == "runtime_warp_modules_unknown_entry":
+
+            def idle_fault(records=()):
                 assert controller._guard_client.state == "IDLE" and controller._guard_reference is None
+                assert not controller._context_active and not controller._replay.failed
                 assert session.validation_report is not None
+                assert all(any(value is record for value in session.runtime_owners) for record in records)
+                expected_records = 3 if fault.endswith("issuance") or fault.endswith("issuance_raise") else 0
+                assert len(records) == expected_records
                 _write(directory, "fault_entered.json", {
-                    "fault": fault, "boundary": "validated_input_idle_entry", "guard": None,
-                    "client_state": controller._guard_client.state, "valid_input_report": True})
-                controller.mark_unknown_device_scope(source="fixed_warp_entry_fault", reason="unknown_device_scope")
+                    "fault": fault, "boundary": "post_disarmed_issuance" if records else "validated_input_idle_entry",
+                    "guard": None, "client_state": controller._guard_client.state,
+                    "valid_input_report": True, "held_compilation_records": len(records)})
+                if "unknown" in fault:
+                    controller.mark_unknown_device_scope(source="fixed_warp_idle_fault", reason="unknown_device_scope")
+                elif "incomplete" in fault:
+                    # Deliberately invalidate admission while retaining the actual
+                    # stream through the source-session graph. No native unload.
+                    held = controller.guardian._owners
+                    index = next(i for i, value in enumerate(held) if value is binding.stream)
+                    held[index] = object()
+                if records:
+                    if "unknown" not in fault:
+                        raise RuntimeError("fixed Warp CPU issuance failure")
+                elif "unknown" not in fault:
+                    session.validation_report = None
+
+            if fault in RUNTIME_WARP_IDLE_FAULTS:
+                if "issuance" in fault:
+                    original_issue = warp_setup.issue_module_set
+                    session.runtime_owners.append(original_issue)
+                    def observed_issue(actual_session, actual_binding, records):
+                        assert actual_session is session and actual_binding is binding
+                        idle_fault(records)
+                        return original_issue(actual_session, actual_binding, records)
+                    warp_setup.issue_module_set = observed_issue
+                else:
+                    idle_fault()
             owners = session.prepare_warp_modules()
+            if fault in RUNTIME_WARP_IDLE_FAULTS:
+                raise AssertionError("fixed Warp IDLE fault was admitted")
 
             with controller.segment("setup"):
                 session._validate_runtime_binding_record(binding, entry._UPLOADED_INPUTS[session][0])

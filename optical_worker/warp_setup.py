@@ -312,8 +312,10 @@ def compile_module(session, binding, index):
 
 def issue_module_set(session, binding, records):
     controller = session.bound_controller()
-    _require(controller._guard_client.state == "IDLE" and not controller._replay.failed,
-             "Warp compilation has no successful DISARMED boundary")
+    _require(controller._guard_client.state == "IDLE" and not controller._replay.failed
+             and not controller._context_active and controller._guard_reference is None
+             and not controller._replay.compromised,
+             "Warp module issuance requires healthy IDLE target scope")
     _require(len(records) == 3 and _MODULE_SETS.get(session) is None, "Warp module set is incomplete or repeated")
     cache = validate_warp_cache(session, binding.module)
     _require(type(records) is tuple and len(cache.records) == 3
