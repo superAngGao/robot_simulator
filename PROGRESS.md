@@ -1686,6 +1686,15 @@ Next milestone:
       code-reviewv4/test-evidencev3. This closes bounded code review only; finish
       native failure acceptance, then the approved graph/render integration and
       whole-C4 systematic refactor/review. No product or performance gate opened.
+      The remaining reviewed beedab6 IDLE batch now completes all six selectors
+      and fresh Go2 positives at1920x1080/960x640. All13 owned batch PIDs are
+      absent; both distinct caches'18 files are verified/archived (test-evidencev4).
+      The next five fixed import/load/publication/adoption/hang selectors reuse
+      the existing driver. Independent support reviewv1 found diagnostic-error
+      masking; the nested catch and three exact-block regressions repair it.
+      Fresh support reviewv2 approves552d1b7 (60 tests passed), full report
+      archived unchanged. Their native execution is now underway; code approval
+      does not establish native failure restoration, timeout cleanup or whole C4.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
