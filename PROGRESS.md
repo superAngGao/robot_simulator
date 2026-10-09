@@ -1421,6 +1421,25 @@ Next milestone:
       gone. Failed runs and raw Windows diagnostic bytes remain retained. No
       production change fromf1ca45a. Fresh whole independent re-review and the
       running85/subsequent12 runtime evidence still precede C2d3 acceptance.
+      **Latest closure (2026-10-09): whole C2d3 is now independently accepted.**
+      Fresh reviewer /root/c2d3_whole_review_v4 issued Approve for code/test
+      4da1fa75634d716d4018d616327c84096e047432 (production f1ca45a), inspected
+      at clean evidence HEAD e5299e3. Complete repaired fc86182 native matrices
+      passed16/85/12, including real Go2 and both-lane target1/ambient0 coverage,
+      setup failures, normal terminal disposal, sync failures and actual hangs.
+      The final85/12 runs passed4495.91s/950.95s, with all172/26 owned PID
+      references absent afterward. Current4da parser replays both complete
+      archives unchanged; original fc native provenance and earlier valid cuts
+      remain explicit. Fresh committed-source, original-counterexample and
+      complete affected CPU checks close the changed source/parser/fixture
+      properties. Full review v4 is archived unchanged; exact hashes, commands,
+      failed attempts and transport/process limits are in whole-review-repairs
+      test-evidence v2 and the referenced earlier records. This accepts only
+      captured runtime/input upload-validation/custody/terminal C2d3, not full
+      parent C2d or C4. Next: resolve the existing bounded compilation-admission
+      and compiler-descendant gap by design and independent review, then continue
+      the parent setup/graph/warmup stages. No compilation or later activation
+      follows from this evidence-only archive; C4 remains the active objective.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
