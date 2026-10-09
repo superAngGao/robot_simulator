@@ -1357,6 +1357,9 @@ if _HAS_WARP:
                     for offset in range(leaf_count):
                         tri_idx = bvh_prim_ids[leaf_start + offset]
                         if (triangle_role_masks[tri_idx] & sensor_role_mask) != wp.int64(0):
+                            # The precise physical cutoff differs from the rounded
+                            # best-hit search bound. Let the float32 comparator
+                            # decide ties after the helper validates physical range.
                             tri_hit, t, fnx, fny, fnz = _intersect_device_triangle_for_ray(
                                 ox,
                                 oy,
@@ -1369,7 +1372,7 @@ if _HAS_WARP:
                                 triangle_e1,
                                 triangle_e2,
                                 triangle_normal,
-                                wp.min(max_distance, best_t + _T_EPS),
+                                max_distance,
                             )
                             if tri_hit:
                                 key = triangle_source_keys[tri_idx]

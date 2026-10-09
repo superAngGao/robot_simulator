@@ -540,6 +540,8 @@ __global__ void first_hit_rays_kernel(
         float nx = 0.0f;
         float ny = 0.0f;
         float nz = 0.0f;
+        // Keep the precise physical cutoff separate from rounded tie pruning.
+        // The returned float distance is then tested by the existing comparator.
         if (!intersect_triangle(
                 ox,
                 oy,
@@ -552,7 +554,7 @@ __global__ void first_hit_rays_kernel(
                 triangle_e1,
                 triangle_e2,
                 triangle_normal,
-                fminf(max_distance, best_t + kTEps),
+                max_distance,
                 &t,
                 &nx,
                 &ny,

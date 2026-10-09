@@ -8,6 +8,7 @@ import ast
 import ctypes
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 from types import SimpleNamespace
@@ -42,8 +43,14 @@ def _warp_bodies():
                          tid=lambda: 0, zeros=lambda shape, dtype: np.zeros(shape, dtype=dtype),
                          atomic_add=lambda a, i, v: a.__setitem__(i, a[i] + v),
                          atomic_max=lambda a, i, v: a.__setitem__(i, max(a[i], v)))
-    namespace = {"wp": wp, "_BUILD_EPS": 1e-8, "_DIR_EPS": 1e-8,
-                 "_T_EPS": 1e-5, "_MAX_BVH_STACK": 64}
+    constants = {"_BUILD_EPS", "_DIR_EPS", "_T_EPS", "_MAX_BVH_STACK"}
+    namespace = {"wp": wp}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+            if name in constants:
+                namespace[name] = ast.literal_eval(node.value)
+    assert constants <= namespace.keys()
     exec(compile(ast.Module(body=functions, type_ignores=[]), "actual_warp_bodies", "exec"), namespace)
     return namespace
 
@@ -73,13 +80,12 @@ def cuda_host(tmp_path_factory):
     cpp.write_text('''#include <cmath>
 #include <cstdint>
 #include <limits>
-constexpr float kBuildEps=1e-8f, kDirEps=1e-8f, kTEps=1e-5f;
-constexpr int kMaxBvhStack=64;
 struct Index { int x; };
 constexpr Index blockIdx{0}, blockDim{1}, threadIdx{0};
 void atomicAdd(int32_t* p, int v) { *p += v; }
 void atomicMax(int32_t* p, int v) { if (v > *p) *p = v; }
-''' + body + '''
+''' + "\n".join(re.findall(r"^constexpr (?:float|int) (?:kBuildEps|kDirEps|kTEps|kMaxBvhStack) = .*;$",
+                           source, re.MULTILINE)) + "\n" + body + '''
 extern "C" int evaluate(const float* o, const float* d, const float* b,
     const float* e1, const float* e2, float limit, float* t) {
   const float n[3]={0,0,0}; float nx,ny,nz;
@@ -142,12 +148,20 @@ def test_captured_edges_match_original_cpu_oracle(request, backend, case):
 @pytest.mark.parametrize("separate_leaves", [False, True])
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize("backend", ["warp", "cuda"])
-def test_primary_traversal_keeps_candidates_within_existing_tie_window(request, backend, separate_leaves, reverse):
+@pytest.mark.parametrize("boundary", ["interior", "rounded_tie", "outside_tie", "physical_limit"])
+def test_primary_traversal_keeps_candidates_within_existing_tie_window(request, backend, separate_leaves, reverse, boundary):
     body = (_warp_bodies()["_device_scene_bvh_first_hit_kernel"] if backend == "warp"
             else request.getfixturevalue("cuda_host").first_hit)
     # The slightly farther face wins by the existing source-key rule. It must
     # survive both leaf intersection clipping and node/child AABB pruning.
-    v0 = np.array([[1, -1, -1], [1.000005, -1, -1]], np.float32)
+    near = np.float32(1 if boundary == "interior" else .1)
+    far = np.float32(1.000005) if boundary == "interior" else np.float32(near + np.float32(1e-5))
+    if boundary == "outside_tie":
+        far = np.nextafter(far, np.float32(np.inf))
+    origin = np.array([[0 if boundary == "interior" else -1e-9, 0, 0]], np.float32)
+    max_distance = far if boundary == "physical_limit" else np.float32(10)
+    expected_id = 20 if boundary in {"outside_tie", "physical_limit"} else 10
+    v0 = np.array([[near, -1, -1], [far, -1, -1]], np.float32)
     e1 = np.array([[0, 2, 0]] * 2, np.float32)
     e2 = np.array([[0, 0, 2]] * 2, np.float32)
     lo, hi = v0.copy(), v0 + e1 + e2
@@ -166,7 +180,7 @@ def test_primary_traversal_keeps_candidates_within_existing_tie_window(request, 
     zero_i = np.empty(0, np.int32)
     zero_key = np.empty(0, np.int64)
     zero_vec = np.empty((0, 3), np.float32)
-    body(np.zeros((1, 3), np.float32), np.array([[1, 0, 0]], np.float32), np.float32(10),
+    body(origin, np.array([[1, 0, 0]], np.float32), max_distance,
          zero_vec, zero_vec, zero_i, zero_key, zero_key, zero_i, 0,
          v0, e1, e2, np.array([[-1, 0, 0]] * 2, np.float32),
          np.array([20, 10], np.int32), np.array([20, 10], np.int64), np.ones(2, np.int64),
@@ -174,5 +188,24 @@ def test_primary_traversal_keeps_candidates_within_existing_tie_window(request, 
          *(np.array(v, np.int32) for v in (left, right, start, count)), ids, len(count), np.int64(1),
          hit, distance, np.zeros((1, 3), np.float32), np.zeros((1, 3), np.float32), instance, material,
          np.zeros(1, np.int32), np.zeros(1, np.int32))
-    assert hit[0] == 1 and instance[0] == 10 and material[0] == 1
-    assert distance[0] == v0[1, 0]
+    assert hit[0] == 1 and instance[0] == expected_id
+    assert material[0] == (1 if expected_id == 10 else 2)
+    assert distance[0] == (far if expected_id == 10 else near)
+
+
+@pytest.mark.parametrize("backend", ["warp_predicate", "cuda_predicate"])
+@pytest.mark.parametrize("offset", [np.float32(-1e-9), np.float32(0), np.float32(1e-9)])
+def test_physical_and_shadow_cutoff_stays_strict_before_distance_rounding(request, backend, offset):
+    # The shared helper is used by primary and shadow rays. All three distances
+    # round to the same ABI float, but the just-outside distance must reject.
+    evaluate = request.getfixturevalue(backend)
+    limit = np.float32(.1)
+    origin = np.array([offset, 0, 0], np.float32)
+    d = np.array([1, 0, 0], np.float32)
+    b = np.array([limit, -1, -1], np.float32)
+    e1, e2 = np.array([0, 2, 0], np.float32), np.array([0, 0, 2], np.float32)
+    assert bool(evaluate(origin, d, b, e1, e2, limit)[0]) == (offset >= 0)
+    # A genuine negative geometric distance stays a miss, even very near zero.
+    b[0] = 0
+    origin[0] = np.nextafter(np.float32(0), np.float32(1))
+    assert not evaluate(origin, d, b, e1, e2, limit)[0]
