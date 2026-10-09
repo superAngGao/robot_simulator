@@ -888,34 +888,38 @@ if _HAS_WARP:
         out_ny = wp.float32(0.0)
         out_nz = wp.float32(0.0)
 
-        v0x = triangle_v0[triangle_index, 0]
-        v0y = triangle_v0[triangle_index, 1]
-        v0z = triangle_v0[triangle_index, 2]
-        e1x = triangle_e1[triangle_index, 0]
-        e1y = triangle_e1[triangle_index, 1]
-        e1z = triangle_e1[triangle_index, 2]
-        e2x = triangle_e2[triangle_index, 0]
-        e2y = triangle_e2[triangle_index, 1]
-        e2z = triangle_e2[triangle_index, 2]
-        pvec_x = dy * e2z - dz * e2y
-        pvec_y = dz * e2x - dx * e2z
-        pvec_z = dx * e2y - dy * e2x
+        # Keep the native float32 ABI; avoid cancellation in edge predicates.
+        rdx = wp.float64(dx)
+        rdy = wp.float64(dy)
+        rdz = wp.float64(dz)
+        v0x = wp.float64(triangle_v0[triangle_index, 0])
+        v0y = wp.float64(triangle_v0[triangle_index, 1])
+        v0z = wp.float64(triangle_v0[triangle_index, 2])
+        e1x = wp.float64(triangle_e1[triangle_index, 0])
+        e1y = wp.float64(triangle_e1[triangle_index, 1])
+        e1z = wp.float64(triangle_e1[triangle_index, 2])
+        e2x = wp.float64(triangle_e2[triangle_index, 0])
+        e2y = wp.float64(triangle_e2[triangle_index, 1])
+        e2z = wp.float64(triangle_e2[triangle_index, 2])
+        pvec_x = rdy * e2z - rdz * e2y
+        pvec_y = rdz * e2x - rdx * e2z
+        pvec_z = rdx * e2y - rdy * e2x
         det = pvec_x * e1x + pvec_y * e1y + pvec_z * e1z
-        if wp.abs(det) > _BUILD_EPS:
-            inv_det = 1.0 / det
-            tvec_x = ox - v0x
-            tvec_y = oy - v0y
-            tvec_z = oz - v0z
+        if wp.abs(det) > wp.float64(wp.float32(_BUILD_EPS)):
+            inv_det = wp.float64(1.0) / det
+            tvec_x = wp.float64(ox) - v0x
+            tvec_y = wp.float64(oy) - v0y
+            tvec_z = wp.float64(oz) - v0z
             u = (pvec_x * tvec_x + pvec_y * tvec_y + pvec_z * tvec_z) * inv_det
-            if u >= 0.0:
+            if u >= wp.float64(0.0):
                 qvec_x = tvec_y * e1z - tvec_z * e1y
                 qvec_y = tvec_z * e1x - tvec_x * e1z
                 qvec_z = tvec_x * e1y - tvec_y * e1x
-                v = (qvec_x * dx + qvec_y * dy + qvec_z * dz) * inv_det
-                if v >= 0.0 and u + v <= 1.0:
+                v = (qvec_x * rdx + qvec_y * rdy + qvec_z * rdz) * inv_det
+                if v >= wp.float64(0.0) and u + v <= wp.float64(1.0):
                     t = (qvec_x * e2x + qvec_y * e2y + qvec_z * e2z) * inv_det
-                    if t >= 0.0 and t <= max_t:
-                        out_t = t
+                    if t >= wp.float64(0.0) and t <= wp.float64(max_t):
+                        out_t = wp.float32(t)
                         out_nx = triangle_normal[triangle_index, 0]
                         out_ny = triangle_normal[triangle_index, 1]
                         out_nz = triangle_normal[triangle_index, 2]
@@ -1315,6 +1319,7 @@ if _HAS_WARP:
                             best_material_index = plane_material_indices[plane_idx]
                             found = wp.int32(1)
 
+        # Pruning must preserve every candidate admitted by _is_better_hit.
         stack = wp.zeros(shape=_MAX_BVH_STACK, dtype=wp.int32)
         stack_t = wp.zeros(shape=_MAX_BVH_STACK, dtype=wp.float32)
         stack_size = wp.int32(0)
@@ -1333,7 +1338,7 @@ if _HAS_WARP:
                 bvh_bounds_max[0, 0],
                 bvh_bounds_max[0, 1],
                 bvh_bounds_max[0, 2],
-                best_t,
+                wp.min(max_distance, best_t + _T_EPS),
             )
             if root_hit:
                 stack[0] = wp.int32(0)
@@ -1345,7 +1350,7 @@ if _HAS_WARP:
             stack_size = stack_size - wp.int32(1)
             node_index = stack[stack_size]
             node_t = stack_t[stack_size]
-            if node_t <= best_t:
+            if node_t <= wp.min(max_distance, best_t + _T_EPS):
                 leaf_count = bvh_count[node_index]
                 if leaf_count > 0:
                     leaf_start = bvh_start[node_index]
@@ -1364,7 +1369,7 @@ if _HAS_WARP:
                                 triangle_e1,
                                 triangle_e2,
                                 triangle_normal,
-                                best_t,
+                                wp.min(max_distance, best_t + _T_EPS),
                             )
                             if tri_hit:
                                 key = triangle_source_keys[tri_idx]
@@ -1403,7 +1408,7 @@ if _HAS_WARP:
                             bvh_bounds_max[left, 0],
                             bvh_bounds_max[left, 1],
                             bvh_bounds_max[left, 2],
-                            best_t,
+                            wp.min(max_distance, best_t + _T_EPS),
                         )
                     if right >= 0:
                         right_hit, right_t, _right_exit_t = _intersect_aabb_for_ray_with_interval(
@@ -1419,7 +1424,7 @@ if _HAS_WARP:
                             bvh_bounds_max[right, 0],
                             bvh_bounds_max[right, 1],
                             bvh_bounds_max[right, 2],
-                            best_t,
+                            wp.min(max_distance, best_t + _T_EPS),
                         )
 
                     first = left
