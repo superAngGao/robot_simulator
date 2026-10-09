@@ -1796,8 +1796,19 @@ Next milestone:
       independent release-reviewv4 approval (232 passed, four declared skips),
       both Linux cold preflights pass, and unchanged CUDA source bytes verify
       against the original build. Full report is archived verbatim. The existing
-      four-case Go2 runner is now executing at frozen812ca29 in new outputs;
-      failed first-launch evidence and original build provenance are preserved.
+      four-case Go2 runner completed at frozen812ca29: both lanes/resolutions
+      exit normally and agree on every hit/instance/material. At1920 one pixel
+      still differs in normal/RGB; fresh CPU spot checks also expose upstream
+      normal precision loss. Full arrays and raw native/cache evidence are
+      archived (02ed978f890352fc5a52c88f3915db6605295ffc12b6c347de40045ccf987698).
+      Failed first-launch evidence and original build provenance are preserved.
+      The input-precision diagnosis v1 checks all376139 source triangle normals
+      and replays the authoritative binary64 camera. It establishes both
+      avoidable loss from vertex rounding before normal calculation and a
+      face-selection change from rounding camera rays to float32. A coherent
+      representation amendment is required; no tolerance/oracle changes or
+      new native representation have been admitted. Independent native/gap
+      review is in progress. Full CPU acceptance, speed and whole C4 remain open.
       Fixed R0 storage native-reviewv1 approves the14-case campaign at3d6692b:
       eight positives, four guarded raises and two deadline kills independently
       replayed; all29 author PIDs absent. Raw archive SHA256 is
