@@ -1610,6 +1610,15 @@ Next milestone:
       v1, SHA256 f88e3b161d9a39cec55136165273745b6a7ed3b471546aad2ebf4d434571f3b4.
       Execute manager acceptance, three builds, cold composition and fixed Go2
       matrix sequentially; real acceptance and all later gates remain unproved.
+      Actual a43f0c1 execution: six manager cases pass, all16 recorded fixture
+      PIDs are absent. First build stops before compilation: Torch maps libcuda,
+      while GPU-FD list is empty and Torch initialized=false; the mapping-only
+      rejection cannot establish driver initialization. Failed unit/builder are
+      terminal and no artifact was published. Repair66240e4 uses the existing
+      no-load driver getter pattern to require uninitialized status3, retaining
+      all other checks and their historical-observation limits. CPU checks pass62.
+      See code-preflight-request v2 for raw evidence, exact repair and fresh-output
+      continuation commands; no new native getter/build run before fresh review.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
