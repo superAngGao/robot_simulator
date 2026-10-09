@@ -18,6 +18,7 @@ from optical_worker.native_contract import (
     PreparedNativeInput,
     WarpPreparedNativeInput,
     assert_cuda_prepared_authority,
+    assert_prepared_storage_registered,
     register_native_readiness,
     register_prepared_native_input,
     warp_dtype_from_host_dtype,
@@ -29,7 +30,7 @@ from optical_worker.native_manifest import (
     _canonical_json_bytes,
     _sha256_payload,
 )
-from optics.host_bvh import build_host_median_bvh
+from optics.host_bvh import DeviceBvhBuildStats, build_host_median_bvh
 from optics.scene_contract import SCENE_CONTRACT_SCHEMA_VERSION, PackedOpticalSceneHost
 
 from .cases import get_case
@@ -175,6 +176,7 @@ class CanonicalFixedRenderFixtureHost:
     topology_sha256: str
     schema_version: str
     fixed_render_fixture_sha256: str
+    bvh_stats: DeviceBvhBuildStats
 
     @classmethod
     def from_scene_contract(
@@ -202,7 +204,7 @@ class CanonicalFixedRenderFixtureHost:
         if packed_scene.max_body_index >= rotation.shape[0]:
             raise ValueError("fixed transforms do not cover the packed scene body indices")
 
-        derived = _derive_fixed_fixture_arrays(packed_scene, rotation, translation)
+        derived, bvh_stats = _derive_fixed_fixture(packed_scene, rotation, translation)
         frozen = _freeze_array_mapping(derived)
         topology_payload = [
             _array_manifest(frozen[name], name=name, semantic=_FIXED_FIXTURE_SEMANTICS[name])
@@ -240,6 +242,7 @@ class CanonicalFixedRenderFixtureHost:
             "topology_sha256": topology_sha256,
             "schema_version": FIXED_RENDER_FIXTURE_SCHEMA_VERSION,
             "fixed_render_fixture_sha256": _sha256_payload(fixture_payload),
+            "bvh_stats": bvh_stats,
         }.items():
             object.__setattr__(instance, name, value)
         return instance
@@ -637,6 +640,72 @@ def build_prepared_warp_local_scene(prepared: WarpPreparedNativeInput):
         device=f"cuda:{prepared.device_ordinal}",
         resources=(prepared,),
     )
+
+
+def _prepared_fixed_fixture(prepared, backend):
+    assert_outside_timed_boundary("prepared fixed render construction")
+    expected = WarpPreparedNativeInput if backend == "warp" else CudaPreparedNativeInput
+    if type(prepared) is not expected:
+        raise TypeError("fixed render inputs require the exact prepared backend type")
+    assert_prepared_storage_registered(prepared)
+    selected = wrap_prepared_fixed_render_inputs(prepared)
+    fixture = prepared.source.fixed_fixture_owner
+    if (type(fixture) is not CanonicalFixedRenderFixtureHost
+            or fixture.packed_scene_owner is not prepared.source.packed_scene_owner
+            or fixture.fixed_render_fixture_sha256 != selected.fixed_render_fixture_sha256):
+        raise ValueError("fixed render inputs lost their canonical fixture owner")
+    return selected, fixture
+
+
+def build_prepared_warp_fixed_render_inputs(prepared: WarpPreparedNativeInput):
+    """Wrap the original R0 world/BVH allocations; no upload or native allocation.
+
+    The caller must provide its guarded runtime scope for native metadata access.
+    These input views carry neither execution readiness nor sample authority.
+    """
+    selected, fixture = _prepared_fixed_fixture(prepared, "warp")
+    from optics.device_scene import WarpWorldSceneBuffers
+    from optics.device_bvh import DeviceOpticalBvh
+
+    scene = build_prepared_warp_local_scene(prepared)
+    derived = selected.derived_fixture_arrays
+    world = WarpWorldSceneBuffers(
+        device=scene.device,
+        **{name: value for name, value in derived.items() if not name.startswith("bvh_")},
+        resources=(prepared,),
+    )
+    bvh = DeviceOpticalBvh(
+        device=scene.device, frame_id=0, env_idx=0,
+        **{name[4:]: value for name, value in derived.items() if name.startswith("bvh_")},
+        primitive_global_id=scene.triangle_primitive_global_id,
+        primitive_instance_index=scene.triangle_instance_index,
+        primitive_index_within_instance=scene.triangle_primitive_index_within_instance,
+        primitive_geometry_index=scene.triangle_geometry_index,
+        primitive_geometry_primitive_index=scene.triangle_geometry_primitive_index,
+        primitive_source_order_key=scene.triangle_source_order_key,
+        stats=fixture.bvh_stats,
+        scene_contract_sha256=scene.scene_contract_sha256,
+        ready_event=prepared.ready_event,
+        resources=(prepared, fixture),
+    )
+    return scene, world, bvh
+
+
+def build_prepared_cuda_fixed_render_inputs(
+    prepared: CudaPreparedNativeInput, *, sensor_role_mask: int, max_distance: float,
+):
+    """Wrap exact R0 inputs for the existing CUDA renderer, without copying."""
+    selected, _fixture = _prepared_fixed_fixture(prepared, "cuda")
+    from optics.cuda_direct_light import CudaFirstHitInputs, CudaShadeInputs
+
+    scene = build_prepared_cuda_local_scene(prepared)
+    arrays = dict(selected.scene_arrays)
+    arrays.update(selected.derived_fixture_arrays)
+    first_hit = CudaFirstHitInputs.from_fixed_arrays(
+        arrays, sensor_role_mask=sensor_role_mask, max_distance=max_distance,
+    )
+    shade = CudaShadeInputs.from_arrays(selected.scene_arrays)
+    return scene, first_hit, shade
 
 
 def build_prepared_warp_transform_inputs(
@@ -1138,6 +1207,14 @@ def _derive_fixed_fixture_arrays(
     x_world_R: np.ndarray,
     x_world_r: np.ndarray,
 ) -> dict[str, np.ndarray]:
+    return _derive_fixed_fixture(packed_scene, x_world_R, x_world_r)[0]
+
+
+def _derive_fixed_fixture(
+    packed_scene: PackedOpticalSceneHost,
+    x_world_R: np.ndarray,
+    x_world_r: np.ndarray,
+) -> tuple[dict[str, np.ndarray], DeviceBvhBuildStats]:
     packed = packed_scene.arrays
     triangle_vertices = np.asarray(packed["triangle_vertices_local"], dtype=np.float32).reshape(-1, 3, 3)
     triangle_instance = packed["triangle_instance_index"]
@@ -1210,7 +1287,7 @@ def _derive_fixed_fixture_arrays(
         "bvh_node_depth": host_bvh["node_depth"],
         "bvh_level_ranges": host_bvh["level_ranges"],
         "bvh_prim_ids": host_bvh["prim_ids"],
-    }
+    }, host_bvh["stats"]
 
 
 def _fixed_instance_transform(

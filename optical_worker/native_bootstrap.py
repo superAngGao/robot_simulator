@@ -122,6 +122,8 @@ _RUNTIME_PHASES = frozenset(
         "cuda_factories_ready",
         "preparing_warp_modules",
         "warp_modules_ready",
+        "preparing_fixed_render_storage",
+        "fixed_render_storage_ready",
     }
 )
 _VALIDATION_SOURCES = MappingProxyType(
@@ -2369,15 +2371,18 @@ class _SourceSession:
                 | _MATERIALIZATION_SOURCES
             )
             if self.phase in {"validating_input", "input_validated", "preparing_cuda_factories", "cuda_factories_ready",
-                              "preparing_warp_modules", "warp_modules_ready"}:
+                              "preparing_warp_modules", "warp_modules_ready",
+                              "preparing_fixed_render_storage", "fixed_render_storage_ready"}:
                 admitted = admitted | _VALIDATION_SOURCES
             if self.lane == "cuda" and self.phase not in {"materializing", "materialized"}:
                 admitted = admitted | _CUDA_ARTIFACT_SOURCES
-            if self.lane == "cuda" and self.phase in {"preparing_cuda_factories", "cuda_factories_ready"}:
+            if self.lane == "cuda" and self.phase in {"preparing_cuda_factories", "cuda_factories_ready",
+                                                    "preparing_fixed_render_storage", "fixed_render_storage_ready"}:
                 admitted = admitted | _CUDA_FACTORY_SOURCES
             if self.lane == "warp" and self.phase not in {"materializing", "materialized"}:
                 admitted = admitted | _WARP_SETUP_SOURCES
-            if self.lane == "warp" and self.phase in {"preparing_warp_modules", "warp_modules_ready"}:
+            if self.lane == "warp" and self.phase in {"preparing_warp_modules", "warp_modules_ready",
+                                                    "preparing_fixed_render_storage", "fixed_render_storage_ready"}:
                 admitted = admitted | _WARP_MODULE_SOURCES
             return admitted
         raise SourceBootstrapError("invalid CPU source phase")
@@ -3307,6 +3312,50 @@ class _SourceSession:
             return self.warp_modules
         except BaseException as error:
             self._fail_warp_preparation(error, runtime_record)
+            raise
+
+    def prepare_fixed_render_storage(self, *, traversal_diagnostics=False):
+        """One supervised R0 storage construction, without execution readiness."""
+        try:
+            self.check_live()
+            expected_phase = "cuda_factories_ready" if self.lane == "cuda" else "warp_modules_ready"
+            _require(self.phase == expected_phase and type(traversal_diagnostics) is bool,
+                     "fixed render storage requires completed compilation, once")
+            _require(self.prepared_input.manifest.input_contract == "fixed_native_scene_v1",
+                     "fixed render storage requires canonical R0 input")
+            controller = self.bound_controller()
+            with controller.segment("setup"):
+                self.phase = "preparing_fixed_render_storage"
+                uploaded = _UPLOADED_INPUTS.get(self)
+                _require(uploaded is not None and uploaded[1] is self.prepared_input
+                         and self.validation_report is not None,
+                         "fixed render storage requires the original validated upload")
+                record, prepared = uploaded
+                module, target, stream = self._validate_runtime_binding_record(record[0], record)
+                controller.require_adopted(prepared)
+                self.audit()
+                self.external.audit()
+                if self.lane == "warp":
+                    from optical_worker import warp_setup
+
+                    warp_setup.validate_module_set(self, self.warp_modules)
+                else:
+                    self.cuda_extensions()
+                from optical_worker.native_setup import _prepare_fixed_render_storage
+
+                storage = _prepare_fixed_render_storage(
+                    self, module, target, stream, traversal_diagnostics=traversal_diagnostics)
+                self._hold_runtime_owner(storage, "fixed_render_storage")
+                self.fixed_render_storage = storage
+                if self.lane == "warp":
+                    warp_setup.validate_module_set(self, self.warp_modules)
+                self.audit()
+                self.external.audit()
+            self.phase = "fixed_render_storage_ready"
+            self.runtime_observation.checkpoint()
+            return storage
+        except BaseException as error:
+            self.fail(error)
             raise
 
     def check_import_topology(self):

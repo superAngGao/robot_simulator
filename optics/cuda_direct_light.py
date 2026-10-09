@@ -34,6 +34,18 @@ _INT32_MAX = (1 << 31) - 1
 _INT64_MAX = (1 << 63) - 1
 _SHADOW_TRAVERSAL_COUNTER_CHANNELS = SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES
 _PREPARED_EXTENSION_TOKEN = object()
+_FIRST_HIT_TENSOR_NAMES = (
+    "plane_normal_world", "plane_point_world", "plane_numeric_instance_id",
+    "plane_source_order_key", "plane_role_mask", "plane_material_index",
+    "triangle_v0_world", "triangle_e1_world", "triangle_e2_world", "triangle_normal_world",
+    "triangle_numeric_instance_id", "triangle_source_order_key", "triangle_role_mask",
+    "triangle_material_index", "bvh_bounds_min", "bvh_bounds_max", "bvh_left", "bvh_right",
+    "bvh_start", "bvh_count", "bvh_prim_ids",
+)
+_SHADE_TENSOR_NAMES = (
+    "material_albedo_rgb", "light_kind", "light_position_or_direction_world",
+    "light_intensity", "light_color_rgb",
+)
 
 
 @dataclass(frozen=True)
@@ -67,31 +79,17 @@ class CudaFirstHitInputs:
     max_distance: float
 
     def tensor_items(self) -> tuple[tuple[str, object], ...]:
-        return tuple(
-            (name, getattr(self, name))
-            for name in (
-                "plane_normal_world",
-                "plane_point_world",
-                "plane_numeric_instance_id",
-                "plane_source_order_key",
-                "plane_role_mask",
-                "plane_material_index",
-                "triangle_v0_world",
-                "triangle_e1_world",
-                "triangle_e2_world",
-                "triangle_normal_world",
-                "triangle_numeric_instance_id",
-                "triangle_source_order_key",
-                "triangle_role_mask",
-                "triangle_material_index",
-                "bvh_bounds_min",
-                "bvh_bounds_max",
-                "bvh_left",
-                "bvh_right",
-                "bvh_start",
-                "bvh_count",
-                "bvh_prim_ids",
-            )
+        return tuple((name, getattr(self, name)) for name in _FIRST_HIT_TENSOR_NAMES)
+
+    @classmethod
+    def from_fixed_arrays(cls, arrays, *, sensor_role_mask: int, max_distance: float):
+        """Borrow the fixed native fixture; validation remains in the renderer."""
+        return cls(
+            **{name: arrays[name] for name in _FIRST_HIT_TENSOR_NAMES},
+            num_planes=int(arrays["plane_normal_world"].shape[0]),
+            num_bvh_nodes=int(arrays["bvh_left"].shape[0]),
+            sensor_role_mask=sensor_role_mask,
+            max_distance=max_distance,
         )
 
 
@@ -107,15 +105,13 @@ class CudaShadeInputs:
     num_lights: int
 
     def tensor_items(self) -> tuple[tuple[str, object], ...]:
-        return tuple(
-            (name, getattr(self, name))
-            for name in (
-                "material_albedo_rgb",
-                "light_kind",
-                "light_position_or_direction_world",
-                "light_intensity",
-                "light_color_rgb",
-            )
+        return tuple((name, getattr(self, name)) for name in _SHADE_TENSOR_NAMES)
+
+    @classmethod
+    def from_arrays(cls, arrays):
+        return cls(
+            **{name: arrays[name] for name in _SHADE_TENSOR_NAMES},
+            num_lights=int(arrays["light_kind"].shape[0]),
         )
 
 

@@ -115,6 +115,56 @@ def _prepare_cuda_factory_owners(session, prepared, torch, target, stream, exten
         return factories
 
 
+def _prepare_fixed_render_storage(session, runtime, target, stream, *, traversal_diagnostics):
+    """Connect retained R0 inputs to one set of existing render outputs."""
+    from optical_worker.cases import get_case
+    from optical_worker.native_input import (
+        build_prepared_cuda_fixed_render_inputs, build_prepared_warp_fixed_render_inputs,
+    )
+
+    prepared = session.prepared_input
+    if session.render_source.packed_scene is not prepared.source.packed_scene_owner:
+        raise ValueError("fixed render storage requires its original render source")
+    case = get_case(prepared.manifest.case_id)
+    controller = session.bound_controller()
+    controller._require_setup()
+    controller.require_adopted(prepared, runtime, target, stream)
+    # Covers constructor metadata and CUDA allocator availability preambles,
+    # as well as device/stream context entry, before any runtime call.
+    session._runtime_leaf("fixed_render_storage_scope", "runtime_import_or_init")
+    device_scope = runtime.cuda.device(target) if session.lane == "cuda" else runtime.ScopedDevice(target)
+    with device_scope:
+        stream_scope = runtime.cuda.stream(stream) if session.lane == "cuda" else runtime.ScopedStream(stream)
+        with stream_scope:
+            if session.lane == "warp":
+                from optics.warp_native_render import allocate_warp_direct_light_buffers
+
+                inputs = build_prepared_warp_fixed_render_inputs(prepared)
+            else:
+                from optics.cuda_direct_light import allocate_cuda_direct_light_buffers
+
+                frame = session.render_source.sequence.to_payload()["frames"][0]
+                inputs = build_prepared_cuda_fixed_render_inputs(
+                    prepared,
+                    sensor_role_mask=session.render_source.packed_scene.role_to_mask[frame["sensor_role"]],
+                    max_distance=float.fromhex(frame["max_distance_f64"]),
+                )
+            session._hold_runtime_owner(inputs, "fixed_render_input_views")
+            context = _create_upload_context(controller, runtime, target, stream)
+            if session.lane == "warp":
+                outputs = allocate_warp_direct_light_buffers(
+                    num_rays=case.width * case.height, device=target, stream=stream,
+                    traversal_diagnostics=traversal_diagnostics, _context=context,
+                )
+            else:
+                outputs = allocate_cuda_direct_light_buffers(
+                    num_rays=case.width * case.height, device=target, direct_light=True,
+                    traversal_diagnostics=traversal_diagnostics, _context=context,
+                )
+            session._hold_runtime_owner(outputs, "fixed_render_output_buffers")
+            return (*inputs, outputs)
+
+
 class NativeWorkerPreparationAborted(RuntimeError):
     """A setup exception reached its required terminal resource disposition."""
 

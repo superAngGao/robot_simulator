@@ -53,9 +53,9 @@ def test_single_definitions_preserve_all_bodies_and_alias_identities(old, new):
         assert set(current) == set(old_definitions) | {"_validate_render_record"}
         assert {name for name in old_definitions if current[name] != old_definitions[name]} == changed
     elif new == "native_input":
-        # C2d3 moves only the inert descriptors/codec into the CPU manifest
-        # module and adds narrow parsing there. Existing constructor/encoding
-        # bodies must still equal the original relocation baseline.
+        # Preserve unaffected relocation bodies and exact legacy aliases.
+        # Later reviewed factory preparation adds extension ownership; fixed
+        # render wrapping retains the original host BVH's actual statistics.
         from optical_worker import native_manifest
 
         moved = {"NativeArrayManifest", "NativeInputManifest", "_canonical_json_bytes", "_sha256_payload"}
@@ -69,7 +69,13 @@ def test_single_definitions_preserve_all_bodies_and_alias_identities(old, new):
                 definitions[node.name] = ast.dump(node, include_attributes=False)
                 assert getattr(production, node.name) is getattr(native_manifest, node.name)
         assert not set(current) & moved
-        assert current | definitions == old_definitions
+        merged = current | definitions
+        added = {"_derive_fixed_fixture", "_prepared_fixed_fixture",
+                 "build_prepared_warp_fixed_render_inputs", "build_prepared_cuda_fixed_render_inputs"}
+        changed = {"CanonicalFixedRenderFixtureHost", "_derive_fixed_fixture_arrays",
+                   "build_prepared_cuda_scene_update_factory", "build_prepared_cuda_lbvh_rebuild_factory"}
+        assert set(merged) == set(old_definitions) | added
+        assert {name for name in old_definitions if merged[name] != old_definitions[name]} == changed
     else:
         assert current == old_definitions
     assert not _definitions(Path(legacy.__file__).read_text())
