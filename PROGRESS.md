@@ -1603,6 +1603,13 @@ Next milestone:
       or code approval is claimed. Owner reiterated the complexity correction:
       close the existing path, avoid more infrastructure, and retain the required
       whole-C4 systematic refactor. C4 remains active and incomplete.
+      Fresh independent /root/fixed_artifacts_preflight_v1 now approves only the
+      exact bounded execution at a43f0c1 (packet6fc47d9), with no substantive
+      findings. Its793 CPU passes/65 skips do not prove native behavior. Complete
+      report is archived unchanged as fixed-cuda-artifacts code-preflight-review
+      v1, SHA256 f88e3b161d9a39cec55136165273745b6a7ed3b471546aad2ebf4d434571f3b4.
+      Execute manager acceptance, three builds, cold composition and fixed Go2
+      matrix sequentially; real acceptance and all later gates remain unproved.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
