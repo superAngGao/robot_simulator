@@ -148,6 +148,10 @@ class _CompilerJob:
         self.transport_channel = None
         self._servicing_due = False
         self._echild_observed = False
+        self._pipe_setup_complete = False
+        self._fd_close_attempted = set()
+        self.launch_errors = []
+        self._last_process_sample_ns = None
         self.output_truncated = {"stdout": 0, "stderr": 0}
         _LIVE_JOBS[self] = core
 
@@ -169,27 +173,42 @@ class _CompilerJob:
         self.transport_channel = parent
         # From this point even a partially initialized Popen is strongly held.
         # No Popen status method is used anywhere in this module.
+        self.process = object.__new__(subprocess.Popen)
         try:
-            self.process = subprocess.Popen(
+            subprocess.Popen.__init__(
+                self.process,
                 [sys.executable, "-I", "-S", "-B", str(driver), "worker", str(child.fileno()), str(request), str(output)],
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 pass_fds=(child.fileno(),), close_fds=True, start_new_session=True,
                 env=dict(environment), cwd=str(root),
             )
+        except BaseException as error:
+            self.launch_errors.append(error)
+            if not getattr(self.process, "_child_created", False):
+                raise  # No fork occurred; the NEW record cannot claim CLOSED.
         finally:
             child.close()
-        for name in ("stdout", "stderr"):
-            stream = getattr(self.process, name)
-            os.set_blocking(stream.fileno(), False)
-            self.channels[name] = stream
         try:
             self._anchor_worker()
+            self._prepare_pipes()
+            if self.launch_errors:
+                self.obligation.observation_failed("other_os")
         except BaseException as error:
             # Keep Popen, channels, PID and any acquired identity. The process
             # service retries observation; no ARM is accepted without its pidfd.
             self.obligation.observation_failed("identity_changed" if isinstance(error, GuardProtocolError)
                                                else _error_kind(error))
         return parent
+
+    def _prepare_pipes(self):
+        if self._pipe_setup_complete:
+            return
+        for name in ("stdout", "stderr"):
+            stream = getattr(self.process, name, None)
+            _require(stream is not None and not stream.closed, "spawn did not return its held output pipes")
+            self.channels[name] = stream
+            os.set_blocking(stream.fileno(), False)
+        self._pipe_setup_complete = True
 
     def _anchor_worker(self):
         if self.obligation.replay.worker is None:
@@ -384,6 +403,13 @@ class _CompilerJob:
                     break
                 self._due()
             self._due()
+            active = self.core._state.active
+            if active is not None and active[0] in CUDA_COMPILE_SEQUENCES:
+                now = self.obligation.now()
+                if self._last_process_sample_ns is None or now - self._last_process_sample_ns >= 50_000_000:
+                    self._last_process_sample_ns = now
+                    self._sample_session()
+            self._prepare_pipes()
             for name, stream in tuple(self.channels.items()):
                 self._due()
                 try:
@@ -421,12 +447,17 @@ class _CompilerJob:
                     # as a diagnostic, not an invented identity/reaping proof.
                     self.unexpected_closure_wait = result
                     self.obligation.observation_failed("identity_changed")
-            if not self.channels and not replay.pipes_eof:
+            if self._pipe_setup_complete and not self.channels and not replay.pipes_eof:
                 self.obligation.pipes_eof()
             if replay.no_children and replay.pipes_eof:
-                self.obligation.close()
-                for fd in self.handles.values():
+                for identity, fd in tuple(self.handles.items()):
+                    if identity in self._fd_close_attempted:
+                        continue
+                    self._fd_close_attempted.add(identity)
                     os.close(fd)
+                    del self.handles[identity]
+                if not self.handles:
+                    self.obligation.close()
         except BaseException as error:
             self.obligation.observation_failed("proc_unavailable" if isinstance(error, GuardProtocolError)
                                                else _error_kind(error))
