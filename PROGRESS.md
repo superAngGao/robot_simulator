@@ -1730,6 +1730,17 @@ Next milestone:
       Positive graph native-driver support has independent approval at50143c6;
       full support reviewv1 is archived unchanged. Its real dual-lane Go2
       recording/event campaign is now running at that isolated revision.
+      That first graph run failed safely before recording; the missing Warp
+      import closure and original profile-enum mismatch are repaired at6300531.
+      Fresh independent native-repair code-reviewv1 approves that bounded fix
+      (488 passed,13 platform/asset skips); its report is archived unchanged.
+      The repaired native graph campaign is running at exact6300531.
+      Fixed R0 storage native-reviewv1 approves the14-case campaign at3d6692b:
+      eight positives, four guarded raises and two deadline kills independently
+      replayed; all29 author PIDs absent. Raw archive SHA256 is
+      0c236e6ea39392af2e74f7e450ed492d52979ca4c734bfd5b578f0067d57e326.
+      Its full report is archived unchanged. This evidence does not cover the
+      later common-scope extraction or graph/render/warmup execution.
       The owner-requested systematic whole-C4 refactor is still required.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
