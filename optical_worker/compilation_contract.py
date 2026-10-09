@@ -34,6 +34,21 @@ CUDA_NATIVE_SITES = ("cuda_compile", "cuda_extension_create", "cuda_extension_ex
 # Pinned dependency grammar. These inert facts are shared by collection/replay;
 # they neither construct an initialization owner nor grant import permission.
 SETUPTOOLS_INITIALIZATION_POLICY = "setuptools_83_conda_cuda_g1_v1"
+
+
+def setuptools_initialization_descriptor() -> dict:
+    """Detached literal deployment description, never a live initialization."""
+    return {
+        "policy": SETUPTOOLS_INITIALIZATION_POLICY,
+        "vendor_root": "setuptools_vendor",
+        "source_package": "setuptools._distutils",
+        "alias": "distutils",
+        "metadata": {"root": "site", "path": "setuptools-83.0.0-py3.12.egg-info/PKG-INFO"},
+        "resource": {"package": "jaraco.text", "root": "setuptools_vendor",
+                     "path": "jaraco/text/Lorem ipsum.txt"},
+    }
+
+
 SETUPTOOLS_ALIAS_ACTIONS = ("alias_created", "alias_executed", "alias_published")
 _SETUPTOOLS_ALIAS_FIELDS = ("source_module_token", "alias_spec_token", "delegate_token", "wrapper_token")
 SETUPTOOLS_ACTION_FIELDS = (

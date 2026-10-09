@@ -15,9 +15,12 @@ from email.parser import BytesParser
 from functools import lru_cache
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+from .compilation_contract import setuptools_initialization_descriptor
 from .protocol import canonical_json_bytes, decode_canonical_message
 
+# Existing callers/fixtures still author the unchanged v5 input contract.
 RUNTIME_ENVIRONMENT_VERSION = "q54.p12.4.runtime-environment.v5"
+RUNTIME_ENVIRONMENT_COMPILATION_VERSION = "q54.p12.4.runtime-environment.v6"
 NATIVE_GLOBAL_OBSERVATIONS_VERSION = "q54.p12.4.native-global-observations.v1"
 MODULE_REPLACEMENT_OBSERVATIONS_VERSION = "q54.p12.4.module-replacement-observations.v1"
 INTERPRETER_ALIAS_OBSERVATIONS_VERSION = "q54.p12.4.interpreter-alias-observations.v1"
@@ -150,6 +153,10 @@ def _file_module_names(encoded: bytes) -> tuple[tuple[str, str], ...]:
 
 
 def _validate(payload: object) -> None:
+    _require(type(payload) is dict, "invalid runtime environment fields")
+    version = payload.get("schema_version")
+    _require(version in (RUNTIME_ENVIRONMENT_VERSION, RUNTIME_ENVIRONMENT_COMPILATION_VERSION),
+             "runtime environment version")
     p = _fields(
         payload,
         {
@@ -166,10 +173,9 @@ def _validate(payload: object) -> None:
             "module_replacements",
             "namespaces",
             "settings",
-        },
+        } | ({"setuptools_initialization"} if version == RUNTIME_ENVIRONMENT_COMPILATION_VERSION else set()),
         "runtime environment",
     )
-    _require(p["schema_version"] == RUNTIME_ENVIRONMENT_VERSION, "runtime environment version")
     interpreter = _fields(p["interpreter"], {"path", "sha256", "implementation", "version"}, "interpreter")
     _absolute(interpreter["path"])
     _digest(interpreter["sha256"])
@@ -424,6 +430,9 @@ def _validate(payload: object) -> None:
     # Any qualified name has an explicitly admitted package parent. Optional
     # probes cannot fabricate parents; creator publications cannot bypass them.
     present = set(modules) | set(publications) | set(native_globals) | namespaces
+    if p.get("setuptools_initialization") is not None:
+        _validate_setuptools_profile(p, roots, root_kinds, files, modules, present | absent_names | disabled)
+        present.add("distutils")
     for name in present | absent_names | disabled:
         parent = name.rpartition(".")[0]
         if parent:
@@ -438,6 +447,61 @@ def _validate(payload: object) -> None:
         settings["TORCH_DEVICE_BACKEND_AUTOLOAD"] == "0" and settings["warp_quiet"] is True,
         "unsafe runtime settings",
     )
+
+
+def _validate_setuptools_profile(p, roots, root_kinds, files, modules, declared):
+    """One pinned package layout; presence of facts is not import authority."""
+    expected = setuptools_initialization_descriptor()
+    _require(p["setuptools_initialization"] == expected, "unknown setuptools initialization descriptor")
+    _require(p["interpreter"]["version"] == [3, 12, 13], "setuptools profile requires pinned interpreter")
+    _require({key for key in roots if root_kinds[key] == "site"} == {"site", "setuptools_vendor"}
+             and roots["setuptools_vendor"] == (Path(roots["site"]) / "setuptools" / "_vendor").as_posix(),
+             "setuptools vendor root layout")
+    _require("distutils" not in declared, "setuptools alias collides with another rule")
+    _require(not any(row["name"].startswith("distutils.")
+                     for key in ("publications", "native_globals", "module_replacements") for row in p[key]),
+             "distutils children require ordinary file or namespace rules")
+    metadata = expected["metadata"]
+    _require({"name": "setuptools", "version": "83.0.0", "root": metadata["root"],
+              "metadata": metadata["path"]} in p["distributions"], "pinned setuptools distribution missing")
+    for kind, row in (("metadata", metadata), ("data", expected["resource"])):
+        file = files.get((row["root"], row["path"]))
+        _require(file is not None and file["kind"] == kind, "setuptools metadata/resource file missing")
+    for name, root, path, package in (
+        ("setuptools", "site", "setuptools/__init__.py", True),
+        ("setuptools._distutils", "site", "setuptools/_distutils/__init__.py", True),
+        ("setuptools.version", "site", "setuptools/version.py", False),
+        ("setuptools.command", "site", "setuptools/command/__init__.py", True),
+        ("setuptools.command.build_ext", "site", "setuptools/command/build_ext.py", False),
+        ("_distutils_hack", "site", "_distutils_hack/__init__.py", True),
+        ("_distutils_hack.override", "site", "_distutils_hack/override.py", False),
+        ("distutils.core", "site", "setuptools/_distutils/core.py", False),
+        ("jaraco.text", "setuptools_vendor", "jaraco/text/__init__.py", True),
+        ("torch.utils.cpp_extension", "site", "torch/utils/cpp_extension.py", False),
+    ):
+        _require(modules.get(name) == {"name": name, "root": root, "path": path,
+                                       "is_package": package, "phase": "runtime"}
+                 and files[(root, path)]["kind"] == "python", "setuptools mandatory source binding")
+    for row in p["modules"]:
+        name = row["name"]
+        if row["root"] == "setuptools_vendor" or name.split(".")[0] in {"setuptools", "_distutils_hack", "distutils"}:
+            _require(row["phase"] == "runtime", "setuptools module cannot enter the input materialization phase")
+        if name.startswith("distutils."):
+            relative = name.replace("distutils.", "setuptools/_distutils/", 1).replace(".", "/")
+            relative += "/__init__.py" if row["is_package"] else ".py"
+            _require(row["root"] == "site" and row["path"] == relative
+                     and files[(row["root"], row["path"])]["kind"] == "python",
+                     "distutils child source layout")
+    namespace_rows = {row["name"]: row for row in p["namespaces"]}
+    for name, root, path in (("jaraco", "setuptools_vendor", "jaraco"),
+                             ("distutils.compilers", "site", "setuptools/_distutils/compilers"),
+                             ("distutils.compilers.C", "site", "setuptools/_distutils/compilers/C")):
+        _require(namespace_rows.get(name) == {"name": name, "phase": "runtime",
+                                              "locations": [{"root": root, "path": path}]},
+                 "setuptools mandatory namespace binding")
+    for row in p["namespaces"]:
+        if row["name"].startswith("distutils.") or any(r["root"] == "setuptools_vendor" for r in row["locations"]):
+            _require(row["phase"] == "runtime", "setuptools namespace phase")
 
 
 def validate_native_global_observations(payload, environment, *, require_complete=False):
@@ -764,6 +828,20 @@ class RuntimeEnvironmentContract:
             if import_name == name:
                 return intrinsic_name
         raise ValueError("intrinsic name requires a declared file module")
+
+    @property
+    def setuptools_initialization(self) -> dict | None:
+        return self.to_payload().get("setuptools_initialization")
+
+    def external_search_roots(self, *, setuptools_active: bool = False) -> tuple[str, ...]:
+        """Pure search-layout projection; only the live session may activate it."""
+        _require(type(setuptools_active) is bool, "invalid setuptools activation projection")
+        payload = self.to_payload()
+        roots = {r["id"]: str(Path(r["path"])) for r in payload["roots"] if r["kind"] == "site"}
+        if payload.get("setuptools_initialization") is None:
+            _require(not setuptools_active, "setuptools initialization is not declared")
+            return tuple(roots.values())
+        return (roots["site"], roots["setuptools_vendor"]) if setuptools_active else (roots["site"],)
 
     def verify_files(self, *, expected_sha256: str) -> None:
         """Verify CPU filesystem facts without importing a single inventoried module."""

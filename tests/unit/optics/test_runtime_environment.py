@@ -14,7 +14,10 @@ from pathlib import Path
 import pytest
 
 from optical_worker.protocol import canonical_sha256
-from optical_worker.runtime_environment import RUNTIME_ENVIRONMENT_VERSION, RuntimeEnvironmentContract
+from optical_worker.compilation_contract import setuptools_initialization_descriptor
+from optical_worker.runtime_environment import (
+    RUNTIME_ENVIRONMENT_VERSION, RUNTIME_ENVIRONMENT_COMPILATION_VERSION, RuntimeEnvironmentContract,
+)
 
 
 @pytest.fixture
@@ -131,6 +134,132 @@ def test_environment_is_canonical_detached_and_never_executes_inventory(deployme
     assert all(sys.modules.get(name) is value for name, value in before.items())
     with pytest.raises(FrozenInstanceError):
         contract.encoded = b"{}"
+
+
+@pytest.fixture
+def setuptools_profile(deployment):
+    """Synthetic file facts only, deliberately not a complete dependency closure."""
+    root, payload = deployment
+    payload["schema_version"] = RUNTIME_ENVIRONMENT_COMPILATION_VERSION
+    payload["setuptools_initialization"] = setuptools_initialization_descriptor()
+    payload["interpreter"]["version"] = [3, 12, 13]
+    vendor = root / "setuptools" / "_vendor"
+    vendor.mkdir(parents=True)
+    payload["roots"].append({"id": "setuptools_vendor", "path": vendor.resolve().as_posix(), "kind": "site"})
+
+    def file(root_id, relative, kind, data):
+        path = (root if root_id == "site" else vendor) / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        payload["files"].append({"root": root_id, "path": relative, "kind": kind,
+                                 "size": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+
+    for name, package in (("setuptools", True), ("setuptools._distutils", True),
+                          ("setuptools.version", False), ("setuptools.command", True),
+                          ("setuptools.command.build_ext", False), ("_distutils_hack", True),
+                          ("_distutils_hack.override", False), ("distutils.core", False),
+                          ("jaraco.text", True), ("torch", True), ("torch.utils", True),
+                          ("torch.utils.cpp_extension", False)):
+        root_id = "setuptools_vendor" if name.startswith("jaraco.") else "site"
+        relative = name.replace("distutils.", "setuptools._distutils.", 1) if name.startswith("distutils.") else name
+        relative = relative.replace(".", "/") + ("/__init__.py" if package else ".py")
+        file(root_id, relative, "python", b"raise AssertionError('inventory must never execute')\n")
+        payload["modules"].append({"name": name, "root": root_id, "path": relative,
+                                   "is_package": package, "phase": "runtime"})
+    metadata = "setuptools-83.0.0-py3.12.egg-info/PKG-INFO"
+    file("site", metadata, "metadata", b"Name: setuptools\nVersion: 83.0.0\n")
+    file("setuptools_vendor", "jaraco/text/Lorem ipsum.txt", "data", b"fixture resource, not the installed data")
+    payload["distributions"].append({"name": "setuptools", "version": "83.0.0", "root": "site", "metadata": metadata})
+    for name, root_id, path in (("jaraco", "setuptools_vendor", "jaraco"),
+                               ("distutils.compilers", "site", "setuptools/_distutils/compilers"),
+                               ("distutils.compilers.C", "site", "setuptools/_distutils/compilers/C")):
+        ((root if root_id == "site" else vendor) / path).mkdir(parents=True, exist_ok=True)
+        payload["namespaces"].append({"name": name, "phase": "runtime", "locations": [{"root": root_id, "path": path}]})
+    for field, key in (("files", lambda r: (r["root"], r["path"])), ("roots", lambda r: r["id"]),
+                        ("modules", lambda r: r["name"]), ("namespaces", lambda r: r["name"]),
+                        ("distributions", lambda r: r["name"])):
+        payload[field].sort(key=key)
+    return payload
+
+
+def test_v6_null_has_v5_file_semantics_and_does_not_rewrite_legacy_payload(deployment):
+    _, payload = deployment
+    original = RuntimeEnvironmentContract.from_payload(payload)
+    original_bytes = original.encoded
+    payload["schema_version"] = RUNTIME_ENVIRONMENT_COMPILATION_VERSION
+    payload["setuptools_initialization"] = None
+    current = RuntimeEnvironmentContract.from_payload(payload)
+    current.verify_files(expected_sha256=current.sha256)
+    assert original.encoded == original_bytes and original.setuptools_initialization is None
+    assert current.external_search_roots() == original.external_search_roots()
+    with pytest.raises(ValueError, match="not declared"):
+        current.external_search_roots(setuptools_active=True)
+
+
+def test_setuptools_alias_namespaces_and_site_priority_are_explicit_facts(setuptools_profile):
+    payload = setuptools_profile
+    before_path, before_modules = tuple(sys.path), dict(sys.modules)
+    contract = RuntimeEnvironmentContract.from_payload(payload)
+    roots = {r["id"]: str(Path(r["path"])) for r in payload["roots"]}
+    assert contract.external_search_roots() == (roots["site"],)
+    assert contract.external_search_roots(setuptools_active=True) == (roots["site"], roots["setuptools_vendor"])
+    exposed = contract.setuptools_initialization
+    exposed["resource"]["path"] = "elsewhere"
+    assert contract.setuptools_initialization == setuptools_initialization_descriptor()
+    assert not any(r["name"] == "distutils" for r in contract.to_payload()["modules"])
+    assert contract.expected_file_module_name("distutils.core") == "distutils.core"
+    with pytest.raises(ValueError, match="declared file"):
+        contract.expected_file_module_name("distutils")
+    assert tuple(sys.path) == before_path and dict(sys.modules) == before_modules
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda p: p["setuptools_initialization"].update(alias="another_alias"),
+    lambda p: p["setuptools_initialization"]["resource"].update(path="../outside"),
+    lambda p: p["setuptools_initialization"].update(extra_permission=True),
+    lambda p: p["interpreter"].update(version=[3, 14, 0]),
+    lambda p: next(r for r in p["roots"] if r["id"] == "setuptools_vendor").update(path="/wrong/vendor"),
+    lambda p: next(r for r in p["distributions"] if r["name"] == "setuptools").update(version="84.0.0"),
+    lambda p: next(r for r in p["files"] if r["path"].endswith("Lorem ipsum.txt")).update(kind="python"),
+    lambda p: next(r for r in p["modules"] if r["name"] == "distutils.core").update(phase="materialization"),
+    lambda p: next(r for r in p["modules"] if r["name"] == "distutils.core").update(path="fake/owner.py"),
+    lambda p: next(r for r in p["namespaces"] if r["name"] == "distutils.compilers")["locations"].append(
+        {"root": "site", "path": "setuptools/_distutils/compilers/extra"}),
+    lambda p: p["modules"].remove(next(r for r in p["modules"] if r["name"] == "_distutils_hack.override")),
+])
+def test_setuptools_profile_cannot_expand_or_redirect_fixed_rules(setuptools_profile, mutation):
+    mutation(setuptools_profile)
+    with pytest.raises(ValueError):
+        RuntimeEnvironmentContract.from_payload(setuptools_profile)
+
+
+def test_setuptools_root_cannot_be_a_namespace_or_a_second_source(setuptools_profile):
+    payload = setuptools_profile
+    payload["namespaces"].append({"name": "distutils", "phase": "runtime",
+                                   "locations": [{"root": "site", "path": "setuptools/_distutils"}]})
+    payload["namespaces"].sort(key=lambda r: r["name"])
+    with pytest.raises(ValueError, match="alias collides"):
+        RuntimeEnvironmentContract.from_payload(payload)
+
+
+def test_v5_cannot_smuggle_a_v6_descriptor_or_alias_parent(setuptools_profile):
+    payload = setuptools_profile
+    payload["schema_version"] = RUNTIME_ENVIRONMENT_VERSION
+    with pytest.raises(ValueError, match="environment fields"):
+        RuntimeEnvironmentContract.from_payload(payload)
+    del payload["setuptools_initialization"]
+    with pytest.raises(ValueError, match="unlisted module parent: distutils"):
+        RuntimeEnvironmentContract.from_payload(payload)
+
+
+def test_alias_child_cannot_reuse_the_legacy_publication_exception(setuptools_profile):
+    payload = setuptools_profile
+    payload["publications"].append({"name": "distutils.unlisted", "kind": "module_alias",
+                                     "creator": "setuptools", "publisher": "setuptools",
+                                     "attributes": ["injected"], "phase": "runtime"})
+    payload["publications"].sort(key=lambda r: r["name"])
+    with pytest.raises(ValueError, match="ordinary file or namespace"):
+        RuntimeEnvironmentContract.from_payload(payload)
 
 
 def test_cached_configuration_copies_and_rebound_bytes_cannot_share_permission(deployment):
