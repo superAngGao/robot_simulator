@@ -48,7 +48,8 @@ RUNTIME_ARTIFACT_FAULTS = ("runtime_artifacts_success", "runtime_artifacts_creat
                          "runtime_artifacts_exec_after_raise", "runtime_artifacts_entry_adoption_raise",
                          "runtime_artifacts_factory_after_raise", "runtime_artifacts_factory_hang")
 RUNTIME_WARP_MODULE_FAULTS = ("runtime_warp_modules_success", "runtime_warp_modules_abi_dtype",
-                             "runtime_warp_modules_abi_ndim", "runtime_warp_modules_entry_hash")
+                             "runtime_warp_modules_abi_ndim", "runtime_warp_modules_entry_hash",
+                             "runtime_warp_modules_unknown_entry")
 RUNTIME_FAULTS = (RUNTIME_NATIVE_FAULTS + RUNTIME_ACK_FAULTS + RUNTIME_PARENT_FAULTS
                   + RUNTIME_SCOPE_FAULTS + RUNTIME_GLOBAL_FAULTS + RUNTIME_CUDA_ONLY_FAULTS
                   + RUNTIME_OBSERVATION_FAULTS + RUNTIME_ARTIFACT_FAULTS + RUNTIME_WARP_MODULE_FAULTS)
@@ -1025,6 +1026,13 @@ def child(fault, fd, directory):
 
             binding.module.load_module = observed_load
             warp_setup.compile_module = observed_compile
+            if fault == "runtime_warp_modules_unknown_entry":
+                assert controller._guard_client.state == "IDLE" and controller._guard_reference is None
+                assert session.validation_report is not None
+                _write(directory, "fault_entered.json", {
+                    "fault": fault, "boundary": "validated_input_idle_entry", "guard": None,
+                    "client_state": controller._guard_client.state, "valid_input_report": True})
+                controller.mark_unknown_device_scope(source="fixed_warp_entry_fault", reason="unknown_device_scope")
             owners = session.prepare_warp_modules()
 
             with controller.segment("setup"):

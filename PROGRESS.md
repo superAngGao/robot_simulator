@@ -1668,6 +1668,14 @@ Next milestone:
       unit checks and4 adapted original-repro checks passing. Fresh re-review,
       revised native restoration/failure acceptance and actual rendering remain
       pending; this is not C4 or compilation acceptance.
+      Re-reviewv2 closed the ABI repair but found an unknown-scope entry ordering
+      defect that fabricated a failed guard while IDLE. The local repair checks
+      actual entry state before resource APIs, preserving the existing quarantine
+      policy;25 module tests plus the independent two-case repro pass27. Revised
+      native960 compilation and three actual ABI/entry mutation cases at0194cb2
+      are terminal successes of their respective positive/negative checks. See
+      implementation-notev3 and unchanged reviewv2; fresh review and unknown-entry
+      native execution remain required. No rendering or performance claim.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design

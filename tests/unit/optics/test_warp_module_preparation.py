@@ -128,6 +128,19 @@ def test_import_then_three_nonnested_compile_guards_issue_one_held_set(prepared_
     assert p.syncs == []
 
 
+def test_preparation_called_in_an_active_guard_keeps_that_guard(prepared_session):
+    p = prepared_session
+    with pytest.raises(bootstrap.SourceBootstrapError, match="healthy IDLE"):
+        with p.controller.segment():
+            original_guard = dict(p.controller._guard_reference)
+            p.session.prepare_warp_modules()
+    failures = [event for event in p.controller._guard_events if event["operation"] == "guard_failed"]
+    assert len(failures) == 1 and failures[0]["guard"] == original_guard
+    assert not p.records and not p.syncs
+    summary = p.controller.termination_evidence.lifecycle.to_payload()["summary"]
+    assert summary["normal_complete_count"] == 1 and summary["emergency_sync_attempt_count"] == 0
+
+
 @pytest.mark.parametrize("boundary", ["entry", "issuance", "repeat"])
 def test_idle_failure_preserves_successful_guards_and_uses_existing_emergency(prepared_session, monkeypatch, boundary):
     p = prepared_session
@@ -157,10 +170,10 @@ def test_idle_failure_preserves_successful_guards_and_uses_existing_emergency(pr
     assert p.session.failed
 
 
-@pytest.mark.parametrize("compromised", ["unknown", "missing_owner", "binding_drift"])
+@pytest.mark.parametrize("compromised", ["unknown", "unknown_valid_report", "missing_owner", "binding_drift"])
 def test_idle_failure_with_unprovable_custody_quarantines_without_sync(prepared_session, compromised):
     p = prepared_session
-    if compromised == "unknown":
+    if compromised.startswith("unknown"):
         p.controller.mark_unknown_device_scope(source="unit_fault", reason="unknown_native_effect")
     elif compromised == "missing_owner":
         owners = p.controller.guardian._owners
@@ -168,13 +181,15 @@ def test_idle_failure_with_unprovable_custody_quarantines_without_sync(prepared_
         owners[index] = object()
     else:
         object.__setattr__(p.binding, "stream", object())
-    p.session.validation_report = None
+    if compromised != "unknown_valid_report":
+        p.session.validation_report = None
     with pytest.raises(bootstrap.SourceBootstrapError):
         p.session.prepare_warp_modules()
     summary = p.controller.termination_evidence.lifecycle.to_payload()["summary"]
     assert summary["emergency_sync_attempt_count"] == 0
     assert p.controller.guardian.state == "TRANSFERRED_TO_QUARANTINE" and p.syncs == []
     assert not any(e["operation"] == "guard_failed" for e in p.controller._guard_events)
+    assert summary["normal_complete_count"] == 1 and not p.records
 
 
 @pytest.mark.parametrize("stage", ["import", "first_compile", "last_compile"])

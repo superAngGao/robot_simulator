@@ -152,9 +152,11 @@ def run_case(repository, revision, environment_path, environment, directory, lan
             if result["worker_returncode"] == 0 or not (directory / "fault_entered.json").is_file():
                 raise RuntimeError("fixed fault did not reach its intended real boundary")
             marker = json.loads((directory / "fault_entered.json").read_bytes())
-            if marker["fault"] != fault or marker["guard"] != {
-                    "sequence": 10 if fault.startswith("runtime_warp_modules_") else (6 if "factory" in fault else 3),
-                    "role": "setup"}:
+            unknown_entry = fault == "runtime_warp_modules_unknown_entry"
+            expected_guard = None if unknown_entry else {
+                "sequence": 10 if fault.startswith("runtime_warp_modules_") else (6 if "factory" in fault else 3),
+                "role": "setup"}
+            if marker["fault"] != fault or marker["guard"] != expected_guard:
                 raise RuntimeError("fixed fault occurred in another guard or case")
             if fault.endswith("hang"):
                 if not control["deadline_expired"] or not control["kill_requested"]:
@@ -163,10 +165,14 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                 raise RuntimeError("failed armed setup attempted another synchronization")
             if fault.startswith("runtime_warp_modules_"):
                 failure = json.loads((directory / "failure.json").read_bytes())
-                if (result["worker_returncode"] != 74 or control["normal_complete_count"] != 10
-                        or control["arm_count"] != 11 or failure["type"] != "ValueError"
-                        or failure["message"] != "Warp executable or kernel ABI changed"):
+                if (result["worker_returncode"] != 74 or control["normal_complete_count"] != (6 if unknown_entry else 10)
+                        or control["arm_count"] != (6 if unknown_entry else 11)
+                        or failure["type"] != ("SourceBootstrapError" if unknown_entry else "ValueError")
+                        or failure["message"] != ("Warp module preparation requires healthy IDLE target scope"
+                                                  if unknown_entry else "Warp executable or kernel ABI changed")):
                     raise RuntimeError("Warp ABI fault did not reject at the actual guarded validator")
+                if unknown_entry and any(event["operation"] == "guard_failed" for event in worker["transition_trace"]):
+                    raise RuntimeError("unknown IDLE scope fabricated a failed guard")
         raw_path = directory / "runtime_custody.json"
         if raw_path.exists():
             raw = raw_path.read_bytes()

@@ -3262,12 +3262,17 @@ class _SourceSession:
                      and not self.warp_preparation_started,
                      "Warp module preparation requires this session's validated input, once")
             self.warp_preparation_started = True
+            controller = self.bound_controller()
+            # This must precede adopted-resource APIs: their compromised-scope
+            # rejection poisons normal work, even when no segment is active.
+            _require(controller._guard_client.state == "IDLE" and not controller._context_active
+                     and controller._guard_reference is None and not controller._replay.compromised,
+                     "Warp module preparation requires healthy IDLE target scope")
             _require(uploaded is not None and uploaded[1] is self.prepared_input
                      and self.validation_report is not None,
                      "Warp modules require the original uploaded and validated input")
             binding = runtime_record[0]
             self._validate_runtime_binding_resources(binding, runtime_record)
-            controller = self.bound_controller()
             controller.require_adopted(self.prepared_input)
             records = []
             with controller.segment("setup"):
