@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath, PureWindowsPath
 
 from .guarded_evidence import GuardedLifecycleEvidence, _Replay as _LifecycleReplay, validate_custody_artifact
-from .lifecycle import HOST_OWNER
+from .lifecycle import HOST_OWNER, _array_operation_id
 from .native_manifest import CANONICAL_DTYPE_METADATA, NativeInputManifest
 from .protocol import canonical_json_bytes, canonical_sha256, decode_canonical_message
 from .runtime_environment import (
@@ -911,7 +911,8 @@ class _RuntimeReplay:
             row = exact_fields(row, {"name", "array_token", "storage_owner_token", "signature"})
             _require(row["name"] == array.name, "prepared storage array name/order")
             token = self.token(row["array_token"])
-            self.adopted(token, roles={self.lane + "_a2_device_array"}, scope=self.config.device_ordinal)
+            self.adopted(token, roles={self.lane + "_a2_device_array"}, scope=self.config.device_ordinal,
+                         operation=_array_operation_id(self.lane + "_allocate", array.name))
             owner = self.token(row["storage_owner_token"], nullable=True)
             _require((owner is None) == (self.lane == "warp"), "storage owner lane mismatch")
             _validate_storage_signature(row["signature"], array, self.lane, self.config.device_ordinal)

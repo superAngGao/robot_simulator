@@ -128,6 +128,21 @@ def _valid_identifier(value: object) -> bool:
     return isinstance(value, str) and _IDENTIFIER_RE.fullmatch(value) is not None
 
 
+def _array_operation_id(prefix: str, array_name: str) -> str:
+    """Bounded diagnostic ID without changing/case-folding the array identity.
+
+    Canonical arrays include distinct x_world_R/x_world_r names. Guardian IDs
+    are lowercase and bounded; the full UTF-8 name digest keeps those separate.
+    This ID is not storage authority: the exact manifest/objects still bind it.
+    """
+    if type(array_name) is not str or not array_name or type(prefix) is not str:
+        raise ValueError("array operation requires an exact nonempty name and prefix")
+    result = f"{prefix}_{hashlib.sha256(array_name.encode('utf-8')).hexdigest()}"
+    if not _valid_identifier(result):
+        raise ValueError("array operation prefix is invalid or too long")
+    return result
+
+
 @dataclass(frozen=True)
 class DeviceScopeDescriptor:
     """Pure-CPU proof declared immediately before one CUDA-touching leaf."""

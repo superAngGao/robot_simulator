@@ -114,6 +114,33 @@ def test_registered_storage_descriptor_substitutions_with_recomputed_digest(exec
         parse(payload, environment, inputs)
 
 
+@pytest.mark.parametrize("mutation", ["array_tokens", "guardian_sequences"])
+def test_named_arrays_cannot_exchange_original_allocations(execution, mutation):
+    original, environment, inputs, artifact = execution
+    payload = copy.deepcopy(original)
+    storage = event(payload, "prepared_storage")["details"]
+    first, second = storage["arrays"][:2]
+    assert first["name"] != second["name"]
+    assert first["array_token"] != second["array_token"]
+    if mutation == "array_tokens":
+        first["array_token"], second["array_token"] = second["array_token"], first["array_token"]
+    else:
+        owners = {row["token"]: row for row in payload["objects"]}
+        first, second = (owners[row["array_token"]] for row in (first, second))
+        assert first["guardian_sequence"] != second["guardian_sequence"]
+        first["guardian_sequence"], second["guardian_sequence"] = (
+            second["guardian_sequence"], first["guardian_sequence"])
+    storage["storage_sha256"] = canonical_sha256(storage["arrays"])
+    # Both owners still have valid roles/scopes, first-use indices and unique
+    # adoptions. Keep independently retained allocation facts fixed.
+    assert payload["lifecycle"] == original["lifecycle"]
+    assert payload["source"] == original["source"]
+    with pytest.raises(ValueError, match="adoption operation mismatch"):
+        parse(payload, environment, inputs)
+    record = parse(original, environment, inputs)
+    assert validate_runtime_custody_attachment(record, environment, inputs, artifact) == "worker_prefix_matched"
+
+
 @pytest.mark.parametrize("kind", ["runtime_binding", "prepared_storage", "input_validated", "binding_consumed"])
 def test_observations_cannot_move_to_another_guard(execution, kind):
     original, environment, inputs, _ = execution
