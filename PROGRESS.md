@@ -1465,6 +1465,17 @@ Next milestone:
       limits. Complete external closure, source pins, integrated proof, fixed
       failures, independent preflight and all real native verification remain
       required. This is unfinished implementation, not checkpoint acceptance.
+      Subsequent source-only setuptools inspection found that module rows alone
+      cannot close the dependency gap: pinned setuptools83 changes import
+      topology, creates a same-object Python package alias, and requires a
+      package-resource read unsupported by the wrapper. Fresh independent gap
+      review at758950c confirmed these blockers (Approve with comments for gap
+      assessment only). Target Python3.12 stand-in CPU probes reproduce alias,
+      metadata and resource conflicts; no actual dependency/native import ran.
+      See setuptools-admission gap-scan/gap-review/test-evidence v1. Next is a
+      bounded design amendment and independent approval before adapting these
+      behaviors. Do not keep adding isolated import exemptions or claim the
+      earlier design approval already covers the new initialization transaction.
       Owner follow-up (2026-10-09): after functional implementation and required
       real verification, perform a systematic refactor of the whole C4 structure
       before final acceptance, covering accumulated hotfixes, ownership boundaries,
