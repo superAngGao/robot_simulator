@@ -101,3 +101,22 @@ attributed in implementation-notev2. The unchangedfc86182 complete85 GPU
 matrix and approved12 terminal run are still pending; partial counts are not
 passes. C2d3/C4 and every later compilation/readiness/optical/result/shipping
 gate remain closed.
+
+## Completed repaired alias execution (append after code commit4da1fa7)
+
+Clean exact4da1fa75634d716d4018d616327c84096e047432, production identical to
+f1ca45a, ran the **complete32-case alias suite:32passed/88.15s**, no skips or
+deselection. Script run_c2d3_alias_cpu_v1.py retains command/environment and
+observed process identities. Archive c2d3-4da1fa7-alias-cpu-v1.tar.gz is964444
+bytes, SHA256cb9e033160174175e9199a08113af9805c3058256bb90e78a0db4ecdbd78566d,
+downloaded and hash-checked. All33 observed owned identities, including
+runner3471066/pytest3471071, are absent from OS/GPU afterward. No GPU work or
+native getter was invoked by this CPU suite. This closes the affected fixture
+execution, not the still-required independent review or whole C2d3 acceptance.
+
+The completed foundation run left its local Windows SSH pipe open after the
+remote runner/pytest and every observed descendant had exited and its archive
+was complete. Only local ssh.exe3152, verified child of PowerShell42612 whose
+exact command ran run_c2d3_foundation_cpu_v4.py, was stopped. Remote pytest1
+remains the authoritative failed result; local tool session78567 also ended1.
+No remote process, GPU process or unrelated transport was signaled.

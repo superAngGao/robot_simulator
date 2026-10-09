@@ -1412,6 +1412,15 @@ Next milestone:
       matrix stays on its original clean checkout. See array-adoption-join
       implementation-notev2 for raw evidence and precise provenance. No
       C2d3/C4 acceptance or later-stage activation follows from parser tests.
+      Exact committedf1ca45a now validates all78 Git source blobs and both-lane
+      actual source capture. Expanded Linux28-suite regression1030pass/19fail/
+      1platformskip exposed old alias probes without the now-required custody
+      controller; isolated cold trio262pass. Test-only4da1fa7 binds those probes
+      to the real controller/peer/guard and preserves original mutation checks;
+      the complete32-case Linux alias rerun passes, all33 observed owned PIDs
+      gone. Failed runs and raw Windows diagnostic bytes remain retained. No
+      production change fromf1ca45a. Fresh whole independent re-review and the
+      running85/subsequent12 runtime evidence still precede C2d3 acceptance.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
