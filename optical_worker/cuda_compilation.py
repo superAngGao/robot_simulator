@@ -105,7 +105,7 @@ class _Toolchain:
     def audit(self):
         _require(canonical_json_bytes(self.payload) == self.encoded, "frozen compiler deployment changed")
         environment = self.payload["environment"]
-        _require(type(environment) is dict and all(type(k) is str and type(v) is str for k, v in environment.items()),
+        _require(type(environment) is dict and all(type(k) is str and (v is None or type(v) is str) for k, v in environment.items()),
                  "compiler environment shape")
         required = {"CUDA_HOME": _CONDA, "CXX": self.payload["tools"]["cxx"], "CC": self.payload["tools"]["cc"],
                     "TORCH_CUDA_ARCH_LIST": "9.0", "MAX_JOBS": "1", "TORCH_DEVICE_BACKEND_AUTOLOAD": "0",
@@ -143,10 +143,17 @@ def _require_compiled_owner(owner, session):
     return owner
 
 
-def _torch_compile_exact(torch, target, stream, dependency, kwargs):
+def _torch_compile_exact(torch, target, stream, compiler, kwargs):
     with torch.cuda.device(target):
         with torch.cuda.stream(stream):
-            return dependency.load_inline(**kwargs)
+            properties = torch.cuda.get_device_properties(target)
+            compiler._retain(properties)
+            _require((properties.major, properties.minor) == (9, 0), "compiler target is not the frozen H200 architecture")
+            # cpp_extension itself performs native availability checks. Its
+            # first import belongs inside the same observed indexed compile
+            # leaf, not in an unobserved gap before that boundary.
+            compiler.install_hook()
+            return compiler.dependency.load_inline(**kwargs)
 
 
 def _cuda_extension_create_exact(torch, target, stream, delegate, spec, compiler):
@@ -192,6 +199,10 @@ class _Compilation:
     def initialize(self):
         self.toolchain = _Toolchain(self.root.deployment, self.session)
         self.observation.token(self.toolchain)
+        self.audit()
+
+    def _bind_dependency(self):
+        _require(self.dependency is None, "build dependency binds once")
         from torch.utils import cpp_extension
 
         self.dependency = cpp_extension
@@ -211,6 +222,22 @@ class _Compilation:
         self.observation.token(cpp_extension)
         self.toolchain.audit()
         self.audit()
+
+    def install_hook(self):
+        global _ACTIVE_HOOK
+        self.audit()
+        _require(_ACTIVE_HOOK is None and self.hook is None, "overlapping or repeated compiler hook")
+        if self.dependency is None:
+            self._bind_dependency()
+        recipe = CUDA_EXTENSION_RECIPES[self.index]
+        _require(self.dependency._import_module_from_library is self.original_hook
+                 and recipe.name not in sys.modules and self.dependency.JIT_EXTENSION_VERSIONER.get_version(recipe.name) is None,
+                 "earlier hook replacement, generated module or extension cache")
+        self.toolchain.audit()
+        self.hook = self._direct_load
+        self._retain(self.hook)
+        _ACTIVE_HOOK = self
+        self.dependency._import_module_from_library = self.hook
 
     def audit(self):
         _require(_COMPILATIONS.get(self.session) is self and self.root.collector is self
@@ -266,8 +293,8 @@ class _Compilation:
         _require(self.controller._guard_reference == {"sequence": CUDA_COMPILE_SEQUENCES[index], "role": "setup"},
                  "compiler called outside its original ARMED segment")
         self.toolchain.audit()
-        _require(_ACTIVE_HOOK is None and self.dependency._import_module_from_library is self.original_hook
-                 and recipe.name not in sys.modules and self.dependency.JIT_EXTENSION_VERSIONER.get_version(recipe.name) is None,
+        _require(_ACTIVE_HOOK is None and (self.dependency is None or self.dependency._import_module_from_library is self.original_hook)
+                 and recipe.name not in sys.modules,
                  "compile overlap, earlier hook replacement, module or cache")
         source = recipe.source_module
         held = self.session.modules.get(source.__name__)
@@ -289,34 +316,51 @@ class _Compilation:
         kwargs = cuda_extension_kwargs(recipe.name)
         kwargs["build_directory"] = str(directory)
         self._retain(kwargs)
-        self.hook = self._direct_load
-        self._retain(self.hook)
-        _ACTIVE_HOOK = self
-        self.dependency._import_module_from_library = self.hook
+        self.hook = None
+        failure = None
         try:
             self._enter("cuda_compile")
-            result = _torch_compile_exact(self.module, self.target, self.stream, self.dependency, kwargs)
+            result = _torch_compile_exact(self.module, self.target, self.stream, self, kwargs)
             self._retain(result)
             _require(result is self.live[index]["module"] and len(self.owners) == index + 1,
                      "load_inline did not return its admitted module")
             self.audit_module(index)
         except BaseException as error:
-            self.failed(error)
-            raise
+            failure = error
         finally:
+            self._finish_build(failure)
+        self._step("hook_restored")
+
+    def _finish_build(self, failure):
+        """Restore once, audit every exit, and preserve the earliest failure."""
+        global _ACTIVE_HOOK
+        errors = [] if failure is None else [failure]
+        if self.hook is not None:
             try:
                 _require(_ACTIVE_HOOK is self and self.dependency._import_module_from_library is self.hook,
                          "direct helper changed during compilation")
             except BaseException as error:
-                self.failed(error)
-                raise
-            finally:
-                # Restore the original once even when a third object replaced
-                # the adapter. The failed audit still permanently poisons work.
+                errors.append(error)
+            try:
                 self.dependency._import_module_from_library = self.original_hook
-                _ACTIVE_HOOK = None
-                self.toolchain.audit()
-        self._step("hook_restored")
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                if _ACTIVE_HOOK is self:
+                    _ACTIVE_HOOK = None
+        try:
+            self.toolchain.audit()
+        except BaseException as error:
+            errors.append(error)
+        for error in errors:
+            try:
+                self.failed(error)
+            except BaseException as diagnostic:
+                # The already rooted collector holds both exceptions even if
+                # journal issuance fails. A partial journal grants no success.
+                self.failure_objects.append(diagnostic)
+        if errors:
+            raise errors[0]
 
     def _direct_load(self, module_name, path, is_python_module):
         self.audit()
@@ -397,10 +441,10 @@ class _Compilation:
             _require(vars(module).get(name) is entry, "compiled entry rebound")
 
     def failed(self, error):
-        self._retain(error)
         self.failed_flag = True
         if not any(old is error for old in self.failure_objects):
             self.failure_objects.append(error)
+            self._retain(error)
             if self.index is not None:
                 self._step("failed", error)
 
