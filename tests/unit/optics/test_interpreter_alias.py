@@ -1,15 +1,70 @@
 """Cold production source session; no backend import or multiprocessing spawn."""
 import copy
 import json
+from pathlib import Path
+from textwrap import indent
 
 import pytest
 
 from optical_worker.runtime_environment import validate_interpreter_alias_observations
 
-from tests.unit.optics.test_native_bootstrap import _internal
+from tests.unit.optics.test_native_bootstrap import _internal as _source_internal
 from tests.unit.optics.test_native_sources import release as _release_fixture
 
 release = _release_fixture
+PEER = Path(__file__).resolve().parents[2] / "support" / "guarded_peer.py"
+
+
+def _internal(release, before="", after=""):
+    # The aggregate observes aliases through the real bound controller. Keep
+    # the original cold bootstrap and assertions, adding its current custody
+    # prerequisite and actual guard peer rather than disabling observation.
+    prefix = "\nentry._verify(session)\n"
+    if not after:
+        return _source_internal(release, before=before)
+    assert after.startswith(prefix)
+    body = indent(after[len(prefix):] + "\nalias_assertions_completed = True\n", "        ")
+    return _source_internal(release, before=before, after=f"""
+entry._verify(session)
+import socket
+channel, remote = socket.socketpair()
+session.bind_guarded_custody(channel, {{
+ 'protocol_version': 'q54.closed-worker.guarded-wait.v1', 'session': 'c'*32,
+ 'device_ordinal': 1, 'ack_timeout_ms': 1000, 'operation_timeout_ms': 5000}})
+controller = session.bound_controller()
+from optical_worker.lifecycle import WorkerSetupProtocolError
+peer_spec = importlib.util.spec_from_file_location('fixed_peer', {str(PEER)!r})
+peer_module = importlib.util.module_from_spec(peer_spec)
+peer_spec.loader.exec_module(peer_module)
+peer = peer_module.Peer(configuration=controller._guard_client.configuration,
+                        channel_pair=(channel, remote))
+alias_assertions_completed = False
+try:
+    try:
+        with controller.segment('setup'):
+{indent(body, '    ')}
+    except WorkerSetupProtocolError:
+        # Expected poison must prevent normal guard completion. A failure in
+        # any original test assertion/body is never swallowed by this wrapper.
+        assert alias_assertions_completed and session.failed
+        assert controller.termination_evidence is not None
+    assert alias_assertions_completed
+    if controller.termination_evidence is None:
+        controller.terminate(fault='setup_failure', detection_phase='alias_cpu_fixture',
+                             emergency_target_synchronize=None)
+    summary = controller.termination_evidence.lifecycle.to_payload()['summary']
+    assert summary['entered_leaf_count'] == 0
+    assert summary['emergency_sync_attempt_count'] == 0
+    # Healthy CPU-only cancellation still supervises release/exit. A poisoned
+    # normal guard must quarantine directly, without another ARM.
+    assert summary['terminal_arm_attempt_count'] == (0 if session.failed else 1)
+    assert summary['normal_complete_count'] == (0 if session.failed else 1)
+    assert summary['disposition'] == (
+        'quarantined_process_exit' if session.failed else 'cancelled_before_submission_exit')
+    assert not {{'numpy', 'torch', 'warp'}} & set(sys.modules)
+finally:
+    peer.close()
+""")
 
 
 @pytest.mark.parametrize("trap", ["class", "getattribute"])
