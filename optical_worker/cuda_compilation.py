@@ -21,6 +21,7 @@ from .compilation_contract import (
 from .cuda_compilation_evidence import CudaCompilationRecord
 from .lifecycle import DeviceScopeDescriptor
 from .protocol import canonical_json_bytes, canonical_sha256
+from .runtime_environment import _hash_file
 from .wait_protocol import exact_fields
 
 _COMPILATIONS = {}
@@ -35,6 +36,7 @@ _INJECTION_VARIABLES = frozenset({
     "SUNPRO_DEPENDENCIES", "GCC_COMPARE_DEBUG",
 })
 _CONDA = "/home/ang.gao/miniforge3/envs/robot_sim"
+_TOOLCHAIN_PATH = _CONDA + "/bin:/usr/bin:/bin"
 _CPP_EXTENSION_SHA256 = "52ba4de5deedd894e2bdafc9b7f40526dbc2cc1e4c560bbae3b38d4a5dcab0c6"
 
 
@@ -61,6 +63,119 @@ def _private_directory(path):
     return path
 
 
+def _toolchain_tools():
+    return {
+        "nvcc": _CONDA + "/bin/nvcc", "ninja": _CONDA + "/bin/ninja",
+        "cxx": "/usr/bin/x86_64-linux-gnu-g++-13", "cc": "/usr/bin/x86_64-linux-gnu-gcc-13",
+        "cc1plus": "/usr/libexec/gcc/x86_64-linux-gnu/13/cc1plus",
+        "collect2": "/usr/libexec/gcc/x86_64-linux-gnu/13/collect2",
+        "as": "/usr/bin/as", "ld": "/usr/bin/ld", "sh": "/bin/sh",
+        "cudafe": _CONDA + "/bin/cudafe++", "ptxas": _CONDA + "/bin/ptxas",
+        "fatbinary": _CONDA + "/bin/fatbinary", "nvlink": _CONDA + "/bin/nvlink",
+        "cicc": _CONDA + "/nvvm/bin/cicc",
+    }
+
+
+def _toolchain_roots():
+    """Fixed deployment coverage; callers cannot choose their own input subset."""
+    torch = _CONDA + "/lib/python3.12/site-packages/torch"
+    trees = (
+        _CONDA + "/include", _CONDA + "/targets/x86_64-linux/include", _CONDA + "/bin/crt",
+        _CONDA + "/nvvm/libdevice", torch + "/include", "/usr/include", "/usr/local/include",
+        "/usr/lib/gcc/x86_64-linux-gnu/13", "/usr/libexec/gcc/x86_64-linux-gnu/13",
+        "/usr/lib/x86_64-linux-gnu/ldscripts", "/etc/ld.so.conf.d",
+    )
+    libraries = (
+        _CONDA + "/lib", _CONDA + "/lib/stubs", _CONDA + "/nvvm/lib64",
+        _CONDA + "/targets/x86_64-linux/lib", _CONDA + "/targets/x86_64-linux/lib/stubs",
+        torch + "/lib", "/usr/lib", "/usr/lib64", "/usr/lib/x86_64-linux-gnu", "/usr/local/lib",
+        "/usr/lib/x86_64-linux-gnu/libfakeroot", "/usr/local/cuda/targets/x86_64-linux/lib",
+        "/usr/local/cuda-13/targets/x86_64-linux/lib", "/usr/local/cuda-13.2/targets/x86_64-linux/lib",
+    )
+    rows = [(path, "tree", True) for path in trees]
+    rows += [(path, "files", True) for path in libraries + (_CONDA + "/bin",)]
+    # Record absent fallback/hardware-capability search roots too. Their later
+    # appearance changes the snapshot even if old file bytes remain identical.
+    rows += [(path, "files", False) for path in (_CONDA + "/lib64", "/usr/local/lib/x86_64-linux-gnu")]
+    rows += [(path + "/glibc-hwcaps", "tree", False) for path in libraries]
+    rows += [(path, "file", True) for path in (*_toolchain_tools().values(),
+             _CONDA + "/bin/nvcc.profile", "/etc/ld.so.conf", "/etc/ld.so.cache", "/lib64/ld-linux-x86-64.so.2")]
+    return tuple(sorted(rows))
+
+
+def _toolchain_inventory():
+    """Read the fixed closure without importing dependencies or executing tools."""
+    files, links, resolved, resolving, visited = {}, {}, {}, set(), set()
+
+    def resolve(path):
+        path = Path(path)
+        _require(path.is_absolute(), "inventory path must be absolute")
+        if path in resolved:
+            return resolved[path]
+        _require(path not in resolving, "compiler input symlink cycle")
+        resolving.add(path)
+        if path.parent == path:
+            result = path
+        elif path.name == "..":
+            result = resolve(path.parent).parent
+        else:
+            candidate = resolve(path.parent) / path.name
+            info = candidate.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                target = os.readlink(candidate)
+                links[str(candidate)] = {"path": str(candidate), "target": target}
+                result = resolve(candidate.parent / target)
+            else:
+                result = candidate
+        resolving.remove(path)
+        resolved[path] = result
+        return result
+
+    def visit(path, recursive):
+        path = resolve(path)
+        before = path.stat()
+        if stat.S_ISDIR(before.st_mode):
+            key = path, recursive
+            if key in visited:
+                return
+            visited.add(key)
+            for child in sorted(path.iterdir()):
+                actual = resolve(child)
+                if recursive or not actual.is_dir():
+                    visit(actual, recursive)
+            return
+        _require(stat.S_ISREG(before.st_mode), "non-regular compiler input")
+        if str(path) not in files:
+            digest, size = _hash_file(path)
+            after = path.stat()
+            _require((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                     == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                     and size == before.st_size and not path.is_symlink(), "compiler input changed while hashing")
+            files[str(path)] = {"path": str(path), "size": size, "sha256": digest}
+
+    roots = []
+    for name, kind, required in _toolchain_roots():
+        present = os.path.lexists(name)
+        _require(present or not required, "required compiler input root missing: " + name)
+        actual = resolve(Path(name)) if present else None
+        roots.append({"path": name, "kind": kind, "present": present,
+                      "resolved": None if actual is None else str(actual)})
+        if actual is not None:
+            _require(actual.is_file() if kind == "file" else actual.is_dir(), "compiler root kind changed")
+            visit(actual, kind == "tree")
+    tools = {name: str(resolve(Path(path))) for name, path in _toolchain_tools().items()}
+    _require(all(path in files for path in tools.values()), "compiler executable missing from coverage")
+    for row in links.values():
+        _require(Path(row["path"]).is_symlink() and os.readlink(row["path"]) == row["target"],
+                 "compiler input symlink changed during inventory")
+    for row in roots:
+        _require(os.path.lexists(row["path"]) == row["present"]
+                 and (not row["present"] or str(Path(row["path"]).resolve(strict=True)) == row["resolved"]),
+                 "compiler root changed during inventory")
+    return {"roots": roots, "files": [files[path] for path in sorted(files)],
+            "symlinks": [links[path] for path in sorted(links)], "tools": tools}
+
+
 class _Toolchain:
     def __init__(self, payload, session):
         p = exact_fields(payload, {"schema_version", "source_sha256", "environment_sha256", "environment",
@@ -73,38 +188,19 @@ class _Toolchain:
         self.sha256 = canonical_sha256(p)
         self.payload = p
         self.root = _private_directory(p["run_root"])
-        _require(type(p["roots"]) is list and type(p["files"]) is list and p["files"]
-                 and type(p["symlinks"]) is list, "compiler inventory missing")
-        roots = [Path(path) for path in p["roots"]]
-        _require(len(set(roots)) == len(roots) and all(path.is_absolute() and path.is_dir() for path in roots),
-                 "compiler inventory root mismatch")
-        paths = set()
-        for row in p["files"]:
-            exact_fields(row, {"path", "size", "sha256"})
-            _require(type(row["path"]) is str and type(row["size"]) is int and row["size"] >= 0
-                     and type(row["sha256"]) is str and len(row["sha256"]) == 64
-                     and all(c in "0123456789abcdef" for c in row["sha256"]), "compiler inventory file shape")
-            path = Path(row["path"])
-            _require(path.is_absolute() and path not in paths and path.resolve(strict=True) == path
-                     and any(path.is_relative_to(root) for root in roots), "compiler inventory file escaped roots")
-            paths.add(path)
-            data, observed = _regular_bytes(path)
-            _require(observed == row, "compiler inventory file changed")
-        tools = exact_fields(p["tools"], {"nvcc", "ninja", "cxx", "cc", "cc1plus", "collect2", "as", "ld"})
-        _require(all(type(path) is str for path in tools.values()) and tools["nvcc"] == _CONDA + "/bin/nvcc"
-                 and tools["cxx"] == "/usr/bin/x86_64-linux-gnu-g++-13"
-                 and tools["cc"] == "/usr/bin/x86_64-linux-gnu-gcc-13"
-                 and all(Path(path) in paths for path in tools.values()), "compiler tools differ from fixed deployment")
-        _require(Path(_CONDA + "/bin/nvcc.profile") in paths, "nvcc implicit profile missing from inventory")
-        for row in p["symlinks"]:
-            exact_fields(row, {"path", "target"})
-            path = Path(row["path"])
-            _require(path.is_absolute() and path.is_symlink() and os.readlink(path) == row["target"]
-                     and path.resolve(strict=True) in paths, "compiler symlink chain drift")
+        self.inventory_checked = False
         expected_pch = [_CONDA + "/lib/python3.12/site-packages/torch/include/torch/extension.h" + suffix
                         for suffix in (".gch", ".sign")]
         _require(p["pch_paths"] == expected_pch, "shared PCH path mismatch")
         self.audit()
+
+    def audit_inventory(self):
+        self.inventory_checked = False
+        self.audit()
+        observed = _toolchain_inventory()
+        _require(canonical_json_bytes(observed) == canonical_json_bytes({key: self.payload[key] for key in observed}),
+                 "compiler inventory coverage or bytes changed")
+        self.inventory_checked = True
 
     def audit(self):
         _require(canonical_json_bytes(self.payload) == self.encoded, "frozen compiler deployment changed")
@@ -113,7 +209,8 @@ class _Toolchain:
                  "compiler environment shape")
         required = {"CUDA_HOME": _CONDA, "CXX": self.payload["tools"]["cxx"], "CC": self.payload["tools"]["cc"],
                     "TORCH_CUDA_ARCH_LIST": "9.0", "MAX_JOBS": "1", "TORCH_DEVICE_BACKEND_AUTOLOAD": "0",
-                    "TMPDIR": str(self.root / "tmp"), "TORCH_EXTENSIONS_DIR": str(self.root / "torch")}
+                    "TMPDIR": str(self.root / "tmp"), "TORCH_EXTENSIONS_DIR": str(self.root / "torch"),
+                    "PATH": _TOOLCHAIN_PATH}
         _require(all(environment.get(key) == value for key, value in required.items())
                  and {"PATH", "LD_LIBRARY_PATH"} <= set(environment)
                  and all(os.environ.get(key) == value for key, value in environment.items())
@@ -207,6 +304,7 @@ class _Compilation:
 
     def _bind_dependency(self):
         _require(self.dependency is None, "build dependency binds once")
+        _require(self.toolchain.inventory_checked, "compiler inventory must precede dependency import")
         from torch.utils import cpp_extension
 
         self.dependency = cpp_extension
@@ -296,7 +394,7 @@ class _Compilation:
         recipe = CUDA_EXTENSION_RECIPES[index]
         _require(self.controller._guard_reference == {"sequence": CUDA_COMPILE_SEQUENCES[index], "role": "setup"},
                  "compiler called outside its original ARMED segment")
-        self.toolchain.audit()
+        self.toolchain.audit_inventory()
         _require(_ACTIVE_HOOK is None and (self.dependency is None or self.dependency._import_module_from_library is self.original_hook)
                  and recipe.name not in sys.modules,
                  "compile overlap, earlier hook replacement, module or cache")

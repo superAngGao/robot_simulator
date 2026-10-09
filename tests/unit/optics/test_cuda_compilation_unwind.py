@@ -18,7 +18,7 @@ def compiler(tmp_path, monkeypatch):
         modules={source.__name__: (source, SimpleNamespace(source=b"fixture", origin="fixture.py"), "completed")},
     )
     owner = compilation._Compilation(session, object(), (), object(), 1, object())
-    owner.toolchain = SimpleNamespace(root=tmp_path, audit=lambda: None)
+    owner.toolchain = SimpleNamespace(root=tmp_path, audit=lambda: None, audit_inventory=lambda: None)
     monkeypatch.setattr(owner, "audit", lambda: None)
     monkeypatch.setattr(owner, "audit_module", lambda index: None)
     monkeypatch.setattr(owner, "_enter", lambda site: None)

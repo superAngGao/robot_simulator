@@ -15,7 +15,7 @@ def toolchain(tmp_path, monkeypatch):
         "CC": "/usr/bin/x86_64-linux-gnu-gcc-13", "TORCH_CUDA_ARCH_LIST": "9.0",
         "MAX_JOBS": "1", "TORCH_DEVICE_BACKEND_AUTOLOAD": "0",
         "TMPDIR": str(tmp_path / "tmp"), "TORCH_EXTENSIONS_DIR": str(tmp_path / "torch"),
-        "PATH": "fixture-path-never-executed", "LD_LIBRARY_PATH": None,
+        "PATH": compilation._TOOLCHAIN_PATH, "LD_LIBRARY_PATH": None,
     }
     for key in compilation._INJECTION_VARIABLES:
         monkeypatch.delenv(key, raising=False)
