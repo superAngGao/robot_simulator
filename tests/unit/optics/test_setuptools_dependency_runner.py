@@ -25,14 +25,15 @@ def test_cpu_hook_allows_only_exact_source_git_commands(tmp_path):
     revision = "a" * 40
     hook = _cpu_only(tmp_path, revision)
     for argv in (["git", "rev-parse", "HEAD"], ["git", "show", revision + ":" + CATALOG]):
-        hook("subprocess.Popen", ("git", argv, str(tmp_path), None))
+        hook("subprocess.Popen", ("git", argv, tmp_path, None))
     for args in (
-        ("nvcc", ["nvcc", "--version"], str(tmp_path), None),
-        ("git", ["git", "status"], str(tmp_path), None),
-        ("git", ["git", "show", "b" * 40 + ":" + CATALOG], str(tmp_path), None),
-        ("git", ["git", "rev-parse", "HEAD"], str(tmp_path.parent), None),
-        ("git", ["git", "rev-parse", "HEAD"], str(tmp_path), {}),
-        ("sh", ["git", "rev-parse", "HEAD"], str(tmp_path), None),
+        ("nvcc", ["nvcc", "--version"], tmp_path, None),
+        ("git", ["git", "status"], tmp_path, None),
+        ("git", ["git", "show", "b" * 40 + ":" + CATALOG], tmp_path, None),
+        ("git", ["git", "rev-parse", "HEAD"], tmp_path.parent, None),
+        ("git", ["git", "rev-parse", "HEAD"], tmp_path, {}),
+        ("git", ["git", "rev-parse", "HEAD"], str(tmp_path), None),
+        ("sh", ["git", "rev-parse", "HEAD"], tmp_path, None),
     ):
         with pytest.raises(RuntimeError, match="forbids this process"):
             hook("subprocess.Popen", args)

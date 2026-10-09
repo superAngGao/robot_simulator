@@ -38,7 +38,7 @@ def _cpu_only(root, revision):
         if event == "subprocess.Popen":
             executable, argv, cwd, env = args
             if (executable == "git" and type(argv) is list and tuple(argv) in commands
-                    and cwd == str(root) and env is None):
+                    and type(cwd) is type(root) and cwd == root and env is None):
                 return  # Exact read-only source revalidation; still owned descendants.
             raise RuntimeError("dependency-only driver forbids this process")
         if event in {"os.system", "os.fork", "os.posix_spawn", "ctypes.dlopen"}:

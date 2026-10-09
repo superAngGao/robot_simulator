@@ -45,7 +45,8 @@ executable='git', argv=['git','rev-parse','HEAD'], cwd=exact_root, env=None
 executable='git', argv=['git','show',exact_revision+':optical_worker/data/native_sources/v13.json'], cwd=exact_root, env=None
 ```
 
-The actual target Linux audit event must have a list argv and string cwd. Any
+The actual target Linux audit event must have a list argv and an exact PosixPath
+cwd equal to the frozen root (no generic path-like conversion is called). Any
 other command, option, executable, revision, directory or environment rejects.
 Backend imports and os.system/fork/posix_spawn/ctypes.dlopen still reject. The
 restriction remains installed during binding and all later production source
