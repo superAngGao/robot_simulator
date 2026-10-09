@@ -4,6 +4,42 @@
   "must_complete": true,
   "entries": [
     {
+      "entry_id": "native_worker_runtime_custody_aggregate",
+      "paths": [
+        "optical_worker/runtime_custody.py",
+        "optical_worker/native_manifest.py",
+        "tests/support/runtime_custody_launch.py",
+        "tests/support/runtime_custody_preflight.py",
+        "tests/support/native_scope_acceptance.py",
+        "tests/unit/optics/test_runtime_custody.py",
+        "tests/unit/optics/test_runtime_custody_actual_records.py",
+        "tests/unit/optics/test_runtime_custody_native_failure_cold.py",
+        "tests/unit/optics/test_runtime_native_scope_codec.py",
+        "tests/unit/optics/test_native_scope_observer.py",
+        "tests/unit/optics/test_native_manifest.py",
+        "tests/unit/optics/data/native_manifests/asymmetric_synthetic_7x3_v1.json",
+        "tests/unit/optics/data/native_manifests/synthetic_dynamic_rigid_960x640_v1.json",
+        "tests/unit/optics/data/native_manifests/go2_static_960x640_v1.json",
+        "tests/unit/optics/data/native_manifests/go2_static_1920x1080_v1.json",
+        "tests/gpu/test_native_runtime_fault_matrix.py",
+        "tests/gpu/test_native_scope_runtime.py",
+        "tests/data/runtime_environments/183_cuda_cold_import_author_v1.json",
+        "tests/data/runtime_environments/183_cuda_stream_author_v1.json",
+        "tests/data/runtime_environments/183_cuda_go2_author_v1.json"
+      ],
+      "symbols": {},
+      "temporary_entry_exit": "C2d3 remains unaccepted until complete actual runtime validation and independent whole-stage review. Preserve original observed records as historical evidence, never migrate them into claimed executions. Remove sacrificial comparison drivers only after equivalent selected-worker coverage exists.",
+      "cuda_selected": {
+        "action": "collapse",
+        "acceptance": "retain the sole CPU-safe manifest and descriptive custody schema with selected CUDA environment/source/storage/lifecycle validation; remove Warp-specific rules, losing-lane profiles and paired test machinery after equivalent selected-worker tests; keep historical raw evidence and no parsed authority"
+      },
+      "warp_selected": {
+        "action": "collapse",
+        "acceptance": "retain the sole CPU-safe manifest and descriptive custody schema with selected Warp environment/source/storage/lifecycle validation; remove CUDA-specific rules, losing-lane profiles and paired test machinery after equivalent selected-worker tests; keep historical raw evidence and no parsed authority"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
       "entry_id": "native_worker_runtime_admission",
       "paths": [
         "optical_worker/runtime_environment.py",

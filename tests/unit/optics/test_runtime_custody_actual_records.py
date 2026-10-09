@@ -93,13 +93,19 @@ def test_runtime_binding_owner_substitutions(execution, field, replacement):
     ("device_ordinal", 0), ("device_ordinal", True), ("base_pointer", 0),
     ("storage_identity", 0), ("storage_nbytes", 0), ("active_start", 1),
     ("active_count", 1), ("dtype", "torch.float64"), ("shape", [1]),
-    ("strides", [1, 1]), ("strides", [-1, 4]), ("active_count", True),
+    ("strides", "noncontiguous"), ("strides", [-1, 4]), ("active_count", True),
 ])
 def test_registered_storage_descriptor_substitutions_with_recomputed_digest(execution, field, value):
     original, environment, inputs, _ = execution
     payload = copy.deepcopy(original)
     storage = event(payload, "prepared_storage")["details"]
     row = next(row for row in storage["arrays"] if row["signature"]["active_count"])
+    if field == "strides" and value == "noncontiguous":
+        # A singleton axis can have another stride without changing layout.
+        # Mutate an axis that actually addresses multiple elements instead.
+        axis = next(i for i, dimension in enumerate(row["signature"]["shape"]) if dimension > 1)
+        value = list(row["signature"]["strides"])
+        value[axis] += 1
     assert (type(row["signature"][field]) is not type(value)
             or row["signature"][field] != value)
     row["signature"][field] = value

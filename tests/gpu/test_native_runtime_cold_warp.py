@@ -1,8 +1,9 @@
-"""Actual cold Warp upload/readback plus terminal-disposal supervision.
+"""Actual cold Warp/CUDA upload/readback plus terminal-disposal supervision.
 
 Opt-in host-specific author acceptance, not a product deployment profile or
 complete C2d3 acceptance. No parent Torch/Warp import, fixture uploads or warmup.
-CUDA/Go2/foreign-device and setup fault matrices remain separate required work.
+The historical filename is retained. Go2/foreign-device and setup fault
+matrices remain separate required work. Use the external live identity recorder.
 """
 
 import hashlib
@@ -24,14 +25,13 @@ from optical_worker.workloads import (
     build_canonical_packed_scene,
     build_canonical_transform_replay,
 )
+from tests.gpu.test_native_runtime_fault_matrix import PROFILES
 
 ROOT = Path(__file__).resolve().parents[2]
-ENVIRONMENT = ROOT / "tests/data/runtime_environments/183_warp_synthetic_author_v5.json"
-ENVIRONMENT_SHA256 = "0783cc820dcb738b8ec82586e2d14a12a7b9b81989e67d1ba9f86ce1ea3ed1b7"
 pytestmark = [
     pytest.mark.gpu,
     pytest.mark.skipif(
-        os.name != "posix" or os.environ.get("ROBOT_SIM_TEST_C2D3_COLD_WARP") != "1",
+        os.name != "posix" or os.environ.get("ROBOT_SIM_TEST_C2D3_TERMINAL") != "1",
         reason="explicit matching 183 deployment required; a skip is NOT C2d3 acceptance",
     ),
 ]
@@ -55,14 +55,24 @@ def _expected_source(case_id):
 
 
 @pytest.mark.parametrize("case_id", ["asymmetric_synthetic_7x3_v1", "synthetic_dynamic_rigid_960x640_v1"])
+@pytest.mark.parametrize("lane", ["warp", "cuda"])
 @pytest.mark.parametrize(
     "fault", ["runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang"]
 )
-def test_actual_cold_canonical_warp_setup_and_terminal_disposition(tmp_path, fault, case_id):
-    environment = RuntimeEnvironmentContract.from_payload(json.loads(ENVIRONMENT.read_bytes()))
+def test_actual_cold_canonical_warp_setup_and_terminal_disposition(tmp_path, lane, fault, case_id):
+    filename, environment_sha256, deadline = PROFILES[lane]
+    environment_path = ROOT / "tests/data/runtime_environments" / filename
+    environment = RuntimeEnvironmentContract.from_payload(json.loads(environment_path.read_bytes()))
     # The trusted test configuration pins bytes, not a caller self-reported hash.
-    assert environment.sha256 == ENVIRONMENT_SHA256
-    environment.verify_files(expected_sha256=ENVIRONMENT_SHA256)
+    assert environment.sha256 == environment_sha256
+    environment.verify_files(expected_sha256=environment_sha256)
+    mapping = subprocess.check_output(["nvidia-smi", "--query-gpu=index,uuid,driver_version",
+                                       "--format=csv,noheader"], text=True, timeout=15)
+    rows = [tuple(part.strip() for part in line.split(",")) for line in mapping.splitlines()]
+    assert ("0", "GPU-a4b256c9-c56a-0ef5-19fa-482196cc3274", "595.71.05") in rows
+    assert ("1", "GPU-3a3112ff-837c-3b87-38d1-cb203d656589", "595.71.05") in rows
+    assert "CUDA_VISIBLE_DEVICES" not in os.environ
+    (tmp_path / "gpu_mapping.txt").write_text(mapping)
     expected = _expected_source(case_id)
     expected_names = [array.name for array in expected.manifest.arrays]
     array_count = len(expected_names)
@@ -70,17 +80,17 @@ def test_actual_cold_canonical_warp_setup_and_terminal_disposition(tmp_path, fau
     request = {
         "root": str(ROOT),
         "revision": revision,
-        "lane": "warp",
+        "lane": lane,
         "catalog_sha256": hashlib.sha256((ROOT / CATALOG_PATH).read_bytes()).hexdigest(),
         "guard_configuration": {
             "protocol_version": "q54.closed-worker.guarded-wait.v1",
             "session": "f" * 32,
             "device_ordinal": 1,
             "ack_timeout_ms": 1000,
-            "operation_timeout_ms": 30000,
+            "operation_timeout_ms": deadline,
         },
-        "environment_path": str(ENVIRONMENT),
-        "environment_sha256": ENVIRONMENT_SHA256,
+        "environment_path": str(environment_path),
+        "environment_sha256": environment_sha256,
         "case_id": case_id,
         "go2_model_dir": None,
     }
@@ -109,10 +119,13 @@ def test_actual_cold_canonical_warp_setup_and_terminal_disposition(tmp_path, fau
     )
     os.close(read_fd)
     try:
-        output, error = supervisor.communicate(timeout=300)
+        output, error = supervisor.communicate(timeout=10 * deadline / 1000 + 45)
+        (tmp_path / "supervisor_stdout.json").write_text(output)
+        (tmp_path / "supervisor_stderr.txt").write_text(error)
         assert supervisor.returncode == 0, (output, error)
         result = json.loads(output)
         artifact = result["artifact"]
+        (tmp_path / "custody_artifact.json").write_text(json.dumps(artifact))
         validate_custody_artifact(artifact)
         from optical_worker.runtime_custody import (
             RuntimeCustodyRecord, validate_runtime_custody_attachment, validate_runtime_custody_selection,
@@ -136,18 +149,24 @@ def test_actual_cold_canonical_warp_setup_and_terminal_disposition(tmp_path, fau
             "pid": result["worker_pid"],
             "ppid": supervisor.pid,
         }
+        identity = json.loads((tmp_path / "external_process_identity.json").read_bytes())
+        assert identity["worker"]["pid"] == result["worker_pid"]
+        assert identity["supervisor"]["pid"] == supervisor.pid
+        assert identity["parent"]["pid"] == os.getpid()
         control = artifact["supervisor"]["summary"]
         worker = artifact["worker"]["summary"]
         assert control["complete"] and control["state"] == "EXITED"
         assert control["arm_count"] == 7 and control["normal_complete_count"] == 6
         assert worker["setup_work_counts"] == {
-            "allocation": array_count,
+            # CUDA's indexed first Stream is itself an allocation leaf.
+            "allocation": array_count + (1 if lane == "cuda" else 0),
             "host_to_device_copy": array_count,
             "device_to_host_copy": array_count,
             "event_create": 2,
             "event_record": 2,
             "event_wait": 2,
-            "runtime_import_or_init": 6,
+            # Warp also counts its init, stream lookup and readback scope here.
+            "runtime_import_or_init": 6 if lane == "warp" else 3,
         }
         report = json.loads((tmp_path / "input_validation_report.json").read_text())
         assert report["final_execution_readiness_issued"] is False
@@ -185,11 +204,11 @@ def test_actual_cold_canonical_warp_setup_and_terminal_disposition(tmp_path, fau
                 assert worker["guardian_state"] == "TRANSFERRED_TO_QUARANTINE"
                 assert worker["custody"] == "full_quarantine"
                 assert worker["release_status"] == "not_authorized"
-        (tmp_path / "custody_artifact.json").write_text(json.dumps(artifact), encoding="utf-8")
         print(
             json.dumps(
                 {
                     "fault": fault,
+                    "lane": lane,
                     "case_id": case_id,
                     "parent_pid": os.getpid(),
                     "supervisor_pid": supervisor.pid,
@@ -201,8 +220,5 @@ def test_actual_cold_canonical_warp_setup_and_terminal_disposition(tmp_path, fau
     finally:
         os.close(write_fd)
         if supervisor.poll() is None:
-            try:
-                supervisor.communicate(timeout=40)
-            except subprocess.TimeoutExpired:
-                supervisor.kill()
-                supervisor.communicate(timeout=3)
+            # Parent EOF is handled by the original per-lane deadline/reaper.
+            supervisor.communicate(timeout=deadline / 1000 + 15)
