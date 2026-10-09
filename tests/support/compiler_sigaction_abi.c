@@ -4,6 +4,12 @@
 #include <stdio.h>
 #include <signal.h>
 #include <sys/prctl.h>
+#include <sys/pidfd.h>
+
+_Static_assert(__builtin_types_compatible_p(pid_t, int), "pid_t must be signed int");
+_Static_assert(__builtin_types_compatible_p(__typeof__(&pidfd_open),
+                                         int (*)(pid_t, unsigned int)), "pidfd_open signature changed");
+_Static_assert(sizeof(int) == 4 && sizeof(unsigned int) == 4, "pidfd argument ABI changed");
 
 int main(void) {
     struct sigaction action;

@@ -171,13 +171,13 @@ class Observer:
         self.job, self.directory, self.case = job, directory, request["process_case"]
         self.production, self.injections, self.read_count = production, [], 0
         self.original_identity = production._proc_identity
-        self.original_open = production.os.pidfd_open
+        self.original_open = job.policy.open_pidfd
         self.original_signal = production.signal.pidfd_send_signal
         self.original_sample = job._sample_session
         self.pidfds = []
         self.exited_core = None
         production._proc_identity = self.identity
-        production.os.pidfd_open = self.open_handle
+        job.policy.open_pidfd = self.open_handle
         production.signal.pidfd_send_signal = self.signal
         job._sample_session = self.sample
 
@@ -199,11 +199,11 @@ class Observer:
                 raise PermissionError(errno.EACCES, "injected proc read failure")
         return result
 
-    def open_handle(self, pid, flags=0):
+    def open_handle(self, pid):
         if self.case == "handle_failure" and not self.injections:
             self.inject("handle_failure")
             raise OSError(errno.EMFILE, "injected pidfd exhaustion")
-        fd = self.original_open(pid, flags)
+        fd = self.original_open(pid)
         self.pidfds.append({"pid": pid, "fd": fd,
                             "fdinfo": Path('/proc/self/fdinfo', str(fd)).read_text()})
         return fd
@@ -246,7 +246,7 @@ class Observer:
             else:
                 raise AssertionError("fixture pidfd remains open after CLOSED")
         self.production._proc_identity = self.original_identity
-        self.production.os.pidfd_open = self.original_open
+        self.job.policy.open_pidfd = self.original_open
         self.production.signal.pidfd_send_signal = self.original_signal
         self.job._sample_session = self.original_sample
         return {"case": self.case, "injections": self.injections, "pidfds": self.pidfds,

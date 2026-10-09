@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from types import SimpleNamespace
+import errno
 
 import pytest
 
@@ -90,3 +91,64 @@ def test_pidfd_close_failure_retains_draining_owner_and_is_not_retried(monkeypat
     else:
         assert job.handles == {} and job.obligation.replay.state == "CLOSED"
         job.obligation.record(require_closed=True)
+
+
+@pytest.mark.parametrize('error_number', [errno.ESRCH, errno.EMFILE, errno.EPERM])
+def test_fixed_libc_pidfd_error_retains_errno_without_numeric_pid_fallback(monkeypatch, error_number):
+    policy = object.__new__(supervision._SubreaperPolicy)
+    calls = []
+    def failed(pid, flags):
+        calls.append((pid, flags))
+        return -1
+    policy._pidfd_open = failed  # CPU C-return model; no CDLL or syscall.
+    monkeypatch.setattr(supervision.ctypes, 'get_errno', lambda: error_number)
+    with pytest.raises(OSError) as raised:
+        policy.open_pidfd(200)
+    assert raised.value.errno == error_number and calls == [(200, 0)]
+
+
+@pytest.mark.parametrize('pid', [0, -1, 2**31, True, 1.0])
+def test_fixed_libc_pidfd_rejects_invalid_pid_before_call(pid):
+    policy = object.__new__(supervision._SubreaperPolicy)
+    policy._pidfd_open = lambda *args: pytest.fail('invalid PID reached native call')
+    with pytest.raises(supervision.GuardProtocolError, match='invalid child PID'):
+        policy.open_pidfd(pid)
+
+
+@pytest.mark.parametrize('after', ['same', 'changed', 'missing'])
+def test_pidfd_acquisition_uses_fixed_libc_and_keeps_before_after_identity_checks(monkeypatch, after):
+    job = object.__new__(supervision._CompilerJob)
+    job.pid, job.handles = 100, {}
+    job.policy = object.__new__(supervision._SubreaperPolicy)
+    identity = (200, 2, 200)
+    calls = []
+    reads = 0
+    def read(pid):
+        nonlocal reads
+        reads += 1
+        calls.append(('read', pid))
+        if reads == 2 and after == 'missing':
+            raise FileNotFoundError(errno.ENOENT, 'CPU proc model')
+        observed = (200, 3, 200) if reads == 2 and after == 'changed' else identity
+        return observed, 100, 'S'
+    def native_open(pid, flags):
+        calls.append(('open', pid, flags))
+        return 12345  # Never used as an actual OS descriptor.
+    original_close = supervision.os.close
+    def close(fd):
+        if fd == 12345:
+            calls.append(('close', fd))
+        else:
+            original_close(fd)
+    monkeypatch.delattr(supervision.os, 'pidfd_open', raising=False)
+    monkeypatch.setattr(supervision, '_proc_identity', read)
+    monkeypatch.setattr(supervision.os, 'close', close)
+    job.policy._pidfd_open = native_open
+    if after == 'same':
+        job._acquire(identity)
+        assert job.handles == {identity: 12345}
+    else:
+        with pytest.raises((supervision.GuardProtocolError, FileNotFoundError)):
+            job._acquire(identity)
+        assert job.handles == {}
+    assert calls == [('read', 200), ('open', 200, 0), ('read', 200)] + ([] if after == 'same' else [('close', 12345)])

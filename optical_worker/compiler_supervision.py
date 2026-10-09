@@ -71,6 +71,11 @@ class _SubreaperPolicy:
         self._sigaction = self.library.sigaction
         self._sigaction.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(_SigAction)]
         self._sigaction.restype = ctypes.c_int
+        # Pinned Conda Python lacks os.pidfd_open despite Linux/glibc support.
+        # Use one fixed binding on every deployment, not a runtime fallback.
+        self._pidfd_open = self.library.pidfd_open
+        self._pidfd_open.argtypes = [ctypes.c_int, ctypes.c_uint]
+        self._pidfd_open.restype = ctypes.c_int
         self._check_sigchld()
         self._check_result(self._prctl(36, 1, 0, 0, 0))
         self.verify()
@@ -93,6 +98,14 @@ class _SubreaperPolicy:
         self._check_result(self._prctl(37, address, 0, 0, 0))
         _require(value.value == 1, "subreaper readback failed")
         self._check_sigchld()
+
+    def open_pidfd(self, pid):
+        _require(type(pid) is int and 0 < pid < 2**31, "invalid child PID for pidfd")
+        fd = self._pidfd_open(pid, 0)  # Fixed flags; no arbitrary syscall/function.
+        if fd < 0:
+            code = ctypes.get_errno()
+            raise OSError(code, os.strerror(code))
+        return fd
 
 
 def _proc_identity(pid):
@@ -122,7 +135,7 @@ class _CompilerJob:
         _require(sys.platform == "linux" and threading.current_thread() is threading.main_thread()
                  and len(threading.enumerate()) == 1, "compiler supervisor must be dedicated and single-threaded")
         _require(not _LIVE_JOBS, "only one compiler tree per supervisor")
-        _require(hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")
+        _require(hasattr(signal, "pidfd_send_signal")
                  and hasattr(os, "waitid") and hasattr(os, "WNOWAIT"), "required Linux process APIs absent")
         self.pid = os.getpid()
         _require({p.name for p in Path("/proc/self/task").iterdir()} == {str(self.pid)},
@@ -225,7 +238,7 @@ class _CompilerJob:
     def _acquire(self, expected):
         before, ppid, _ = _proc_identity(expected[0])
         _require(before == expected and ppid == self.pid, "child identity changed before pidfd")
-        fd = os.pidfd_open(expected[0], 0)
+        fd = self.policy.open_pidfd(expected[0])
         try:
             after, ppid, _ = _proc_identity(expected[0])
             _require(after == before and ppid == self.pid, "child identity changed around pidfd")
