@@ -1780,6 +1780,15 @@ Next milestone:
       two wrong first hits; camera rounding alone does not explain them.
       Root-cause repair/native numerical acceptance and performance remain
       pending. The complete bounded review is archived unchanged; no gate opens.
+      Native intersection repair now has fresh code-reviewv3 approval at
+      a42dbe0154e7c97dcd23a1de2514636551079d74 (115 independent checks passed).
+      Triangle/box intermediate precision and conservative BVH search address
+      captured edge errors plus both original review counterexamples without
+      changing physical cutoffs, camera/geometry or existing tolerances. The
+      full report is archived unchanged. Approved source is integrated while
+      preserving earlier evidence/history; new fixed CUDA compilation and
+      supervised full-frame Go2 validation are underway at the frozen source.
+      Native optical closure, speed evidence and whole C4 remain unproved.
       Fixed R0 storage native-reviewv1 approves the14-case campaign at3d6692b:
       eight positives, four guarded raises and two deadline kills independently
       replayed; all29 author PIDs absent. Raw archive SHA256 is
