@@ -42,7 +42,7 @@ _SNAPSHOT_FUNCTION = "_render_launch_snapshot"
 # Exact LF Git/source-release bytes reviewed in C2c4 (4b7bf4c). Deliberately
 # not universal-newline-normalized at verification time. A CRLF checkout is
 # not this POSIX worker release; packaging must supply the reviewed bytes.
-_SNAPSHOT_SOURCE_SHA256 = "21b98c19956dbfba3131cfd66b37b86d79798d275dc0f2954d065c67d8c40e45"
+_SNAPSHOT_SOURCE_SHA256 = "e19dfc74327111fa70ce7d06aa9a4379a9ce50d8932664a0a2dedef53895886f"
 _SNAPSHOT_FUNCTION_SHA256 = "725c7f315fdba4ad6df78e31a149865fd97e26da3c95df24678dbadba0459199"
 # Existing CPU regex construction is not Python code compilation. Keep this
 # exception release-pinned; do not generally admit arbitrary obj.compile().
