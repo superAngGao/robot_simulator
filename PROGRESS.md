@@ -1701,8 +1701,19 @@ Next milestone:
       absent. Raw archive SHA and CPU source/preexisting-state checks are in
       test-evidencev5. Fresh warp-admission-support code-reviewv1 approves4fe6b3a
       for the next15 admission selectors; no production delta or new manager.
-      Native admission/regression acceptance and actual graph/render work remain
-      pending; the owner-requested whole-C4 refactor is still required.
+      All15 real Go2 post-compilation admission failures at4fe6b3a now pass their
+      exact rejection/retention/exit checks (test-evidencev6; all31 owned PIDs
+      absent). Existing Warp input960 and CUDA factory/input960/1920 regressions
+      also pass at4fe6b3a (test-evidencev7; all7 owned PIDs absent). A fresh
+      compilation native acceptance review is pending; this is not rendering.
+      Output allocation repair has independent code approval atfdb86a0. Fixed
+      R0 storage integration now has independent code approval at12c1619:
+      original uploaded world/BVH arrays are reused, actual host BVH stats are
+      retained, and existing output allocators run under one guarded session
+      entry. The full fixed-render-storage code-reviewv1 is archived unchanged;
+      reviewer independently ran572 tests with13 host/asset skips. Real native
+      storage/scope/failure validation and command/event/render graph work remain.
+      The owner-requested systematic whole-C4 refactor is still required.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
