@@ -1812,8 +1812,22 @@ Next milestone:
       and requests numerical changes for both source-normal loss and ray
       rounding. It independently reproduces the source-normal census and
       authoritative-camera counterexample. Full report is archived verbatim;
-      full CPU acceptance, speed and whole C4 remain open. Next is one reviewed
-      numerical-input representation amendment covering R0/R1 consistently.
+      full CPU acceptance, speed and whole C4 remain open. Input-precision
+      design v2 atdb062cd now has fresh independent design approval, archived
+      at02e5c1c; implementation remains unfinished in a separate worktree.
+      New original full CPU frames at812ca29 expose shared native failures:
+      1920 has36 instance/3 range failures,960 has13 instance/4 range failures,
+      plus normal/RGB discrepancies. Both full frames and exact scripts are
+      preserved in archive f6698bee3e11b7e0a2bb24b7abc28a6e74531b88b369bd10ae103051a6e92936.
+      Author diagnosis in full-cpu-frame__diagnosis__codex__v1 documents20639
+      source faces omitted by the native filter and differing CPU/native tie
+      thresholds. Two wrong ranges directly involve omitted nearest faces;
+      all36 instance failures have nearby lower-key competing instances.
+      The source-normal/ray-only amendment cannot by itself close these
+      differences. Next consolidate the numerical policy amendment around
+      these root causes; no unreviewed policy/tolerance change is authorized.
+      New full CPU evidence still awaits independent review and contains no
+      native intensity or performance result. Whole C4 remains incomplete.
       Fixed R0 storage native-reviewv1 approves the14-case campaign at3d6692b:
       eight positives, four guarded raises and two deadline kills independently
       replayed; all29 author PIDs absent. Raw archive SHA256 is
