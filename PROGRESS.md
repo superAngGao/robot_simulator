@@ -1769,9 +1769,17 @@ Next milestone:
       (50 fresh CPU tests, no substantive findings). The existing readback
       guard can capture original rays and first-hit channels using one shared
       copy body; no production/kernel/tolerance changes. Its full review is
-      archived. Source-frozen native1920 reruns started in the isolated
-      robot_sim_render_geometry_wip tree; native geometry acceptance and the
-      numerical root cause remain pending.
+      archived. Native-reviewv1 independently approves only both original
+      source-frozen1920 geometry diagnostic executions at5a5a17c: nine same-frame
+      guarded copies, strict lifecycle replay, archive integrity and exit proof.
+      Archive SHA256619167158ae9da9a99112a6ce22a191fb033645dbcf2bb714a4c810ae33e8f3a.
+      First-hit data already differs at all six RGB outliers. Full-array review
+      additionally finds normal-only discrepancies at1116499 and1116503; the
+      six RGB pixels are not a complete geometry discrepancy inventory.
+      Fresh CPU replay of exact Warp rays and encoded fixture confirms its
+      two wrong first hits; camera rounding alone does not explain them.
+      Root-cause repair/native numerical acceptance and performance remain
+      pending. The complete bounded review is archived unchanged; no gate opens.
       Fixed R0 storage native-reviewv1 approves the14-case campaign at3d6692b:
       eight positives, four guarded raises and two deadline kills independently
       replayed; all29 author PIDs absent. Raw archive SHA256 is
