@@ -1626,10 +1626,15 @@ Next milestone:
       complete immutable set and cold v5 environment are published/verified. First
       real Go2 CUDA960 preparation passes, including exact factory/workspace and
       target1/ambient0 checks; private missing/changed/partial copies reject.
-      The ten-case matrix is still running in tool session94514, parent2083102,
-      output c4-fixed-artifact-runtime-v2; do not restart it. See fixed-cuda-artifacts
-      test-evidencev1 for hashes, raw records, live handle and remaining scope.
-      This is actual progress, not whole artifact/C2d3/C4 or performance acceptance.
+      The ten-case matrix completed exit0 in session94514; all ten cases passed,
+      and parent2083102 plus all20 supervisor/worker PIDs were observed absent.
+      Fresh independent acceptance approves the whole fixed-artifact replacement
+      at code66240e4, frozen packet0df3e260, with no substantive findings; full
+      report is archived unchanged in fixed-cuda-artifacts acceptance-review v1
+      (SHA256 fb1da1aa38358c5a31ea988c97b39725176c50907389f07e03c274767e8cc972).
+      Test-evidencev2 records terminal results and the matching local/remote raw
+      archive. This closes fixed-artifact replacement only; whole C2d3/C4,
+      numerical rendering and performance remain unproved.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
