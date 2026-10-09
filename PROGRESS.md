@@ -1676,6 +1676,16 @@ Next milestone:
       are terminal successes of their respective positive/negative checks. See
       implementation-notev3 and unchanged reviewv2; fresh review and unknown-entry
       native execution remain required. No rendering or performance claim.
+      Subsequent code-reviewv3 found the same ordering defect at final aggregate
+      issuance; the issuer now performs its pure CPU scope check first. Fresh
+      independent code-reviewv4 approves bounded module preparation atbeedab6,
+      with F1/F2/F3 closed,365 tests and12 original repro checks passed. Actual
+      Go2 unknown issuance preserves10 completed guards and quarantines without
+      sync; healthy entry failure performs exactly one bounded sync/release.
+      All named processes exited; full report and raw archive identities are in
+      code-reviewv4/test-evidencev3. This closes bounded code review only; finish
+      native failure acceptance, then the approved graph/render integration and
+      whole-C4 systematic refactor/review. No product or performance gate opened.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
