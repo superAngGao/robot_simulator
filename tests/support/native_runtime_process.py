@@ -1132,26 +1132,31 @@ def child(fault, fd, directory):
                 if fault in RUNTIME_WARP_COMPILE_FAULTS:
                     # CPU-only post-failure inspection; no native call, adoption
                     # or owner repair after the original guard fails.
-                    name, kernels, *_ = warp_setup._DEFINITIONS[0]
-                    python_module = session.modules[name][0]
-                    kernel = vars(python_module).get(kernels[0])
-                    module = None if kernel is None else kernel.module
-                    mapping = None if module is None else module.execs
-                    executable = None if mapping is None else mapping.get((binding.target.context, 256))
-                    _write(directory, "warp_failure_roots.json", {
-                        "python_module_id": id(python_module),
-                        "python_module_guardian_owned": controller.guardian.contains_exact_owner(python_module),
-                        "module_id": None if module is None else id(module),
-                        "module_guardian_owned": module is not None and controller.guardian.contains_exact_owner(module),
-                        "mapping_id": None if mapping is None else id(mapping),
-                        "mapping_guardian_owned": mapping is not None and controller.guardian.contains_exact_owner(mapping),
-                        "executable_id": None if executable is None else id(executable),
-                        "executable_session_owned": executable is not None and any(
-                            owner is executable for owner in session.runtime_owners),
-                        "completed_records": len(warp_setup._CACHES[session].records),
-                        "module_set_issued": session in warp_setup._MODULE_SETS,
-                        "load_attempts": load_attempts, "calls": calls,
-                        "guardian_state": controller.guardian.state})
+                    try:
+                        name, kernels, *_ = warp_setup._DEFINITIONS[0]
+                        python_module = session.modules[name][0]
+                        kernel = vars(python_module).get(kernels[0])
+                        module = None if kernel is None else kernel.module
+                        mapping = None if module is None else module.execs
+                        executable = None if mapping is None else mapping.get((binding.target.context, 256))
+                        _write(directory, "warp_failure_roots.json", {
+                            "python_module_id": id(python_module),
+                            "python_module_guardian_owned": controller.guardian.contains_exact_owner(python_module),
+                            "module_id": None if module is None else id(module),
+                            "module_guardian_owned": module is not None and controller.guardian.contains_exact_owner(module),
+                            "mapping_id": None if mapping is None else id(mapping),
+                            "mapping_guardian_owned": mapping is not None and controller.guardian.contains_exact_owner(mapping),
+                            "executable_id": None if executable is None else id(executable),
+                            "executable_session_owned": executable is not None and any(
+                                owner is executable for owner in session.runtime_owners),
+                            "completed_records": len(warp_setup._CACHES[session].records),
+                            "module_set_issued": session in warp_setup._MODULE_SETS,
+                            "load_attempts": load_attempts, "calls": calls,
+                            "guardian_state": controller.guardian.state})
+                    except BaseException as diagnostic:
+                        # Missing evidence still fails acceptance. Preserve the
+                        # primary compilation error, as the native observer does.
+                        session.runtime_owners.append(diagnostic)
                 raise
             if fault in RUNTIME_WARP_IDLE_FAULTS:
                 raise AssertionError("fixed Warp IDLE fault was admitted")
