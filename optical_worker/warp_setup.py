@@ -211,16 +211,29 @@ def definition_owners(session, index):
     return python_module, module, kernels + functions + structs
 
 
-def _definition_facts(definitions):
+def _type_facts(value, types):
+    # Warp's own type code freezes scalar/vector/matrix layout. Array annotations
+    # and struct fields are mutable, so retain their values as well as owners.
+    code = types.get_type_code(value)
+    if types.is_array(value):
+        return (value, code, value.ndim, _type_facts(value.dtype, types))
+    if types.type_is_struct(value):
+        return (value, code, value.ctype, value.instance_type,
+                tuple((name, _type_facts(var.type, types)) for name, var in value.vars.items()))
+    return (value, code, getattr(value, "_type_", None))
+
+
+def _definition_facts(definitions, types):
     facts = []
     for value in definitions:
         if hasattr(value, "func"):
             facts.append((value, value.func, value.func.__code__, value.adj,
-                          tuple((arg.label, arg.type) for arg in value.adj.args),
-                          _json(value.options) if hasattr(value, "options") else None))
+                          tuple((arg.label, _type_facts(arg.type, types)) for arg in value.adj.args),
+                          (_json(value.options), value.key, value.hash, value.get_mangled_name())
+                          if hasattr(value, "options") else None))
         else:
             facts.append((value, value.cls, value.module, value.ctype, value.instance_type,
-                          tuple((name, var.type) for name, var in value.vars.items()),
+                          tuple((name, _type_facts(var.type, types)) for name, var in value.vars.items()),
                           value.hash, value.native_name))
     return tuple(facts)
 
@@ -266,8 +279,11 @@ def compile_module(session, binding, index):
     session._hold_runtime_owner(mapping, "warp_compile_executables")
     _require(type(mapping) is dict and not mapping and not module.failed_builds, "Warp executable already exists")
     _require(target.arch == 90 and target.is_cuda and stream.device is target, "Warp compilation target drift")
-    before = _definition_facts(definitions)
+    types = session.external.records["warp._src.types"]["module"]
+    # Module hashing initializes each kernel's hash/mangled entry. Snapshot that
+    # legitimate initialized state, then reject changes through load and reuse.
     expected_hash = module.get_module_hash(256)
+    before = _definition_facts(definitions, types)
     identifier = module.get_module_identifier()
     _require(not (cache.path / identifier).exists(), "Warp module cache predates compilation")
     session._runtime_leaf("warp_compile_" + str(index), "runtime_import_or_init")
@@ -281,7 +297,7 @@ def compile_module(session, binding, index):
                  and executable.module_hash == expected_hash and module.execs is mapping
                  and set(mapping) == {(target.context, 256)},
                  "Warp loaded executable identity drift")
-        _require(_definition_facts(definitions) == before, "Warp definitions changed during compilation")
+        _require(_definition_facts(definitions, types) == before, "Warp definitions changed during compilation")
         artifacts, metadata = _artifact_facts(cache, module, target)
         _require(_json(executable.meta) == metadata, "Warp executable metadata differs from compiled file")
         guard = controller._guard_reference
@@ -331,6 +347,7 @@ def validate_module_set(session, owner):
     _require(len(cache.records) == 3 and all(actual is held for actual, held in zip(records, cache.records)),
              "Warp compilation record registry changed")
     controller.require_adopted(owner, binding, *records)
+    types = session.external.records["warp._src.types"]["module"]
     for index, record in enumerate(records):
         python_module, module, definitions = definition_owners(session, index)
         _require(python_module is record.python_module and module is record.module
@@ -338,7 +355,7 @@ def validate_module_set(session, owner):
                  and set(module.execs) == {(binding.target.context, 256)}
                  and module.execs[(binding.target.context, 256)] is record.executable,
                  "Warp executable mapping changed or a new variant appeared")
-        _require(_definition_facts(definitions) == record.definition_facts
+        _require(_definition_facts(definitions, types) == record.definition_facts
                  and module.get_module_hash(256) == record.module_hash
                  and record.executable.module_hash == record.module_hash
                  and record.executable.handle == record.handle and record.executable.device is binding.target

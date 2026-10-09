@@ -136,6 +136,11 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                 compiled = json.loads((directory / "warp_module_binding.json").read_bytes())
                 if len(compiled["modules"]) != 3 or len(compiled["calls"]) != 6:
                     raise RuntimeError("Warp compile and same-session reuse observations are incomplete")
+                scopes = compiled["outer_scopes"]
+                if len(scopes) != 3 or any(row["before"] != row["after"]
+                        or row["after"]["default_device"] != 0 or row["after"]["current_context"] is not None
+                        for row in scopes):
+                    raise RuntimeError("Warp compilation did not preserve its outer ambient scope")
                 for record, first, reused in zip(compiled["modules"], compiled["calls"][:3], compiled["calls"][3:]):
                     if (record["executable_id"] != first["executable_id"]
                             or first["executable_id"] != reused["executable_id"]
@@ -148,13 +153,20 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                 raise RuntimeError("fixed fault did not reach its intended real boundary")
             marker = json.loads((directory / "fault_entered.json").read_bytes())
             if marker["fault"] != fault or marker["guard"] != {
-                    "sequence": 6 if "factory" in fault else 3, "role": "setup"}:
+                    "sequence": 10 if fault.startswith("runtime_warp_modules_") else (6 if "factory" in fault else 3),
+                    "role": "setup"}:
                 raise RuntimeError("fixed fault occurred in another guard or case")
             if fault.endswith("hang"):
                 if not control["deadline_expired"] or not control["kill_requested"]:
                     raise RuntimeError("factory hang was not terminated by the original guard deadline")
             elif worker is None or worker["summary"]["emergency_sync_attempt_count"] != 0:
                 raise RuntimeError("failed armed setup attempted another synchronization")
+            if fault.startswith("runtime_warp_modules_"):
+                failure = json.loads((directory / "failure.json").read_bytes())
+                if (result["worker_returncode"] != 74 or control["normal_complete_count"] != 10
+                        or control["arm_count"] != 11 or failure["type"] != "ValueError"
+                        or failure["message"] != "Warp executable or kernel ABI changed"):
+                    raise RuntimeError("Warp ABI fault did not reject at the actual guarded validator")
         raw_path = directory / "runtime_custody.json"
         if raw_path.exists():
             raw = raw_path.read_bytes()

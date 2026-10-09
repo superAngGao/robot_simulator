@@ -1658,7 +1658,16 @@ Next milestone:
       cases now pass, with280 other passes/13 skips from the broader run.
       See warp-module-preparation implementation-notev1 for exact commands,
       failures/repairs, hashes and remaining integration. This is unreviewed
-      partial implementation; no Warp compile/load or rendering success yet.
+      partial implementation. Subsequent source-session integration now compiled
+      all three existing Warp modules on real Go2 at960x640 and1920x1080 and
+      reused the same worker's executable owners (author code4400cfd). Both
+      workers/supervisors exited; exact artifacts and raw records are archived
+      in warp-module-preparation test-evidencev1. Fresh code-reviewv1 requested
+      one repair for mutable ABI/entry snapshots; the revised implementation
+      freezes actual type values and initialized kernel entry identity, with23
+      unit checks and4 adapted original-repro checks passing. Fresh re-review,
+      revised native restoration/failure acceptance and actual rendering remain
+      pending; this is not C4 or compilation acceptance.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design

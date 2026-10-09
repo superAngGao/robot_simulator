@@ -47,7 +47,8 @@ RUNTIME_OBSERVATION_FAULTS = ("runtime_scope_success", "runtime_scope_getter_err
 RUNTIME_ARTIFACT_FAULTS = ("runtime_artifacts_success", "runtime_artifacts_create_after_raise",
                          "runtime_artifacts_exec_after_raise", "runtime_artifacts_entry_adoption_raise",
                          "runtime_artifacts_factory_after_raise", "runtime_artifacts_factory_hang")
-RUNTIME_WARP_MODULE_FAULTS = ("runtime_warp_modules_success",)
+RUNTIME_WARP_MODULE_FAULTS = ("runtime_warp_modules_success", "runtime_warp_modules_abi_dtype",
+                             "runtime_warp_modules_abi_ndim", "runtime_warp_modules_entry_hash")
 RUNTIME_FAULTS = (RUNTIME_NATIVE_FAULTS + RUNTIME_ACK_FAULTS + RUNTIME_PARENT_FAULTS
                   + RUNTIME_SCOPE_FAULTS + RUNTIME_GLOBAL_FAULTS + RUNTIME_CUDA_ONLY_FAULTS
                   + RUNTIME_OBSERVATION_FAULTS + RUNTIME_ARTIFACT_FAULTS + RUNTIME_WARP_MODULE_FAULTS)
@@ -990,8 +991,23 @@ def child(fault, fd, directory):
             assert request["lane"] == "warp"
             phase = "warp_module_preparation"
             original_load = binding.module.load_module
-            calls = []
-            session.runtime_owners.extend((original_load, calls))
+            from optical_worker import warp_setup
+
+            original_compile = warp_setup.compile_module
+            calls, scopes = [], []
+            session.runtime_owners.extend((original_load, original_compile, calls, scopes))
+
+            def observed_compile(*args):
+                scope_observer._ticket()
+                before = scope_observer._state(False)
+                result = original_compile(*args)
+                session.runtime_owners.append(result)
+                after = scope_observer._state(False)
+                assert before == after and after["default_device"] == 0
+                assert after["current_context"] is None and after["current_context_device"] is None
+                scopes.append({"module": result.module.name, "before": before, "after": after,
+                               "guard": dict(controller._guard_reference)})
+                return result
 
             def observed_load(*args, **kwargs):
                 scope_observer._ticket()
@@ -1008,12 +1024,26 @@ def child(fault, fd, directory):
                 return result
 
             binding.module.load_module = observed_load
+            warp_setup.compile_module = observed_compile
             owners = session.prepare_warp_modules()
-            from optical_worker import warp_setup
 
             with controller.segment("setup"):
                 session._validate_runtime_binding_record(binding, entry._UPLOADED_INPUTS[session][0])
                 records = warp_setup.validate_module_set(session, owners)
+                if fault != "runtime_warp_modules_success":
+                    kernel = records[0].definitions[0]
+                    _write(directory, "fault_entered.json", {
+                        "fault": fault, "boundary": "compiled_kernel_before_reuse",
+                        "guard": dict(controller._guard_reference), "kernel": kernel.key,
+                        "executable_id": id(records[0].executable)})
+                    if fault == "runtime_warp_modules_abi_dtype":
+                        kernel.adj.args[0].type.dtype = binding.module.float64
+                    elif fault == "runtime_warp_modules_abi_ndim":
+                        kernel.adj.args[0].type.ndim += 1
+                    else:
+                        kernel.hash = b"fixed changed kernel entry"
+                    warp_setup.validate_module_set(session, owners)
+                    raise AssertionError("changed kernel ABI or entry was admitted")
                 session._runtime_leaf("warp_module_reuse", "runtime_import_or_init")
                 with binding.module.ScopedDevice(binding.target), binding.module.ScopedStream(binding.stream):
                     for record in records:
@@ -1024,7 +1054,7 @@ def child(fault, fd, directory):
                 session.external.audit()
             session.runtime_observation.checkpoint()
             _write(directory, "warp_module_binding.json", {
-                "cache_path": str(warp_setup._CACHES[session].path), "calls": calls,
+                "cache_path": str(warp_setup._CACHES[session].path), "calls": calls, "outer_scopes": scopes,
                 "modules": [{"name": record.module.name, "executable_id": id(record.executable),
                              "module_hash": record.module_hash.hex(), "native_handle": record.handle,
                              "artifacts": record.artifacts, "source_sha256": record.source_sha256,

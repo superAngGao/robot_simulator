@@ -14,6 +14,7 @@ from optical_worker.wait_protocol import GuardConfiguration
 from tests.support.guarded_peer import Peer
 
 compile_warp_module = warp_setup.compile_module
+definition_facts = warp_setup._definition_facts
 
 
 def test_compilation_inventory_covers_actual_kernel_function_and_struct_declarations():
@@ -48,7 +49,8 @@ def prepared_session(monkeypatch):
     stream = SimpleNamespace(device=target, cuda_stream=412)
     session.external = SimpleNamespace(
         audit=lambda: controller._require_setup(), records={"warp": {"module": wp},
-            "warp._src.context": {"module": SimpleNamespace(runtime=runtime)}})
+            "warp._src.context": {"module": SimpleNamespace(runtime=runtime)},
+            "warp._src.types": {"module": SimpleNamespace()}})
     monkeypatch.setitem(sys.modules, "warp", wp)
     monkeypatch.setitem(bootstrap._SOURCE_CUSTODY, session,
         (controller, controller.guardian, peer.config, controller._guard_client.configuration,
@@ -284,3 +286,77 @@ def test_aggregate_cannot_issue_from_copied_compilation_records(prepared_session
         p.session.prepare_warp_modules()
     assert p.session not in warp_setup._MODULE_SETS
     assert p.controller.termination_evidence.lifecycle.to_payload()["summary"]["emergency_sync_attempt_count"] == 1
+
+
+@pytest.mark.parametrize("change", [None, "dtype", "ndim", "entry_hash", "struct_field", "nested_array"])
+def test_later_admission_freezes_abi_values_and_entry_identity(prepared_session, monkeypatch, change):
+    p = prepared_session
+    class Array:
+        def __init__(self):
+            self.dtype, self.ndim = float, 1
+    class Struct:
+        pass
+    # Dependency metadata doubles only. The test reaches actual production
+    # snapshot, issuance and later validation with a real lifecycle/guardian.
+    types = SimpleNamespace(
+        get_type_code=lambda value: "array" if isinstance(value, Array) else "struct" if isinstance(value, Struct) else value.__name__,
+        is_array=lambda value: isinstance(value, Array),
+        type_is_struct=lambda value: isinstance(value, Struct))
+    p.session.external.records["warp._src.types"]["module"] = types
+    p.binding.target.context = 42
+    cache = SimpleNamespace(records=[])
+    p.session._hold_runtime_owner(cache, "unit_cache_for_validation")
+    monkeypatch.setattr(warp_setup, "validate_warp_cache", lambda *args: cache)
+    monkeypatch.setattr(warp_setup, "_artifact_facts", lambda *args: ((), b"{}"))
+    definitions = []
+    kernels, structs = [], []
+    for index in range(3):
+        python_module = ModuleType("unit_module_" + str(index))
+        module = SimpleNamespace(get_module_hash=lambda block: b"unchanged cached module hash")
+        executable = SimpleNamespace(device=p.binding.target, module_hash=module.get_module_hash(256),
+                                     handle=100 + index, meta={})
+        module.execs = {(42, 256): executable}
+        def function():
+            pass
+        kernel = SimpleNamespace(func=function, adj=SimpleNamespace(args=[SimpleNamespace(label="array", type=Array())]),
+                                 options={}, key="unit_kernel", hash=b"compiled kernel hash")
+        kernel.get_mangled_name = lambda owner=kernel: owner.key + "_" + owner.hash.hex()[:8]
+        struct = Struct()
+        struct.cls, struct.module, struct.ctype, struct.instance_type = Struct, module, object(), object()
+        struct.vars = {"scalar": SimpleNamespace(type=float), "nested": SimpleNamespace(type=Array())}
+        struct.hash, struct.native_name = b"struct hash", "unit_struct"
+        owners = (kernel, struct)
+        definitions.append((python_module, module, owners))
+        kernels.append(kernel)
+        structs.append(struct)
+        with p.controller.segment():
+            record = warp_setup._CompiledModule(
+                python_module, module, module.execs, executable, owners, definition_facts(owners, types),
+                executable.module_hash, executable.handle, b"{}", (), "a" * 64,
+                (p.controller._guard_reference["sequence"], "setup"))
+            for value in (module, module.execs, executable, record):
+                p.session._hold_runtime_owner(value, "unit_compiled_owner")
+            cache.records.append(record)
+    monkeypatch.setattr(warp_setup, "definition_owners", lambda session, index: definitions[index])
+    records = tuple(cache.records)
+    owner = warp_setup.issue_module_set(p.session, p.binding, records)
+    with p.controller.segment():
+        assert warp_setup.validate_module_set(p.session, owner) is records
+    if change is None:
+        with p.controller.segment():
+            assert warp_setup.validate_module_set(p.session, owner) is records
+        return
+    if change == "dtype":
+        kernels[0].adj.args[0].type.dtype = int
+    elif change == "ndim":
+        kernels[0].adj.args[0].type.ndim = 2
+    elif change == "entry_hash":
+        kernels[0].hash = b"another kernel entry"
+    elif change == "struct_field":
+        structs[0].vars["scalar"].type = int
+    else:
+        structs[0].vars["nested"].type.ndim = 2
+    with pytest.raises(ValueError, match="ABI changed"):
+        with p.controller.segment():
+            warp_setup.validate_module_set(p.session, owner)
+    assert p.controller.termination_evidence.lifecycle.to_payload()["summary"]["emergency_sync_attempt_count"] == 0
