@@ -1393,6 +1393,12 @@ Next milestone:
       its result,12terminal rerun and fresh whole review still precede acceptance.
       See whole-review-repairs test-evidence/code-preflight-review v1 for hashes,
       limitations and unchanged full report. C4 remains the active objective.
+      Parallel source-only remaining-setup gap scan v1 identifies a bounded
+      next-compilation design decision for generated artifacts/cache provenance
+      and compiler descendants. It confirms existing parent warmup/readiness/
+      seal order, missing slot custody and C2e graph dependencies. This is no
+      C2d3 rejection/acceptance or later implementation approval; its complete
+      report is archived unchanged. Current85/12 and whole review still lead.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design

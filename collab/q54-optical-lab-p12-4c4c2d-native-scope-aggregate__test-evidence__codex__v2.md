@@ -57,3 +57,20 @@ c2d3-fc86182-runtime-fault-matrix-v5. It is running at this evidence cut; no
 outcome is claimed. The12 terminal rerun follows with the same reviewed source.
 C2d3 and C4 remain incomplete; all later product/performance/selection gates
 remain closed as specified in the independent preflight report.
+
+Subsequent CPU checks of these NEW eight positive records: the existing actual
+record suite selected only roundtrip/no-live-authority and all six per-record
+external-admission deletions, yielding56passed/480deselected46.06s. This is not
+a second full500-case rerun. All168 source artifact hashes remain unchanged.
+Runner3346331/pytest3346345 are absent from OS/GPU checks. The downloaded and
+hash-verified c2d3-fc86182-repaired-record-mutations-v7.tar.gz is6592bytes,
+SHA25694a3f52f487eb8b12644f034cdd9d1ddee856ad60f67608240a0531a4d0ac24c.
+The source is ../c4_assets/run_actual_record_mutations_v7.py.
+
+Separately, replay_actual_native_scope_v2.py validates all eight new originals,
+their selection/attachment and native acceptance, totaling1988native rows,
+and rejects56 native-scope/ambient mutations. No NumPy/Torch/Warp is imported.
+The original script is unchanged except its retained run directory. Local
+replay_actual_native_scope_v2.log SHA256 is
+c9699aa3a579620864f4c0b60f161183a539750735734d9cc89a8a0870fae348.
+Both CPU commands completed; the85 GPU fault matrix continues independently.
