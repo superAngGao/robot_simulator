@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import weakref
 from collections.abc import Callable
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
@@ -313,6 +314,67 @@ def _consume_upload_context(context):
         raise ValueError("upload context is unregistered, consumed or has changed")
     context.lifecycle.require_adopted(context)
     return context.lifecycle, context.runtime, context.target, context.stream
+
+
+@contextmanager
+def _output_array_allocation(runtime, target, *, lane, stream=None, context=None):
+    """One allocation implementation for ordinary and guarded output builders.
+
+    The optional context is the existing single-use preparation context, not a
+    callback. The guarded caller supplies it from its validated runtime binding.
+    Every returned array is retained before metadata inspection or adoption.
+    Exceptions propagate through the caller's original setup guard.
+    """
+    lifecycle = None
+    if lane not in {"cuda", "warp"}:
+        raise ValueError("unknown output allocation lane")
+    if context is not None:
+        from .guarded_lifecycle import NativeGuardedSetupLifecycle
+
+        lifecycle, held_runtime, held_target, held_stream = _consume_upload_context(context)
+        if type(lifecycle) is not NativeGuardedSetupLifecycle:
+            raise TypeError("guarded output allocation requires its guarded lifecycle")
+        lifecycle._require_setup()
+        if (runtime is not held_runtime or lifecycle._lane_id != lane
+                or (target != held_target if lane == "cuda" else target is not held_target)
+                or (stream is not None and stream is not held_stream)):
+            raise ValueError("output allocation differs from its runtime binding")
+        target, stream = held_target, held_stream
+        lifecycle.require_adopted(runtime, target, stream)
+        owners = []
+        lifecycle.adopt_host_owner(owners, role="slot_array_custody", operation_id="slot_array_custody")
+        _enter_device_leaf(lifecycle, _descriptor(lifecycle,
+            operation_id="slot_allocation_scope", leaf_kind="runtime_import_or_init",
+            runtime_identity=lane + "_output_scope_v1"))
+
+    active = False
+
+    def empty(name, shape, dtype):
+        if not active:
+            raise ValueError("output allocator is outside its original scope")
+        if lifecycle is not None:
+            lifecycle._require_setup()
+            _enter_device_leaf(lifecycle, _descriptor(lifecycle,
+                operation_id=_array_operation_id("slot_allocate", name), leaf_kind="allocation",
+                runtime_identity=lane + "_empty_explicit_device_v1"))
+        result = runtime.empty(shape, dtype=dtype, device=target)
+        if lifecycle is not None:
+            owners.append(result)
+            ordinal = int(result.device.index if lane == "cuda" else result.device.ordinal)
+            lifecycle.adopt_returned_device_owner(result, actual_device_ordinal=ordinal,
+                role="slot_device_array", operation_id=_array_operation_id("slot_allocate", name))
+        return result
+
+    device_scope = runtime.cuda.device(target) if lane == "cuda" else runtime.ScopedDevice(target)
+    with device_scope:
+        stream_scope = (runtime.cuda.stream(stream) if lane == "cuda" else runtime.ScopedStream(stream)) \
+            if stream is not None else nullcontext()
+        with stream_scope:
+            active = True
+            try:
+                yield empty
+            finally:
+                active = False
 
 
 def _upload_cuda_native_input(source, *, context):

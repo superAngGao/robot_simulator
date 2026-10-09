@@ -692,6 +692,7 @@ def allocate_cuda_direct_light_buffers(
     directions: object | None = None,
     direct_light: bool,
     traversal_diagnostics: bool,
+    _context=None,
 ) -> CudaDirectLightBuffers:
     """Allocate a one-shot bundle outside native enqueue.
 
@@ -704,23 +705,27 @@ def allocate_cuda_direct_light_buffers(
         raise ValueError("CUDA render buffers require an indexed CUDA device")
     if not isinstance(num_rays, int) or isinstance(num_rays, bool) or num_rays < 0:
         raise ValueError("num_rays must be a non-negative integer")
-    with torch.cuda.device(resolved_device):
+    from optical_worker.native_setup import _output_array_allocation
+
+    with _output_array_allocation(torch, resolved_device, lane="cuda", context=_context) as empty:
         ray_origins = origins
         ray_directions = directions
+        if _context is not None:
+            _context.lifecycle.require_adopted(*(value for value in (origins, directions) if value is not None))
         if ray_origins is None:
-            ray_origins = torch.empty((num_rays, 3), dtype=torch.float32, device=resolved_device)
+            ray_origins = empty("ray_origins", (num_rays, 3), torch.float32)
         if ray_directions is None:
-            ray_directions = torch.empty((num_rays, 3), dtype=torch.float32, device=resolved_device)
+            ray_directions = empty("ray_directions", (num_rays, 3), torch.float32)
         kwargs: dict[str, object] = {}
         if direct_light:
             kwargs = {
-                "rgb": torch.empty((num_rays, 3), dtype=torch.float32, device=resolved_device),
-                "intensity": torch.empty((num_rays,), dtype=torch.float32, device=resolved_device),
-                "shadow_stack_overflow_count": torch.empty((1,), dtype=torch.int32, device=resolved_device),
-                "shadow_max_stack_depth": torch.empty((1,), dtype=torch.int32, device=resolved_device),
+                "rgb": empty("rgb", (num_rays, 3), torch.float32),
+                "intensity": empty("intensity", (num_rays,), torch.float32),
+                "shadow_stack_overflow_count": empty("shadow_stack_overflow_count", (1,), torch.int32),
+                "shadow_max_stack_depth": empty("shadow_max_stack_depth", (1,), torch.int32),
                 "shadow_traversal_counters": tuple(
-                    torch.empty((1,), dtype=torch.int32, device=resolved_device)
-                    for _ in _SHADOW_TRAVERSAL_COUNTER_CHANNELS
+                    empty(name, (1,), torch.int32)
+                    for name in _SHADOW_TRAVERSAL_COUNTER_CHANNELS
                 )
                 if traversal_diagnostics
                 else (),
@@ -728,14 +733,14 @@ def allocate_cuda_direct_light_buffers(
         return CudaDirectLightBuffers(
             origins=ray_origins,
             directions=ray_directions,
-            hit_mask=torch.empty((num_rays,), dtype=torch.int32, device=resolved_device),
-            range_m=torch.empty((num_rays,), dtype=torch.float32, device=resolved_device),
-            position_world=torch.empty((num_rays, 3), dtype=torch.float32, device=resolved_device),
-            normal_world=torch.empty((num_rays, 3), dtype=torch.float32, device=resolved_device),
-            numeric_instance_id=torch.empty((num_rays,), dtype=torch.int32, device=resolved_device),
-            material_index=torch.empty((num_rays,), dtype=torch.int32, device=resolved_device),
-            bvh_stack_overflow_count=torch.empty((1,), dtype=torch.int32, device=resolved_device),
-            bvh_max_stack_depth=torch.empty((1,), dtype=torch.int32, device=resolved_device),
+            hit_mask=empty("hit_mask", (num_rays,), torch.int32),
+            range_m=empty("range_m", (num_rays,), torch.float32),
+            position_world=empty("position_world", (num_rays, 3), torch.float32),
+            normal_world=empty("normal_world", (num_rays, 3), torch.float32),
+            numeric_instance_id=empty("numeric_instance_id", (num_rays,), torch.int32),
+            material_index=empty("material_index", (num_rays,), torch.int32),
+            bvh_stack_overflow_count=empty("bvh_stack_overflow_count", (1,), torch.int32),
+            bvh_max_stack_depth=empty("bvh_max_stack_depth", (1,), torch.int32),
             **kwargs,
         )
 

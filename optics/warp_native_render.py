@@ -355,6 +355,21 @@ def warp_direct_light_buffer_layout(
     return result
 
 
+def allocate_warp_direct_light_buffers(*, num_rays, device, traversal_diagnostics, stream=None, _context=None):
+    """Allocate the existing output ABI, retaining guarded partial returns."""
+    from optical_worker.native_setup import _output_array_allocation
+
+    layout = warp_direct_light_buffer_layout(num_rays, traversal_diagnostics=traversal_diagnostics)
+    if not _HAS_WARP:
+        raise RuntimeError("Warp is required for native render storage")
+    with _output_array_allocation(wp, device, lane="warp", stream=stream, context=_context) as empty:
+        arrays = {name: empty(name, shape, getattr(wp, dtype)) for name, dtype, shape in layout}
+    counters = tuple(arrays.pop(name) for name in SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES) \
+        if traversal_diagnostics else ()
+    return WarpDirectLightBuffers(num_rays=num_rays, traversal_diagnostics=traversal_diagnostics,
+                                  traversal_counters=counters, **arrays)
+
+
 def _render_array_layout(value: object, *, name: str, device: object) -> tuple:
     """Inspect the layout actually passed by Warp, for both inputs and outputs."""
     if type(value) is not wp.array:

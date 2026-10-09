@@ -240,23 +240,20 @@ def cuda_replay_transform_inputs(
 
 def allocate_cuda_world_scene_buffers(
     scene: CudaOpticalLocalScene,
+    *,
+    _context=None,
 ) -> CudaWorldSceneBuffers:
     """Allocate one setup/test output bundle; C4 supplies final arena slots."""
 
     torch = _torch_module()
     device = torch.device("cuda", scene.device_ordinal)
-    with torch.cuda.device(device):
+    from optical_worker.native_setup import _output_array_allocation
+
+    with _output_array_allocation(torch, device, lane="cuda", context=_context) as empty:
         values = {
-            "triangle_v0_world": torch.empty((scene.num_triangles, 3), dtype=torch.float32, device=device),
-            "triangle_e1_world": torch.empty((scene.num_triangles, 3), dtype=torch.float32, device=device),
-            "triangle_e2_world": torch.empty((scene.num_triangles, 3), dtype=torch.float32, device=device),
-            "triangle_normal_world": torch.empty(
-                (scene.num_triangles, 3), dtype=torch.float32, device=device
-            ),
-            "plane_normal_world": torch.empty((scene.num_planes, 3), dtype=torch.float32, device=device),
-            "plane_point_world": torch.empty((scene.num_planes, 3), dtype=torch.float32, device=device),
-            "triangle_aabb_min": torch.empty((scene.num_triangles, 3), dtype=torch.float32, device=device),
-            "triangle_aabb_max": torch.empty((scene.num_triangles, 3), dtype=torch.float32, device=device),
+            name: empty(name, (scene.num_planes if name.startswith("plane_") else scene.num_triangles, 3),
+                        torch.float32)
+            for name in _WORLD_OUTPUT_NAMES
         }
     return CudaWorldSceneBuffers(
         device_ordinal=scene.device_ordinal,

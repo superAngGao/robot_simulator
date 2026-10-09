@@ -240,6 +240,8 @@ def _query_workspace_requirements(module, primitive_count, device_ordinal):
 
 def allocate_cuda_lbvh_workspace(
     requirements: CudaLbvhWorkspaceRequirements,
+    *,
+    _context=None,
 ) -> CudaLbvhWorkspace:
     """Allocate aligned scratch outside timing; C4 supplies final arena storage."""
 
@@ -248,12 +250,14 @@ def allocate_cuda_lbvh_workspace(
     device = torch.device("cuda", requirements.device_ordinal)
     required = requirements.required_bytes
     alignment = requirements.alignment_bytes
-    with torch.cuda.device(device):
+    from optical_worker.native_setup import _output_array_allocation
+
+    with _output_array_allocation(torch, device, lane="cuda", context=_context) as empty:
         if required == 0:
-            owner = torch.empty((0,), dtype=torch.uint8, device=device)
+            owner = empty("lbvh_workspace", (0,), torch.uint8)
             storage = owner
         else:
-            owner = torch.empty((required + alignment - 1,), dtype=torch.uint8, device=device)
+            owner = empty("lbvh_workspace", (required + alignment - 1,), torch.uint8)
             offset = (-int(owner.data_ptr())) % alignment
             storage = owner[offset : offset + required]
     workspace = CudaLbvhWorkspace(
@@ -269,6 +273,7 @@ def allocate_cuda_lbvh_buffers(
     *,
     primitive_count: int,
     device: object,
+    _context=None,
 ) -> CudaLbvhBuffers:
     """Allocate one setup/test output graph outside native timed submission."""
 
@@ -278,25 +283,27 @@ def allocate_cuda_lbvh_buffers(
     node_count = _node_count(primitive_count)
     internal_count = max(primitive_count - 1, 0)
     scene_shape = (3,) if primitive_count > 0 else (0,)
-    with torch.cuda.device(target):
+    from optical_worker.native_setup import _output_array_allocation
+
+    with _output_array_allocation(torch, target, lane="cuda", context=_context) as empty:
         values = {
-            "scene_bounds_min": torch.empty(scene_shape, dtype=torch.float32, device=target),
-            "scene_bounds_max": torch.empty(scene_shape, dtype=torch.float32, device=target),
-            "morton_keys": torch.empty((primitive_count,), dtype=torch.int64, device=target),
-            "primitive_ids": torch.empty((primitive_count,), dtype=torch.int32, device=target),
-            "sorted_morton_keys": torch.empty((primitive_count,), dtype=torch.int64, device=target),
-            "sorted_primitive_ids": torch.empty((primitive_count,), dtype=torch.int32, device=target),
-            "left": torch.empty((node_count,), dtype=torch.int32, device=target),
-            "right": torch.empty((node_count,), dtype=torch.int32, device=target),
-            "parent": torch.empty((node_count,), dtype=torch.int32, device=target),
-            "start": torch.empty((node_count,), dtype=torch.int32, device=target),
-            "count": torch.empty((node_count,), dtype=torch.int32, device=target),
-            "range_start": torch.empty((internal_count,), dtype=torch.int32, device=target),
-            "range_end": torch.empty((internal_count,), dtype=torch.int32, device=target),
-            "split": torch.empty((internal_count,), dtype=torch.int32, device=target),
-            "node_bounds_min": torch.empty((node_count, 3), dtype=torch.float32, device=target),
-            "node_bounds_max": torch.empty((node_count, 3), dtype=torch.float32, device=target),
-            "child_counter": torch.empty((internal_count,), dtype=torch.int32, device=target),
+            "scene_bounds_min": empty("lbvh_scene_bounds_min", scene_shape, torch.float32),
+            "scene_bounds_max": empty("lbvh_scene_bounds_max", scene_shape, torch.float32),
+            "morton_keys": empty("lbvh_morton_keys", (primitive_count,), torch.int64),
+            "primitive_ids": empty("lbvh_primitive_ids", (primitive_count,), torch.int32),
+            "sorted_morton_keys": empty("lbvh_sorted_morton_keys", (primitive_count,), torch.int64),
+            "sorted_primitive_ids": empty("lbvh_sorted_primitive_ids", (primitive_count,), torch.int32),
+            "left": empty("lbvh_left", (node_count,), torch.int32),
+            "right": empty("lbvh_right", (node_count,), torch.int32),
+            "parent": empty("lbvh_parent", (node_count,), torch.int32),
+            "start": empty("lbvh_start", (node_count,), torch.int32),
+            "count": empty("lbvh_count", (node_count,), torch.int32),
+            "range_start": empty("lbvh_range_start", (internal_count,), torch.int32),
+            "range_end": empty("lbvh_range_end", (internal_count,), torch.int32),
+            "split": empty("lbvh_split", (internal_count,), torch.int32),
+            "node_bounds_min": empty("lbvh_node_bounds_min", (node_count, 3), torch.float32),
+            "node_bounds_max": empty("lbvh_node_bounds_max", (node_count, 3), torch.float32),
+            "child_counter": empty("lbvh_child_counter", (internal_count,), torch.int32),
         }
     buffers = CudaLbvhBuffers(
         device_ordinal=int(target.index),

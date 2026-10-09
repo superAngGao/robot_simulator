@@ -615,6 +615,7 @@ def allocate_warp_world_scene_buffers(
     scene: DeviceOpticalScene,
     *,
     stream: object | None = None,
+    _context=None,
 ) -> WarpWorldSceneBuffers:
     """Allocate one caller-owned C3 test/compatibility output bundle.
 
@@ -625,18 +626,17 @@ def allocate_warp_world_scene_buffers(
     _require_warp()
     if stream is not None:
         _validate_warp_stream(stream, device=scene.device)
-    with _scoped_stream(stream):
+    from optical_worker.native_setup import _output_array_allocation
+
+    with _output_array_allocation(wp, scene.device, lane="warp", stream=stream, context=_context) as empty:
         arrays = {
-            "triangle_v0_world": wp.empty((scene.num_triangles, 3), dtype=wp.float32, device=scene.device),
-            "triangle_e1_world": wp.empty((scene.num_triangles, 3), dtype=wp.float32, device=scene.device),
-            "triangle_e2_world": wp.empty((scene.num_triangles, 3), dtype=wp.float32, device=scene.device),
-            "triangle_normal_world": wp.empty(
-                (scene.num_triangles, 3), dtype=wp.float32, device=scene.device
-            ),
-            "plane_normal_world": wp.empty((scene.num_planes, 3), dtype=wp.float32, device=scene.device),
-            "plane_point_world": wp.empty((scene.num_planes, 3), dtype=wp.float32, device=scene.device),
-            "triangle_aabb_min": wp.empty((scene.num_triangles, 3), dtype=wp.float32, device=scene.device),
-            "triangle_aabb_max": wp.empty((scene.num_triangles, 3), dtype=wp.float32, device=scene.device),
+            name: empty(name, (count, 3), wp.float32)
+            for name, count in (
+                ("triangle_v0_world", scene.num_triangles), ("triangle_e1_world", scene.num_triangles),
+                ("triangle_e2_world", scene.num_triangles), ("triangle_normal_world", scene.num_triangles),
+                ("plane_normal_world", scene.num_planes), ("plane_point_world", scene.num_planes),
+                ("triangle_aabb_min", scene.num_triangles), ("triangle_aabb_max", scene.num_triangles),
+            )
         }
     return WarpWorldSceneBuffers(
         device=scene.device,
