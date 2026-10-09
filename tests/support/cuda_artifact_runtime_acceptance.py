@@ -118,9 +118,9 @@ def run_case(repository, revision, environment_path, environment, directory, lan
             raise RuntimeError("owned worker PID still exists; inspect without broad signaling")
         if (directory / "ordinary_atexit.json").exists():
             raise RuntimeError("worker performed ordinary Python cleanup")
-        successful = fault in {"runtime_artifacts_success", "runtime_scope_success"}
+        successful = fault in {"runtime_artifacts_success", "runtime_scope_success", "runtime_warp_modules_success"}
         if successful:
-            expected_phases = 7 if lane == "cuda" else 6
+            expected_phases = 11 if fault == "runtime_warp_modules_success" else (7 if lane == "cuda" else 6)
             if (result["worker_returncode"] != 0 or error or result["stderr"]
                     or control["normal_complete_count"] != expected_phases
                     or control["arm_count"] != expected_phases + 1
@@ -132,6 +132,15 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                 raise RuntimeError("positive case did not finish its original terminal disposal")
             if lane == "cuda" and not (directory / "cuda_factory_binding.json").is_file():
                 raise RuntimeError("captured CUDA factory bindings were not observed")
+            if fault == "runtime_warp_modules_success":
+                compiled = json.loads((directory / "warp_module_binding.json").read_bytes())
+                if len(compiled["modules"]) != 3 or len(compiled["calls"]) != 6:
+                    raise RuntimeError("Warp compile and same-session reuse observations are incomplete")
+                for record, first, reused in zip(compiled["modules"], compiled["calls"][:3], compiled["calls"][3:]):
+                    if (record["executable_id"] != first["executable_id"]
+                            or first["executable_id"] != reused["executable_id"]
+                            or record["name"] != first["module"] or first["module"] != reused["module"]):
+                        raise RuntimeError("Warp module reuse replaced a compiled executable")
             if (directory / "failure.json").exists() or (directory / "fault_entered.json").exists():
                 raise RuntimeError("positive native case has a failure marker")
         else:

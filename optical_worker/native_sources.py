@@ -103,7 +103,7 @@ _COMMON = (
     "tools/optical_closed_worker.py",
     "tools/optical_closed_worker_supervisor.py",
 )
-_WARP = ("optics/warp_native_render.py",)
+_WARP = ("optical_worker/warp_setup.py", "optics/warp_native_render.py")
 _CUDA = (
     "optics/_cuda_direct_light_source.py",
     "optics/_cuda_lbvh_source.py",

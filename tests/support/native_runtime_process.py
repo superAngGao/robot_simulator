@@ -47,9 +47,10 @@ RUNTIME_OBSERVATION_FAULTS = ("runtime_scope_success", "runtime_scope_getter_err
 RUNTIME_ARTIFACT_FAULTS = ("runtime_artifacts_success", "runtime_artifacts_create_after_raise",
                          "runtime_artifacts_exec_after_raise", "runtime_artifacts_entry_adoption_raise",
                          "runtime_artifacts_factory_after_raise", "runtime_artifacts_factory_hang")
+RUNTIME_WARP_MODULE_FAULTS = ("runtime_warp_modules_success",)
 RUNTIME_FAULTS = (RUNTIME_NATIVE_FAULTS + RUNTIME_ACK_FAULTS + RUNTIME_PARENT_FAULTS
                   + RUNTIME_SCOPE_FAULTS + RUNTIME_GLOBAL_FAULTS + RUNTIME_CUDA_ONLY_FAULTS
-                  + RUNTIME_OBSERVATION_FAULTS + RUNTIME_ARTIFACT_FAULTS)
+                  + RUNTIME_OBSERVATION_FAULTS + RUNTIME_ARTIFACT_FAULTS + RUNTIME_WARP_MODULE_FAULTS)
 
 
 def _install_runtime_fault(fault, entry, session, controller, directory):
@@ -58,7 +59,7 @@ def _install_runtime_fault(fault, entry, session, controller, directory):
     All wrappers and their real return values are retained by the already held
     source session. The production source closure has no fault selector.
     """
-    if fault in {"runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang", "runtime_artifacts_success"} or fault in RUNTIME_ACK_FAULTS + RUNTIME_OBSERVATION_FAULTS:
+    if fault in {"runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang", "runtime_artifacts_success"} or fault in RUNTIME_ACK_FAULTS + RUNTIME_OBSERVATION_FAULTS + RUNTIME_WARP_MODULE_FAULTS:
         return None
     state = {"fired": False, "returned": [], "originals": []}
     session.runtime_owners.append(state)
@@ -804,7 +805,9 @@ class _NativeScopeObserver:
                         observer.snapshot(self.site, "after", self.before[1], self.before)
                     return result
             def scoped(target):
-                if observer.controller._terminating:
+                if observer.controller._terminating or observer.session.phase in {"preparing_warp_modules", "warp_modules_ready"}:
+                    # Compilation gets downstream raw observations, never an
+                    # input-phase readback receipt with a different meaning.
                     return original_scope(target)
                 result = Scope(target)
                 observer.held.append(result)
@@ -948,7 +951,7 @@ def child(fault, fd, directory):
         observe()
         injection = _install_runtime_fault(fault, entry, session, controller, directory)
         scope_observer = (_NativeScopeObserver(session, controller, directory, environment_payload, fault)
-                          if fault in RUNTIME_OBSERVATION_FAULTS + RUNTIME_ARTIFACT_FAULTS else None)
+                          if fault in RUNTIME_OBSERVATION_FAULTS + RUNTIME_ARTIFACT_FAULTS + RUNTIME_WARP_MODULE_FAULTS else None)
         phase = "setup_definitions"
         session.import_setup_definitions()
         observe()
@@ -982,6 +985,51 @@ def child(fault, fd, directory):
         if fault in RUNTIME_ARTIFACT_FAULTS:
             phase = "cuda_factory_preparation"
             session.prepare_cuda_factories()
+            observe()
+        if fault in RUNTIME_WARP_MODULE_FAULTS:
+            assert request["lane"] == "warp"
+            phase = "warp_module_preparation"
+            original_load = binding.module.load_module
+            calls = []
+            session.runtime_owners.extend((original_load, calls))
+
+            def observed_load(*args, **kwargs):
+                scope_observer._ticket()
+                before = scope_observer._state(False)
+                result = original_load(*args, **kwargs)
+                executable = kwargs["module"].execs[(binding.target.context, 256)]
+                session.runtime_owners.append(executable)
+                after = scope_observer._state(False)
+                assert before == after and before["default_device"] == 1
+                assert before["current_context_device"] == 1
+                assert before["target_current_stream"] == int(binding.stream.cuda_stream)
+                calls.append({"module": kwargs["module"].name, "before": before, "after": after,
+                              "guard": dict(controller._guard_reference), "executable_id": id(executable)})
+                return result
+
+            binding.module.load_module = observed_load
+            owners = session.prepare_warp_modules()
+            from optical_worker import warp_setup
+
+            with controller.segment("setup"):
+                session._validate_runtime_binding_record(binding, entry._UPLOADED_INPUTS[session][0])
+                records = warp_setup.validate_module_set(session, owners)
+                session._runtime_leaf("warp_module_reuse", "runtime_import_or_init")
+                with binding.module.ScopedDevice(binding.target), binding.module.ScopedStream(binding.stream):
+                    for record in records:
+                        binding.module.load_module(module=record.module, device=binding.target,
+                                                   recursive=False, block_dim=256, max_workers=0)
+                assert warp_setup.validate_module_set(session, owners) is records
+                session.audit()
+                session.external.audit()
+            session.runtime_observation.checkpoint()
+            _write(directory, "warp_module_binding.json", {
+                "cache_path": str(warp_setup._CACHES[session].path), "calls": calls,
+                "modules": [{"name": record.module.name, "executable_id": id(record.executable),
+                             "module_hash": record.module_hash.hex(), "native_handle": record.handle,
+                             "artifacts": record.artifacts, "source_sha256": record.source_sha256,
+                             "compile_guard": record.guard} for record in records],
+                "final_execution_readiness_issued": False, "sample_submission_count": 0})
             observe()
         phase = "terminal_disposal"
 

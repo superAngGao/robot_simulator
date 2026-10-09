@@ -120,6 +120,8 @@ _RUNTIME_PHASES = frozenset(
         "input_validated",
         "preparing_cuda_factories",
         "cuda_factories_ready",
+        "preparing_warp_modules",
+        "warp_modules_ready",
     }
 )
 _VALIDATION_SOURCES = MappingProxyType(
@@ -145,6 +147,17 @@ _CUDA_FACTORY_SOURCES = MappingProxyType(
         "optics.execution": "optics/execution.py",
         "optics.output_contract": "optics/output_contract.py",
         "optics.scene": "optics/scene.py",
+    }
+)
+_WARP_SETUP_SOURCES = MappingProxyType(
+    {"optical_worker.warp_setup": "optical_worker/warp_setup.py"}
+)
+_WARP_MODULE_SOURCES = MappingProxyType(
+    {
+        "optics.device_scene": "optics/device_scene.py",
+        "optics.device_bvh": "optics/device_bvh.py",
+        "optics.warp_native_render": "optics/warp_native_render.py",
+        "optics.output_contract": "optics/output_contract.py",
     }
 )
 # One-shot trusted-process identities, never reconstructed from a receipt.
@@ -1439,7 +1452,7 @@ class _ExternalAdmission:
             "disabled optional index drift",
         )
 
-    def fail(self, error, name, *, native_create=False):
+    def fail(self, error, name, *, native_create=False, notify_session=True):
         first_failure = not self.failed
         self.failed = True
         if not any(value is error for value in self.failures):
@@ -1475,7 +1488,8 @@ class _ExternalAdmission:
             self.record("failed", name, "failure")
         except BaseException as record_error:
             self.failures.append(record_error)
-        self.session.fail(error)
+        if notify_session:
+            self.session.fail(error)
 
     def _paths(self, fullname):
         parent = fullname.rpartition(".")[0]
@@ -2332,6 +2346,7 @@ class _SourceSession:
         self.runtime_owners = []
         self.render_source, self.canonical_input, self.prepared_input = None, None, None
         self.validation_report = None
+        self.warp_preparation_started = False
         self.runtime_observation = _RuntimeObservation(self)
         self.loaders, self.modules, self.trace = {}, {}, []
         self.finder = _CapturedSourceFinder(self)
@@ -2353,12 +2368,17 @@ class _SourceSession:
                 | _EXTERNAL_CONTRACT_DEFINITIONS
                 | _MATERIALIZATION_SOURCES
             )
-            if self.phase in {"validating_input", "input_validated", "preparing_cuda_factories", "cuda_factories_ready"}:
+            if self.phase in {"validating_input", "input_validated", "preparing_cuda_factories", "cuda_factories_ready",
+                              "preparing_warp_modules", "warp_modules_ready"}:
                 admitted = admitted | _VALIDATION_SOURCES
             if self.lane == "cuda" and self.phase not in {"materializing", "materialized"}:
                 admitted = admitted | _CUDA_ARTIFACT_SOURCES
             if self.lane == "cuda" and self.phase in {"preparing_cuda_factories", "cuda_factories_ready"}:
                 admitted = admitted | _CUDA_FACTORY_SOURCES
+            if self.lane == "warp" and self.phase not in {"materializing", "materialized"}:
+                admitted = admitted | _WARP_SETUP_SOURCES
+            if self.lane == "warp" and self.phase in {"preparing_warp_modules", "warp_modules_ready"}:
+                admitted = admitted | _WARP_MODULE_SOURCES
             return admitted
         raise SourceBootstrapError("invalid CPU source phase")
 
@@ -2382,7 +2402,7 @@ class _SourceSession:
         if self in _INTERPRETER_ALIAS_CUSTODY:
             self._retain_interpreter_alias()
 
-    def fail(self, error):
+    def _retain_failure(self, error):
         self.failed = True
         if not any(value is error for value in self.failures):
             self.failures.append(error)
@@ -2398,10 +2418,10 @@ class _SourceSession:
         self.retain_import_boundary()
         external = _EXTERNAL_CUSTODY.get(self)
         if external is not None and "failures" in vars(external[0]) and not external[0].failed:
-            # Share the existing one-way failure path. Its callback re-enters
-            # here only after admission.failed is set, then terminates once.
-            external[0].fail(error, "source_session")
-            return
+            external[0].fail(error, "source_session", notify_session=False)
+
+    def fail(self, error):
+        self._retain_failure(error)
         binding = _SOURCE_CUSTODY.get(self)
         if binding is not None:
             controller = binding[0]
@@ -2782,8 +2802,9 @@ class _SourceSession:
                     else:
                         import warp as module
 
-                        module.config.quiet = True
-                        _require(module.config.quiet is True, "Warp quiet initialization required")
+                        from optical_worker.warp_setup import configure_warp_cache
+
+                        configure_warp_cache(self, module)
                         self._runtime_leaf("indexed_warp_init", "runtime_import_or_init")
                         module.init()
                         runtime = self.external.records["warp._src.context"]["module"].runtime
@@ -3011,9 +3032,13 @@ class _SourceSession:
         return validated
 
     def _validate_runtime_binding_record(self, binding, record):
+        self.bound_controller()._require_setup()
+        return self._validate_runtime_binding_resources(binding, record)
+
+    def _validate_runtime_binding_resources(self, binding, record):
+        """CPU identity checks, including at a healthy IDLE failure boundary."""
         self.check_live()
         controller = self.bound_controller()
-        controller._require_setup()
         _require(
             type(binding) is _RuntimeSetupBinding and record is not None and record[0] is binding,
             "runtime binding is foreign, copied, unregistered or consumed",
@@ -3198,6 +3223,85 @@ class _SourceSession:
             return factories
         except BaseException as error:
             self.fail(error)
+            raise
+
+    def _fail_warp_preparation(self, error, runtime_record):
+        controller = self.bound_controller()
+        if (controller.termination_evidence is not None or controller._terminating
+                or controller._replay.failed or controller._guard_client.state != "IDLE"):
+            self.fail(error)
+            return
+        synchronize = None
+        try:
+            _require(not controller._replay.compromised, "existing scope requires quarantine")
+            _require(self.lane == "warp" and runtime_record is not None,
+                     "no retained Warp runtime for idle disposal")
+            module, target, _stream = self._validate_runtime_binding_resources(runtime_record[0], runtime_record)
+            setup = self.modules["optical_worker.native_setup"][0]
+            _require(sys.modules.get("optical_worker.native_setup") is setup, "setup module identity drift")
+
+            def synchronize():
+                setup._warp_synchronize_target_exact(module, target)
+        except BaseException as custody_error:
+            self.runtime_owners.append(custody_error)
+            controller.mark_unknown_device_scope(
+                source="warp_preparation_failure", reason="runtime_custody_not_validated")
+        self._retain_failure(error)
+        # Preserve the actual IDLE history. The existing lifecycle alone chooses
+        # quarantine or its one emergency target synchronization and release.
+        controller.terminate(fault="setup_failure", detection_phase="warp_preparation_idle_failure",
+                             emergency_target_synchronize=synchronize)
+
+    def prepare_warp_modules(self):
+        """Compile existing optical modules; does not issue execution readiness."""
+        uploaded = _UPLOADED_INPUTS.get(self)
+        runtime_record = None if uploaded is None else uploaded[0]
+        try:
+            self.check_live()
+            _require(self.lane == "warp" and self.phase == "input_validated"
+                     and not self.warp_preparation_started,
+                     "Warp module preparation requires this session's validated input, once")
+            self.warp_preparation_started = True
+            _require(uploaded is not None and uploaded[1] is self.prepared_input
+                     and self.validation_report is not None,
+                     "Warp modules require the original uploaded and validated input")
+            binding = runtime_record[0]
+            self._validate_runtime_binding_resources(binding, runtime_record)
+            controller = self.bound_controller()
+            controller.require_adopted(self.prepared_input)
+            records = []
+            with controller.segment("setup"):
+                self.phase = "preparing_warp_modules"
+                self.audit()
+                self.external.audit()
+                from optical_worker import warp_setup
+
+                warp_setup.validate_compilation_inputs(self)
+                warp_setup.validate_warp_cache(self, binding.module)
+                self._runtime_leaf("warp_optical_imports", "runtime_import_or_init")
+                from optics import device_scene, device_bvh, warp_native_render
+
+                for index, imported in enumerate((device_scene, device_bvh, warp_native_render)):
+                    python_module, module, definitions = warp_setup.definition_owners(self, index)
+                    _require(python_module is imported, "Warp captured module identity drift")
+                    self._hold_runtime_owner(module, "warp_imported_module")
+                    self._hold_runtime_owner(definitions, "warp_imported_definitions")
+                self.audit()
+                self.external.audit()
+            for index in range(3):
+                with controller.segment("setup"):
+                    self._validate_runtime_binding_record(binding, runtime_record)
+                    self.audit()
+                    self.external.audit()
+                    records.append(warp_setup.compile_module(self, binding, index))
+                    self.audit()
+                    self.external.audit()
+            self.warp_modules = warp_setup.issue_module_set(self, binding, tuple(records))
+            self.phase = "warp_modules_ready"
+            self.runtime_observation.checkpoint()
+            return self.warp_modules
+        except BaseException as error:
+            self._fail_warp_preparation(error, runtime_record)
             raise
 
     def check_import_topology(self):

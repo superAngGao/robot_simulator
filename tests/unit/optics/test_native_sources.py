@@ -82,7 +82,7 @@ def test_literal_lane_catalogs_have_no_losing_optical_modules():
     warp, cuda = native_source_paths("warp"), native_source_paths("cuda")
     assert warp == tuple(sorted(set(warp)))
     assert cuda == tuple(sorted(set(cuda)))
-    assert set(warp) - set(cuda) == {"optics/warp_native_render.py"}
+    assert set(warp) - set(cuda) == {"optical_worker/warp_setup.py", "optics/warp_native_render.py"}
     assert set(cuda) - set(warp) == {
         "optics/cuda_extension_loading.py", "optics/cuda_extension_recipes.py",
         "optics/_cuda_scene_source.py", "optics/_cuda_direct_light_source.py",
