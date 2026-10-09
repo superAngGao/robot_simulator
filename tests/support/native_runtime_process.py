@@ -74,10 +74,11 @@ RUNTIME_WARP_MODULE_FAULTS = ("runtime_warp_modules_success", *RUNTIME_WARP_ADMI
                              *RUNTIME_WARP_IDLE_FAULTS, *RUNTIME_WARP_COMPILE_FAULTS)
 RUNTIME_FIXED_STORAGE_FAULTS = tuple("runtime_fixed_storage_" + name for name in (
     "success", "diagnostics", "allocate_raise", "adoption_raise", "allocate_hang"))
+RUNTIME_RENDER_GRAPH_CASES = ("runtime_render_graph_success", "runtime_render_graph_diagnostics")
 RUNTIME_FAULTS = (RUNTIME_NATIVE_FAULTS + RUNTIME_ACK_FAULTS + RUNTIME_PARENT_FAULTS
                   + RUNTIME_SCOPE_FAULTS + RUNTIME_GLOBAL_FAULTS + RUNTIME_CUDA_ONLY_FAULTS
                   + RUNTIME_OBSERVATION_FAULTS + RUNTIME_ARTIFACT_FAULTS + RUNTIME_WARP_MODULE_FAULTS
-                  + RUNTIME_FIXED_STORAGE_FAULTS)
+                  + RUNTIME_FIXED_STORAGE_FAULTS + RUNTIME_RENDER_GRAPH_CASES)
 
 
 def _install_runtime_fault(fault, entry, session, controller, directory):
@@ -86,7 +87,7 @@ def _install_runtime_fault(fault, entry, session, controller, directory):
     All wrappers and their real return values are retained by the already held
     source session. The production source closure has no fault selector.
     """
-    if fault in {"runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang", "runtime_artifacts_success"} or fault in RUNTIME_ACK_FAULTS + RUNTIME_OBSERVATION_FAULTS + RUNTIME_WARP_MODULE_FAULTS + RUNTIME_FIXED_STORAGE_FAULTS:
+    if fault in {"runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang", "runtime_artifacts_success"} or fault in RUNTIME_ACK_FAULTS + RUNTIME_OBSERVATION_FAULTS + RUNTIME_WARP_MODULE_FAULTS + RUNTIME_FIXED_STORAGE_FAULTS + RUNTIME_RENDER_GRAPH_CASES:
         return None
     state = {"fired": False, "returned": [], "originals": []}
     session.runtime_owners.append(state)
@@ -773,7 +774,7 @@ class _NativeScopeObserver:
                 self.snapshot(_site, "after", opening[1], opening)
                 return result
             setattr(setup, name, wrapper)
-        if self.fault in RUNTIME_ARTIFACT_FAULTS + RUNTIME_FIXED_STORAGE_FAULTS and self.session.lane == "cuda":
+        if self.fault in RUNTIME_ARTIFACT_FAULTS + RUNTIME_FIXED_STORAGE_FAULTS + RUNTIME_RENDER_GRAPH_CASES and self.session.lane == "cuda":
             original = setup._prepare_cuda_factory_owners
             self.originals.append(original)
             def observed_factories(*args):
@@ -834,7 +835,8 @@ class _NativeScopeObserver:
             def scoped(target):
                 if observer.controller._terminating or observer.session.phase in {
                         "preparing_warp_modules", "warp_modules_ready",
-                        "preparing_fixed_render_storage", "fixed_render_storage_ready"}:
+                        "preparing_fixed_render_storage", "fixed_render_storage_ready",
+                        "preparing_fixed_render_graph", "fixed_render_graph_ready"}:
                     # Compilation gets downstream raw observations, never an
                     # input-phase readback receipt with a different meaning.
                     return original_scope(target)
@@ -961,6 +963,81 @@ def _prepare_observed_fixed_storage(session, controller, binding, observer, dire
     finally:
         native_setup._prepare_fixed_render_storage = original_prepare
         binding.module.empty = original_empty
+        controller.adopt_returned_device_owner = original_adopt
+
+
+def _prepare_observed_render_graph(session, controller, binding, observer, directory, fault):
+    """Observe actual recording/events through the production graph entry."""
+    from optical_worker import native_setup
+
+    original_prepare = native_setup._prepare_fixed_render_graph
+    original_adopt = controller.adopt_returned_device_owner
+    adoptions = []
+
+    def adopt(owner, *, actual_device_ordinal, role, operation_id):
+        if role in {"slot_recorded_command", "slot_event"}:
+            observer._ticket()
+            assert any(type(root) is list and any(value is owner for value in root)
+                       for root in controller.guardian._owners), "native return lacks production custody"
+            state = observer._state(False)
+            assert actual_device_ordinal == 1
+            assert state["target_current_stream"] == int(binding.stream.cuda_stream)
+            adoptions.append({"id": id(owner), "role": role, "ordinal": actual_device_ordinal,
+                              "state": state, "guard": dict(controller._guard_reference)})
+        return original_adopt(owner, actual_device_ordinal=actual_device_ordinal,
+                              role=role, operation_id=operation_id)
+
+    def prepare(*args, **kwargs):
+        observer._ticket()
+        before = observer._state(False)
+        result = original_prepare(*args, **kwargs)
+        after = observer._state(False)
+        assert before == after, "render graph changed ambient device or stream"
+        rows = []
+        if session.lane == "warp":
+            from optical_worker import warp_setup
+            compiled = warp_setup.validate_module_set(session, result.compiled_modules)
+        else:
+            renderer, context = native_setup._require_cuda_render_factory(session, result.compiled_modules)
+            assert renderer is result.factory and context.stream is binding.stream
+            issued_module = session.require_cuda_extension(result.compiled_modules, "robot_sim_cuda_direct_light_v8")
+        for parameters, bundle in result.frames:
+            controller.require_adopted(bundle)
+            if session.lane == "warp":
+                bundle.validate_resolved_parameters(parameters)
+                entries = []
+                for command in bundle.commands:
+                    controller.require_adopted(command)
+                    assert command.module_exec is compiled[2].executable and command.kernel.module is compiled[2].module
+                    entries.append({"id": id(command), "executable": id(command.module_exec),
+                                    "expected_executable": id(compiled[2].executable)})
+            else:
+                assert bundle.renderer is renderer
+                bundle._validate_cuda_transaction_stage(context)
+                bundle._cuda_transaction_stage_evidence().validate_render_parameters(parameters.to_payload())
+                entries = [{"id": id(bundle._raygen_entry), "expected_entry": id(issued_module.pinhole_camera_rays_out)},
+                           {"id": id(renderer.module.first_hit_rays_out), "expected_entry": id(issued_module.first_hit_rays_out)},
+                           {"id": id(bundle._shade_entry), "expected_entry": id(getattr(issued_module, bundle._shade_entry_name))}]
+            rows.append({"frame_id": parameters.to_payload()["frame_id"], "bundle_id": id(bundle), "entries": entries})
+        events = (result.completion_event, *(event for _, start, end in result.diagnostic_events for event in (start, end)))
+        controller.require_adopted(*events)
+        assert {id(event) for event in events} == {row["id"] for row in adoptions if row["role"] == "slot_event"}
+        _write(directory, "render_graph_binding.json", {
+            "before": before, "after": after, "guard": dict(controller._guard_reference),
+            "frames": rows, "adoptions": adoptions, "event_ids": [id(event) for event in events],
+            "diagnostic_phases": [name for name, _, _ in result.diagnostic_events],
+            "warmup_frames_completed": result.readiness.warmup_frames_completed,
+            "profile": result.profile, "shadows": result.shadows, "pass_mode": result.pass_mode,
+            "sample_submission_count": 0, "final_execution_readiness_issued": False})
+        return result
+
+    native_setup._prepare_fixed_render_graph = prepare
+    controller.adopt_returned_device_owner = adopt
+    try:
+        return session.prepare_fixed_render_graph(profile="direct_light_full", shadows=True,
+            pass_mode="diagnostic_profiled" if fault.endswith("diagnostics") else "primary_unprofiled")
+    finally:
+        native_setup._prepare_fixed_render_graph = original_prepare
         controller.adopt_returned_device_owner = original_adopt
 
 
@@ -1093,7 +1170,7 @@ def child(fault, fd, directory):
         observe()
         injection = _install_runtime_fault(fault, entry, session, controller, directory)
         scope_observer = (_NativeScopeObserver(session, controller, directory, environment_payload, fault)
-                          if fault in RUNTIME_OBSERVATION_FAULTS + RUNTIME_ARTIFACT_FAULTS + RUNTIME_WARP_MODULE_FAULTS + RUNTIME_FIXED_STORAGE_FAULTS else None)
+                          if fault in RUNTIME_OBSERVATION_FAULTS + RUNTIME_ARTIFACT_FAULTS + RUNTIME_WARP_MODULE_FAULTS + RUNTIME_FIXED_STORAGE_FAULTS + RUNTIME_RENDER_GRAPH_CASES else None)
         phase = "setup_definitions"
         session.import_setup_definitions()
         observe()
@@ -1124,11 +1201,11 @@ def child(fault, fd, directory):
                 "final_execution_readiness_issued": False,
             },
         )
-        if fault in RUNTIME_ARTIFACT_FAULTS or (fault in RUNTIME_FIXED_STORAGE_FAULTS and request["lane"] == "cuda"):
+        if fault in RUNTIME_ARTIFACT_FAULTS or (fault in RUNTIME_FIXED_STORAGE_FAULTS + RUNTIME_RENDER_GRAPH_CASES and request["lane"] == "cuda"):
             phase = "cuda_factory_preparation"
             session.prepare_cuda_factories()
             observe()
-        if fault in RUNTIME_WARP_MODULE_FAULTS or (fault in RUNTIME_FIXED_STORAGE_FAULTS and request["lane"] == "warp"):
+        if fault in RUNTIME_WARP_MODULE_FAULTS or (fault in RUNTIME_FIXED_STORAGE_FAULTS + RUNTIME_RENDER_GRAPH_CASES and request["lane"] == "warp"):
             assert request["lane"] == "warp"
             phase = "warp_module_preparation"
             original_load = binding.module.load_module
@@ -1377,9 +1454,21 @@ def child(fault, fd, directory):
                              "compile_guard": record.guard} for record in records],
                 "final_execution_readiness_issued": False, "sample_submission_count": 0})
             observe()
-        if fault in RUNTIME_FIXED_STORAGE_FAULTS:
+        if fault in RUNTIME_FIXED_STORAGE_FAULTS + RUNTIME_RENDER_GRAPH_CASES:
             phase = "fixed_render_storage"
-            _prepare_observed_fixed_storage(session, controller, binding, scope_observer, directory, fault)
+            storage_fault = ("runtime_fixed_storage_" + ("diagnostics" if fault.endswith("diagnostics") else "success")
+                             if fault in RUNTIME_RENDER_GRAPH_CASES else fault)
+            _prepare_observed_fixed_storage(session, controller, binding, scope_observer, directory, storage_fault)
+            observe()
+        if fault in RUNTIME_RENDER_GRAPH_CASES:
+            phase = "fixed_render_graph"
+            if request["lane"] == "warp":
+                # Compilation's observer accepts Module arguments; the ordinary
+                # render factory also loads by its Python module name. Restore
+                # the public loader before exercising that unmodified route.
+                binding.module.load_module = original_load
+                warp_setup.compile_module = original_compile
+            _prepare_observed_render_graph(session, controller, binding, scope_observer, directory, fault)
             observe()
         phase = "terminal_disposal"
 

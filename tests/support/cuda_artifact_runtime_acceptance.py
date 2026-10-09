@@ -122,6 +122,58 @@ def _validate_fixed_storage(directory, lane, case, fault, *, successful):
         raise RuntimeError("fixed storage replaced the original failure")
 
 
+def _validate_render_graph(directory, lane, fault, *, trace):
+    data = json.loads((directory / "render_graph_binding.json").read_bytes())
+    diagnostic = fault == "runtime_render_graph_diagnostics"
+    guard = {"sequence": 12 if lane == "warp" else 8, "role": "setup"}
+    kinds = [row["details"]["descriptor"]["leaf_kind"] for row in trace
+             if row["guard"] == guard and row["operation"] == "descriptor_observed"]
+    count = 7 if diagnostic else 1
+    if (kinds.count("event_create") != count or kinds.count("event_record") != count
+            or kinds.count("event_wait") != 1 or kinds[-1:] != ["event_wait"]
+            or "warmup_launch" in kinds or "allocation" in kinds):
+        raise RuntimeError("render graph did not complete its exact initialized-event path")
+    if (data["guard"] != guard or data["before"] != data["after"]
+            or data["warmup_frames_completed"] != 0 or data["sample_submission_count"] != 0
+            or data["final_execution_readiness_issued"] is not False
+            or data["profile"] != "direct_light_full" or data["shadows"] is not True
+            or data["pass_mode"] != ("diagnostic_profiled" if diagnostic else "primary_unprofiled")
+            or data["diagnostic_phases"] != (["raygen_kernel", "first_hit_kernel", "shade_kernel"] if diagnostic else [])
+            or [row["frame_id"] for row in data["frames"]] != list(range(1, 11))
+            or len(set(data["event_ids"])) != (7 if diagnostic else 1)):
+        raise RuntimeError("provisional render graph has incorrect modes, frames, events or scope")
+    before = data["before"]
+    if (before["default_device"] != 0 or before["current_context"] is not None
+            if lane == "warp" else before["logical_device"] != 0 or before["raw_device"] != 1):
+        raise RuntimeError("render graph did not restore the required ambient scope")
+    adoptions = data["adoptions"]
+    if ({row["id"] for row in adoptions if row["role"] == "slot_event"} != set(data["event_ids"])
+            or len({row["bundle_id"] for row in data["frames"]}) != 10):
+        raise RuntimeError("provisional render graph lost distinct frames or event custody")
+    command_ids = []
+    for frame in data["frames"]:
+        if len(frame["entries"]) != (5 if lane == "warp" else 3):
+            raise RuntimeError("provisional render graph has incomplete native commands")
+        for entry in frame["entries"]:
+            if lane == "warp":
+                if entry["executable"] != entry["expected_executable"]:
+                    raise RuntimeError("recorded Warp command replaced its compiled executable")
+                command_ids.append(entry["id"])
+            elif entry["id"] != entry["expected_entry"]:
+                raise RuntimeError("CUDA stage captured another executable entry")
+    if (len(set(command_ids)) != len(command_ids)
+            or set(command_ids) != {row["id"] for row in adoptions if row["role"] == "slot_recorded_command"}):
+        raise RuntimeError("recorded Warp commands lack exact distinct custody")
+    for row in adoptions:
+        state = row["state"]
+        if (row["guard"] != guard or row["ordinal"] != 1
+                or state["target_current_stream"] != state["held_stream"]["handle"]
+                or [item["ordinal"] for item in state["primary_contexts"] if item["active"]] != [1]
+                or (state["default_device"] != 1 or state["current_context_device"] != 1
+                    if lane == "warp" else state["logical_device"] != 1 or state["raw_device"] != 1)):
+            raise RuntimeError("render command/event was prepared outside its held target scope")
+
+
 def run_case(repository, revision, environment_path, environment, directory, lane, case, fault):
     from optical_worker.guarded_evidence import validate_custody_artifact
     from optical_worker.native_sources import CATALOG_PATH
@@ -129,7 +181,7 @@ def run_case(repository, revision, environment_path, environment, directory, lan
         RuntimeCustodyRecord, validate_runtime_custody_selection, validate_runtime_custody_attachment,
     )
     from tests.support.runtime_custody_launch import capture_runtime_custody_inputs
-    from tests.support.native_runtime_process import RUNTIME_FIXED_STORAGE_FAULTS
+    from tests.support.native_runtime_process import RUNTIME_FIXED_STORAGE_FAULTS, RUNTIME_RENDER_GRAPH_CASES
 
     request = {"root": str(repository), "revision": revision, "lane": lane,
                "catalog_sha256": hashlib.sha256((repository / CATALOG_PATH).read_bytes()).hexdigest(),
@@ -170,12 +222,14 @@ def run_case(repository, revision, environment_path, environment, directory, lan
             raise RuntimeError("owned worker PID still exists; inspect without broad signaling")
         if (directory / "ordinary_atexit.json").exists():
             raise RuntimeError("worker performed ordinary Python cleanup")
-        storage_case = fault in RUNTIME_FIXED_STORAGE_FAULTS
+        graph_case = fault in RUNTIME_RENDER_GRAPH_CASES
+        storage_case = fault in RUNTIME_FIXED_STORAGE_FAULTS or graph_case
         successful = fault in {"runtime_artifacts_success", "runtime_scope_success", "runtime_warp_modules_success",
-                               "runtime_fixed_storage_success", "runtime_fixed_storage_diagnostics"}
+                               "runtime_fixed_storage_success", "runtime_fixed_storage_diagnostics"} or graph_case
         if successful:
             expected_phases = (12 if lane == "warp" else 8) if storage_case else (
                 11 if fault == "runtime_warp_modules_success" else (7 if lane == "cuda" else 6))
+            expected_phases += int(graph_case)
             if (result["worker_returncode"] != 0 or error or result["stderr"]
                     or control["normal_complete_count"] != expected_phases
                     or control["arm_count"] != expected_phases + 1
@@ -345,7 +399,11 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                     if not idle_synced and summary["custody"] != "full_quarantine":
                         raise RuntimeError("unprovable IDLE custody did not retain the graph")
         if storage_case:
-            _validate_fixed_storage(directory, lane, case, fault, successful=successful)
+            storage_fault = ("runtime_fixed_storage_" + ("diagnostics" if fault.endswith("diagnostics") else "success")
+                             if graph_case else fault)
+            _validate_fixed_storage(directory, lane, case, storage_fault, successful=successful)
+        if graph_case:
+            _validate_render_graph(directory, lane, fault, trace=worker["transition_trace"])
         raw_path = directory / "runtime_custody.json"
         if raw_path.exists():
             raw = raw_path.read_bytes()

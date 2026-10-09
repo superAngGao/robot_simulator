@@ -1720,6 +1720,13 @@ Next milestone:
       (150 passed,41 unavailable source/POSIX skips); full support code-reviewv1
       is archived unchanged. The real dual-lane Go2 allocation matrix is now
       running in an isolated3d6692b checkout, using the original supervisor.
+      Provisional R0 graph construction now has fresh code-reviewv2 approval
+      at8315b00: ten frozen frame bindings and initialized completion/events,
+      warmup0 only. Review F1 (CUDA renderer module/context provenance) is closed
+      through existing retained factory, extension and stream checks; the full
+      report is archived unchanged. Independent tests passed422, plus281 source/
+      bootstrap checks with13 platform/asset skips. Real recording/event checks
+      and optical execution remain pending; there is no image or speed result.
       The owner-requested systematic whole-C4 refactor is still required.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
