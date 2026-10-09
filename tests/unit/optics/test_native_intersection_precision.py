@@ -40,6 +40,7 @@ def _warp_bodies():
     assert {f.name for f in functions} == names
     wp = SimpleNamespace(float32=np.float32, float64=np.float64, int32=np.int32,
                          int64=np.int64, abs=abs, min=min, inf=np.inf, nan=np.nan,
+                         cast=lambda value, dtype: np.asarray(value).view(dtype)[()],
                          tid=lambda: 0, zeros=lambda shape, dtype: np.zeros(shape, dtype=dtype),
                          atomic_add=lambda a, i, v: a.__setitem__(i, a[i] + v),
                          atomic_max=lambda a, i, v: a.__setitem__(i, max(a[i], v)))
@@ -92,6 +93,10 @@ extern "C" int evaluate(const float* o, const float* d, const float* b,
   return intersect_triangle(o[0],o[1],o[2],d[0],d[1],d[2],0,b,e1,e2,n,
                             limit,t,&nx,&ny,&nz);
 }
+extern "C" int evaluate_box(const float* o, const float* d, const float* lo,
+    const float* hi, float limit, float* entry) {
+  return intersect_aabb(o[0],o[1],o[2],d[0],d[1],d[2],lo,hi,0,limit,entry);
+}
 ''')
     subprocess.run([compiler, "-O2", "-shared", "-fPIC", str(cpp), "-o", str(library)],
                    check=True, capture_output=True, timeout=60)
@@ -99,12 +104,19 @@ extern "C" int evaluate(const float* o, const float* d, const float* b,
     pointer = ctypes.POINTER(ctypes.c_float)
     dll.evaluate.argtypes = [pointer] * 5 + [ctypes.c_float, pointer]
     dll.evaluate.restype = ctypes.c_int
+    dll.evaluate_box.argtypes = [pointer] * 4 + [ctypes.c_float, pointer]
+    dll.evaluate_box.restype = ctypes.c_int
 
     def evaluate(origin, direction, v0, e1, e2, limit):
         t = ctypes.c_float()
         hit = dll.evaluate(*(a.ctypes.data_as(pointer) for a in (origin, direction, v0, e1, e2)),
                            limit, ctypes.byref(t))
         return bool(hit), t.value
+    def box(origin, direction, lo, hi, limit):
+        entry = ctypes.c_float()
+        hit = dll.evaluate_box(*(a.ctypes.data_as(pointer) for a in (origin, direction, lo, hi)),
+                               limit, ctypes.byref(entry))
+        return bool(hit), entry.value
     def first_hit(*args):
         native = []
         for value in (*args, 1):
@@ -119,7 +131,7 @@ extern "C" int evaluate(const float* o, const float* d, const float* b,
         dll.first_hit_rays_kernel.argtypes = [type(v) for v in native]
         dll.first_hit_rays_kernel.restype = None
         dll.first_hit_rays_kernel(*native)
-    return SimpleNamespace(predicate=evaluate, first_hit=first_hit)
+    return SimpleNamespace(predicate=evaluate, first_hit=first_hit, box=box)
 
 
 @pytest.fixture(scope="module")
@@ -148,7 +160,8 @@ def test_captured_edges_match_original_cpu_oracle(request, backend, case):
 @pytest.mark.parametrize("separate_leaves", [False, True])
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize("backend", ["warp", "cuda"])
-@pytest.mark.parametrize("boundary", ["interior", "rounded_tie", "outside_tie", "physical_limit"])
+@pytest.mark.parametrize("boundary", ["interior", "rounded_tie", "outside_tie", "physical_limit",
+                                      "oblique", "oblique_outside", "oblique_limit", "half_ulp"])
 def test_primary_traversal_keeps_candidates_within_existing_tie_window(request, backend, separate_leaves, reverse, boundary):
     body = (_warp_bodies()["_device_scene_bvh_first_hit_kernel"] if backend == "warp"
             else request.getfixturevalue("cuda_host").first_hit)
@@ -159,11 +172,35 @@ def test_primary_traversal_keeps_candidates_within_existing_tie_window(request, 
     if boundary == "outside_tie":
         far = np.nextafter(far, np.float32(np.inf))
     origin = np.array([[0 if boundary == "interior" else -1e-9, 0, 0]], np.float32)
+    direction = np.array([[1, 0, 0]], np.float32)
     max_distance = far if boundary == "physical_limit" else np.float32(10)
     expected_id = 20 if boundary in {"outside_tie", "physical_limit"} else 10
     v0 = np.array([[near, -1, -1], [far, -1, -1]], np.float32)
     e1 = np.array([[0, 2, 0]] * 2, np.float32)
     e2 = np.array([[0, 0, 2]] * 2, np.float32)
+    expected_distance = far if expected_id == 10 else near
+    if boundary == "half_ulp":
+        origin[:] = [-3.725290298461914e-9, 0, 0]
+        far = np.float32(0.1076514795422554)
+        near = np.float32(far - np.float32(1e-5))
+        v0[:, 0] = [near, far]
+        e1[:] = [0, 3.5386428833007812, 0]
+        e2[:] = [0, 0, 7.4439778327941895]
+        expected_distance = far
+    if boundary.startswith("oblique"):
+        origin[:] = 0
+        direction[:] = [0.8446270823478699, 0.5353550910949707, 0]
+        near, far = np.float32(0.1518450379371643), np.float32(0.15185348689556122)
+        if boundary == "oblique_outside":
+            far = np.nextafter(far, np.float32(np.inf))
+        v0[:] = [[near, -2, -2], [far, -2, -2]]
+        e1[:] = [0, 8, 0]
+        e2[:] = [0, 0, 8]
+        expected_id = 10 if boundary == "oblique" else 20
+        expected_distance = np.float32(np.float64(far if expected_id == 10 else near) / direction[0, 0])
+        if boundary == "oblique_limit":
+            # This rounded limit is just below the true far-plane distance.
+            max_distance = np.float32(np.float64(far) / direction[0, 0])
     lo, hi = v0.copy(), v0 + e1 + e2
     ids = np.array([1, 0] if reverse else [0, 1], np.int32)
     if separate_leaves:
@@ -180,7 +217,7 @@ def test_primary_traversal_keeps_candidates_within_existing_tie_window(request, 
     zero_i = np.empty(0, np.int32)
     zero_key = np.empty(0, np.int64)
     zero_vec = np.empty((0, 3), np.float32)
-    body(origin, np.array([[1, 0, 0]], np.float32), max_distance,
+    body(origin, direction, max_distance,
          zero_vec, zero_vec, zero_i, zero_key, zero_key, zero_i, 0,
          v0, e1, e2, np.array([[-1, 0, 0]] * 2, np.float32),
          np.array([20, 10], np.int32), np.array([20, 10], np.int64), np.ones(2, np.int64),
@@ -190,7 +227,7 @@ def test_primary_traversal_keeps_candidates_within_existing_tie_window(request, 
          np.zeros(1, np.int32), np.zeros(1, np.int32))
     assert hit[0] == 1 and instance[0] == expected_id
     assert material[0] == (1 if expected_id == 10 else 2)
-    assert distance[0] == (far if expected_id == 10 else near)
+    assert distance[0] == expected_distance
 
 
 @pytest.mark.parametrize("backend", ["warp_predicate", "cuda_predicate"])
@@ -209,3 +246,29 @@ def test_physical_and_shadow_cutoff_stays_strict_before_distance_rounding(reques
     b[0] = 0
     origin[0] = np.nextafter(np.float32(0), np.float32(1))
     assert not evaluate(origin, d, b, e1, e2, limit)[0]
+
+
+@pytest.mark.parametrize("backend", ["warp", "cuda"])
+def test_stack_entry_quantization_preserves_lower_bound(request, backend):
+    if backend == "warp":
+        body = _warp_bodies()["_intersect_aabb_for_ray_with_interval"]
+        box = lambda o, d, lo, hi, limit: body(*o, *d, *lo, *hi, np.float32(limit))[:2]
+        predicate = request.getfixturevalue("warp_predicate")
+    else:
+        host = request.getfixturevalue("cuda_host")
+        box, predicate = host.box, host.predicate
+    rng = np.random.default_rng(710)
+    d = np.array([1, 0, 0], np.float32)
+    for _ in range(5000):
+        x = np.float32(rng.uniform(.08, .2))
+        # Halfway distances exercise round-to-even on both parities, with
+        # varying edges so the triangle calculation follows its actual body.
+        o = np.array([-np.spacing(x) / np.float32(2), 0, 0], np.float32)
+        b = np.array([x, -1, -1], np.float32)
+        e1 = np.array([0, rng.uniform(3, 9), 0], np.float32)
+        e2 = np.array([0, 0, rng.uniform(3, 9)], np.float32)
+        hit, distance = predicate(o, d, b, e1, e2, 10)
+        box_hit, entry = box(o, d, b, b + e1 + e2, 10)
+        assert hit and box_hit
+        assert entry <= np.float64(x) - np.float64(o[0])
+        assert entry <= distance

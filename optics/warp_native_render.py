@@ -784,7 +784,7 @@ if _HAS_WARP:
 
     @wp.func
     def _intersect_aabb_axis(
-        origin: float, direction: float, lower: float, upper: float, t_min: float, t_max: float
+        origin: float, direction: float, lower: float, upper: float, t_min: wp.float64, t_max: wp.float64
     ):
         hit = bool(True)
         out_min = t_min
@@ -793,9 +793,10 @@ if _HAS_WARP:
             if origin < lower - _T_EPS or origin > upper + _T_EPS:
                 hit = False
         else:
-            inv_d = 1.0 / direction
-            t0 = (lower - origin) * inv_d
-            t1 = (upper - origin) * inv_d
+            # Slab and triangle predicates use the same intermediate precision.
+            # Cast before subtraction, then divide directly (no float reciprocal).
+            t0 = (wp.float64(lower) - wp.float64(origin)) / wp.float64(direction)
+            t1 = (wp.float64(upper) - wp.float64(origin)) / wp.float64(direction)
             if t0 > t1:
                 tmp = t0
                 t0 = t1
@@ -857,15 +858,22 @@ if _HAS_WARP:
         max_z: float,
         max_t: float,
     ):
-        t_min = wp.float32(0.0)
-        t_max = wp.float32(max_t)
+        t_min = wp.float64(0.0)
+        t_max = wp.float64(max_t)
         hit = bool(True)
         hit, t_min, t_max = _intersect_aabb_axis(ox, dx, min_x, max_x, t_min, t_max)
         if hit:
             hit, t_min, t_max = _intersect_aabb_axis(oy, dy, min_y, max_y, t_min, t_max)
         if hit:
             hit, t_min, t_max = _intersect_aabb_axis(oz, dz, min_z, max_z, t_min, t_max)
-        return hit, t_min, t_max
+        # A lower bound must stay a lower bound when stored in the float32
+        # traversal stack. Nearest rounding can move a half-ULP entry past a
+        # valid triangle distance. t_min is nonnegative, so decrementing its
+        # positive IEEE representation is the exact next float toward zero.
+        entry = wp.float32(t_min)
+        if wp.float64(entry) > t_min:
+            entry = wp.cast(wp.cast(entry, wp.int32) - wp.int32(1), wp.float32)
+        return hit, entry, wp.float32(t_max)
 
     @wp.func
     def _intersect_device_triangle_for_ray(
@@ -1319,7 +1327,8 @@ if _HAS_WARP:
                             best_material_index = plane_material_indices[plane_idx]
                             found = wp.int32(1)
 
-        # Pruning must preserve every candidate admitted by _is_better_hit.
+        # Box validity uses physical range; node pruning uses the same float32
+        # distance difference as the hit comparator, without a rounded sum cap.
         stack = wp.zeros(shape=_MAX_BVH_STACK, dtype=wp.int32)
         stack_t = wp.zeros(shape=_MAX_BVH_STACK, dtype=wp.float32)
         stack_size = wp.int32(0)
@@ -1338,7 +1347,7 @@ if _HAS_WARP:
                 bvh_bounds_max[0, 0],
                 bvh_bounds_max[0, 1],
                 bvh_bounds_max[0, 2],
-                wp.min(max_distance, best_t + _T_EPS),
+                max_distance,
             )
             if root_hit:
                 stack[0] = wp.int32(0)
@@ -1350,7 +1359,7 @@ if _HAS_WARP:
             stack_size = stack_size - wp.int32(1)
             node_index = stack[stack_size]
             node_t = stack_t[stack_size]
-            if node_t <= wp.min(max_distance, best_t + _T_EPS):
+            if node_t <= best_t or node_t - best_t <= _T_EPS:
                 leaf_count = bvh_count[node_index]
                 if leaf_count > 0:
                     leaf_start = bvh_start[node_index]
@@ -1411,7 +1420,7 @@ if _HAS_WARP:
                             bvh_bounds_max[left, 0],
                             bvh_bounds_max[left, 1],
                             bvh_bounds_max[left, 2],
-                            wp.min(max_distance, best_t + _T_EPS),
+                            max_distance,
                         )
                     if right >= 0:
                         right_hit, right_t, _right_exit_t = _intersect_aabb_for_ray_with_interval(
@@ -1427,7 +1436,7 @@ if _HAS_WARP:
                             bvh_bounds_max[right, 0],
                             bvh_bounds_max[right, 1],
                             bvh_bounds_max[right, 2],
-                            wp.min(max_distance, best_t + _T_EPS),
+                            max_distance,
                         )
 
                     first = left

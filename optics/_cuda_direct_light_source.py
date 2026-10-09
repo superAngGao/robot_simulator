@@ -285,21 +285,21 @@ __device__ __forceinline__ bool intersect_aabb_axis(
     float direction,
     float lower,
     float upper,
-    float* t_min,
-    float* t_max) {
+    double* t_min,
+    double* t_max) {
   if (fabsf(direction) <= kDirEps) {
     return origin >= lower && origin <= upper;
   }
-  float inv_d = 1.0f / direction;
-  float t0 = (lower - origin) * inv_d;
-  float t1 = (upper - origin) * inv_d;
+  // Widen before subtraction; direct division avoids float reciprocal rounding.
+  double t0 = (double(lower) - double(origin)) / double(direction);
+  double t1 = (double(upper) - double(origin)) / double(direction);
   if (t0 > t1) {
-    float tmp = t0;
+    double tmp = t0;
     t0 = t1;
     t1 = tmp;
   }
-  *t_min = fmaxf(*t_min, t0);
-  *t_max = fminf(*t_max, t1);
+  *t_min = fmax(*t_min, t0);
+  *t_max = fmin(*t_max, t1);
   return *t_min <= *t_max;
 }
 
@@ -315,8 +315,8 @@ __device__ __forceinline__ bool intersect_aabb(
     int node,
     float max_distance,
     float* entry_t) {
-  float t_min = 0.0f;
-  float t_max = max_distance;
+  double t_min = 0.0;
+  double t_max = max_distance;
   bool hit = intersect_aabb_axis(ox, dx, bounds_min[node * 3 + 0], bounds_max[node * 3 + 0], &t_min, &t_max);
   if (hit) {
     hit = intersect_aabb_axis(oy, dy, bounds_min[node * 3 + 1], bounds_max[node * 3 + 1], &t_min, &t_max);
@@ -324,7 +324,12 @@ __device__ __forceinline__ bool intersect_aabb(
   if (hit) {
     hit = intersect_aabb_axis(oz, dz, bounds_min[node * 3 + 2], bounds_max[node * 3 + 2], &t_min, &t_max);
   }
-  *entry_t = t_min;
+  // Preserve the nonnegative lower bound when quantizing the traversal stack.
+  float entry = static_cast<float>(t_min);
+  if (double(entry) > t_min) {
+    entry = nextafterf(entry, 0.0f);
+  }
+  *entry_t = entry;
   return hit;
 }
 
@@ -513,7 +518,7 @@ __global__ void first_hit_rays_kernel(
   if (num_bvh_nodes > 0) {
     float root_t = 0.0f;
     if (intersect_aabb(
-            ox, oy, oz, dx, dy, dz, bvh_bounds_min, bvh_bounds_max, 0, fminf(max_distance, best_t + kTEps), &root_t)) {
+            ox, oy, oz, dx, dy, dz, bvh_bounds_min, bvh_bounds_max, 0, max_distance, &root_t)) {
       stack[0] = 0;
       stack_t[0] = root_t;
       stack_size = 1;
@@ -525,7 +530,8 @@ __global__ void first_hit_rays_kernel(
     --stack_size;
     int node = stack[stack_size];
     float node_t = stack_t[stack_size];
-    if (node_t > fminf(max_distance, best_t + kTEps)) {
+    // Match the float32 comparator's difference, not a rounded sum bound.
+    if (node_t > best_t && node_t - best_t > kTEps) {
       continue;
     }
     int leaf_count = bvh_count[node];
@@ -585,11 +591,11 @@ __global__ void first_hit_rays_kernel(
       float right_t = 0.0f;
       if (left >= 0) {
         left_hit = intersect_aabb(
-            ox, oy, oz, dx, dy, dz, bvh_bounds_min, bvh_bounds_max, left, fminf(max_distance, best_t + kTEps), &left_t);
+            ox, oy, oz, dx, dy, dz, bvh_bounds_min, bvh_bounds_max, left, max_distance, &left_t);
       }
       if (right >= 0) {
         right_hit = intersect_aabb(
-            ox, oy, oz, dx, dy, dz, bvh_bounds_min, bvh_bounds_max, right, fminf(max_distance, best_t + kTEps), &right_t);
+            ox, oy, oz, dx, dy, dz, bvh_bounds_min, bvh_bounds_max, right, max_distance, &right_t);
       }
 
       int first = left;
