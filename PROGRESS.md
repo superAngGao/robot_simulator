@@ -1593,6 +1593,16 @@ Next milestone:
       commands, limitations and remaining whole-packet work. Committed source
       checks pass206 with4 skips (43.85s, exit0). Read-only target
       inspection still finds clean92a8ac6; no service/build/GPU campaign was run.
+      Whole replacement code is now frozen at a43f0c1: guarded parent CUDA factory
+      preparation, cold v5 composition and fixed actual Go2 acceptance commands
+      are connected. Builder OS checkpoints are explicitly not a syscall history.
+      Committed source/bootstrap/cold checks at0a26ad0 finish295 passed/13 skipped
+      (348.98s, exit0); the final support-only delta has21 manifest-test passes.
+      See fixed-cuda-artifacts code-preflight-request v1 for the whole diff,
+      limitations and sequential manager/build/native commands. No real campaign
+      or code approval is claimed. Owner reiterated the complexity correction:
+      close the existing path, avoid more infrastructure, and retain the required
+      whole-C4 systematic refactor. C4 remains active and incomplete.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
