@@ -1832,8 +1832,15 @@ Next milestone:
       It further identifies determinant rejection at970674 and all four960
       range failures, and12 local/world area-filter disagreements. Full report
       is archived unchanged. Input-precision design v3 now proposes one coherent
-      source-preserving geometry/query policy, removing v2's extra normal array;
-      independent design review precedes implementation. No native intensity or
+      source-preserving geometry/query policy, removing v2's extra normal array.
+      Fresh design-review v3 requests one concrete correction: its prescribed
+      new host transform order changes20 CPU world-area decisions. The report
+      and exact original counterexamples are preserved unchanged. Design v4
+      replaces per-face source vertex duplication with original indexed mesh
+      blocks so R0 can use unchanged mesh-wide CPU composition/transformation;
+      a CPU feasibility probe reproduces all original world vertices and396778
+      admitted faces. Fresh independent design review precedes implementation.
+      No native intensity or
       performance result is available. Whole C4 remains incomplete.
       Fixed R0 storage native-reviewv1 approves the14-case campaign at3d6692b:
       eight positives, four guarded raises and two deadline kills independently
