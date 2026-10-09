@@ -253,7 +253,8 @@ def test_fixed_storage_connects_real_builders_under_existing_guard(fixed_storage
 
 
 @pytest.mark.parametrize('lane', ['warp', 'cuda'])
-@pytest.mark.parametrize('phase', ['input_validated', 'preparing_fixed_render_storage', 'fixed_render_storage_ready'])
+@pytest.mark.parametrize('phase', ['input_validated', 'preparing_fixed_render_storage', 'fixed_render_storage_ready',
+                                   'preparing_fixed_render_graph', 'fixed_render_graph_ready'])
 def test_fixed_storage_source_closure_remains_lane_specific(lane, phase):
     from optical_worker.native_bootstrap import _SourceSession
 

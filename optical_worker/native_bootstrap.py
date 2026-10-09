@@ -124,6 +124,8 @@ _RUNTIME_PHASES = frozenset(
         "warp_modules_ready",
         "preparing_fixed_render_storage",
         "fixed_render_storage_ready",
+        "preparing_fixed_render_graph",
+        "fixed_render_graph_ready",
     }
 )
 _VALIDATION_SOURCES = MappingProxyType(
@@ -2372,17 +2374,20 @@ class _SourceSession:
             )
             if self.phase in {"validating_input", "input_validated", "preparing_cuda_factories", "cuda_factories_ready",
                               "preparing_warp_modules", "warp_modules_ready",
-                              "preparing_fixed_render_storage", "fixed_render_storage_ready"}:
+                              "preparing_fixed_render_storage", "fixed_render_storage_ready",
+                              "preparing_fixed_render_graph", "fixed_render_graph_ready"}:
                 admitted = admitted | _VALIDATION_SOURCES
             if self.lane == "cuda" and self.phase not in {"materializing", "materialized"}:
                 admitted = admitted | _CUDA_ARTIFACT_SOURCES
             if self.lane == "cuda" and self.phase in {"preparing_cuda_factories", "cuda_factories_ready",
-                                                    "preparing_fixed_render_storage", "fixed_render_storage_ready"}:
+                                                    "preparing_fixed_render_storage", "fixed_render_storage_ready",
+                                                    "preparing_fixed_render_graph", "fixed_render_graph_ready"}:
                 admitted = admitted | _CUDA_FACTORY_SOURCES
             if self.lane == "warp" and self.phase not in {"materializing", "materialized"}:
                 admitted = admitted | _WARP_SETUP_SOURCES
             if self.lane == "warp" and self.phase in {"preparing_warp_modules", "warp_modules_ready",
-                                                    "preparing_fixed_render_storage", "fixed_render_storage_ready"}:
+                                                    "preparing_fixed_render_storage", "fixed_render_storage_ready",
+                                                    "preparing_fixed_render_graph", "fixed_render_graph_ready"}:
                 admitted = admitted | _WARP_MODULE_SOURCES
             return admitted
         raise SourceBootstrapError("invalid CPU source phase")
@@ -3354,6 +3359,56 @@ class _SourceSession:
             self.phase = "fixed_render_storage_ready"
             self.runtime_observation.checkpoint()
             return storage
+        except BaseException as error:
+            self.fail(error)
+            raise
+
+    def prepare_fixed_render_graph(self, *, profile, shadows, pass_mode):
+        """Prepare provisional frame commands/events, without executing optical work."""
+        try:
+            self.check_live()
+            _require(self.phase == "fixed_render_storage_ready", "fixed render graph requires its storage, once")
+            _require(type(profile) is str and profile in {"direct_light_full", "rgb_preview", "render_only"}
+                     and type(shadows) is bool and type(pass_mode) is str
+                     and pass_mode in {"primary_unprofiled", "diagnostic_profiled"},
+                     "invalid fixed render graph modes")
+            controller = self.bound_controller()
+            with controller.segment("setup"):
+                self.phase = "preparing_fixed_render_graph"
+                uploaded = _UPLOADED_INPUTS.get(self)
+                _require(uploaded is not None and uploaded[1] is self.prepared_input
+                         and self.validation_report is not None,
+                         "fixed render graph requires the original validated upload")
+                record, prepared = uploaded
+                module, target, stream = self._validate_runtime_binding_record(record[0], record)
+                controller.require_adopted(prepared, self.fixed_render_storage)
+                self.audit()
+                self.external.audit()
+                if self.lane == "warp":
+                    from optical_worker import warp_setup
+                    compiled = warp_setup.validate_module_set(self, self.warp_modules)
+                else:
+                    compiled = self.cuda_extensions()
+                from optical_worker.native_input import certify_native_readiness
+                from optical_worker.native_setup import _prepare_fixed_render_graph
+
+                readiness = certify_native_readiness(prepared, self.validation_report,
+                                                     compile_complete=True, warmup_frames_completed=0)
+                self._hold_runtime_owner(readiness, "provisional_input_readiness")
+                graph = _prepare_fixed_render_graph(self, module, target, stream, readiness=readiness,
+                    profile=profile, shadows=shadows, pass_mode=pass_mode)
+                self._hold_runtime_owner(graph, "provisional_fixed_render_graph")
+                if self.lane == "warp":
+                    _require(warp_setup.validate_module_set(self, self.warp_modules) is compiled,
+                             "render recording changed its compiled modules")
+                else:
+                    _require(self.cuda_extensions() is compiled, "render binding changed its CUDA extensions")
+                self.audit()
+                self.external.audit()
+            self.fixed_render_graph = graph
+            self.phase = "fixed_render_graph_ready"
+            self.runtime_observation.checkpoint()
+            return graph
         except BaseException as error:
             self.fail(error)
             raise

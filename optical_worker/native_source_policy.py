@@ -18,7 +18,7 @@ from .protocol import ClosedWorkerProtocolError, canonical_sha256
 
 NATIVE_AST_POLICY_VERSION = "q54.p12.4.closed-worker-ast-policy.v16"
 _BOOTSTRAP_PATH = "optical_worker/native_bootstrap.py"
-_BOOTSTRAP_SOURCE_SHA256 = "4955f73961d5c9fd11b648bce947d70ff92c54754416883bae8a80fca2cc9021"
+_BOOTSTRAP_SOURCE_SHA256 = "0be7c5bc26c55b14b3a50724cd22b39de9e7ed4f95af67ccd8273864d18f7378"
 _BOOTSTRAP_CLASS_PINS = {
     "_RuntimeObservation": "cfb64f25a4bf1774a5e67128ac7e1b3b5a06ab9800ddd2f9b51d39e2b9537b3e",
     "_CapturedSourceLoader": "92da4e467035fe308c4ec6af32f2d05831adc7e5015f5f400545d1541ad5556b",
@@ -27,7 +27,7 @@ _BOOTSTRAP_CLASS_PINS = {
     "_ExternalAdmission": "157107d2ca7210f687ec3898d072231ccb993f061647cc740982262c8b004070",
     "_ExternalNamespaceLoader": "524801ff222139e86fa76fa918b42a20ee61d6bcfe9e783542c880da3cad46bf",
     "_RuntimeSetupBinding": "85bf4bb6a12a3ab17807393c27993ca319e5b614eda9c14d4f1d6c0b042f6112",
-    "_SourceSession": "d66c3477f232014c977a7ea5445e4ed3c196fd9c07f80dfc5ed4bc49c22caf10",
+    "_SourceSession": "4b3e2103fd8103131b4859144667e73d3e44953d7e66fd7833d05172de4b7220",
 }
 _BOOTSTRAP_IMPORTS = frozenset(("importlib.abc", "importlib.machinery", "importlib.util"))
 _BOOTSTRAP_USES = frozenset((
@@ -42,7 +42,7 @@ _SNAPSHOT_FUNCTION = "_render_launch_snapshot"
 # Exact LF Git/source-release bytes reviewed in C2c4 (4b7bf4c). Deliberately
 # not universal-newline-normalized at verification time. A CRLF checkout is
 # not this POSIX worker release; packaging must supply the reviewed bytes.
-_SNAPSHOT_SOURCE_SHA256 = "86eee027aab7f47168e40fb6e1301d8ca3e5a5730bfc068158359905e2a567ea"
+_SNAPSHOT_SOURCE_SHA256 = "21b98c19956dbfba3131cfd66b37b86d79798d275dc0f2954d065c67d8c40e45"
 _SNAPSHOT_FUNCTION_SHA256 = "725c7f315fdba4ad6df78e31a149865fd97e26da3c95df24678dbadba0459199"
 # Existing CPU regex construction is not Python code compilation. Keep this
 # exception release-pinned; do not generally admit arbitrary obj.compile().

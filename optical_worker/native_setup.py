@@ -165,6 +165,159 @@ def _prepare_fixed_render_storage(session, runtime, target, stream, *, traversal
             return (*inputs, outputs)
 
 
+@dataclass(frozen=True, eq=False)
+class _FixedRenderPreparation:
+    """Retained provisional graph; not warmup, final readiness or sample authority."""
+
+    readiness: object
+    compiled_modules: object
+    factory: object
+    frames: tuple
+    completion_event: object
+    diagnostic_events: tuple
+    profile: str
+    shadows: bool
+    pass_mode: str
+
+
+def _prepare_render_events(runtime, target, stream, *, lane, diagnostic, context):
+    """Initialize and complete one slot's events under the caller's setup guard."""
+    if context is None or type(diagnostic) is not bool:
+        raise TypeError("render events require a guarded context and exact diagnostic mode")
+    phases = ("raygen_kernel", "first_hit_kernel", "shade_kernel") if diagnostic else ()
+    with _native_resource_scope(runtime, target, lane=lane, stream=stream, context=context,
+            owner_role="slot_event_custody", scope_id="slot_event_scope") as (lifecycle, owners, operation):
+        def create(timing):
+            with operation("slot_event_create", "event_create"):
+                event = (runtime.cuda.Event(enable_timing=timing) if lane == "cuda"
+                         else runtime.Event(device=target, enable_timing=timing))
+                owners.append(event)
+                ordinal = _event_ordinal(event, cuda=lane == "cuda", lifecycle=lifecycle, allow_unbound=True)
+                lifecycle.adopt_returned_device_owner(event, actual_device_ordinal=ordinal,
+                    role="slot_event", operation_id="slot_event_create")
+                return event
+
+        def record(event):
+            with operation("slot_event_initialize", "event_record"):
+                if lane == "cuda":
+                    event.record(stream)
+                else:
+                    stream.record_event(event)
+                _require_ready_event_target(event, cuda=lane == "cuda", lifecycle=lifecycle)
+
+        completion = create(False)
+        pairs = []
+        for phase in phases:
+            start, end = create(True), create(True)
+            record(start)
+            record(end)
+            pairs.append((phase, start, end))
+        # The terminal initialization is last, so its guarded wait covers all
+        # diagnostic event initialization on the same stream as well.
+        record(completion)
+        with operation("slot_event_initialization_wait", "event_wait"):
+            if lane == "cuda":
+                completion.synchronize()
+            else:
+                runtime.synchronize_event(completion)
+        return completion, tuple(pairs)
+
+
+def _prepare_fixed_render_graph(session, runtime, target, stream, *, readiness, profile, shadows, pass_mode):
+    """Bind the ten provisional warmup frames using existing renderer builders."""
+    import struct
+    from dataclasses import replace
+    from optical_worker.render_parameters import (
+        bind_render_parameters, load_frozen_render_sequence, NATIVE_SCALAR_ORDER,
+    )
+
+    controller = session.bound_controller()
+    scene, first, second, outputs = session.fixed_render_storage
+    diagnostic = pass_mode == "diagnostic_profiled"
+    allocated_diagnostic = (outputs.traversal_diagnostics if session.lane == "warp"
+                            else bool(outputs.shadow_traversal_counters))
+    if diagnostic != allocated_diagnostic:
+        raise ValueError("render graph diagnostics differ from its allocated storage")
+    frames = []
+    session._hold_runtime_owner(frames, "provisional_render_frames")
+    sequence = session.render_source.sequence
+    source = sequence.to_payload()
+    prepared = session.prepared_input
+    if (session.render_source.packed_scene is not prepared.source.packed_scene_owner
+            or sequence.canonical_bytes != load_frozen_render_sequence(prepared.manifest.case_id).canonical_bytes):
+        raise ValueError("render graph lost its original canonical source")
+    controller.require_adopted(session.fixed_render_storage, readiness)
+    session._runtime_leaf("provisional_render_graph_scope", "runtime_import_or_init")
+    device_scope = runtime.cuda.device(target) if session.lane == "cuda" else runtime.ScopedDevice(target)
+    with device_scope:
+        stream_scope = runtime.cuda.stream(stream) if session.lane == "cuda" else runtime.ScopedStream(stream)
+        with stream_scope:
+            if session.lane == "warp":
+                from optical_worker import warp_setup
+                from optics.warp_native_render import (
+                    WarpDirectLightRenderCommandFactory, WarpCameraParameters, WarpRenderQueryParameters,
+                )
+                compiled_owner = session.warp_modules
+                warp_setup.validate_module_set(session, compiled_owner)
+                factory = WarpDirectLightRenderCommandFactory.prepare(
+                    prepared_input=session.prepared_input, readiness=readiness, local_scene=scene,
+                    device=target, stream=stream, _context=_create_upload_context(controller, runtime, target, stream))
+            else:
+                from optics.cuda_direct_light import CudaCameraParameters
+                compiled_owner = session.cuda_extensions()
+                factory = session.cuda_factories[3]
+            session._hold_runtime_owner(factory, "provisional_render_factory")
+            for index in range(10):
+                parameters = bind_render_parameters(sequence, sample_index=index, profile=profile,
+                    shadows=shadows, pass_mode=pass_mode,
+                    role_to_mask=session.render_source.packed_scene.role_to_mask)
+                payload = parameters.to_payload()
+                scalars = tuple(struct.unpack("<f", bytes.fromhex(value))[0]
+                                for value in payload["native_scalars_f32"])
+                values = dict(zip(NATIVE_SCALAR_ORDER, scalars, strict=True))
+                camera_values = dict(width=payload["width"], height=payload["height"],
+                    fx=values["fx"], fy=values["fy"], cx=values["cx"], cy=values["cy"],
+                    origin=scalars[4:7], rotation=scalars[7:16])
+                colors = dict(ambient_rgb=scalars[17:20], background_rgb=scalars[20:23],
+                              shadow_bias=values["shadow_bias"])
+                if session.lane == "warp":
+                    frame = source["frames"][index % len(source["frames"])]
+                    query = WarpRenderQueryParameters(
+                        num_rays=payload["width"] * payload["height"], frame_id=payload["frame_id"],
+                        sim_time=float.fromhex(payload["sim_time_f64"]), env_idx=payload["env_idx"],
+                        sensor_id=payload["sensor_id"], max_distance=values["max_distance"],
+                        sensor_role=frame["sensor_role"], sensor_role_mask=payload["sensor_role_mask"])
+                    camera = WarpCameraParameters(query=query, **camera_values)
+                    # Each frame's metadata view borrows the same immutable R0
+                    # BVH allocations; no rebuild, refit or extra upload occurs.
+                    bvh = replace(second, frame_id=query.frame_id, env_idx=query.env_idx)
+                    session._hold_runtime_owner(bvh, "provisional_fixed_bvh_view")
+                    compiled = warp_setup.validate_module_set(session, compiled_owner)
+                    bundle = factory.seal_camera(world=first, bvh=bvh, camera=camera, buffers=outputs,
+                        output_profile=profile, shadows=shadows, traversal_diagnostics=diagnostic, **colors,
+                        _context=_create_upload_context(controller, runtime, target, stream))
+                else:
+                    camera = CudaCameraParameters(**camera_values)
+                    inputs = replace(first, sensor_role_mask=payload["sensor_role_mask"],
+                                     max_distance=values["max_distance"])
+                    bundle = factory.bind_direct_light(first_hit_inputs=inputs, shade_inputs=second,
+                        buffers=outputs, camera=camera, output_profile=profile, shadows=shadows, **colors)
+                session._hold_runtime_owner(bundle, "provisional_render_bundle")
+                frames.append((parameters, bundle))
+                if session.lane == "warp":
+                    if (warp_setup.validate_module_set(session, compiled_owner) is not compiled
+                            or any(command.module_exec is not compiled[2].executable
+                                   or command.kernel.module is not compiled[2].module for command in bundle.commands)):
+                        raise ValueError("recorded render commands differ from the compiled executable")
+                    bundle.validate_resolved_parameters(parameters)
+                else:
+                    bundle._cuda_transaction_stage_evidence().validate_render_parameters(payload)
+            completion, events = _prepare_render_events(runtime, target, stream, lane=session.lane,
+                diagnostic=diagnostic, context=_create_upload_context(controller, runtime, target, stream))
+            return _FixedRenderPreparation(readiness, compiled_owner, factory, tuple(frames), completion, events,
+                                           profile, shadows, pass_mode)
+
+
 class NativeWorkerPreparationAborted(RuntimeError):
     """A setup exception reached its required terminal resource disposition."""
 
@@ -367,57 +520,47 @@ def _consume_upload_context(context):
 
 
 @contextmanager
-def _output_array_allocation(runtime, target, *, lane, stream=None, context=None):
-    """One allocation implementation for ordinary and guarded output builders.
-
-    The optional context is the existing single-use preparation context, not a
-    callback. The guarded caller supplies it from its validated runtime binding.
-    Every returned array is retained before metadata inspection or adoption.
-    Native failures remain fatal even when caught within the original guard.
-    """
+def _native_resource_scope(runtime, target, *, lane, stream=None, context=None,
+                           owner_role, scope_id):
+    """Reuse one guarded ticket and retain every partial native resource graph."""
     lifecycle = None
+    owners = []
     if lane not in {"cuda", "warp"}:
-        raise ValueError("unknown output allocation lane")
+        raise ValueError("unknown native resource lane")
     if context is not None:
         from .guarded_lifecycle import NativeGuardedSetupLifecycle
 
         lifecycle, held_runtime, held_target, held_stream = _consume_upload_context(context)
         if type(lifecycle) is not NativeGuardedSetupLifecycle:
-            raise TypeError("guarded output allocation requires its guarded lifecycle")
+            raise TypeError("native resource setup requires its guarded lifecycle")
         lifecycle._require_setup()
         ticket = lifecycle._guard_ticket
         if (runtime is not held_runtime or lifecycle._lane_id != lane
                 or (target != held_target if lane == "cuda" else target is not held_target)
                 or (stream is not None and stream is not held_stream)):
-            raise ValueError("output allocation differs from its runtime binding")
+            raise ValueError("native resource setup differs from its runtime binding")
         target, stream = held_target, held_stream
         lifecycle.require_adopted(runtime, target, stream)
-        owners = []
-        lifecycle.adopt_host_owner(owners, role="slot_array_custody", operation_id="slot_array_custody")
+        lifecycle.adopt_host_owner(owners, role=owner_role, operation_id=owner_role)
         _enter_device_leaf(lifecycle, _descriptor(lifecycle,
-            operation_id="slot_allocation_scope", leaf_kind="runtime_import_or_init",
-            runtime_identity=lane + "_output_scope_v1"))
+            operation_id=scope_id, leaf_kind="runtime_import_or_init",
+            runtime_identity=lane + "_resource_scope_v1"))
 
     active = False
 
-    def empty(name, shape, dtype):
+    @contextmanager
+    def operation(name, kind):
         if not active:
-            raise ValueError("output allocator is outside its original scope")
+            raise ValueError("native resource operation is outside its original scope")
         with lifecycle._observe_public_operation() if lifecycle is not None else nullcontext():
             if lifecycle is not None:
                 lifecycle._require_setup()
                 if lifecycle._guard_ticket is not ticket:
-                    raise ValueError("output allocator is outside its original guard")
+                    raise ValueError("native resource operation is outside its original guard")
                 _enter_device_leaf(lifecycle, _descriptor(lifecycle,
-                    operation_id=_array_operation_id("slot_allocate", name), leaf_kind="allocation",
-                    runtime_identity=lane + "_empty_explicit_device_v1"))
-            result = runtime.empty(shape, dtype=dtype, device=target)
-            if lifecycle is not None:
-                owners.append(result)
-                ordinal = int(result.device.index if lane == "cuda" else result.device.ordinal)
-                lifecycle.adopt_returned_device_owner(result, actual_device_ordinal=ordinal,
-                    role="slot_device_array", operation_id=_array_operation_id("slot_allocate", name))
-            return result
+                    operation_id=name, leaf_kind=kind,
+                    runtime_identity=lane + "_explicit_resource_v1"))
+            yield
 
     with lifecycle._observe_public_operation() if lifecycle is not None else nullcontext():
         device_scope = runtime.cuda.device(target) if lane == "cuda" else runtime.ScopedDevice(target)
@@ -427,9 +570,47 @@ def _output_array_allocation(runtime, target, *, lane, stream=None, context=None
             with stream_scope:
                 active = True
                 try:
-                    yield empty
+                    yield lifecycle, owners, operation
                 finally:
                     active = False
+
+
+@contextmanager
+def _output_array_allocation(runtime, target, *, lane, stream=None, context=None):
+    """Existing allocator, sharing the original ticket/custody scope with recording."""
+    with _native_resource_scope(runtime, target, lane=lane, stream=stream, context=context,
+            owner_role="slot_array_custody", scope_id="slot_allocation_scope") as (lifecycle, owners, operation):
+        target = context.target if context is not None else target
+        def empty(name, shape, dtype):
+            with operation(_array_operation_id("slot_allocate", name), "allocation"):
+                result = runtime.empty(shape, dtype=dtype, device=target)
+                owners.append(result)
+                if lifecycle is not None:
+                    ordinal = int(result.device.index if lane == "cuda" else result.device.ordinal)
+                    lifecycle.adopt_returned_device_owner(result, actual_device_ordinal=ordinal,
+                        role="slot_device_array", operation_id=_array_operation_id("slot_allocate", name))
+                return result
+        yield empty
+
+
+@contextmanager
+def _warp_command_recording(runtime, target, stream, *, context=None):
+    """Record existing kernel definitions, retaining each return before the next leaf."""
+    with _native_resource_scope(runtime, target, lane="warp", stream=stream, context=context,
+            owner_role="slot_command_custody", scope_id="slot_command_scope") as (lifecycle, owners, operation):
+        def record(kernel, *, dim, inputs):
+            with operation("slot_record_command", "compile_or_jit"):
+                # Hold operands before record_cmd can initialize a native entry.
+                owners.append((kernel, inputs))
+                result = runtime.launch(kernel, dim=dim, inputs=inputs, device=target,
+                                        stream=stream, record_tape=False, record_cmd=True)
+                owners.append(result)
+                if lifecycle is not None:
+                    lifecycle.adopt_returned_device_owner(result,
+                        actual_device_ordinal=int(result.device.ordinal),
+                        role="slot_recorded_command", operation_id="slot_record_command")
+                return result
+        yield record
 
 
 def _upload_cuda_native_input(source, *, context):

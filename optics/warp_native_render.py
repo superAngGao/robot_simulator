@@ -2566,7 +2566,7 @@ def _render_factory_facts(factory) -> tuple:
 class WarpDirectLightRenderCommandFactory:
     """Untimed immutable binder. It never launches a recorded GPU command.
 
-    Setup/recording belongs to the future supervised setup owner. This factory
+    Setup/recording belongs to the supervised source-session owner. This factory
     supplies no driver, drain, lease or completion authority.
     """
 
@@ -2596,13 +2596,21 @@ class WarpDirectLightRenderCommandFactory:
         object.__setattr__(self, "_signature", facts)
 
     @classmethod
-    def prepare(cls, *, prepared_input, readiness, local_scene, device, stream):
-        factory = cls(prepared_input, readiness, local_scene, device, stream)
+    def prepare(cls, *, prepared_input, readiness, local_scene, device, stream, _context=None):
+        from optical_worker.native_setup import _native_resource_scope
+
         # Compilation is setup work, never a native render command. Execution
         # warmup remains in the supervised driver and is not claimed here.
-        with wp.ScopedStream(stream):
-            wp.load_module(module=__name__, device=device)
-        return factory
+        with _native_resource_scope(wp, device, lane="warp", stream=stream, context=_context,
+                owner_role="render_factory_custody", scope_id="render_factory_scope") as (lifecycle, owners, operation):
+            with operation("render_factory_create", "runtime_import_or_init"):
+                factory = cls(prepared_input, readiness, local_scene, device, stream)
+                owners.append(factory)
+                if lifecycle is not None:
+                    lifecycle.adopt_host_owner(factory, role="render_factory", operation_id="render_factory_create")
+            with operation("render_factory_module", "compile_or_jit"):
+                wp.load_module(module=__name__, device=device, recursive=False, block_dim=256, max_workers=0)
+            return factory
 
     def validate_bound(self) -> None:
         if _render_factory_facts(self) != self._signature:
@@ -2628,6 +2636,7 @@ class WarpDirectLightRenderCommandFactory:
         ambient_rgb=(0.1, 0.1, 0.1),
         background_rgb=(0.0, 0.0, 0.0),
         shadow_bias=1e-4,
+        _context=None,
     ):
         if type(camera) is not WarpCameraParameters:
             raise TypeError("render camera must be the exact normalized camera type")
@@ -2645,6 +2654,7 @@ class WarpDirectLightRenderCommandFactory:
             ambient_rgb=ambient_rgb,
             background_rgb=background_rgb,
             shadow_bias=shadow_bias,
+            _context=_context,
         )
 
     def seal_device_rays(
@@ -2661,6 +2671,7 @@ class WarpDirectLightRenderCommandFactory:
         ambient_rgb=(0.1, 0.1, 0.1),
         background_rgb=(0.0, 0.0, 0.0),
         shadow_bias=1e-4,
+        _context=None,
     ):
         """Compatibility-only resident rays; never an eligible camera binding."""
         return self._seal(
@@ -2676,25 +2687,24 @@ class WarpDirectLightRenderCommandFactory:
             ambient_rgb=ambient_rgb,
             background_rgb=background_rgb,
             shadow_bias=shadow_bias,
+            _context=_context,
         )
 
-    def _seal(self, **values):
+    def _seal(self, *, _context=None, **values):
+        from optical_worker.native_setup import _warp_command_recording
+
         self.validate_bound()
         # The binding is validated in full before any record_cmd/JIT entry.
         binding = _WarpRenderBinding(factory=self, **values)
         descriptors = binding.command_descriptors()
         commands = []
-        with wp.ScopedStream(self.stream):
+        with _warp_command_recording(wp, self.device, self.stream, context=_context) as record:
             for descriptor in descriptors:
                 commands.append(
-                    wp.launch(
+                    record(
                         descriptor.kernel,
                         dim=descriptor.dim,
                         inputs=descriptor.arguments,
-                        device=self.device,
-                        stream=self.stream,
-                        record_tape=False,
-                        record_cmd=True,
                     )
                 )
         return WarpDirectLightRenderCommandBundle(
