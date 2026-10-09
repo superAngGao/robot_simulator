@@ -1705,7 +1705,10 @@ Next milestone:
       exact rejection/retention/exit checks (test-evidencev6; all31 owned PIDs
       absent). Existing Warp input960 and CUDA factory/input960/1920 regressions
       also pass at4fe6b3a (test-evidencev7; all7 owned PIDs absent). A fresh
-      compilation native acceptance review is pending; this is not rendering.
+      compilation native acceptance review now approves the bounded prerequisite
+      at production beedab6 / native source4fe6b3a:31 raw native cases replayed,
+      18 artifacts and six sm90 binaries verified,37 fresh CPU tests passed.
+      Full native-reviewv1 is archived unchanged. This is not rendering.
       Output allocation repair has independent code approval atfdb86a0. Fixed
       R0 storage integration now has independent code approval at12c1619:
       original uploaded world/BVH arrays are reused, actual host BVH stats are
