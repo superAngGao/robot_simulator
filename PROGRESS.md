@@ -1752,7 +1752,26 @@ Next milestone:
       This is an actual diagnostic image, not a successful whole native case.
       The support-only checkpoint repair is independently approved at7fe32a5
       (44 fresh tests plus original-artifact replay); its full report is archived.
-      Positive native rerun, image correctness and performance remain unproved.
+      Native-reviewv1 now approves only the eight positive warmup lifecycle
+      executions at7fe32a5 (both Go2 resolutions/lanes/diagnostic modes): original
+      strict replays pass,104 altered copies reject,277 archive members match,
+      all17 author PIDs absent. Archive SHA256:
+      75447f0f29738fed6a12326f8c3e53f2771d91e2ac8e7dd04ef46d6ddeb531ad.
+      Diagnostic on/off RGB is byte-identical for each lane/resolution.
+      Optical correctness remains blocked:1920 full RGB has six substantial
+      cross-lane outliers (max1.2056253776); a fresh independently rerun CPU54
+      outlier/neighbour diagnostic confirms material disagreement at four CUDA
+      and two Warp pixels.960 full RGB max difference is2.384185791e-7; its
+      CPU420 sample max6.825475443e-6 never proved1920/full correctness.
+      The complete report preserves this P1 numerical blocker; root cause,
+      numerical repair, failure/hang matrix and performance remain unproved.
+      Geometry diagnostic support at5a5a17c is independently code-approved
+      (50 fresh CPU tests, no substantive findings). The existing readback
+      guard can capture original rays and first-hit channels using one shared
+      copy body; no production/kernel/tolerance changes. Its full review is
+      archived. Source-frozen native1920 reruns started in the isolated
+      robot_sim_render_geometry_wip tree; native geometry acceptance and the
+      numerical root cause remain pending.
       Fixed R0 storage native-reviewv1 approves the14-case campaign at3d6692b:
       eight positives, four guarded raises and two deadline kills independently
       replayed; all29 author PIDs absent. Raw archive SHA256 is
@@ -1760,6 +1779,15 @@ Next milestone:
       Its full report is archived unchanged. This evidence does not cover the
       later common-scope extraction or graph/render/warmup execution.
       The owner-requested systematic whole-C4 refactor is still required.
+      Fresh systematic-refactor gap-reviewv1 at9067e11 identifies concrete
+      consolidation work: setup sequencing/state-based failure routing, event
+      initialization, explicit CUDA native-leaf latching, shared setup/final
+      graph assembly, guarded wait versus resolution commit, and positional
+      warmup bookkeeping. Its full report is archived unchanged. Next coherent
+      implementation is observed R0 warmup through final readiness/origin,
+      actual C3/arena graph/dormant plans, one seal and guarded final barrier;
+      readiness alone is not a completed integration. R1/full C4 follow-up and
+      fresh whole review remain mandatory.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
