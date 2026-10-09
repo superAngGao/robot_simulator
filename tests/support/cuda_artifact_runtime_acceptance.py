@@ -246,7 +246,25 @@ def _validate_render_warmups(directory, lane, case, fault, *, trace, request):
     copies = [row['details']['descriptor'] for row in readback_trace
               if row['operation'] == 'descriptor_observed'
               and row['details']['descriptor']['leaf_kind'] == 'device_to_host_copy']
-    if (len(copies) != 1 or copies[0]['operation_id'] != 'warmup_rgb_readback'
+    expected_copies = ['warmup_rgb_readback']
+    if fault == 'runtime_render_warmup_geometry':
+        from tests.support.native_runtime_process import WARMUP_GEOMETRY_CHANNELS
+        geometry = json.loads((directory / 'warmup_geometry.json').read_bytes())
+        if (geometry['frame_id'] != rgb['frame_id'] or geometry['guard'] != rgb['guard']
+                or set(geometry['channels']) != set(WARMUP_GEOMETRY_CHANNELS)):
+            raise RuntimeError('diagnostic geometry differs from its final-frame RGB')
+        for name in WARMUP_GEOMETRY_CHANNELS:
+            row = geometry['channels'][name]
+            shape = [workload.width * workload.height]
+            if name in {'origins', 'directions', 'position_world', 'normal_world'}:
+                shape.append(3)
+            dtype = 'int32' if name in {'hit_mask', 'numeric_instance_id', 'material_index'} else 'float32'
+            raw = (directory / ('warmup_' + name + '.bin')).read_bytes()
+            if (row['shape'] != shape or row['dtype'] != dtype or row['bytes'] != len(raw)
+                    or len(raw) != math.prod(shape) * 4 or row['sha256'] != hashlib.sha256(raw).hexdigest()):
+                raise RuntimeError('diagnostic geometry channel differs from its native ABI/readback')
+            expected_copies.append('warmup_' + name + '_readback')
+    if ([row['operation_id'] for row in copies] != expected_copies
             or not any(row['operation'] == 'normal_disarmed' for row in readback_trace)):
         raise RuntimeError('diagnostic RGB lacks its actual completed readback guard')
 

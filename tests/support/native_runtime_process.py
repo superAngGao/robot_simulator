@@ -75,7 +75,12 @@ RUNTIME_WARP_MODULE_FAULTS = ("runtime_warp_modules_success", *RUNTIME_WARP_ADMI
                              *RUNTIME_WARP_IDLE_FAULTS, *RUNTIME_WARP_COMPILE_FAULTS)
 RUNTIME_FIXED_STORAGE_FAULTS = tuple("runtime_fixed_storage_" + name for name in (
     "success", "diagnostics", "allocate_raise", "adoption_raise", "allocate_hang"))
-RUNTIME_RENDER_WARMUP_CASES = ("runtime_render_warmup_success", "runtime_render_warmup_diagnostics")
+RUNTIME_RENDER_WARMUP_CASES = ("runtime_render_warmup_success", "runtime_render_warmup_diagnostics",
+                             "runtime_render_warmup_geometry")
+# Fixed diagnostic selection for tracing RGB discrepancies to camera/first hit.
+# These are existing outputs, not additional kernels or product payloads.
+WARMUP_GEOMETRY_CHANNELS = ("origins", "directions", "hit_mask", "range_m", "position_world",
+                          "normal_world", "numeric_instance_id", "material_index")
 RUNTIME_RENDER_GRAPH_CASES = ("runtime_render_graph_success", "runtime_render_graph_diagnostics",
                             *RUNTIME_RENDER_WARMUP_CASES)
 RUNTIME_FAULTS = (RUNTIME_NATIVE_FAULTS + RUNTIME_ACK_FAULTS + RUNTIME_PARENT_FAULTS
@@ -1046,7 +1051,7 @@ def _prepare_observed_render_graph(session, controller, binding, observer, direc
         controller.adopt_returned_device_owner = original_adopt
 
 
-def _run_observed_render_warmups(session, controller, binding, observer, directory):
+def _run_observed_render_warmups(session, controller, binding, observer, directory, *, geometry=False):
     """Exercise production execution, observe native scope and save diagnostic RGB."""
     import hashlib
     from optical_worker import native_setup
@@ -1104,23 +1109,36 @@ def _run_observed_render_warmups(session, controller, binding, observer, directo
         context = native_setup._create_upload_context(controller, binding.module, binding.target, binding.stream)
         with original_scope(binding.module, binding.target, lane=session.lane, stream=binding.stream,
                 context=context, owner_role='warmup_rgb_host_custody', scope_id='warmup_rgb_readback_scope') as (_, owners, operation):
-            rgb = session.fixed_render_storage[3].rgb
-            with operation('warmup_rgb_readback', 'device_to_host_copy'):
-                host = rgb.numpy() if session.lane == 'warp' else rgb.detach().cpu()
-                owners.append(host)
-                controller.adopt_host_owner(host, role='warmup_rgb_host', operation_id='warmup_rgb_readback')
-                if session.lane == 'cuda':
-                    host = host.numpy()
+            def readback(name):
+                value = getattr(session.fixed_render_storage[3], name)
+                operation_id = 'warmup_' + name + '_readback'
+                with operation(operation_id, 'device_to_host_copy'):
+                    host = value.numpy() if session.lane == 'warp' else value.detach().cpu()
                     owners.append(host)
-                parameters = graph.frames[-1][0].to_payload()
-                width, height = parameters['width'], parameters['height']
-                assert host.dtype.name == 'float32' and host.shape == (width * height, 3)
-                encoded = host.tobytes(order='C')
-                owners.append(encoded)
+                    controller.adopt_host_owner(host, role='warmup_' + name + '_host', operation_id=operation_id)
+                    if session.lane == 'cuda':
+                        host = host.numpy()
+                        owners.append(host)
+                    encoded = host.tobytes(order='C')
+                    owners.append(encoded)
+                return host, encoded
+            host, encoded = readback('rgb')
+            parameters = graph.frames[-1][0].to_payload()
+            width, height = parameters['width'], parameters['height']
+            assert host.dtype.name == 'float32' and host.shape == (width * height, 3)
             (directory / 'warmup_rgb.f32').write_bytes(encoded)
             _write(directory, 'warmup_rgb.json', {'width': width, 'height': height, 'channels': 3,
                 'dtype': 'float32', 'frame_id': parameters['frame_id'], 'sha256': hashlib.sha256(encoded).hexdigest(),
                 'bytes': len(encoded), 'guard': dict(controller._guard_reference)})
+            if geometry:
+                channels = {}
+                for name in WARMUP_GEOMETRY_CHANNELS:
+                    host, encoded = readback(name)
+                    (directory / ('warmup_' + name + '.bin')).write_bytes(encoded)
+                    channels[name] = {'dtype': host.dtype.name, 'shape': list(host.shape),
+                        'bytes': len(encoded), 'sha256': hashlib.sha256(encoded).hexdigest()}
+                _write(directory, 'warmup_geometry.json', {'frame_id': parameters['frame_id'],
+                    'guard': dict(controller._guard_reference), 'channels': channels})
     # The diagnostic copy is a later completed guard than the production
     # warmup checkpoint; observe() must consume this current validated cut.
     session.runtime_observation.checkpoint()
@@ -1558,7 +1576,8 @@ def child(fault, fd, directory):
             observe()
         if fault in RUNTIME_RENDER_WARMUP_CASES:
             phase = "fixed_render_warmups"
-            _run_observed_render_warmups(session, controller, binding, scope_observer, directory)
+            _run_observed_render_warmups(session, controller, binding, scope_observer, directory,
+                                         geometry=fault == 'runtime_render_warmup_geometry')
             observe()
         phase = "terminal_disposal"
 

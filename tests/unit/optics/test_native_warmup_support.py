@@ -8,11 +8,12 @@ from tests.unit.optics.test_prepared_fixed_render_inputs import fixed_inputs, fi
 
 
 @pytest.mark.parametrize('fail_at', [None])
-@pytest.mark.parametrize('diagnostic', [False, True])
-def test_warmup_observer_readback_and_tamper_replay(executable_graph, diagnostic, monkeypatch, tmp_path):
+@pytest.mark.parametrize('diagnostic,geometry', [(False, False), (True, False), (False, True)])
+def test_warmup_observer_readback_and_tamper_replay(executable_graph, diagnostic, geometry, monkeypatch, tmp_path):
     from optical_worker import native_setup
     from tests.support.native_runtime_process import _run_observed_render_warmups
     from tests.support.cuda_artifact_runtime_acceptance import _validate_render_warmups
+    from tests.support.native_runtime_process import WARMUP_GEOMETRY_CHANNELS
     x = executable_graph
     checkpoints = []
     monkeypatch.setattr(x.session.runtime_observation, 'checkpoint',
@@ -46,15 +47,33 @@ def test_warmup_observer_readback_and_tamper_replay(executable_graph, diagnostic
     (tmp_path / 'input_validation_report.json').write_text(json.dumps({'manifest_sha256': x.session.prepared_input.manifest.sha256}))
     original = native_setup._native_resource_scope
     result = _run_observed_render_warmups(x.session, x.controller,
-        NS(module=x.p.runtime, target=x.p.device, stream=x.f.stream), NS(_state=state), tmp_path)
+        NS(module=x.p.runtime, target=x.p.device, stream=x.f.stream), NS(_state=state), tmp_path,
+        geometry=geometry)
     assert result is x.session.fixed_render_warmups and native_setup._native_resource_scope is original
     assert checkpoints[-1] == x.controller.evidence().to_payload()
     assert (tmp_path / 'warmup_rgb.f32').read_bytes() == rgb.data.tobytes()
-    fault = 'runtime_render_warmup_' + ('diagnostics' if diagnostic else 'success')
+    fault = 'runtime_render_warmup_' + ('geometry' if geometry else 'diagnostics' if diagnostic else 'success')
     def validate(trace=None):
         _validate_render_warmups(tmp_path, x.p.lane, 'asymmetric_synthetic_7x3_v1', fault,
             trace=x.controller._guard_events if trace is None else trace, request=request)
     validate()
+    if geometry:
+        metadata = json.loads((tmp_path / 'warmup_geometry.json').read_bytes())
+        for name in WARMUP_GEOMETRY_CHANNELS:
+            original_bytes = getattr(x.session.fixed_render_storage[3], name).data.tobytes()
+            channel_path = tmp_path / ('warmup_' + name + '.bin')
+            assert channel_path.read_bytes() == original_bytes
+            assert metadata['channels'][name]['bytes'] == len(original_bytes)
+        channel_path.write_bytes(original_bytes[:-4])
+        with pytest.raises(RuntimeError, match='geometry channel'):
+            validate()
+        channel_path.write_bytes(original_bytes)
+        metadata['guard']['sequence'] -= 1
+        (tmp_path / 'warmup_geometry.json').write_text(json.dumps(metadata))
+        with pytest.raises(RuntimeError, match='final-frame'):
+            validate()
+        metadata['guard']['sequence'] += 1
+        (tmp_path / 'warmup_geometry.json').write_text(json.dumps(metadata))
     path = tmp_path / 'warmup_completion.json'
     original_data = path.read_bytes()
     for attack in ('count', 'wait', 'scope', 'guard', 'transaction', 'bundle'):
@@ -92,3 +111,38 @@ def test_failed_observation_preserves_original_error_and_restores_hook(executabl
     assert caught.value is x.failure
     assert native_setup._native_resource_scope is original
     assert x.controller.guardian.state == 'TRANSFERRED_TO_QUARANTINE'
+
+
+@pytest.mark.parametrize('fail_at', [None])
+@pytest.mark.parametrize('diagnostic', [False])
+def test_geometry_copy_failure_stops_readback_under_original_guard(executable_graph, monkeypatch, tmp_path):
+    from tests.support.native_runtime_process import _run_observed_render_warmups
+    x = executable_graph
+    outputs = x.session.fixed_render_storage[3]
+    copied = []
+    failure = RuntimeError('geometry D2H failure')
+    def copy_host(value):
+        x.controller._require_setup()
+        copied.append(value)
+        if value is outputs.directions:
+            raise failure
+        return value.data.copy()
+    monkeypatch.setattr(type(outputs.rgb), 'numpy', copy_host, raising=False)
+    monkeypatch.setattr(type(outputs.rgb), 'detach', lambda value: value, raising=False)
+    def cpu(value):
+        array = copy_host(value)
+        return NS(numpy=lambda: array)
+    monkeypatch.setattr(type(outputs.rgb), 'cpu', cpu, raising=False)
+    with pytest.raises(RuntimeError) as caught:
+        _run_observed_render_warmups(x.session, x.controller,
+            NS(module=x.p.runtime, target=x.p.device, stream=x.f.stream), NS(_state=lambda _: {}),
+            tmp_path, geometry=True)
+    assert caught.value is failure
+    assert len(copied) == 3 and all(a is b for a,b in zip(copied,
+        (outputs.rgb, outputs.origins, outputs.directions), strict=True))
+    assert (tmp_path / 'warmup_rgb.f32').is_file() and (tmp_path / 'warmup_origins.bin').is_file()
+    assert not (tmp_path / 'warmup_geometry.json').exists()
+    assert not (tmp_path / 'warmup_hit_mask.bin').exists()
+    assert x.controller.guardian.state == 'TRANSFERRED_TO_QUARANTINE'
+    summary = x.controller.termination_evidence.lifecycle.to_payload()['summary']
+    assert summary['emergency_sync_attempt_count'] == 0
