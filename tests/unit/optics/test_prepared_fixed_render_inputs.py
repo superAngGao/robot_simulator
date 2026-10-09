@@ -264,6 +264,9 @@ def test_fixed_storage_source_closure_remains_lane_specific(lane, phase):
     ready = phase != 'input_validated'
     assert ('optics.warp_native_render' in admitted) is (ready and lane == 'warp')
     assert ('optics.cuda_direct_light' in admitted) is (ready and lane == 'cuda')
+    graph = phase in {'preparing_fixed_render_graph', 'fixed_render_graph_ready'}
+    assert ('optics.execution' in admitted) is (lane == 'cuda' and ready or lane == 'warp' and graph)
+    assert ('optics.scene' in admitted) is (lane == 'cuda' and ready or lane == 'warp' and graph)
     assert not any(name.startswith(('benchmarks', 'tests', 'tools')) for name in admitted)
 
 

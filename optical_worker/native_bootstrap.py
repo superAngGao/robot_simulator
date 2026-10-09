@@ -164,6 +164,9 @@ _WARP_MODULE_SOURCES = MappingProxyType(
         "optics.output_contract": "optics/output_contract.py",
     }
 )
+_WARP_RENDER_SOURCES = MappingProxyType(
+    {"optics.execution": "optics/execution.py", "optics.scene": "optics/scene.py"}
+)
 # One-shot trusted-process identities, never reconstructed from a receipt.
 # None is a permanent failed/in-progress binding tombstone, not permission to retry.
 _SOURCE_CUSTODY = {}
@@ -2389,6 +2392,8 @@ class _SourceSession:
                                                     "preparing_fixed_render_storage", "fixed_render_storage_ready",
                                                     "preparing_fixed_render_graph", "fixed_render_graph_ready"}:
                 admitted = admitted | _WARP_MODULE_SOURCES
+            if self.lane == "warp" and self.phase in {"preparing_fixed_render_graph", "fixed_render_graph_ready"}:
+                admitted = admitted | _WARP_RENDER_SOURCES
             return admitted
         raise SourceBootstrapError("invalid CPU source phase")
 

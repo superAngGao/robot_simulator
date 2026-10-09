@@ -273,6 +273,9 @@ def _prepare_fixed_render_graph(session, runtime, target, stream, *, readiness, 
                 from optics.warp_native_render import (
                     WarpDirectLightRenderCommandFactory, WarpCameraParameters, WarpRenderQueryParameters,
                 )
+                from optics.execution import normalize_output_profile
+
+                render_profile = normalize_output_profile(profile)
                 compiled_owner = session.warp_modules
                 warp_setup.validate_module_set(session, compiled_owner)
                 factory = WarpDirectLightRenderCommandFactory.prepare(
@@ -310,7 +313,7 @@ def _prepare_fixed_render_graph(session, runtime, target, stream, *, readiness, 
                     session._hold_runtime_owner(bvh, "provisional_fixed_bvh_view")
                     compiled = warp_setup.validate_module_set(session, compiled_owner)
                     bundle = factory.seal_camera(world=first, bvh=bvh, camera=camera, buffers=outputs,
-                        output_profile=profile, shadows=shadows, traversal_diagnostics=diagnostic, **colors,
+                        output_profile=render_profile, shadows=shadows, traversal_diagnostics=diagnostic, **colors,
                         _context=_create_upload_context(controller, runtime, target, stream))
                 else:
                     camera = CudaCameraParameters(**camera_values)

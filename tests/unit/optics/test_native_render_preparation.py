@@ -114,6 +114,36 @@ def test_events_are_retained_and_initialization_wait_covers_every_record(allocat
 from tests.unit.optics.test_prepared_fixed_render_inputs import fixed_inputs, fixed_storage_session
 
 
+@pytest.mark.parametrize('phase', ['preparing_warp_modules', 'fixed_render_storage_ready',
+                                  'preparing_fixed_render_graph', 'fixed_render_graph_ready'])
+@pytest.mark.parametrize('name', ['optics.execution', 'optics.scene', 'optics.cuda_direct_light'])
+def test_warp_graph_dependencies_resolve_through_captured_finder(phase, name):
+    from pathlib import Path
+    from optical_worker.native_bootstrap import _SourceSession, _CapturedSourceFinder, SourceBootstrapError
+    session = object.__new__(_SourceSession)
+    session.phase, session.lane = phase, 'warp'
+    session.root = Path(__file__).resolve().parents[3]
+    relative = name.replace('.', '/') + '.py'
+    source = (session.root / relative).read_bytes()
+    session.sources, session.loaders = {relative: (source, 'unused-digest')}, {}
+    session.check_import_topology = lambda: None
+    session.is_interpreter_name = lambda fullname: False
+    session.check_live = lambda: None
+    session.bound_controller = lambda: NS(_require_setup=lambda: None)
+    failures = []
+    session.fail = failures.append
+    finder = _CapturedSourceFinder(session)
+    allowed = phase in {'preparing_fixed_render_graph', 'fixed_render_graph_ready'} and name != 'optics.cuda_direct_light'
+    if allowed:
+        spec = finder._find_spec(name)
+        assert spec.loader.source is source and spec.loader.relative == relative
+        assert spec.loader is session.loaders[name] and not failures
+    else:
+        with pytest.raises(SourceBootstrapError, match='repository import outside') as caught:
+            finder._find_spec(name)
+        assert failures == [caught.value] and not session.loaders
+
+
 @pytest.fixture
 def graph_session(fixed_storage_session, monkeypatch, diagnostic):
     from optical_worker.native_input import NativeInputValidationReport
@@ -191,6 +221,8 @@ def graph_session(fixed_storage_session, monkeypatch, diagnostic):
                     return cls()
 
             def seal_camera(self, *, _context, **kwargs):
+                from optics.execution import OpticalOutputProfile
+                assert type(kwargs['output_profile']) is OpticalOutputProfile
                 camera = kwargs['camera']
                 assert kwargs['bvh'].frame_id == camera.query.frame_id
                 assert kwargs['bvh'].bounds_min is p.prepared.arrays['bvh_bounds_min']
