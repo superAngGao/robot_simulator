@@ -1456,6 +1456,14 @@ Next milestone:
       remain required before new native execution, followed by real cold builds,
       failure matrices and fresh whole-checkpoint review. No compilation,
       implementation acceptance, readiness or later gate is claimed here.
+      Owner follow-up (2026-10-09): after functional implementation and required
+      real verification, perform a systematic refactor of the whole C4 structure
+      before final acceptance, covering accumulated hotfixes, ownership boundaries,
+      state/failure flow, shared rules and superseded temporary wiring. This is
+      authorized work, not a new permission gate. Preserve accepted contracts;
+      rerun affected success/failure checks and obtain fresh independent review.
+      See systematic-refactor implementation-note v1 for the exact owner request
+      and scope. Earlier bounded reviews remain mandatory; C4 stays active.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
