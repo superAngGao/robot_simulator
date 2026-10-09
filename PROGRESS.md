@@ -1826,8 +1826,15 @@ Next milestone:
       The source-normal/ray-only amendment cannot by itself close these
       differences. Next consolidate the numerical policy amendment around
       these root causes; no unreviewed policy/tolerance change is authorized.
-      New full CPU evidence still awaits independent review and contains no
-      native intensity or performance result. Whole C4 remains incomplete.
+      Fresh full-CPU gap-review v1 independently approves the bounded diagnosis
+      evidence with comments: complete saved arrays/hashes, original full camera,
+      72 freshly shaded pixels and the39-pixel geometry isolation reproduce.
+      It further identifies determinant rejection at970674 and all four960
+      range failures, and12 local/world area-filter disagreements. Full report
+      is archived unchanged. Input-precision design v3 now proposes one coherent
+      source-preserving geometry/query policy, removing v2's extra normal array;
+      independent design review precedes implementation. No native intensity or
+      performance result is available. Whole C4 remains incomplete.
       Fixed R0 storage native-reviewv1 approves the14-case campaign at3d6692b:
       eight positives, four guarded raises and two deadline kills independently
       replayed; all29 author PIDs absent. Raw archive SHA256 is
