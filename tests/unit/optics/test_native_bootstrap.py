@@ -108,6 +108,80 @@ def test_actual_source_entry(release, lane):
     assert value["repository_revision"] == release[1]
 
 
+@pytest.mark.parametrize("lane", ["warp", "cuda"])
+def test_captured_inspect_uses_held_source_before_execution_and_after_disk_change(release, lane):
+    result = _internal(
+        release, lane=lane,
+        before="""
+import inspect, linecache
+origin = str(root / 'optical_worker/protocol.py')
+linecache.cache[origin] = (10, None, ['stale source cache\\n'], origin)
+original_compile = entry._CapturedSourceLoader.source_to_code
+observed = []
+def compile_source(loader, data, path, *args, **kwargs):
+    # Observe the actual production ordering, before the module body/decorators.
+    assert ''.join(linecache.getlines(path)).encode('utf-8') == data
+    observed.append(loader.name)
+    return original_compile(loader, data, path, *args, **kwargs)
+entry._CapturedSourceLoader.source_to_code = compile_source
+""",
+        after="""
+entry._verify(session)
+assert 'optical_worker.protocol' in observed
+module = sys.modules['optical_worker.protocol']
+loader = module.__loader__
+expected = inspect.getsource(module.canonical_json_bytes)
+assert expected in loader.get_source(module.__name__)
+path = Path(loader.origin)
+original = path.read_bytes()
+try:
+    path.write_bytes(b'def canonical_json_bytes(value):\\n    return b"different"\\n')
+    linecache.checkcache(loader.origin)
+    assert inspect.getsource(module.canonical_json_bytes) == expected
+    assert loader.get_source(module.__name__).encode('utf-8') == loader.source
+finally:
+    path.write_bytes(original)
+session.audit()
+assert not {'torch', 'warp'} & set(sys.modules)
+print('held_source_consumed')
+""",
+    )
+    assert result[0] == 0, result[2].decode()
+    assert result[1].strip() == b"held_source_consumed"
+
+
+@pytest.mark.parametrize("mutation", ["clear", "replace", "lines", "mtime"])
+def test_captured_source_audit_rejects_linecache_drift(release, mutation):
+    result = _internal(
+        release,
+        after=f"""
+entry._verify(session)
+loader = sys.modules['optical_worker.protocol'].__loader__
+cache = entry.linecache.cache
+stored = cache[loader.origin]
+mutation = {mutation!r}
+if mutation == 'clear':
+    del cache[loader.origin]
+elif mutation == 'replace':
+    cache[loader.origin] = tuple(list(stored))
+elif mutation == 'lines':
+    stored[2][0] = '# mutated in place\\n'
+elif mutation == 'mtime':
+    cache[loader.origin] = (stored[0], 1, stored[2], stored[3])
+try:
+    session.audit()
+except entry.SourceBootstrapError as error:
+    assert str(error) == 'captured source linecache changed'
+    assert session.failed and any(failure is error for failure in session.failures)
+else:
+    raise AssertionError('source cache mutation was accepted')
+print('source_cache_rejected')
+""",
+    )
+    assert result[0] == 0, result[2].decode()
+    assert result[1].strip() == b"source_cache_rejected"
+
+
 @pytest.mark.parametrize("mutation", ["prepend", "append", "reorder", "site_path"])
 def test_cold_install_rejects_nonstandard_topology_without_callback(release, mutation):
     before = """

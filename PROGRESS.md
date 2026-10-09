@@ -1650,6 +1650,15 @@ Next milestone:
       Source-only linecache reproduction passed local3.14 and remote3.12.13;
       these are authoring facts, not runtime admission or native compilation.
       Code, real-device acceptance and whole-C4 work remain outstanding.
+      Implementation has begun with held-source linecache in the existing
+      loader (policyv16/catalogv15) and explicit47-header candidate profile
+      183_warp_go2_author_v4. The unchanged remote CPU verifier checked all1057
+      candidate files without backend imports. Source regressions exposed old
+      policy/module-count assertions; corrected policy case and all26 custody
+      cases now pass, with280 other passes/13 skips from the broader run.
+      See warp-module-preparation implementation-notev1 for exact commands,
+      failures/repairs, hashes and remaining integration. This is unreviewed
+      partial implementation; no Warp compile/load or rendering success yet.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design

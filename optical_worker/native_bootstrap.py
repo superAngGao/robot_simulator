@@ -13,6 +13,7 @@ import importlib.abc
 import importlib.machinery
 import importlib.util
 import json
+import linecache
 import os
 import subprocess
 import sys
@@ -21,7 +22,7 @@ from types import FunctionType, MappingProxyType, ModuleType
 
 _BOOTSTRAP = "optical_worker/native_bootstrap.py"
 _NATIVE_EXEC_OPERATION = "exec"  # Descriptive operation enum, never a dynamic Python callable.
-_CATALOG = "optical_worker/data/native_sources/v14.json"
+_CATALOG = "optical_worker/data/native_sources/v15.json"
 _MAX_BYTES = 4 * 1024 * 1024  # Rechecked against the sole protocol constant.
 _ROOTS = frozenset(
     ("optical_worker", "optics", "physics", "robot", "sensing", "benchmarks", "examples", "tests", "tools")
@@ -361,6 +362,7 @@ class _CapturedSourceLoader(importlib.abc.SourceLoader):
         self.relative = session.admitted_sources()[name]
         self.origin = str(session.root / self.relative)
         self.source = session.sources[self.relative][0]
+        self.source_cache = None
 
     def _check(self, fullname):
         self.session.check_live()
@@ -371,6 +373,25 @@ class _CapturedSourceLoader(importlib.abc.SourceLoader):
             and self.origin == str(self.session.root / self.relative),
             "loader binding changed",
         )
+        if self.source_cache is not None:
+            entry = self.source_cache
+            _require(
+                linecache.cache.get(self.origin) is entry
+                and type(entry) is tuple and len(entry) == 4
+                and entry[0] == len(self.source) and entry[1] is None
+                and type(entry[2]) is list and all(type(line) is str for line in entry[2])
+                and "".join(entry[2]).encode("utf-8") == self.source
+                and entry[3] == self.origin,
+                "captured source linecache changed",
+            )
+
+    def _publish_source_cache(self):
+        # Warp decorators call inspect while this module body executes. A held
+        # get_source alone does not override inspect's readable on-disk origin.
+        _require(self.source_cache is None, "captured source cache is single-use")
+        lines = self.source.decode("utf-8").splitlines(keepends=True)
+        self.source_cache = (len(self.source), None, lines, self.origin)
+        linecache.cache[self.origin] = self.source_cache
 
     def get_filename(self, fullname):
         self._check(fullname)
@@ -418,6 +439,7 @@ class _CapturedSourceLoader(importlib.abc.SourceLoader):
                 controller.adopt_host_owner(
                     module, role="captured_repository_module", operation_id=self.name.replace(".", "_")
                 )
+            self._publish_source_cache()
             super().exec_module(module)
             self.session.check_live()
             _require(self.session.modules[self.name] == (module, self, "started"), "execution record changed")
@@ -3494,6 +3516,7 @@ class _SourceSession:
                     state == "completed" and sys.modules.get(name) is module, "module identity/state drift"
                 )
                 loader._check(name)
+                _require(loader.source_cache is not None, "captured source cache missing")
                 expected_package = (
                     name if loader.relative.endswith("/__init__.py") else name.rpartition(".")[0]
                 )

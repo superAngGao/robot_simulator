@@ -23,6 +23,18 @@ import weakref
 from dataclasses import replace
 entry._verify(session)
 assert len(session.modules) == 6
+expected_prelude = {{
+    'optical_worker', 'optical_worker.lifecycle', 'optical_worker.protocol',
+    'optical_worker.manifest', 'optical_worker.native_source_policy',
+    'optical_worker.native_sources', 'optical_worker.wait_protocol',
+    'optical_worker.wait_supervision', 'optical_worker.guarded_evidence',
+    'optical_worker.guarded_lifecycle', 'optical_worker.lane_contract',
+    'optical_worker.native_manifest', 'optical_worker.runtime_environment',
+    'optical_worker.runtime_custody', 'optical_worker.runtime_phases',
+}}
+expected_definitions = expected_prelude | {{
+    'optical_worker.native_setup', 'optical_worker.native_contract',
+}}
 assert session.lane == {lane!r}
 fault = {fault!r}
 original_error = RuntimeError('fixed_source_fault_' + fault)
@@ -73,7 +85,7 @@ try:
 except BaseException as error:
     binding_error = error
 controller = entry._SOURCE_CUSTODY[session][0]
-assert len(session.modules) == 14
+assert set(session.modules) == expected_prelude, sorted(session.modules)
 assert controller is session.bound_controller()
 assert entry._SOURCE_CUSTODY[session][2] is not controller._guard_client.configuration
 assert entry._SOURCE_CUSTODY[session][3] is controller._guard_client.configuration
@@ -97,7 +109,7 @@ try:
         elif fault == 'audit':
             original_audit = session.audit
             def audit():
-                if session.phase == 'importing' and len(session.modules) == 16:
+                if session.phase == 'importing' and set(session.modules) == expected_definitions:
                     raise original_error
                 return original_audit()
             session.audit = audit
@@ -115,7 +127,7 @@ try:
             assert fault == 'success', fault
     if fault == 'success':
         assert observed == ['optical_worker.native_setup', 'optical_worker.native_contract']
-        assert len(session.modules) == 16
+        assert set(session.modules) == expected_definitions
         assert not set(sys.modules) & {{'numpy', 'torch', 'warp'}}
         session.audit()
         assert all(controller.guardian.contains_exact_owner(x[0]) for x in session.modules.values())
