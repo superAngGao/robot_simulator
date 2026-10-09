@@ -1456,6 +1456,15 @@ Next milestone:
       remain required before new native execution, followed by real cold builds,
       failure matrices and fresh whole-checkpoint review. No compilation,
       implementation acceptance, readiness or later gate is claimed here.
+      Implementation WIP at52fb36a now includes the shared recipes, continued
+      custody/parser, fixed compiler-tree driver, nested observation wiring and
+      shared toolchain scanner. The source-only primary-host scan produced17023
+      file rows/60roots/1169links in15.10s; the inventory/environment/unwind CPU
+      suite passed34 on Linux. See compilation-admission implementation-note v4
+      and toolchain-inventory test-evidence v1 for exact revisions, hashes and
+      limits. Complete external closure, source pins, integrated proof, fixed
+      failures, independent preflight and all real native verification remain
+      required. This is unfinished implementation, not checkpoint acceptance.
       Owner follow-up (2026-10-09): after functional implementation and required
       real verification, perform a systematic refactor of the whole C4 structure
       before final acceptance, covering accumulated hotfixes, ownership boundaries,
