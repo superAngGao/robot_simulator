@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from optical_worker.runtime_custody import RuntimeCustodyRecord, RUNTIME_CUSTODY_VERSION
+from optical_worker.runtime_custody import RuntimeCustodyRecord
 from optical_worker.runtime_environment import RuntimeEnvironmentContract
 
 ROOT = Path(os.environ.get("ROBOT_SIM_REPO_ROOT", Path(__file__).resolve().parents[3]))
@@ -79,7 +79,9 @@ def _reindex(record):
 
 def fixture(original, sites=("helper",)):
     record = copy.deepcopy(original[0])
-    record["schema_version"] = RUNTIME_CUSTODY_VERSION
+    # This fixture exercises the historical v2 input grammar. It does not
+    # contain a v3 CUDA extension set and must never relabel that evidence.
+    record["schema_version"] = "q54.p12.4.runtime-custody.v2"
     binding_row = next(e for e in record["journal"] if e["kind"] == "runtime_binding")
     binding = binding_row["details"]
     cuda = record["lane_id"] == "cuda"

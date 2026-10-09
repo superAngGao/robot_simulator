@@ -128,6 +128,14 @@ _RUNTIME_PHASES = frozenset(
 _VALIDATION_SOURCES = MappingProxyType(
     {"optical_worker.native_readback": "optical_worker/native_readback.py"}
 )
+_CUDA_ARTIFACT_SOURCES = MappingProxyType(
+    {
+        "optics.cuda_extension_recipes": "optics/cuda_extension_recipes.py",
+        "optics._cuda_scene_source": "optics/_cuda_scene_source.py",
+        "optics._cuda_lbvh_source": "optics/_cuda_lbvh_source.py",
+        "optics._cuda_direct_light_source": "optics/_cuda_direct_light_source.py",
+    }
+)
 _CUDA_COMPILATION_SOURCES = MappingProxyType(
     {
         "optical_worker.cuda_compilation": "optical_worker/cuda_compilation.py",
@@ -151,6 +159,7 @@ _VERIFIED_SNAPSHOTS = {}
 _EXTERNAL_CUSTODY = {}
 _RUNTIME_BINDINGS = {}
 _UPLOADED_INPUTS = {}
+_CUDA_EXTENSION_SETS = {}
 _IMPORT_TOPOLOGIES = {}
 _GENERATED_STDLIB_SPECS = {}
 _GENERATED_STDLIB_MODULES = {}
@@ -597,17 +606,15 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
             self.admission.record("create_started", self.name, "file_module")
             self.admission.stack.append(self.name)
             frame = self.admission.begin_native_call(self, "create", None, marker)
-            if type(self.delegate) is importlib.machinery.ExtensionFileLoader:
+            if self.admission.rules[self.name]["root"] == "cuda_artifacts":
+                module = self.admission.session._create_cuda_artifact(self, spec, frame)
+            elif type(self.delegate) is importlib.machinery.ExtensionFileLoader:
                 module = self.delegate.create_module(spec)
                 _require(module is not None, "native loader returned no module")
+                self._retain_created_module(module, frame)
             else:
                 module = ModuleType(self.name)
-            # This registry is held by the adopted source session before any
-            # explicit adoption that can fail. Preserve partial native owners.
-            self.admission.records[self.name] = {"module": module, "state": "created", "kind": "file_module"}
-            observation = self.admission.session.runtime_observation
-            observation.append("returned_owner", {"producer": "file_create", "call_sequence": frame["sequence"],
-                               "leaf_event_index": None, "object_token": observation.token(module)})
+                self._retain_created_module(module, frame)
             self.admission.return_native_call(frame, module)
             # Native return is already retained. Importlib has not initialized
             # spec/loader/package yet, so inspect only the raw intrinsic name.
@@ -625,6 +632,15 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
         finally:
             if marker is not None:
                 self.admission.leave_import_wrapper(marker)
+
+    def _retain_created_module(self, module, frame):
+        # Called inside the indexed contexts for CUDA artifacts. A context exit,
+        # journal append or later adoption may fail without losing this owner.
+        self.admission.records[self.name] = {"module": module, "state": "created", "kind": "file_module"}
+        _require(module is not None, "native loader returned no module")
+        observation = self.admission.session.runtime_observation
+        observation.append("returned_owner", {"producer": "file_create", "call_sequence": frame["sequence"],
+                           "leaf_event_index": None, "object_token": observation.token(module)})
 
     def exec_module(self, module):
         marker, frame, failure = None, None, None
@@ -649,7 +665,9 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
             self.admission.record("exec_started", self.name, "file_module")
             self.admission.stack.append(self.name)
             frame = self.admission.begin_native_call(self, _NATIVE_EXEC_OPERATION, module, marker)
-            if self.source is None:
+            if self.admission.rules[self.name]["root"] == "cuda_artifacts":
+                self.admission.session._exec_cuda_artifact(self, module)
+            elif self.source is None:
                 self.delegate.exec_module(module)
             else:
                 super().exec_module(module)
@@ -1548,6 +1566,8 @@ class _ExternalAdmission:
                 self.loaders[fullname] = loader
                 return spec
             _require(rule["phase"] == self.phase, "file module phase mismatch")
+            if rule["root"] == "cuda_artifacts":
+                self.session._cuda_artifact_runtime(fullname)
             origin = str(Path(self.roots[rule["root"]]) / rule["path"])
             file_record = self.files[(rule["root"], rule["path"])]
             delegate_type = (
@@ -2171,6 +2191,21 @@ class _RuntimeSetupBinding:
         raise TypeError("runtime binding is frozen")
 
 
+class CudaExtensionSet:
+    """Session-issued module identities; construction never grants authority."""
+
+    __slots__ = ("session", "controller", "binding", "admission", "recipes")
+
+    def __init__(self):
+        raise TypeError("CUDA extension sets are issued by their source session")
+
+    def __setattr__(self, name, value):
+        raise TypeError("CUDA extension set is frozen")
+
+    def __delattr__(self, name):
+        raise TypeError("CUDA extension set is frozen")
+
+
 def _compiler_root(session):
     record = _CUDA_COMPILATIONS.get(id(session))
     if record is None:
@@ -2324,7 +2359,7 @@ class _RuntimeObservation:
                     # These are component-local facts or non-token descriptors.
                     if key in {"event", "manifest", "signature", "local_token"}:
                         continue
-                    if key.endswith("_token") and item is not None:
+                    if (key.endswith("_token") or kind == "cuda_extensions_bound" and key == "token") and item is not None:
                         _require(type(item) is int and item > 0, "runtime observation token type")
                         self.first.setdefault(item, index)
                     else:
@@ -2365,7 +2400,7 @@ class _RuntimeObservation:
         external = [e["details"]["event"] for e in self.journal if e["kind"] == "external"]
         kinds = {e["kind"] for e in self.journal}
         return {
-            "schema_version": "q54.p12.4.runtime-custody.v2",
+            "schema_version": "q54.p12.4.runtime-custody.v3",
             "source": {"revision": session.revision, "catalog_sha256": session.catalog_sha256,
                        "snapshot_sha256": session.snapshot.sha256},
             "environment_sha256": self.environment.sha256 if "environment_bound" in kinds else None,
@@ -2486,6 +2521,8 @@ class _SourceSession:
             if self.phase in _CUDA_COMPILATION_PHASES:
                 _require(self.lane == "cuda", "CUDA compilation source closure on another lane")
                 admitted = admitted | _CUDA_COMPILATION_SOURCES
+            if self.lane == "cuda" and self.phase not in {"materializing", "materialized"}:
+                admitted = admitted | _CUDA_ARTIFACT_SOURCES
             return admitted
         raise SourceBootstrapError("invalid CPU source phase")
 
@@ -3027,9 +3064,148 @@ class _SourceSession:
                     "target_token": observation.token(target), "stream_token": observation.token(stream),
                     "source_token": observation.token(self.canonical_input), "stream_identity": list(identity),
                 })
+                if self.lane == "cuda":
+                    try:
+                        self._bind_cuda_artifacts()
+                    except BaseException:
+                        if not controller._terminating and not controller._replay.unknown:
+                            try:
+                                controller.mark_unknown_device_scope(
+                                    source="partial_cuda_artifact_binding", reason="cuda_artifact_set_not_completed")
+                            except BaseException as scope_error:
+                                self.runtime_owners.append(scope_error)
+                        raise
             self.phase = "runtime_ready"
             self._runtime_phase_completed("runtime_initialization")
             return binding
+        except BaseException as error:
+            self.fail(error)
+            raise
+
+    def _cuda_artifact_runtime(self, name):
+        from optics.cuda_extension_recipes import cuda_extension_recipe
+
+        cuda_extension_recipe(name)
+        self.check_live()
+        _require(self.lane == "cuda" and self.phase == "initializing_runtime"
+                 and self not in _CUDA_EXTENSION_SETS,
+                 "CUDA artifact import outside original runtime initialization")
+        controller = self.bound_controller()
+        _require(controller._guard_reference["sequence"] == 3, "CUDA artifact import outside guard3")
+        rule = self.external.rules.get(name)
+        _require(rule is not None and rule["root"] == "cuda_artifacts"
+                 and rule["phase"] == "runtime" and not rule["is_package"],
+                 "CUDA artifact lacks its deployed ordinary file rule")
+        record = _RUNTIME_BINDINGS.get(self)
+        _require(record is not None, "CUDA artifact has no live runtime binding")
+        return self._validate_runtime_binding_record(record[0], record)
+
+    def _cuda_artifact_leaf(self, name, operation):
+        from optical_worker.lifecycle import DeviceScopeDescriptor
+
+        controller = self.bound_controller()
+        descriptor = DeviceScopeDescriptor.exact_target(
+            operation_id=name + "." + operation,
+            leaf_kind="runtime_import_or_init",
+            device_ordinal=controller.target_device_ordinal,
+            scope_source="captured_runtime_admission",
+            runtime_identity="python_extension_" + operation + "_v1",
+        )
+        controller.enter_device_leaf(controller.begin_device_leaf(descriptor))
+
+    def _create_cuda_artifact(self, loader, spec, frame):
+        from optical_worker.native_setup import _cuda_artifact_create_exact
+
+        module, target, stream = self._cuda_artifact_runtime(loader.name)
+        self._cuda_artifact_leaf(loader.name, "create")
+        return _cuda_artifact_create_exact(module, target, stream, loader, spec, frame)
+
+    def _exec_cuda_artifact(self, loader, extension):
+        from optical_worker.native_setup import _cuda_artifact_exec_exact
+
+        module, target, stream = self._cuda_artifact_runtime(loader.name)
+        self._cuda_artifact_leaf(loader.name, "exec")
+        _cuda_artifact_exec_exact(module, target, stream, loader.delegate, extension)
+
+    def _bind_cuda_artifacts(self):
+        from optics.cuda_extension_recipes import CUDA_EXTENSION_RECIPES
+
+        for recipe in CUDA_EXTENSION_RECIPES:
+            self._cuda_artifact_runtime(recipe.name)
+            _require(recipe.name not in sys.modules and recipe.name not in self.external.records,
+                     "CUDA artifact was preloaded")
+        import robot_sim_cuda_scene_v1
+        import robot_sim_cuda_lbvh_native_v3
+        import robot_sim_cuda_direct_light_v8
+
+        modules = (robot_sim_cuda_scene_v1, robot_sim_cuda_lbvh_native_v3, robot_sim_cuda_direct_light_v8)
+        controller, admission = self.bound_controller(), self.external
+        runtime_record = _RUNTIME_BINDINGS[self]
+        owner = object.__new__(CudaExtensionSet)
+        self.runtime_owners.append(owner)
+        rows, evidence = [], []
+        observation = self.runtime_observation
+        for recipe, module in zip(CUDA_EXTENSION_RECIPES, modules, strict=True):
+            admission.check_module(recipe.name)
+            record, wrapper = admission.records[recipe.name], admission.loaders[recipe.name]
+            _require(record["state"] == "completed" and record["module"] is module,
+                     "CUDA artifact has not completed ordinary admission")
+            spec, delegate = admission.specs[recipe.name], wrapper.delegate
+            controller.require_adopted(module, spec, delegate)
+            entries, entry_rows = [], []
+            for name in recipe.entries:
+                entry = vars(module).get(name)
+                self.runtime_owners.append(entry)
+                _require(callable(entry) and entry.__module__ == recipe.name and entry.__name__ == name,
+                         "CUDA artifact entry identity differs from its fixed ABI")
+                controller.adopt_host_owner(entry, role="cuda_artifact_entry",
+                                            operation_id=recipe.name + ".entry." + name)
+                entries.append(entry)
+                entry_rows.append({"name": name, "token": observation.token(entry)})
+            rows.append((recipe.name, module, spec, delegate, tuple(entries)))
+            evidence.append({"name": recipe.name, "module_token": observation.token(module),
+                             "spec_token": observation.token(spec), "loader_token": observation.token(delegate),
+                             "entries": entry_rows})
+        rows = tuple(rows)
+        identities = [value for _, module, spec, delegate, entries in rows for value in (module, spec, delegate, *entries)]
+        _require(len({id(value) for value in identities}) == len(identities), "CUDA artifact owners alias")
+        for key, value in (("session", self), ("controller", controller), ("binding", runtime_record[0]),
+                           ("admission", admission), ("recipes", rows)):
+            object.__setattr__(owner, key, value)
+        controller.adopt_host_owner(owner, role="cuda_artifact_set", operation_id="cuda_artifacts.bind_set")
+        observation.append("cuda_extensions_bound", {"owner_token": observation.token(owner),
+                           "binding_token": observation.token(runtime_record[0]), "recipes": evidence})
+        _CUDA_EXTENSION_SETS[self] = (owner, runtime_record, rows)
+
+    def require_cuda_extension(self, owner, recipe_name):
+        """Return only the module issued to this exact live source/runtime graph."""
+        try:
+            from optics.cuda_extension_recipes import cuda_extension_recipe
+
+            recipe = cuda_extension_recipe(recipe_name)
+            self.check_live()
+            registered = _CUDA_EXTENSION_SETS.get(self)
+            _require(type(owner) is CudaExtensionSet and registered is not None and registered[0] is owner,
+                     "CUDA extension set is foreign, copied or unregistered")
+            _, runtime_record, rows = registered
+            controller = self.bound_controller()
+            self._validate_runtime_binding_record(runtime_record[0], runtime_record)
+            _require(owner.session is self and owner.controller is controller and owner.admission is self.external
+                     and owner.binding is runtime_record[0] and owner.recipes is rows,
+                     "CUDA extension set binding drift")
+            controller.require_adopted(owner)
+            for name, module, spec, delegate, entries in rows:
+                self.external.check_module(name)
+                _require(self.external.records[name]["state"] == "completed"
+                         and self.external.records[name]["module"] is module
+                         and self.external.specs[name] is spec and self.external.loaders[name].delegate is delegate,
+                         "CUDA extension set file identity drift")
+                fixed_recipe = cuda_extension_recipe(name)
+                for entry_name, entry in zip(fixed_recipe.entries, entries, strict=True):
+                    _require(vars(module).get(entry_name) is entry and entry.__module__ == name
+                             and entry.__name__ == entry_name, "CUDA extension set entry was replaced")
+                controller.require_adopted(module, spec, delegate, *entries)
+            return next(row[1] for row in rows if row[0] == recipe.name)
         except BaseException as error:
             self.fail(error)
             raise

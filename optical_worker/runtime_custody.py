@@ -21,8 +21,8 @@ from .runtime_environment import (
 )
 from .wait_protocol import GuardConfiguration, GuardProtocolError, exact_fields
 
-RUNTIME_CUSTODY_VERSION = "q54.p12.4.runtime-custody.v2"
-RUNTIME_CUSTODY_VERSIONS = ("q54.p12.4.runtime-custody.v1", RUNTIME_CUSTODY_VERSION)
+RUNTIME_CUSTODY_VERSION = "q54.p12.4.runtime-custody.v3"
+RUNTIME_CUSTODY_VERSIONS = ("q54.p12.4.runtime-custody.v1", "q54.p12.4.runtime-custody.v2", RUNTIME_CUSTODY_VERSION)
 RUNTIME_CUSTODY_INPUTS_VERSION = "q54.p12.4.runtime-custody-inputs.v1"
 RUNTIME_CUSTODY_SELECTION_VERSION = "q54.p12.4.runtime-custody-selection.v1"
 
@@ -45,6 +45,7 @@ _DETAIL_FIELDS = {
     "interpreter_alias": {"event_index", "token_bindings", "publisher_token", "spec_token", "loader_token"},
     "runtime_binding": {"binding_token", "controller_token", "module_token", "runtime_token",
                         "target_token", "stream_token", "source_token", "stream_identity"},
+    "cuda_extensions_bound": {"owner_token", "binding_token", "recipes"},
     "binding_consumed": {"binding_token"},
     "prepared_storage": {"prepared_token", "source_token", "ready_event_token", "manifest", "arrays",
                          "storage_sha256"},
@@ -307,6 +308,8 @@ class _RuntimeReplay:
         self.self_absences, self.publications, self.namespaces, self.disabled = {}, {}, {}, {}
         self.returned_files, self.returned_runtime = {}, {}
         self.native_pairs, self.native_seen, self.native_rows = [], set(), []
+        self.cuda_extensions = None
+        self.cuda_artifact_pairs, self.cuda_artifact_calls = {}, {}
         self.native_identity = None
         self.external_count, self.last_lifecycle, self.index, self.lci, self.guard = 0, -1, -1, -1, None
         ep = environment.to_payload()
@@ -382,6 +385,9 @@ class _RuntimeReplay:
                 _require(module == previous["module_token"] or module is not None and module == allowed_module,
                          "failed file call invented a returned module")
             if state == "returned":
+                if self.root["schema_version"] == RUNTIME_CUSTODY_VERSION and self.rules[name]["root"] == "cuda_artifacts":
+                    _require((name, operation) in self.cuda_artifact_pairs,
+                             "CUDA artifact returned before its native context pair closed")
                 _require(self.delegate_stack and self.delegate_stack[-1] == sequence, "file return nesting mismatch")
                 self.delegate_stack.pop()
             elif state == "failed" and sequence in self.delegate_stack:
@@ -684,6 +690,8 @@ class _RuntimeReplay:
             self.returned_owner(d)
         elif kind == "runtime_binding":
             self.runtime_binding(d)
+        elif kind == "cuda_extensions_bound":
+            self.cuda_extensions_bound(d)
         elif kind == "native_scope":
             self.native_scope(d)
         elif kind == "binding_consumed":
@@ -709,11 +717,14 @@ class _RuntimeReplay:
             self.phase_completed(d)
 
     def native_scope(self, d):
-        _require(self.root["schema_version"] == RUNTIME_CUSTODY_VERSION and not self.failed,
+        _require(self.root["schema_version"] in RUNTIME_CUSTODY_VERSIONS[1:] and not self.failed,
                  "native scope version or failed predecessor")
         site, edge = _text(d["site"]), _text(d["edge"])
         helpers = NATIVE_SCOPE_HELPERS
-        _require(site in {*helpers, "runtime_stream", "runtime_binding", "upload_scope", "readback_scope", "terminal_sync"},
+        artifact = site in {"cuda_artifact_create", "cuda_artifact_exec"}
+        _require(not artifact or self.root["schema_version"] == RUNTIME_CUSTODY_VERSION,
+                 "CUDA artifact scope requires runtime custody v3")
+        _require(artifact or site in {*helpers, "runtime_stream", "runtime_binding", "upload_scope", "readback_scope", "terminal_sync"},
                  "native scope site")
         _require(edge == "point" if site == "runtime_binding" else edge in {"before", "after"},
                  "native scope edge")
@@ -729,7 +740,7 @@ class _RuntimeReplay:
             _require(phase == 6 and self.validated and self.native_emergency[self.lci]
                      and self.trace[operation]["operation"] == "emergency_sync_started",
                      "native terminal observation outside original sync interval")
-        elif site in {"runtime_stream", "runtime_binding"}:
+        elif artifact or site in {"runtime_stream", "runtime_binding"}:
             self.at_phase(3)
         elif site in {"upload_scope", "readback_scope"}:
             _require(self.lane == "warp", "native outer scope belongs only to Warp")
@@ -739,7 +750,37 @@ class _RuntimeReplay:
         if site not in {"runtime_binding", "terminal_sync"}:
             _require(operation in self.leaf_descriptors, "native operation lacks entered leaf")
             descriptor = self.leaf_descriptors[operation]
-            if site == "runtime_stream":
+            if artifact:
+                from optics.cuda_extension_recipes import CUDA_EXTENSION_RECIPES
+
+                _require(self.lane == "cuda" and self.binding is not None and self.cuda_extensions is None
+                         and self.guard == {"sequence": 3, "role": "setup"}
+                         and len(self.delegate_stack) == 1, "CUDA artifact lacks original bound file-call interval")
+                call = self.calls[self.delegate_stack[-1]]
+                operation_name = "create" if site == "cuda_artifact_create" else "exec"
+                name = call["observer"]
+                _require(call["operation"] == operation_name and call["state"] == "started"
+                         and call["guard"] == self.guard and call["start_journal"] < self.index
+                         and name in {recipe.name for recipe in CUDA_EXTENSION_RECIPES}
+                         and self.rules[name]["root"] == "cuda_artifacts",
+                         "CUDA native pair differs from active file-call recipe")
+                expected_order = [(recipe.name, op) for recipe in CUDA_EXTENSION_RECIPES for op in ("create", "exec")]
+                _require(len(self.cuda_artifact_pairs) < len(expected_order)
+                         and (name, operation_name) == expected_order[len(self.cuda_artifact_pairs)],
+                         "CUDA artifact scope recipe order or duplicate")
+                expected = (name + "." + operation_name, "runtime_import_or_init",
+                            "python_extension_" + operation_name + "_v1")
+                _require(descriptor["scope_source"] == "captured_runtime_admission",
+                         "CUDA artifact native scope source")
+                if edge == "before":
+                    _require(operation not in self.cuda_artifact_calls, "CUDA artifact leaf reused")
+                    self.cuda_artifact_calls[operation] = call["sequence"]
+                else:
+                    _require(self.cuda_artifact_calls.get(operation) == call["sequence"],
+                             "CUDA artifact pair changed file frame")
+                    _require(operation_name != "create" or call["sequence"] in self.returned_files,
+                             "CUDA artifact context closed before retained create return")
+            elif site == "runtime_stream":
                 expected = ("indexed_runtime_stream", "allocation" if self.lane == "cuda" else "runtime_import_or_init",
                             "frozen_runtime_environment_v2")
             elif site in {"upload_scope", "readback_scope"}:
@@ -778,6 +819,8 @@ class _RuntimeReplay:
                          "native helper pair was not closed")
                 self.native_pairs.append((key, self.index))
         self._native_scope_objects(d)
+        if artifact and edge == "after":
+            self.cuda_artifact_pairs[name, operation_name] = (operation, call["sequence"])
 
     def _native_scope_objects(self, d):
         """Shared native owner/library/state validation, without extending old sites."""
@@ -845,6 +888,10 @@ class _RuntimeReplay:
             call = self.calls[sequence]
             _require(call["state"] == "started" and call["operation"] == "create"
                      and self.delegate_stack and self.delegate_stack[-1] == sequence, "returned file outside create interval")
+            if self.root["schema_version"] == RUNTIME_CUSTODY_VERSION and self.rules[call["observer"]]["root"] == "cuda_artifacts":
+                _require(self.native_pairs and self.native_pairs[-1][0][0] == "cuda_artifact_create"
+                         and self.cuda_artifact_calls.get(self.native_pairs[-1][0][1]) == sequence,
+                         "CUDA artifact create return was not retained inside its native pair")
             self.returned_files[sequence] = token
         else:
             self.at_phase(3)
@@ -899,6 +946,60 @@ class _RuntimeReplay:
                  "runtime binding owner identities collide")
         self.binding = dict(d)
 
+    def cuda_extensions_bound(self, d):
+        from optics.cuda_extension_recipes import CUDA_EXTENSION_RECIPES
+
+        self.at_phase(3)
+        _require(self.root["schema_version"] == RUNTIME_CUSTODY_VERSION and self.lane == "cuda"
+                 and self.binding is not None and self.cuda_extensions is None
+                 and self.guard == {"sequence": 3, "role": "setup"}
+                 and not self.delegate_stack and not self.native_pairs,
+                 "CUDA extension binding version, guard or predecessor")
+        _require(self.token(d["binding_token"]) == self.binding["binding_token"], "CUDA extension runtime substitution")
+        _require(type(d["recipes"]) is list and len(d["recipes"]) == len(CUDA_EXTENSION_RECIPES),
+                 "CUDA extension binding must contain the whole fixed set")
+        seen = set(self.binding[key] for key in _DETAIL_FIELDS["runtime_binding"] - {"stream_identity"})
+
+        def distinct(token):
+            token = self.token(token)
+            _require(token not in seen, "CUDA extension owner alias")
+            seen.add(token)
+            return token
+
+        def named_adoption(token, role, operation):
+            event = self.adopted(token, roles={role}, scope=HOST_OWNER, operation=operation)
+            # lci is the last event already observed, so its adoption is prior
+            # to this journal append even when the two carry the same cut.
+            _require(event["guard"] == self.guard, "CUDA extension adoption belongs to another guard")
+
+        owner = distinct(d["owner_token"])
+        named_adoption(owner, "cuda_artifact_set", "cuda_artifacts.bind_set")
+        expected_pairs = {(recipe.name, op) for recipe in CUDA_EXTENSION_RECIPES for op in ("create", "exec")}
+        _require(set(self.cuda_artifact_pairs) == expected_pairs, "CUDA extension binding lacks six native pairs")
+        for recipe, raw in zip(CUDA_EXTENSION_RECIPES, d["recipes"], strict=True):
+            row = exact_fields(raw, {"name", "module_token", "spec_token", "loader_token", "entries"})
+            _require(row["name"] == recipe.name and self.file_states.get(recipe.name) == "completed",
+                     "CUDA extension recipe lacks completed file admission")
+            module, spec, loader = (distinct(row[key]) for key in ("module_token", "spec_token", "loader_token"))
+            _require(module == self.file_owners[recipe.name]
+                     and (spec, loader) == self.file_resolutions[recipe.name][:2], "CUDA extension file owner substitution")
+            for token in (module, spec, loader):
+                event = self.adopted(token, roles={"external_import_owner"}, scope=HOST_OWNER)
+                _require(event["guard"] == self.guard, "CUDA extension file owner adopted outside guard3")
+            for op in ("create", "exec"):
+                _, sequence = self.cuda_artifact_pairs[recipe.name, op]
+                call = self.calls[sequence]
+                _require(call["state"] == "completed" and call["module_token"] == module
+                         and call["spec_token"] == spec and call["loader_token"] == loader,
+                         "CUDA extension native pair differs from completed file identities")
+            _require(type(row["entries"]) is list and len(row["entries"]) == len(recipe.entries),
+                     "CUDA extension entry count")
+            for name, raw_entry in zip(recipe.entries, row["entries"], strict=True):
+                entry = exact_fields(raw_entry, {"name", "token"})
+                _require(entry["name"] == name, "CUDA extension entry name/order")
+                named_adoption(distinct(entry["token"]), "cuda_artifact_entry", recipe.name + ".entry." + name)
+        self.cuda_extensions = dict(d)
+
     def prepared_storage(self, d):
         self.at_phase(4)
         _require(self.consumed and self.prepared is None, "prepared storage predecessor")
@@ -938,6 +1039,8 @@ class _RuntimeReplay:
         _require(len(self.phases) < len(self.normal_guards)
                  and self.trace[index]["guard"] == self.normal_guards[len(self.phases)], "phase completion guard order")
         count = len(self.phases)
+        if count == 3 and self.lane == "cuda" and self.root["schema_version"] == RUNTIME_CUSTODY_VERSION:
+            _require(self.cuda_extensions is not None, "CUDA runtime initialization lacks its issued extension set")
         expected = (True, self.bound_environment, True, self.binding is not None,
                     self.prepared is not None, self.validated)[count]
         _require(expected and not self.delegate_stack and all(c["state"] == "completed" for c in self.calls),

@@ -7,6 +7,7 @@ guardian already exist.
 
 from __future__ import annotations
 
+
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -26,6 +27,20 @@ from .native_contract import (
     register_prepared_native_input,
     warp_dtype_from_host_dtype,
 )
+
+
+def _cuda_artifact_create_exact(torch, target, stream, loader, spec, frame):
+    with torch.cuda.device(target):
+        with torch.cuda.stream(stream):
+            module = loader.delegate.create_module(spec)
+            loader._retain_created_module(module, frame)
+            return module
+
+
+def _cuda_artifact_exec_exact(torch, target, stream, delegate, module):
+    with torch.cuda.device(target):
+        with torch.cuda.stream(stream):
+            delegate.exec_module(module)
 
 
 class NativeWorkerPreparationAborted(RuntimeError):

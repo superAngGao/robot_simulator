@@ -1567,12 +1567,15 @@ Next milestone:
       standard deployment builds and ordinary guard3 file admission, and specifies
       removal of the superseded live setuptools/compiler machinery. Original v1
       findings about normal main exit, builder availability probing and named
-      adoption joins are closed at design level. Implementation has started with
-      explicit source bindings and standard build/status leaves;30 local CPU
-      source/contract checks pass. No real build/service/GPU run or code acceptance
-      is claimed. Launcher/publication, worker loading, factory binding, net deletion
-      and source/profile refresh are unfinished; see fixed-cuda-artifacts
-      implementation-notev1. Finish and preflight the whole replacement packet,
+      adoption joins are closed at design level. Implementation now includes the
+      deployment publisher/manifest, ordinary v5 environment composition and guard3
+      loading with retained create returns and named v3 extension-set bindings.
+      The selected CPU checks pass90; observer/historical selection passes27 with110
+      skipped. These are not real build/loading evidence. The current source-policy
+      check rejects the unfinished loader definition closure, as recorded in
+      fixed-cuda-artifacts implementation-notev2. Factory integration, net deletion,
+      full v3 replay and source/profile refresh remain unfinished. No real build,
+      service/GPU run or code acceptance is claimed. Finish and preflight the whole replacement packet,
       then continue all parent C4 work. Do not resume the isolated pidfd campaign.
       Product requirements and independent checkpoints remain; no early benchmark
       or activation is authorized. C4 remains active and incomplete.

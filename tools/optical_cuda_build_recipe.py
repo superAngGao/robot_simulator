@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import stat
+import re
 import sys
 import sysconfig
 from pathlib import Path, PurePosixPath
@@ -41,6 +42,41 @@ def validate_build_environment(environment) -> None:
         raise RuntimeError("fixed build environment is absent or changed")
     if _INJECTION_VARIABLES.intersection(environment):
         raise RuntimeError("compiler override or injection variable is present")
+
+
+def build_service_argv(repository: Path, job: Path, unit: str, environment: dict) -> list[str]:
+    """One fixed systemd invocation, shared by launch and provenance validation."""
+    from tools.optical_cuda_build_status import validate_status
+    from optics.cuda_extension_recipes import CUDA_EXTENSION_RECIPES
+
+    validate_build_environment(environment)
+    if set(environment) != set(_BUILD_ENVIRONMENT) | {"PATH", "LD_LIBRARY_PATH", "TMPDIR", "LC_ALL"}:
+        raise ValueError("unexpected build environment keys")
+    if any(type(v) is not str or "\x00" in v or "\n" in v for v in environment.values()):
+        raise ValueError("invalid build environment value")
+    validate_status({"unit": unit, "invocation_id": None, "service_result": None,
+                     "exit_code": None, "exit_status": None, "cgroup_path": None}, unit=unit)
+    index = int(unit[-9])
+    for path in (repository, job):
+        if not path.is_absolute() or re.fullmatch(r"/[A-Za-z0-9_/.-]+", path.as_posix()) is None:
+            raise ValueError("deployment command paths must be absolute literal Linux paths")
+    python = str(_PREFIX / "bin/python")
+    footer = [python, "-I", "-S", "-B", str(repository / "tools/optical_cuda_build_status.py"),
+              "--output", str(job / "termination.json"), "--unit", unit]
+    return [
+        "/usr/bin/systemd-run", "--user", "--no-ask-password", "--wait", "--collect",
+        "--service-type=exec", "--expand-environment=no", "--unit=" + unit,
+        "--property=ExitType=cgroup", "--property=Restart=no", "--property=RemainAfterExit=no",
+        "--property=RuntimeMaxSec=120s", "--property=TimeoutStartSec=120s", "--property=TimeoutStopSec=10s",
+        "--property=KillMode=control-group", "--property=SendSIGKILL=yes", "--property=Delegate=no",
+        "--property=WorkingDirectory=" + str(job),
+        "--property=StandardOutput=append:" + str(job / "stdout.log"),
+        "--property=StandardError=append:" + str(job / "stderr.log"),
+        "--property=ExecStopPost=" + " ".join(footer),
+        "--", "/usr/bin/env", "-i", *(key + "=" + environment[key] for key in sorted(environment)),
+        python, "-I", "-S", "-B", str(repository / "tools/optical_cuda_build_recipe.py"),
+        "--recipe", CUDA_EXTENSION_RECIPES[index].name, "--job-directory", str(job), "--unit", unit,
+    ]
 
 
 def _check_environment() -> None:
@@ -123,7 +159,7 @@ def build_recipe(name: str, job: Path, unit: str) -> None:
         py_modules=[],
         ext_modules=[extension],
         cmdclass={"build_ext": BuildExtension.with_options(use_ninja=True)},
-        script_args=["build_ext", "--build-temp", str(temporary), "--build-lib", str(output)],
+        script_args=["--no-user-cfg", "build_ext", "--build-temp", str(temporary), "--build-lib", str(output)],
     )
     suffix = sysconfig.get_config_var("EXT_SUFFIX")
     if type(suffix) is not str or not suffix.endswith(".so"):

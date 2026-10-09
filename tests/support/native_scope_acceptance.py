@@ -1,5 +1,5 @@
 """CPU checks of required scope coverage, never a live runtime authority."""
-from optical_worker.runtime_custody import NATIVE_SCOPE_HELPERS, RUNTIME_CUSTODY_VERSION
+from optical_worker.runtime_custody import NATIVE_SCOPE_HELPERS, RUNTIME_CUSTODY_VERSIONS
 
 
 def assert_native_scope_success(record, artifact, identity):
@@ -9,7 +9,7 @@ def assert_native_scope_success(record, artifact, identity):
     observation. This is a fixed deployment acceptance check, not attestation.
     """
     payload = record.to_payload()
-    assert payload["schema_version"] == RUNTIME_CUSTODY_VERSION
+    assert payload["schema_version"] in RUNTIME_CUSTODY_VERSIONS[1:]
     assert payload["summary"]["input_validation_observed"] is True
     assert payload["summary"]["final_execution_readiness_issued"] is False
     assert payload["configuration"]["device_ordinal"] == 1
@@ -37,6 +37,10 @@ def assert_native_scope_success(record, artifact, identity):
                 site = "runtime_stream"
             elif lane == "warp" and operation in {"indexed_upload_scope", "indexed_validation_scope"}:
                 site = "upload_scope" if operation == "indexed_upload_scope" else "readback_scope"
+            elif lane == "cuda" and descriptor["runtime_identity"] in {
+                "python_extension_create_v1", "python_extension_exec_v1"
+            }:
+                site = "cuda_artifact_" + operation.rsplit(".", 1)[1]
             if site is not None:
                 expected.update((site, edge, event["index"]) for edge in ("before", "after"))
         elif event["operation"] == "emergency_sync_started":

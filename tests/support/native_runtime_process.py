@@ -759,9 +759,13 @@ class _NativeScopeObserver:
     def _wrap_helpers(self):
         setup = self.session.modules["optical_worker.native_setup"][0]
         prefix = "_torch_" if self.session.lane == "cuda" else "_warp_"
-        for suffix, site in (("empty_exact", "empty"), ("copy_exact", "copy"), ("event_exact", "event_create"),
-                             ("record_event_exact", "event_record"), ("wait_event_host_exact", "event_wait")):
-            name = prefix + suffix
+        helpers = [(prefix + suffix, site) for suffix, site in (
+            ("empty_exact", "empty"), ("copy_exact", "copy"), ("event_exact", "event_create"),
+            ("record_event_exact", "event_record"), ("wait_event_host_exact", "event_wait"))]
+        if self.session.lane == "cuda":
+            helpers.extend((("_cuda_artifact_create_exact", "cuda_artifact_create"),
+                            ("_cuda_artifact_exec_exact", "cuda_artifact_exec")))
+        for name, site in helpers:
             original = vars(setup)[name]
             self.originals.append(original)
             if self.fault == "runtime_scope_c1_copy" and site == "copy":
