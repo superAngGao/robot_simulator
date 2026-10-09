@@ -1619,6 +1619,17 @@ Next milestone:
       all other checks and their historical-observation limits. CPU checks pass62.
       See code-preflight-request v2 for raw evidence, exact repair and fresh-output
       continuation commands; no new native getter/build run before fresh review.
+      Fresh preflightv2 accepts the six actual manager cases and the bounded repair
+      continuation at66240e4; report archived unchanged ata341584. All three real
+      builds now succeed (50.195s/54.493s/51.561s), with actual status3/uninitialized
+      checkpoints, matching ABI, normal main exit and owned-group closure. The
+      complete immutable set and cold v5 environment are published/verified. First
+      real Go2 CUDA960 preparation passes, including exact factory/workspace and
+      target1/ambient0 checks; private missing/changed/partial copies reject.
+      The ten-case matrix is still running in tool session94514, parent2083102,
+      output c4-fixed-artifact-runtime-v2; do not restart it. See fixed-cuda-artifacts
+      test-evidencev1 for hashes, raw records, live handle and remaining scope.
+      This is actual progress, not whole artifact/C2d3/C4 or performance acceptance.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design
