@@ -767,6 +767,7 @@ def build_prepared_cuda_scene_update_factory(
     prepared: CudaPreparedNativeInput,
     *,
     context: object,
+    extensions=None,
 ):
     """Bind the CUDA scene factory to the exact prepared manifest and scene."""
 
@@ -782,6 +783,7 @@ def build_prepared_cuda_scene_update_factory(
         local_scene=build_prepared_cuda_local_scene(prepared),
         native_input_manifest_sha256=prepared.manifest.sha256,
         input_contract=prepared.manifest.input_contract,
+        extensions=extensions,
     )
 
 
@@ -789,6 +791,7 @@ def build_prepared_cuda_lbvh_rebuild_factory(
     prepared: CudaPreparedNativeInput,
     *,
     context: object,
+    extensions=None,
 ):
     """Bind the CUDA LBVH factory to the exact prepared scene provenance."""
 
@@ -813,6 +816,7 @@ def build_prepared_cuda_lbvh_rebuild_factory(
         native_input_manifest_sha256=manifest.sha256,
         scene_contract_sha256=manifest.scene_contract_sha256,
         input_contract=manifest.input_contract,
+        extensions=extensions,
     )
 
 

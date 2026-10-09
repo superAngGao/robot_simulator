@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from optics.cuda_extension_recipes import CUDA_EXTENSION_RECIPES, cuda_extension_kwargs
+from optics.cuda_extension_recipes import CUDA_EXTENSION_RECIPES
 
 
 def test_original_kernel_bytes_and_entry_abis_are_preserved():
@@ -59,50 +59,25 @@ def test_cold_recipe_import_has_no_backend_or_compatibility_side_effect():
     ("scene", "_torch_module"), ("lbvh", "_require_torch_cuda_lbvh"),
     ("direct_light", "_require_cuda_direct_light_deps"),
 ))
-def test_actual_legacy_wrapper_delegates_once_and_keeps_source_aliases(monkeypatch, lane, require_name):
+def test_actual_wrapper_rechecks_fixed_resolution_and_keeps_source_aliases(monkeypatch, lane, require_name):
     module = importlib.import_module("optics.cuda_" + lane)
     recipe = next(r for r in CUDA_EXTENSION_RECIPES if r.source_module.__name__ == "optics._cuda_" + lane + "_source")
     sentinel = object()
     calls = []
 
-    def load_inline(**kwargs):
-        calls.append(kwargs)
+    def resolve(name, *, extensions, context):
+        calls.append((name, extensions, context))
         return sentinel
 
     monkeypatch.setattr(module, require_name, lambda: None)
-    if lane == "scene":
-        # Scene intentionally resolves Torch only when its legacy loader runs.
-        from types import ModuleType
-        fake = ModuleType("torch.utils.cpp_extension")
-        fake.load_inline = load_inline
-        monkeypatch.setitem(sys.modules, "torch.utils.cpp_extension", fake)
-    else:
-        monkeypatch.setattr(module, "load_inline", load_inline)
+    monkeypatch.setattr(module, "load_cuda_extension", resolve)
     loader = getattr(module, "_load_cuda_" + lane + "_extension")
-    loader.cache_clear()
-    try:
-        assert loader() is sentinel and loader() is sentinel
-        assert calls == [cuda_extension_kwargs(recipe.name)]
-    finally:
-        loader.cache_clear()
+    extensions, context = object(), object()
+    assert loader() is sentinel and loader(extensions=extensions, context=context) is sentinel
+    assert calls == [(recipe.name, None, None), (recipe.name, extensions, context)]
     prefix = "" if lane == "lbvh" else "_"
     assert getattr(module, prefix + "CPP_SOURCE") is recipe.source_module.CPP_SOURCE
     assert getattr(module, prefix + "CUDA_SOURCE") is recipe.source_module.CUDA_SOURCE
     tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
     assert not any(isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant)
                    and type(n.value.value) is str and "#include <" in n.value.value for n in tree.body)
-
-
-def test_recipe_kwargs_cannot_mutate_later_build_or_choose_arbitrary_recipe():
-    for recipe in CUDA_EXTENSION_RECIPES:
-        original = cuda_extension_kwargs(recipe.name)
-        changed = cuda_extension_kwargs(recipe.name)
-        for value in changed.values():
-            if type(value) is list:
-                value.clear()
-        assert cuda_extension_kwargs(recipe.name) == original
-        assert original["use_pch"] is False and original["is_python_module"] is True
-        assert original["extra_cflags"] == original["extra_cuda_cflags"] == ["-O2"]
-    for invalid in (None, True, 0, {}, "robot_sim_cuda_scene_v1_v2", "../source"):
-        with pytest.raises(ValueError):
-            cuda_extension_kwargs(invalid)

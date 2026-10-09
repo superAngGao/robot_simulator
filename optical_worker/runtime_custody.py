@@ -7,7 +7,7 @@ import json
 from dataclasses import dataclass
 from pathlib import PurePosixPath, PureWindowsPath
 
-from .compilation_contract import INPUT_PHASES as PHASES
+from .runtime_phases import INPUT_PHASES as PHASES
 from .guarded_evidence import GuardedLifecycleEvidence, _Replay as _LifecycleReplay, validate_custody_artifact
 from .lifecycle import HOST_OWNER, _array_operation_id
 from .native_manifest import CANONICAL_DTYPE_METADATA, NativeInputManifest

@@ -4,8 +4,8 @@ import copy
 
 import pytest
 
-from optical_worker.compilation_contract import CUDA_FOUNDATION_PHASES, cuda_foundation_phase
-from optical_worker.compiler_job import CompilerJobRecord, _CompilerObligation
+from optical_worker.historical.compilation_contract import CUDA_FOUNDATION_PHASES, cuda_foundation_phase
+from optical_worker.historical.compiler_job import CompilerJobRecord, _CompilerObligation
 from optical_worker.protocol import canonical_json_bytes
 from optical_worker.wait_protocol import GuardConfiguration, GuardProtocolError, I64_MAX
 from optical_worker.wait_supervision import GuardSupervisorCore

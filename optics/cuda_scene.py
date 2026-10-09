@@ -6,14 +6,13 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from functools import lru_cache
 from types import MappingProxyType
 from typing import Any
 
 import numpy as np
 
 from ._cuda_scene_source import CPP_SOURCE as _CPP_SOURCE, CUDA_SOURCE as _CUDA_SOURCE
-from .cuda_extension_recipes import cuda_extension_kwargs
+from .cuda_extension_loading import load_cuda_extension
 
 from .scene_contract import PackedOpticalSceneHost
 
@@ -336,13 +335,14 @@ class CudaSceneUpdateStageFactory:
         local_scene: CudaOpticalLocalScene,
         native_input_manifest_sha256: str,
         input_contract: str,
+        extensions=None,
     ) -> "CudaSceneUpdateStageFactory":
-        """Load/compile the extension outside timing and freeze its entries."""
+        """Resolve the deployed or captured extension outside timing."""
 
         return cls(
             context=context,
             local_scene=local_scene,
-            module=_load_cuda_scene_extension(),
+            module=_load_cuda_scene_extension(extensions=extensions, context=context),
             native_input_manifest_sha256=native_input_manifest_sha256,
             input_contract=input_contract,
             _prepared_extension_token=_PREPARED_EXTENSION_TOKEN,
@@ -922,12 +922,10 @@ def _torch_module():
     return torch
 
 
-@lru_cache(maxsize=1)
-def _load_cuda_scene_extension():
-    _torch_module()
-    from torch.utils.cpp_extension import load_inline
-
-    return load_inline(**cuda_extension_kwargs('robot_sim_cuda_scene_v1'))
+def _load_cuda_scene_extension(*, extensions=None, context=None):
+    if extensions is None:
+        _torch_module()
+    return load_cuda_extension("robot_sim_cuda_scene_v1", extensions=extensions, context=context)
 
 
 def _torch_dtype_numpy(torch: Any, dtype: Any) -> np.dtype[Any]:

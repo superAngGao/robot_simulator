@@ -21,7 +21,7 @@ from types import FunctionType, MappingProxyType, ModuleType
 
 _BOOTSTRAP = "optical_worker/native_bootstrap.py"
 _NATIVE_EXEC_OPERATION = "exec"  # Descriptive operation enum, never a dynamic Python callable.
-_CATALOG = "optical_worker/data/native_sources/v13.json"
+_CATALOG = "optical_worker/data/native_sources/v14.json"
 _MAX_BYTES = 4 * 1024 * 1024  # Rechecked against the sole protocol constant.
 _ROOTS = frozenset(
     ("optical_worker", "optics", "physics", "robot", "sensing", "benchmarks", "examples", "tests", "tools")
@@ -47,7 +47,7 @@ _CUSTODY_PRELUDE = MappingProxyType(
         "optical_worker.native_manifest": "optical_worker/native_manifest.py",
         "optical_worker.runtime_environment": "optical_worker/runtime_environment.py",
         "optical_worker.runtime_custody": "optical_worker/runtime_custody.py",
-        "optical_worker.compilation_contract": "optical_worker/compilation_contract.py",
+        "optical_worker.runtime_phases": "optical_worker/runtime_phases.py",
     }
 )
 _SETUP_DEFINITIONS = MappingProxyType(
@@ -117,12 +117,6 @@ _RUNTIME_PHASES = frozenset(
         "uploaded",
         "validating_input",
         "input_validated",
-        "compiling_cuda_scene",
-        "cuda_scene_compiled",
-        "compiling_cuda_lbvh",
-        "cuda_lbvh_compiled",
-        "compiling_cuda_direct_light",
-        "cuda_compiled",
     }
 )
 _VALIDATION_SOURCES = MappingProxyType(
@@ -130,28 +124,13 @@ _VALIDATION_SOURCES = MappingProxyType(
 )
 _CUDA_ARTIFACT_SOURCES = MappingProxyType(
     {
+        "optics.cuda_extension_loading": "optics/cuda_extension_loading.py",
         "optics.cuda_extension_recipes": "optics/cuda_extension_recipes.py",
         "optics._cuda_scene_source": "optics/_cuda_scene_source.py",
         "optics._cuda_lbvh_source": "optics/_cuda_lbvh_source.py",
         "optics._cuda_direct_light_source": "optics/_cuda_direct_light_source.py",
     }
 )
-_CUDA_COMPILATION_SOURCES = MappingProxyType(
-    {
-        "optical_worker.cuda_compilation": "optical_worker/cuda_compilation.py",
-        "optical_worker.cuda_compilation_evidence": "optical_worker/cuda_compilation_evidence.py",
-        "optical_worker.compilation_contract": "optical_worker/compilation_contract.py",
-        "optical_worker.setuptools_admission": "optical_worker/setuptools_admission.py",
-        "optics.cuda_extension_recipes": "optics/cuda_extension_recipes.py",
-        "optics._cuda_scene_source": "optics/_cuda_scene_source.py",
-        "optics._cuda_lbvh_source": "optics/_cuda_lbvh_source.py",
-        "optics._cuda_direct_light_source": "optics/_cuda_direct_light_source.py",
-    }
-)
-_CUDA_COMPILATION_PHASES = frozenset({
-    "compiling_cuda_scene", "cuda_scene_compiled", "compiling_cuda_lbvh",
-    "cuda_lbvh_compiled", "compiling_cuda_direct_light", "cuda_compiled",
-})
 # One-shot trusted-process identities, never reconstructed from a receipt.
 # None is a permanent failed/in-progress binding tombstone, not permission to retry.
 _SOURCE_CUSTODY = {}
@@ -159,13 +138,10 @@ _VERIFIED_SNAPSHOTS = {}
 _EXTERNAL_CUSTODY = {}
 _RUNTIME_BINDINGS = {}
 _UPLOADED_INPUTS = {}
-_CUDA_EXTENSION_SETS = {}
 _IMPORT_TOPOLOGIES = {}
 _GENERATED_STDLIB_SPECS = {}
 _GENERATED_STDLIB_MODULES = {}
 _INTERPRETER_ALIAS_CUSTODY = {}
-_CUDA_COMPILATIONS = {}
-_SETUPTOOLS_CUSTODY = {}
 
 
 class SourceBootstrapError(RuntimeError):
@@ -442,12 +418,6 @@ class _CapturedSourceFinder(importlib.abc.MetaPathFinder):
     def __init__(self, session):
         self.session = session
 
-    def find_distributions(self, context=None):
-        owner = self.session.setuptools_owner()
-        if (owner is None or getattr(owner, "state", "NEW") in {"NEW", "COMPLETE", "FAILED"}
-                or getattr(context, "name", None) != "setuptools"):
-            return ()
-        return owner.find_distributions(context)
 
     def find_spec(self, fullname, path=None, target=None):
         custody = _EXTERNAL_CUSTODY.get(self.session)
@@ -473,9 +443,8 @@ class _CapturedSourceFinder(importlib.abc.MetaPathFinder):
                 # poison. Topology integrity does not reopen session liveness.
                 for owner, method in topology[4]:
                     search = path
-                    initialization = self.session.setuptools_owner()
                     if owner is importlib.machinery.PathFinder and path is None:
-                        search = topology[2] if initialization is None else initialization.original_paths
+                        search = topology[2]
                     spec = method(fullname, search, target)
                     self.session.check_import_topology()
                     if spec is not None:
@@ -589,11 +558,6 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
         self.compiled_code = self.source_to_code(self.source, self.origin)
         return self.compiled_code
 
-    def get_resource_reader(self, fullname):
-        owner = self.admission.session.setuptools_owner()
-        if owner is None or self.name != "jaraco.text":
-            return None
-        return owner.resource_reader(fullname, self)
 
     def create_module(self, spec):
         marker, frame = None, None
@@ -643,7 +607,7 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
                            "leaf_event_index": None, "object_token": observation.token(module)})
 
     def exec_module(self, module):
-        marker, frame, failure = None, None, None
+        marker, frame = None, None
         try:
             marker = self.admission.enter_import_wrapper("delegate_entry")
             self._check()
@@ -680,22 +644,13 @@ class _ExternalSourceLoader(importlib.abc.SourceLoader):
             self.admission.stack.pop()
             record["state"] = "completed"
             self.admission.record("completed", self.name, "file_module")
-            owner = self.admission.session.setuptools_owner()
-            if owner is not None:
-                owner.after_file_complete(self.name, module, self)
         except BaseException as error:
-            failure = error
             self.admission.fail_native_call(frame)
             self.admission.fail(error, self.name, native_create=self.source is None)
             raise
         finally:
-            try:
-                owner = self.admission.session.setuptools_owner()
-                if owner is not None:
-                    owner.finish_file(self.name, failure)
-            finally:
-                if marker is not None:
-                    self.admission.leave_import_wrapper(marker)
+            if marker is not None:
+                self.admission.leave_import_wrapper(marker)
 
 
 class _ExternalAdmission:
@@ -1432,9 +1387,7 @@ class _ExternalAdmission:
         p = self.payload
         _require(
             self.roots == {r["id"]: r["path"] for r in p["roots"]}
-            and self.search_roots == self.environment.external_search_roots(
-                setuptools_active=self.session.setuptools_owner() is not None
-                and self.session.setuptools_owner().vendor_active)
+            and self.search_roots == self.environment.external_search_roots()
             and self.files == {(r["root"], r["path"]): r for r in p["files"]}
             and self.rules == {r["name"]: r for r in p["modules"]}
             and self.publications == {r["name"]: r for r in p["publications"]}
@@ -1491,10 +1444,6 @@ class _ExternalAdmission:
         parent = fullname.rpartition(".")[0]
         if not parent:
             return self.search_roots
-        if parent == "distutils" and self.environment.setuptools_initialization is not None:
-            owner = self.session.setuptools_owner()
-            _require(owner is not None, "setuptools alias parent outside initialization custody")
-            return owner.alias_path()
         _require(parent in self.records, "external parent was not admitted")
         parent_record = self.records[parent]
         if parent_record["kind"] == "namespace":
@@ -1514,18 +1463,6 @@ class _ExternalAdmission:
         try:
             self.check_live()
             _require(target is None and fullname not in self.records, "external reload or duplicate import")
-            if self.environment.setuptools_initialization is not None:
-                owner = self.session.setuptools_owner()
-                rule = self.rules.get(fullname)
-                namespace = self.namespaces.get(fullname)
-                reserved = fullname.partition(".")[0] in {"setuptools", "_distutils_hack", "distutils", "backports"}
-                vendor = rule is not None and rule["root"] == "setuptools_vendor"
-                vendor = vendor or namespace is not None and any(r["root"] == "setuptools_vendor" for r in namespace["locations"])
-                if reserved or vendor:
-                    _require(owner is not None, "setuptools dependency outside initialization custody")
-                    owner.check_import()
-                if fullname == "distutils":
-                    return owner.alias_specification(path, target)
             expected_paths = self._paths(fullname)
             _require(
                 path is None if not fullname.rpartition(".")[0] else tuple(path or ()) == expected_paths,
@@ -1993,10 +1930,6 @@ class _ExternalAdmission:
         record = self.records[name]
         _require(record["kind"] == "file_module", "intrinsic name requires a file record")
         actual = vars(record["module"]).get("__name__")
-        owner = self.session.setuptools_owner()
-        if name == "setuptools._distutils" and owner is not None and owner.source is record["module"] and owner.state != "SHIM_ACTIVE":
-            owner.check_source_metadata(intermediate=owner.state == "ALIAS_CREATED" and vars(record["module"]).get("__spec__") is owner.source_spec)
-            return
         expected = self.environment.expected_file_module_name(name)
         _require(type(actual) is str and actual == expected, "external intrinsic module name drift")
 
@@ -2006,14 +1939,6 @@ class _ExternalAdmission:
             self._check_replacement(name)
         else:
             _require(sys.modules.get(name) is record["module"], "external sys.modules identity drift")
-        owner = self.session.setuptools_owner()
-        if name == "distutils" and record["kind"] == "python_package_alias":
-            _require(owner is not None and record["module"] is owner.source, "setuptools alias owner changed")
-            owner.alias_path()
-            return
-        if name == "setuptools._distutils" and owner is not None and owner.source is record["module"] and owner.state != "SHIM_ACTIVE":
-            owner.check_source_metadata(intermediate=owner.state == "ALIAS_CREATED" and vars(record["module"]).get("__spec__") is owner.source_spec)
-            return
         if record["kind"] == "namespace":
             module, spec, loader = record["module"], self.specs[name], self.loaders[name]
             locations = tuple(
@@ -2191,128 +2116,10 @@ class _RuntimeSetupBinding:
         raise TypeError("runtime binding is frozen")
 
 
-class CudaExtensionSet:
-    """Session-issued module identities; construction never grants authority."""
-
-    __slots__ = ("session", "controller", "binding", "admission", "recipes")
-
-    def __init__(self):
-        raise TypeError("CUDA extension sets are issued by their source session")
-
-    def __setattr__(self, name, value):
-        raise TypeError("CUDA extension set is frozen")
-
-    def __delattr__(self, name):
-        raise TypeError("CUDA extension set is frozen")
 
 
-def _compiler_root(session):
-    record = _CUDA_COMPILATIONS.get(id(session))
-    if record is None:
-        return None
-    _require(record[0] is session, "compiler source identity reused")
-    return record[1]
 
 
-class _DirectExtensionLoader(importlib.abc.Loader):
-    """Fixed generated extension wrapper; direct ledger, never sys.modules publication."""
-
-    def __init__(self, compiler, delegate):
-        self.compiler, self.delegate = compiler, delegate
-
-    def _check(self, spec=None):
-        compiler = self.compiler
-        compiler.audit()
-        live = compiler.live[compiler.index]
-        row = compiler.rows[compiler.index]
-        _require(live["wrapper"] is self and live["delegate"] is self.delegate
-                 and type(self.delegate) is importlib.machinery.ExtensionFileLoader
-                 and self.delegate.name == row["recipe_id"] and self.delegate.path == row["artifact"]["path"]
-                 and (spec is None or spec is live["spec"]), "direct extension loader identity changed")
-        path = Path(row["artifact"]["path"])
-        _require(not path.is_symlink() and path.is_file()
-                 and path.read_bytes() == live["generated"][row["recipe_id"] + ".so"],
-                 "generated extension bytes changed before native load")
-
-    def create_module(self, spec):
-        compiler = self.compiler
-        try:
-            self._check(spec)
-            compiler._enter("cuda_extension_create")
-            helper = compiler.session.modules["optical_worker.cuda_compilation"][0]
-            return helper._cuda_extension_create_exact(
-                compiler.module, compiler.target, compiler.stream, self.delegate, spec, compiler)
-        except BaseException as error:
-            compiler.failed(error)
-            if not compiler.live[compiler.index]["create_returned"]:
-                compiler.controller.mark_unknown_device_scope(source="cuda_extension_create", reason="native_create_did_not_return")
-            raise
-
-    def exec_module(self, module):
-        compiler = self.compiler
-        try:
-            self._check()
-            _require(module is compiler.live[compiler.index]["module"], "direct exec module substitution")
-            compiler.audit_module(compiler.index)
-            compiler._enter("cuda_extension_exec")
-            helper = compiler.session.modules["optical_worker.cuda_compilation"][0]
-            helper._cuda_extension_exec_exact(compiler.module, compiler.target, compiler.stream, self.delegate, module)
-            compiler.audit_module(compiler.index)
-            compiler._step("exec_completed")
-        except BaseException as error:
-            compiler.failed(error)
-            raise
-
-
-class _CompileCustodyRoot:
-    """One guardian-held retention root; tokens remain in _RuntimeObservation."""
-
-    def __init__(self, session, input_record, input_trace, deployment):
-        self.session = session
-        self.input_record = input_record
-        self.input_bytes = input_record.encoded
-        self.input_payload = input_record.to_payload()
-        self.input_trace = tuple(input_trace)
-        self.input_objects = {row["token"]: dict(row) for row in self.input_payload["objects"]}
-        self.deployment = deployment
-        self.root_token = None
-        self.held, self.issued = [], []
-        self.collector = None
-
-    def retain(self, token, owner):
-        if owner is self or token in self.input_objects:
-            return
-        for old_token, old_owner, _ in self.issued:
-            if old_token == token:
-                _require(old_owner is owner, "compiler retention token changed identity")
-                return
-        # Strong hold precedes every fallible journal/adoption operation.
-        slot = len(self.held)
-        self.held.append(owner)
-        observation = self.session.runtime_observation
-        index = len(observation.journal)
-        self.issued.append((token, owner, index))
-        _require(self.root_token is not None, "compiler root was not registered")
-        observation.append("compile_owner_retained", {
-            "root_token": self.root_token, "owner_token": token, "slot": slot,
-        })
-
-    def audit_retention(self):
-        _require(_compiler_root(self.session) is self, "compiler root identity changed")
-        observation = self.session.runtime_observation
-        _require(self.input_record.encoded == self.input_bytes
-                 and self.input_payload == self.input_record.to_payload(), "immutable input cut changed")
-        _require(tuple(self.session.trace[:len(self.input_trace)]) == self.input_trace,
-                 "input source trace prefix changed")
-        _require(len(self.held) == len(self.issued), "compiler retention issuance interrupted")
-        for slot, (token, owner, index) in enumerate(self.issued):
-            observed = observation.owners.get(id(owner))
-            _require(self.held[slot] is owner and observed is not None and observed[0] == token and observed[1] is owner,
-                     "compiler retained object identity changed")
-            event = observation.journal[index]
-            _require(event["kind"] == "compile_owner_retained" and event["details"] == {
-                "root_token": self.root_token, "owner_token": token, "slot": slot,
-            }, "compiler retention occurrence changed")
 
 
 class _RuntimeObservation:
@@ -2332,15 +2139,9 @@ class _RuntimeObservation:
         previous = self.owners.get(key)
         if previous is not None:
             _require(previous[1] is owner, "runtime observation object identity reused")
-            root = _compiler_root(self.session)
-            if root is not None:
-                root.retain(previous[0], owner)
             return previous[0]
         token = len(self.owners) + 1
         self.owners[key] = (token, owner)
-        root = _compiler_root(self.session)
-        if root is not None:
-            root.retain(token, owner)
         return token
 
     def append(self, kind, details):
@@ -2426,7 +2227,6 @@ class _RuntimeObservation:
         }
 
     def checkpoint(self):
-        _require(_compiler_root(self.session) is None, "input checkpoint cannot consume compilation suffix")
         _require(self.environment is not None and self.inputs is not None, "runtime custody inputs missing")
         module = self.session.modules["optical_worker.runtime_custody"][0]
         record = module.RuntimeCustodyRecord.from_payload(
@@ -2516,79 +2316,16 @@ class _SourceSession:
                 | _EXTERNAL_CONTRACT_DEFINITIONS
                 | _MATERIALIZATION_SOURCES
             )
-            if self.phase in {"validating_input", "input_validated"} | _CUDA_COMPILATION_PHASES:
+            if self.phase in {"validating_input", "input_validated"}:
                 admitted = admitted | _VALIDATION_SOURCES
-            if self.phase in _CUDA_COMPILATION_PHASES:
-                _require(self.lane == "cuda", "CUDA compilation source closure on another lane")
-                admitted = admitted | _CUDA_COMPILATION_SOURCES
             if self.lane == "cuda" and self.phase not in {"materializing", "materialized"}:
                 admitted = admitted | _CUDA_ARTIFACT_SOURCES
             return admitted
         raise SourceBootstrapError("invalid CPU source phase")
 
-    def setuptools_owner(self):
-        binding = _SETUPTOOLS_CUSTODY.get(self)
-        if binding is None:
-            return None
-        owner, owner_type = binding[:2]
-        _require(type(owner) is owner_type, "setuptools issued owner type changed")
-        return owner
 
-    def setuptools_binding(self, owner):
-        binding = _SETUPTOOLS_CUSTODY.get(self)
-        _require(binding is not None and binding[0] is owner and type(owner) is binding[1],
-                 "setuptools owner was not issued by this session")
-        _, _, root, admission, controller, thread, paths, path_object = binding
-        external = _EXTERNAL_CUSTODY.get(self)
-        _require(_compiler_root(self) is root and external is not None and external[0] is admission
-                 and external[3] is controller and self.bound_controller() is controller,
-                 "setuptools source/compilation custody changed")
-        if "original_paths" in vars(owner):
-            _require(owner.original_paths == paths and owner.path_object is path_object,
-                     "setuptools original topology changed")
-        return root, admission, controller, thread
 
-    def begin_setuptools_initialization(self, run_root):
-        self.check_live()
-        root = _compiler_root(self)
-        _require(root is not None and root.collector is not None and root.collector.toolchain.inventory_checked,
-                 "setuptools requires the inventoried compilation root")
-        controller = self.bound_controller()
-        controller._require_setup()
-        _require(controller._guard_reference == {"sequence": 6, "role": "setup"}
-                 and self not in _SETUPTOOLS_CUSTODY, "setuptools initialization is single-use at guard6")
-        from optical_worker.setuptools_admission import _SetuptoolsInitialization
 
-        owner = object.__new__(_SetuptoolsInitialization)
-        # The existing token path holds even an uninitialized or unadopted owner.
-        self.runtime_observation.token(owner)
-        _SETUPTOOLS_CUSTODY[self] = (owner, _SetuptoolsInitialization, root,
-                                    _EXTERNAL_CUSTODY[self][0], controller, _thread.get_ident(),
-                                    tuple(sys.path), sys.path)
-        try:
-            _SetuptoolsInitialization.__init__(owner, self, run_root)
-            controller.adopt_host_owner(owner, role="setuptools_initialization", operation_id="setuptools_initialization")
-            self.runtime_observation.freeze_adoptions()
-            owner.begin()
-            return owner
-        except BaseException as error:
-            if "state" in vars(owner):
-                owner.fail(error)
-            else:
-                self.fail(error)
-            raise
-
-    def activate_setuptools_vendor(self, owner):
-        self.setuptools_binding(owner)
-        topology = self.check_import_topology()
-        _require(owner.state == "NEW" and not owner.vendor_active and owner.original_paths == topology[2]
-                 and sys.path is owner.path_object and owner.vendor_path not in sys.path,
-                 "setuptools topology transition repeated or changed")
-        sys.path.append(owner.vendor_path)
-        _IMPORT_TOPOLOGIES[self] = topology[:2] + (owner.active_paths,) + topology[3:]
-        owner.vendor_active = True
-        owner.admission.search_roots = owner.admission.environment.external_search_roots(setuptools_active=True)
-        self.check_import_topology()
 
     def retain_import_boundary(self):
         # Intake only: no validation, adoption, event or terminal operation.
@@ -2610,9 +2347,6 @@ class _SourceSession:
         self.failed = True
         if not any(value is error for value in self.failures):
             self.failures.append(error)
-        initialization = self.setuptools_owner()
-        if initialization is not None and "state" in vars(initialization):
-            initialization.fail(error)
         if _SOURCE_CUSTODY.get(self) is not None:
             try:
                 observation = self.runtime_observation
@@ -2738,6 +2472,9 @@ class _SourceSession:
             from optical_worker.runtime_custody import validate_runtime_custody_inputs
             from optical_worker.runtime_environment import RuntimeEnvironmentContract
 
+            _require(type(environment_payload) is dict
+                     and environment_payload.get("schema_version") == "q54.p12.4.runtime-environment.v5",
+                     "worker runtime requires the ordinary v5 environment")
             environment = RuntimeEnvironmentContract.from_payload(environment_payload)
             validate_runtime_custody_inputs(trusted_launch_inputs, environment)
             observation = self.runtime_observation
@@ -2825,6 +2562,9 @@ class _SourceSession:
                 self.phase = "configuring_runtime"
                 from optical_worker.runtime_environment import RuntimeEnvironmentContract
 
+                _require(type(environment_payload) is dict
+                         and environment_payload.get("schema_version") == "q54.p12.4.runtime-environment.v5",
+                         "worker runtime requires the ordinary v5 environment")
                 environment = RuntimeEnvironmentContract.from_payload(environment_payload)
                 _require(
                     not any(
@@ -3083,6 +2823,7 @@ class _SourceSession:
             raise
 
     def _cuda_artifact_runtime(self, name):
+        from optical_worker.native_setup import _CUDA_EXTENSION_SETS
         from optics.cuda_extension_recipes import cuda_extension_recipe
 
         cuda_extension_recipe(name)
@@ -3124,11 +2865,12 @@ class _SourceSession:
         from optical_worker.native_setup import _cuda_artifact_exec_exact
 
         module, target, stream = self._cuda_artifact_runtime(loader.name)
-        self._cuda_artifact_leaf(loader.name, "exec")
+        self._cuda_artifact_leaf(loader.name, _NATIVE_EXEC_OPERATION)
         _cuda_artifact_exec_exact(module, target, stream, loader.delegate, extension)
 
     def _bind_cuda_artifacts(self):
-        from optics.cuda_extension_recipes import CUDA_EXTENSION_RECIPES
+        from optical_worker.native_setup import CudaExtensionSet, _CUDA_EXTENSION_SETS
+        from optics.cuda_extension_recipes import CUDA_EXTENSION_RECIPES, cuda_extension_entries
 
         for recipe in CUDA_EXTENSION_RECIPES:
             self._cuda_artifact_runtime(recipe.name)
@@ -3152,15 +2894,12 @@ class _SourceSession:
                      "CUDA artifact has not completed ordinary admission")
             spec, delegate = admission.specs[recipe.name], wrapper.delegate
             controller.require_adopted(module, spec, delegate)
-            entries, entry_rows = [], []
-            for name in recipe.entries:
-                entry = vars(module).get(name)
-                self.runtime_owners.append(entry)
-                _require(callable(entry) and entry.__module__ == recipe.name and entry.__name__ == name,
-                         "CUDA artifact entry identity differs from its fixed ABI")
+            self.runtime_owners.extend(vars(module).get(name) for name in recipe.entries)
+            entries = cuda_extension_entries(module, recipe.name)
+            entry_rows = []
+            for name, entry in zip(recipe.entries, entries, strict=True):
                 controller.adopt_host_owner(entry, role="cuda_artifact_entry",
                                             operation_id=recipe.name + ".entry." + name)
-                entries.append(entry)
                 entry_rows.append({"name": name, "token": observation.token(entry)})
             rows.append((recipe.name, module, spec, delegate, tuple(entries)))
             evidence.append({"name": recipe.name, "module_token": observation.token(module),
@@ -3180,7 +2919,8 @@ class _SourceSession:
     def require_cuda_extension(self, owner, recipe_name):
         """Return only the module issued to this exact live source/runtime graph."""
         try:
-            from optics.cuda_extension_recipes import cuda_extension_recipe
+            from optical_worker.native_setup import CudaExtensionSet, _CUDA_EXTENSION_SETS
+            from optics.cuda_extension_recipes import cuda_extension_recipe, cuda_extension_entries
 
             recipe = cuda_extension_recipe(recipe_name)
             self.check_live()
@@ -3200,15 +2940,23 @@ class _SourceSession:
                          and self.external.records[name]["module"] is module
                          and self.external.specs[name] is spec and self.external.loaders[name].delegate is delegate,
                          "CUDA extension set file identity drift")
-                fixed_recipe = cuda_extension_recipe(name)
-                for entry_name, entry in zip(fixed_recipe.entries, entries, strict=True):
-                    _require(vars(module).get(entry_name) is entry and entry.__module__ == name
-                             and entry.__name__ == entry_name, "CUDA extension set entry was replaced")
+                actual_entries = cuda_extension_entries(module, name)
+                _require(all(actual is original for actual, original in zip(actual_entries, entries, strict=True)),
+                         "CUDA extension set entry was replaced")
                 controller.require_adopted(module, spec, delegate, *entries)
             return next(row[1] for row in rows if row[0] == recipe.name)
         except BaseException as error:
             self.fail(error)
             raise
+
+    def cuda_extensions(self):
+        from optical_worker.native_setup import _CUDA_EXTENSION_SETS
+
+        self.check_live()
+        registered = _CUDA_EXTENSION_SETS.get(self)
+        _require(registered is not None, "this session has no issued CUDA extension set")
+        self.require_cuda_extension(registered[0], "robot_sim_cuda_scene_v1")
+        return registered[0]
 
     def _consume_runtime_binding(self, binding):
         self.check_live()
@@ -3370,102 +3118,13 @@ class _SourceSession:
             self.fail(error)
             raise
 
-    def compile_cuda_extensions(self, deployment_payload):
-        """Fixed three-recipe prefix, before readiness or any optical entry call."""
-        root = None
-        try:
-            self.check_live()
-            _require(self.lane == "cuda" and self.phase == "input_validated"
-                     and _compiler_root(self) is None, "CUDA compilation predecessor or repeated build")
-            self.audit()
-            self.external.audit()
-            observation = self.runtime_observation
-            input_record = observation.checkpoint()
-            contract = self.modules["optical_worker.compilation_contract"][0]
-            summary = input_record.to_payload()["summary"]
-            _require(summary["successful_guard_sequences"] == list(range(len(contract.INPUT_PHASES)))
-                     and summary["input_validation_observed"] and not summary["final_execution_readiness_issued"],
-                     "compilation requires the complete immutable input cut")
-            controller = self.bound_controller()
-            runtime_record, prepared = _UPLOADED_INPUTS[self]
-            _require(prepared is self.prepared_input, "compiled input was replaced")
-            module, target, stream = self._validate_runtime_binding_record(runtime_record[0], runtime_record)
-            frozen_trace = tuple(self.trace)
-            for index, (predecessor, compiling, completed) in enumerate(contract.CUDA_SOURCE_PHASES):
-                _require(self.phase == predecessor, "compiler source phase skipped or repeated")
-                with controller.segment("setup"):
-                    _require(controller._guard_reference == {
-                        "sequence": contract.CUDA_COMPILE_SEQUENCES[index], "role": "setup",
-                    }, "compiler guard sequence differs from fixed phase table")
-                    self.phase = compiling
-                    if index == 0:
-                        root = _CompileCustodyRoot(self, input_record, frozen_trace, deployment_payload)
-                        self.runtime_owners.append(root)
-                        controller.adopt_host_owner(root, role="cuda_compile_custody", operation_id="cuda_compile_custody")
-                        _CUDA_COMPILATIONS[id(self)] = (self, root)
-                        root.root_token = observation.token(root)
-                        observation.append("compile_root_registered", {"root_token": root.root_token})
-                        from optical_worker.cuda_compilation import _create_compilation
 
-                        root.collector = _create_compilation(self, root, runtime_record, module, target, stream)
-                    root.collector.compile_recipe(index)
-                    root.audit_retention()
-                    self.audit()
-                    self.external.audit()
-                self.phase = completed
-                root.collector.guard_completed(index)
-                root.collector.checkpoint()
-            return root.collector.compiled_owners()
-        except BaseException as error:
-            if root is not None and root.collector is not None:
-                try:
-                    root.collector.failed(error)
-                except BaseException as diagnostic:
-                    self.runtime_owners.append(diagnostic)
-            self.fail(error)
-            raise
-
-    def load_compiled_extension(self, compiler, artifact):
-        """The sole additional importlib boundary, tied to actual compiler custody."""
-        root = _compiler_root(self)
-        helper = self.modules["optical_worker.cuda_compilation"][0]
-        _require(root is not None and root.collector is compiler and type(compiler) is helper._Compilation
-                 and helper._COMPILATIONS.get(self) is compiler, "foreign direct compiler owner")
-        compiler.audit()
-        index = compiler.index
-        row = compiler.rows[index]
-        _require(artifact is row["artifact"] and compiler.steps[index] == ["build_entered", "generated"],
-                 "direct loading outside generated recipe")
-        name, path = row["recipe_id"], artifact["path"]
-        _require(name not in sys.modules and compiler.live[index]["module"] is None, "direct module already exists")
-        # Retention precedes spec creation and explicit adoptions, either of
-        # which can fail without returning a complete loader stack.
-        delegate = importlib.machinery.ExtensionFileLoader(name, path)
-        compiler._retain(delegate)
-        wrapper = _DirectExtensionLoader(compiler, delegate)
-        compiler._retain(wrapper)
-        spec = importlib.util.spec_from_file_location(name, path, loader=wrapper)
-        compiler._retain(spec)
-        _require(spec is not None, "generated extension lacks a loader spec")
-        compiler.create_entered(spec, delegate, wrapper)
-        module = importlib.util.module_from_spec(spec)
-        _require(module is compiler.live[index]["module"], "module_from_spec changed retained native return")
-        wrapper.exec_module(module)
-        return module
 
     def check_import_topology(self):
         """Pure CPU integrity, also usable by terminal stdlib after poison."""
         topology = _IMPORT_TOPOLOGIES.get(self)
         _require(topology is not None, "source import topology was not installed")
         chain, finder, paths, hooks, delegates, names, generated = topology
-        initialization = _SETUPTOOLS_CUSTODY.get(self)
-        if initialization is not None:
-            owner, owner_type, _, _, _, _, original_paths, path_object = initialization
-            _require(type(owner) is owner_type and sys.path is path_object,
-                     "setuptools import path object changed")
-            if "original_paths" in vars(owner):
-                _require(owner.original_paths == original_paths and owner.path_object is path_object,
-                         "setuptools interpreter search path changed")
         _require("_PYTHON_SYSCONFIGDATA_NAME" not in os.environ, "sysconfig name override forbidden")
         _require(generated[0] == _generated_interpreter_identity(), "generated interpreter identity drift")
         _require(

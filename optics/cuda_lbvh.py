@@ -6,32 +6,18 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass, replace
-from functools import lru_cache
 
 from ._cuda_lbvh_source import CPP_SOURCE, CUDA_SOURCE
-from .cuda_extension_recipes import cuda_extension_kwargs
+from .cuda_extension_loading import load_cuda_extension
 from .cuda_scene import CudaWorldSceneBuffers
-from .device_bvh import DeviceBvhBuildStats, DeviceOpticalBvh
-from .device_scene import DeviceOpticalSceneSnapshot
 
 try:  # pragma: no cover - exercised in CUDA extension environments.
     import torch
-    from torch.utils.cpp_extension import load_inline
 
     _HAS_TORCH_CUDA_LBVH_DEPS = True
 except Exception:  # pragma: no cover - keep CPU-only imports working.
     torch = None
-    load_inline = None
     _HAS_TORCH_CUDA_LBVH_DEPS = False
-
-try:  # pragma: no cover - compatibility facade only.
-    import warp as wp
-
-    _HAS_WARP_COMPAT = True
-except Exception:  # pragma: no cover - core CUDA path does not require Warp.
-    wp = None
-    _HAS_WARP_COMPAT = False
-
 
 CUDA_LBVH_ACCELERATION_ID = "cuda_morton_karras_lbvh_rebuild_v1"
 CUDA_LBVH_OPERATION_ID = "cuda_lbvh_scene_bounds_morton_sort_topology_bounds_out_v1"
@@ -209,13 +195,20 @@ def cuda_lbvh_workspace_requirements(
 ) -> CudaLbvhWorkspaceRequirements:
     """Query CUB scratch size outside native timing for one indexed device."""
 
+    _validate_workspace_request(primitive_count, device_ordinal)
+    return _query_workspace_requirements(_load_cuda_lbvh_extension(), primitive_count, device_ordinal)
+
+
+def _validate_workspace_request(primitive_count, device_ordinal):
     _require_torch_cuda_lbvh()
     _validate_primitive_count(primitive_count)
     if not isinstance(device_ordinal, int) or isinstance(device_ordinal, bool):
         raise TypeError("device_ordinal must be an integer")
     if device_ordinal < 0 or device_ordinal >= torch.cuda.device_count():
         raise ValueError("device_ordinal is out of range")
-    module = _load_cuda_lbvh_extension()
+
+
+def _query_workspace_requirements(module, primitive_count, device_ordinal):
     with torch.cuda.device(device_ordinal):
         reduction_bytes, radix_bytes, alignment_bytes = module.cuda_lbvh_workspace_requirements(
             primitive_count, device_ordinal
@@ -391,18 +384,19 @@ class CudaLbvhRebuildStageFactory:
         native_input_manifest_sha256: str,
         scene_contract_sha256: str,
         input_contract: str,
+        extensions=None,
     ) -> "CudaLbvhRebuildStageFactory":
         """Load the extension and freeze workspace requirements outside timing."""
 
-        requirements = cuda_lbvh_workspace_requirements(
-            primitive_count,
-            int(getattr(context.device, "index", -1)),
-        )
+        ordinal = int(getattr(context.device, "index", -1))
+        _validate_workspace_request(primitive_count, ordinal)
+        module = _load_cuda_lbvh_extension(extensions=extensions, context=context)
+        requirements = _query_workspace_requirements(module, primitive_count, ordinal)
         return cls(
             context=context,
             primitive_count=primitive_count,
             requirements=requirements,
-            module=_load_cuda_lbvh_extension(),
+            module=module,
             native_input_manifest_sha256=native_input_manifest_sha256,
             scene_contract_sha256=scene_contract_sha256,
             input_contract=input_contract,
@@ -950,9 +944,11 @@ def build_cuda_lbvh_from_snapshot(
 ) -> DeviceOpticalBvh:
     """Allocating Warp/Torch compatibility facade; never native-benchmark eligible."""
 
+    import warp as wp
+    from .device_bvh import DeviceBvhBuildStats, DeviceOpticalBvh
+
     total_start = time.perf_counter()
     _require_torch_cuda_lbvh()
-    _require_warp_compat()
     if snapshot.triangle_aabb_min is None or snapshot.triangle_aabb_max is None:
         raise ValueError("build_cuda_lbvh_from_snapshot requires AABB snapshot buffers")
     wp.init()
@@ -1109,19 +1105,14 @@ def build_cuda_lbvh_from_snapshot(
     )
 
 
-@lru_cache(maxsize=1)
-def _load_cuda_lbvh_extension():
-    _require_torch_cuda_lbvh()
-    return load_inline(**cuda_extension_kwargs('robot_sim_cuda_lbvh_native_v3'))
+def _load_cuda_lbvh_extension(*, extensions=None, context=None):
+    if extensions is None:
+        _require_torch_cuda_lbvh()
+    return load_cuda_extension("robot_sim_cuda_lbvh_native_v3", extensions=extensions, context=context)
 
 
 def _require_torch_cuda_lbvh() -> None:
     if not _HAS_TORCH_CUDA_LBVH_DEPS:
-        raise ImportError("CUDA LBVH rebuild requires Torch CUDA extension tooling")
+        raise ImportError("CUDA LBVH rebuild requires PyTorch")
     if not torch.cuda.is_available():
         raise ImportError("CUDA LBVH rebuild requires Torch CUDA availability")
-
-
-def _require_warp_compat() -> None:
-    if not _HAS_WARP_COMPAT:
-        raise ImportError("legacy CUDA LBVH compatibility requires Warp")

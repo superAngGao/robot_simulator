@@ -15,7 +15,6 @@ from email.parser import BytesParser
 from functools import lru_cache
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from .compilation_contract import setuptools_initialization_descriptor
 from .protocol import canonical_json_bytes, decode_canonical_message
 
 # Existing callers/fixtures still author the unchanged v5 input contract.
@@ -451,6 +450,8 @@ def _validate(payload: object) -> None:
 
 def _validate_setuptools_profile(p, roots, root_kinds, files, modules, declared):
     """One pinned package layout; presence of facts is not import authority."""
+    from .historical.compilation_contract import setuptools_initialization_descriptor
+
     expected = setuptools_initialization_descriptor()
     _require(p["setuptools_initialization"] == expected, "unknown setuptools initialization descriptor")
     _require(p["interpreter"]["version"] == [3, 12, 13], "setuptools profile requires pinned interpreter")

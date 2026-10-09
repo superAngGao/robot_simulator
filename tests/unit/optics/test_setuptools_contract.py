@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from optical_worker.compilation_contract import (
+from optical_worker.historical.compilation_contract import (
     SETUPTOOLS_ALIAS_ACTIONS,
     SETUPTOOLS_HELPER_BINDINGS,
     setuptools_event_fields,

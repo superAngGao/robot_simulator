@@ -12,8 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from optical_worker.compilation_contract import setuptools_initialization_descriptor, setuptools_role_anchor
-from optical_worker.cuda_compilation_evidence import _CompilationReplay, validate_cuda_compilation_selection
+from optical_worker.historical.compilation_contract import setuptools_initialization_descriptor, setuptools_role_anchor
+from optical_worker.historical.cuda_compilation_evidence import _CompilationReplay, validate_cuda_compilation_selection
 from optical_worker.lifecycle import HOST_OWNER, NativeWorkerResourceGuardian
 from optical_worker.protocol import canonical_json_bytes
 from optical_worker.runtime_custody import _DETAIL_FIELDS
@@ -41,7 +41,7 @@ class Journal:
 
     def reader(self):
         r = object.__new__(_CompilationReplay)
-        r.root = {"journal": self.events}
+        r.root = {"schema_version": "q54.p12.4.runtime-custody.v2", "journal": self.events}
         r.environment = SimpleNamespace(setuptools_initialization=self.descriptor)
         r.inputs = {"interpreter_alias": {"interpreter_identity": [None] * 6 + ["posix"]}}
         r.roots, r.files, r.rules = self.roots, self.files, self.rules
@@ -188,7 +188,7 @@ def journal():
 def replay(journal, events=None):
     reader = journal.reader()
     events = journal.events if events is None else events
-    reader.root = {"journal": events}
+    reader.root = {"schema_version": "q54.p12.4.runtime-custody.v2", "journal": events}
     for event in events:
         reader.apply_continuation(event)
     return reader

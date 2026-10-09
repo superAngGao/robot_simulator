@@ -1,9 +1,6 @@
-"""Inert fixed compilation phases and evidence vocabulary; no build authority."""
+"""Archived worker-JIT evidence vocabulary; no live worker/build authority."""
 
-INPUT_PHASES = (
-    "setup_definitions", "external_environment", "canonical_materialization",
-    "runtime_initialization", "native_upload", "input_validation",
-)
+from ..runtime_phases import INPUT_PHASES
 CUDA_COMPILE_PHASES = (
     "cuda_scene_compile", "cuda_lbvh_compile", "cuda_direct_light_compile",
 )

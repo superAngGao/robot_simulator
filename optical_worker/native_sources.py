@@ -24,7 +24,7 @@ from .protocol import (
 
 NATIVE_SOURCE_CATALOG_VERSION = "q54.p12.4.native-component-source-catalog.v7"
 NATIVE_SOURCE_SNAPSHOT_VERSION = "q54.p12.4.native-component-source-snapshot.v1"
-CATALOG_PATH = "optical_worker/data/native_sources/v13.json"
+CATALOG_PATH = "optical_worker/data/native_sources/v14.json"
 
 # Deliberate literal inventory, not filesystem discovery. Includes eager
 # physics/sensing package initialization, even where the requested leaf is CPU.
@@ -34,7 +34,7 @@ _COMMON = (
     "optical_worker/assets.py",
     "optical_worker/camera_contract.py",
     "optical_worker/cases.py",
-    "optical_worker/compilation_contract.py",
+    "optical_worker/runtime_phases.py",
     "optical_worker/guarded_evidence.py",
     "optical_worker/guarded_lifecycle.py",
     "optical_worker/lane_contract.py",
@@ -105,14 +105,12 @@ _COMMON = (
 )
 _WARP = ("optics/warp_native_render.py",)
 _CUDA = (
-    "optical_worker/cuda_compilation.py",
-    "optical_worker/cuda_compilation_evidence.py",
-    "optical_worker/setuptools_admission.py",
     "optics/_cuda_direct_light_source.py",
     "optics/_cuda_lbvh_source.py",
     "optics/_cuda_scene_source.py",
     "optics/cuda_arena.py",
     "optics/cuda_direct_light.py",
+    "optics/cuda_extension_loading.py",
     "optics/cuda_extension_recipes.py",
     "optics/cuda_lbvh.py",
     "optics/cuda_scene.py",

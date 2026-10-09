@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from optical_worker.protocol import canonical_sha256
-from optical_worker.compilation_contract import setuptools_initialization_descriptor
+from optical_worker.historical.compilation_contract import setuptools_initialization_descriptor
 from optical_worker.runtime_environment import (
     RUNTIME_ENVIRONMENT_VERSION, RUNTIME_ENVIRONMENT_COMPILATION_VERSION, RuntimeEnvironmentContract,
 )

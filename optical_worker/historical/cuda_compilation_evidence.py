@@ -1,4 +1,4 @@
-"""CUDA compilation continuation records. Parsing never issues a compiled owner."""
+"""Archived CUDA JIT continuation records. Parsing never issues a live owner."""
 
 from __future__ import annotations
 
@@ -16,13 +16,16 @@ from .compilation_contract import (
     CUDA_LEGACY_CONTINUATION_SOURCE_MODULES, SETUPTOOLS_ORDERED_ACTIONS,
     cuda_native_operation, cuda_role_anchor, setuptools_event_fields, setuptools_role_anchor,
 )
-from .lifecycle import HOST_OWNER
-from .protocol import canonical_json_bytes, decode_canonical_message
-from .runtime_custody import (
-    PHASES, RUNTIME_CUSTODY_VERSION, RuntimeCustodyRecord, _DETAIL_FIELDS,
+from ..lifecycle import HOST_OWNER
+from ..protocol import canonical_json_bytes, decode_canonical_message
+from ..runtime_custody import (
+    PHASES, RuntimeCustodyRecord, _DETAIL_FIELDS,
     _RuntimeReplay, _digest, _integer, _require,
 )
-from .wait_protocol import exact_fields
+from ..wait_protocol import exact_fields
+
+# Archived compilation records predate ordinary artifact binding in v3.
+RUNTIME_CUSTODY_VERSION = "q54.p12.4.runtime-custody.v2"
 
 _FIELDS = {
     "compile_root_registered": {"root_token"},

@@ -6,32 +6,25 @@ import math
 import struct
 import time
 from dataclasses import dataclass
-from functools import lru_cache
 
 import numpy as np
 
 from ._cuda_direct_light_source import CPP_SOURCE as _CPP_SOURCE, CUDA_SOURCE as _CUDA_SOURCE
-from .cuda_extension_recipes import cuda_extension_kwargs
+from .cuda_extension_loading import load_cuda_extension
 
 from sensing.optical import OpticalPinholeCameraSpec, OpticalRaySensorSpec
 
 from .cuda_timeline import CudaOpticalExecutionContext, CudaOpticalTransaction
-from .device_bvh import DeviceOpticalBvh
 from .device_channel import channel_to_torch
-from .device_scene import DeviceOpticalSceneSnapshot
 from .execution import OpticalComputeResult, OpticalOutputProfile, normalize_output_profile
 from .output_contract import SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES
 
 try:  # pragma: no cover - exercised in CUDA extension environments.
     import torch
-    import warp as wp
-    from torch.utils.cpp_extension import load_inline
 
     _HAS_CUDA_DIRECT_LIGHT_DEPS = True
 except Exception:  # pragma: no cover - keeps CPU-only imports working.
     torch = None
-    wp = None
-    load_inline = None
     _HAS_CUDA_DIRECT_LIGHT_DEPS = False
 
 _DIR_EPS = 1.0e-8
@@ -40,6 +33,7 @@ _MAX_BVH_STACK = 32
 _INT32_MAX = (1 << 31) - 1
 _INT64_MAX = (1 << 63) - 1
 _SHADOW_TRAVERSAL_COUNTER_CHANNELS = SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES
+_PREPARED_EXTENSION_TOKEN = object()
 
 
 @dataclass(frozen=True)
@@ -292,13 +286,17 @@ class CudaDirectLightBuffers:
 class CudaDirectLightNativeRenderer:
     """Prepared CUDA extension bound to one explicit execution context."""
 
-    def __init__(self, *, context: CudaOpticalExecutionContext, module: object) -> None:
+    def __init__(self, *, context: CudaOpticalExecutionContext, module: object,
+                 _prepared_extension_token=None) -> None:
+        if _prepared_extension_token is not _PREPARED_EXTENSION_TOKEN:
+            raise TypeError("use prepare() to resolve the CUDA direct-light extension")
         self.context = context
         self.module = module
 
     @classmethod
-    def prepare(cls, context: CudaOpticalExecutionContext) -> "CudaDirectLightNativeRenderer":
-        return cls(context=context, module=_load_cuda_direct_light_extension())
+    def prepare(cls, context: CudaOpticalExecutionContext, *, extensions=None) -> "CudaDirectLightNativeRenderer":
+        return cls(context=context, module=_load_cuda_direct_light_extension(extensions=extensions, context=context),
+                   _prepared_extension_token=_PREPARED_EXTENSION_TOKEN)
 
     def bind_first_hit(
         self,
@@ -1135,6 +1133,8 @@ class CudaDeviceBvhOpticalExecutor:
     supported_profiles = frozenset({OpticalOutputProfile.GEOMETRY_FULL})
 
     def __init__(self, *, device=None) -> None:
+        import warp as wp
+
         _require_cuda_direct_light_deps()
         wp.init()
         self.device = wp.get_device("cuda:0" if device is None else device)
@@ -1361,6 +1361,8 @@ class CudaDeviceBvhDirectLightOpticalExecutor:
         background_rgb: tuple[float, float, float] = (0.0, 0.0, 0.0),
         shadow_bias: float = 1.0e-6,
     ) -> None:
+        import warp as wp
+
         _require_cuda_direct_light_deps()
         wp.init()
         self.device = wp.get_device("cuda:0" if device is None else device)
@@ -1658,13 +1660,15 @@ def cuda_direct_light_available() -> bool:
 
 def _require_cuda_direct_light_deps() -> None:
     if not _HAS_CUDA_DIRECT_LIGHT_DEPS:
-        raise ImportError("CUDA direct-light executor requires torch, warp, and torch CUDA extension tooling")
+        raise ImportError("CUDA direct-light executor requires PyTorch")
     if not torch.cuda.is_available():
         raise ImportError("CUDA direct-light executor requires torch CUDA availability")
 
 
 def _synchronize_ready_event(event: object | None) -> None:
     if event is not None:
+        import warp as wp
+
         wp.synchronize_event(event)
 
 
@@ -1687,7 +1691,7 @@ def _filter_channels_for_profile(
     return {name: value for name, value in channels.items() if name in guaranteed}
 
 
-@lru_cache(maxsize=1)
-def _load_cuda_direct_light_extension():
-    _require_cuda_direct_light_deps()
-    return load_inline(**cuda_extension_kwargs('robot_sim_cuda_direct_light_v8'))
+def _load_cuda_direct_light_extension(*, extensions=None, context=None):
+    if extensions is None:
+        _require_cuda_direct_light_deps()
+    return load_cuda_extension("robot_sim_cuda_direct_light_v8", extensions=extensions, context=context)

@@ -337,35 +337,6 @@ def _persist_final_runtime_custody(directory, session):
     _persist_runtime_custody(directory, record, dict(selection, failure_diagnostic_present=diagnostic_present))
 
 
-def _persist_compilation_custody(directory, session, entry):
-    # The original input record stays an immutable companion. Never feed the
-    # compilation suffix to the old input-only final() grammar.
-    root = entry._compiler_root(session)
-    collector = None if root is None else root.collector
-    if collector is None:
-        contract = session.modules["optical_worker.compilation_contract"][0]
-        record, selection = None, {
-            "schema_version": contract.CUDA_COMPILATION_SELECTION_VERSION,
-            "selection": "unavailable", "record_sha256": None,
-            "selected_lifecycle_event_count": None,
-            "observed_lifecycle_event_count": len(session.bound_controller()._guard_events),
-            "failure_diagnostic_present": True,
-        }
-    else:
-        record, selection = collector.final()
-    if record is not None:
-        _write_bytes(directory, "cuda_compilation.json", record.encoded)
-    if selection["failure_diagnostic_present"] or session.failed:
-        _write(directory, "cuda_compilation_failure_diagnostic.json", {
-            "schema_version": "q54.c2d.cuda-compilation-diagnostic.v0", "validating": False,
-            "journal": session.runtime_observation.journal,
-            "source_trace": session.trace,
-            "collector_errors": [] if collector is None else [
-                {"type": type(error).__name__, "message": str(error)[:512]}
-                for error in collector.failure_objects],
-            "observed_lifecycle_event_count": selection["observed_lifecycle_event_count"],
-        })
-    _write(directory, "cuda_compilation_selection.json", selection)
 
 
 def _stall():
@@ -380,8 +351,7 @@ class _NativeScopeObserver:
     receives held primitive results and never invokes this object.
     """
 
-    def __init__(self, session, controller, directory, environment, fault, *, compilation=False):
-        assert type(compilation) is bool and (not compilation or session.lane == "cuda")
+    def __init__(self, session, controller, directory, environment, fault):
         self.session, self.controller, self.directory = session, controller, directory
         self.environment, self.fault = environment, fault
         self.held, self.raw, self.originals = [], [], []
@@ -391,9 +361,6 @@ class _NativeScopeObserver:
         self.target_context = None
         self.cache_established = False
         self.scope_depth = 0
-        self.compilation = compilation
-        self.compilation_depth = 0
-        self.compilation_wrapped = False
         session.runtime_owners.append(self)
         hold, leaf, returned, append = (session._hold_runtime_owner, session._runtime_leaf,
                                        session._observe_runtime_return, session.runtime_observation.append)
@@ -438,8 +405,6 @@ class _NativeScopeObserver:
                 if session.lane == "cuda":
                     self._check_cuda_deferred_state()
                 self._wrap_helpers()
-            elif self.compilation and kind == "compile_step" and details["operation"] == "build_entered":
-                self._wrap_compilation_helpers()
             return result
 
         session._hold_runtime_owner = observed_hold
@@ -703,9 +668,8 @@ class _NativeScopeObserver:
                 expected_contexts[self.controller.target_device_ordinal] = True
             assert [row["active"] for row in state["primary_contexts"]] == expected_contexts
             if self.session.lane == "cuda":
-                interior = self.compilation and site in {"cuda_extension_create", "cuda_extension_exec"}
-                assert self.compilation_depth == (1 if interior else 0)
-                assert state["logical_device"] == (1 if interior else 0) and state["raw_device"] == (0 if pristine else 1)
+                interior = False
+                assert state["logical_device"] == 0 and state["raw_device"] == (0 if pristine else 1)
                 assert state["initialized"] is (not pristine)
             else:
                 interior = self.scope_depth > 0
@@ -726,35 +690,6 @@ class _NativeScopeObserver:
             self._fail(error)
             raise
 
-    def _wrap_compilation_helpers(self):
-        if self.compilation_wrapped:
-            return
-        self._ticket()
-        assert self.compilation and self.session.lane == "cuda" and self.compilation_depth == 0
-        helper = self.session.modules["optical_worker.cuda_compilation"][0]
-        for name, site in (("_torch_compile_exact", "cuda_compile"),
-                           ("_cuda_extension_create_exact", "cuda_extension_create"),
-                           ("_cuda_extension_exec_exact", "cuda_extension_exec")):
-            original = vars(helper)[name]
-            self.originals.append(original)
-
-            def wrapper(*args, _original=original, _site=site, **kwargs):
-                opening = self.snapshot(_site, "before", self._latest_leaf())
-                outer = _site == "cuda_compile"
-                if outer:
-                    self.compilation_depth += 1
-                try:
-                    result = _original(*args, **kwargs)
-                    if result is not None:
-                        self.held.append(result)
-                finally:
-                    if outer:
-                        self.compilation_depth -= 1
-                self.snapshot(_site, "after", opening[1], opening)
-                return result
-
-            setattr(helper, name, wrapper)
-        self.compilation_wrapped = True
 
     def _wrap_helpers(self):
         setup = self.session.modules["optical_worker.native_setup"][0]
@@ -855,9 +790,7 @@ def _unrecorded_module_observations(admission):
     return {"total": len(entries), "truncated": len(entries) > 256, "modules": observations}
 
 
-def child(fault, fd, directory, *, compilation=False):
-    if type(compilation) is not bool or compilation and fault != "runtime_scope_success":
-        raise ValueError("fixed compilation observation mode required")
+def child(fault, fd, directory):
     if fault not in RUNTIME_FAULTS:
         raise ValueError("not a fixed runtime fault selector")
     request = json.loads((directory / "request.json").read_text(encoding="utf-8"))
@@ -872,28 +805,8 @@ def child(fault, fd, directory, *, compilation=False):
         "case_id",
         "go2_model_dir",
     }
-    if compilation:
-        fields |= {"compilation_deployment_path", "compilation_deployment_sha256"}
-    if set(request) != fields or compilation and request["lane"] != "cuda":
+    if set(request) != fields:
         raise ValueError("unexpected fixed runtime configuration field")
-    deployment_bytes = None
-    if compilation:
-        import hashlib
-        import stat
-
-        deployment_bytes = Path(request["compilation_deployment_path"]).read_bytes()
-        if hashlib.sha256(deployment_bytes).hexdigest() != request["compilation_deployment_sha256"]:
-            raise ValueError("fixed compilation deployment changed before bootstrap")
-        run_root = Path(json.loads(deployment_bytes)["run_root"])
-        info = run_root.lstat()
-        if (not run_root.is_absolute() or run_root.resolve(strict=True) != run_root
-                or not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700
-                or info.st_uid != os.getuid() or os.path.lexists(run_root / "pybuilddir.txt")):
-            raise ValueError("compiler worker needs its private run directory before bootstrap")
-        os.chdir(run_root)
-        current = Path.cwd().stat()
-        if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
-            raise ValueError("compiler worker directory changed during entry")
     root = Path(request["root"])
     trusted_inputs = json.loads((directory / "runtime_custody_inputs.json").read_bytes())
     environment_payload = json.loads(Path(request["environment_path"]).read_bytes())
@@ -908,12 +821,7 @@ def child(fault, fd, directory, *, compilation=False):
     phase = "source_verification"
 
     def persist_final():
-        if compilation and entry._compiler_root(session) is not None:
-            _persist_compilation_custody(directory, session, entry)
-        else:
-            _persist_final_runtime_custody(directory, session)
-            if compilation:
-                _persist_compilation_custody(directory, session, entry)
+        _persist_final_runtime_custody(directory, session)
 
     def observe():
         # Debug facts, not runtime-custody receipt/authority. Preserve each fixed
@@ -980,8 +888,7 @@ def child(fault, fd, directory, *, compilation=False):
         session.configure_runtime_custody(environment_payload, trusted_inputs)
         observe()
         injection = _install_runtime_fault(fault, entry, session, controller, directory)
-        scope_observer = (_NativeScopeObserver(session, controller, directory, environment_payload, fault,
-                                              compilation=compilation)
+        scope_observer = (_NativeScopeObserver(session, controller, directory, environment_payload, fault)
                           if fault in RUNTIME_OBSERVATION_FAULTS else None)
         phase = "setup_definitions"
         session.import_setup_definitions()
@@ -1013,20 +920,6 @@ def child(fault, fd, directory, *, compilation=False):
                 "final_execution_readiness_issued": False,
             },
         )
-        if compilation:
-            import hashlib
-
-            phase = "cuda_compilation"
-            if Path(request["compilation_deployment_path"]).read_bytes() != deployment_bytes:
-                raise ValueError("fixed compilation deployment changed")
-            contract = session.modules["optical_worker.compilation_contract"][0]
-            if contract.INPUT_PHASES != RUNTIME_PHASES:
-                raise ValueError("input driver differs from shared phase contract")
-            owners = session.compile_cuda_extensions(json.loads(deployment_bytes))
-            count = sum(e["operation"] == "normal_disarmed" for e in controller._guard_events)
-            if (len(owners) != len(contract.CUDA_COMPILE_SEQUENCES)
-                    or contract.cuda_foundation_phase(count, "emergency") != "terminal_disposal"):
-                raise ValueError("compilation did not reach the fixed terminal sequence")
         phase = "terminal_disposal"
 
         def synchronize():

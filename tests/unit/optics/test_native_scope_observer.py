@@ -23,7 +23,6 @@ def observer(tmp_path):
     value.module, value.runtime, value.target, value.stream, value.binding = (object() for _ in range(5))
     value.library = {"root": "os_native", "path": "libcuda.so.595.71.05", "sha256": "a" * 64}
     value.count, value.scope_depth, value.target_context = 8, 0, 9000
-    value.compilation, value.compilation_depth, value.compilation_wrapped = False, 0, False
     value.originals = []
     value.current_stream_baseline = 123
     # Keep PID/TID observation separate from the CPU state model on Windows.
@@ -95,72 +94,6 @@ def test_failed_getter_emits_no_complete_snapshot_or_retry(observer):
     assert observer.controller.termination_evidence.lifecycle.to_payload()["summary"]["unknown_device_scope"]
 
 
-@pytest.mark.parametrize("fault", [None, "nested_stream", "outer_restore"])
-def test_compilation_observer_distinguishes_nested_scope_and_outer_restoration(observer, monkeypatch, fault):
-    """Actual observer wrappers/state validation, with explicitly modeled CUDA."""
-    import os
-    from pathlib import Path
-
-    original_resolve = Path.resolve
-    monkeypatch.setattr(Path, "resolve", lambda p, **kw: Path(str(os.getpid()))
-                        if str(p).replace("\\", "/") == "/proc/thread-self" else original_resolve(p, **kw))
-    value = observer
-    value.compilation = True
-    value.session.lane = "cuda"
-    value.snapshot_state = {
-        "initialized": True, "logical_device": 0, "logical_basis": "native_return", "raw_device": 1,
-        "primary_contexts": [{"ordinal": i, "active": i == 1} for i in range(8)],
-        "target_current_stream": 123, "held_stream": {"ordinal": 1, "handle": 456},
-    }
-    module = object()
-    calls = []
-
-    def create():
-        calls.append("create")
-        return module
-
-    def execute():
-        calls.append("exec")
-
-    def compile_recipe():
-        calls.append("compile")
-        value.snapshot_state = dict(value.snapshot_state, logical_device=1,
-                                    target_current_stream=123 if fault == "nested_stream" else 456)
-        _enter(value.controller)
-        helper._cuda_extension_create_exact()
-        _enter(value.controller)
-        helper._cuda_extension_exec_exact()
-        if fault != "outer_restore":
-            value.snapshot_state = dict(value.snapshot_state, logical_device=0, target_current_stream=123)
-        return module
-
-    helper = SimpleNamespace(_torch_compile_exact=compile_recipe, _cuda_extension_create_exact=create,
-                             _cuda_extension_exec_exact=execute)
-    value.session.modules = {"optical_worker.cuda_compilation": (helper, None, "completed")}
-
-    def run():
-        with value.controller.segment():
-            _enter(value.controller)
-            value._wrap_compilation_helpers()
-            value._wrap_compilation_helpers()  # Subsequent recipes do not add another wrapper.
-            assert len(value.originals) == 3
-            return helper._torch_compile_exact()
-
-    if fault is None:
-        assert run() is module
-        rows = value.session.runtime_observation.journal
-        assert [(row["details"]["site"], row["details"]["edge"]) for row in rows] == [
-            ("cuda_compile", "before"), ("cuda_extension_create", "before"),
-            ("cuda_extension_create", "after"), ("cuda_extension_exec", "before"),
-            ("cuda_extension_exec", "after"), ("cuda_compile", "after")]
-        assert calls == ["compile", "create", "exec"]
-    else:
-        with pytest.raises(AssertionError):
-            run()
-        summary = value.controller.termination_evidence.lifecycle.to_payload()["summary"]
-        assert summary["unknown_device_scope"] and summary["normal_complete_count"] == 0
-        assert calls == (["compile"] if fault == "nested_stream" else ["compile", "create", "exec"])
-    assert value.compilation_depth == 0
 
 
 @pytest.fixture

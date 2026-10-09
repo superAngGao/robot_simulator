@@ -29,6 +29,48 @@ from .native_contract import (
 )
 
 
+_CUDA_EXTENSION_SETS = {}
+
+
+class CudaExtensionSet:
+    """Only the captured source session registers a usable extension set."""
+
+    __slots__ = ("session", "controller", "binding", "admission", "recipes")
+
+    def __init__(self):
+        raise TypeError("CUDA extension sets are issued by their source session")
+
+    def __setattr__(self, name, value):
+        raise TypeError("CUDA extension set is frozen")
+
+    def __delattr__(self, name):
+        raise TypeError("CUDA extension set is frozen")
+
+
+def _require_cuda_extension(owner, recipe_name, context):
+    if type(owner) is not CudaExtensionSet:
+        raise TypeError("captured preparation needs its issued CUDA extension set")
+    record = _CUDA_EXTENSION_SETS.get(owner.session)
+    if record is None or record[0] is not owner:
+        raise ValueError("CUDA extension set is copied, foreign or unregistered")
+    session = record[1][0].session
+    try:
+        module = session.require_cuda_extension(owner, recipe_name)
+        # The set is checked before inspecting caller context metadata. The
+        # registered stream must be the actual stream used by preparation.
+        from optics.cuda_timeline import CudaOpticalExecutionContext
+
+        binding = record[1][0]
+        if (type(context) is not CudaOpticalExecutionContext or context.device != binding.target
+                or context.stream is not binding.stream or context.stream_handle != binding.stream_identity[1]):
+            raise ValueError("CUDA factory context differs from its issued runtime binding")
+        context._validate_identity()
+        return module
+    except BaseException as error:
+        session.fail(error)
+        raise
+
+
 def _cuda_artifact_create_exact(torch, target, stream, loader, spec, frame):
     with torch.cuda.device(target):
         with torch.cuda.stream(stream):

@@ -16,20 +16,18 @@ from pathlib import Path, PurePosixPath
 from .manifest import AST_POLICY
 from .protocol import ClosedWorkerProtocolError, canonical_sha256
 
-NATIVE_AST_POLICY_VERSION = "q54.p12.4.closed-worker-ast-policy.v14"
+NATIVE_AST_POLICY_VERSION = "q54.p12.4.closed-worker-ast-policy.v15"
 _BOOTSTRAP_PATH = "optical_worker/native_bootstrap.py"
-_BOOTSTRAP_SOURCE_SHA256 = "94e719b85ae34c4b231f92af512f06c282312eddc1316893f4ca9bd4bd20c828"
+_BOOTSTRAP_SOURCE_SHA256 = "c71f20e7c982b8f336ecfb8b25444b1d0e9b5fcb9bb7f88951a8ab59b86be7ec"
 _BOOTSTRAP_CLASS_PINS = {
-    "_RuntimeObservation": "35db98614af469b2b096d0a8c5f9872f85b49ba54620acb6bc72cc73de3fcc43",
+    "_RuntimeObservation": "cfb64f25a4bf1774a5e67128ac7e1b3b5a06ab9800ddd2f9b51d39e2b9537b3e",
     "_CapturedSourceLoader": "cc647d0af05f892513eceea40708734e5a7aafe82c278507d094a65894639ecb",
-    "_CapturedSourceFinder": "9e05685290b9f47d1f715a5cc41cb5c3e458ddcf6bda550ca6a9ba56df21a76b",
-    "_ExternalSourceLoader": "7d5fbeff7df40ccc4970120d3774fbd406aedc13fb4ec4b0322be737eb660592",
-    "_ExternalAdmission": "788145ee29b48bd20f39b8248e7030fde52d27621bbed5f1e6e85bfd98658309",
+    "_CapturedSourceFinder": "67bbea24396197e51d2acfb4076c98d9b514dc34d5d416e16f81d88624105e92",
+    "_ExternalSourceLoader": "a52ecdc72961066c61f5341522e764153210dce1cb59a1fc69d8d83f07790f53",
+    "_ExternalAdmission": "b0f10b81a78f0ed470edb01d0ad982c1c70be35fb06530bfa565142ec2c77773",
     "_ExternalNamespaceLoader": "524801ff222139e86fa76fa918b42a20ee61d6bcfe9e783542c880da3cad46bf",
     "_RuntimeSetupBinding": "85bf4bb6a12a3ab17807393c27993ca319e5b614eda9c14d4f1d6c0b042f6112",
-    "_SourceSession": "337d30e50f83391b083345f4449bdb3cb0b1d064818fabb99cecd8e22a4e273c",
-    "_CompileCustodyRoot": "cd8966d1d90f8bc84f19db6260867e8b19436e3358c12f48750446c1a64c108b",
-    "_DirectExtensionLoader": "2a982e50647ddf6baf3b69657d398328f5e71ef903e23a630f6cf256b85693cd"
+    "_SourceSession": "eb0df970e922fb344b3e3bcc5c51497887bd50ffd713778ebef77d19b6928895",
 }
 _BOOTSTRAP_IMPORTS = frozenset(("importlib.abc", "importlib.machinery", "importlib.util"))
 _BOOTSTRAP_USES = frozenset((
@@ -38,21 +36,6 @@ _BOOTSTRAP_USES = frozenset((
     "importlib.machinery.PathFinder.find_spec", "importlib.util.spec_from_loader",
     "importlib.machinery.BuiltinImporter", "importlib.machinery.FrozenImporter",
     "importlib.machinery.PathFinder", "importlib.machinery.ModuleSpec",
-    "importlib.util.spec_from_file_location", "importlib.util.module_from_spec",
-))
-_SETUPTOOLS_PATH = "optical_worker/setuptools_admission.py"
-_SETUPTOOLS_SOURCE_SHA256 = "17a4c5658306665c2c73e3f80a6b0da8b873413fe9fcba7535b3c7d2c6f7b0bc"
-_SETUPTOOLS_CLASS_PINS = {
-    "_ReadOnlyResource": "36026b66a59aa97655eb38be4817484039068f081163d8a88a8fc142eaf45fff",
-    "_ResourceReader": "257abd1e4d7ce176c3d85d98c1813ff5cf9955a256c4824ad1c9078d13cbb502",
-    "_Distribution": "28c6fa2c11016c59fe3acd5a554e58fe69f0de05e1f450ef12773ea53bcfc938",
-    "_AliasLoader": "73b92e7127904c8a301acbac2bf4d8f2200bb1c1f7deffd4795f829a78de680b",
-    "_SetuptoolsInitialization": "7a4f046e40594f1526e4edaaa745a18dc1182d6b242b9c82bb44c20d24eeb3ac"
-}
-_SETUPTOOLS_IMPORTS = frozenset(("importlib.metadata", "importlib.resources.abc"))
-_SETUPTOOLS_USES = frozenset((
-    "importlib.metadata.Distribution", "importlib.metadata.DistributionFinder.Context",
-    "importlib.resources.abc.ResourceReader",
 ))
 _SNAPSHOT_PATH = "optics/warp_native_render.py"
 _SNAPSHOT_FUNCTION = "_render_launch_snapshot"
@@ -93,14 +76,6 @@ NATIVE_AST_POLICY_SHA256 = canonical_sha256({
         "imports": sorted(_BOOTSTRAP_IMPORTS),
         "uses": sorted(_BOOTSTRAP_USES),
     },
-    "pinned_setuptools_initialization": {
-        "path": _SETUPTOOLS_PATH,
-        "source_sha256": _SETUPTOOLS_SOURCE_SHA256,
-        "class_source_pins": _SETUPTOOLS_CLASS_PINS,
-        "imports": sorted(_SETUPTOOLS_IMPORTS),
-        "uses": sorted(_SETUPTOOLS_USES),
-        "function_closure_access": "load-only, exact pinned source; no general closure permission",
-    },
     "source_roots": sorted(_SOURCE_ROOTS),
     "launcher_paths": sorted(_LAUNCHER_PATHS),
     "ctypes_exception": {
@@ -131,12 +106,9 @@ def _validate_relative_path(relative_path: str) -> PurePosixPath:
 
 
 def _validate_tree(relative_path: str, tree: ast.Module, source: bytes) -> None:
-    class_pins = (_BOOTSTRAP_CLASS_PINS if relative_path == _BOOTSTRAP_PATH
-                  else _SETUPTOOLS_CLASS_PINS if relative_path == _SETUPTOOLS_PATH else {})
-    importlib_imports = (_BOOTSTRAP_IMPORTS if relative_path == _BOOTSTRAP_PATH
-                        else _SETUPTOOLS_IMPORTS if relative_path == _SETUPTOOLS_PATH else frozenset())
-    importlib_uses = (_BOOTSTRAP_USES if relative_path == _BOOTSTRAP_PATH
-                     else _SETUPTOOLS_USES if relative_path == _SETUPTOOLS_PATH else frozenset())
+    class_pins = _BOOTSTRAP_CLASS_PINS if relative_path == _BOOTSTRAP_PATH else {}
+    importlib_imports = _BOOTSTRAP_IMPORTS if relative_path == _BOOTSTRAP_PATH else frozenset()
+    importlib_uses = _BOOTSTRAP_USES if relative_path == _BOOTSTRAP_PATH else frozenset()
     if class_pins:
         classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
         for name, digest in class_pins.items():
@@ -204,8 +176,6 @@ def _validate_tree(relative_path: str, tree: ast.Module, source: bytes) -> None:
                 (relative_path in _REGEX_SOURCE_PINS and node.attr == "compile"
                 and isinstance(node.value, ast.Name) and node.value.id == "re"
                 and isinstance(node.ctx, ast.Load))
-                or (relative_path == _SETUPTOOLS_PATH and node.attr == "__closure__"
-                    and isinstance(node.ctx, ast.Load))
             ):
                 raise ClosedWorkerProtocolError("native source reaches a forbidden runtime attribute")
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -253,8 +223,6 @@ def validate_native_source_bytes(
         raise ClosedWorkerProtocolError("regex exception source is not the reviewed release")
     if relative_path == _BOOTSTRAP_PATH and actual != _BOOTSTRAP_SOURCE_SHA256:
         raise ClosedWorkerProtocolError("source bootstrap exception is not the reviewed release")
-    if relative_path == _SETUPTOOLS_PATH and actual != _SETUPTOOLS_SOURCE_SHA256:
-        raise ClosedWorkerProtocolError("setuptools initialization exception differs from its pinned release")
 
 
 def validate_native_source_file(

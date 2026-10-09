@@ -56,20 +56,17 @@ def cuda_extension_recipe(recipe_id: str) -> CudaExtensionRecipe:
     raise ValueError("unknown fixed CUDA extension recipe")
 
 
-def cuda_extension_kwargs(recipe_id: str) -> dict:
-    """Return fresh kwargs for the sole fixed recipe; no caller source or hook."""
+def cuda_extension_entries(module, recipe_id: str) -> tuple:
+    """Read the fixed exported callables; this check grants no live authority."""
+    from types import ModuleType
+
     recipe = cuda_extension_recipe(recipe_id)
-    result = {
-        "name": recipe.name,
-        "cpp_sources": [recipe.source_module.CPP_SOURCE],
-        "cuda_sources": [recipe.source_module.CUDA_SOURCE],
-        "with_cuda": True,
-        "is_python_module": True,
-        "use_pch": False,
-        "extra_cflags": list(recipe.cflags),
-        "extra_cuda_cflags": list(recipe.cuda_cflags),
-        "verbose": False,
-    }
-    if recipe.generate_bindings:
-        result["functions"] = list(recipe.entries)
-    return result
+    if type(module) is not ModuleType or vars(module).get("__name__") != recipe.name:
+        raise ValueError("CUDA extension module differs from the fixed recipe")
+    entries = tuple(vars(module).get(name) for name in recipe.entries)
+    if any(not callable(entry) or entry.__module__ != recipe.name or entry.__name__ != name
+           for name, entry in zip(recipe.entries, entries, strict=True)):
+        raise ValueError("CUDA extension entry differs from the fixed ABI")
+    if len({id(entry) for entry in entries}) != len(entries):
+        raise ValueError("CUDA extension entries alias")
+    return entries

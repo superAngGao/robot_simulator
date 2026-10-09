@@ -15,12 +15,12 @@ from pathlib import Path
 import pytest
 
 from optics.cuda_extension_recipes import CUDA_EXTENSION_RECIPES
-from optical_worker.compilation_contract import (
+from optical_worker.historical.compilation_contract import (
     CUDA_COMPILATION_LEGACY_VERSION as CUDA_COMPILATION_VERSION,
     CUDA_LEGACY_CONTINUATION_SOURCE_MODULES as CUDA_CONTINUATION_SOURCE_MODULES,
     cuda_role_anchor, cuda_native_operation,
 )
-from optical_worker.cuda_compilation_evidence import CudaCompilationRecord
+from optical_worker.historical.cuda_compilation_evidence import CudaCompilationRecord
 from optical_worker.guarded_evidence import replay_lifecycle
 from optical_worker.lifecycle import HOST_OWNER, DeviceScopeDescriptor
 from optical_worker.runtime_custody import RuntimeCustodyRecord

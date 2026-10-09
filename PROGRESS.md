@@ -1572,10 +1572,15 @@ Next milestone:
       loading with retained create returns and named v3 extension-set bindings.
       The selected CPU checks pass90; observer/historical selection passes27 with110
       skipped. These are not real build/loading evidence. The current source-policy
-      check rejects the unfinished loader definition closure, as recorded in
-      fixed-cuda-artifacts implementation-notev2. Factory integration, net deletion,
-      full v3 replay and source/profile refresh remain unfinished. No real build,
-      service/GPU run or code acceptance is claimed. Finish and preflight the whole replacement packet,
+      check rejected the unfinished loader closure in implementation-notev2.
+      Factory routing and LBVH single-module resolution are now connected; live
+      worker JIT/setuptools/compiler supervision and their obsolete execution
+      drivers are deleted. Historical CPU readers moved out of worker admission.
+      Affected CPU checks pass494 with9 skips; prospective LF source validation
+      covers83 files under policyv15/catalogv14. See implementation-notev3 for
+      test limits, the fixed historical fixture failure and remaining cold release,
+      full v3 replay and bounded native acceptance work. No real build/service/GPU
+      run or code acceptance is claimed. Finish and preflight the whole replacement packet,
       then continue all parent C4 work. Do not resume the isolated pidfd campaign.
       Product requirements and independent checkpoints remain; no early benchmark
       or activation is authorized. C4 remains active and incomplete.

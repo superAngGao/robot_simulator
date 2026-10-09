@@ -1,4 +1,4 @@
-"""Compiler descendant obligation and canonical replay, independent of worker exit.
+"""Archived compiler descendant obligation and canonical CPU replay.
 
 These records describe observations. They do not grant process or compilation
 authority. The dedicated supervisor supplies actual OS observations.
@@ -9,9 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .compilation_contract import COMPILER_JOB_VERSION, CUDA_COMPILE_SEQUENCES, cuda_foundation_phase
-from .protocol import MAX_RESPONSE_BYTES, canonical_json_bytes, canonical_sha256, decode_canonical_message
-from .wait_protocol import GuardConfiguration, GuardProtocolError, bounded_integer, checked_add, exact_fields
-from .wait_supervision import GuardSupervisorCore, GuardSupervisorEvidence, _State, _transition
+from ..protocol import MAX_RESPONSE_BYTES, canonical_json_bytes, canonical_sha256, decode_canonical_message
+from ..wait_protocol import GuardConfiguration, GuardProtocolError, bounded_integer, checked_add, exact_fields
+from ..wait_supervision import GuardSupervisorCore, GuardSupervisorEvidence, _State, _transition
 
 _DEADLINE_SOURCES = frozenset({"operation", "ack", "terminal_grace", "clock_fault"})
 _ERRORS = frozenset({"missing", "permission", "identity_changed", "proc_unavailable",
