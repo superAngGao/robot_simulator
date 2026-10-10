@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from optics.execution import _intersect_triangle_scalar
+from optics.execution import _intersect_aabb_scalar, _intersect_triangle_scalar
 from optics import _cuda_direct_light_source
 
 
@@ -102,6 +102,12 @@ extern "C" int evaluate_box(const double* o, const double* d, const float* lo,
     const float* hi, double limit, double* entry) {
   return intersect_aabb(o[0],o[1],o[2],d[0],d[1],d[2],lo,hi,0,limit,entry);
 }
+extern "C" int evaluate_normal(const double* o, const double* d, const double* b,
+    const double* e1, const double* e2, const float* n, double limit,
+    double* t, float* output) {
+  return intersect_triangle(o[0],o[1],o[2],d[0],d[1],d[2],0,b,e1,e2,n,
+                            limit,t,output,output+1,output+2);
+}
 ''')
     subprocess.run([compiler, "-O2", "-ffp-contract=off", "-shared", "-fPIC", str(cpp), "-o", str(library)],
                    check=True, capture_output=True, timeout=60)
@@ -112,6 +118,8 @@ extern "C" int evaluate_box(const double* o, const double* d, const float* lo,
     dll.evaluate.restype = ctypes.c_int
     dll.evaluate_box.argtypes = [pointer] * 2 + [bounds_pointer] * 2 + [ctypes.c_double, pointer]
     dll.evaluate_box.restype = ctypes.c_int
+    dll.evaluate_normal.argtypes = [pointer] * 5 + [bounds_pointer, ctypes.c_double, pointer, bounds_pointer]
+    dll.evaluate_normal.restype = ctypes.c_int
 
     def evaluate(origin, direction, v0, e1, e2, limit):
         t = ctypes.c_double()
@@ -125,6 +133,14 @@ extern "C" int evaluate_box(const double* o, const double* d, const float* lo,
                                     (lo, np.float32, bounds_pointer), (hi, np.float32, bounds_pointer))),
                                limit, ctypes.byref(entry))
         return bool(hit), entry.value
+    def normal(origin, direction, v0, e1, e2, shading_normal, limit):
+        t = ctypes.c_double()
+        output = np.zeros(3, np.float32)
+        hit = dll.evaluate_normal(
+            *(np.asarray(a, np.float64).ctypes.data_as(pointer) for a in (origin, direction, v0, e1, e2)),
+            shading_normal.ctypes.data_as(bounds_pointer), limit, ctypes.byref(t),
+            output.ctypes.data_as(bounds_pointer))
+        return bool(hit), t.value, output
     def first_hit(*args):
         native = []
         for value in (*args, 1):
@@ -149,7 +165,53 @@ extern "C" int evaluate_box(const double* o, const double* d, const float* lo,
         dll.pinhole_camera_rays_kernel(width, height, *intrinsics, *origin, *rotation,
                                        origins.ctypes.data_as(pointer), directions.ctypes.data_as(pointer))
         return origins[0], directions[0]
-    return SimpleNamespace(predicate=evaluate, first_hit=first_hit, box=box, camera=camera)
+    return SimpleNamespace(predicate=evaluate, first_hit=first_hit, box=box, camera=camera, normal=normal)
+
+
+@pytest.mark.parametrize("backend", ["warp", "cuda"])
+@pytest.mark.parametrize("reverse_ray", [False, True])
+@pytest.mark.parametrize("reverse_winding", [False, True])
+def test_grazing_normal_facing_precedes_float32_rounding(request, backend, reverse_ray, reverse_winding):
+    vertices = np.array([[0., 0., 0.], [-0.123456789, 1., 0.], [-0.3, 0., 1.]])
+    origin = np.array([-0.26367883497322825, 1.3257985665584018, 0.333333333012683])
+    direction = np.array([0.12252657197322826, -0.9924652332250684, 3.2065034296667426e-10])
+    if reverse_ray:
+        origin, direction = origin + 2. * direction, -direction
+    if reverse_winding:
+        vertices = vertices[[0, 2, 1]]
+    v0, v1, v2 = vertices
+    e1, e2 = v1-v0, v2-v0
+    n = np.cross(e1, e2)
+    n /= np.linalg.norm(n)
+    shading_normal = n.astype(np.float32)
+    assert (n @ direction) * (shading_normal.astype(np.float64) @ direction) < 0.
+    truth = _intersect_triangle_scalar(origin, direction, 2., *vertices)
+    assert truth is not None
+    if backend == "warp":
+        result = _warp_bodies()["_intersect_device_triangle_for_ray"](
+            *origin, *direction, 0, v0[None], e1[None], e2[None], shading_normal[None], np.float64(2.))
+        hit, distance, *normal = result
+    else:
+        hit, distance, normal = request.getfixturevalue("cuda_host").normal(
+            origin, direction, v0, e1, e2, shading_normal, 2.)
+    assert hit
+    assert distance == pytest.approx(truth.distance, abs=2e-8, rel=0)
+    np.testing.assert_array_equal(np.asarray(normal, np.float32), truth.normal_world.astype(np.float32))
+
+
+@pytest.mark.parametrize("backend", ["warp", "cuda"])
+@pytest.mark.parametrize("origin_x", [-5e-13, 0., 5e-13])
+@pytest.mark.parametrize("direction_x", [-5e-13, 0., 5e-13])
+def test_parallel_slab_does_not_expand_by_nearest_hit_tolerance(request, backend, origin_x, direction_x):
+    origin, direction = np.array([origin_x, 0., -1.]), np.array([direction_x, 0., 1.])
+    lo, hi = np.array([0., -1., -1.], np.float32), np.array([0., 3., 3.], np.float32)
+    truth, _ = _intersect_aabb_scalar(origin, direction, lo, hi, max_distance=2.)
+    if backend == "warp":
+        result = _warp_bodies()["_intersect_aabb_for_ray_with_interval"](
+            *origin, *direction, *lo, *hi, np.float64(2.))
+    else:
+        result = request.getfixturevalue("cuda_host").box(origin, direction, lo, hi, 2.)
+    assert bool(result[0]) == truth == (origin_x == 0.)
 
 
 def test_cuda_camera_keeps_original_binary64_origin_and_world_normalization(cuda_host):

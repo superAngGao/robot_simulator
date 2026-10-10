@@ -20,12 +20,14 @@ def test_fixed_recipe_kernel_bytes_and_entry_abis():
         ("65783ded7966b45f71c4dd4330530c3f20817622d86710a9ac9a3d72511c354c",
          "3643883860c27fbff71e54817855015890753e454628976e0cf4c05fc518f79e"),
         ("2f9b088f191936092412a908137e767c906f3b0fcfe7505ef0f88709af55b0b0",
-         "2ceea84854157f4b93acbbfce53b500be9d4de6f9a354054a964d20bd003c850"),
+         "cc0325d33dc1039c66177567c031990f3049e13f109eecc2dc3a9ba605fdb684"),
     )
     for recipe, hashes in zip(CUDA_EXTENSION_RECIPES, expected, strict=True):
         cpp, cuda = recipe.source_module.CPP_SOURCE, recipe.source_module.CUDA_SOURCE
         # Scene v3 intentionally changes geometry/indices and binary64 arithmetic
         # under input-precision design v4, together with renderer v10.
+        # Precision gap F2 corrects facing before shading-normal rounding;
+        # the renderer's argument ABI is unchanged.
         # The LBVH source stays unchanged.
         # These pins detect drift; they do not prove numerical correctness.
         original_cpp = cpp

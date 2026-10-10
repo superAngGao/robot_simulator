@@ -396,7 +396,8 @@ __device__ __forceinline__ bool intersect_triangle(
   float nx = triangle_normal[tri * 3 + 0];
   float ny = triangle_normal[tri * 3 + 1];
   float nz = triangle_normal[tri * 3 + 2];
-  double ndotd = nx * dx + ny * dy + nz * dz;
+  // Match the CPU facing decision before rounding the shading normal.
+  double ndotd = (area_x / area) * dx + (area_y / area) * dy + (area_z / area) * dz;
   if (ndotd > 0.0f) {
     nx = -nx;
     ny = -ny;
