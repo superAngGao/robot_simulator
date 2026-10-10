@@ -235,8 +235,14 @@ class ClosedWorkerSession:
         self._state = "TERMINATED"
         payload: dict[str, object] = {"code": code, "message": message, "worker_exit": True}
         if self._termination is not None:
-            payload["termination_evidence"] = self._termination.to_payload()
             payload["termination_evidence_sha256"] = self._termination.sha256
+            if self._native_source is None:
+                payload["termination_evidence"] = self._termination.to_payload()
+            else:
+                # The full versioned trace is written to the separate journal.
+                # Nesting it below the response envelope exceeds the unchanged
+                # protocol depth limit; this compact reply grants no authority.
+                payload["disposition"] = self._termination.lifecycle.to_payload()["summary"]["disposition"]
         return self._error(sequence, payload)
 
     def _hello(self, sequence: int, arguments: Mapping[str, object]) -> dict[str, object]:

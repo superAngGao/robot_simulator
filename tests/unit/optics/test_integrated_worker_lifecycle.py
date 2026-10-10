@@ -361,3 +361,22 @@ def test_native_runtime_contract_cannot_be_changed_to_extend_deadlines(bound_wor
     path.write_text(json.dumps(payload), encoding="utf8")
     with pytest.raises(p.ClosedWorkerProtocolError, match="frozen release"):
         build_integrated_worker_runtime_manifest(source, pass_mode="primary_unprofiled", go2_model_dir=None)
+
+
+def test_native_fault_reply_fits_frozen_codec_and_binds_full_separate_evidence(worker_graph):
+    x = worker_graph
+    run_sample(x.worker, 0)
+    terminal = x.controller.terminate(fault="channel_eof", detection_phase="request_loop",
+                                      emergency_target_synchronize=lambda: None)
+    # Reproduce the real CUDA intake failure's secondary envelope-depth error.
+    with pytest.raises(p.ClosedWorkerProtocolError, match="nesting"):
+        p.encode_framed_message(x.worker._error(3, {"termination_evidence": terminal.to_payload()}),
+                                max_bytes=p.MAX_RESPONSE_BYTES)
+    response = x.worker.terminal_fault_response(sequence=3, code="EOFError", message="control channel EOF",
+                                                fault="channel_eof", detection_phase="request_loop")
+    frame = p.encode_framed_message(response, max_bytes=p.MAX_RESPONSE_BYTES)
+    decoded = p.decode_canonical_message(frame[4:], max_bytes=p.MAX_RESPONSE_BYTES)
+    assert decoded["payload"]["termination_evidence_sha256"] == terminal.sha256
+    assert decoded["payload"]["disposition"] == "aborted_synced_exit"
+    assert "termination_evidence" not in decoded["payload"]
+    assert x.worker.termination_evidence is terminal

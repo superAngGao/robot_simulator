@@ -1967,6 +1967,14 @@ Next milestone:
       acceptance, bounded preallocated traces and independent review remain open.
       Product activation and performance measurement remain closed. No native
       final-sample acceptance or speed result is claimed.
+      At2654254 the actual framed loop completed two Warp samples and clean
+      close; CUDA failed custody replay because native observation pairs exist
+      only in the test driver. Fresh independent worker-intake gap-reviewv1
+      confirms this production dependency and also the missing physical-scope
+      proof in Warp's smoke. A bounded design/source-policy amendment is next;
+      no replay requirement is relaxed. Compact terminal error replies and
+      journal recovery address the separately reproduced nesting defect.
+      Current CPU worker/protocol regression:60 passed,9 Linux-only skips.
       R1/full C4 follow-up and fresh whole review remain mandatory.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain

@@ -372,6 +372,15 @@ def run_case(repository, revision, environment_path, environment, directory, lan
         if worker_case:
             from optics.native_arena import C4ArenaLifecycleEvidence
 
+            if (result["worker_returncode"] != 0 or error or result["stderr"]
+                    or result["worker_protocol"].get("completed") is not True):
+                raise RuntimeError(
+                    "native worker request flow failed before successful close: "
+                    + json.dumps({"returncode": result["worker_returncode"],
+                                  "protocol": result["worker_protocol"],
+                                  "worker_stderr": result["stderr"], "supervisor_stderr": error})
+                    + "; inspect worker_journal.bin for the original fault and terminal evidence"
+                )
             arena = C4ArenaLifecycleEvidence.from_payload(json.loads((directory / "worker_arena.json").read_bytes()))
             summary = worker["summary"]
             commands = json.loads((directory / "worker_request_trace.json").read_bytes())
@@ -380,9 +389,7 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                     "EXECUTE_PREPARED_SAMPLE", "RESOLVE_PREPARED_SAMPLE", "RELEASE_RESOLVED_SAMPLE")
             ] + ["CLOSE_SESSION"]
             resolved = [event for event in worker["transition_trace"] if event["operation"] == "sample_resolved"]
-            if (result["worker_returncode"] != 0 or error or result["stderr"]
-                    or result["worker_protocol"].get("completed") is not True
-                    or control["deadline_expired"] or control["kill_requested"]
+            if (control["deadline_expired"] or control["kill_requested"]
                     or control["arm_count"] != control["normal_complete_count"]
                     or summary["disposition"] != "clean_reclaimed_exit"
                     or summary["emergency_sync_attempt_count"] != 0

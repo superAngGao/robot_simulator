@@ -538,7 +538,23 @@ def supervise(fault, liveness_fd, directory):
         worker = None
         if (directory / "worker.json").exists():
             worker = json.loads((directory / "worker.json").read_text(encoding="utf-8"))
-        elif (directory / "prefix.json").exists():
+        elif native_worker_mode and (directory / "worker_journal.bin").exists():
+            from optical_worker.guarded_evidence import GuardedTerminationEvidence
+            from optical_worker.protocol import MAX_RESPONSE_BYTES, decode_canonical_message, decode_frame_header
+
+            raw = (directory / "worker_journal.bin").read_bytes()
+            while raw:
+                length = decode_frame_header(raw[:4], max_bytes=MAX_RESPONSE_BYTES)
+                if len(raw) < length + 4:
+                    raise RuntimeError("native worker terminal journal has a partial frame")
+                record = decode_canonical_message(raw[4:4 + length], max_bytes=MAX_RESPONSE_BYTES)
+                raw = raw[4 + length:]
+                if record["kind"] in {"transport_termination", "native_preparation_aborted"}:
+                    terminal = GuardedTerminationEvidence.from_payload(record["evidence"])
+                    if terminal.sha256 != record["evidence_sha256"]:
+                        raise RuntimeError("native terminal journal digest mismatch")
+                    worker = terminal.lifecycle.to_payload()
+        if worker is None and (directory / "prefix.json").exists():
             worker = json.loads((directory / "prefix.json").read_text(encoding="utf-8"))
         artifact = {
             "schema_version": VALIDATION_VERSION,

@@ -158,7 +158,52 @@ Scratch ledgers remain in c4_assets/worker_timeout_evidence_v1.json and
 worker_drain_prework_evidence_v1.json. Tests were terminal before the current
 implementation continued. No author GPU jobs are outstanding.
 
-## Complete next packet
+## Integrated native probe and intake gap, 2026-10-10
+
+Candidate26542543d067d20c64670d375065535420ede203 added the native v3
+manifest builder/validator and fixed client through the actual framed worker
+loop. The remote clean candidate is
+/data2/shared/ang.gao/robot_sim_worker_2654254. Raw probe evidence is
+/data2/shared/ang.gao/c4-worker-26542543d0-probe. Two asymmetric samples in
+Warp completed EXECUTE/RESOLVE/RELEASE and normal close (worker1984161,
+supervisor1984157, exit0/reaped). CUDA reached extension loading but custody
+checkpoint rejected missing native scope pairs (worker1989673,
+supervisor1989666, exit74/reaped). No final-sample numerical or speed claim.
+
+The fresh independent gap review is archived verbatim in
+q54-optical-lab-p12-4c4c2-worker-intake__gap-review__codex__v1.md:
+session01a124d3-a32b-7d43-b6bb-1262e8c90d69, Request changes,
+SHA256 b78661032b29b7e84e03a59c5f6a5c5642bd155fc63c7f5265669730f1853c34.
+The reviewer confirmed that production already retains created CUDA modules
+before scope unwind; the absent facts are produced only by test wrappers.
+Warp's successful lifecycle has zero native-scope rows and does not prove
+physical scope. F1 requires a bounded design/source-policy amendment before
+moving the observation mechanism into production. F2 remains full integrated
+scope-coverage work. Neither finding is closed by the Warp smoke.
+
+The current bounded error-path fix keeps the full termination record in the
+separate journal and sends its digest/disposition in the native error reply.
+The old C0 reply and depth8 codec bound are unchanged. The fixed supervisor
+reads and verifies the actual terminal journal when hard exit prevents a
+worker.json; the acceptance driver reports request-flow failure before trying
+to read an arena that was never constructed. The original CUDA failure remains
+preserved. These fixes do not close the intake gap or have independent code
+approval yet.
+
+Local Python3.14 worker/protocol regressions:60 passed,9 Linux-only skips in
+53.89s. A separate targeted run reproduced the original nested terminal reply
+and verified the compact replacement in both lanes:2 passed. Ruff on changed
+production/test files and py_compile on both support drivers passed. One
+initial pytest command used an incorrect optics path for benchmark tests and
+collected no tests; the60-pass command used the correct benchmark paths.
+All90 staged LF sources pass source-policy validation; updated catalog v17
+SHA25692aefc3fde3ccdb48abb78b1aac768cc314527be74a28a8df77b12eee306c01c.
+At2654254 the remote Linux legacy protocol/worker suite passed27 in126.11s;
+that run precedes this error-path change. The reviewer verified campaign and
+replay PIDs absent and preserved64 raw files with matching hashes. The CLI
+review exited0; its original report and launch/exit records remain in c4_assets.
+
+## Remaining integrated acceptance
 
 Follow runtime-integration design v3 sections4,7,8,9. Reuse the existing
 ClosedWorkerSession parser/serial loop, captured source setup orchestration,
