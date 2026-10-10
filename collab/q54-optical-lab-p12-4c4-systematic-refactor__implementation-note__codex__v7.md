@@ -8,7 +8,7 @@ Related Files: runtime-integration design-request/review v3 section6; systematic
 Owner Summary: R1 work has begun by reusing existing scene/refit kernels and the renderer's guarded recording helper. This is an incomplete working change, not a new acceptance checkpoint or R1 approval.
 
 The isolated c4_dynamic_graph branch starts at c3472f22f1d52bfb6c853bf95cef4040cf666316.
-The M1 candidate in c4_setup_orchestration remains frozen for independent review.
+The M1 candidate c3472f2 has since received independent approval; its unchanged report is archived in code-review v5.
 
 WarpSceneUpdateCommandFactory.seal and WarpBvhRefitCommandFactory.seal now use
 the existing _warp_command_recording core. Kernel operands, dispatch order and
@@ -158,3 +158,74 @@ those changes require the next regression run. All90 prospective LF sources
 pass the existing AST policy; source catalog b9db06834328433d24ee67b697acb0a2d68d2c736e12c2c0a2eb2f9316a39dca.
 Native R1 runs and numerical/failure verification plus independent review remain
 pending. This is still the same unaccepted R1 packet, not R1/C4 acceptance.
+
+## First captured R1 primary success and raw replay
+
+Production source revision626f6320eda3bbfb527be49390c696012873e33d now includes
+final R1 composition. Subsequent3d59c2d/fea529c/0f46f64 commits changed only tests
+and driver observation. Production catalog remains
+b9db06834328433d24ee67b697acb0a2d68d2c736e12c2c0a2eb2f9316a39dca.
+No independent R1 review has been requested yet; the full packet is unfinished.
+
+Actual primary server, target physicalGPU1, all GPUs visible:
+- CUDA atfea529cb360e55b2f4facf7a087575c823b7ef23: original driver exit0;
+  worker988359/supervisor988351/parent987629 are absent. Twenty-three normal
+  completed guards, twenty-four ARM operations; ten real three-stage warmups,
+  three final C3 plans, one final barrier, acquire/cancel, no final submissions.
+- Warp at0f46f64309f649c3daec60a2f1a0a6113cddcc5e: worker998094 exit0,
+  supervisor998086/parent997982 absent. Twenty-seven normal completed guards,
+  twenty-eight ARM operations; ten actual five-phase warmups, three final plans,
+  one barrier, acquire/cancel, no final submissions. Original parent validator
+  exited1 on an incorrect allocation-count expectation; that failure is retained,
+  not relabeled as an original driver success.
+Both workers ended cancelled_before_submission_exit/release completed, without
+emergency synchronization, expiry or kill. Warp restores default0/no current
+context; CUDA restores logical0/raw1, not a claim of raw0 restoration.
+The frozen row is r1_dynamic_full_shadow, synthetic_dynamic_rigid_960x640_v1.
+
+The raw validator now accounts for the existing nine derived topology uploads
+(24 slot allocations plus9), the frozen scene's one triangle/no planes (one
+scene launch), and the existing refit_topology_ready_wait before the single
+slot_event_initialization_wait. None changes production execution. The input
+transfer observer had wrongly applied its a2 ambient-scope receipt assumptions
+to reused helpers inside the later target scope; its later-helper observations
+now explicitly verify unchanged caller scope, exact stream and target1. The
+original failure traceback is preserved. Another earlier driver error passed a
+Go2 asset path to the synthetic case; the driver now supplies assets only for
+Go2. Three earlier failed worker runs are archived with their original records.
+
+A read-only replay on the primary Linux host ran production custody-artifact,
+runtime-custody selection/attachment, storage, graph and warmup validators over
+both completed runs and checked final graph/barrier hashes and all six terminal
+PIDs. Both passed. This is author verification, not independent review.
+Replay report: dynamic_primary_replay_v1.json; validator source SHA256
+14c9adca9c8138543a6d4405b913a7000f1d8fb7218bd237d4e0ae94ca38fd24.
+
+The final warmup frame10 RGB images are byte-identical, SHA256
+26d00b19c615e79e6d954c55d9550482051048f28f78cd4f72293cd178ad1aea.
+An independent CPU rendering algorithm using the frozen registry, exact decoded
+camera scalars and replay frame9 checked all614400 rays:6393 hits; maximum RGB
+channel absolute error2.9703586035267904e-08 for each lane; zero pixels over1e-6.
+This is full-frame RGB for one setup warmup, not all-channel/all-frame numeric
+acceptance or measured final sample evidence. CPU script and result are archived.
+
+Local regressions after final barrier/resolution dataflow validation:120 passed
+in187.86s (Warp arena/final graph and CUDA arena contract/resolution). Dynamic
+recording/replay-root checks and C3 frame selection:32 passed in1.59s, including
+both mandatory row profiles and camera sample indices0,119,120,121. Native
+metadata is doubled in these CPU checks. Changed Warp modules and new test Ruff
+checks pass; git diff --check passes. The whole repository is not claimed tested.
+
+Archive c4_assets/c4-dynamic-primary-evidence-v1.tar.gz:1944165 bytes,
+150 unique members, SHA256
+4ebd2fe77850de49b437a0693b8751273a76da8c5127aa5345bf433f5dd6c302.
+Includes the five original raw run directories, driver/replay scripts, the
+corrected validator snapshot, CPU oracle results and per-file digests.
+The corrected validator snapshot is archived; earlier validator source remains
+available at each exact Git revision in the raw requests.
+
+Still required for this SAME R1 packet: native second mandatory row, diagnostic
+five-phase variant, numerical channels/frames and relevant failure cases; fresh
+independent review after freezing the completed candidate. C2f native worker
+submission/resolve/reclaim/close integration and full C4 remain outstanding.
+No formal performance, product preparation or backend-selection gate is opened.

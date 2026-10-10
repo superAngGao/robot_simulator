@@ -85,7 +85,7 @@ def _validate_fixed_storage(directory, lane, case, fault, *, successful):
     count = (23 if diagnostics else 14) if successful else (2 if "adoption" in fault else 1)
     if dynamic and successful:
         count += 10 if lane == "warp" else 26
-    call_count = count + (12 if dynamic and lane == "warp" else 0)
+    call_count = count + (9 if dynamic and lane == "warp" else 0)
     if (data["guard"] != guard or len(data["arrays"]) != count
             or len(data["calls"]) != (call_count if successful else 2)):
         raise RuntimeError("fixed storage did not reach its exact allocation boundary")
@@ -136,8 +136,13 @@ def _validate_render_graph(directory, lane, fault, *, trace, final_row=None):
     phases = (["scene_update_kernel", "acceleration_kernel"] if dynamic else []) + [
         "raygen_kernel", "first_hit_kernel", "shade_kernel"]
     count = 2 * len(phases) + 1 if diagnostic else 1
+    waits = [row["details"]["descriptor"]["operation_id"] for row in trace
+             if row["guard"] == guard and row["operation"] == "descriptor_observed"
+             and row["details"]["descriptor"]["leaf_kind"] == "event_wait"]
+    expected_waits = (["refit_topology_ready_wait"] if dynamic and lane == "warp" else []) + [
+        "slot_event_initialization_wait"]
     if (kinds.count("event_create") != count or kinds.count("event_record") != count
-            or kinds.count("event_wait") != 1 or kinds[-1:] != ["event_wait"]
+            or waits != expected_waits or kinds[-1:] != ["event_wait"]
             or "warmup_launch" in kinds or "allocation" in kinds):
         raise RuntimeError("render graph did not complete its exact initialized-event path")
     if (data["guard"] != guard or data["before"] != data["after"]
@@ -162,7 +167,7 @@ def _validate_render_graph(directory, lane, fault, *, trace, final_row=None):
     for frame in data["frames"]:
         counts = frame["phase_launch_counts"]
         if (len(counts) != len(phases) or counts[-3:] != ([1, 2, 2] if lane == "warp" else [1, 1, 1])
-                or (dynamic and (counts[0] != (2 if lane == "warp" else 1) or counts[1] < 1))
+                or (dynamic and (counts[0] != 1 or counts[1] < 1))
                 or (dynamic and frame["transform_frame_index"] != (frame["frame_id"] - 1) % 120)
                 or len(frame["entries"]) != (sum(counts) if lane == "warp" else 3)):
             raise RuntimeError("provisional render graph has incomplete native commands")

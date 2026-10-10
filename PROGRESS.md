@@ -1931,9 +1931,15 @@ Next milestone:
       dynamic slot storage and five-phase warmup composition. Existing actual
       Warp scene/refit GPU regressions pass9 on physical GPU1; frozen-snapshot
       CPU helper/binding regressions also pass (implementation-notev7). These
-      tests do not prove captured R1 execution. Final R1 C3/arena composition,
-      full native/numerical verification and independent review remain pending.
-      No final sample or speed result is claimed.
+      tests alone do not prove captured R1 execution. Production626f632 now
+      composes final R1 C3/arena plans through the existing execution/control
+      paths. Actual captured full-shadow primary runs on physical GPU1 complete
+      ten dynamic warmups, three final plans, one barrier and acquire/cancel for
+      both lanes; native custody/raw replay passes. Both frame10 RGB images are
+      identical; all614400 pixels match CPU RGB within2.98e-8. Evidence and
+      original driver failures are preserved in implementation-notev7.
+      The second mandatory row, diagnostic/failure/all-channel checks and fresh
+      independent R1 review remain pending. No final sample or speed result is claimed.
       R1/full C4 follow-up and fresh whole review remain mandatory.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
