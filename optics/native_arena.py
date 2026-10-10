@@ -1076,6 +1076,7 @@ class NativeOpticalArena:
 
     def _begin_enqueue(self, lease: C4ActiveOutputLease) -> None:
         with self._lock:
+            _require_captured_arena_admission(self, for_enqueue=True)
             slot = self._slot_for_live_lease(lease)
             self._require_running_arena(operation="begin_enqueue")
             if slot.state != "LEASED":

@@ -11,7 +11,10 @@ from tests.unit.optics.test_native_render_preparation import graph_session
 from tests.unit.optics.test_native_render_warmup import executable_graph
 from tests.unit.optics.test_prepared_fixed_render_inputs import fixed_inputs, fixed_storage_session
 
-pytestmark = [pytest.mark.parametrize("fail_at", [None]), pytest.mark.parametrize("diagnostic", [False])]
+pytestmark = [
+    pytest.mark.parametrize("fail_at", [None]),
+    pytest.mark.parametrize("diagnostic", [False, True]),
+]
 
 
 def _final_spec(x):
@@ -23,6 +26,7 @@ def _final_spec(x):
         case_sha256=m.case_sha256,
         native_input_manifest_sha256=m.sha256,
         native_readiness_sha256=x.graph.readiness.sha256,
+        diagnostic_mode=x.graph.pass_mode,
         scene_contract_sha256=m.scene_contract_sha256,
         fixed_render_fixture_sha256=m.fixed_render_fixture_sha256,
         primitive_count=int(first.triangle_v0_world.shape[0]),
@@ -189,12 +193,7 @@ def _adapt_warp_cpu_metadata(monkeypatch):
 
 @pytest.mark.parametrize("fixed_inputs", ["warp"], indirect=True)
 def test_final_warp_graph_consumes_same_slot_and_new_readiness(executable_graph, monkeypatch):
-    from types import SimpleNamespace as NS
-
     from optical_worker import native_setup
-    from optical_worker.provenance import NativeStorageSignature
-    from optics import warp_arena
-    from optics import warp_native_render as render
 
     x = executable_graph
     observed = x.session.run_fixed_render_warmups()
@@ -209,6 +208,7 @@ def test_final_warp_graph_consumes_same_slot_and_new_readiness(executable_graph,
         case_sha256=m.case_sha256,
         native_input_manifest_sha256=m.sha256,
         native_readiness_sha256=x.graph.readiness.sha256,
+        diagnostic_mode=x.graph.pass_mode,
         scene_contract_sha256=m.scene_contract_sha256,
         fixed_render_fixture_sha256=m.fixed_render_fixture_sha256,
         primitive_count=bvh.num_primitives,
@@ -252,7 +252,7 @@ def test_final_barrier_admits_only_after_exact_sync_and_ack(executable_graph, mo
         row_id="r0_asymmetric_full_shadow",
         case_id=x.session.prepared_input.manifest.case_id,
         sample_count=2,
-        pass_mode="primary_unprofiled",
+        pass_mode=x.graph.pass_mode,
     )
     x.session.phase = "fixed_render_warmups_ready"
     if x.session.lane == "warp":
@@ -334,6 +334,13 @@ def test_final_barrier_admits_only_after_exact_sync_and_ack(executable_graph, mo
             assert x.controller.state == "SETUP_QUIESCENT"
             assert x.controller._final_admission is graph
             active = graph.arena.acquire(graph.samples[0])
+            from optical_worker.lifecycle import WorkerSetupProtocolError
+
+            lease = active._lease if x.session.lane == "warp" else active._control_lease
+            calls_before = tuple(x.calls)
+            with pytest.raises(WorkerSetupProtocolError, match="measured submission remains closed"):
+                lease.begin_enqueue()
+            assert lease.state == "LEASED" and tuple(x.calls) == calls_before
             active.cancel_before_enqueue()
             evidence = x.controller.evidence().to_payload()
             assert evidence["schema_version"] == "q54.p12.4.setup-lifecycle.v4"
@@ -357,6 +364,9 @@ def test_final_barrier_admits_only_after_exact_sync_and_ack(executable_graph, mo
 
             with pytest.raises(GuardProtocolError):
                 GuardedLifecycleEvidence.from_payload(legacy)
+            x.controller.mark_unknown_device_scope(source="test_final_scope", reason="late_unknown_scope")
+            with pytest.raises(ValueError, match="acknowledged final"):
+                graph.arena.acquire(graph.samples[1])
         else:
             with pytest.raises(Exception):
                 x.session.prepare_fixed_final_graph(sample_count=2)

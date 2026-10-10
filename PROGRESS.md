@@ -1903,7 +1903,10 @@ Next milestone:
       warmed storage in both lanes and adds the Warp adapter over the existing
       control plane. CPU composition tests pass. Source-session row admission, final sealing and
       guarded target barrier are implemented, including pre-barrier acquisition
-      rejection. Both-lane native validation and independent review remain open.
+      rejection. Both lanes pass real Go2 primary final preparation at e31b83a
+      and injected final-sync failure at f05235f. Later submission/unknown-scope
+      restrictions have CPU evidence; diagnostic/native matrix and independent
+      review remain open. No final sample or speed result is claimed.
       R1/full C4 follow-up and fresh whole review remain mandatory.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain

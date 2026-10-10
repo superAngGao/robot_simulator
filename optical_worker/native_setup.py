@@ -480,7 +480,7 @@ def _require_final_graph(session, graph):
     return graph
 
 
-def _require_captured_arena_admission(control):
+def _require_captured_arena_admission(control, *, for_enqueue=False):
     """Fixed-cost acquisition check; standalone arenas retain their own contract."""
     retained = _CAPTURED_ARENAS.get(control)
     if retained is None:
@@ -491,8 +491,14 @@ def _require_captured_arena_admission(control):
             or session.phase != "fixed_final_graph_admitted" or session.failed
             or controller._final_admission is not graph or controller.guardian is not guardian
             or guardian.state != "SEALED" or controller._terminating
-            or controller._replay.controller != "RUNNING" or controller._replay.failed):
+            or controller._replay.controller != "RUNNING" or controller._replay.failed
+            or controller._replay.compromised):
         raise ValueError("captured arena has no acknowledged final target barrier")
+    if for_enqueue:
+        # Final setup admits plans, while measured submission still belongs to
+        # the guarded worker entry. Its current closed implementation rejects
+        # attempts through either lane's public arena/lease methods as well.
+        controller.latch_measured_sample_submission()
 
 
 def _require_final_readiness_origin(session, prepared, readiness):
