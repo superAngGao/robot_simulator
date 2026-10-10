@@ -116,6 +116,32 @@ Policy SHA256:
 08a940137df8d0cf82ccd287f1fbf1aa4ad8201d59d5bb25c7ff6c7f0f83a466.
 These are author checkpoint identities, not independently reviewed releases.
 
+Code checkpoint4c33b87d00b9133dbb59eb5647ab997b9b0d0593 records this WIP.
+Post-checkpoint source-policy and actual captured-source-custody regressions:
+
+```text
+python -m pytest tests/unit/optics/test_native_source_policy.py tests/unit/optics/test_native_source_custody.py -q --disable-warnings --maxfail=2
+195 passed in137.76s
+python -m pytest tests/unit/benchmarks/test_optical_closed_worker.py -q --disable-warnings --maxfail=1
+2 passed,9 skipped in0.71s
+```
+
+The nine legacy process cases require Linux and remain unexecuted in this
+Windows run; previous Linux evidence does not validate this new code revision.
+The first broader source-policy/bootstrap/custody run had243 passed,9 skipped,
+2 failed in141.12s: one test intentionally reads HEAD bytes while the source pin
+was still an uncommitted change; the other still expected only the two prior
+CPU definition modules. The new exact five-module expectation also verifies
+guarded adoption and absence of numpy/torch/warp imports. The195-pass rerun
+checks the committed pins and that updated cold-process test, including its
+failure injections. The bootstrap cases passed in the initial broader run;
+its two failures are retained here rather than reported as a green full run.
+
+All owned pytest sessions ended. Sampled source-test PIDs41320 and37456 are
+absent; a scoped process query found no remaining pytest for this checkpoint's
+source/worker commands. Cold-process helpers assert subprocess termination and
+collect child output before returning. No GPU job was launched in this checkpoint.
+
 ## Verification recorded so far
 
 - Timeout CPU protocol regressions:14 passed in1.68s.
