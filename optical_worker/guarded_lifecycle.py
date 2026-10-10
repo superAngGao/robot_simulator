@@ -99,6 +99,7 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
         self._final_barrier_ticket = None
         self._final_admission = None
         self._worker_session = None
+        self._native_source_session = None
         self._post_reclaim_proof = None
         self._worker_resolution = None
         super().__init__(
@@ -732,7 +733,16 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
         try:
             if synchronize is None:
                 raise WorkerSetupProtocolError("no exact runtime target sync selected")
+            reader = opening = None
+            source = self._native_source_session
+            if source is not None and source.phase == "input_validated":
+                from .native_scope import require_reader
+
+                reader = require_reader(source)
+                opening = reader.snapshot("terminal_sync", "before", self._guard_events[-1]["index"])
             synchronize()
+            if reader is not None:
+                reader.snapshot("terminal_sync", "after", opening[1], opening)
         except BaseException as error:
             with self._event_lock:
                 self._hold_failure(error)

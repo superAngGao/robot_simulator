@@ -1368,13 +1368,19 @@ class _NativeUploadContext:
     runtime: object
     target: object
     stream: object
+    source_session: object
 
 
 _UPLOAD_CONTEXTS = {}
 
 
 def _create_upload_context(lifecycle, runtime, target, stream):
-    context = _NativeUploadContext(lifecycle, runtime, target, stream)
+    from .guarded_lifecycle import NativeGuardedSetupLifecycle
+
+    source = lifecycle._native_source_session if type(lifecycle) is NativeGuardedSetupLifecycle else None
+    if source is not None and source.bound_controller() is not lifecycle:
+        raise ValueError("upload context source/controller differs")
+    context = _NativeUploadContext(lifecycle, runtime, target, stream, source)
     key = id(context)
 
     def discard(reference):
@@ -1388,6 +1394,7 @@ def _create_upload_context(lifecycle, runtime, target, stream):
         runtime,
         target,
         stream,
+        source,
     )
     try:
         lifecycle.adopt_host_owner(
@@ -1416,6 +1423,7 @@ def _consume_upload_context(context):
         or record[2] is not context.runtime
         or record[3] is not context.target
         or record[4] is not context.stream
+        or record[5] is not context.source_session
     ):
         raise ValueError("upload context is unregistered, consumed or has changed")
     context.lifecycle.require_adopted(context)
@@ -1534,6 +1542,9 @@ def _warp_command_recording(runtime, target, stream, *, context=None, ready_even
 def _upload_cuda_native_input(source, *, context):
     """Single allocation/upload implementation; the caller owns failure policy."""
     lifecycle, torch, target, stream = _consume_upload_context(context)
+    from .native_scope import reader_for_input
+
+    reader = reader_for_input(lifecycle, torch, target, stream, phase="uploading")
     import numpy as np
 
     prepared: dict[str, Any] = {}
@@ -1560,12 +1571,15 @@ def _upload_cuda_native_input(source, *, context):
                 runtime_identity="torch_empty_explicit_device_v1",
             ),
         )
-        destination = _torch_empty_exact(
-            torch,
-            shape=tuple(host.shape),
-            dtype=host_tensor.dtype,
-            target=target,
-        )
+        with reader.operation("empty") if reader is not None else nullcontext():
+            destination = _torch_empty_exact(
+                torch,
+                shape=tuple(host.shape),
+                dtype=host_tensor.dtype,
+                target=target,
+            )
+            if reader is not None:
+                reader.hold_returned(destination)
         lifecycle.adopt_returned_device_owner(
             destination,
             actual_device_ordinal=(
@@ -1586,7 +1600,8 @@ def _upload_cuda_native_input(source, *, context):
                 runtime_identity="torch_copy_explicit_stream_v1",
             ),
         )
-        _torch_copy_exact(torch, destination, host_tensor, stream)
+        with reader.operation("copy") if reader is not None else nullcontext():
+            _torch_copy_exact(torch, destination, host_tensor, stream)
         prepared[manifest.name] = destination
 
     ready_owners = []
@@ -1600,7 +1615,10 @@ def _upload_cuda_native_input(source, *, context):
             runtime_identity="torch_cuda_event_v1",
         ),
     )
-    ready_event = _torch_event_exact(torch)
+    with reader.operation("event_create") if reader is not None else nullcontext():
+        ready_event = _torch_event_exact(torch)
+        if reader is not None:
+            reader.hold_returned(ready_event)
     ready_owners.append(ready_event)
     lifecycle.adopt_returned_device_owner(
         ready_event,
@@ -1618,7 +1636,8 @@ def _upload_cuda_native_input(source, *, context):
             runtime_identity="torch_event_record_indexed_stream_v1",
         ),
     )
-    _torch_record_event_exact(ready_event, stream)
+    with reader.operation("event_record") if reader is not None else nullcontext():
+        _torch_record_event_exact(ready_event, stream)
     _require_ready_event_target(ready_event, cuda=True, lifecycle=lifecycle)
     _enter_device_leaf(
         lifecycle,
@@ -1629,7 +1648,8 @@ def _upload_cuda_native_input(source, *, context):
             runtime_identity="torch_event_synchronize_v1",
         ),
     )
-    _torch_wait_event_host_exact(ready_event)
+    with reader.operation("event_wait") if reader is not None else nullcontext():
+        _torch_wait_event_host_exact(ready_event)
     result = CudaPreparedNativeInput(
         manifest=source.manifest,
         device_ordinal=lifecycle.target_device_ordinal,
@@ -1650,6 +1670,9 @@ def _upload_cuda_native_input(source, *, context):
 def _upload_warp_array(lifecycle, wp, target, stream, name, value):
     """One adopted host staging / allocation / explicit-stream copy body."""
     import numpy as np
+    from .native_scope import reader_for_input
+
+    reader = reader_for_input(lifecycle, wp, target, stream, phase="uploading")
 
     host = np.array(value, copy=True, order="C")
     lifecycle.adopt_host_owner(
@@ -1677,12 +1700,15 @@ def _upload_warp_array(lifecycle, wp, target, stream, name, value):
             runtime_identity="warp_empty_explicit_device_v1",
         ),
     )
-    destination = _warp_empty_exact(
-        wp,
-        shape=tuple(host.shape),
-        dtype=warp_dtype_from_host_dtype(wp, value.dtype),
-        target=target,
-    )
+    with reader.operation("empty") if reader is not None else nullcontext():
+        destination = _warp_empty_exact(
+            wp,
+            shape=tuple(host.shape),
+            dtype=warp_dtype_from_host_dtype(wp, value.dtype),
+            target=target,
+        )
+        if reader is not None:
+            reader.hold_returned(destination)
     lifecycle.adopt_returned_device_owner(
         destination,
         actual_device_ordinal=int(destination.device.ordinal),
@@ -1699,61 +1725,73 @@ def _upload_warp_array(lifecycle, wp, target, stream, name, value):
             runtime_identity="warp_copy_explicit_stream_v1",
         ),
     )
-    _warp_copy_exact(wp, destination, host_array, stream)
+    with reader.operation("copy") if reader is not None else nullcontext():
+        _warp_copy_exact(wp, destination, host_array, stream)
     return destination
 
 
 def _upload_warp_native_input(source, *, context):
     """Single allocation/upload implementation; the caller owns failure policy."""
     lifecycle, wp, target, stream = _consume_upload_context(context)
-    prepared: dict[str, Any] = {}
-    with wp.ScopedDevice(target):
-        for manifest in source.manifest.arrays:
-            value = source.arrays[manifest.name]
-            destination = _upload_warp_array(lifecycle, wp, target, stream, manifest.name, value)
-            prepared[manifest.name] = destination
+    from .native_scope import reader_for_input
 
-        ready_owners = []
-        lifecycle.adopt_host_owner(ready_owners, role="ready_event_custody", operation_id="ready_event_custody")
-        _enter_device_leaf(
-            lifecycle,
-            _descriptor(
+    reader = reader_for_input(lifecycle, wp, target, stream, phase="uploading")
+    prepared: dict[str, Any] = {}
+    with reader.outer_scope("upload_scope") if reader is not None else nullcontext():
+        with wp.ScopedDevice(target):
+            for manifest in source.manifest.arrays:
+                value = source.arrays[manifest.name]
+                destination = _upload_warp_array(lifecycle, wp, target, stream, manifest.name, value)
+                prepared[manifest.name] = destination
+
+            ready_owners = []
+            lifecycle.adopt_host_owner(
+                ready_owners, role="ready_event_custody", operation_id="ready_event_custody"
+            )
+            _enter_device_leaf(
                 lifecycle,
+                _descriptor(
+                    lifecycle,
+                    operation_id="warp_ready_event_create",
+                    leaf_kind="event_create",
+                    runtime_identity="warp_event_explicit_device_v1",
+                ),
+            )
+            with reader.operation("event_create") if reader is not None else nullcontext():
+                ready_event = _warp_event_exact(wp, target=target)
+                if reader is not None:
+                    reader.hold_returned(ready_event)
+            ready_owners.append(ready_event)
+            lifecycle.adopt_returned_device_owner(
+                ready_event,
+                actual_device_ordinal=_event_ordinal(ready_event, cuda=False, lifecycle=lifecycle),
+                role="warp_a2_ready_event",
                 operation_id="warp_ready_event_create",
-                leaf_kind="event_create",
-                runtime_identity="warp_event_explicit_device_v1",
-            ),
-        )
-        ready_event = _warp_event_exact(wp, target=target)
-        ready_owners.append(ready_event)
-        lifecycle.adopt_returned_device_owner(
-            ready_event,
-            actual_device_ordinal=_event_ordinal(ready_event, cuda=False, lifecycle=lifecycle),
-            role="warp_a2_ready_event",
-            operation_id="warp_ready_event_create",
-        )
-        lifecycle.require_adopted(ready_event, stream)
-        _enter_device_leaf(
-            lifecycle,
-            _descriptor(
+            )
+            lifecycle.require_adopted(ready_event, stream)
+            _enter_device_leaf(
                 lifecycle,
-                operation_id="warp_ready_event_record",
-                leaf_kind="event_record",
-                runtime_identity="warp_stream_record_event_v1",
-            ),
-        )
-        _warp_record_event_exact(stream, ready_event)
-        _require_ready_event_target(ready_event, cuda=False, lifecycle=lifecycle)
-        _enter_device_leaf(
-            lifecycle,
-            _descriptor(
+                _descriptor(
+                    lifecycle,
+                    operation_id="warp_ready_event_record",
+                    leaf_kind="event_record",
+                    runtime_identity="warp_stream_record_event_v1",
+                ),
+            )
+            with reader.operation("event_record") if reader is not None else nullcontext():
+                _warp_record_event_exact(stream, ready_event)
+            _require_ready_event_target(ready_event, cuda=False, lifecycle=lifecycle)
+            _enter_device_leaf(
                 lifecycle,
-                operation_id="warp_ready_event_host_wait",
-                leaf_kind="event_wait",
-                runtime_identity="warp_synchronize_event_v1",
-            ),
-        )
-        _warp_wait_event_host_exact(wp, ready_event)
+                _descriptor(
+                    lifecycle,
+                    operation_id="warp_ready_event_host_wait",
+                    leaf_kind="event_wait",
+                    runtime_identity="warp_synchronize_event_v1",
+                ),
+            )
+            with reader.operation("event_wait") if reader is not None else nullcontext():
+                _warp_wait_event_host_exact(wp, ready_event)
     result = WarpPreparedNativeInput(
         manifest=source.manifest,
         device_ordinal=lifecycle.target_device_ordinal,

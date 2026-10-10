@@ -34,7 +34,7 @@ expected_prelude = {{
 }}
 expected_definitions = expected_prelude | {{
     'optical_worker.native_setup', 'optical_worker.native_contract',
-    'optical_worker.arena', 'optical_worker.cases', 'optical_worker.worker',
+    'optical_worker.arena', 'optical_worker.cases', 'optical_worker.worker', 'optical_worker.native_scope',
 }}
 assert session.lane == {lane!r}
 fault = {fault!r}
@@ -127,7 +127,7 @@ try:
         else:
             assert fault == 'success', fault
     if fault == 'success':
-        assert observed == ['optical_worker.arena', 'optical_worker.cases',
+        assert observed == ['optical_worker.arena', 'optical_worker.cases', 'optical_worker.native_scope',
                             'optical_worker.native_setup', 'optical_worker.native_contract',
                             'optical_worker.worker'], observed
         assert set(session.modules) == expected_definitions

@@ -19,6 +19,15 @@ def assert_native_scope_success(record, artifact, identity):
     assert worker["release_status"] == "completed" and worker["emergency_sync_attempt_count"] == 1
     assert worker["unknown_device_scope"] is False and worker["possible_dirty_device_ordinals"] == [1]
     assert supervisor["complete"] and supervisor["state"] == "EXITED"
+    return assert_native_input_scope_success(record, identity, include_terminal=True)
+
+
+def assert_native_input_scope_success(record, identity, *, include_terminal=False):
+    """Validate input-phase scope facts; this does not prove final-sample scope."""
+    payload = record.to_payload()
+    assert payload["schema_version"] in RUNTIME_CUSTODY_VERSIONS[1:]
+    assert payload["summary"]["input_validation_observed"] is True
+    assert payload["configuration"]["device_ordinal"] == 1
     assert identity["worker"]["ppid"] == identity["supervisor"]["pid"]
     assert identity["supervisor"]["ppid"] == identity["parent"]["pid"]
     assert all(type(identity[role]["start_ticks"]) is int and identity[role]["start_ticks"] > 0
@@ -26,11 +35,19 @@ def assert_native_scope_success(record, artifact, identity):
     lane = payload["lane_id"]
     helpers = {row[1 if lane == "cuda" else 2]: site for site, row in NATIVE_SCOPE_HELPERS.items()}
     expected = set()
+    input_phases = {"runtime_initialization", "native_upload", "input_validation"}
+    completed = {row["details"]["phase"]: row["details"]["disarmed_event_index"]
+                 for row in payload["journal"] if row["kind"] == "phase_completed"
+                 and row["details"]["phase"] in input_phases}
+    assert set(completed) == input_phases
+    trace = payload["lifecycle"]["transition_trace"]
+    guards = [trace[index]["guard"] for index in completed.values()]
     descriptor = None
     for event in payload["lifecycle"]["transition_trace"]:
-        if event["operation"] == "descriptor_observed":
+        eligible = event["guard"] in guards
+        if eligible and event["operation"] == "descriptor_observed":
             descriptor = event["details"]["descriptor"]
-        elif event["operation"] == "low_level_leaf_entered":
+        elif eligible and event["operation"] == "low_level_leaf_entered":
             operation = descriptor["operation_id"]
             site = helpers.get(descriptor["runtime_identity"])
             if operation == "indexed_runtime_stream":
@@ -43,14 +60,15 @@ def assert_native_scope_success(record, artifact, identity):
                 site = "cuda_artifact_" + operation.rsplit(".", 1)[1]
             if site is not None:
                 expected.update((site, edge, event["index"]) for edge in ("before", "after"))
-        elif event["operation"] == "emergency_sync_started":
+        elif include_terminal and event["operation"] == "emergency_sync_started":
             expected.update(("terminal_sync", edge, event["index"]) for edge in ("before", "after"))
     binding = next(e for e in payload["journal"] if e["kind"] == "runtime_binding")
     expected.add(("runtime_binding", "point", binding["lifecycle_event_index"]))
-    rows = [e["details"] for e in payload["journal"] if e["kind"] == "native_scope"]
+    rows = [e["details"] for e in payload["journal"] if e["kind"] == "native_scope"
+            and (include_terminal or e["details"]["site"] != "terminal_sync")]
     observed = [(r["site"], r["edge"], r["operation_event_index"]) for r in rows]
     assert len(observed) == len(set(observed)) and set(observed) == expected
-    required = {"runtime_stream", "terminal_sync"}
+    required = {"runtime_stream", "terminal_sync"} if include_terminal else {"runtime_stream"}
     if lane == "warp":
         required.update(("upload_scope", "readback_scope"))
     for site in required:

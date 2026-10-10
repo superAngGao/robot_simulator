@@ -16,9 +16,11 @@ from pathlib import Path, PurePosixPath
 from .manifest import AST_POLICY
 from .protocol import ClosedWorkerProtocolError, canonical_sha256
 
-NATIVE_AST_POLICY_VERSION = "q54.p12.4.closed-worker-ast-policy.v17"
+NATIVE_AST_POLICY_VERSION = "q54.p12.4.closed-worker-ast-policy.v18"
+_NATIVE_SCOPE_PATH = "optical_worker/native_scope.py"
+_NATIVE_SCOPE_SOURCE_SHA256 = "14cfade215dc383bbf8d66e0b49ad3e8b1d2628b46310c52ed7f9106560c17aa"
 _BOOTSTRAP_PATH = "optical_worker/native_bootstrap.py"
-_BOOTSTRAP_SOURCE_SHA256 = "9e0e1a0d5999ba11c92f6c67bdcbd4bbe1de836f29b68c7ce39149bff8b436d6"
+_BOOTSTRAP_SOURCE_SHA256 = "5a8f54ce74f9f991f11ad554cf0a7fa1a5f24793c48be4738a2444aa49fff277"
 _BOOTSTRAP_CLASS_PINS = {
     "_RuntimeObservation": "cfb64f25a4bf1774a5e67128ac7e1b3b5a06ab9800ddd2f9b51d39e2b9537b3e",
     "_CapturedSourceLoader": "92da4e467035fe308c4ec6af32f2d05831adc7e5015f5f400545d1541ad5556b",
@@ -27,7 +29,7 @@ _BOOTSTRAP_CLASS_PINS = {
     "_ExternalAdmission": "157107d2ca7210f687ec3898d072231ccb993f061647cc740982262c8b004070",
     "_ExternalNamespaceLoader": "524801ff222139e86fa76fa918b42a20ee61d6bcfe9e783542c880da3cad46bf",
     "_RuntimeSetupBinding": "85bf4bb6a12a3ab17807393c27993ca319e5b614eda9c14d4f1d6c0b042f6112",
-    "_SourceSession": "39a978830eb3ff21e9119797b893f93fa4c0e54df06f84bcac28049d2ec21723",
+    "_SourceSession": "78a2443fb1d8c4f8e12f563cf935ac9827b4e2a8dcf774146a443a47488c108e",
 }
 _BOOTSTRAP_IMPORTS = frozenset(("importlib.abc", "importlib.machinery", "importlib.util"))
 _BOOTSTRAP_USES = frozenset((
@@ -86,6 +88,15 @@ NATIVE_AST_POLICY_SHA256 = canonical_sha256({
         "function_source_encoding": "exact physical UTF-8 lines including final newline",
         "attributes": sorted(_CTYPES_ATTRIBUTES),
     },
+    "native_state_reader_exception": {
+        "path": _NATIVE_SCOPE_PATH,
+        "source_sha256": _NATIVE_SCOPE_SOURCE_SHA256,
+        "class": "NativeStateReader",
+        "ctypes_methods": ["_initialize_queries", "_state"],
+        "library_mode": "RTLD_NOLOAD|RTLD_LOCAL",
+        "symbols": ["cudaGetDevice", "cuDeviceGetCount", "cuDeviceGet",
+                    "cuDevicePrimaryCtxGetState", "cuCtxGetCurrent", "cuCtxGetDevice"],
+    },
     "source_encoding": "utf-8",
     "bytecode_only_allowed": False,
 })
@@ -128,6 +139,15 @@ def _validate_tree(relative_path: str, tree: ast.Module, source: bytes) -> None:
         )).hexdigest() != _SNAPSHOT_FUNCTION_SHA256:
             raise ClosedWorkerProtocolError("read-only packed snapshot function has drifted")
     snapshot_nodes = set(ast.walk(snapshot)) if snapshot is not None else set()
+    reader_nodes = set()
+    if relative_path == _NATIVE_SCOPE_PATH:
+        reader = next((node for node in tree.body if isinstance(node, ast.ClassDef)
+                       and node.name == "NativeStateReader"), None)
+        if reader is None:
+            raise ClosedWorkerProtocolError("native state reader definition missing")
+        for method in reader.body:
+            if isinstance(method, ast.FunctionDef) and method.name in {"_initialize_queries", "_state"}:
+                reader_nodes.update(ast.walk(method))
     parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
     ctypes_imports = 0
     for node in ast.walk(tree):
@@ -142,6 +162,11 @@ def _validate_tree(relative_path: str, tree: ast.Module, source: bytes) -> None:
                     if (alias.name != "ctypes" or alias.asname is not None
                             or len(node.names) != 1 or node not in tree.body):
                         raise ClosedWorkerProtocolError("ctypes import must be the sole plain module import")
+                    ctypes_imports += 1
+                elif root == "ctypes" and relative_path == _NATIVE_SCOPE_PATH:
+                    if (alias.name != "ctypes" or alias.asname is not None
+                            or len(node.names) != 1 or node not in reader_nodes):
+                        raise ClosedWorkerProtocolError("ctypes import escapes the native state reader")
                     ctypes_imports += 1
                 elif root in _FORBIDDEN_IMPORTS:
                     raise ClosedWorkerProtocolError("native source imports a forbidden module")
@@ -166,9 +191,11 @@ def _validate_tree(relative_path: str, tree: ast.Module, source: bytes) -> None:
             if node.id == "ctypes":
                 parent = parents.get(node)
                 if not (
+                    node in reader_nodes or (
                     node in snapshot_nodes and isinstance(node.ctx, ast.Load)
                     and isinstance(parent, ast.Attribute) and parent.value is node
                     and isinstance(parent.ctx, ast.Load) and parent.attr in _CTYPES_ATTRIBUTES
+                    )
                 ):
                     raise ClosedWorkerProtocolError("ctypes reference escapes the read-only snapshot")
         elif isinstance(node, ast.Attribute) and node.attr in _FORBIDDEN_ATTRIBUTES | _FORBIDDEN_NAMES:
@@ -193,6 +220,8 @@ def _validate_tree(relative_path: str, tree: ast.Module, source: bytes) -> None:
                 raise ClosedWorkerProtocolError("native source reflects a forbidden runtime attribute")
     if relative_path == _SNAPSHOT_PATH and ctypes_imports != 1:
         raise ClosedWorkerProtocolError("packed snapshot needs exactly one plain ctypes import")
+    if relative_path == _NATIVE_SCOPE_PATH and ctypes_imports != 1:
+        raise ClosedWorkerProtocolError("native reader needs exactly one deferred ctypes import")
 
 
 def validate_native_source_bytes(
@@ -223,6 +252,8 @@ def validate_native_source_bytes(
         raise ClosedWorkerProtocolError("regex exception source is not the reviewed release")
     if relative_path == _BOOTSTRAP_PATH and actual != _BOOTSTRAP_SOURCE_SHA256:
         raise ClosedWorkerProtocolError("source bootstrap exception is not the reviewed release")
+    if relative_path == _NATIVE_SCOPE_PATH and actual != _NATIVE_SCOPE_SOURCE_SHA256:
+        raise ClosedWorkerProtocolError("native state reader exception is not the reviewed release")
 
 
 def validate_native_source_file(

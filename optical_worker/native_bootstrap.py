@@ -22,7 +22,7 @@ from types import FunctionType, MappingProxyType, ModuleType
 
 _BOOTSTRAP = "optical_worker/native_bootstrap.py"
 _NATIVE_EXEC_OPERATION = "exec"  # Descriptive operation enum, never a dynamic Python callable.
-_CATALOG = "optical_worker/data/native_sources/v17.json"
+_CATALOG = "optical_worker/data/native_sources/v18.json"
 _MAX_BYTES = 4 * 1024 * 1024  # Rechecked against the sole protocol constant.
 _ROOTS = frozenset(
     ("optical_worker", "optics", "physics", "robot", "sensing", "benchmarks", "examples", "tests", "tools")
@@ -54,6 +54,7 @@ _CUSTODY_PRELUDE = MappingProxyType(
 _SETUP_DEFINITIONS = MappingProxyType(
     {
         "optical_worker.native_setup": "optical_worker/native_setup.py",
+        "optical_worker.native_scope": "optical_worker/native_scope.py",
         "optical_worker.native_contract": "optical_worker/native_contract.py",
         "optical_worker.worker": "optical_worker/worker.py",
         "optical_worker.arena": "optical_worker/arena.py",
@@ -2362,6 +2363,7 @@ class _SourceSession:
         self.snapshot = None
         self.external = None
         self.runtime_owners = []
+        self._native_scope_record = None
         self.render_source, self.canonical_input, self.prepared_input = None, None, None
         self.validation_report = None
         self.fixed_row = None
@@ -2495,7 +2497,8 @@ class _SourceSession:
             and type(actual_config) is config_type
             and launch_config is not actual_config
             and launch_config.to_payload() == actual_config.to_payload()
-            and controller._lane_id == self.lane,
+            and controller._lane_id == self.lane
+            and controller._native_source_session is self,
             "source custody identity changed",
         )
         return controller
@@ -2526,6 +2529,7 @@ class _SourceSession:
                 NativeGuardedSetupLifecycle,
                 GuardConfiguration,
             )
+            controller._native_source_session = self
             self.phase = "binding"
             for owner, role in (
                 (self, "captured_source_session"),
@@ -2556,13 +2560,14 @@ class _SourceSession:
             controller = self.bound_controller()
             with controller.segment("setup"):
                 self.phase = "importing"
-                from optical_worker import arena, native_setup, worker
+                from optical_worker import arena, native_scope, native_setup, worker
 
                 _require(
                     native_setup is self.modules["optical_worker.native_setup"][0],
                     "setup definition module changed",
                 )
                 _require(arena is self.modules["optical_worker.arena"][0]
+                         and native_scope is self.modules["optical_worker.native_scope"][0]
                          and worker is self.modules["optical_worker.worker"][0],
                          "worker definition module changed")
                 self.audit()
@@ -2845,6 +2850,8 @@ class _SourceSession:
                 self.external.phase = "runtime"
                 _require(os.environ.get("TORCH_DEVICE_BACKEND_AUTOLOAD") == "0", "backend plugins enabled")
                 try:
+                    from optical_worker.native_scope import NativeStateReader
+
                     self._runtime_leaf("indexed_runtime_import", "runtime_import_or_init")
                     if self.lane == "cuda":
                         import torch as module
@@ -2854,11 +2861,14 @@ class _SourceSession:
                         target = module.device("cuda", ordinal)
                         self._hold_runtime_owner(target, "torch_target_descriptor")
                         self._runtime_leaf("indexed_runtime_stream", "allocation")
+                        reader = NativeStateReader(self, module, runtime, target)
+                        opening = reader.start_stream()
                         stream = module.cuda.Stream(device=target)
                         # Store before reading returned metadata as that read
                         # or its ordinal validation may itself fail.
                         self.runtime_owners.append(stream)
                         self._observe_runtime_return("runtime_stream", stream)
+                        reader.stream_returned(stream, opening)
                         _require(type(stream.device.index) is int, "CUDA stream has no indexed device")
                         self._hold_runtime_owner(
                             stream, "torch_runtime_stream", device_ordinal=stream.device.index
@@ -2881,9 +2891,12 @@ class _SourceSession:
                             target, "warp_runtime_target", device_ordinal=int(target.ordinal)
                         )
                         self._runtime_leaf("indexed_runtime_stream", "runtime_import_or_init")
+                        reader = NativeStateReader(self, module, runtime, target)
+                        opening = reader.start_stream()
                         stream = module.get_stream(target)
                         self.runtime_owners.append(stream)
                         self._observe_runtime_return("runtime_stream", stream)
+                        reader.stream_returned(stream, opening)
                         self._hold_runtime_owner(
                             stream, "warp_runtime_stream", device_ordinal=int(stream.device.ordinal)
                         )
@@ -2928,6 +2941,7 @@ class _SourceSession:
                     "target_token": observation.token(target), "stream_token": observation.token(stream),
                     "source_token": observation.token(self.canonical_input), "stream_identity": list(identity),
                 })
+                reader.binding_returned(binding)
                 if self.lane == "cuda":
                     try:
                         self._bind_cuda_artifacts()
@@ -2945,6 +2959,50 @@ class _SourceSession:
         except BaseException as error:
             self.fail(error)
             raise
+
+    def _check_cuda_deferred_state(self, module):
+        """Retain the prior reviewed no-Triton-execution acceptance check."""
+        self.bound_controller()._require_setup()
+        admission = self.external
+        admission.audit()
+        events = [e for e in admission.events if e["name"] == "triton"]
+        _require(
+            len(events) == 1 and events[0]["operation"] == "file_resolved", "CUDA deferred runtime state changed"
+        )
+        _require(
+            "triton" not in sys.modules and "triton" not in admission.records,
+            "CUDA deferred runtime state changed",
+        )
+        spec, loader = (admission.specs["triton"], admission.loaders["triton"])
+        loader._check_binding()
+        _require(spec.loader is loader and spec.name == "triton", "CUDA deferred runtime state changed")
+        _require(
+            spec.origin
+            == "/home/ang.gao/miniforge3/envs/robot_sim/lib/python3.12/site-packages/triton/__init__.py",
+            "CUDA deferred runtime state changed",
+        )
+        _require(
+            list(spec.submodule_search_locations) == [str(Path(spec.origin).parent)],
+            "CUDA deferred runtime state changed",
+        )
+        _require(
+            type(loader.delegate) is importlib.machinery.SourceFileLoader, "CUDA deferred runtime state changed"
+        )
+        _require(
+            loader.delegate.name == "triton" and loader.delegate.path == spec.origin,
+            "CUDA deferred runtime state changed",
+        )
+        operations = vars(vars(module)["_TritonLibrary"])["ops_table"]
+        _require(
+            set(operations)
+            == {("_triton_bsr_dense_mm_out", "SparseCsrCUDA"), ("_triton_bsr_dense_addmm_out", "SparseCsrCUDA")},
+            "CUDA deferred runtime state changed",
+        )
+        _require(
+            all((vars(kernel)["kernel_invoked"] is False for kernel in operations.values())),
+            "CUDA deferred runtime state changed",
+        )
+        return {"triton_events": events, "triton_executed": False}
 
     def _cuda_artifact_runtime(self, name):
         from optical_worker.native_setup import _CUDA_EXTENSION_SETS
@@ -2980,17 +3038,22 @@ class _SourceSession:
 
     def _create_cuda_artifact(self, loader, spec, frame):
         from optical_worker.native_setup import _cuda_artifact_create_exact
+        from optical_worker.native_scope import require_reader
 
         module, target, stream = self._cuda_artifact_runtime(loader.name)
         self._cuda_artifact_leaf(loader.name, "create")
-        return _cuda_artifact_create_exact(module, target, stream, loader, spec, frame)
+        with require_reader(self).operation("cuda_artifact_create"):
+            result = _cuda_artifact_create_exact(module, target, stream, loader, spec, frame)
+        return result
 
     def _exec_cuda_artifact(self, loader, extension):
         from optical_worker.native_setup import _cuda_artifact_exec_exact
+        from optical_worker.native_scope import require_reader
 
         module, target, stream = self._cuda_artifact_runtime(loader.name)
         self._cuda_artifact_leaf(loader.name, _NATIVE_EXEC_OPERATION)
-        _cuda_artifact_exec_exact(module, target, stream, loader.delegate, extension)
+        with require_reader(self).operation("cuda_artifact_exec"):
+            _cuda_artifact_exec_exact(module, target, stream, loader.delegate, extension)
 
     def _bind_cuda_artifacts(self):
         from optical_worker.native_setup import CudaExtensionSet, _CUDA_EXTENSION_SETS

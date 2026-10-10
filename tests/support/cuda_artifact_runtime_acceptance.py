@@ -712,6 +712,13 @@ def run_case(repository, revision, environment_path, environment, directory, lan
             validate_runtime_custody_attachment(record, environment, inputs, result["artifact"])
             if successful and not record.to_payload()["summary"]["input_validation_observed"]:
                 raise RuntimeError("positive native case lacks input validation")
+            if worker_case:
+                from tests.support.native_scope_acceptance import assert_native_input_scope_success
+
+                identity = json.loads((directory / "process_identity.json").read_bytes())
+                if identity["worker"]["pid"] != result["worker_pid"] or identity["supervisor"]["pid"] != process.pid:
+                    raise RuntimeError("native scope identity differs from the actual launched processes")
+                assert_native_input_scope_success(record, identity)
         else:
             raise RuntimeError("native case lacks its retained runtime custody prefix")
         return {"lane": lane, "case": case, "fault": fault, "worker_pid": result["worker_pid"],

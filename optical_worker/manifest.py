@@ -27,7 +27,7 @@ from .protocol import (
 
 _RUNTIME_CONTRACT_RELATIVE_PATH = "benchmarks/results/q54_p12_4/closed_worker_runtime_contract.json"
 _INTEGRATED_RUNTIME_CONTRACT_PATH = "optical_worker/data/integrated_worker_runtime_contract_v3.json"
-_INTEGRATED_RUNTIME_CONTRACT_SHA256 = "b3fc6ca25c2af42ceb7e8d509ed4c073a777e39512ba9cf6096c44a7f01e313c"
+_INTEGRATED_RUNTIME_CONTRACT_SHA256 = "cff830f90fca7c966916ceb43b7ad0dfebd621011df66b9aa66d313653c7ebe2"
 
 AST_POLICY = {
     "schema_version": "q54.p12.4.closed-worker-ast-policy.v1",

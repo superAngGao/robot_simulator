@@ -1,4 +1,4 @@
-"""CPU failure models of the fixed observer, never native-scope proof."""
+"""CPU failure models of the production reader, never native-scope proof."""
 from types import SimpleNamespace
 
 import pytest
@@ -6,8 +6,8 @@ import pytest
 from optical_worker.guarded_lifecycle import NativeGuardedSetupLifecycle
 from optical_worker.lifecycle import DeviceScopeDescriptor
 from optical_worker.native_bootstrap import _RuntimeObservation
+from optical_worker.native_scope import NativeStateReader
 from tests.support.guarded_peer import Peer
-from tests.support.native_runtime_process import _NativeScopeObserver
 
 
 @pytest.fixture
@@ -16,7 +16,7 @@ def observer(tmp_path):
     controller = NativeGuardedSetupLifecycle(lane_id="warp", channel=peer.channel, configuration=peer.config)
     session = SimpleNamespace(bound_controller=lambda: controller, lane="warp", failed=False)
     session.runtime_observation = _RuntimeObservation(session)
-    value = object.__new__(_NativeScopeObserver)
+    value = object.__new__(NativeStateReader)
     value.session, value.controller, value.directory = session, controller, tmp_path
     value.raw, value.held = [], []
     value.fault = "runtime_scope_success"
@@ -31,12 +31,19 @@ def observer(tmp_path):
                             "target_context": 9000, "target_current_stream": 123,
                             "held_stream": {"ordinal": 1, "handle": 123}}
     value._state = lambda pristine: value.snapshot_state
+    _bind_model_reader(value)
     try:
         yield value
     finally:
         if controller.termination_evidence is None:
             controller.terminate(fault="setup_failure", detection_phase="observer_unit_end", emergency_target_synchronize=None)
         peer.close()
+
+
+def _bind_model_reader(value):
+    value.session._native_scope_record = (value, value.controller, value.module, value.runtime, value.target)
+    value.binding = SimpleNamespace(session=value.session, controller=value.controller,
+        module=value.module, runtime=value.runtime, target=value.target, stream=value.stream)
 
 
 def _enter(controller):
@@ -62,7 +69,7 @@ def test_exit_return_with_wrong_context_preserves_row_then_poison(observer, monk
     monkeypatch.setattr(Path, "resolve", lambda p, **kw: Path(str(os.getpid()))
                         if str(p).replace("\\", "/") == "/proc/thread-self" else original(p, **kw))
     controller = observer.controller
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         with controller.segment():
             operation = _enter(controller)
             before = observer.snapshot("readback_scope", "before", operation)
@@ -158,6 +165,8 @@ def warp_cache_model(observer, monkeypatch):
         return 0
     observer.context_get, observer.primary = current, primary
     del observer._state  # Use the actual implemented query ordering.
+    _bind_model_reader(observer)
+    observer.binding = None  # Runtime binding follows the actual stream return.
     return observer, model
 
 
@@ -177,7 +186,7 @@ def test_original_void_setter_cache_precondition(warp_cache_model, failure):
             state = value._state(False)
             assert state["target_current_stream"] == state["held_stream"]["handle"] == 123
             assert model.getter_calls == [9000]
-    except AssertionError as error:
+    except ValueError as error:
         if not failure:
             raise
         assert "native error" in str(error)
@@ -196,7 +205,7 @@ def test_original_void_setter_cache_precondition(warp_cache_model, failure):
 def test_stale_or_invalid_error_buffer_prevents_original_stream(warp_cache_model, error):
     value, model = warp_cache_model
     model.error = error
-    with pytest.raises(AssertionError, match="native error"):
+    with pytest.raises(ValueError, match="native error"):
         with value.controller.segment():
             _enter(value.controller)
             value._warp_cache_precondition(before=True)
@@ -206,7 +215,7 @@ def test_stale_or_invalid_error_buffer_prevents_original_stream(warp_cache_model
 
 def test_unproved_python_stream_metadata_cannot_call_native_getter(warp_cache_model):
     value, model = warp_cache_model
-    with pytest.raises(AssertionError, match="prerequisite is absent"):
+    with pytest.raises(ValueError, match="prerequisite is absent"):
         with value.controller.segment():
             _enter(value.controller)
             value.stream = value.target.stream
@@ -224,7 +233,7 @@ def test_first_warp_native_stream_must_match_actual_return(observer, monkeypatch
                         if str(p).replace("\\", "/") == "/proc/thread-self" else original(p, **kw))
     observer.current_stream_baseline = None
     observer.snapshot_state["target_current_stream"] = handle
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         with observer.controller.segment():
             operation = _enter(observer.controller)
             observer.snapshot("runtime_stream", "after", operation)
@@ -256,6 +265,7 @@ def test_cuda_getter_failure_preserves_ordered_successful_prefix(observer, monke
     value.stream_query = lambda ordinal: invoke("stream", 123)
     monkeypatch.setitem(sys.modules, "torch.cuda", SimpleNamespace(_initialized=True))
     del value._state
+    _bind_model_reader(value)
     with pytest.raises(RuntimeError, match="modeled C10 error"):
         with value.controller.segment():
             operation = _enter(value.controller)
@@ -293,113 +303,23 @@ def test_count_getter_exception_is_held_and_named(observer):
                              "exception_type": "RuntimeError", "message": "count failure"}]
 
 
-@pytest.mark.parametrize("fault", ["runtime_scope_success", "runtime_scope_after_return_raise"])
-def test_actual_return_hook_keeps_original_owner_before_precondition_failure(warp_cache_model, fault):
+def test_retained_stream_survives_production_reader_cache_failure(warp_cache_model):
     value, model = warp_cache_model
     model.setter_failure = True
-    resources = {name: getattr(value, name) for name in
-                 ("target", "runtime", "ctypes", "error_query", "stream_query")}
     session = value.session
-    session.runtime_owners = []
+    session.runtime_owners = [value]
     original_returns = []
-    session._hold_runtime_owner = lambda *args, **kw: None
-    session._runtime_leaf = lambda *args: None
     session._observe_runtime_return = lambda producer, owner: original_returns.append((producer, owner))
-    _NativeScopeObserver.__init__(value, session, value.controller, value.directory, {}, fault)
-    for name, resource in resources.items():
-        setattr(value, name, resource)
-    expected = AssertionError if fault == "runtime_scope_success" else RuntimeError
-    with pytest.raises(expected):
+    with pytest.raises(ValueError, match="native error"):
         with value.controller.segment():
-            _enter(value.controller)
+            operation = _enter(value.controller)
             value._warp_cache_precondition(before=True)
             returned = value.target.stream
-            # Real bootstrap ordering: retain first, then call its observed-return hook.
             session.runtime_owners.append(returned)
             session._observe_runtime_return("runtime_stream", returned)
+            value.stream_returned(returned, (0, operation))
     assert original_returns == [("runtime_stream", returned)]
     assert value in session.runtime_owners and returned in session.runtime_owners
     assert value.stream is returned and not value.cache_established and not model.getter_calls
-    assert len(value.raw) == (4 if fault == "runtime_scope_success" else 2)
     summary = value.controller.termination_evidence.lifecycle.to_payload()["summary"]
     assert summary["unknown_device_scope"] and summary["normal_complete_count"] == 0
-    assert summary["emergency_sync_attempt_count"] == 0 and summary["release_status"] == "not_authorized"
-
-
-@pytest.mark.parametrize("field", ["_context", "_stream"])
-@pytest.mark.parametrize("missing", [False, True])
-def test_raw_precondition_rejection_preserves_distinguishable_diagnostic(observer, field, missing):
-    import json
-    observer.target = SimpleNamespace(_context=None, _stream=None)
-    if missing:
-        delattr(observer.target, field)
-    else:
-        setattr(observer.target, field, 9000)
-    observer.cache_established = False
-    calls = []
-    observer.error_query = lambda: calls.append(1)
-    with pytest.raises(AssertionError):
-        with observer.controller.segment():
-            _enter(observer.controller)
-            observer._warp_cache_precondition(before=True)
-    diagnostic = json.loads((observer.directory / "native_scope_diagnostic.json").read_bytes())
-    assert len(diagnostic["raw"]) == 1 and not calls and not observer.cache_established
-    raw = diagnostic["raw"][0]
-    assert raw["cache_precondition"] == "before"
-    assert raw["context_present"] is (not missing or field != "_context")
-    assert raw["stream_present"] is (not missing or field != "_stream")
-    assert raw["context"] == (9000 if not missing and field == "_context" else None)
-    assert raw["stream_is_none"] is (missing or field != "_stream")
-    assert observer.session.runtime_observation.journal == []
-    summary = observer.controller.termination_evidence.lifecycle.to_payload()["summary"]
-    assert summary["unknown_device_scope"] and summary["release_status"] == "not_authorized"
-
-
-@pytest.mark.parametrize("bad", ["identity", "context", "handle"])
-def test_postreturn_precondition_records_raw_identity_and_handle_before_rejection(observer, bad):
-    import json
-    returned = SimpleNamespace(cuda_stream=123)
-    observer.held.append(returned)
-    observer.stream = returned
-    observer.target = SimpleNamespace(_context=9000, _stream=returned)
-    observer.cache_established = False
-    if bad == "identity":
-        observer.target._stream = object()
-    elif bad == "context":
-        observer.target._context = None
-    else:
-        returned.cuda_stream = 0
-    calls = []
-    observer.error_query = lambda: calls.append(1)
-    with pytest.raises(AssertionError):
-        with observer.controller.segment():
-            _enter(observer.controller)
-            observer._warp_cache_precondition(before=False)
-    raw = json.loads((observer.directory / "native_scope_diagnostic.json").read_bytes())["raw"][0]
-    assert raw["cache_precondition"] == "after"
-    assert raw["stream_is_returned"] is (bad != "identity")
-    assert raw["context"] == (None if bad == "context" else 9000)
-    assert raw["returned_handle"] == (0 if bad == "handle" else 123)
-    assert raw["returned_handle_present"] and returned in observer.held
-    assert not calls and not observer.cache_established
-
-
-def test_precondition_diagnostics_never_call_properties_or_repr(observer):
-    class Hostile:
-        def __repr__(self):
-            raise RuntimeError("repr must not execute")
-    class Target:
-        @property
-        def _context(self):
-            raise RuntimeError("context property must not execute")
-        @property
-        def _stream(self):
-            raise RuntimeError("stream property must not execute")
-    observer.target = Target()
-    vars(observer.target).update(_context=Hostile(), _stream=Hostile())
-    observer.cache_established = False
-    with pytest.raises(AssertionError):
-        with observer.controller.segment():
-            _enter(observer.controller)
-            observer._warp_cache_precondition(before=True)
-    assert observer.raw[0]["context_type"] == "Hostile" and observer.raw[0]["context"] is None

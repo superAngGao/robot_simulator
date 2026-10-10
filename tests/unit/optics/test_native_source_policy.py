@@ -290,10 +290,39 @@ assert not set(sys.modules) & {{'numpy', 'torch', 'warp', 'optics', 'benchmarks'
     subprocess.run([sys.executable, "-I", "-S", "-c", script], check=True, timeout=20)
     assert AST_POLICY["schema_version"].endswith("v1")
     assert AST_POLICY_SHA256 == canonical_sha256(AST_POLICY)
-    assert NATIVE_AST_POLICY_VERSION.endswith("v17")
+    assert NATIVE_AST_POLICY_VERSION.endswith("v18")
     assert NATIVE_AST_POLICY_SHA256 != AST_POLICY_SHA256
     with pytest.raises(ClosedWorkerProtocolError, match="forbidden module"):
         validate_trusted_source_ast(ROOT / RENDERER)
+
+
+@pytest.mark.parametrize("change", [
+    ("cudaGetDevice", "cudaSetDevice"),
+    ("cuCtxGetCurrent", "cuCtxSetCurrent"),
+    ("RTLD_NOLOAD", "RTLD_NOW"),
+    ("libcuda.so.595.71.05", "libcuda.so.1"),
+    ("self.count == 8", "self.count >= 1"),
+])
+def test_reader_exception_rejects_caller_rehashed_changes(change):
+    path = "optical_worker/native_scope.py"
+    source = subprocess.check_output(["git", "show", f"HEAD:{path}"], cwd=ROOT, timeout=20)
+    _check(source, path)
+    changed = source.replace(change[0].encode(), change[1].encode())
+    assert changed != source
+    with pytest.raises(ClosedWorkerProtocolError):
+        _check(changed, path)
+    with pytest.raises(ClosedWorkerProtocolError):
+        _check(source, "optical_worker/transferred_reader.py")
+
+
+def test_reader_definition_import_does_not_load_ffi_or_native_runtime():
+    script = f"""
+import sys
+sys.path.insert(0, {str(ROOT)!r})
+import optical_worker.native_scope
+assert not set(sys.modules) & {{'ctypes', '_ctypes', 'numpy', 'torch', 'warp'}}
+"""
+    subprocess.run([sys.executable, "-I", "-S", "-c", script], check=True, timeout=20)
 
 
 def test_cleanup_obligation_and_old_worker_gate_remain_explicit():

@@ -24,7 +24,7 @@ from .protocol import (
 
 NATIVE_SOURCE_CATALOG_VERSION = "q54.p12.4.native-component-source-catalog.v8"
 NATIVE_SOURCE_SNAPSHOT_VERSION = "q54.p12.4.native-component-source-snapshot.v1"
-CATALOG_PATH = "optical_worker/data/native_sources/v17.json"
+CATALOG_PATH = "optical_worker/data/native_sources/v18.json"
 
 # Deliberate literal inventory, not filesystem discovery. Includes eager
 # physics/sensing package initialization, even where the requested leaf is CPU.
@@ -47,6 +47,7 @@ _COMMON = (
     "optical_worker/native_manifest.py",
     "optical_worker/native_readback.py",
     "optical_worker/native_setup.py",
+    "optical_worker/native_scope.py",
     "optical_worker/native_source_policy.py",
     "optical_worker/native_sources.py",
     "optical_worker/protocol.py",

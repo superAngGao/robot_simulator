@@ -4,7 +4,7 @@
   "trust_model_version": "q54.p12.4.closed-worker-trust-model.v2",
   "state_machine_version": "q54.p12.4.closed-worker-state-machine.v3",
   "guard_protocol_version": "q54.closed-worker.guarded-wait.v1",
-  "source_catalog_relative_path": "optical_worker/data/native_sources/v17.json",
+  "source_catalog_relative_path": "optical_worker/data/native_sources/v18.json",
   "worker_script_relative_path": "optical_worker/native_bootstrap.py",
   "control_idle_timeout_ms": 120000,
   "response_write_timeout_ms": 30000,

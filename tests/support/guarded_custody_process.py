@@ -423,6 +423,12 @@ def _read_worker_lifecycle(directory, *, native_worker_mode):
     return worker
 
 
+def _process_identity(pid):
+    stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    fields = stat[stat.rindex(")") + 2:].split()
+    return {"pid": pid, "ppid": int(fields[1]), "start_ticks": int(fields[19])}
+
+
 def supervise(fault, liveness_fd, directory):
     source_mode = fault in SOURCE_FAULTS
     runtime_mode = fault in RUNTIME_FAULTS
@@ -480,6 +486,11 @@ def supervise(fault, liveness_fd, directory):
     injected = False
     parent_alive = True
     try:
+        if native_worker_mode:
+            mark(directory, "process_identity.json", json.dumps({
+                "worker": _process_identity(process.pid), "supervisor": _process_identity(os.getpid()),
+                "parent": _process_identity(os.getppid()),
+            }))
         while True:
             if time.monotonic() - started > outer_bound:
                 raise RuntimeError("outer test fail-bound; NOT successful supervisor termination")

@@ -7,6 +7,8 @@ and calls this once. No runtime discovery, callback or fallback synchronization.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 from .guarded_lifecycle import NativeGuardedSetupLifecycle
 from .lifecycle import DeviceScopeDescriptor
 from .native_contract import (
@@ -15,6 +17,7 @@ from .native_contract import (
     assert_prepared_storage_registered,
     warp_dtype_from_host_dtype,
 )
+from .native_scope import reader_for_input
 from .native_setup import (
     _array_operation_id,
     _descriptor,
@@ -48,6 +51,7 @@ def _readback_prepared_native_input(source, prepared, *, lifecycle, runtime, tar
     if type(lifecycle) is not NativeGuardedSetupLifecycle:
         raise TypeError("validation readback requires the exact guarded lifecycle")
     lifecycle._require_setup()
+    reader = reader_for_input(lifecycle, runtime, target, stream, phase="validating_input")
     if type(prepared) not in (CudaPreparedNativeInput, WarpPreparedNativeInput):
         raise TypeError("validation readback requires exact registered prepared input")
     if prepared.backend != lifecycle._lane_id:
@@ -83,8 +87,11 @@ def _readback_prepared_native_input(source, prepared, *, lifecycle, runtime, tar
     # The real Warp D2H helper's native ContextGuard does not restore a prior
     # null context. Keep its indexed work inside the runtime's restoring scope.
     # The report remains held on error and is returned only after scope exit.
-    with runtime.ScopedDevice(target):
-        report = _readback_held_input(source, prepared, lifecycle, runtime, target, stream, cuda, retained)
+    with reader.outer_scope("readback_scope") if reader is not None else nullcontext():
+        with runtime.ScopedDevice(target):
+            report = _readback_held_input(
+                source, prepared, lifecycle, runtime, target, stream, cuda, retained
+            )
     return report
 
 
@@ -107,6 +114,8 @@ def _readback_held_input(source, prepared, lifecycle, runtime, target, stream, c
 def _readback_native_arrays(arrays, lifecycle, runtime, target, stream, cuda, retained):
     """Shared setup D2H body; caller retains the list and owns the active guard."""
     import numpy as np
+
+    reader = reader_for_input(lifecycle, runtime, target, stream, phase="validating_input")
 
     observations = []
     retained.append(observations)
@@ -138,9 +147,11 @@ def _readback_native_arrays(arrays, lifecycle, runtime, target, stream, cuda, re
             "torch_copy_explicit_stream_v1" if cuda else "warp_copy_explicit_stream_v1",
         )
         if cuda:
-            _torch_copy_exact(runtime, view, device_array, stream)
+            with reader.operation("copy") if reader is not None else nullcontext():
+                _torch_copy_exact(runtime, view, device_array, stream)
         else:
-            _warp_copy_exact(runtime, view, device_array, stream)
+            with reader.operation("copy") if reader is not None else nullcontext():
+                _warp_copy_exact(runtime, view, device_array, stream)
         observations.append((name, host))
 
     _leaf(
@@ -149,7 +160,10 @@ def _readback_native_arrays(arrays, lifecycle, runtime, target, stream, cuda, re
         "event_create",
         "torch_cuda_event_v1" if cuda else "warp_event_explicit_device_v1",
     )
-    event = _torch_event_exact(runtime) if cuda else _warp_event_exact(runtime, target=target)
+    with reader.operation("event_create") if reader is not None else nullcontext():
+        event = _torch_event_exact(runtime) if cuda else _warp_event_exact(runtime, target=target)
+        if reader is not None:
+            reader.hold_returned(event)
     retained.append(event)
     lifecycle.adopt_returned_device_owner(
         event,
@@ -165,9 +179,11 @@ def _readback_native_arrays(arrays, lifecycle, runtime, target, stream, cuda, re
         "torch_event_record_indexed_stream_v1" if cuda else "warp_stream_record_event_v1",
     )
     if cuda:
-        _torch_record_event_exact(event, stream)
+        with reader.operation("event_record") if reader is not None else nullcontext():
+            _torch_record_event_exact(event, stream)
     else:
-        _warp_record_event_exact(stream, event)
+        with reader.operation("event_record") if reader is not None else nullcontext():
+            _warp_record_event_exact(stream, event)
     actual_ordinal = _event_ordinal(event, cuda=cuda, lifecycle=lifecycle)
     if actual_ordinal != lifecycle.target_device_ordinal:
         # The next wait would touch this observed device. Commit that scope
@@ -190,8 +206,10 @@ def _readback_native_arrays(arrays, lifecycle, runtime, target, stream, cuda, re
         "torch_event_synchronize_v1" if cuda else "warp_synchronize_event_v1",
     )
     if cuda:
-        _torch_wait_event_host_exact(event)
+        with reader.operation("event_wait") if reader is not None else nullcontext():
+            _torch_wait_event_host_exact(event)
     else:
-        _warp_wait_event_host_exact(runtime, event)
+        with reader.operation("event_wait") if reader is not None else nullcontext():
+            _warp_wait_event_host_exact(runtime, event)
 
     return observations
