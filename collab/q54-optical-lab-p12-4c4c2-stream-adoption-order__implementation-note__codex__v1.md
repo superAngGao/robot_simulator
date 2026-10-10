@@ -67,7 +67,16 @@ bootstrap7822eba259d80919cb5791e884d1084b4c099ba3fa5bf78fe3c6e38cc962546c;
 catalog0433890aa9f5720001e91426c8bd37bb9061370338f56861a22f852dce5297cc.
 Ruff comparison: bootstrap76 existing diagnostics both revisions; binding2
 before/1after, no new diagnostics. This is not a clean full lint result.
-Whitespace check passes. Full source/bootstrap regression is separately running.
+Whitespace check passes. Full local source/bootstrap/policy/custody regression
+completed317passed,13skipped in371.07s. The13 Windows skips (real Go2 input,
+actual POSIX release bytes/entry and pinned CPython3.12 generated stdlib)
+were separately run on primary183's exact frozen cf7f5a6 checkout:
+13passed/no skips in37.41s. Remote evidence prefix
+`/data2/shared/ang.gao/c4-stream-order-cpu-cf7f5a6-v1`; runner2853810 and
+pytest2853817 both absent in scoped OS/GPU closure, clean tracked checkout.
+Local pytest34544 exited0; it and its last observed child36624 are absent.
+Local log: `c4_assets/stream_adoption_order_source_regression_v1.txt`.
+Remote launch/exit/closure/stdout/stderr were copied into local c4_assets.
 
 Frozen independent checkout: `C:/Users/AG/新建文件夹/c4_stream_adoption_order_review`.
 Fresh built-in reviewer creation again returned agent thread limit reached;
