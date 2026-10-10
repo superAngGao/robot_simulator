@@ -1994,6 +1994,15 @@ Next milestone:
       Implementation-notev2 records that failure and the separate fixture repair;
       the two affected/previously unrun files then pass82 CPU cases. Clean exact5d deployment is ready on
       the primary server. Formal speed comparison remains closed.
+      Preflightv2 closes the original13 counterexamples but requests changes
+      for two further caught-failure routes: raw query errors and registered
+      upload-context field rejection. Candidate df1a46a consolidates their
+      failure handling at existing shared entries. Committed CPU regression
+      passes381; all17 original v2 repros pass; exact server CPU Go2/POSIX
+      supplement passes4 without skips. The separate binding fixture delta
+      has independent test-only approval. Full reports are archived unchanged.
+      Fresh independent preflightv3 is running, with no new native execution;
+      implementation-notev3 records exact candidate, evidence and pending work.
       R1/full C4 follow-up and fresh whole review remain mandatory.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
