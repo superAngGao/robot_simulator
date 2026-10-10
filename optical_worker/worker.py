@@ -40,6 +40,12 @@ def _no_legacy_abort(_device_ordinal):
     raise ClosedWorkerProtocolError("integrated workers cannot use the legacy A/K channel")
 
 
+def _audit_repository_imports(manifest, source):
+    # Captured native sources already audit exact loaded identities and paths.
+    # The C0 file scan can mistake external namespace labels for repository files.
+    return validate_repository_import_ledger(manifest) if source is None else source.audit()
+
+
 @dataclass(eq=False, slots=True)
 class _WorkerSample:
     index: int
@@ -260,8 +266,8 @@ class ClosedWorkerSession:
                 session_identity=self._session_identity,
             )
         else:
-            self._require_native_binding().audit()
-        repository_paths = validate_repository_import_ledger(self._manifest)
+            self._require_native_binding()
+        repository_paths = _audit_repository_imports(self._manifest, self._native_source)
         executable_digest = hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest()
         evidence = ClosedNativeLaneWorkerEvidence(
             schema_version=(CLOSED_WORKER_EVIDENCE_VERSION if self._native_source is None
@@ -601,7 +607,7 @@ def run_worker_loop(
             raise BrokenPipeError("abort-watchdog acknowledgement is missing or invalid")
         abort_signaled = True
 
-    validate_repository_import_ledger(manifest)
+    _audit_repository_imports(manifest, _source_session)
     session = (ClosedWorkerSession(manifest, emergency_sync_notifier=signal_abort_start)
                if _source_session is None else _source_session.open_worker(manifest))
     while True:
@@ -626,9 +632,7 @@ def run_worker_loop(
                 if isinstance(candidate, int) and not isinstance(candidate, bool) and candidate >= 0:
                     sequence = candidate
             response = session.handle(raw)
-            if _source_session is not None:
-                _source_session.audit()
-            validate_repository_import_ledger(manifest)
+            _audit_repository_imports(manifest, _source_session)
             frame = encode_framed_message(response, max_bytes=MAX_RESPONSE_BYTES)
             _write_all(
                 command_descriptor,

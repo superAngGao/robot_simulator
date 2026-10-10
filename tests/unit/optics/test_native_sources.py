@@ -136,6 +136,43 @@ print(observed)
 
 
 @pytest.mark.parametrize("lane", ["warp", "cuda"])
+def test_native_audit_ignores_namespace_labels_but_rejects_actual_unlisted_files(release, lane):
+    _cold(release, """
+import os
+from types import ModuleType, SimpleNamespace
+from optical_worker.manifest import validate_repository_import_ledger
+from optical_worker.worker import _audit_repository_imports
+os.chdir(snapshot.repository_root)
+manifest = SimpleNamespace(repository_root=str(snapshot.repository_root), source_digests=snapshot.sources)
+before = snapshot.check_loaded_modules()
+class Namespace(ModuleType):
+    __file__ = '_ops.py'  # Matches the pinned Torch namespace class attribute.
+    def __getattr__(self, name):
+        raise AssertionError('source audit invoked lazy namespace metadata')
+sys.modules['external_namespace_probe'] = Namespace('external_namespace_probe')
+try:
+    validate_repository_import_ledger(manifest)
+except ClosedWorkerProtocolError as error:
+    assert "'_ops.py'" in str(error)
+else:
+    raise AssertionError('old C0 scanner did not reproduce the observed mismatch')
+source = SimpleNamespace(audit=snapshot.check_loaded_modules)
+assert _audit_repository_imports(manifest, source) == before
+actual = ModuleType('unlisted_repository_file')
+actual.__file__ = str(snapshot.repository_root / 'unlisted_worker_probe.py')
+sys.modules[actual.__name__] = actual
+try:
+    _audit_repository_imports(manifest, source)
+except ClosedWorkerProtocolError as error:
+    assert 'outside lane source catalog' in str(error)
+else:
+    raise AssertionError('actual unlisted repository path escaped native audit')
+assert not set(sys.modules) & {'numpy', 'torch', 'warp'}
+print('native_namespace_ledger_checked')
+""", lane=lane, cpu_only=True)
+
+
+@pytest.mark.parametrize("lane", ["warp", "cuda"])
 def test_real_go2_cpu_materialization_has_no_unlisted_imports(release, lane):
     asset = os.environ.get("ROBOT_SIM_TEST_GO2_MODEL_DIR")
     if not asset:

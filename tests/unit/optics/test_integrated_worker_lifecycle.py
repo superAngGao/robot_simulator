@@ -117,6 +117,29 @@ def run_sample(worker, index):
     request(worker, "RELEASE_RESOLVED_SAMPLE", resolved_token=resolved["resolved_token"])
 
 
+def test_native_hello_uses_the_captured_ledger(bound_worker, monkeypatch):
+    from optical_worker import worker as worker_module
+
+    worker = bound_worker
+    paths, calls = ("optical_worker/worker.py",), []
+
+    def audit():
+        calls.append(True)
+        return paths
+
+    def forbidden_legacy_scan(manifest):
+        raise AssertionError("native HELLO used the C0 scanner")
+
+    monkeypatch.setattr(worker._native_source, "audit", audit)
+    monkeypatch.setattr(worker_module, "validate_repository_import_ledger", forbidden_legacy_scan)
+    response = request(worker, "HELLO", manifest_sha256=worker._manifest.sha256,
+                       lane_id=worker._manifest.lane_id, device_ordinal=worker._manifest.device_ordinal)
+    evidence = response["payload"]["worker_evidence"]
+    assert calls == [True]
+    assert evidence["repository_module_paths"] == paths
+    assert evidence["repository_import_ledger_sha256"] == p.canonical_sha256(list(paths))
+
+
 def test_two_samples_reclaim_before_close_and_release_only_after_written_ack(worker_graph):
     x = worker_graph
     for index in range(2):

@@ -3695,6 +3695,7 @@ class _SourceSession:
                 ),
                 "execution trace drift",
             )
+            observed = ()
             if self.snapshot is not None:
                 observed = self.snapshot.check_loaded_modules()
                 executed = {expected[name] for name in self.modules}
@@ -3703,6 +3704,7 @@ class _SourceSession:
                 controller = self.bound_controller()
                 controller.require_adopted(self, self.snapshot, self.bootstrap_owner)
                 controller.require_adopted(*(record[0] for record in self.modules.values()))
+            return observed
         except BaseException as error:
             self.fail(error)
             raise

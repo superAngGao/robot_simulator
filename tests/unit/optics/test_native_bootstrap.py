@@ -109,6 +109,21 @@ def test_actual_source_entry(release, lane):
 
 
 @pytest.mark.parametrize("lane", ["warp", "cuda"])
+def test_source_audit_returns_its_actual_verified_repository_paths(release, lane):
+    result = _internal(release, lane=lane, after="""
+entry._verify(session)
+observed = session.audit()
+assert type(observed) is tuple
+assert observed == session.snapshot.check_loaded_modules()
+assert set(observed) == {session.admitted_sources()[name] for name in session.modules} | {entry._BOOTSTRAP}
+assert not set(sys.modules) & {'numpy', 'torch', 'warp'}
+print('actual_source_paths_checked')
+""")
+    assert result[0] == 0, result[2].decode()
+    assert result[1].splitlines() == [b"actual_source_paths_checked"]
+
+
+@pytest.mark.parametrize("lane", ["warp", "cuda"])
 def test_captured_inspect_uses_held_source_before_execution_and_after_disk_change(release, lane):
     result = _internal(
         release, lane=lane,

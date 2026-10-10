@@ -280,6 +280,7 @@ def test_symlink_file_or_parent_rejected(tmp_path, directory):
 def test_cold_import_remains_cpu_only_and_does_not_mutate_c0_policy():
     script = f"""
 import sys
+assert sys.dont_write_bytecode
 sys.path.insert(0, {str(ROOT)!r})
 from optical_worker.manifest import AST_POLICY, AST_POLICY_SHA256
 before = repr(AST_POLICY), AST_POLICY_SHA256
@@ -287,7 +288,7 @@ import optical_worker.native_source_policy
 assert (repr(AST_POLICY), AST_POLICY_SHA256) == before
 assert not set(sys.modules) & {{'numpy', 'torch', 'warp', 'optics', 'benchmarks'}}
 """
-    subprocess.run([sys.executable, "-I", "-S", "-c", script], check=True, timeout=20)
+    subprocess.run([sys.executable, "-I", "-S", "-B", "-c", script], check=True, timeout=20)
     assert AST_POLICY["schema_version"].endswith("v1")
     assert AST_POLICY_SHA256 == canonical_sha256(AST_POLICY)
     assert NATIVE_AST_POLICY_VERSION.endswith("v18")
@@ -318,11 +319,12 @@ def test_reader_exception_rejects_caller_rehashed_changes(change):
 def test_reader_definition_import_does_not_load_ffi_or_native_runtime():
     script = f"""
 import sys
+assert sys.dont_write_bytecode
 sys.path.insert(0, {str(ROOT)!r})
 import optical_worker.native_scope
 assert not set(sys.modules) & {{'ctypes', '_ctypes', 'numpy', 'torch', 'warp'}}
 """
-    subprocess.run([sys.executable, "-I", "-S", "-c", script], check=True, timeout=20)
+    subprocess.run([sys.executable, "-I", "-S", "-B", "-c", script], check=True, timeout=20)
 
 
 def test_cleanup_obligation_and_old_worker_gate_remain_explicit():
