@@ -425,3 +425,69 @@ def runtime_manifest(tmp_path):
         "gpu_preparation_enabled": False,
     }
     return ClosedWorkerRuntimeManifest.from_payload(json.loads(canonical_json_bytes(payload)))
+
+
+@pytest.mark.parametrize("boundary", ["read_idle", "close_ack_write"])
+def test_worker_loop_timeout_preserves_fault_and_terminates_session(runtime_manifest, monkeypatch, boundary):
+    from optical_worker import worker
+    from optical_worker.protocol import FRAME_HEADER_BYTES, encode_framed_message
+
+    session = ClosedWorkerSession(runtime_manifest, emergency_sync_notifier=_noop_abort_notifier)
+    requests = [
+        ("HELLO", {"manifest_sha256": runtime_manifest.sha256,
+                   "lane_id": runtime_manifest.lane_id, "device_ordinal": runtime_manifest.device_ordinal}),
+        ("OPEN_FROZEN_SESSION", {"gate_sha256": runtime_manifest.gate_sha256,
+                                 "workload_set_sha256": runtime_manifest.workload_set_sha256}),
+    ]
+    if boundary == "close_ack_write":
+        requests.append(("CLOSE_SESSION", {}))
+    chunks = []
+    for sequence, (operation, arguments) in enumerate(requests):
+        frame = encode_framed_message({"protocol_version": CLOSED_WORKER_PROTOCOL_VERSION,
+                                      "sequence": sequence, "operation": operation, "arguments": arguments},
+                                     max_bytes=MAX_REQUEST_BYTES)
+        chunks.extend((frame[:FRAME_HEADER_BYTES], frame[FRAME_HEADER_BYTES:]))
+    incoming = iter(chunks)
+    responses, journal = [], []
+    message = "control channel idle timeout" if boundary == "read_idle" else "response write timeout"
+    failure = TimeoutError(message)
+    write_attempts = 0
+
+    def read(descriptor, size, **kwargs):
+        try:
+            chunk = next(incoming)
+        except StopIteration:
+            raise failure
+        assert len(chunk) == size
+        return chunk
+
+    def write(descriptor, frame, **kwargs):
+        nonlocal write_attempts
+        write_attempts += 1
+        if boundary == "close_ack_write" and write_attempts == 3:
+            assert session._state == "CLOSE_ACK_PENDING"
+            assert session.termination_evidence is None
+            raise failure
+        responses.append(decode_canonical_message(frame[FRAME_HEADER_BYTES:], max_bytes=len(frame)))
+
+    monkeypatch.setattr(worker, "ClosedWorkerSession", lambda *args, **kwargs: session)
+    monkeypatch.setattr(worker, "_read_exact", read)
+    monkeypatch.setattr(worker, "_write_all", write)
+    monkeypatch.setattr(worker, "_journal", lambda descriptor, record: journal.append(record))
+    assert worker.run_worker_loop(
+        command_descriptor=-1, liveness_descriptor=-1, journal_descriptor=-1,
+        abort_signal_descriptor=-1, abort_ack_descriptor=-1, manifest=runtime_manifest,
+    ) == 64
+    fault = "control_idle_timeout" if boundary == "read_idle" else "response_write_timeout"
+    assert journal[0] == {"kind": "worker_loop_fault", "fault": fault,
+                          "exception_type": "TimeoutError", "message": message}
+    assert len(responses) == 3 and responses[-1]["status"] == "error"
+    assert responses[-1]["payload"]["code"] == "TimeoutError"
+    assert responses[-1]["payload"]["message"] == message
+    assert session.terminal and session._state == "TERMINATED"
+    evidence = session.termination_evidence
+    assert evidence is not None
+    validate_transport_termination_evidence(evidence)
+    assert evidence.disposition == "cancelled_before_submission_exit"
+    assert evidence.emergency_sync_attempt_count == 0
+    assert journal[-1]["kind"] == "transport_termination"

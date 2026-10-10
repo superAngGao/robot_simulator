@@ -373,7 +373,8 @@ def run_worker_loop(
             if session.hard_exit_required:
                 os._exit(74)
             return 66
-        except TimeoutError as exc:
+        except TimeoutError as timeout:
+            exc = timeout
             fault = "control_idle_timeout" if "idle" in str(exc) else "response_write_timeout"
         except EOFError:
             exc = EOFError("control channel EOF")
