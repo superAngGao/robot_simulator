@@ -357,8 +357,21 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
             if (record is None or record.state != "COMPLETION_RECORDED"
                     or owner is not record.active or transaction is not owner._transaction
                     or event is not owner.completion.event or stream is not worker._graph.stream
-                    or target is not worker._graph.target or self._worker_resolution is not None):
+                    or self._worker_resolution is not None):
                 self._reject_closed_entry("terminal wait is not the worker's exact pending sample")
+            retained_target = worker._graph.target
+            if self._lane_id == "cuda":
+                # torch.device is an indexed value constructed by the context,
+                # not the guardian-owned runtime target object. Bind that value
+                # through the exact sealed context, then use the retained target.
+                context = worker._graph.factory.context
+                valid_target = (transaction._context is context and target is context.device
+                                and context.stream is stream and target == retained_target)
+            else:
+                valid_target = target is retained_target
+            if not valid_target:
+                self._reject_closed_entry("terminal wait differs from its bound runtime target")
+            target = retained_target
         ordinal = target.index if self._lane_id == "cuda" else target.ordinal
         if (self.target_device_ordinal != ordinal or self.unknown_device_scope
                 or self.possible_dirty_device_ordinals != (ordinal,)

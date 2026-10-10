@@ -117,6 +117,70 @@ def run_sample(worker, index):
     request(worker, "RELEASE_RESOLVED_SAMPLE", resolved_token=resolved["resolved_token"])
 
 
+@pytest.fixture
+def cuda_device_values(graph_session, monkeypatch):
+    """Torch device construction returns an equal value, not a retained handle."""
+    from copy import copy
+
+    from optics import cuda_timeline
+
+    f = graph_session.f
+    original_scope = f.p.runtime.cuda.device
+    monkeypatch.setattr(f.p.runtime, "device", lambda value: copy(f.p.device))
+
+    def scope(value):
+        assert value == f.p.device
+        return original_scope(f.p.device)
+
+    monkeypatch.setattr(f.p.runtime.cuda, "device", scope)
+    # The shared CPU fixture constructs its context without __init__. Model
+    # the actual constructor before any provisional/final templates are sealed.
+    monkeypatch.setattr(cuda_timeline, "_require_torch_cuda", lambda: None)
+    constructed = cuda_timeline.CudaOpticalExecutionContext(device=f.p.device, stream=f.stream)
+    f.session.cuda_factories[0].device = constructed.device
+
+
+@pytest.mark.parametrize("fixed_inputs", ["cuda"], indirect=True)
+def test_cuda_resolve_retains_bound_target_with_distinct_device_value(cuda_device_values, worker_graph):
+    x = worker_graph
+    context = x.final_graph.factory.context
+    assert context.device == x.final_graph.target
+    assert context.device is not x.final_graph.target
+    for index in range(2):
+        run_sample(x.worker, index)
+    assert x.worker._state == "DRAINED_IDLE"
+    assert len([kind for kind, _ in x.sample_calls if kind == "wait"]) == 2
+    assert x.controller._replay.sync_count == 0
+
+
+@pytest.mark.parametrize("fixed_inputs", ["cuda"], indirect=True)
+@pytest.mark.parametrize("changed", ["target", "stream", "event", "transaction", "owner", "context"])
+def test_cuda_resolve_rejects_replaced_wait_objects(cuda_device_values, worker_graph, monkeypatch, changed):
+    from copy import copy
+
+    from optical_worker.lifecycle import WorkerSetupProtocolError
+
+    x = worker_graph
+    record = x.worker._samples[0]
+    pending = request(x.worker, "EXECUTE_PREPARED_SAMPLE", prepared_token=record.prepared_token)["payload"]
+    original = x.controller.observe_terminal_completion
+
+    def replaced(**arguments):
+        if changed == "context":
+            arguments["transaction"]._context = copy(arguments["transaction"]._context)
+        elif changed == "owner":
+            arguments[changed] = object.__new__(type(arguments[changed]))
+        else:
+            arguments[changed] = copy(arguments[changed])
+        return original(**arguments)
+
+    monkeypatch.setattr(x.controller, "observe_terminal_completion", replaced)
+    with pytest.raises(WorkerSetupProtocolError, match="terminal wait"):
+        request(x.worker, "RESOLVE_PREPARED_SAMPLE", pending_token=pending["pending_token"])
+    assert not [kind for kind, _ in x.sample_calls if kind == "wait"]
+    assert x.controller._worker_resolution is None
+
+
 def test_native_hello_uses_the_captured_ledger(bound_worker, monkeypatch):
     from optical_worker import worker as worker_module
 
