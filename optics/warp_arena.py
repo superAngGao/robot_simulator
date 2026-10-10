@@ -463,6 +463,12 @@ class WarpNativeOpticalArena:
         ):
             raise NativeOpticalArenaProtocolError("Warp stream or native event binding changed")
 
+    def begin_drain(self):
+        self._control.begin_drain()
+
+    def close(self):
+        self._control.close()
+
     def lifecycle_evidence(self):
         return self._control.lifecycle_evidence()
 

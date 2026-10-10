@@ -239,6 +239,48 @@ def test_shared_phase_order_and_two_generations(build_arena, diagnostic):
     assert sum(kind == "record" for kind, _ in x.calls) == 2 * (7 if diagnostic else 1)
 
 
+@pytest.mark.parametrize("state", ["prepared", "pending", "resolved"])
+def test_drain_invalidates_future_plans_without_burning_generations(build_arena, state):
+    x = build_arena(count=3)
+    active = None
+    if state != "prepared":
+        active = x.arena.acquire(x.plans[0])
+        active.enqueue()
+        active.finish()
+        if state == "resolved":
+            active.resolve()
+    before = x.arena.lifecycle_evidence()
+    calls = list(x.calls)
+    x.arena.begin_drain()
+    drained = x.arena.lifecycle_evidence()
+    assert drained.arena_state == "DRAINING"
+    assert drained.slots == before.slots
+    assert x.calls == calls
+    assert not x.arena._control._prepared_registry
+    for plan in x.plans[1:]:
+        with pytest.raises(NativeOpticalArenaProtocolError):
+            x.arena.acquire(plan)
+        with pytest.raises(NativeOpticalArenaProtocolError):
+            plan._transaction.enqueue()
+    with pytest.raises(NativeOpticalArenaProtocolError):
+        x.arena.begin_drain()
+    if active is not None:
+        with pytest.raises(NativeOpticalArenaProtocolError):
+            x.arena.close()
+        if state == "pending":
+            active.resolve()
+        active.release_device_result()
+        active.reclaim()
+    x.arena.close()
+    result = x.arena.lifecycle_evidence()
+    assert result.arena_state == "CLOSED"
+    assert result.slots[0].generation == before.slots[0].generation
+    assert result.slots[0].state == "FREE"
+    assert result.final_drain_complete and result.final_reclaim_complete
+    assert result.completion_resolution_count == result.slot_reclaim_count == int(active is not None)
+    assert not any(t.operation == "cancelled_generation_burned" for t in result.transitions)
+
+
 def test_copies_cancellation_and_burned_generation(build_arena):
     x = build_arena()
     with pytest.raises(NativeOpticalArenaProtocolError):
