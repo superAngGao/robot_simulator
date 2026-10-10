@@ -299,7 +299,7 @@ def run_case(repository, revision, environment_path, environment, directory, lan
     request = {"root": str(repository), "revision": revision, "lane": lane,
                "catalog_sha256": hashlib.sha256((repository / CATALOG_PATH).read_bytes()).hexdigest(),
                "environment_path": str(environment_path), "environment_sha256": environment.sha256,
-               "case_id": case, "go2_model_dir": ASSETS,
+               "case_id": case, "go2_model_dir": ASSETS if case.startswith("go2_static_") else None,
                "guard_configuration": {"protocol_version": "q54.closed-worker.guarded-wait.v1",
                    "session": uuid.uuid4().hex, "device_ordinal": 1,
                    "ack_timeout_ms": 1000, "operation_timeout_ms": 120000}}

@@ -246,3 +246,60 @@ def test_refit_recording_keeps_leaf_before_internal_failure(allocation, monkeypa
         )
         for command in p.state.arrays
     )
+
+
+@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize("attack", [None, "root", "offset", "shape", "env", "hash"])
+def test_dynamic_replay_checks_original_allocation_and_selected_frame(monkeypatch, empty, attack):
+    from optics import warp_native_render, warp_timeline
+
+    # The physical metadata reader is doubled; the production replay validator
+    # must distinguish an equal-content allocation and an adjacent frame view.
+    dtype, device = object(), object()
+    arrays, snapshots = {}, {}
+    transforms = NS(transform_frame_index=2, transform_replay_sha256="r",
+                    input_contract="canonical_native_replay_v1", env_idx=2 if empty else 0)
+    for name, trailing in (("x_world_R", (3, 3)), ("x_world_r", (3,))):
+        base, view = object(), object()
+        bodies = 0 if empty else 1
+        size = (36 if name.endswith("R") else 12) * bodies
+        shape = (3, bodies, *trailing)
+        strides = (size, 36 if name.endswith("R") else 12, *([12, 4] if name.endswith("R") else [4]))
+        pointer = 1000 if size else 0
+        chain = ((base, pointer, size * 3, None, object()),)
+        snapshots[id(base)] = (base, device, dtype, shape, strides, pointer, size * 3, size * 3, chain)
+        if empty:
+            view = base
+        else:
+            snapshots[id(view)] = (view, device, dtype, (1, bodies, *trailing), strides,
+                                   pointer + 2 * size, size, size, chain)
+        arrays["replay_" + name] = base
+        setattr(transforms, name, view)
+    prepared = NS(arrays=arrays, manifest=NS(transform_frame_count=3, sha256="m",
+                    input_contract=transforms.input_contract, transform_replay_sha256="r"))
+    scene = NS(transforms=transforms, evidence=NS(native_input_manifest_sha256="m"),
+               local_scene=NS(device=device))
+    view = transforms.x_world_R
+    actual = list(snapshots[id(view)])
+    if attack == "root":
+        actual[-1] = ((object(), 1000, 108, None, object()),)
+    elif attack == "offset":
+        if empty:
+            transforms.x_world_R = object()
+            snapshots[id(transforms.x_world_R)] = tuple(actual)
+        else:
+            actual[5] -= 36
+    elif attack == "shape":
+        actual[3] = (9, 1, 3, 3)
+    elif attack == "env":
+        transforms.env_idx = 1
+    elif attack == "hash":
+        transforms.transform_replay_sha256 = "foreign"
+    snapshots[id(view)] = tuple(actual)
+    monkeypatch.setattr(warp_native_render, "_render_array_snapshot",
+                        lambda value, **kwargs: snapshots[id(value)])
+    if attack is None:
+        warp_timeline._validate_replay_views(scene, prepared)
+    else:
+        with pytest.raises(ValueError, match="prepared|selected"):
+            warp_timeline._validate_replay_views(scene, prepared)
