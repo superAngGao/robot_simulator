@@ -281,7 +281,8 @@ def run_case(repository, revision, environment_path, environment, directory, lan
     from tests.support.runtime_custody_launch import capture_runtime_custody_inputs
     from tests.support.native_runtime_process import (RUNTIME_FIXED_STORAGE_FAULTS, RUNTIME_RENDER_GRAPH_CASES,
                                                       RUNTIME_RENDER_WARMUP_CASES, RUNTIME_FINAL_GRAPH_CASES,
-                                                      RUNTIME_FINAL_GRAPH_FAULTS, RUNTIME_FINAL_IDLE_FAULTS)
+                                                      RUNTIME_FINAL_GRAPH_FAULTS, RUNTIME_FINAL_IDLE_FAULTS,
+                                                      RUNTIME_PHASES)
 
     request = {"root": str(repository), "revision": revision, "lane": lane,
                "catalog_sha256": hashlib.sha256((repository / CATALOG_PATH).read_bytes()).hexdigest(),
@@ -374,7 +375,8 @@ def run_case(repository, revision, environment_path, environment, directory, lan
             failure = json.loads((directory / "failure.json").read_bytes())
             scope = json.loads((directory / "idle_sync_scope.json").read_bytes())
             summary = worker["summary"]
-            completed = 7 if lane == "cuda" else 6
+            # This fault precedes either lane's compilation/factory stage.
+            completed = len(RUNTIME_PHASES)
             if (result["worker_returncode"] != 74 or control["normal_complete_count"] != completed
                     or control["arm_count"] != completed + 1 or control["deadline_expired"] or control["kill_requested"]
                     or marker != {"fault": fault, "boundary": "post_input_idle", "guard": None}

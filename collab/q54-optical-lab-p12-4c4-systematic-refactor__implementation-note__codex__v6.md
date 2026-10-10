@@ -85,6 +85,17 @@ uploader, synchronization function or lifecycle with a test implementation.
 Native execution of that case and full R0 preparation at the exact frozen
 candidate remains pending, followed by a fresh independent review of M1.
 
+The first actual624a71f CUDA idle-entry run reached the expected production
+error, synchronized target1 once, restored its prior scope, released and exited74.
+The driver then failed its acceptance assertion: it incorrectly counted a
+seventh CUDA factory phase although this injection precedes factory preparation.
+The six original input phases completed. The assertion now uses the existing
+RUNTIME_PHASES inventory, common to both lanes. This is a driver-count repair;
+production source bytes and the catalog are unchanged. Preserve the original
+failed driver run under c4-final-graph-624a71f11f-cuda-runtime_optical_idle_entry
+and obtain new evidence at the corrected revision. Do not relabel its original
+driver exit as a pass or count this as a hardware/production failure.
+
 This note does not claim M1 approval or full C4. Continue the approved R1
 composition, C2f token/resolve/reclaim/close, numeric/native failure matrices,
 C4c3/c4 and C4d/B3 and final systematic whole-C4 review. Performance, backend
