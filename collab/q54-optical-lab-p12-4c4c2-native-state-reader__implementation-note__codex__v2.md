@@ -89,6 +89,15 @@ recorded. This is not a claim of native correctness or whole-suite acceptance.
 No native reader or framed GPU worker has run at this candidate. The previous
 CUDA failure/Warp two-sample evidence is unchanged and is not acceptance.
 
+Primary-server supplement at the exact clean 5d804f7 checkout used the existing
+Python 3.12 `robot_sim` environment and frozen Go2 model directory:
+`test_native_sources.py::test_real_go2_cpu_materialization_has_no_unlisted_imports`
+and `::test_actual_posix_checkout_catalog_matches_reviewed_git_bytes`:
+**4 passed in 17.19s**, no skips, exit 0. The two lane cases each materialize
+both Go2 resolutions on CPU. This closes the four local asset/platform skips
+for this source candidate, not runtime/native acceptance. Driver/pytest PIDs
+2477953/2477958 were reaped/checked absent; the remote checkout remained clean.
+
 ## Fresh review and deployment
 
 Frozen clean detached local checkout: `../c4_native_reader_code_review_v2`.
