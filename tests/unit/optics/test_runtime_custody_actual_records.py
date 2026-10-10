@@ -62,6 +62,15 @@ def test_actual_execution_roundtrip_does_not_mint_live_authority(execution):
         assert_prepared_storage_registered(record.to_payload())
 
 
+def test_reindex_preserves_unmodified_actual_record(execution):
+    from tests.unit.optics.test_runtime_native_scope_codec import _reindex
+
+    original, _, _, _ = execution
+    payload = copy.deepcopy(original)
+    _reindex(payload)
+    assert payload == original
+
+
 @pytest.mark.parametrize("replacement", ["session_token", "bootstrap_token", "controller_token"])
 @pytest.mark.parametrize("location", ["runtime_binding", "prepared_storage", "both"])
 def test_source_session_is_never_canonical_input(execution, replacement, location):

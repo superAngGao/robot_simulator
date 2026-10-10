@@ -60,7 +60,7 @@ def _reindex(record):
             for key, item in value.items():
                 if key in {"event", "manifest", "signature", "local_token"}:
                     continue
-                if key.endswith("_token") and item is not None:
+                if (key == "token" or key.endswith("_token")) and item is not None:
                     first.setdefault(item, index)
                 else:
                     references(item, index)
