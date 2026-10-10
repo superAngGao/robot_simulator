@@ -256,7 +256,9 @@ def test_frozen_sequence_compares_actual_warp_packed_scalars(wp, monkeypatch, sh
         role_to_mask=setup.prepared.source.packed_scene_owner.role_to_mask,
     )
     payload = record.to_payload()
-    values = tuple(struct.unpack("<f", bytes.fromhex(v))[0] for v in payload["native_scalars_f32"])
+    from optical_worker.render_parameters import decode_native_scalars
+
+    values = decode_native_scalars(payload)
     query = WarpRenderQueryParameters(
         num_rays=21,
         frame_id=1,

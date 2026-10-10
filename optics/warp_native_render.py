@@ -3075,9 +3075,9 @@ class WarpDirectLightRenderCommandBundle:
         This does not confer a C4 lease or execution/result authority. The
         future Warp arena must call it before accepting a canonical binding.
         """
-        import struct
-
-        from optical_worker.render_parameters import BoundRenderParameters, load_frozen_render_sequence
+        from optical_worker.render_parameters import (
+            BoundRenderParameters, encode_native_scalars, load_frozen_render_sequence,
+        )
 
         if type(record) is not BoundRenderParameters:
             raise TypeError("exact bound render parameters required")
@@ -3117,9 +3117,9 @@ class WarpDirectLightRenderCommandBundle:
             raise ValueError("canonical Warp binding requires the camera fixed ABI") from exc
         # The diagnostics-off/shadow-off ABI has no dummy bias argument.
         bias = values["shadow_bias"] if binding.shadows else binding.shadow_bias
-        encoded = [struct.pack("<f", value).hex() for value in (*actual, bias)]
+        encoded = encode_native_scalars(actual[:17], (*actual[17:], bias))
         if (
-            encoded != payload["native_scalars_f32"]
+            any(payload[name] != value for name, value in encoded.items())
             or (values["width"], values["height"]) != (payload["width"], payload["height"])
             or values["sensor_role_mask"] != payload["sensor_role_mask"]
             or query.env_idx != payload["env_idx"]

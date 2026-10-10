@@ -114,7 +114,7 @@ def test_noncanonical_bytes_duplicates_and_mutable_storage_reject(source):
 @pytest.mark.parametrize("shadows", [False, True])
 @pytest.mark.parametrize("pass_mode", ["primary_unprofiled", "diagnostic_profiled"])
 @pytest.mark.parametrize("sample_index", [0, 9, 119, 120, 241])
-def test_bound_exact_binary32_order_and_metadata(source, profile, shadows, pass_mode, sample_index):
+def test_bound_exact_mixed_precision_order_and_metadata(source, profile, shadows, pass_mode, sample_index):
     kwargs = dict(
         sample_index=sample_index,
         profile=profile,
@@ -128,7 +128,8 @@ def test_bound_exact_binary32_order_and_metadata(source, profile, shadows, pass_
     intrinsics, origin, rotation, distance = camera.scalar_values()
     expected = (*intrinsics, *origin, *rotation, distance, 0.03, 0.05, 0.07, 0.0, 0.0, 0.0, 1e-4)
     assert len(expected) == len(NATIVE_SCALAR_ORDER) == 24
-    assert payload["native_scalars_f32"] == [struct.pack("<f", v).hex() for v in expected]
+    assert payload["native_camera_scalars_f64"] == [struct.pack("<d", v).hex() for v in expected[:17]]
+    assert payload["native_shading_scalars_f32"] == [struct.pack("<f", v).hex() for v in expected[17:]]
     assert payload["frame_id"] == sample_index + 1
     assert payload["sim_time_f64"] == (sample_index / 30.0).hex()
     assert payload["camera_index"] == 0
@@ -229,10 +230,10 @@ def test_binary32_ties_nearest_even_signed_zero_and_no_second_math(source):
         pass_mode="primary_unprofiled",
         role_to_mask={"rgb": 8},
     )
-    values = json.loads(record.canonical_bytes)["native_scalars_f32"]
-    assert values[0] == "0000803f"
-    assert values[4] == "00000080"
-    assert math.copysign(1.0, struct.unpack("<f", bytes.fromhex(values[4]))[0]) == -1.0
+    values = json.loads(record.canonical_bytes)["native_camera_scalars_f64"]
+    assert values[0] == struct.pack("<d", scalar).hex()
+    assert values[4] == "0000000000000080"
+    assert math.copysign(1.0, struct.unpack("<d", bytes.fromhex(values[4]))[0]) == -1.0
 
 
 def test_shipping_and_missing_go2_reject_before_materialization(monkeypatch):
@@ -334,7 +335,7 @@ def test_native_scalar_storage_swap_and_foreign_sequence_rejected(source):
     )
     record = bind_render_parameters(source.sequence, **kwargs)
     payload = json.loads(record.canonical_bytes)
-    scalars = payload["native_scalars_f32"]
+    scalars = payload["native_camera_scalars_f64"]
     scalars[0], scalars[1] = scalars[1], scalars[0]
     with pytest.raises(ValueError):
         BoundRenderParameters(canonical_json_bytes(payload)).validate(source.sequence, **kwargs)

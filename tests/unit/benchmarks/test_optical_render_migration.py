@@ -122,9 +122,11 @@ def _parse(payload):
 @pytest.mark.parametrize("index", range(24))
 def test_descriptive_parser_rejects_changed_native_scalar_even_after_rehash(index):
     payload = copy.deepcopy(_bound().to_payload())
-    payload["native_scalars_f32"][index] = (
-        "0000803f" if payload["native_scalars_f32"][index] != "0000803f" else "00000000"
+    field, offset, one, zero = (
+        ("native_camera_scalars_f64", index, "000000000000f03f", "0000000000000000")
+        if index < 17 else ("native_shading_scalars_f32", index - 17, "0000803f", "00000000")
     )
+    payload[field][offset] = one if payload[field][offset] != one else zero
     with pytest.raises(ValueError, match="parameters differ"):
         _parse(payload)
 

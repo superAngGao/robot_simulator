@@ -20,7 +20,19 @@ from optical_worker.camera_contract import (
     resolve_frozen_camera_contract,
 )
 
-EXPECTED_SHA = "04ab7bc2571b8396f06d36b7baea66224868001894c4ce7a5ea12e4faecda1ef"
+EXPECTED_SHA = "3cee982411e6a7c02b81dda2929ead53ea5895ed00513b8e67d3d91dcf1d46ef"
+
+
+def test_old_camera_artifact_is_preserved_but_rejected_by_current_resolver():
+    path = Path(contract_module.__file__).parent / 'data/resolved_cameras/v1/asymmetric_synthetic_7x3_v1.jsonl'
+    old = json.loads(path.read_bytes())
+    current = resolve_frozen_camera_contract(CASE).to_payload()
+    assert old['schema_version'] == 'q54.p12.4.resolved-camera.v1'
+    assert current['schema_version'] == 'q54.p12.4.resolved-camera.v2'
+    assert {k: v for k, v in old.items() if k not in ('schema_version', 'native_scalar_encoding')} == {
+        k: v for k, v in current.items() if k not in ('schema_version', 'native_scalar_encoding')}
+    with pytest.raises(ValueError):
+        ResolvedPinholeCameraContract.from_payload(old)
 
 
 def _axis(axis, tangent):

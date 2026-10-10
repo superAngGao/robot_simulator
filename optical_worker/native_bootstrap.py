@@ -2965,9 +2965,9 @@ class _SourceSession:
                      "CUDA artifact was preloaded")
         import robot_sim_cuda_scene_v3
         import robot_sim_cuda_lbvh_native_v3
-        import robot_sim_cuda_direct_light_v8
+        import robot_sim_cuda_direct_light_v10
 
-        modules = (robot_sim_cuda_scene_v3, robot_sim_cuda_lbvh_native_v3, robot_sim_cuda_direct_light_v8)
+        modules = (robot_sim_cuda_scene_v3, robot_sim_cuda_lbvh_native_v3, robot_sim_cuda_direct_light_v10)
         controller, admission = self.bound_controller(), self.external
         runtime_record = _RUNTIME_BINDINGS[self]
         owner = object.__new__(CudaExtensionSet)

@@ -39,19 +39,24 @@ def _warp_bodies():
             functions.append(node)
     assert {f.name for f in functions} == names
     wp = SimpleNamespace(float32=np.float32, float64=np.float64, int32=np.int32,
-                         int64=np.int64, abs=abs, min=min, inf=np.inf, nan=np.nan,
+                         int64=np.int64, sqrt=np.sqrt, abs=abs, min=min, inf=np.inf, nan=np.nan,
                          cast=lambda value, dtype: np.asarray(value).view(dtype)[()],
                          tid=lambda: 0, zeros=lambda shape, dtype: np.zeros(shape, dtype=dtype),
                          atomic_add=lambda a, i, v: a.__setitem__(i, a[i] + v),
                          atomic_max=lambda a, i, v: a.__setitem__(i, max(a[i], v)))
-    constants = {"_BUILD_EPS", "_DIR_EPS", "_T_EPS", "_MAX_BVH_STACK"}
+    # Execute the current typed Warp constants and policy imports as well as
+    # the actual helper bodies; do not supply a second policy definition.
+    wp.constant = lambda value: value
     namespace = {"wp": wp}
     for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module == "query_numerics":
+            node.module, node.level = "optics.query_numerics", 0
+            exec(compile(ast.Module(body=[node], type_ignores=[]), "policy", "exec"), namespace)
+    for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
-            name = node.targets[0].id
-            if name in constants:
-                namespace[name] = ast.literal_eval(node.value)
-    assert constants <= namespace.keys()
+            if node.targets[0].id in {"_QUERY_BUILD_EPS", "_QUERY_DIR_EPS", "_QUERY_TIE_EPS",
+                                     "_NO_HIT_SOURCE_KEY", "_MAX_BVH_STACK"}:
+                exec(compile(ast.Module(body=[node], type_ignores=[]), "constants", "exec"), namespace)
     exec(compile(ast.Module(body=functions, type_ignores=[]), "actual_warp_bodies", "exec"), namespace)
     return namespace
 
@@ -62,7 +67,7 @@ def warp_predicate():
 
     def evaluate(origin, direction, v0, e1, e2, limit):
         return body(*origin, *direction, 0, v0[None], e1[None], e2[None],
-                    np.zeros((1, 3), np.float32), np.float32(limit))[:2]
+                    np.zeros((1, 3), np.float32), np.float64(limit))[:2]
     return evaluate
 
 
@@ -72,7 +77,7 @@ def cuda_host(tmp_path_factory):
     if compiler is None:
         pytest.skip("host C++ compiler unavailable; native GPU validation remains required")
     source = _cuda_direct_light_source.CUDA_SOURCE
-    start = source.index("__device__ __forceinline__ bool better_hit(")
+    start = source.index("__global__ void pinhole_camera_rays_kernel(")
     end = source.index("\n}", source.index("__global__ void first_hit_rays_kernel(")) + 2
     body = source[start:end].replace("__device__ __forceinline__", "")
     body = body.replace("__global__ void", 'extern "C" void')
@@ -85,36 +90,39 @@ struct Index { int x; };
 constexpr Index blockIdx{0}, blockDim{1}, threadIdx{0};
 void atomicAdd(int32_t* p, int v) { *p += v; }
 void atomicMax(int32_t* p, int v) { if (v > *p) *p = v; }
-''' + "\n".join(re.findall(r"^constexpr (?:float|int) (?:kBuildEps|kDirEps|kTEps|kMaxBvhStack) = .*;$",
+''' + "\n".join(re.findall(r"^constexpr (?:double|float|int) (?:kBuildEps|kDirEps|kTEps|kMaxBvhStack) = .*;$",
                            source, re.MULTILINE)) + "\n" + body + '''
-extern "C" int evaluate(const float* o, const float* d, const float* b,
-    const float* e1, const float* e2, float limit, float* t) {
+extern "C" int evaluate(const double* o, const double* d, const double* b,
+    const double* e1, const double* e2, double limit, double* t) {
   const float n[3]={0,0,0}; float nx,ny,nz;
   return intersect_triangle(o[0],o[1],o[2],d[0],d[1],d[2],0,b,e1,e2,n,
                             limit,t,&nx,&ny,&nz);
 }
-extern "C" int evaluate_box(const float* o, const float* d, const float* lo,
-    const float* hi, float limit, float* entry) {
+extern "C" int evaluate_box(const double* o, const double* d, const float* lo,
+    const float* hi, double limit, double* entry) {
   return intersect_aabb(o[0],o[1],o[2],d[0],d[1],d[2],lo,hi,0,limit,entry);
 }
 ''')
-    subprocess.run([compiler, "-O2", "-shared", "-fPIC", str(cpp), "-o", str(library)],
+    subprocess.run([compiler, "-O2", "-ffp-contract=off", "-shared", "-fPIC", str(cpp), "-o", str(library)],
                    check=True, capture_output=True, timeout=60)
     dll = ctypes.CDLL(str(library))
-    pointer = ctypes.POINTER(ctypes.c_float)
-    dll.evaluate.argtypes = [pointer] * 5 + [ctypes.c_float, pointer]
+    pointer = ctypes.POINTER(ctypes.c_double)
+    bounds_pointer = ctypes.POINTER(ctypes.c_float)
+    dll.evaluate.argtypes = [pointer] * 5 + [ctypes.c_double, pointer]
     dll.evaluate.restype = ctypes.c_int
-    dll.evaluate_box.argtypes = [pointer] * 4 + [ctypes.c_float, pointer]
+    dll.evaluate_box.argtypes = [pointer] * 2 + [bounds_pointer] * 2 + [ctypes.c_double, pointer]
     dll.evaluate_box.restype = ctypes.c_int
 
     def evaluate(origin, direction, v0, e1, e2, limit):
-        t = ctypes.c_float()
-        hit = dll.evaluate(*(a.ctypes.data_as(pointer) for a in (origin, direction, v0, e1, e2)),
+        t = ctypes.c_double()
+        hit = dll.evaluate(*(np.asarray(a, np.float64).ctypes.data_as(pointer) for a in (origin, direction, v0, e1, e2)),
                            limit, ctypes.byref(t))
         return bool(hit), t.value
     def box(origin, direction, lo, hi, limit):
-        entry = ctypes.c_float()
-        hit = dll.evaluate_box(*(a.ctypes.data_as(pointer) for a in (origin, direction, lo, hi)),
+        entry = ctypes.c_double()
+        hit = dll.evaluate_box(*(np.asarray(a, dtype).ctypes.data_as(ptr) for a, dtype, ptr in
+                                   ((origin, np.float64, pointer), (direction, np.float64, pointer),
+                                    (lo, np.float32, bounds_pointer), (hi, np.float32, bounds_pointer))),
                                limit, ctypes.byref(entry))
         return bool(hit), entry.value
     def first_hit(*args):
@@ -123,7 +131,7 @@ extern "C" int evaluate_box(const float* o, const float* d, const float* lo,
             if isinstance(value, np.ndarray):
                 native.append(value.ctypes.data_as(ctypes.POINTER(np.ctypeslib.as_ctypes_type(value.dtype))))
             elif isinstance(value, np.floating):
-                native.append(ctypes.c_float(value))
+                native.append(ctypes.c_double(value))
             elif isinstance(value, np.int64):
                 native.append(ctypes.c_int64(value))
             else:
@@ -131,7 +139,39 @@ extern "C" int evaluate_box(const float* o, const float* d, const float* lo,
         dll.first_hit_rays_kernel.argtypes = [type(v) for v in native]
         dll.first_hit_rays_kernel.restype = None
         dll.first_hit_rays_kernel(*native)
-    return SimpleNamespace(predicate=evaluate, first_hit=first_hit, box=box)
+    def camera(width, height, intrinsics, origin, rotation):
+        origins = np.empty((width * height, 3), np.float64)
+        directions = np.empty_like(origins)
+        dll.pinhole_camera_rays_kernel.argtypes = [ctypes.c_int] * 2 + [ctypes.c_double] * 16 + [pointer] * 2
+        dll.pinhole_camera_rays_kernel.restype = None
+        # This host wrapper has one thread; one pixel exposes origin downcasts
+        # and the old camera-before-world normalization regression.
+        dll.pinhole_camera_rays_kernel(width, height, *intrinsics, *origin, *rotation,
+                                       origins.ctypes.data_as(pointer), directions.ctypes.data_as(pointer))
+        return origins[0], directions[0]
+    return SimpleNamespace(predicate=evaluate, first_hit=first_hit, box=box, camera=camera)
+
+
+def test_cuda_camera_keeps_original_binary64_origin_and_world_normalization(cuda_host):
+    from optical_worker.camera_contract import resolve_frozen_camera_contract
+
+    intrinsic, origin, rotation, _ = resolve_frozen_camera_contract('asymmetric_synthetic_7x3_v1').scalar_values()
+    actual_origin, direction = cuda_host.camera(7, 3, intrinsic, origin, rotation)
+    fx, fy, cx, cy = intrinsic
+    world = np.array(rotation).reshape(3, 3) @ np.array([-cx/fx, -cy/fy, 1.])
+    expected = world / np.linalg.norm(world)
+    np.testing.assert_array_equal(actual_origin, origin)
+    np.testing.assert_allclose(direction, expected, rtol=0, atol=2.3e-16)
+
+
+@pytest.mark.parametrize('backend', ['warp_predicate', 'cuda_predicate'])
+def test_world_area_boundary_matches_original_cpu(request, backend):
+    evaluate = request.getfixturevalue(backend)
+    for area in (np.nextafter(1e-12, 0.), 1e-12, np.nextafter(1e-12, np.inf)):
+        origin = np.array([.25, area*.25, 0.])
+        d, b, e1, e2 = map(np.array, ([0., 0., 1.], [0., 0., 1.], [1., 0., 0.], [0., area, 0.]))
+        truth = _intersect_triangle_scalar(origin, d, 2., b, b+e1, b+e2)
+        assert evaluate(origin, d, b, e1, e2, 2.)[0] == (truth is not None) == (area > 1e-12)
 
 
 @pytest.fixture(scope="module")
@@ -151,7 +191,7 @@ def test_captured_edges_match_original_cpu_oracle(request, backend, case):
     hit, distance = evaluate(origin, direction, v0, e1, e2, 10.0)
     assert bool(hit) == (truth is not None)
     if truth is not None:
-        assert distance == np.float32(truth.distance)
+        assert distance == pytest.approx(truth.distance, rel=0, abs=2e-15)
         # Range clipping remains strict; increased precision is not an edge epsilon.
         limit = np.nextafter(np.float32(truth.distance), np.float32(0))
         assert not evaluate(origin, direction, v0, e1, e2, limit)[0]
@@ -161,12 +201,13 @@ def test_captured_edges_match_original_cpu_oracle(request, backend, case):
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize("backend", ["warp", "cuda"])
 @pytest.mark.parametrize("boundary", ["interior", "rounded_tie", "outside_tie", "physical_limit",
-                                      "oblique", "oblique_outside", "oblique_limit", "half_ulp"])
-def test_primary_traversal_keeps_candidates_within_existing_tie_window(request, backend, separate_leaves, reverse, boundary):
+                                      "oblique", "oblique_outside", "oblique_limit", "half_ulp",
+                                      "double_separated", "double_tie"])
+def test_primary_traversal_uses_original_cpu_tie_window(request, backend, separate_leaves, reverse, boundary):
     body = (_warp_bodies()["_device_scene_bvh_first_hit_kernel"] if backend == "warp"
             else request.getfixturevalue("cuda_host").first_hit)
-    # The slightly farther face wins by the existing source-key rule. It must
-    # survive both leaf intersection clipping and node/child AABB pruning.
+    # Preserve the old traversal counterexamples, now using the CPU 1e-9
+    # window. Add two distances that collapse under the former float32 ABI.
     near = np.float32(1 if boundary == "interior" else .1)
     far = np.float32(1.000005) if boundary == "interior" else np.float32(near + np.float32(1e-5))
     if boundary == "outside_tie":
@@ -201,7 +242,17 @@ def test_primary_traversal_keeps_candidates_within_existing_tie_window(request, 
         if boundary == "oblique_limit":
             # This rounded limit is just below the true far-plane distance.
             max_distance = np.float32(np.float64(far) / direction[0, 0])
+    origin, direction, v0, e1, e2 = (a.astype(np.float64) for a in (origin, direction, v0, e1, e2))
+    if boundary in {"double_separated", "double_tie"}:
+        v0[:, 0] = [1.0, 1.0 + (2e-8 if boundary == "double_separated" else 5e-10)]
+    max_distance = np.float64(max_distance)
+    near_t, far_t = (v0[:, 0] - origin[0, 0]) / direction[0, 0]
+    expected_id = 10 if far_t <= max_distance and abs(far_t - near_t) <= 1e-9 else 20
+    expected_distance = np.float32(far_t if expected_id == 10 else near_t)
     lo, hi = v0.copy(), v0 + e1 + e2
+    lo32, hi32 = lo.astype(np.float32), hi.astype(np.float32)
+    lo = np.where(lo32.astype(np.float64) > lo, np.nextafter(lo32, np.float32(-np.inf)), lo32)
+    hi = np.where(hi32.astype(np.float64) < hi, np.nextafter(hi32, np.float32(np.inf)), hi32)
     ids = np.array([1, 0] if reverse else [0, 1], np.int32)
     if separate_leaves:
         bounds_min = np.vstack([lo.min(axis=0), lo])
@@ -216,7 +267,7 @@ def test_primary_traversal_keeps_candidates_within_existing_tie_window(request, 
     hit, distance, instance, material = (np.zeros(1, dtype=t) for t in (np.int32, np.float32, np.int32, np.int32))
     zero_i = np.empty(0, np.int32)
     zero_key = np.empty(0, np.int64)
-    zero_vec = np.empty((0, 3), np.float32)
+    zero_vec = np.empty((0, 3), np.float64)
     body(origin, direction, max_distance,
          zero_vec, zero_vec, zero_i, zero_key, zero_key, zero_i, 0,
          v0, e1, e2, np.array([[-1, 0, 0]] * 2, np.float32),
@@ -249,7 +300,7 @@ def test_physical_and_shadow_cutoff_stays_strict_before_distance_rounding(reques
 
 
 @pytest.mark.parametrize("backend", ["warp", "cuda"])
-def test_stack_entry_quantization_preserves_lower_bound(request, backend):
+def test_double_stack_entry_preserves_slab_distance(request, backend):
     if backend == "warp":
         body = _warp_bodies()["_intersect_aabb_for_ray_with_interval"]
         box = lambda o, d, lo, hi, limit: body(*o, *d, *lo, *hi, np.float32(limit))[:2]
@@ -271,4 +322,4 @@ def test_stack_entry_quantization_preserves_lower_bound(request, backend):
         box_hit, entry = box(o, d, b, b + e1 + e2, 10)
         assert hit and box_hit
         assert entry <= np.float64(x) - np.float64(o[0])
-        assert entry <= distance
+        assert abs(entry - distance) <= 1e-15

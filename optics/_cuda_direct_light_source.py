@@ -1,5 +1,7 @@
 """Sole CUDA direct light kernel source literals; no backend imports."""
 
+from .query_numerics import BUILD_EPS, DIR_EPS, TIE_EPS
+
 CPP_SOURCE = r"""
 #include <torch/extension.h>
 
@@ -224,32 +226,33 @@ CUDA_SOURCE = r"""
 #include <limits>
 namespace {
 
-constexpr float kBuildEps = 1.0e-8f;
-constexpr float kDirEps = 1.0e-8f;
-constexpr float kTEps = 1.0e-5f;
+constexpr double kBuildEps = @BUILD_EPS@;
+constexpr double kDirEps = @DIR_EPS@;
+constexpr float kShadingDirEps = 1.0e-8f;
+constexpr double kTEps = @TIE_EPS@;
 constexpr int kMaxBvhStack = 32;
 
 __global__ void pinhole_camera_rays_kernel(
     int width,
     int height,
-    float fx,
-    float fy,
-    float cx,
-    float cy,
-    float origin_x,
-    float origin_y,
-    float origin_z,
-    float r00,
-    float r01,
-    float r02,
-    float r10,
-    float r11,
-    float r12,
-    float r20,
-    float r21,
-    float r22,
-    float* origins,
-    float* directions) {
+    double fx,
+    double fy,
+    double cx,
+    double cy,
+    double origin_x,
+    double origin_y,
+    double origin_z,
+    double r00,
+    double r01,
+    double r02,
+    double r10,
+    double r11,
+    double r12,
+    double r20,
+    double r21,
+    double r22,
+    double* origins,
+    double* directions) {
   int ray = blockIdx.x * blockDim.x + threadIdx.x;
   int num_rays = width * height;
   if (ray >= num_rays) {
@@ -258,36 +261,36 @@ __global__ void pinhole_camera_rays_kernel(
 
   int px = ray % width;
   int py = ray / width;
-  float camera_x = (static_cast<float>(px) - cx) / fx;
-  float camera_y = (static_cast<float>(py) - cy) / fy;
-  float inv_norm = rsqrtf(camera_x * camera_x + camera_y * camera_y + 1.0f);
-  camera_x *= inv_norm;
-  camera_y *= inv_norm;
-  float camera_z = inv_norm;
+  double camera_x = (static_cast<double>(px) - cx) / fx;
+  double camera_y = (static_cast<double>(py) - cy) / fy;
+  double world_x = (r00 * camera_x + r01 * camera_y) + r02;
+  double world_y = (r10 * camera_x + r11 * camera_y) + r12;
+  double world_z = (r20 * camera_x + r21 * camera_y) + r22;
+  double norm = sqrt((world_x * world_x + world_y * world_y) + world_z * world_z);
 
   origins[ray * 3 + 0] = origin_x;
   origins[ray * 3 + 1] = origin_y;
   origins[ray * 3 + 2] = origin_z;
-  directions[ray * 3 + 0] = r00 * camera_x + r01 * camera_y + r02 * camera_z;
-  directions[ray * 3 + 1] = r10 * camera_x + r11 * camera_y + r12 * camera_z;
-  directions[ray * 3 + 2] = r20 * camera_x + r21 * camera_y + r22 * camera_z;
+  directions[ray * 3 + 0] = world_x / norm;
+  directions[ray * 3 + 1] = world_y / norm;
+  directions[ray * 3 + 2] = world_z / norm;
 }
 
-__device__ __forceinline__ bool better_hit(float t, int64_t key, float best_t, int64_t best_key) {
+__device__ __forceinline__ bool better_hit(double t, int64_t key, double best_t, int64_t best_key) {
   if (t < best_t - kTEps) {
     return true;
   }
-  return fabsf(t - best_t) <= kTEps && key < best_key;
+  return fabs(t - best_t) <= kTEps && key < best_key;
 }
 
 __device__ __forceinline__ bool intersect_aabb_axis(
-    float origin,
-    float direction,
+    double origin,
+    double direction,
     float lower,
     float upper,
     double* t_min,
     double* t_max) {
-  if (fabsf(direction) <= kDirEps) {
+  if (fabs(direction) <= kDirEps) {
     return origin >= lower && origin <= upper;
   }
   // Widen before subtraction; direct division avoids float reciprocal rounding.
@@ -304,17 +307,17 @@ __device__ __forceinline__ bool intersect_aabb_axis(
 }
 
 __device__ __forceinline__ bool intersect_aabb(
-    float ox,
-    float oy,
-    float oz,
-    float dx,
-    float dy,
-    float dz,
+    double ox,
+    double oy,
+    double oz,
+    double dx,
+    double dy,
+    double dz,
     const float* bounds_min,
     const float* bounds_max,
     int node,
-    float max_distance,
-    float* entry_t) {
+    double max_distance,
+    double* entry_t) {
   double t_min = 0.0;
   double t_max = max_distance;
   bool hit = intersect_aabb_axis(ox, dx, bounds_min[node * 3 + 0], bounds_max[node * 3 + 0], &t_min, &t_max);
@@ -324,33 +327,27 @@ __device__ __forceinline__ bool intersect_aabb(
   if (hit) {
     hit = intersect_aabb_axis(oz, dz, bounds_min[node * 3 + 2], bounds_max[node * 3 + 2], &t_min, &t_max);
   }
-  // Preserve the nonnegative lower bound when quantizing the traversal stack.
-  float entry = static_cast<float>(t_min);
-  if (double(entry) > t_min) {
-    entry = nextafterf(entry, 0.0f);
-  }
-  *entry_t = entry;
+  *entry_t = t_min;
   return hit;
 }
 
 __device__ __forceinline__ bool intersect_triangle(
-    float ox,
-    float oy,
-    float oz,
-    float dx,
-    float dy,
-    float dz,
+    double ox,
+    double oy,
+    double oz,
+    double dx,
+    double dy,
+    double dz,
     int tri,
-    const float* triangle_v0,
-    const float* triangle_e1,
-    const float* triangle_e2,
+    const double* triangle_v0,
+    const double* triangle_e1,
+    const double* triangle_e2,
     const float* triangle_normal,
-    float max_t,
-    float* out_t,
+    double max_t,
+    double* out_t,
     float* out_nx,
     float* out_ny,
     float* out_nz) {
-  // Native storage/output stays float32; evaluate cancellation-prone predicates in double.
   const double rdx = dx, rdy = dy, rdz = dz;
   double v0x = triangle_v0[tri * 3 + 0];
   double v0y = triangle_v0[tri * 3 + 1];
@@ -361,6 +358,14 @@ __device__ __forceinline__ bool intersect_triangle(
   double e2x = triangle_e2[tri * 3 + 0];
   double e2y = triangle_e2[tri * 3 + 1];
   double e2z = triangle_e2[tri * 3 + 2];
+
+  double area_x = e1y * e2z - e1z * e2y;
+  double area_y = e1z * e2x - e1x * e2z;
+  double area_z = e1x * e2y - e1y * e2x;
+  double area = sqrt((area_x * area_x + area_y * area_y) + area_z * area_z);
+  if (area <= kBuildEps) {
+    return false;
+  }
 
   double pvec_x = rdy * e2z - rdz * e2y;
   double pvec_y = rdz * e2x - rdx * e2z;
@@ -391,13 +396,13 @@ __device__ __forceinline__ bool intersect_triangle(
   float nx = triangle_normal[tri * 3 + 0];
   float ny = triangle_normal[tri * 3 + 1];
   float nz = triangle_normal[tri * 3 + 2];
-  float ndotd = nx * dx + ny * dy + nz * dz;
+  double ndotd = nx * dx + ny * dy + nz * dz;
   if (ndotd > 0.0f) {
     nx = -nx;
     ny = -ny;
     nz = -nz;
   }
-  *out_t = static_cast<float>(t);
+  *out_t = t;
   *out_nx = nx;
   *out_ny = ny;
   *out_nz = nz;
@@ -405,19 +410,19 @@ __device__ __forceinline__ bool intersect_triangle(
 }
 
 __global__ void first_hit_rays_kernel(
-    const float* origins,
-    const float* directions,
-    float max_distance,
-    const float* plane_normals,
-    const float* plane_points,
+    const double* origins,
+    const double* directions,
+    double max_distance,
+    const double* plane_normals,
+    const double* plane_points,
     const int32_t* plane_numeric_ids,
     const int64_t* plane_source_keys,
     const int64_t* plane_role_masks,
     const int32_t* plane_material_indices,
     int num_planes,
-    const float* triangle_v0,
-    const float* triangle_e1,
-    const float* triangle_e2,
+    const double* triangle_v0,
+    const double* triangle_e1,
+    const double* triangle_e2,
     const float* triangle_normal,
     const int32_t* triangle_numeric_ids,
     const int64_t* triangle_source_keys,
@@ -446,12 +451,12 @@ __global__ void first_hit_rays_kernel(
     return;
   }
 
-  float ox = origins[ray * 3 + 0];
-  float oy = origins[ray * 3 + 1];
-  float oz = origins[ray * 3 + 2];
-  float dx = directions[ray * 3 + 0];
-  float dy = directions[ray * 3 + 1];
-  float dz = directions[ray * 3 + 2];
+  double ox = origins[ray * 3 + 0];
+  double oy = origins[ray * 3 + 1];
+  double oz = origins[ray * 3 + 2];
+  double dx = directions[ray * 3 + 0];
+  double dy = directions[ray * 3 + 1];
+  double dz = directions[ray * 3 + 2];
 
   hit_mask[ray] = 0;
   range_m[ray] = INFINITY;
@@ -464,14 +469,14 @@ __global__ void first_hit_rays_kernel(
   numeric_instance_id[ray] = 0;
   material_index[ray] = 0;
 
-  float best_t = max_distance;
+  double best_t = max_distance;
   int64_t best_key = std::numeric_limits<int64_t>::max();
-  float best_px = 0.0f;
-  float best_py = 0.0f;
-  float best_pz = 0.0f;
-  float best_nx = 0.0f;
-  float best_ny = 0.0f;
-  float best_nz = 0.0f;
+  double best_px = 0.0f;
+  double best_py = 0.0f;
+  double best_pz = 0.0f;
+  double best_nx = 0.0f;
+  double best_ny = 0.0f;
+  double best_nz = 0.0f;
   int32_t best_id = 0;
   int32_t best_material_index = 0;
   bool found = false;
@@ -480,18 +485,18 @@ __global__ void first_hit_rays_kernel(
     if ((plane_role_masks[plane] & sensor_role_mask) == 0) {
       continue;
     }
-    float nx = plane_normals[plane * 3 + 0];
-    float ny = plane_normals[plane * 3 + 1];
-    float nz = plane_normals[plane * 3 + 2];
-    float px = plane_points[plane * 3 + 0];
-    float py = plane_points[plane * 3 + 1];
-    float pz = plane_points[plane * 3 + 2];
-    float denom = dx * nx + dy * ny + dz * nz;
-    if (fabsf(denom) <= kDirEps) {
+    double nx = plane_normals[plane * 3 + 0];
+    double ny = plane_normals[plane * 3 + 1];
+    double nz = plane_normals[plane * 3 + 2];
+    double px = plane_points[plane * 3 + 0];
+    double py = plane_points[plane * 3 + 1];
+    double pz = plane_points[plane * 3 + 2];
+    double denom = dx * nx + dy * ny + dz * nz;
+    if (fabs(denom) <= kDirEps) {
       continue;
     }
-    float numer = (px - ox) * nx + (py - oy) * ny + (pz - oz) * nz;
-    float t = numer / denom;
+    double numer = (px - ox) * nx + (py - oy) * ny + (pz - oz) * nz;
+    double t = numer / denom;
     if (t < 0.0f || t > max_distance) {
       continue;
     }
@@ -512,11 +517,11 @@ __global__ void first_hit_rays_kernel(
   }
 
   int stack[kMaxBvhStack];
-  float stack_t[kMaxBvhStack];
+  double stack_t[kMaxBvhStack];
   int stack_size = 0;
   int local_max_stack = 0;
   if (num_bvh_nodes > 0) {
-    float root_t = 0.0f;
+    double root_t = 0.0f;
     if (intersect_aabb(
             ox, oy, oz, dx, dy, dz, bvh_bounds_min, bvh_bounds_max, 0, max_distance, &root_t)) {
       stack[0] = 0;
@@ -529,8 +534,8 @@ __global__ void first_hit_rays_kernel(
   while (stack_size > 0) {
     --stack_size;
     int node = stack[stack_size];
-    float node_t = stack_t[stack_size];
-    // Match the float32 comparator's difference, not a rounded sum bound.
+    double node_t = stack_t[stack_size];
+    // Retain candidates within the original CPU tie window.
     if (node_t > best_t && node_t - best_t > kTEps) {
       continue;
     }
@@ -542,12 +547,11 @@ __global__ void first_hit_rays_kernel(
         if ((triangle_role_masks[tri] & sensor_role_mask) == 0) {
           continue;
         }
-        float t = 0.0f;
+        double t = 0.0f;
         float nx = 0.0f;
         float ny = 0.0f;
         float nz = 0.0f;
-        // Keep the precise physical cutoff separate from rounded tie pruning.
-        // The returned float distance is then tested by the existing comparator.
+        // Apply the physical cutoff before the unrounded nearest-hit comparison.
         if (!intersect_triangle(
                 ox,
                 oy,
@@ -587,8 +591,8 @@ __global__ void first_hit_rays_kernel(
       int right = bvh_right[node];
       bool left_hit = false;
       bool right_hit = false;
-      float left_t = 0.0f;
-      float right_t = 0.0f;
+      double left_t = 0.0f;
+      double right_t = 0.0f;
       if (left >= 0) {
         left_hit = intersect_aabb(
             ox, oy, oz, dx, dy, dz, bvh_bounds_min, bvh_bounds_max, left, max_distance, &left_t);
@@ -602,8 +606,8 @@ __global__ void first_hit_rays_kernel(
       int second = right;
       bool first_hit = left_hit;
       bool second_hit = right_hit;
-      float first_t = left_t;
-      float second_t = right_t;
+      double first_t = left_t;
+      double second_t = right_t;
       if (right_hit && (!left_hit || right_t < left_t)) {
         first = right;
         second = left;
@@ -708,7 +712,7 @@ __global__ void shade_direct_light_no_shadow_kernel(
         lz = lz - pz;
         float distance_sq = lx * lx + ly * ly + lz * lz;
         float distance = sqrtf(distance_sq);
-        if (distance > kDirEps) {
+        if (distance > kShadingDirEps) {
           float inv_distance = 1.0f / distance;
           lx = lx * inv_distance;
           ly = ly * inv_distance;
@@ -719,7 +723,7 @@ __global__ void shade_direct_light_no_shadow_kernel(
         }
       } else {
         float light_norm = sqrtf(lx * lx + ly * ly + lz * lz);
-        if (light_norm > kDirEps) {
+        if (light_norm > kShadingDirEps) {
           float inv_light_norm = 1.0f / light_norm;
           lx = lx * inv_light_norm;
           ly = ly * inv_light_norm;
@@ -750,16 +754,16 @@ __global__ void shade_direct_light_no_shadow_kernel(
 }
 
 __device__ bool shadow_occluded_by_triangles(
-    float ox,
-    float oy,
-    float oz,
-    float dx,
-    float dy,
-    float dz,
-    float max_distance,
-    const float* triangle_v0,
-    const float* triangle_e1,
-    const float* triangle_e2,
+    double ox,
+    double oy,
+    double oz,
+    double dx,
+    double dy,
+    double dz,
+    double max_distance,
+    const double* triangle_v0,
+    const double* triangle_e1,
+    const double* triangle_e2,
     const float* triangle_normal,
     const int64_t* triangle_role_masks,
     const float* bvh_bounds_min,
@@ -787,7 +791,7 @@ __device__ bool shadow_occluded_by_triangles(
   int local_node_visit_count = 0;
   int local_leaf_visit_count = 0;
   int local_triangle_test_count = 0;
-  float root_t = 0.0f;
+  double root_t = 0.0f;
   if (intersect_aabb(
           ox, oy, oz, dx, dy, dz, bvh_bounds_min, bvh_bounds_max, 0, max_distance, &root_t)) {
     stack[0] = 0;
@@ -810,7 +814,7 @@ __device__ bool shadow_occluded_by_triangles(
           continue;
         }
         ++local_triangle_test_count;
-        float t = 0.0f;
+        double t = 0.0f;
         float nx = 0.0f;
         float ny = 0.0f;
         float nz = 0.0f;
@@ -839,7 +843,7 @@ __device__ bool shadow_occluded_by_triangles(
       int left = bvh_left[node];
       int right = bvh_right[node];
       if (right >= 0) {
-        float right_t = 0.0f;
+        double right_t = 0.0f;
         if (intersect_aabb(
                 ox,
                 oy,
@@ -861,7 +865,7 @@ __device__ bool shadow_occluded_by_triangles(
         }
       }
       if (left >= 0) {
-        float left_t = 0.0f;
+        double left_t = 0.0f;
         if (intersect_aabb(
                 ox,
                 oy,
@@ -908,9 +912,9 @@ __global__ void shade_direct_light_with_shadows_kernel(
     const float* light_intensity,
     const float* light_color_rgb,
     int num_lights,
-    const float* triangle_v0,
-    const float* triangle_e1,
-    const float* triangle_e2,
+    const double* triangle_v0,
+    const double* triangle_e1,
+    const double* triangle_e2,
     const float* triangle_normal,
     const int64_t* triangle_role_masks,
     const float* bvh_bounds_min,
@@ -980,7 +984,7 @@ __global__ void shade_direct_light_with_shadows_kernel(
         lz = lz - pz;
         float distance_sq = lx * lx + ly * ly + lz * lz;
         float distance = sqrtf(distance_sq);
-        if (distance > kDirEps) {
+        if (distance > kShadingDirEps) {
           float inv_distance = 1.0f / distance;
           lx = lx * inv_distance;
           ly = ly * inv_distance;
@@ -993,7 +997,7 @@ __global__ void shade_direct_light_with_shadows_kernel(
         }
       } else {
         float light_norm = sqrtf(lx * lx + ly * ly + lz * lz);
-        if (light_norm > kDirEps) {
+        if (light_norm > kShadingDirEps) {
           float inv_light_norm = 1.0f / light_norm;
           lx = lx * inv_light_norm;
           ly = ly * inv_light_norm;
@@ -1075,6 +1079,13 @@ __global__ void shade_direct_light_with_shadows_kernel(
   }
 }
 
+void check_double_2d_3(torch::Tensor value, const char* name) {
+  TORCH_CHECK(value.is_cuda(), name, " must be a CUDA tensor");
+  TORCH_CHECK(value.dtype() == torch::kFloat64, name, " must be float64");
+  TORCH_CHECK(value.is_contiguous(), name, " must be contiguous");
+  TORCH_CHECK(value.dim() == 2 && value.size(1) == 3, name, " must have shape [N, 3]");
+}
+
 void check_float_2d_3(torch::Tensor value, const char* name) {
   TORCH_CHECK(value.is_cuda(), name, " must be a CUDA tensor");
   TORCH_CHECK(value.dtype() == torch::kFloat32, name, " must be float32");
@@ -1130,8 +1141,8 @@ void pinhole_camera_rays_out(
     double r20,
     double r21,
     double r22) {
-  check_float_2d_3(origins, "origins");
-  check_float_2d_3(directions, "directions");
+  check_double_2d_3(origins, "origins");
+  check_double_2d_3(directions, "directions");
   TORCH_CHECK(directions.sizes() == origins.sizes(), "directions must match origins shape");
   check_same_device(origins, directions, "directions");
   TORCH_CHECK(width > 0 && height > 0, "width and height must be > 0");
@@ -1151,24 +1162,24 @@ void pinhole_camera_rays_out(
     pinhole_camera_rays_kernel<<<grid, block, 0, stream>>>(
         static_cast<int>(width),
         static_cast<int>(height),
-        static_cast<float>(fx),
-        static_cast<float>(fy),
-        static_cast<float>(cx),
-        static_cast<float>(cy),
-        static_cast<float>(origin_x),
-        static_cast<float>(origin_y),
-        static_cast<float>(origin_z),
-        static_cast<float>(r00),
-        static_cast<float>(r01),
-        static_cast<float>(r02),
-        static_cast<float>(r10),
-        static_cast<float>(r11),
-        static_cast<float>(r12),
-        static_cast<float>(r20),
-        static_cast<float>(r21),
-        static_cast<float>(r22),
-        origins.data_ptr<float>(),
-        directions.data_ptr<float>());
+        fx,
+        fy,
+        cx,
+        cy,
+        origin_x,
+        origin_y,
+        origin_z,
+        r00,
+        r01,
+        r02,
+        r10,
+        r11,
+        r12,
+        r20,
+        r21,
+        r22,
+        origins.data_ptr<double>(),
+        directions.data_ptr<double>());
     C10_CUDA_KERNEL_LAUNCH_CHECK();
   }
 }
@@ -1209,19 +1220,19 @@ void first_hit_rays_out(
     torch::Tensor material_index,
     torch::Tensor bvh_stack_overflow_count,
     torch::Tensor bvh_max_stack_depth) {
-  check_float_2d_3(origins, "origins");
-  check_float_2d_3(directions, "directions");
+  check_double_2d_3(origins, "origins");
+  check_double_2d_3(directions, "directions");
   TORCH_CHECK(directions.sizes() == origins.sizes(), "directions must match origins shape");
   TORCH_CHECK(std::isfinite(max_distance), "max_distance must be finite");
-  check_float_2d_3(plane_normals, "plane_normals");
-  check_float_2d_3(plane_points, "plane_points");
+  check_double_2d_3(plane_normals, "plane_normals");
+  check_double_2d_3(plane_points, "plane_points");
   check_i32_1d(plane_numeric_ids, "plane_numeric_ids");
   check_i64_1d(plane_source_keys, "plane_source_keys");
   check_i64_1d(plane_role_masks, "plane_role_masks");
   check_i32_1d(plane_material_indices, "plane_material_indices");
-  check_float_2d_3(triangle_v0, "triangle_v0");
-  check_float_2d_3(triangle_e1, "triangle_e1");
-  check_float_2d_3(triangle_e2, "triangle_e2");
+  check_double_2d_3(triangle_v0, "triangle_v0");
+  check_double_2d_3(triangle_e1, "triangle_e1");
+  check_double_2d_3(triangle_e2, "triangle_e2");
   check_float_2d_3(triangle_normal, "triangle_normal");
   check_i32_1d(triangle_numeric_ids, "triangle_numeric_ids");
   check_i64_1d(triangle_source_keys, "triangle_source_keys");
@@ -1317,19 +1328,19 @@ void first_hit_rays_out(
     int block = 256;
     int grid = (static_cast<int>(num_rays) + block - 1) / block;
     first_hit_rays_kernel<<<grid, block, 0, stream>>>(
-        origins.data_ptr<float>(),
-        directions.data_ptr<float>(),
-        static_cast<float>(max_distance),
-        plane_normals.data_ptr<float>(),
-        plane_points.data_ptr<float>(),
+        origins.data_ptr<double>(),
+        directions.data_ptr<double>(),
+        max_distance,
+        plane_normals.data_ptr<double>(),
+        plane_points.data_ptr<double>(),
         plane_numeric_ids.data_ptr<int32_t>(),
         plane_source_keys.data_ptr<int64_t>(),
         plane_role_masks.data_ptr<int64_t>(),
         plane_material_indices.data_ptr<int32_t>(),
         static_cast<int>(num_planes),
-        triangle_v0.data_ptr<float>(),
-        triangle_e1.data_ptr<float>(),
-        triangle_e2.data_ptr<float>(),
+        triangle_v0.data_ptr<double>(),
+        triangle_e1.data_ptr<double>(),
+        triangle_e2.data_ptr<double>(),
         triangle_normal.data_ptr<float>(),
         triangle_numeric_ids.data_ptr<int32_t>(),
         triangle_source_keys.data_ptr<int64_t>(),
@@ -1697,9 +1708,9 @@ void shade_direct_light_with_shadows_impl(
       TORCH_CHECK(counter->size(0) == 1, "shadow traversal counters must have shape [1]");
     }
   }
-  check_float_2d_3(triangle_v0, "triangle_v0");
-  check_float_2d_3(triangle_e1, "triangle_e1");
-  check_float_2d_3(triangle_e2, "triangle_e2");
+  check_double_2d_3(triangle_v0, "triangle_v0");
+  check_double_2d_3(triangle_e1, "triangle_e1");
+  check_double_2d_3(triangle_e2, "triangle_e2");
   check_float_2d_3(triangle_normal, "triangle_normal");
   check_i64_1d(triangle_role_masks, "triangle_role_masks");
   check_float_2d_3(bvh_bounds_min, "bvh_bounds_min");
@@ -1805,9 +1816,9 @@ void shade_direct_light_with_shadows_impl(
         light_intensity.data_ptr<float>(),
         light_color_rgb.data_ptr<float>(),
         static_cast<int>(num_lights),
-        triangle_v0.data_ptr<float>(),
-        triangle_e1.data_ptr<float>(),
-        triangle_e2.data_ptr<float>(),
+        triangle_v0.data_ptr<double>(),
+        triangle_e1.data_ptr<double>(),
+        triangle_e2.data_ptr<double>(),
         triangle_normal.data_ptr<float>(),
         triangle_role_masks.data_ptr<int64_t>(),
         bvh_bounds_min.data_ptr<float>(),
@@ -2020,3 +2031,9 @@ void shade_direct_light_with_shadows_diagnostics_out(
       &traversal_counter_8);
 }
 """
+
+CUDA_SOURCE = (
+    CUDA_SOURCE.replace("@BUILD_EPS@", repr(BUILD_EPS))
+    .replace("@DIR_EPS@", repr(DIR_EPS))
+    .replace("@TIE_EPS@", repr(TIE_EPS))
+)

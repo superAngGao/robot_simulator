@@ -34,7 +34,7 @@ CUDA_EXTENSION_RECIPES = (
         False,
     ),
     CudaExtensionRecipe(
-        "robot_sim_cuda_direct_light_v8",
+        "robot_sim_cuda_direct_light_v10",
         _cuda_direct_light_source,
         (
             "pinhole_camera_rays_out",
@@ -45,6 +45,7 @@ CUDA_EXTENSION_RECIPES = (
             "shade_direct_light_with_shadows_diagnostics_out",
         ),
         False,
+        cuda_cflags=("-O2", "--fmad=false"),
     ),
 )
 

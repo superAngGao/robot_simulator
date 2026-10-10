@@ -30,7 +30,7 @@ from .workload_contract import frozen_workload_content
 from .workloads import _materialize_canonical_scene, build_canonical_transform_replay
 
 SEQUENCE_SCHEMA = "q54.p12.4.resolved-render-sequence.v1"
-BOUND_SCHEMA = "q54.p12.4.bound-render-parameters.v1"
+BOUND_SCHEMA = "q54.p12.4.bound-render-parameters.v2"
 _ASYMMETRIC = "asymmetric_synthetic_7x3_v1"
 _DYNAMIC = "synthetic_dynamic_rigid_960x640_v1"
 _GO2 = ("go2_static_960x640_v1", "go2_static_1920x1080_v1")
@@ -86,6 +86,54 @@ NATIVE_SCALAR_ORDER = (
     "background_b",
     "shadow_bias",
 )
+NATIVE_CAMERA_SCALAR_ORDER = NATIVE_SCALAR_ORDER[:17]
+NATIVE_SHADING_SCALAR_ORDER = NATIVE_SCALAR_ORDER[17:]
+
+
+def encode_native_scalars(camera_values, shading_values):
+    """Encode the actual fixed ABI: 17 doubles followed by seven floats."""
+    result = {}
+    for field, values, order, format in (
+        ("native_camera_scalars_f64", camera_values, NATIVE_CAMERA_SCALAR_ORDER, "<d"),
+        ("native_shading_scalars_f32", shading_values, NATIVE_SHADING_SCALAR_ORDER, "<f"),
+    ):
+        if len(values) != len(order):
+            raise ValueError("wrong native scalar count")
+        encoded = []
+        for value in values:
+            try:
+                raw = struct.pack(format, value)
+            except (OverflowError, struct.error) as exc:
+                raise ValueError("native scalar conversion overflow or invalid value") from exc
+            if not math.isfinite(struct.unpack(format, raw)[0]):
+                raise ValueError("native scalars must be finite")
+            encoded.append(raw.hex())
+        result[field] = encoded
+    return result
+
+
+def decode_native_scalars(payload):
+    """Reject obsolete/mixed encodings before constructing native arguments."""
+    if (type(payload) is not dict or payload.get("schema_version") != BOUND_SCHEMA
+            or "native_scalars_f32" in payload):
+        raise ValueError("native scalar ABI requires bound-render-parameters v2")
+    values = []
+    for field, order, format in (
+        ("native_camera_scalars_f64", NATIVE_CAMERA_SCALAR_ORDER, "<d"),
+        ("native_shading_scalars_f32", NATIVE_SHADING_SCALAR_ORDER, "<f"),
+    ):
+        encoded = payload.get(field)
+        if type(encoded) is not list or len(encoded) != len(order):
+            raise ValueError("wrong native scalar count")
+        for value in encoded:
+            if (type(value) is not str or len(value) != 2 * struct.calcsize(format)
+                    or any(c not in "0123456789abcdef" for c in value)):
+                raise ValueError("native scalar must be exact lowercase little-endian hex")
+            number = struct.unpack(format, bytes.fromhex(value))[0]
+            if not math.isfinite(number):
+                raise ValueError("native scalars must be finite")
+            values.append(number)
+    return tuple(values)
 
 
 def _case(case_id):
@@ -129,7 +177,7 @@ def _index(value):
 
 def _resolution_ids(case_id):
     if case_id == _ASYMMETRIC:
-        return ["asymmetric_resolved_camera_v1"]
+        return ["asymmetric_resolved_camera_v2"]
     if case_id == _DYNAMIC:
         return ["model_bounds_front_frame0_v1"]
     return ["lab_video_camera_orbit_120_30_v1"]
@@ -285,8 +333,8 @@ def materialize_render_source(
             rotation = replay.arrays["replay_x_world_R"][0]
             translation = replay.arrays["replay_x_world_r"][0]
         else:
-            rotation = np.empty((0, 3, 3), dtype=np.float32)
-            translation = np.empty((0, 3), dtype=np.float32)
+            rotation = np.empty((0, 3, 3), dtype=np.float64)
+            translation = np.empty((0, 3), dtype=np.float64)
         world = _derive_fixed_fixture_arrays(packed, rotation, translation)
         bounds = (
             tuple(float(v) for v in world["triangle_aabb_min"].min(axis=0)),
@@ -391,10 +439,8 @@ def _bound_payload(sequence, *, sample_index, profile, shadows, pass_mode, role_
         *source["background_f64"],
         source["shadow_bias_f64"],
     )
-    # struct implements one nearest-even binary64->binary32 conversion.
-    encoded = [struct.pack("<f", _f64(value)).hex() for value in scalars]
-    if any(not math.isfinite(struct.unpack("<f", bytes.fromhex(value))[0]) for value in encoded):
-        raise ValueError("native scalar conversion overflow")
+    values = tuple(_f64(value) for value in scalars)
+    encoded = encode_native_scalars(values[:17], values[17:])
     return {
         "schema_version": BOUND_SCHEMA,
         "sequence_sha256": sequence.sha256,
@@ -409,7 +455,7 @@ def _bound_payload(sequence, *, sample_index, profile, shadows, pass_mode, role_
         "width": frame["width"],
         "height": frame["height"],
         "sensor_role_mask": role_mask,
-        "native_scalars_f32": encoded,
+        **encoded,
     }
 
 
@@ -425,6 +471,7 @@ class BoundRenderParameters:
         payload = json.loads(self.canonical_bytes)
         if type(payload) is not dict or canonical_json_bytes(payload) != self.canonical_bytes:
             raise ValueError("bound render record is not canonical")
+        decode_native_scalars(payload)
         return payload
 
     @classmethod

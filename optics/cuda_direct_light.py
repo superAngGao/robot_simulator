@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import struct
 import time
 from dataclasses import dataclass
 
@@ -27,8 +26,6 @@ except Exception:  # pragma: no cover - keeps CPU-only imports working.
     torch = None
     _HAS_CUDA_DIRECT_LIGHT_DEPS = False
 
-_DIR_EPS = 1.0e-8
-_T_EPS = 1.0e-5
 _MAX_BVH_STACK = 32
 _INT32_MAX = (1 << 31) - 1
 _INT64_MAX = (1 << 63) - 1
@@ -130,8 +127,8 @@ class CudaCameraParameters:
 
     @classmethod
     def from_spec(cls, camera: OpticalPinholeCameraSpec) -> "CudaCameraParameters":
-        origin = np.asarray(camera.X_world_camera.r, dtype=np.float32)
-        rotation = np.asarray(camera.X_world_camera.R, dtype=np.float32)
+        origin = np.asarray(camera.X_world_camera.r, dtype=np.float64)
+        rotation = np.asarray(camera.X_world_camera.R, dtype=np.float64)
         return cls(
             width=int(camera.width),
             height=int(camera.height),
@@ -157,17 +154,22 @@ class CudaDirectLightStageEvidence:
     traversal_diagnostics: bool
     camera_dimensions: tuple[int, int] | None
     sensor_role_mask: int
-    native_scalars_f32: tuple[str, ...]
+    native_camera_scalars_f64: tuple[str, ...]
+    native_shading_scalars_f32: tuple[str, ...]
 
     def validate_render_parameters(self, payload: dict[str, object]) -> None:
         """Compare a descriptive record to the actual frozen extension ABI."""
+        from optical_worker.render_parameters import decode_native_scalars
+
+        decode_native_scalars(payload)
         if (
             self.camera_dimensions != (payload.get("width"), payload.get("height"))
             or self.sensor_role_mask != payload.get("sensor_role_mask")
             or self.output_profile != payload.get("profile")
             or self.shadows is not payload.get("shadows")
             or self.traversal_diagnostics is not payload.get("diagnostics")
-            or list(self.native_scalars_f32) != payload.get("native_scalars_f32")
+            or list(self.native_camera_scalars_f64) != payload["native_camera_scalars_f64"]
+            or list(self.native_shading_scalars_f32) != payload["native_shading_scalars_f32"]
         ):
             raise ValueError("bound render parameters differ from actual CUDA scalar ABI")
 
@@ -651,7 +653,10 @@ class CudaDirectLightRenderStage:
             raise ValueError("CUDA render evidence cannot be rebuilt")
         # This is untimed construction/preflight, not an enqueue operation.
         # Read scalars from the bound tuples that will actually reach pybind.
-        scalars = ()
+        from optical_worker.render_parameters import encode_native_scalars
+
+        camera_scalars = ()
+        shading_scalars = ()
         dimensions = None
         if self.camera is not None and self.shade_inputs is not None:
             self._validate_cuda_transaction_stage(self.renderer.context)
@@ -665,7 +670,9 @@ class CudaDirectLightRenderStage:
                 *self._shade_args[shade_start : shade_start + 6],
                 bias,
             )
-            scalars = tuple(struct.pack("<f", value).hex() for value in values)
+            encoded = encode_native_scalars(values[:17], values[17:])
+            camera_scalars = tuple(encoded["native_camera_scalars_f64"])
+            shading_scalars = tuple(encoded["native_shading_scalars_f32"])
         return CudaDirectLightStageEvidence(
             operation="first_hit" if self.shade_inputs is None else "direct_light",
             ray_source="camera" if self.camera is not None else "device_rays",
@@ -676,7 +683,8 @@ class CudaDirectLightRenderStage:
             traversal_diagnostics=bool(self.buffers.shadow_traversal_counters),
             camera_dimensions=dimensions,
             sensor_role_mask=self.first_hit_inputs.sensor_role_mask,
-            native_scalars_f32=scalars,
+            native_camera_scalars_f64=camera_scalars,
+            native_shading_scalars_f32=shading_scalars,
         )
 
 
@@ -709,9 +717,9 @@ def allocate_cuda_direct_light_buffers(
         if _context is not None:
             _context.lifecycle.require_adopted(*(value for value in (origins, directions) if value is not None))
         if ray_origins is None:
-            ray_origins = empty("ray_origins", (num_rays, 3), torch.float32)
+            ray_origins = empty("ray_origins", (num_rays, 3), torch.float64)
         if ray_directions is None:
-            ray_directions = empty("ray_directions", (num_rays, 3), torch.float32)
+            ray_directions = empty("ray_directions", (num_rays, 3), torch.float64)
         kwargs: dict[str, object] = {}
         if direct_light:
             kwargs = {
@@ -742,16 +750,11 @@ def allocate_cuda_direct_light_buffers(
 
 
 def _validate_first_hit_inputs(inputs: CudaFirstHitInputs, device: object) -> None:
-    float_2d = (
-        "plane_normal_world",
-        "plane_point_world",
-        "triangle_v0_world",
-        "triangle_e1_world",
-        "triangle_e2_world",
-        "triangle_normal_world",
-        "bvh_bounds_min",
-        "bvh_bounds_max",
+    double_2d = (
+        "plane_normal_world", "plane_point_world",
+        "triangle_v0_world", "triangle_e1_world", "triangle_e2_world",
     )
+    float_2d = ("triangle_normal_world", "bvh_bounds_min", "bvh_bounds_max")
     int32_1d = (
         "plane_numeric_instance_id",
         "plane_material_index",
@@ -769,6 +772,8 @@ def _validate_first_hit_inputs(inputs: CudaFirstHitInputs, device: object) -> No
         "triangle_source_order_key",
         "triangle_role_mask",
     )
+    for name in double_2d:
+        _validate_tensor(getattr(inputs, name), name=name, device=device, dtype=torch.float64, tail=(3,))
     for name in float_2d:
         _validate_tensor(getattr(inputs, name), name=name, device=device, dtype=torch.float32, tail=(3,))
     for name in int32_1d:
@@ -856,7 +861,7 @@ def _validate_render_buffers(
     camera: CudaCameraParameters | None,
     direct_light: bool,
 ) -> None:
-    _validate_tensor(buffers.origins, name="origins", device=device, dtype=torch.float32, tail=(3,))
+    _validate_tensor(buffers.origins, name="origins", device=device, dtype=torch.float64, tail=(3,))
     num_rays = buffers.origins.shape[0]
     if num_rays > _INT32_MAX:
         raise ValueError("ray count exceeds CUDA kernel index range")
@@ -864,7 +869,7 @@ def _validate_render_buffers(
         buffers.directions,
         name="directions",
         device=device,
-        dtype=torch.float32,
+        dtype=torch.float64,
         exact=(num_rays, 3),
     )
     for name, dtype, exact in (
@@ -1168,13 +1173,13 @@ class CudaDeviceBvhOpticalExecutor:
         upload_start = time.perf_counter()
         with torch.cuda.device(tensor_device):
             origins = torch.as_tensor(
-                np.asarray(spec.origins_world, dtype=np.float32),
-                dtype=torch.float32,
+                np.asarray(spec.origins_world, dtype=np.float64),
+                dtype=torch.float64,
                 device=tensor_device,
             ).contiguous()
             directions = torch.as_tensor(
-                np.asarray(spec.directions_world, dtype=np.float32),
-                dtype=torch.float32,
+                np.asarray(spec.directions_world, dtype=np.float64),
+                dtype=torch.float64,
                 device=tensor_device,
             ).contiguous()
         _add_profile_ms(render_profile, "cuda_first_hit_ray_upload_ms", upload_start)
@@ -1402,13 +1407,13 @@ class CudaDeviceBvhDirectLightOpticalExecutor:
         upload_start = time.perf_counter()
         with torch.cuda.device(self._execution_context.device):
             origins = torch.as_tensor(
-                np.asarray(spec.origins_world, dtype=np.float32),
-                dtype=torch.float32,
+                np.asarray(spec.origins_world, dtype=np.float64),
+                dtype=torch.float64,
                 device=self._execution_context.device,
             ).contiguous()
             directions = torch.as_tensor(
-                np.asarray(spec.directions_world, dtype=np.float32),
-                dtype=torch.float32,
+                np.asarray(spec.directions_world, dtype=np.float64),
+                dtype=torch.float64,
                 device=self._execution_context.device,
             ).contiguous()
         _add_profile_ms(render_profile, "cuda_first_hit_ray_upload_ms", upload_start)
@@ -1603,8 +1608,8 @@ def _generate_pinhole_camera_ray_tensors(
         raise ValueError("CUDA camera raygen requires a CUDA torch.device")
 
     params_start = time.perf_counter()
-    origin = np.asarray(camera.X_world_camera.r, dtype=np.float32)
-    rotation = np.asarray(camera.X_world_camera.R, dtype=np.float32)
+    origin = np.asarray(camera.X_world_camera.r, dtype=np.float64)
+    rotation = np.asarray(camera.X_world_camera.R, dtype=np.float64)
     _add_profile_ms(render_profile, "raygen_camera_params_ms", params_start)
 
     load_start = time.perf_counter()
@@ -1614,8 +1619,8 @@ def _generate_pinhole_camera_ray_tensors(
     alloc_start = time.perf_counter()
     num_rays = int(camera.width) * int(camera.height)
     with torch.cuda.device(device):
-        origins = torch.empty((num_rays, 3), dtype=torch.float32, device=device)
-        directions = torch.empty((num_rays, 3), dtype=torch.float32, device=device)
+        origins = torch.empty((num_rays, 3), dtype=torch.float64, device=device)
+        directions = torch.empty((num_rays, 3), dtype=torch.float64, device=device)
     _add_profile_ms(render_profile, "raygen_buffer_alloc_ms", alloc_start)
 
     timing = None
@@ -1695,4 +1700,4 @@ def _filter_channels_for_profile(
 def _load_cuda_direct_light_extension(*, extensions=None, context=None):
     if extensions is None:
         _require_cuda_direct_light_deps()
-    return load_cuda_extension("robot_sim_cuda_direct_light_v8", extensions=extensions, context=context)
+    return load_cuda_extension("robot_sim_cuda_direct_light_v10", extensions=extensions, context=context)

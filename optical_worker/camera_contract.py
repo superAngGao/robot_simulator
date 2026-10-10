@@ -1,6 +1,6 @@
 """Exact CPU-only camera data; never a live execution/readiness authority.
 
-The v1 contract resolves only the previously symbolic asymmetric camera.
+The v2 contract resolves only the previously symbolic asymmetric camera.
 Runtime adoption must additionally bind actual camera/ABI values to its plan.
 """
 
@@ -11,10 +11,10 @@ from dataclasses import dataclass
 
 from .cases import canonical_json_bytes, get_case
 
-RESOLVED_CAMERA_SCHEMA_VERSION = "q54.p12.4.resolved-camera.v1"
+RESOLVED_CAMERA_SCHEMA_VERSION = "q54.p12.4.resolved-camera.v2"
 ASYMMETRIC_CAMERA_CASE_ID = "asymmetric_synthetic_7x3_v1"
 ASYMMETRIC_CAMERA_CASE_SHA256 = "3f6ce0ac1d59d0c0d0e5ea57f497c308a9d5c4b2a5c19462c900627fd99d0181"
-ASYMMETRIC_CAMERA_SHA256 = "04ab7bc2571b8396f06d36b7baea66224868001894c4ce7a5ea12e4faecda1ef"
+ASYMMETRIC_CAMERA_SHA256 = "3cee982411e6a7c02b81dda2929ead53ea5895ed00513b8e67d3d91dcf1d46ef"
 _ROTATION_ID = "non_identity_compound_xyz_v1"
 _ROTATION_F64 = (
     "0x1.e966c0cb6338ep-1",
@@ -52,7 +52,7 @@ def _frozen_payload() -> dict:
         "convention": "active_camera_to_world_rz_ry_rx_column_vector_v1",
         "ray_layout": "integer_pixel_center_py_times_width_plus_px_v1",
         "scalar_encoding": "ieee754_binary64_canonical_hex_v1",
-        "native_scalar_encoding": "binary64_to_binary32_nearest_even_v1",
+        "native_scalar_encoding": "binary64_native_no_rounding_v1",
         "width": case.width,
         "height": case.height,
         "intrinsics_f64": [float(case.camera[name]).hex() for name in ("fx", "fy", "cx", "cy")],

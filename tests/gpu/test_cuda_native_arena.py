@@ -76,7 +76,7 @@ def _context(device: str = "cuda:0") -> CudaOpticalExecutionContext:
 
 
 def _render_values(case_id):
-    # Use the reviewed binary32 input record, never a tiny surrogate camera.
+    # Use the reviewed camera/shading ABI, never a tiny surrogate camera.
     payload = bind_render_parameters(
         load_frozen_render_sequence(case_id),
         sample_index=0,
@@ -85,7 +85,9 @@ def _render_values(case_id):
         pass_mode="primary_unprofiled",
         role_to_mask={"rgb": 2},
     ).to_payload()
-    values = tuple(struct.unpack("<f", bytes.fromhex(v))[0] for v in payload["native_scalars_f32"])
+    from optical_worker.render_parameters import decode_native_scalars
+
+    values = decode_native_scalars(payload)
     return payload, values
 
 

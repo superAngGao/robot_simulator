@@ -70,7 +70,7 @@ def load_cuda_extension(recipe_name):
         elif name == "robot_sim_cuda_lbvh_native_v3":
             import robot_sim_cuda_lbvh_native_v3 as module
         else:
-            import robot_sim_cuda_direct_light_v8 as module
+            import robot_sim_cuda_direct_light_v10 as module
         # Hold before metadata/ABI validation can fail. A partial load cannot be
         # retried as an unobserved new module in this process.
         _LOADED[name] = (module, None, None, None)

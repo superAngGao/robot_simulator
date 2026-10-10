@@ -125,7 +125,7 @@ def _require_cuda_render_factory(session, extensions):
     session.bound_controller().require_adopted(context, renderer)
     if type(renderer) is not CudaDirectLightNativeRenderer or renderer.context is not context:
         raise ValueError("CUDA render factory differs from its retained context")
-    module = _require_cuda_extension(extensions, "robot_sim_cuda_direct_light_v8", context)
+    module = _require_cuda_extension(extensions, "robot_sim_cuda_direct_light_v10", context)
     if renderer.module is not module:
         raise ValueError("CUDA render factory differs from its issued module")
     return renderer, context
@@ -241,10 +241,9 @@ def _prepare_render_events(runtime, target, stream, *, lane, diagnostic, context
 
 def _prepare_fixed_render_graph(session, runtime, target, stream, *, readiness, profile, shadows, pass_mode):
     """Bind the ten provisional warmup frames using existing renderer builders."""
-    import struct
     from dataclasses import replace
     from optical_worker.render_parameters import (
-        bind_render_parameters, load_frozen_render_sequence, NATIVE_SCALAR_ORDER,
+        bind_render_parameters, load_frozen_render_sequence, NATIVE_SCALAR_ORDER, decode_native_scalars,
     )
 
     controller = session.bound_controller()
@@ -291,8 +290,7 @@ def _prepare_fixed_render_graph(session, runtime, target, stream, *, readiness, 
                     shadows=shadows, pass_mode=pass_mode,
                     role_to_mask=session.render_source.packed_scene.role_to_mask)
                 payload = parameters.to_payload()
-                scalars = tuple(struct.unpack("<f", bytes.fromhex(value))[0]
-                                for value in payload["native_scalars_f32"])
+                scalars = decode_native_scalars(payload)
                 values = dict(zip(NATIVE_SCALAR_ORDER, scalars, strict=True))
                 camera_values = dict(width=payload["width"], height=payload["height"],
                     fx=values["fx"], fy=values["fy"], cx=values["cx"], cy=values["cy"],
