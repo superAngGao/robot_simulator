@@ -996,6 +996,65 @@ def _run_observed_render_warmups(session, controller, binding, observer, directo
     return evidence
 
 
+@contextmanager
+def _prepared_worker_readback(session):
+    """Prepare the fixed correctness driver's staging before the original seal.
+
+    Ordinary workers never install this wrapper. Final copy/observation is
+    intentionally not invoked until the D1 original-RESOLVE aperture is bound.
+    """
+    from optical_worker import native_setup
+
+    original = native_setup._prepare_fixed_final_graph
+    held = {"graph": None, "readback": None}
+
+    def prepare(actual_session, runtime, target, stream, **kwargs):
+        if actual_session is not session or held["graph"] is not None:
+            raise ValueError("final readback requires its original one-shot worker preparation")
+        graph = original(actual_session, runtime, target, stream, **kwargs)
+        from optical_worker.native_readback import _prepare_native_readback
+
+        controller = session.bound_controller()
+        controller._require_setup()
+        if (native_setup._FINAL_RENDER_GRAPHS.get(session) is not graph
+                or graph.runtime is not runtime or graph.target is not target or graph.stream is not stream
+                or session.phase != "preparing_fixed_final_graph"):
+            raise ValueError("final readback differs from its original prepared graph")
+        # Retain the holder before creating any staging owner. Every partial
+        # array/view/scope/event return is retained by the shared readback body.
+        session._hold_runtime_owner(held, "final_validation_readback")
+        held["graph"] = graph
+        retained = []
+        held["retained"] = retained
+        controller.adopt_host_owner(
+            retained, role="final_readback_custody", operation_id="final_readback_custody",
+        )
+        storage = session.fixed_render_storage
+        outputs = storage.outputs if type(storage) is native_setup._DynamicRenderStorage else storage[3]
+        if session.lane == "warp":
+            from optics.warp_native_render import warp_direct_light_buffer_layout
+
+            physical = dict(outputs.arrays)
+            layout = warp_direct_light_buffer_layout(
+                graph.spec.width * graph.spec.height,
+                traversal_diagnostics=graph.spec.diagnostic_mode == "diagnostic_profiled",
+            )
+            arrays = tuple((name, shape, dtype, physical[name]) for name, dtype, shape in layout)
+        else:
+            arrays = tuple((name, tuple(value.shape), str(value.dtype).removeprefix("torch."), value)
+                           for name, value in outputs.tensor_items())
+        held["readback"] = _prepare_native_readback(
+            arrays, controller, runtime, target, stream, session.lane == "cuda", retained,
+        )
+        return graph
+
+    native_setup._prepare_fixed_final_graph = prepare
+    try:
+        yield held
+    finally:
+        native_setup._prepare_fixed_final_graph = original
+
+
 def _prepare_observed_final_graph(session, controller, binding, observer, directory, fault):
     """Observe the production final graph and barrier without submitting a sample."""
     from optical_worker import native_setup
@@ -1266,12 +1325,14 @@ def child(fault, fd, directory, command_fd=None, liveness_fd=None):
             )
             _write(directory, "worker_manifest.json", manifest.to_payload())
             _write(directory, "worker_ready.json", {"manifest_sha256": manifest.sha256})
-            with (directory / "worker_journal.bin").open("xb", buffering=0) as journal:
-                code = run_worker_loop(
-                    command_descriptor=command_fd, liveness_descriptor=liveness_fd,
-                    journal_descriptor=journal.fileno(), abort_signal_descriptor=-1, abort_ack_descriptor=-1,
-                    manifest=manifest, _source_session=session,
-                )
+            with _prepared_worker_readback(session):
+                with (directory / "worker_journal.bin").open("xb", buffering=0) as journal:
+                    code = run_worker_loop(
+                        command_descriptor=command_fd, liveness_descriptor=liveness_fd,
+                        journal_descriptor=journal.fileno(),
+                        abort_signal_descriptor=-1, abort_ack_descriptor=-1,
+                        manifest=manifest, _source_session=session,
+                    )
             _write(directory, "worker.json", controller.evidence().to_payload())
             if controller._final_graph is not None:
                 _write(directory, "worker_arena.json",

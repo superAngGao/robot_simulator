@@ -374,3 +374,84 @@ def test_storage_rebinding_is_rejected_before_any_readback_leaf(readback_case):
         with case.lifecycle.segment():
             _run(case)
     assert not case.state.trace and not case.state.hosts
+
+
+def _prepare_reusable(case):
+    from optical_worker.native_readback import _prepare_native_readback
+
+    retained = []
+    case.lifecycle.adopt_host_owner(retained, role="unit_staging", operation_id="unit_staging")
+    arrays = tuple((row.name, row.shape, row.dtype, case.prepared.arrays[row.name])
+                   for row in case.source.manifest.arrays)
+    return _prepare_native_readback(arrays, case.lifecycle, case.runtime, case.target,
+                                    case.stream, case.prepared.backend == "cuda", retained)
+
+
+def test_reusable_readback_initializes_event_and_reuses_original_host_storage(readback_case, monkeypatch):
+    from optical_worker.native_readback import _copy_prepared_native_readback
+
+    case = readback_case
+    with case.lifecycle.segment():
+        prepared = _prepare_reusable(case)
+    assert case.state.trace == ["event", "record", "wait"]
+    assert prepared.event.device is case.target
+    hosts = tuple(host for _, host in prepared.observations)
+    original_ids = tuple(id(host) for host in hosts)
+    event = prepared.event
+
+    def late_creation(*args, **kwargs):
+        pytest.fail("readback created storage, host views, events or native scopes after preparation")
+
+    monkeypatch.setattr(np, "empty", late_creation)
+    for name in ("from_numpy", "array", "Event", "ScopedDevice"):
+        monkeypatch.setattr(case.runtime, name, late_creation)
+    for name in ("device", "stream", "Event"):
+        monkeypatch.setattr(case.runtime.cuda, name, late_creation)
+    for generation in range(1, 5):
+        case.prepared.arrays["float_values"].data[:] = generation + 0.25
+        case.prepared.arrays["integer_values"].data[:] = generation
+        with case.lifecycle.segment():
+            observed = _copy_prepared_native_readback(prepared, case.lifecycle)
+        assert observed is prepared.observations and prepared.event is event
+        assert tuple(id(host) for _, host in observed) == original_ids
+        for name, host in observed:
+            np.testing.assert_array_equal(host, case.prepared.arrays[name].data)
+    assert case.state.trace == ["event", "record", "wait"] + ["copy", "copy", "copy", "record", "wait"] * 4
+    assert not case.state.pending and case.state.current_context is None
+    assert case.state.scope_entries == case.state.scope_exits
+
+
+@pytest.mark.parametrize("fault", ["event", "record", "wait", "adopt_view", "adopt_event"])
+def test_prepared_readback_failure_retains_partial_owners(readback_case, fault):
+    case = readback_case
+    case.state.fault = fault
+    with pytest.raises(RuntimeError):
+        with case.lifecycle.segment():
+            _prepare_reusable(case)
+    gc.collect()
+    assert all(reference() is not None for reference in case.state.hosts + case.state.views)
+    if case.state.event is not None:
+        assert case.state.event() is not None
+    assert case.lifecycle.guardian.state == "TRANSFERRED_TO_QUARANTINE"
+    assert case.state.trace.count("wait") <= 1 and "copy" not in case.state.trace
+
+
+@pytest.mark.parametrize("fault", ["copy", "record", "wait"])
+def test_reusable_readback_failure_never_returns_or_waits_again(readback_case, fault):
+    from optical_worker.native_readback import _copy_prepared_native_readback
+
+    case = readback_case
+    with case.lifecycle.segment():
+        prepared = _prepare_reusable(case)
+    case.state.trace.clear()
+    case.state.fault = fault
+    with pytest.raises(RuntimeError):
+        with case.lifecycle.segment():
+            _copy_prepared_native_readback(prepared, case.lifecycle)
+    assert case.lifecycle.guardian.state == "TRANSFERRED_TO_QUARANTINE"
+    assert case.state.trace.count("wait") == (1 if fault == "wait" else 0)
+    assert prepared.event is case.state.event()
+    before = tuple(case.state.trace)
+    with pytest.raises(RuntimeError):
+        _copy_prepared_native_readback(prepared, case.lifecycle)
+    assert tuple(case.state.trace) == before

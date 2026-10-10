@@ -1257,13 +1257,13 @@ def _torch_empty_exact(torch: Any, *, shape: tuple[int, ...], dtype: Any, target
     return torch.empty(shape, dtype=dtype, device=target)
 
 
-def _torch_copy_exact(torch: Any, destination: Any, source: Any, stream: Any) -> None:
+def _torch_copy_exact(torch: Any, destination: Any, source: Any, stream: Any, *, _scopes=None) -> None:
     # StreamContext restores its source stream via set_stream(). Enter the
     # indexed device first so that source and destination streams belong to the
     # target, rather than restoring an ambient foreign-device stream. The outer
     # device guard uses Torch's lazy device restoration on CUDA 12.
-    with torch.cuda.device(stream.device):
-        with torch.cuda.stream(stream):
+    with torch.cuda.device(stream.device) if _scopes is None else _scopes[0]:
+        with torch.cuda.stream(stream) if _scopes is None else _scopes[1]:
             destination.copy_(source, non_blocking=True)
 
 

@@ -2088,6 +2088,12 @@ Next milestone:
       before repair;230 related CPU checks pass afterward. Complete persistence
       recovery/OS faults and the integrated independent/native packet remain
       unfinished; see the same worker-control-work note for exact evidence.
+      The shared validation readback now separates preparation from copy/wait.
+      The fixed correctness driver prepares output staging and initializes its
+      event before the original final seal/barrier. CPU reuse/failure and graph
+      integration checks pass; broader regression is485passed with4 asset/POSIX
+      skips. D1 final-resolve admission and actual final-generation numerical
+      comparison remain unimplemented, so this is preparation progress only.
       Author full source
       regression passes317 with13 Windows skips, all13 supplemented successfully
       on primary Linux. Separately the approvedfc23b4e

@@ -604,3 +604,77 @@ remain required together with G3 trace/terminal capacity reservation. G1/G2
 final native observation/staging/numerical work and full fixed-work proof are
 also outstanding. Neither commit is an independently approved packet, a native
 deployment, a speed comparison or permission to open a later gate.
+
+## Shared diagnostic readback preparation (after858417e)
+
+The previous goal turn made author progress in9ef12cf/858417e; neither was
+integrated acceptance. This turn began from tracked-clean858417e with no
+remaining local or native job. It implements the preparation side of the
+approved G2/D1 staging requirement; final generation observation is not done.
+
+`native_readback.py` now separates the existing host/view creation, exact copy,
+event creation and record/wait bodies. The existing one-shot input readback
+calls those shared bodies in its original order (per-array create/copy, then
+event create/record/wait); it still uses the original host content validator.
+Reusable staging prepares the original device-array references, host arrays,
+native host views, CUDA device/stream scope objects or Warp restoring device
+scope, and one event. It records and waits that event during guarded setup,
+before seal, to initialize actual lazy event storage. Partial returns remain
+in the original already-adopted custody list before subsequent registration.
+The exact Torch copy body accepts prepared scopes while preserving its old
+construction/entry order for input/upload callers. No second native copy or
+mathematical validation algorithm was added.
+
+The existing fixed correctness driver installs a wrapper around the original
+final-graph preparation entry. It stages the exact physical output arrays
+before that original setup guard ends and before the original seal/barrier.
+Warp dtype/shape metadata comes from its existing physical buffer layout; CUDA
+metadata comes from its actual output tensors. The wrapper restores the
+original entry in finally, stays out of ordinary worker code and is installed
+only by the existing sacrificial worker correctness branch. The normal worker
+has no request, selector or callback that installs this staging. No new guard,
+barrier, lease, payload or product host output is introduced.
+
+The reusable copy helper deliberately still requires setup. It is not yet
+connected to final RESOLVE, and an unguarded post-seal call rejects without
+copy/wait. D1 must bind that execution to the exact original resolve ticket,
+sample/lease/generation and reader before final copies are enabled. Thus no
+final GPU result, numerical agreement or slot-reset acceptance is claimed.
+
+CPU evidence (native leaves doubled, Python3.14):
+- Original30 input readback cases pass2.19s, preserving copy/record/wait order,
+  physical-input rejection, foreign/unknown event scope and failure custody.
+  `prepared_readback_existing_v1.txt`:204bytes, SHA256
+  f5d546480a23dba692db859e87c6ef126da0dc4c723eb09ff3a5daf9c08ecbc4.
+- Expanded48 readback cases pass4.45s. Both lanes reuse the same buffers/views,
+  scopes and event across four distinct CPU-backed generations with allocator,
+  view/event and native-scope constructor tripwires after preparation. These
+  are setup-copy generations, not final arena slot reuse evidence. Creation,
+  adoption, copy, record and wait failure tests retain original custody.
+  `prepared_readback_reuse_v1.txt`:204bytes, SHA256
+  21c58f07ec5b3bc7318e591b2f888cce86e3367b95b0edf7f4ad8ed4f34378e9.
+- Original final graph/seal/barrier with fixed driver wrapper:12passed15.81s,
+  both lanes and pass modes, initialization record/wait failures included.
+  The barrier sees the initialized adopted event, or remains unentered on
+  failure. Original array joins/metadata and wrapper restoration are checked.
+  `final_readback_preparation_v2.txt`:206bytes, SHA256
+  4efd1d71fc2f4c17c435f0bcddac291bfcd1375ac468c7ba064f2ac4a6508d34.
+  Initialv1 failed because its test double replaced Warp's exact Event class;
+  v2 preserves that class and replaces only native leaf bodies. The production
+  exact-class validation was not relaxed. That attempt is not baseline proof.
+- Broader original readback/upload/binding/reader/source-policy/catalog/final
+  graph regression:485passed,4skipped,158.19s. The four platform/asset skips
+  are both lane instances of actual POSIX source checkout verification and
+  real Go2 CPU materialization. `prepared_final_readback_regression_v1.txt`:
+  141140bytes, SHA256
+  48aa3f2196c29ccbd0fbe64ea1f7a4c73452a41a01d6933ed2065bc9ba6db743.
+  Tool91504 is terminal0; tool53777 is terminal0. Two subsequent driver line
+  wraps have no behavior change. No native/GPU execution was launched.
+
+The unchanged AST policy accepts91 prospective LF sources; catalog SHA256
+cf484692355612760ab66ee4b0d2ebd303ebdbdc2c0507845dc2ae191b5ce523.
+Full D1 registration/physical observations, original-RESOLVE copy integration,
+per-generation persistence/CPU comparison/sentinels, G3 allocation/capacity,
+complete G4/G5 fault/OS evidence and independent coherent packet acceptance
+remain mandatory. Formal speed comparison and every later product gate stay
+closed; continue the unchanged full C4 objective.
