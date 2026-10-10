@@ -76,7 +76,15 @@ RUNTIME_WARP_MODULE_FAULTS = ("runtime_warp_modules_success", *RUNTIME_WARP_ADMI
                              *RUNTIME_WARP_IDLE_FAULTS, *RUNTIME_WARP_COMPILE_FAULTS)
 RUNTIME_FIXED_STORAGE_FAULTS = tuple("runtime_fixed_storage_" + name for name in (
     "success", "diagnostics", "allocate_raise", "adoption_raise", "allocate_hang"))
-RUNTIME_FINAL_GRAPH_FAULTS = ("runtime_final_graph_sync_raise",)
+RUNTIME_FINAL_COMMAND_ERRORS = {
+    "runtime_final_graph_scene_pointer": "recorded array descriptor differs from exact bound storage",
+    "runtime_final_graph_refit_pointer": "recorded array descriptor differs from exact bound storage",
+    "runtime_final_graph_scene_scalar": "recorded scalar differs from normalized binding",
+    "runtime_final_graph_scene_dispatch": "recorded launch dimensions differ from descriptor",
+    "runtime_final_graph_refit_dispatch": "recorded launch dimensions differ from descriptor",
+    "runtime_final_graph_scene_kernel": "recorded launch kernel/device identity differs from descriptor",
+}
+RUNTIME_FINAL_GRAPH_FAULTS = ("runtime_final_graph_sync_raise", *RUNTIME_FINAL_COMMAND_ERRORS)
 RUNTIME_FINAL_IDLE_FAULTS = {
     "runtime_final_graph_channel_eof": "channel_eof",
     "runtime_final_graph_parent_lost": "parent_lost",
@@ -1289,6 +1297,37 @@ def _prepare_observed_final_graph(session, controller, binding, observer, direct
         observer._ticket()
         before = observer._state(False)
         graph = original_prepare(*args, **kwargs)
+        if fault in RUNTIME_FINAL_COMMAND_ERRORS:
+            stages = graph.frames[0][1].stages
+            scene, refit = stages[:2]
+            command = (refit if "refit" in fault else scene)._commands[0]
+            if fault.endswith("scene_pointer"):
+                before_value = int(command.params[8].data)
+                replacement = graph.frames[1][1].stages[0].transforms.x_world_r
+                command.set_param_at_index(7, replacement)
+                after_value = int(command.params[8].data)
+                assert after_value == replacement.ptr
+            elif fault.endswith("refit_pointer"):
+                before_value = int(command.params[6].data)
+                command.set_param_at_index(5, refit.bvh.bounds_max)
+                after_value = int(command.params[6].data)
+                assert after_value == refit.bvh.bounds_max.ptr
+            elif fault.endswith("scalar"):
+                before_value = int(command.params[9].value)
+                command.set_param_at_index(8, before_value + 1)
+                after_value = int(command.params[9].value)
+            elif fault.endswith("dispatch"):
+                before_value = int(command.bounds.size)
+                command.bounds.size = before_value + 1
+                after_value = int(command.bounds.size)
+            else:
+                before_value = id(command.kernel)
+                command.kernel = refit._commands[0].kernel
+                after_value = id(command.kernel)
+            assert before_value != after_value
+            _write(directory, "fault_entered.json", {
+                "fault": fault, "boundary": "final_command_mutation", "guard": dict(controller._guard_reference),
+                "before": before_value, "after": after_value})
         after = observer._state(False)
         assert before == after
         assert controller.guardian.state == "CONSTRUCTING"
@@ -1303,6 +1342,10 @@ def _prepare_observed_final_graph(session, controller, binding, observer, direct
         return graph
 
     def synchronize(target):
+        # Idle rejection before the final barrier may enter the existing
+        # emergency disposal. Its distinct ticket is not a final barrier.
+        if controller._guard_ticket is not controller._final_barrier_ticket:
+            return original_sync(target)
         observer._ticket()
         assert target is binding.target and controller.guardian.state == "SEALED"
         assert controller.quiescence_evidence is None and controller._final_admission is None
@@ -1403,6 +1446,9 @@ def child(fault, fd, directory):
         raise ValueError("explicit frozen row selection requires a final graph case")
     if fault in RUNTIME_RENDER_WARMUP_FAULTS and request["case_id"] != "synthetic_dynamic_rigid_960x640_v1":
         raise ValueError("dynamic warmup fault requires the frozen dynamic case")
+    if fault in RUNTIME_FINAL_COMMAND_ERRORS and (
+            request["lane"] != "warp" or request["case_id"] != "synthetic_dynamic_rigid_960x640_v1"):
+        raise ValueError("recorded command fault requires the frozen Warp dynamic case")
     if fault in RUNTIME_ARTIFACT_FAULTS and request["lane"] != "cuda":
         raise ValueError("fixed CUDA artifact case requires the CUDA lane")
     root = Path(request["root"])

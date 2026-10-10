@@ -258,12 +258,25 @@ class WarpSceneUpdateCommandEvidence:
         return _canonical_sha256(self.__dict__)
 
 
+def _warp_command_snapshots(commands, descriptors, device):
+    """Reuse the renderer's admitted read-only inspection for recorded stages."""
+    from .warp_native_render import _WarpRenderDescriptor, _render_launch_snapshot
+
+    if type(descriptors) is not tuple or any(type(value) is not _WarpRenderDescriptor for value in descriptors):
+        raise TypeError("recorded stage requires exact frozen launch descriptors")
+    return tuple(
+        (id(descriptor), _render_launch_snapshot(command, descriptor, device))
+        for command, descriptor in zip(commands, descriptors, strict=True)
+    )
+
+
 class WarpSceneUpdateCommandBundle:
     """Immutable pre-recorded Warp scene commands for one storage graph."""
 
     __slots__ = (
         "_binding_signature",
         "_commands",
+        "_descriptors",
         "_frozen_commands",
         "_frozen_device_ordinal",
         "_frozen_dispatch_count",
@@ -287,6 +300,7 @@ class WarpSceneUpdateCommandBundle:
         self,
         *,
         commands: tuple[object, ...],
+        descriptors: tuple[object, ...],
         evidence: WarpSceneUpdateCommandEvidence,
         local_scene: DeviceOpticalScene,
         transforms: WarpSceneTransformInputs,
@@ -296,6 +310,7 @@ class WarpSceneUpdateCommandBundle:
         self._sealed = False
         self._binding_signature: tuple[object, ...] | None = None
         self._commands = commands
+        self._descriptors = descriptors
         self._poisoned = False
         self.evidence = evidence
         self.local_scene = local_scene
@@ -416,6 +431,8 @@ class WarpSceneUpdateCommandBundle:
 
     def _bundle_signature(self) -> tuple[object, ...]:
         return (
+            id(self._descriptors),
+            _warp_command_snapshots(self._commands, self._descriptors, self.local_scene.device),
             id(self._commands),
             tuple(id(command) for command in self._commands),
             id(self._frozen_commands),
@@ -510,7 +527,10 @@ class WarpSceneUpdateCommandFactory:
 
         from optical_worker.native_setup import _warp_command_recording
 
-        with _warp_command_recording(wp, scene.device, self.stream, context=_context) as record:
+        descriptors = []
+        with _warp_command_recording(
+            wp, scene.device, self.stream, context=_context, _descriptors=descriptors
+        ) as record:
             commands: list[object] = []
             if scene.num_triangles > 0:
                 commands.append(
@@ -575,6 +595,7 @@ class WarpSceneUpdateCommandFactory:
         )
         return WarpSceneUpdateCommandBundle(
             commands=tuple(commands),
+            descriptors=tuple(descriptors),
             evidence=evidence,
             local_scene=scene,
             transforms=transforms,

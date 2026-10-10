@@ -1943,7 +1943,22 @@ Next milestone:
       failures atf15aa62 pass. Original diagnostic-driver failures are retained.
       All frame10 output channels match CPU under unchanged tolerances;
       implementation-notev8 consolidates the candidate and raw evidence.
-      Fresh independent R1 review is pending. No final sample or speed result is claimed.
+      Fresh independent code-reviewv6 requests changes atba394c6: F1 reproduces
+      admission of changed native Warp scene/refit command operands despite
+      unchanged Python bindings. Positive/fault/numeric evidence is verified,
+      but that candidate was not approved. Repair13d17dd reuses the renderer's
+      packed-command inspector for scene/refit final validation. Six real native
+      command mutations now reject; eight normal row/lane/pass cases and all
+      eight CPU numerical comparisons pass. CPU regressions pass278 and the
+      real Warp scene/refit suite passes9. Implementation-notev9 records exact
+      scope and evidence. Fresh independent code-reviewv7 approves the coherent
+      R1 candidate atfb49e7e (native production/test13d17dd): both original
+      pointer mutations independently reject before admission,312 CPU tests
+      pass,14 raw records replay and all8 numerical cases recompute. Full
+      report is archived unchanged. This approves preparation/final composition
+      only; C2f must still integrate actual worker execution, guarded resolution,
+      token release/reclaim and close/ACK/observed exit in one complete packet.
+      No final sample or speed result is claimed.
       R1/full C4 follow-up and fresh whole review remain mandatory.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain

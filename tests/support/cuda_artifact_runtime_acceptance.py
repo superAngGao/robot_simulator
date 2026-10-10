@@ -308,6 +308,7 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                                                       RUNTIME_RENDER_WARMUP_CASES, RUNTIME_FINAL_GRAPH_CASES,
                                                       RUNTIME_FINAL_GRAPH_FAULTS, RUNTIME_FINAL_IDLE_FAULTS,
                                                       RUNTIME_RENDER_WARMUP_FAULTS,
+                                                      RUNTIME_FINAL_COMMAND_ERRORS,
                                                       RUNTIME_PHASES)
 
     request = {"root": str(repository), "revision": revision, "lane": lane,
@@ -448,6 +449,26 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                     or (inside["logical_device"] != 1 or inside["raw_device"] != 1
                         if lane == "cuda" else inside["default_device"] != 1 or inside["current_context_device"] != 1)):
                 raise RuntimeError("optical idle disposal synchronized outside its exact target")
+        elif fault in RUNTIME_FINAL_COMMAND_ERRORS:
+            marker = json.loads((directory / "fault_entered.json").read_bytes())
+            partial = json.loads((directory / "final_graph_partial.json").read_bytes())
+            failure = json.loads((directory / "failure.json").read_bytes())
+            summary = worker["summary"]
+            if (lane != "warp" or result["worker_returncode"] != 74
+                    or control["deadline_expired"] or control["kill_requested"]
+                    or marker["fault"] != fault or marker["boundary"] != "final_command_mutation"
+                    or marker["guard"] != {"sequence": 25, "role": "setup"}
+                    or marker["before"] == marker["after"]
+                    or failure["type"] != "ValueError" or failure["message"] != RUNTIME_FINAL_COMMAND_ERRORS[fault]
+                    or failure["phase"] != "fixed_final_graph"
+                    or partial["admitted"] or partial["quiescent"] or "barrier_guard" in partial
+                    or partial["sealed_coverage_retained"]
+                    or summary["disposition"] != "aborted_synced_exit" or summary["release_status"] != "completed"
+                    or summary["emergency_sync_attempt_count"] != 1
+                    or summary["setup_work_counts"]["warmup_launch"] != 71
+                    or control["normal_complete_count"] != 26 or control["arm_count"] != 27
+                    or (directory / "final_graph_binding.json").exists()):
+                raise RuntimeError("changed native command was not rejected before final admission with safe disposal")
         elif fault in RUNTIME_FINAL_GRAPH_FAULTS:
             marker = json.loads((directory / "fault_entered.json").read_bytes())
             partial = json.loads((directory / "final_graph_partial.json").read_bytes())
