@@ -146,14 +146,13 @@ def test_idle_timeout_records_original_fault_and_reaps_worker(tmp_path):
     )
 
     root = Path(__file__).resolve().parents[3]
-    manifest = replace(build_closed_worker_runtime_manifest(root, lane_id="warp", device_ordinal=0),
-                       control_idle_timeout_ms=1000)
+    manifest = build_closed_worker_runtime_manifest(root, lane_id="warp", device_ordinal=0)
     manifest_path = tmp_path / "idle-timeout-runtime.json"
     write_closed_worker_runtime_manifest(manifest_path, manifest)
     proxy = ClosedWorkerLaneProxy(manifest_path=manifest_path, artifact_root=tmp_path / "artifacts")
     try:
         proxy.hello_and_open()
-        assert proxy.wait_supervisor(timeout_seconds=10.0) == 0
+        assert proxy.wait_supervisor(timeout_seconds=manifest.control_idle_timeout_ms / 1000.0 + 10.0) == 0
         supervisor = json.loads(proxy.supervisor_evidence_path.read_bytes())
         assert supervisor["worker_return_code"] == 64
         assert not supervisor["parent_lost"] and not supervisor["watchdog_killed_worker"]
