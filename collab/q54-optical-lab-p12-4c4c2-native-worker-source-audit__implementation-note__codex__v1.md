@@ -134,8 +134,22 @@ launcher/reviewer7056/5648, started2026-10-10T09:58:21Z, is reviewing frozen
 `82c1d0ae3cc4d03a1ceb587473ded8d1340de360d766e22121100a1e554e2bba`.
 It receives full original raw evidence and must decide whether the delta
 preserves existing admission policy and may resume bounded native validation.
-No verdict or native permission for22b1db0 is presumed. Its clean isolated
-server checkout is `/data2/shared/ang.gao/robot_sim_worker_22b1db0`.
+The complete returned preflight report is now archived verbatim as
+`q54-optical-lab-p12-4c4c2-native-worker-source-audit__code-preflight-review__codex__v1.md`,
+SHA-256 `ce80f7d68b7e9532495cef0454acf9aede3a9b8284e97152991d31518578fe31`.
+Verdict Approve: exact22b1db0 may resume bounded native setup/framed validation.
+Independent tests:238 targeted and7 additional boundary probes passed, with
+no skips;91/91 source entries verified. The reviewer independently checked
+the preserved base campaign and replayed both input records. This approves
+the source-audit delta/preflight, not hardware or whole C2f/C4 acceptance.
+Its clean isolated server checkout is
+`/data2/shared/ang.gao/robot_sim_worker_22b1db0`.
+
+After receiving and archiving that verdict, a new two-lane/two-sample probe
+started2026-10-10T10:08:51Z, wrapper2670393/driver2670408, using the unchanged
+campaign driver. Output prefix `/data2/shared/ang.gao/c4-worker-22b1db0ee6-probe`.
+The execution ledger preserves command, code revision, process start identity,
+stdout/stderr and GPU inventories. It is still running; no outcome is claimed.
 
 Complete reader failure/Go2 native acceptance, final-sample physical and
 numerical proof, bounded preallocated traces and fixed work, full worker fault

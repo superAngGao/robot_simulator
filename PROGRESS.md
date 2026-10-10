@@ -2012,8 +2012,10 @@ Next milestone:
       Candidate22b1db0 reuses the existing captured source audit throughout the
       native worker loop, removing that duplicate scan without a name exception
       or new admission policy. Author regression:308 local passes/13 skips,
-      15 primary-server CPU passes/no skips. Fresh independent preflight is
-      running; no native rerun or formal speed result is claimed. See native
+      15 primary-server CPU passes/no skips. Fresh independent preflight
+      approved exact22b1db0 for bounded native validation (245 independent CPU
+      passes, no skips); complete report is archived. The fresh same-driver
+      double-lane probe is running; no outcome or speed result is claimed. See native
       worker source audit implementation-notev1 for exact scope and evidence.
       R1/full C4 follow-up and fresh whole review remain mandatory.
       C4c2 runtime, C4c3-c4,
