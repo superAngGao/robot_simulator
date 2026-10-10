@@ -32,6 +32,7 @@ def observer(tmp_path):
                             "held_stream": {"ordinal": 1, "handle": 123}}
     value._state = lambda pristine: value.snapshot_state
     _bind_model_reader(value)
+    controller.adopt_host_owner(value, role="reader", operation_id="reader")
     try:
         yield value
     finally:
@@ -41,9 +42,15 @@ def observer(tmp_path):
 
 
 def _bind_model_reader(value):
-    value.session._native_scope_record = (value, value.controller, value.module, value.runtime, value.target)
     value.binding = SimpleNamespace(session=value.session, controller=value.controller,
         module=value.module, runtime=value.runtime, target=value.target, stream=value.stream)
+    value.controller.adopt_host_owner(value.binding, role="runtime_setup_binding", operation_id="binding")
+    _record_model_reader(value)
+
+
+def _record_model_reader(value):
+    value.session._native_scope_record = (value, value.controller, value.module, value.runtime, value.target,
+                                         value.stream, value.binding)
 
 
 def _enter(controller):
@@ -167,6 +174,8 @@ def warp_cache_model(observer, monkeypatch):
     del observer._state  # Use the actual implemented query ordering.
     _bind_model_reader(observer)
     observer.binding = None  # Runtime binding follows the actual stream return.
+    observer.stream = None
+    _record_model_reader(observer)
     return observer, model
 
 
@@ -179,6 +188,7 @@ def test_original_void_setter_cache_precondition(warp_cache_model, failure):
             _enter(value.controller)
             value._warp_cache_precondition(before=True)
             value.stream = value.target.stream
+            _record_model_reader(value)
             value.held.append(value.stream)  # original returned owner remains retained
             assert value.target._stream is value.stream and model.setters == 1
             value._warp_cache_precondition(before=False)
@@ -219,6 +229,7 @@ def test_unproved_python_stream_metadata_cannot_call_native_getter(warp_cache_mo
         with value.controller.segment():
             _enter(value.controller)
             value.stream = value.target.stream
+            _record_model_reader(value)
             value.target_context = value.target._context
             value._state(False)
     assert not model.getter_calls
@@ -323,3 +334,101 @@ def test_retained_stream_survives_production_reader_cache_failure(warp_cache_mod
     assert value.stream is returned and not value.cache_established and not model.getter_calls
     summary = value.controller.termination_evidence.lifecycle.to_payload()["summary"]
     assert summary["unknown_device_scope"] and summary["normal_complete_count"] == 0
+
+
+def _prepare_model_query(value):
+    with value.controller.segment():
+        _enter(value.controller)
+        value._warp_cache_precondition(before=True)
+        value.stream = value.target.stream
+        _record_model_reader(value)
+        value._warp_cache_precondition(before=False)
+
+
+def test_reader_cannot_query_after_ordinary_release(warp_cache_model):
+    value, model = warp_cache_model
+    _prepare_model_query(value)
+    end = value.controller.terminate(fault="setup_failure", detection_phase="input_validated",
+                                     emergency_target_synchronize=lambda: None)
+    assert end.lifecycle.to_payload()["summary"]["release_status"] == "completed"
+    calls = list(model.getter_calls)
+    with pytest.raises(ValueError, match="outside the original terminal sync"):
+        value._state(False)
+    assert model.getter_calls == calls
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_reader_query_is_limited_to_healthy_terminal_sync(warp_cache_model, failed):
+    value, model = warp_cache_model
+    _prepare_model_query(value)
+
+    def synchronize():
+        if failed:
+            value._fail(RuntimeError("terminal reader failure"))
+        calls = len(model.getter_calls)
+        if failed:
+            with pytest.raises(ValueError, match="sticky failure"):
+                value._state(False)
+            assert len(model.getter_calls) == calls
+        else:
+            value._state(False)
+            assert len(model.getter_calls) == calls + 1
+
+    end = value.controller.terminate(fault="setup_failure", detection_phase="input_validated",
+                                     emergency_target_synchronize=synchronize)
+    assert end.lifecycle.to_payload()["summary"]["release_status"] == (
+        "not_authorized" if failed else "completed")
+
+
+@pytest.mark.parametrize("boundary", ["after_sync", "failed_sync", "cleanup"])
+def test_terminal_boundaries_reject_queries_before_any_getter(warp_cache_model, monkeypatch, boundary):
+    value, model = warp_cache_model
+    _prepare_model_query(value)
+    controller = value.controller
+    reached = []
+
+    def rejected_query():
+        calls = list(model.getter_calls)
+        with pytest.raises(ValueError, match="outside the original terminal sync"):
+            value._state(False)
+        assert model.getter_calls == calls
+        assert controller._replay.terminal_failed
+        reached.append(boundary)
+
+    def synchronize():
+        if boundary == "failed_sync":
+            raise RuntimeError("modeled terminal synchronization failure")
+
+    if boundary == "after_sync":
+        original = controller._release
+
+        def release(purpose):
+            assert controller._replay.sync_outcome == "succeeded"
+            rejected_query()
+            return original(purpose)
+
+        monkeypatch.setattr(controller, "_release", release)
+    elif boundary == "failed_sync":
+        original = controller._quarantine
+
+        def quarantine():
+            assert controller._replay.sync_outcome == "failed"
+            rejected_query()
+            return original()
+
+        monkeypatch.setattr(controller, "_quarantine", quarantine)
+    else:
+        def cleanup(guardian, authority):
+            assert guardian is controller.guardian
+            assert guardian.state == "RELEASE_AUTHORIZED" and controller._replay.release == "started"
+            rejected_query()
+            raise RuntimeError("cleanup probe stopped after rejected query")
+
+        monkeypatch.setattr(type(controller.guardian), "release_whole_graph", cleanup)
+
+    end = controller.terminate(fault="setup_failure", detection_phase="input_validated",
+                               emergency_target_synchronize=synchronize)
+    assert reached == [boundary]
+    summary = end.lifecycle.to_payload()["summary"]
+    assert summary["emergency_sync_attempt_count"] == 1
+    assert summary["release_status"] == ("failed" if boundary == "cleanup" else "not_authorized")

@@ -188,6 +188,22 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
             raise WorkerSetupProtocolError("setup leaf has no armed segment")
         self._guard_client.require_live_ticket(self._guard_ticket, role="setup")
 
+    def _bound_source_session(self):
+        """Check the source link against the original guardian-owned source."""
+        with self._observe_public_operation():
+            self._check_owner()
+            sources = [owner for owner, record in zip(
+                self.guardian._owners, self.guardian._records, strict=True
+            ) if record.role == "captured_source_session"]
+            source = self._native_source_session
+            if not sources:
+                if source is not None:
+                    raise WorkerSetupProtocolError("native source lacks original custody")
+                return None
+            if len(sources) != 1 or source is not sources[0] or source.bound_controller() is not self:
+                raise WorkerSetupProtocolError("native source/controller binding changed")
+            return source
+
     @contextmanager
     def _observe_public_operation(self):
         # Catching a controller-owned API rejection inside an active operation
@@ -734,7 +750,7 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
             if synchronize is None:
                 raise WorkerSetupProtocolError("no exact runtime target sync selected")
             reader = opening = None
-            source = self._native_source_session
+            source = self._bound_source_session()
             if source is not None and source.phase == "input_validated":
                 from .native_scope import require_reader
 

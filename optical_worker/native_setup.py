@@ -1377,9 +1377,7 @@ _UPLOAD_CONTEXTS = {}
 def _create_upload_context(lifecycle, runtime, target, stream):
     from .guarded_lifecycle import NativeGuardedSetupLifecycle
 
-    source = lifecycle._native_source_session if type(lifecycle) is NativeGuardedSetupLifecycle else None
-    if source is not None and source.bound_controller() is not lifecycle:
-        raise ValueError("upload context source/controller differs")
+    source = lifecycle._bound_source_session() if type(lifecycle) is NativeGuardedSetupLifecycle else None
     context = _NativeUploadContext(lifecycle, runtime, target, stream, source)
     key = id(context)
 
@@ -1427,6 +1425,12 @@ def _consume_upload_context(context):
     ):
         raise ValueError("upload context is unregistered, consumed or has changed")
     context.lifecycle.require_adopted(context)
+    from .guarded_lifecycle import NativeGuardedSetupLifecycle
+
+    if type(context.lifecycle) is NativeGuardedSetupLifecycle:
+        with context.lifecycle._observe_public_operation():
+            if context.lifecycle._bound_source_session() is not context.source_session:
+                raise ValueError("upload context lost its original source")
     return context.lifecycle, context.runtime, context.target, context.stream
 
 
@@ -1544,7 +1548,7 @@ def _upload_cuda_native_input(source, *, context):
     lifecycle, torch, target, stream = _consume_upload_context(context)
     from .native_scope import reader_for_input
 
-    reader = reader_for_input(lifecycle, torch, target, stream, phase="uploading")
+    reader = reader_for_input(lifecycle, torch, target, stream, phase="uploading", input_entry=True)
     import numpy as np
 
     prepared: dict[str, Any] = {}
@@ -1735,7 +1739,7 @@ def _upload_warp_native_input(source, *, context):
     lifecycle, wp, target, stream = _consume_upload_context(context)
     from .native_scope import reader_for_input
 
-    reader = reader_for_input(lifecycle, wp, target, stream, phase="uploading")
+    reader = reader_for_input(lifecycle, wp, target, stream, phase="uploading", input_entry=True)
     prepared: dict[str, Any] = {}
     with reader.outer_scope("upload_scope") if reader is not None else nullcontext():
         with wp.ScopedDevice(target):

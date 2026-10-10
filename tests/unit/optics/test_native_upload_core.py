@@ -81,7 +81,7 @@ def test_same_context_field_rebinding_burns_registration(field):
 
 def test_copy_or_handmade_context_has_no_registration():
     context, owners = _context()
-    for impostor in (copy.copy(context), native_setup._NativeUploadContext(*owners)):
+    for impostor in (copy.copy(context), native_setup._NativeUploadContext(*owners, None)):
         with pytest.raises(ValueError, match="unregistered"):
             native_setup._consume_upload_context(impostor)
     assert native_setup._consume_upload_context(context) == owners
@@ -150,6 +150,47 @@ def test_upload_body_matches_approved_pre_extraction_ast(lane):
     assert ids.changed == 5
     new_function = getattr(native_setup, f"_upload_{lane}_native_input")
     new = ast.parse(inspect.getsource(new_function)).body[0]
+    # The approved reader adds observations around the unchanged native bodies.
+    # Remove only those exact wrappers/retentions, checking every occurrence.
+    runtime_name = "torch" if lane == "cuda" else "wp"
+    reader_prefix = [ast.dump(ast.parse(code).body[0]) for code in (
+        "from .native_scope import reader_for_input",
+        f'reader = reader_for_input(lifecycle, {runtime_name}, target, stream, phase="uploading")',
+        f'reader = reader_for_input(lifecycle, {runtime_name}, target, stream, phase="uploading", input_entry=True)',
+    )]
+    reader_contexts = {}
+    for site in ("empty", "copy", "event_create", "event_record", "event_wait", "upload_scope"):
+        method = "outer_scope" if site == "upload_scope" else "operation"
+        expression = f'reader.{method}("{site}") if reader is not None else nullcontext()'
+        reader_contexts[ast.dump(ast.parse(expression, mode="eval").body)] = site
+    reader_holds = {ast.dump(ast.parse(
+        f"if reader is not None:\n    reader.hold_returned({owner})"
+    ).body[0]) for owner in ("destination", "ready_event")}
+
+    class ReaderAnnotations(ast.NodeTransformer):
+        def __init__(self):
+            self.prefixes, self.holds, self.sites = 0, 0, []
+
+        def visit(self, node):
+            if isinstance(node, ast.stmt) and ast.dump(node) in reader_prefix:
+                self.prefixes += 1
+                return None
+            if isinstance(node, ast.If) and ast.dump(node) in reader_holds:
+                self.holds += 1
+                return None
+            return super().visit(node)
+
+        def visit_With(self, node):
+            key = ast.dump(node.items[0].context_expr) if len(node.items) == 1 else None
+            if key in reader_contexts:
+                assert node.items[0].optional_vars is None
+                self.sites.append(reader_contexts[key])
+                self.generic_visit(node)
+                return node.body
+            return self.generic_visit(node)
+
+    reader_annotations = ReaderAnnotations()
+    new = reader_annotations.visit(new)
     if lane == "warp":
         # Inline the shared per-array body for the historical comparison. This
         # retains every allocation/copy/adoption node rather than exempting the
@@ -157,6 +198,7 @@ def test_upload_body_matches_approved_pre_extraction_ast(lane):
         import copy
 
         helper = ast.parse(inspect.getsource(native_setup._upload_warp_array)).body[0]
+        helper = reader_annotations.visit(helper)
         assert [arg.arg for arg in helper.args.args] == ["lifecycle", "wp", "target", "stream", "name", "value"]
         assert ast.dump(helper.body[1]) == ast.dump(ast.parse("import numpy as np").body[0])
         assert ast.dump(helper.body[-1]) == ast.dump(ast.parse("return destination").body[0])
@@ -181,6 +223,11 @@ def test_upload_body_matches_approved_pre_extraction_ast(lane):
         new = inline.visit(new)
         assert inline.count == 1
         new.body.insert(2, copy.deepcopy(helper.body[1]))
+    assert reader_annotations.prefixes == (4 if lane == "warp" else 2)
+    assert reader_annotations.holds == 2
+    assert sorted(reader_annotations.sites) == sorted(
+        ["empty", "copy", "event_create", "event_record", "event_wait"]
+        + (["upload_scope"] if lane == "warp" else []))
     new_start = next(
         i for i, n in enumerate(new.body) if isinstance(n, ast.Import) and n.names[0].name == "numpy"
     )

@@ -35,18 +35,39 @@ class NativeStateReader:
         self.cache_established = False
         self.scope_depth = 0
         session.runtime_owners.append(self)
-        session._native_scope_record = (self, controller, module, runtime, target)
+        session._native_scope_record = (self, controller, module, runtime, target, None, None)
         controller.adopt_host_owner(self, role="native_state_reader", operation_id="native_state_reader")
 
     def _ticket(self):
-        _require(require_reader(self.session) is self, "native reader identity changed")
-        c = self.controller
-        c._check_owner()
-        _require(
-            not self.session.failed and not c._replay.compromised and not c._replay.failed,
-            "native query after sticky failure",
-        )
-        c._guard_client.require_live_ticket(c._guard_ticket, role="emergency" if c._terminating else "setup")
+        try:
+            c = self.controller
+            c._check_owner()
+            _require(
+                not self.session.failed
+                and not c._replay.compromised
+                and not c._replay.failed
+                and not c._replay.terminal_failed,
+                "native query after sticky failure",
+            )
+            if c._terminating:
+                # An emergency ticket deliberately remains armed through cleanup
+                # and process exit. Only the original in-flight sync permits queries.
+                _require(
+                    c._replay.controller == "TERMINATING"
+                    and c._replay.sync_outcome == "started"
+                    and c._replay.purpose == "target_sync"
+                    and c._replay.custody == "retained"
+                    and c._replay.release == "not_authorized"
+                    and c.guardian.state == "PARTIAL_FROZEN",
+                    "native query outside the original terminal sync",
+                )
+                c._guard_client.require_live_ticket(c._guard_ticket, role="emergency")
+            else:
+                c._require_setup()
+            _require(require_reader(self.session) is self, "native reader identity changed")
+        except BaseException as error:
+            self._fail(error)
+            raise
 
     def _fail(self, error):
         self.held.append(error)
@@ -73,16 +94,29 @@ class NativeStateReader:
 
     def stream_returned(self, stream, opening):
         # Caller retained and journaled the real return before entering here.
-        self.stream = stream
-        if self.session.lane == "warp":
-            self._warp_cache_precondition(before=False)
-        self.snapshot("runtime_stream", "after", opening[1], opening)
+        with self.controller._observe_public_operation():
+            self._ticket()
+            _require(self.stream is None, "native reader stream return is single-use")
+            record = self.session._native_scope_record
+            self.session._native_scope_record = (*record[:5], stream, None)
+            self.stream = stream
+            if self.session.lane == "warp":
+                self._warp_cache_precondition(before=False)
+            self.snapshot("runtime_stream", "after", opening[1], opening)
 
     def binding_returned(self, binding):
-        self.binding = binding
-        self.snapshot("runtime_binding", "point", len(self.controller._guard_events) - 1)
-        if self.session.lane == "cuda":
-            self.raw.append(self.session._check_cuda_deferred_state(self.module))
+        with self.controller._observe_public_operation():
+            self._ticket()
+            _require(
+                self.stream is not None and self.binding is None,
+                "native reader binding return is ordered and single-use",
+            )
+            record = self.session._native_scope_record
+            self.session._native_scope_record = (*record[:6], binding)
+            self.binding = binding
+            self.snapshot("runtime_binding", "point", len(self.controller._guard_events) - 1)
+            if self.session.lane == "cuda":
+                self.raw.append(self.session._check_cuda_deferred_state(self.module))
 
     def hold_returned(self, owner):
         self.held.append(owner)
@@ -475,47 +509,56 @@ class NativeStateReader:
 
 
 def require_reader(session):
-    record = session._native_scope_record
-    _require(type(record) is tuple and len(record) == 5, "captured native reader is missing")
-    reader, controller, module, runtime, target = record
-    _require(
-        type(reader) is NativeStateReader
-        and reader.session is session
-        and session.bound_controller() is controller
-        and reader.controller is controller
-        and reader.module is module
-        and reader.runtime is runtime
-        and reader.target is target,
-        "captured native reader binding changed",
-    )
-    if reader.binding is not None:
-        binding = reader.binding
+    controller = session.bound_controller()
+    with controller._observe_public_operation():
+        record = session._native_scope_record
+        _require(type(record) is tuple and len(record) == 7, "captured native reader is missing")
+        reader, original_controller, module, runtime, target, stream, binding = record
         _require(
-            binding.session is session
-            and binding.controller is controller
-            and binding.module is module
-            and binding.runtime is runtime
-            and binding.target is target
-            and binding.stream is reader.stream,
-            "native reader runtime binding changed",
+            type(reader) is NativeStateReader
+            and reader.session is session
+            and original_controller is controller
+            and reader.controller is controller
+            and reader.module is module
+            and reader.runtime is runtime
+            and reader.target is target
+            and reader.stream is stream
+            and reader.binding is binding
+            and controller.guardian.contains_exact_owner(reader),
+            "captured native reader binding changed",
         )
-    return reader
+        if binding is not None:
+            _require(
+                binding.session is session
+                and binding.controller is controller
+                and binding.module is module
+                and binding.runtime is runtime
+                and binding.target is target
+                and binding.stream is stream
+                and controller.guardian.contains_exact_owner(binding),
+                "native reader runtime binding changed",
+            )
+        return reader
 
 
-def reader_for_input(lifecycle, module, target, stream, *, phase):
+def reader_for_input(lifecycle, module, target, stream, *, phase, input_entry=False):
     from .guarded_lifecycle import NativeGuardedSetupLifecycle
 
     if type(lifecycle) is not NativeGuardedSetupLifecycle:
         return None
-    source = lifecycle._native_source_session
-    if source is None or source.phase != phase:
-        return None
-    reader = require_reader(source)
-    _require(
-        reader.controller is lifecycle
-        and reader.module is module
-        and reader.target is target
-        and reader.stream is stream,
-        "native input reader differs from its original runtime",
-    )
-    return reader
+    with lifecycle._observe_public_operation():
+        source = lifecycle._bound_source_session()
+        if source is None:
+            return None
+        if source.phase != phase:
+            _require(not input_entry, "captured input reader phase differs")
+            return None
+        reader = require_reader(source)
+        _require(
+            reader.controller is lifecycle
+            and reader.module is module
+            and reader.target is target
+            and reader.stream is stream,
+            "native input reader differs from its original runtime",
+        )
+        return reader

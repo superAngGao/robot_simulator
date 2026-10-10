@@ -51,7 +51,7 @@ def _readback_prepared_native_input(source, prepared, *, lifecycle, runtime, tar
     if type(lifecycle) is not NativeGuardedSetupLifecycle:
         raise TypeError("validation readback requires the exact guarded lifecycle")
     lifecycle._require_setup()
-    reader = reader_for_input(lifecycle, runtime, target, stream, phase="validating_input")
+    reader = reader_for_input(lifecycle, runtime, target, stream, phase="validating_input", input_entry=True)
     if type(prepared) not in (CudaPreparedNativeInput, WarpPreparedNativeInput):
         raise TypeError("validation readback requires exact registered prepared input")
     if prepared.backend != lifecycle._lane_id:

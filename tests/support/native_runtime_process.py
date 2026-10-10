@@ -492,7 +492,6 @@ class _NativeScopeProbe:
             original = reader_type.stream_returned
             self.originals.append(original)
             def stream_returned(reader, stream, opening):
-                reader.stream = stream
                 probe._fault("after_real_stream_return")
             reader_type.stream_returned = stream_returned
         elif fault == "runtime_scope_getter_error":
