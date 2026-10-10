@@ -102,10 +102,11 @@ WARMUP_GEOMETRY_CHANNELS = ("origins", "directions", "hit_mask", "range_m", "pos
                           "normal_world", "numeric_instance_id", "material_index", "intensity")
 RUNTIME_RENDER_GRAPH_CASES = ("runtime_render_graph_success", "runtime_render_graph_diagnostics",
                             *RUNTIME_RENDER_WARMUP_CASES)
+RUNTIME_WORKER_CASES = ("runtime_worker_success",)
 RUNTIME_FAULTS = (RUNTIME_NATIVE_FAULTS + RUNTIME_ACK_FAULTS + RUNTIME_PARENT_FAULTS
                   + RUNTIME_SCOPE_FAULTS + RUNTIME_GLOBAL_FAULTS + RUNTIME_CUDA_ONLY_FAULTS
                   + RUNTIME_OBSERVATION_FAULTS + RUNTIME_ARTIFACT_FAULTS + RUNTIME_WARP_MODULE_FAULTS
-                  + RUNTIME_FIXED_STORAGE_FAULTS + RUNTIME_RENDER_GRAPH_CASES)
+                  + RUNTIME_FIXED_STORAGE_FAULTS + RUNTIME_RENDER_GRAPH_CASES + RUNTIME_WORKER_CASES)
 
 
 def _install_runtime_fault(fault, entry, session, controller, directory):
@@ -1425,7 +1426,7 @@ def _unrecorded_module_observations(admission):
     return {"total": len(entries), "truncated": len(entries) > 256, "modules": observations}
 
 
-def child(fault, fd, directory):
+def child(fault, fd, directory, command_fd=None, liveness_fd=None):
     if fault not in RUNTIME_FAULTS:
         raise ValueError("not a fixed runtime fault selector")
     request = json.loads((directory / "request.json").read_text(encoding="utf-8"))
@@ -1440,9 +1441,14 @@ def child(fault, fd, directory):
         "case_id",
         "go2_model_dir",
     }
-    if set(request) not in (fields, fields | {"row_id"}):
+    worker_mode = fault in RUNTIME_WORKER_CASES
+    worker_fields = {"row_id", "sample_count", "repeat_index", "pass_mode"}
+    if set(request) not in ((fields | worker_fields,) if worker_mode else (fields, fields | {"row_id"})):
         raise ValueError("unexpected fixed runtime configuration field")
-    if "row_id" in request and (fault not in RUNTIME_FINAL_GRAPH_CASES or type(request["row_id"]) is not str):
+    if worker_mode != (command_fd is not None and liveness_fd is not None):
+        raise ValueError("native worker mode requires its separate command and liveness descriptors")
+    if "row_id" in request and (fault not in RUNTIME_FINAL_GRAPH_CASES + RUNTIME_WORKER_CASES
+                               or type(request["row_id"]) is not str):
         raise ValueError("explicit frozen row selection requires a final graph case")
     if fault in RUNTIME_RENDER_WARMUP_FAULTS and request["case_id"] != "synthetic_dynamic_rigid_960x640_v1":
         raise ValueError("dynamic warmup fault requires the frozen dynamic case")
@@ -1537,6 +1543,28 @@ def child(fault, fd, directory):
         phase = "setup_definitions"
         session.import_setup_definitions()
         observe()
+        if worker_mode:
+            from optical_worker.manifest import build_integrated_worker_runtime_manifest
+            from optical_worker.worker import run_worker_loop
+
+            phase = "integrated_worker"
+            manifest = build_integrated_worker_runtime_manifest(
+                session, pass_mode=request["pass_mode"], go2_model_dir=request["go2_model_dir"],
+            )
+            _write(directory, "worker_manifest.json", manifest.to_payload())
+            _write(directory, "worker_ready.json", {"manifest_sha256": manifest.sha256})
+            with (directory / "worker_journal.bin").open("xb", buffering=0) as journal:
+                code = run_worker_loop(
+                    command_descriptor=command_fd, liveness_descriptor=liveness_fd,
+                    journal_descriptor=journal.fileno(), abort_signal_descriptor=-1, abort_ack_descriptor=-1,
+                    manifest=manifest, _source_session=session,
+                )
+            _write(directory, "worker.json", controller.evidence().to_payload())
+            if controller._final_graph is not None:
+                _write(directory, "worker_arena.json",
+                       controller._final_graph.arena.lifecycle_evidence().to_payload())
+            persist_final()
+            os._exit(code)
         phase = "external_environment"
         session.configure_external_environment(environment_payload, request["environment_sha256"])
         observe()
@@ -1979,6 +2007,7 @@ def child(fault, fd, directory):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 5 or sys.argv[1] != "child":
+    if len(sys.argv) not in {5, 7} or sys.argv[1] != "child":
         raise ValueError("fixed sacrificial child invocation required")
-    child(sys.argv[2], int(sys.argv[3]), Path(sys.argv[4]))
+    extra = () if len(sys.argv) == 5 else (int(sys.argv[5]), int(sys.argv[6]))
+    child(sys.argv[2], int(sys.argv[3]), Path(sys.argv[4]), *extra)

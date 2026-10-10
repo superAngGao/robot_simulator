@@ -19,6 +19,9 @@ from optical_worker.manifest import (
     sha256_file,
     validate_runtime_manifest_against_process,
 )
+from optical_worker.manifest import (
+    workload_set_sha256 as _workload_set_sha256,
+)
 from optical_worker.protocol import (
     CLOSED_WORKER_PROTOCOL_VERSION,
     CLOSED_WORKER_RUNTIME_MANIFEST_VERSION,
@@ -93,16 +96,6 @@ def _load_runtime_contract(root: Path) -> dict[str, object]:
     if not isinstance(paths, list) or paths != sorted(set(paths)):
         raise ClosedWorkerProtocolError("closed-worker trusted source list is not canonical")
     return payload
-
-
-def _workload_set_sha256(gate: dict[str, object]) -> str:
-    return canonical_sha256(
-        {
-            "cases": gate["cases"],
-            "boundaries": gate["boundaries"],
-            "mandatory_rows": gate["mandatory_rows"],
-        }
-    )
 
 
 def build_closed_worker_runtime_manifest(

@@ -8,15 +8,13 @@ real setup/arena constructors, and each request drives the production dispatcher
 
 import json
 import secrets
-import sys
 from pathlib import Path
 from types import SimpleNamespace as NS
 
 import pytest
 
 from optical_worker import protocol as p
-from optical_worker.manifest import current_environment_identity
-from optical_worker.native_source_policy import NATIVE_AST_POLICY_SHA256
+from optical_worker.manifest import build_integrated_worker_runtime_manifest
 from optical_worker.worker import ClosedWorkerSession, _WorkerSample
 from tests.unit.optics.test_native_final_graph import final_session
 from tests.unit.optics.test_native_render_preparation import graph_session
@@ -29,33 +27,23 @@ pytestmark = [pytest.mark.parametrize("fail_at", [None]), pytest.mark.parametriz
 @pytest.fixture(autouse=True)
 def bound_worker(fixed_storage_session, tmp_path, diagnostic):
     f = fixed_storage_session
-    source, c = f.session, f.controller
+    source = f.session
     previous_phase = source.phase
     source.phase, source.root, source.revision = "imported", tmp_path, "a" * 40
     source.catalog_sha256 = "a" * 64
     source.failed = False
     sources = (p.FrozenSourceDigest("optical_worker/worker.py", "b" * 64),)
     source.snapshot = NS(sources=sources)
-    source.runtime_observation.environment = NS(sha256="c" * 64)
+    source.runtime_observation.environment = NS(sha256="c" * 64, to_payload=lambda: {"roots": []})
     source.runtime_observation.inputs = {"case_id": f.p.prepared.manifest.case_id}
-    environment = current_environment_identity()
-    manifest = p.IntegratedWorkerRuntimeManifest(
-        schema_version=p.INTEGRATED_WORKER_RUNTIME_MANIFEST_VERSION,
-        protocol_version=p.INTEGRATED_WORKER_PROTOCOL_VERSION,
-        trust_model_version=p.CLOSED_WORKER_TRUST_MODEL_VERSION,
-        state_machine_version=p.INTEGRATED_WORKER_STATE_MACHINE_VERSION,
-        interpreter_executable=sys.executable, python_version=sys.version,
-        environment=environment, environment_sha256=p.canonical_sha256(environment), site_package_paths=(),
-        repository_root=str(tmp_path), repository_revision=source.revision, repository_clean=True,
-        worker_script_relative_path="tools/optical_closed_worker.py", lane_id=source.lane, device_ordinal=1,
-        gate_relative_path="benchmarks/results/q54_p12_4/gate.json", gate_sha256="d" * 64,
-        workload_set_sha256="e" * 64, source_digests=sources,
-        source_manifest_sha256=p.canonical_sha256([s.to_payload() for s in sources]),
-        ast_policy_sha256=NATIVE_AST_POLICY_SHA256, control_idle_timeout_ms=120000,
-        response_write_timeout_ms=30000, abort_watchdog_ms=30000, gpu_preparation_enabled=True,
-        guard_configuration=c._guard_client.configuration.to_payload(),
-        source_catalog_sha256=source.catalog_sha256, runtime_environment_sha256="c" * 64,
-        case_id=f.p.prepared.manifest.case_id,
+    repository = Path(__file__).resolve().parents[3]
+    for relative in ("benchmarks/results/q54_p12_4/gate.json",
+                     "optical_worker/data/integrated_worker_runtime_contract_v3.json"):
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((repository / relative).read_bytes().replace(b"\r\n", b"\n"))
+    manifest = build_integrated_worker_runtime_manifest(
+        source,
         pass_mode="diagnostic_profiled" if diagnostic else "primary_unprofiled", go2_model_dir=None,
     )
     worker = source.open_worker(manifest)
@@ -340,3 +328,36 @@ def test_oversized_prepared_response_rejects_before_tokens_or_runtime_configurat
                 case_id=worker._manifest.case_id, repeat_index=0, sample_count=1_000_000)
     assert not worker._samples and not worker._tokens
     assert worker._lifecycle.evidence().sha256 == before
+
+
+@pytest.mark.parametrize("field,value", [
+    ("control_idle_timeout_ms", 1), ("response_write_timeout_ms", 1), ("abort_watchdog_ms", 1),
+    ("python_version", "0.0.0"), ("gate_sha256", "f" * 64),
+    ("worker_script_relative_path", "tools/optical_closed_worker.py"),
+])
+def test_native_manifest_rejects_changed_process_or_contract_metadata(
+    bound_worker, monkeypatch, field, value,
+):
+    from dataclasses import replace
+
+    from optical_worker.manifest import validate_integrated_worker_runtime_manifest
+
+    worker = bound_worker
+    # Descriptive validation only; the already-bound source cannot bind another worker.
+    monkeypatch.setattr(worker._native_source, "phase", "imported")
+    validate_integrated_worker_runtime_manifest(worker._manifest, worker._native_source)
+    changed = replace(worker._manifest, **{field: value})
+    with pytest.raises(p.ClosedWorkerProtocolError, match="actual process and frozen contract"):
+        validate_integrated_worker_runtime_manifest(changed, worker._native_source)
+
+
+def test_native_runtime_contract_cannot_be_changed_to_extend_deadlines(bound_worker, monkeypatch):
+    worker = bound_worker
+    source = worker._native_source
+    monkeypatch.setattr(source, "phase", "imported")
+    path = source.root / "optical_worker/data/integrated_worker_runtime_contract_v3.json"
+    payload = json.loads(path.read_bytes())
+    payload["control_idle_timeout_ms"] *= 10
+    path.write_text(json.dumps(payload), encoding="utf8")
+    with pytest.raises(p.ClosedWorkerProtocolError, match="frozen release"):
+        build_integrated_worker_runtime_manifest(source, pass_mode="primary_unprofiled", go2_model_dir=None)

@@ -84,26 +84,16 @@ class ClosedWorkerSession:
     @classmethod
     def from_source_session(cls, manifest, source):
         """Bind the same serial dispatcher to its captured native source owner."""
-        from .native_source_policy import NATIVE_AST_POLICY_SHA256
+        from .manifest import validate_integrated_worker_runtime_manifest
 
         if type(manifest) is not IntegratedWorkerRuntimeManifest:
             raise ClosedWorkerProtocolError("native worker requires the exact v3 manifest")
         manifest = IntegratedWorkerRuntimeManifest.from_payload(manifest.to_payload())
         source.check_live()
+        validate_integrated_worker_runtime_manifest(manifest, source)
         controller = source.bound_controller()
-        snapshot = source.snapshot
-        environment = source.runtime_observation.environment
-        if (source in _NATIVE_WORKERS or source.phase != "imported"
-                or Path(manifest.repository_root).resolve() != source.root
-                or manifest.repository_revision != source.revision or manifest.lane_id != source.lane
-                or manifest.source_catalog_sha256 != source.catalog_sha256
-                or manifest.ast_policy_sha256 != NATIVE_AST_POLICY_SHA256
-                or [(s.relative_path, s.sha256) for s in manifest.source_digests]
-                != [(s.relative_path, s.sha256) for s in snapshot.sources]
-                or dict(manifest.guard_configuration) != controller._guard_client.configuration.to_payload()
-                or environment is None or environment.sha256 != manifest.runtime_environment_sha256
-                or source.runtime_observation.inputs["case_id"] != manifest.case_id):
-            raise ClosedWorkerProtocolError("native manifest differs from its actual captured source session")
+        if source in _NATIVE_WORKERS:
+            raise ClosedWorkerProtocolError("captured source session already bound its one worker")
         _NATIVE_WORKERS[source] = None
         worker = cls(manifest, emergency_sync_notifier=_no_legacy_abort)
         worker._native_source = source

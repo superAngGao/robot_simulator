@@ -26,6 +26,8 @@ from .protocol import (
 )
 
 _RUNTIME_CONTRACT_RELATIVE_PATH = "benchmarks/results/q54_p12_4/closed_worker_runtime_contract.json"
+_INTEGRATED_RUNTIME_CONTRACT_PATH = "optical_worker/data/integrated_worker_runtime_contract_v3.json"
+_INTEGRATED_RUNTIME_CONTRACT_SHA256 = "b3fc6ca25c2af42ceb7e8d509ed4c073a777e39512ba9cf6096c44a7f01e313c"
 
 AST_POLICY = {
     "schema_version": "q54.p12.4.closed-worker-ast-policy.v1",
@@ -63,6 +65,88 @@ def sha256_file(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def workload_set_sha256(gate: dict[str, object]) -> str:
+    """One workload identity for both legacy and source-bound native manifests."""
+    return canonical_sha256({
+        "cases": gate["cases"], "boundaries": gate["boundaries"], "mandatory_rows": gate["mandatory_rows"],
+    })
+
+
+def build_integrated_worker_runtime_manifest(source, *, pass_mode, go2_model_dir):
+    """Describe the actual captured session before native imports, without discovery.
+
+    This is a manifest builder, not admission. The source session and guarded
+    controller must separately register the worker which consumes this record.
+    """
+    from .arena import _FROZEN_GATE_PATH, _FROZEN_GATE_SHA256
+    from .cases import canonical_json_bytes as canonical_gate_bytes
+    from .native_source_policy import NATIVE_AST_POLICY_SHA256
+    from .native_sources import CATALOG_PATH, _read_contained
+    from .protocol import (
+        INTEGRATED_WORKER_RUNTIME_MANIFEST_VERSION,
+        FrozenSourceDigest,
+        IntegratedWorkerRuntimeManifest,
+    )
+
+    source.check_live()
+    if source.phase != "imported" or source.runtime_observation.environment is None:
+        raise ClosedWorkerProtocolError("native manifest requires CPU definitions and frozen runtime custody")
+    encoded = _read_contained(source.root, _INTEGRATED_RUNTIME_CONTRACT_PATH)
+    if hashlib.sha256(encoded).hexdigest() != _INTEGRATED_RUNTIME_CONTRACT_SHA256:
+        raise ClosedWorkerProtocolError("native runtime contract differs from its frozen release")
+    contract = json.loads(encoded)
+    configuration = source.bound_controller()._guard_client.configuration.to_payload()
+    expected_limits = {
+        "schema_version": "q54.p12.4.closed-worker-runtime-contract.v3",
+        "guard_protocol_version": configuration["protocol_version"],
+        "source_catalog_relative_path": CATALOG_PATH,
+        "request_limit_bytes": MAX_REQUEST_BYTES, "response_limit_bytes": MAX_RESPONSE_BYTES,
+        "nesting_depth_limit": MAX_NESTING_DEPTH, "object_field_limit": MAX_OBJECT_FIELDS,
+        "string_limit_utf8_bytes": MAX_STRING_BYTES,
+    }
+    if any(contract[key] != value for key, value in expected_limits.items()):
+        raise ClosedWorkerProtocolError("native runtime contract differs from protocol implementation")
+    gate_bytes = _read_contained(source.root, _FROZEN_GATE_PATH)
+    gate = json.loads(gate_bytes)
+    if hashlib.sha256(canonical_gate_bytes(gate)).hexdigest() != _FROZEN_GATE_SHA256:
+        raise ClosedWorkerProtocolError("native manifest gate differs from the frozen workload")
+    environment = current_environment_identity()
+    deployment = source.runtime_observation.environment
+    sites = tuple(sorted(row["path"] for row in deployment.to_payload()["roots"] if row["kind"] == "site"))
+    sources = tuple(FrozenSourceDigest(item.relative_path, item.sha256) for item in source.snapshot.sources)
+    manifest = IntegratedWorkerRuntimeManifest(
+        schema_version=INTEGRATED_WORKER_RUNTIME_MANIFEST_VERSION,
+        protocol_version=contract["protocol_version"], trust_model_version=contract["trust_model_version"],
+        state_machine_version=contract["state_machine_version"],
+        interpreter_executable=str(Path(sys.executable).resolve()), python_version=platform.python_version(),
+        environment=environment, environment_sha256=canonical_sha256(environment), site_package_paths=sites,
+        repository_root=str(source.root), repository_revision=source.revision, repository_clean=True,
+        worker_script_relative_path=contract["worker_script_relative_path"], lane_id=source.lane,
+        device_ordinal=configuration["device_ordinal"], gate_relative_path=_FROZEN_GATE_PATH,
+        gate_sha256=hashlib.sha256(gate_bytes).hexdigest(), workload_set_sha256=workload_set_sha256(gate),
+        source_digests=sources,
+        source_manifest_sha256=canonical_sha256([item.to_payload() for item in sources]),
+        ast_policy_sha256=NATIVE_AST_POLICY_SHA256,
+        control_idle_timeout_ms=contract["control_idle_timeout_ms"],
+        response_write_timeout_ms=contract["response_write_timeout_ms"],
+        abort_watchdog_ms=contract["abort_watchdog_ms"],
+        gpu_preparation_enabled=contract["gpu_preparation_enabled"],
+        guard_configuration=configuration, source_catalog_sha256=source.catalog_sha256,
+        runtime_environment_sha256=deployment.sha256, case_id=source.runtime_observation.inputs["case_id"],
+        pass_mode=pass_mode, go2_model_dir=go2_model_dir,
+    )
+    return IntegratedWorkerRuntimeManifest.from_payload(manifest.to_payload())
+
+
+def validate_integrated_worker_runtime_manifest(manifest, source):
+    """Bind all launch metadata to the current source, process and frozen contract."""
+    expected = build_integrated_worker_runtime_manifest(
+        source, pass_mode=manifest.pass_mode, go2_model_dir=manifest.go2_model_dir,
+    )
+    if manifest.to_payload() != expected.to_payload():
+        raise ClosedWorkerProtocolError("native manifest differs from its actual process and frozen contract")
 
 
 def validate_repository_import_ledger(

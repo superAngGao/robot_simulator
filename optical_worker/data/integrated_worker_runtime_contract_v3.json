@@ -1,0 +1,18 @@
+{
+  "schema_version": "q54.p12.4.closed-worker-runtime-contract.v3",
+  "protocol_version": "q54.p12.4.closed-worker-protocol.v2",
+  "trust_model_version": "q54.p12.4.closed-worker-trust-model.v2",
+  "state_machine_version": "q54.p12.4.closed-worker-state-machine.v3",
+  "guard_protocol_version": "q54.closed-worker.guarded-wait.v1",
+  "source_catalog_relative_path": "optical_worker/data/native_sources/v17.json",
+  "worker_script_relative_path": "optical_worker/native_bootstrap.py",
+  "control_idle_timeout_ms": 120000,
+  "response_write_timeout_ms": 30000,
+  "abort_watchdog_ms": 30000,
+  "gpu_preparation_enabled": true,
+  "request_limit_bytes": 65536,
+  "response_limit_bytes": 4194304,
+  "nesting_depth_limit": 8,
+  "object_field_limit": 64,
+  "string_limit_utf8_bytes": 4096
+}

@@ -297,7 +297,8 @@ def _validate_render_warmups(directory, lane, case, fault, *, trace, request):
         raise RuntimeError('diagnostic RGB lacks its actual completed readback guard')
 
 
-def run_case(repository, revision, environment_path, environment, directory, lane, case, fault, *, row_id=None):
+def run_case(repository, revision, environment_path, environment, directory, lane, case, fault, *, row_id=None,
+             sample_count=3, pass_mode="primary_unprofiled"):
     from optical_worker.guarded_evidence import validate_custody_artifact
     from optical_worker.native_sources import CATALOG_PATH
     from optical_worker.runtime_custody import (
@@ -309,7 +310,7 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                                                       RUNTIME_FINAL_GRAPH_FAULTS, RUNTIME_FINAL_IDLE_FAULTS,
                                                       RUNTIME_RENDER_WARMUP_FAULTS,
                                                       RUNTIME_FINAL_COMMAND_ERRORS,
-                                                      RUNTIME_PHASES)
+                                                      RUNTIME_PHASES, RUNTIME_WORKER_CASES)
 
     request = {"root": str(repository), "revision": revision, "lane": lane,
                "catalog_sha256": hashlib.sha256((repository / CATALOG_PATH).read_bytes()).hexdigest(),
@@ -319,9 +320,16 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                    "session": uuid.uuid4().hex, "device_ordinal": 1,
                    "ack_timeout_ms": 1000, "operation_timeout_ms": 120000}}
     if row_id is not None:
-        if fault not in RUNTIME_FINAL_GRAPH_CASES or type(row_id) is not str:
+        if fault not in RUNTIME_FINAL_GRAPH_CASES + RUNTIME_WORKER_CASES or type(row_id) is not str:
             raise ValueError("explicit frozen row selection requires a final graph case")
         request["row_id"] = row_id
+    worker_case = fault in RUNTIME_WORKER_CASES
+    if worker_case:
+        if row_id is None:
+            raise ValueError("integrated worker validation requires an explicit frozen row")
+        request.update(sample_count=sample_count, repeat_index=0, pass_mode=pass_mode)
+    elif sample_count != 3 or pass_mode != "primary_unprofiled":
+        raise ValueError("worker batch/mode arguments do not configure a legacy setup probe")
     inputs = capture_runtime_custody_inputs(request)
     write(directory, "request.json", request)
     write(directory, "runtime_custody_inputs.json", inputs)
@@ -358,10 +366,38 @@ def run_case(repository, revision, environment_path, environment, directory, lan
         warmup_case = fault in RUNTIME_RENDER_WARMUP_CASES
         final_case = fault in RUNTIME_FINAL_GRAPH_CASES
         storage_case = fault in RUNTIME_FIXED_STORAGE_FAULTS or graph_case
-        successful = fault in {"runtime_artifacts_success", "runtime_scope_success", "runtime_warp_modules_success",
+        successful = worker_case or fault in {"runtime_artifacts_success", "runtime_scope_success", "runtime_warp_modules_success",
                                "runtime_fixed_storage_success", "runtime_fixed_storage_diagnostics"} or (
                                    graph_case and fault not in RUNTIME_FINAL_GRAPH_FAULTS + RUNTIME_RENDER_WARMUP_FAULTS)
-        if successful:
+        if worker_case:
+            from optics.native_arena import C4ArenaLifecycleEvidence
+
+            arena = C4ArenaLifecycleEvidence.from_payload(json.loads((directory / "worker_arena.json").read_bytes()))
+            summary = worker["summary"]
+            commands = json.loads((directory / "worker_request_trace.json").read_bytes())
+            operations = ["HELLO", "OPEN_FROZEN_SESSION", "PREPARE_FROZEN_ROW"] + [
+                operation for _ in range(sample_count) for operation in (
+                    "EXECUTE_PREPARED_SAMPLE", "RESOLVE_PREPARED_SAMPLE", "RELEASE_RESOLVED_SAMPLE")
+            ] + ["CLOSE_SESSION"]
+            resolved = [event for event in worker["transition_trace"] if event["operation"] == "sample_resolved"]
+            if (result["worker_returncode"] != 0 or error or result["stderr"]
+                    or result["worker_protocol"].get("completed") is not True
+                    or control["deadline_expired"] or control["kill_requested"]
+                    or control["arm_count"] != control["normal_complete_count"]
+                    or summary["disposition"] != "clean_reclaimed_exit"
+                    or summary["emergency_sync_attempt_count"] != 0
+                    or summary["release_status"] != "completed"
+                    or summary["worker"]["samples"] != ["RECLAIMED"] * sample_count
+                    or not summary["worker"]["historical_submission_latched"]
+                    or len(resolved) != sample_count
+                    or arena.arena_state != "CLOSED" or arena.ring_depth != 1
+                    or arena.terminal_event_record_count != sample_count
+                    or arena.completion_resolution_count != sample_count or arena.slot_reclaim_count != sample_count
+                    or [row["request"]["operation"] for row in commands] != operations):
+                raise RuntimeError("native worker did not complete its actual request/arena/guard/exit path")
+            if (directory / "failure.json").exists():
+                raise RuntimeError("native worker success has a failure diagnostic")
+        elif successful:
             expected_phases = (12 if lane == "warp" else 8) if storage_case else (
                 11 if fault == "runtime_warp_modules_success" else (7 if lane == "cuda" else 6))
             expected_phases += int(graph_case)

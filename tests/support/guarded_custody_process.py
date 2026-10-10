@@ -90,7 +90,7 @@ SOURCE_FAULTS = tuple(
 )
 
 # Fixed sacrificial C2d3 driver only. Not product IPC or an arbitrary callback.
-from tests.support.native_runtime_process import RUNTIME_ACK_FAULTS, RUNTIME_FAULTS
+from tests.support.native_runtime_process import RUNTIME_ACK_FAULTS, RUNTIME_FAULTS, RUNTIME_WORKER_CASES
 
 
 def configuration():
@@ -312,9 +312,95 @@ def child(fault, fd, directory):
         os._exit(74)
 
 
+def _native_worker_requests(channel, directory, request, stop, deadline, outcome):
+    """Fixed validation client; the child uses the unmodified production codec/loop."""
+    from optical_worker.guarded_evidence import PostReclaimIdleEvidence
+    from optical_worker.protocol import (
+        INTEGRATED_WORKER_PROTOCOL_VERSION, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,
+        ClosedNativeLaneWorkerEvidence, IntegratedWorkerRuntimeManifest, decode_canonical_message,
+        decode_frame_header, validate_response_envelope,
+    )
+
+    trace = []
+    channel.settimeout(0.2)
+
+    def read_exact(count):
+        chunks = bytearray()
+        while len(chunks) < count:
+            if stop.is_set() or time.monotonic() >= deadline:
+                raise TimeoutError("fixed native request driver did not complete")
+            try:
+                chunk = channel.recv(count - len(chunks))
+            except TimeoutError:
+                continue
+            if not chunk:
+                raise EOFError("native worker response channel closed")
+            chunks.extend(chunk)
+        return bytes(chunks)
+
+    def exchange(operation, arguments):
+        sequence = len(trace)
+        message = {"protocol_version": INTEGRATED_WORKER_PROTOCOL_VERSION, "sequence": sequence,
+                   "operation": operation, "arguments": arguments}
+        frame = encode_framed_message(message, max_bytes=MAX_REQUEST_BYTES)
+        (directory / f"request_{sequence:04d}.bin").write_bytes(frame)
+        record = {"request": message, "response": None}
+        trace.append(record)
+        channel.sendall(frame)
+        header = read_exact(4)
+        size = decode_frame_header(header, max_bytes=MAX_RESPONSE_BYTES)
+        encoded = read_exact(size)
+        (directory / f"response_{sequence:04d}.bin").write_bytes(header + encoded)
+        response = validate_response_envelope(
+            decode_canonical_message(encoded, max_bytes=MAX_RESPONSE_BYTES),
+            expected_version=INTEGRATED_WORKER_PROTOCOL_VERSION,
+        )
+        record["response"] = response
+        if response["sequence"] != sequence or response["status"] != "ok":
+            raise RuntimeError("native request did not succeed: " + operation)
+        return response["payload"]
+
+    try:
+        while not (directory / "worker_ready.json").exists():
+            if stop.wait(0.01) or time.monotonic() >= deadline:
+                raise TimeoutError("native worker did not become ready")
+        manifest = IntegratedWorkerRuntimeManifest.from_payload(
+            json.loads((directory / "worker_manifest.json").read_text(encoding="utf8")),
+        )
+        hello = exchange("HELLO", {"manifest_sha256": manifest.sha256, "lane_id": manifest.lane_id,
+                                   "device_ordinal": manifest.device_ordinal})
+        # Parsing checks wire consistency; the child's controller retains authority.
+        ClosedNativeLaneWorkerEvidence.from_payload(hello["worker_evidence"])
+        exchange("OPEN_FROZEN_SESSION", {"gate_sha256": manifest.gate_sha256,
+                                        "workload_set_sha256": manifest.workload_set_sha256})
+        prepared = exchange("PREPARE_FROZEN_ROW", {key: request[key] for key in (
+            "row_id", "case_id", "repeat_index", "sample_count")})
+        tokens = prepared["prepared_tokens"]
+        if len(tokens) != request["sample_count"]:
+            raise RuntimeError("native worker prepared a different sample count")
+        for token in tokens:
+            pending = exchange("EXECUTE_PREPARED_SAMPLE", {"prepared_token": token})
+            resolved = exchange("RESOLVE_PREPARED_SAMPLE", pending)
+            exchange("RELEASE_RESOLVED_SAMPLE", resolved)
+        close = exchange("CLOSE_SESSION", {})
+        proof = PostReclaimIdleEvidence.from_payload(close["post_reclaim_idle"])
+        if proof.to_payload()["reclaimed_count"] != len(tokens):
+            raise RuntimeError("close did not account for all actual submitted samples")
+        outcome.update(completed=True, close_ack_observed_ns=time.monotonic_ns())
+    except BaseException as error:
+        outcome.update(completed=False, error_type=type(error).__name__, error=str(error))
+    finally:
+        mark(directory, "worker_request_trace.json", json.dumps(trace, sort_keys=True, separators=(",", ":")))
+        try:
+            channel.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+
 def supervise(fault, liveness_fd, directory):
     source_mode = fault in SOURCE_FAULTS
     runtime_mode = fault in RUNTIME_FAULTS
+    native_worker_mode = fault in RUNTIME_WORKER_CASES
     if runtime_mode:
         request = json.loads((directory / "request.json").read_text(encoding="utf-8"))
         config = GuardConfiguration.from_payload(request["guard_configuration"])
@@ -331,6 +417,10 @@ def supervise(fault, liveness_fd, directory):
         (10 * config.operation_timeout_ms / 1000 + 30) if runtime_mode else (20 if source_mode else 12)
     )
     channel, worker_channel = socket.socketpair()
+    command, worker_command = socket.socketpair() if native_worker_mode else (None, None)
+    extra_args = [str(worker_command.fileno()), str(liveness_fd)] if native_worker_mode else []
+    inherited = ((worker_channel.fileno(), worker_command.fileno(), liveness_fd)
+                 if native_worker_mode else (worker_channel.fileno(),))
     process = subprocess.Popen(
         [
             sys.executable,
@@ -342,8 +432,9 @@ def supervise(fault, liveness_fd, directory):
             fault,
             str(worker_channel.fileno()),
             str(directory),
+            *extra_args,
         ],
-        pass_fds=(worker_channel.fileno(),),
+        pass_fds=inherited,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
@@ -352,6 +443,14 @@ def supervise(fault, liveness_fd, directory):
     core = GuardSupervisorCore(config)
     transport = GuardSupervisorTransport(channel, core)
     started = time.monotonic()
+    client = None
+    client_stop, client_outcome = threading.Event(), {}
+    if native_worker_mode:
+        worker_command.close()
+        client = threading.Thread(target=_native_worker_requests, args=(
+            command, directory, request, client_stop, started + outer_bound, client_outcome,
+        ))
+        client.start()
     injected = False
     parent_alive = True
     try:
@@ -427,6 +526,14 @@ def supervise(fault, liveness_fd, directory):
                 if core.state != "TERMINATING":
                     raise
         process.wait(timeout=1)
+        if client is not None:
+            client.join(timeout=1)
+            if client.is_alive():
+                client_stop.set()
+                command.shutdown(socket.SHUT_RDWR)
+                client.join(timeout=1)
+            if client.is_alive():
+                raise RuntimeError("native request client was not joined")
         stderr = process.stderr.read().decode("utf-8", errors="replace")
         worker = None
         if (directory / "worker.json").exists():
@@ -439,7 +546,7 @@ def supervise(fault, liveness_fd, directory):
             "supervisor": core.evidence(require_final=True).to_payload(),
         }
         validate_custody_artifact(artifact)
-        return {
+        result = {
             "artifact": artifact,
             "stderr": stderr,
             "parent_alive": parent_alive,
@@ -449,12 +556,23 @@ def supervise(fault, liveness_fd, directory):
             "worker_returncode": process.returncode,
             "injected": injected,
         }
+        if native_worker_mode:
+            result["worker_protocol"] = client_outcome
+        return result
     finally:
         if process.poll() is None:
             process.kill()
             process.wait(timeout=3)
         process.stderr.close()
         channel.close()
+        if client is not None:
+            client_stop.set()
+            try:
+                command.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            client.join(timeout=1)
+            command.close()
 
 
 def main():
