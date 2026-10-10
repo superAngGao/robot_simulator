@@ -163,3 +163,51 @@ operation/allocation proof. G2 final-output staging/oracle and G4/G5 complete
 actual worker/fault/transport evidence are also open. These author changes have
 not been deployed for native use or independently accepted. Preserve the complete
 packet and subsequent C4 objective; do not promote these local passes to a gate.
+
+## D1 approval and subsequent implementation progress
+
+Fresh design review session01a1259f-a957-7071-9142-7b4593996629 completed
+Approve with comments for208f32c86c25b26bda6a31f66c21f9aeb0fe1ffb.
+Tool71384 exited0. Full report is archived verbatim as final-observation
+design-review v2, working-byte SHA256
+28f422d64ee7fdc4f29765b999b3a1d36930b34afac01dc8114b0a7dba1f9d75.
+Author confirms the intended candidate is that exact committed HEAD/document.
+Its committed LF digest is81111b1e548c438689e44a04129407273379184b62c69624480835964a71b7a6;
+the packet's06862ff... was the Windows CRLF working-byte digest. Actual Git bytes
+and working bytes were independently compared and differ only by CRLF. The
+review expressly binds the inspected LF bytes, so no unreviewed alternate text
+is substituted. Keep this identity correction with the original report/packet.
+F1/F2 are closed at design level. C1 native event initialization before seal and
+C2 three successful sentinel reuses/actual post-resolution failure state remain
+mandatory implementation evidence, not waived comments.
+
+After that approval, the existing fixed request client/supervisor gained the
+sequence-bound observation handoff. Publication precedes send; timely success
+is timestamped before persistence and only the original supervisor thread
+retires it. Equality/late responses and stale observations cannot clear an
+expired obligation. Existing guard deadlines tick before retirement. The parent
+retains original partial/error response bytes and first exceptions even if
+response persistence also fails. Fast normal worker exit still drains the
+buffered CLOSE response and supervisor retirement handshake before joining the
+client. This is the approved fixed correctness driver, not a product callback
+or native-query implementation. Final reader/staging wiring remains unfinished.
+
+New author tests:19 request/close scheduling and actual child-disposal cases
+passed in0.65s;12 actual fixed-client socket cases passed in2.42s (partial reply,
+error reply and wrong sequence, each with successful/failed persistence, both
+CPU fixture lanes). Original native worker dispatch is not claimed by these
+modeled peer responses. Full integrated native fault/close tests still remain.
+
+Linux CPU verification of snapshotc29a197cf217ece399fbb4703c24d934ba3e18f8:
+26new control/journal/reducer cases passed;11historical compilation-codec cases
+errored in shared fixture setup at NativeInputManifest.from_payload with
+"native manifest version" while reading the pinned fc86182 archive. Exact
+unchangedcf7f5a6 baseline reproduces all11 same errors. This is not a new
+reducer regression and not a pass: the retained historical fixture/current
+schema compatibility gap remains to reconcile without relabeling old records
+as current or weakening current manifest admission. Raw logs/launch/exit are
+downloaded as c4-worker-control-cpu-c29a197-v1-* and
+c4-worker-control-baseline-cpu-cf7f5a6-v1-* in c4_assets. Both runs block
+torch/warp/cupy imports and perform no native/GPU work. Six recorded owned CPU
+PIDs3026067,3026072,3026253,3026254,3034182,3034187 are absent; closure JSON is
+retained. These are diagnostic/check outcomes, not full refactor acceptance.

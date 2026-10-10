@@ -523,3 +523,73 @@ def test_supervisor_reads_actual_terminal_journal_over_stale_prefix(worker_graph
         assert recovered != prefix
         # The legacy driver continues to use its own persisted prefix.
         assert _read_worker_lifecycle(tmp_path, native_worker_mode=False) == prefix
+
+
+@pytest.mark.parametrize("response_kind", ["partial", "error", "wrong_sequence"])
+@pytest.mark.parametrize("persist_fails", [False, True])
+def test_fixed_request_client_retains_failed_wire_prefix_and_original_error(
+    bound_worker, tmp_path, monkeypatch, response_kind, persist_fails,
+):
+    import socket
+    import threading
+    import time
+
+    from optical_worker.wait_supervision import GuardSupervisorCore
+    from tests.support.guarded_custody_process import (
+        _native_worker_requests, _observe_worker_client_exit, _WorkerRequestObservation,
+    )
+
+    manifest = bound_worker._manifest
+    (tmp_path / "worker_ready.json").write_text("{}")
+    (tmp_path / "worker_manifest.json").write_text(json.dumps(manifest.to_payload()))
+    config = bound_worker._lifecycle._guard_client.configuration
+    observation = _WorkerRequestObservation(123, config)
+    core = GuardSupervisorCore(config)
+    client, peer = socket.socketpair()
+    peer.settimeout(2)
+    stop, outcome = threading.Event(), {}
+    if persist_fails:
+        original_write = Path.write_bytes
+
+        def fail_response(path, data):
+            if path.name.startswith("response_"):
+                raise OSError("secondary response persistence failure")
+            return original_write(path, data)
+
+        monkeypatch.setattr(Path, "write_bytes", fail_response)
+    thread = threading.Thread(target=_native_worker_requests, args=(
+        client, tmp_path, {}, stop, time.monotonic() + 5, outcome, observation,
+    ))
+    thread.start()
+    try:
+        with peer.makefile("rb") as incoming:
+            header = incoming.read(4)
+            request_size = p.decode_frame_header(header, max_bytes=p.MAX_REQUEST_BYTES)
+            sent = p.decode_canonical_message(incoming.read(request_size), max_bytes=p.MAX_REQUEST_BYTES)
+            assert sent["operation"] == "HELLO" and sent["sequence"] == 0
+        wire = p.encode_framed_message({"protocol_version": p.INTEGRATED_WORKER_PROTOCOL_VERSION,
+            "sequence": 1 if response_kind == "wrong_sequence" else 0,
+            "status": "error" if response_kind == "error" else "ok", "payload": {}},
+            max_bytes=p.MAX_RESPONSE_BYTES)
+        if response_kind == "partial":
+            wire = wire[:9]
+        peer.sendall(wire)
+        peer.shutdown(socket.SHUT_WR)
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+        assert outcome["completed"] is False
+        expected = "EOFError" if response_kind == "partial" else "RuntimeError"
+        assert outcome["error_type"] == observation.failure == expected
+        trace = json.loads((tmp_path / "worker_request_trace.json").read_text())
+        assert len(trace) == 1 and "observation" not in trace[0]
+        if persist_fails:
+            assert trace[0]["response_persistence_error"] == "OSError"
+        else:
+            assert (tmp_path / "response_0000.bin").read_bytes() == wire
+        _observe_worker_client_exit(core, client, stop, outcome, time.monotonic_ns(), observation)
+        assert core.state == "TERMINATING" and observation.state == "TERMINAL"
+    finally:
+        stop.set()
+        client.close()
+        peer.close()
+        thread.join(timeout=2)

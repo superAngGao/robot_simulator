@@ -312,7 +312,82 @@ def child(fault, fd, directory):
         os._exit(74)
 
 
-def _native_worker_requests(channel, directory, request, stop, deadline, outcome):
+class _WorkerRequestObservation:
+    """Sequence-bound handoff for the fixed correctness client and supervisor.
+
+    Only the supervisor retires an observation or commits terminal disposition.
+    This record grants no worker execution/guard/release authority.
+    """
+
+    def __init__(self, worker_pid, configuration):
+        self.worker_pid, self.session = worker_pid, configuration.session
+        self.supervisor_thread = threading.current_thread()
+        self.timeout_ns = configuration.operation_timeout_ms * 1_000_000
+        self.condition = threading.Condition()
+        self.state, self.sequence = "EMPTY", -1
+        self.operation = None
+        self.published_ns = self.retired_ns = None
+        self.deadline_ns = self.observed_ns = self.failure = None
+
+    def publish(self, sequence, operation, now_ns):
+        with self.condition:
+            if self.state not in {"EMPTY", "RETIRED"} or sequence != self.sequence + 1:
+                raise RuntimeError("request observation is not retired or next in sequence")
+            self.state, self.sequence = "PUBLISHED", sequence
+            self.operation, self.published_ns, self.retired_ns = operation, now_ns, None
+            # PREPARE retains its original individually guarded setup operations.
+            # RESOLVE retains its original wait guard. Only the query-free EXECUTE
+            # aperture needs the separately observed diagnostic request budget.
+            self.deadline_ns = (now_ns + self.timeout_ns
+                                if operation == "EXECUTE_PREPARED_SAMPLE" else None)
+            self.observed_ns = self.failure = None
+
+    def response(self, sequence, now_ns):
+        with self.condition:
+            if self.state != "PUBLISHED" or sequence != self.sequence:
+                self.failure = self.failure or "stale_response"
+            elif self.deadline_ns is not None and now_ns >= self.deadline_ns:
+                self.failure = self.failure or "response_deadline_expired"
+            else:
+                self.observed_ns, self.state = now_ns, "RESPONSE_OBSERVED"
+            self.condition.notify_all()
+
+    def failed(self, error):
+        with self.condition:
+            self.failure = self.failure or error
+            self.condition.notify_all()
+
+    def supervise(self, now_ns, *, core_failed):
+        if threading.current_thread() is not self.supervisor_thread:
+            raise RuntimeError("request retirement belongs to the original supervisor thread")
+        with self.condition:
+            expired = (self.state == "PUBLISHED" and self.deadline_ns is not None
+                       and now_ns >= self.deadline_ns)
+            if core_failed or self.failure is not None or expired:
+                self.failure = self.failure or ("core_failed" if core_failed else "request_deadline_expired")
+                self.state = "TERMINAL"
+            elif self.state == "RESPONSE_OBSERVED":
+                self.state, self.retired_ns = "RETIRED", now_ns
+            self.condition.notify_all()
+            return self.state == "TERMINAL"
+
+    def wait_retired(self, sequence, stop, outer_deadline):
+        with self.condition:
+            while True:
+                if (self.sequence != sequence or self.state == "TERMINAL" or stop.is_set()
+                        or time.monotonic() >= outer_deadline):
+                    raise RuntimeError("request observation did not retire successfully")
+                if self.state == "RETIRED":
+                    return {"worker_pid": self.worker_pid, "session": self.session,
+                            "sequence": sequence, "operation": self.operation,
+                            "published_ns": self.published_ns, "deadline_ns": self.deadline_ns,
+                            "observed_ns": self.observed_ns, "retired_ns": self.retired_ns}
+                # Condition.wait releases the lock; no socket or file operation
+                # is ever performed while holding this handoff lock.
+                self.condition.wait(timeout=0.01)
+
+
+def _native_worker_requests(channel, directory, request, stop, deadline, outcome, observation):
     """Fixed validation client; the child uses the unmodified production codec/loop."""
     from optical_worker.guarded_evidence import PostReclaimIdleEvidence
     from optical_worker.protocol import (
@@ -324,7 +399,7 @@ def _native_worker_requests(channel, directory, request, stop, deadline, outcome
     trace = []
     channel.settimeout(0.2)
 
-    def read_exact(count):
+    def read_exact(count, received):
         chunks = bytearray()
         while len(chunks) < count:
             if stop.is_set() or time.monotonic() >= deadline:
@@ -336,6 +411,7 @@ def _native_worker_requests(channel, directory, request, stop, deadline, outcome
             if not chunk:
                 raise EOFError("native worker response channel closed")
             chunks.extend(chunk)
+            received.extend(chunk)
         return bytes(chunks)
 
     def exchange(operation, arguments):
@@ -346,22 +422,35 @@ def _native_worker_requests(channel, directory, request, stop, deadline, outcome
         (directory / f"request_{sequence:04d}.bin").write_bytes(frame)
         record = {"request": message, "response": None}
         trace.append(record)
-        channel.sendall(frame)
-        header = read_exact(4)
-        size = decode_frame_header(header, max_bytes=MAX_RESPONSE_BYTES)
-        encoded = read_exact(size)
-        (directory / f"response_{sequence:04d}.bin").write_bytes(header + encoded)
-        response = validate_response_envelope(
-            decode_canonical_message(encoded, max_bytes=MAX_RESPONSE_BYTES),
-            expected_version=INTEGRATED_WORKER_PROTOCOL_VERSION,
-        )
-        record["response"] = response
-        if response["sequence"] != sequence or response["status"] != "ok":
-            raise RuntimeError("native request did not succeed: " + operation)
-        if operation == "CLOSE_SESSION":
-            # Timestamp the actual complete successful response separately from
-            # proof parsing, cleanup and observed/reaped process exit.
-            outcome["close_ack_observed_ns"] = time.monotonic_ns()
+        observation.publish(sequence, operation, time.monotonic_ns())
+        received = bytearray()
+        response_path = directory / f"response_{sequence:04d}.bin"
+        try:
+            channel.sendall(frame)
+            header = read_exact(4, received)
+            size = decode_frame_header(header, max_bytes=MAX_RESPONSE_BYTES)
+            encoded = read_exact(size, received)
+            response = validate_response_envelope(
+                decode_canonical_message(encoded, max_bytes=MAX_RESPONSE_BYTES),
+                expected_version=INTEGRATED_WORKER_PROTOCOL_VERSION,
+            )
+            record["response"] = response
+            if response["sequence"] != sequence or response["status"] != "ok":
+                raise RuntimeError("native request did not succeed: " + operation)
+            observed_ns = time.monotonic_ns()
+            observation.response(sequence, observed_ns)
+            if operation == "CLOSE_SESSION":
+                # Actual complete response, before persistence/cleanup/exit.
+                outcome["close_ack_observed_ns"] = observed_ns
+            record["observation"] = observation.wait_retired(sequence, stop, deadline)
+        except BaseException as original_error:
+            observation.failed(type(original_error).__name__)
+            try:
+                response_path.write_bytes(received)
+            except BaseException as persistence_error:
+                record["response_persistence_error"] = type(persistence_error).__name__
+            raise
+        response_path.write_bytes(received)
         return response["payload"]
 
     try:
@@ -392,6 +481,7 @@ def _native_worker_requests(channel, directory, request, stop, deadline, outcome
             raise RuntimeError("close did not account for all actual submitted samples")
         outcome.update(completed=True)
     except BaseException as error:
+        observation.failed(type(error).__name__)
         outcome.update(completed=False, error_type=type(error).__name__, error=str(error))
     finally:
         mark(directory, "worker_request_trace.json", json.dumps(trace, sort_keys=True, separators=(",", ":")))
@@ -401,7 +491,7 @@ def _native_worker_requests(channel, directory, request, stop, deadline, outcome
             pass
 
 
-def _observe_worker_client_exit(core, command, stop, outcome, now_ns):
+def _observe_worker_client_exit(core, command, stop, outcome, now_ns, observation=None):
     """Bound post-ACK exit and client failure with the original supervisor.
 
     This executes on the supervisor thread even if its request client or the
@@ -409,10 +499,19 @@ def _observe_worker_client_exit(core, command, stop, outcome, now_ns):
     """
     if "terminal_transport_closed_ns" in outcome:
         return
+    request_failed = False
+    if observation is not None:
+        request_failed = observation.supervise(now_ns, core_failed=core.state in {"TERMINATING", "EXITED"})
+        if request_failed:
+            outcome["request_observation_failure"] = observation.failure
+            outcome["request_observation_sequence"] = observation.sequence
+            outcome["request_observation_worker_pid"] = observation.worker_pid
+            outcome["request_observation_session"] = observation.session
+            outcome["request_observation_deadline_ns"] = observation.deadline_ns
     acknowledged = outcome.get("close_ack_observed_ns")
     expired = (acknowledged is not None
                and now_ns >= acknowledged + core.configuration.operation_timeout_ms * 1_000_000)
-    if not expired and outcome.get("completed") is not False:
+    if not request_failed and not expired and outcome.get("completed") is not False:
         return
     if expired:
         outcome["close_exit_wait_expired_ns"] = now_ns
@@ -511,15 +610,18 @@ def supervise(fault, liveness_fd, directory):
     transport = GuardSupervisorTransport(channel, core)
     started = time.monotonic()
     client = None
+    observation = None
     client_stop, client_outcome = threading.Event(), {}
     if native_worker_mode:
         worker_command.close()
+        observation = _WorkerRequestObservation(process.pid, config)
         client = threading.Thread(target=_native_worker_requests, args=(
-            command, directory, request, client_stop, started + outer_bound, client_outcome,
+            command, directory, request, client_stop, started + outer_bound, client_outcome, observation,
         ))
         client.start()
     injected = False
     parent_alive = True
+    clean_worker_exit = False
     try:
         if native_worker_mode:
             mark(directory, "process_identity.json", json.dumps({
@@ -531,13 +633,18 @@ def supervise(fault, liveness_fd, directory):
                 raise RuntimeError("outer test fail-bound; NOT successful supervisor termination")
             code = process.poll()
             if code is not None:
+                clean_worker_exit = code == 0 and core.state == "IDLE"
                 core.observe_exit(code)
                 if native_worker_mode:
                     client_outcome["worker_exit_observed_ns"] = time.monotonic_ns()
                 break
-            if native_worker_mode:
-                _observe_worker_client_exit(core, command, client_stop, client_outcome, time.monotonic_ns())
+            # Earlier guard/ACK obligations win before request retirement can
+            # wake the client to send its next command.
             core.tick()
+            if native_worker_mode:
+                _observe_worker_client_exit(
+                    core, command, client_stop, client_outcome, time.monotonic_ns(), observation,
+                )
             if core.kill_required:
                 core.record_kill_request()
                 try:
@@ -605,7 +712,16 @@ def supervise(fault, liveness_fd, directory):
         if native_worker_mode:
             client_outcome["worker_reaped_ns"] = time.monotonic_ns()
         if client is not None:
-            client.join(timeout=1)
+            # A fast normal worker may exit after writing CLOSE before the
+            # client publishes its observation. Keep the supervisor-owned
+            # retirement handshake alive while draining that buffered response.
+            join_deadline = time.monotonic() + 1
+            while client.is_alive() and time.monotonic() < join_deadline:
+                valid_close_exit = clean_worker_exit and observation.operation == "CLOSE_SESSION"
+                observation.supervise(time.monotonic_ns(), core_failed=not valid_close_exit)
+                if not valid_close_exit:
+                    client_stop.set()
+                client.join(timeout=0.01)
             if client.is_alive():
                 client_stop.set()
                 command.shutdown(socket.SHUT_RDWR)
