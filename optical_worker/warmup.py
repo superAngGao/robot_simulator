@@ -5,11 +5,23 @@ The source session alone owns the live registration and its one active guard.
 """
 from contextlib import contextmanager
 from dataclasses import dataclass
+from .native_setup import SETUP_WARMUP_FRAME_COUNT
 
 
 _SETUP_WARMUPS = {}
 _TRANSACTION_WARMUPS = {}
 _COMPLETED_WARMUPS = {}
+
+
+@dataclass(slots=True)
+class _SetupWarmupRecord:
+    authority: object
+    transactions: tuple
+    completions: list
+    tickets: list
+    active_frame_index: int | None = None
+    active_ticket: object = None
+    active_operation: object = None
 
 
 @dataclass(frozen=True, eq=False)
@@ -65,8 +77,8 @@ def _require_warmup_transaction(transaction):
         raise ValueError("setup transaction has no registered warmup authority")
     authority, index = entry
     record = _SETUP_WARMUPS.get(authority.session)
-    if (record is None or record[0] is not authority or record[2] is None
-            or record[1][index] is not transaction or record[2][0] != index):
+    if (record is None or record.authority is not authority or record.active_frame_index is None
+            or record.transactions[index] is not transaction or record.active_frame_index != index):
         raise ValueError("setup transaction is outside its exact active frame")
     session, controller = authority.session, authority.controller
     session.check_live()
@@ -74,7 +86,7 @@ def _require_warmup_transaction(transaction):
     if (session.phase != "warming_fixed_render_graph" or session.bound_controller() is not controller
             or controller.guardian is not authority.guardian or authority.guardian.state != "CONSTRUCTING"
             or session.fixed_render_graph is not authority.graph
-            or controller._guard_ticket is not record[2][1]
+            or controller._guard_ticket is not record.active_ticket
             or controller.unknown_device_scope
             or controller.possible_dirty_device_ordinals != (controller.target_device_ordinal,)
             or authority.stream.cuda_stream != authority.stream_handle
@@ -98,7 +110,7 @@ def _require_warmup_transaction(transaction):
 @contextmanager
 def _warmup_leaf(transaction, name, kind):
     authority = _require_warmup_transaction(transaction)
-    operation = _SETUP_WARMUPS[authority.session][2][2]
+    operation = _SETUP_WARMUPS[authority.session].active_operation
     with operation(name, kind):
         yield
 
@@ -117,7 +129,7 @@ def _prepare_fixed_render_warmups(session, runtime, target, stream):
 
     controller = session.bound_controller()
     graph = session.fixed_render_graph
-    if (type(graph) is not _FixedRenderPreparation or len(graph.frames) != 10
+    if (type(graph) is not _FixedRenderPreparation or len(graph.frames) != SETUP_WARMUP_FRAME_COUNT
             or graph.readiness.warmup_frames_completed != 0 or session in _SETUP_WARMUPS):
         raise ValueError("warmup requires the original ten-frame provisional graph, once")
     transactions, completions, tickets = [], [], []
@@ -157,7 +169,7 @@ def _prepare_fixed_render_warmups(session, runtime, target, stream):
                 transaction = _prepare_cuda_transaction(bundle, cuda_context, graph)
             transactions.append(transaction)
             session._hold_runtime_owner(transaction, "setup_warmup_transaction")
-        _SETUP_WARMUPS[session] = [authority, tuple(transactions), None, completions, tickets]
+        _SETUP_WARMUPS[session] = _SetupWarmupRecord(authority, tuple(transactions), completions, tickets)
         for index, transaction in enumerate(transactions):
             _TRANSACTION_WARMUPS[transaction] = (authority, index)
     return authority
@@ -168,9 +180,9 @@ def _run_fixed_render_warmups(authority):
 
     session, controller, graph = authority.session, authority.controller, authority.graph
     record = _SETUP_WARMUPS.get(session)
-    if record is None or record[0] is not authority:
+    if record is None or record.authority is not authority:
         raise ValueError("warmup driver requires its issued preparation")
-    transactions, completions, tickets = record[1], record[3], record[4]
+    transactions, completions, tickets = record.transactions, record.completions, record.tickets
     runtime, target, stream = authority.runtime, authority.target, authority.stream
     prepared = session.prepared_input
 
@@ -181,7 +193,7 @@ def _run_fixed_render_warmups(authority):
                 context = _create_upload_context(controller, runtime, target, stream)
                 with _native_resource_scope(runtime, target, lane=session.lane, stream=stream, context=context,
                         owner_role="setup_warmup_frame", scope_id="setup_warmup_frame_scope") as (_, _, operation):
-                    _SETUP_WARMUPS[session][2] = (index, ticket, operation)
+                    record.active_frame_index, record.active_ticket, record.active_operation = index, ticket, operation
                     try:
                         if session.lane == "warp":
                             from . import warp_setup
@@ -205,7 +217,7 @@ def _run_fixed_render_warmups(authority):
                             session.audit()
                             session.external.audit()
                     finally:
-                        _SETUP_WARMUPS[session][2] = None
+                        record.active_frame_index = record.active_ticket = record.active_operation = None
             # The wait returning is insufficient: COMPLETE/DISARMED must also
             # have succeeded on this exact ticket before the next event reuse.
             controller._guard_client.require_completed_ticket(ticket)
@@ -227,7 +239,7 @@ def require_observed_warmups(session, evidence):
     if (type(evidence) is not WarmupCompletionEvidence or _COMPLETED_WARMUPS.get(session) is not evidence
             or evidence.session is not session or evidence.prepared is not session.prepared_input
             or evidence.graph is not session.fixed_render_graph or session.phase != "fixed_render_warmups_ready"
-            or len(evidence.completions) != 10):
+            or len(evidence.completions) != SETUP_WARMUP_FRAME_COUNT):
         raise ValueError("warmup completion was not observed by this exact session")
     session.check_live()
     return evidence

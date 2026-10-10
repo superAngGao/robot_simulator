@@ -31,6 +31,16 @@ from .native_contract import (
 
 
 _CUDA_EXTENSION_SETS = {}
+SETUP_WARMUP_FRAME_COUNT = 10
+_RENDER_PHASE_NAMES = ("raygen_kernel", "first_hit_kernel", "shade_kernel")
+
+
+def _render_phase_names(*, boundary, diagnostic):
+    if boundary not in {"R0", "R1", "R2"} or type(diagnostic) is not bool:
+        raise ValueError("invalid native render event mode")
+    if not diagnostic:
+        return ()
+    return (() if boundary == "R0" else ("scene_update_kernel", "acceleration_kernel")) + _RENDER_PHASE_NAMES
 
 
 class CudaExtensionSet:
@@ -200,7 +210,20 @@ def _prepare_render_events(runtime, target, stream, *, lane, diagnostic, context
     """Initialize and complete one slot's events under the caller's setup guard."""
     if context is None or type(diagnostic) is not bool:
         raise TypeError("render events require a guarded context and exact diagnostic mode")
-    phases = ("raygen_kernel", "first_hit_kernel", "shade_kernel") if diagnostic else ()
+    return _prepare_native_events(runtime, target, stream, lane=lane,
+        phase_names=_render_phase_names(boundary="R0", diagnostic=diagnostic), context=context)
+
+
+def _prepare_native_events(runtime, target, stream, *, lane, phase_names, context=None):
+    """Shared native event initialization; terminal wait covers all prior records.
+
+    Captured setup supplies its existing custody context. Standalone arena and
+    compatibility callers use the same loop under an explicit device/stream.
+    """
+    if (type(phase_names) is not tuple or len(set(phase_names)) != len(phase_names)
+            or any(name not in ("scene_update_kernel", "acceleration_kernel", *_RENDER_PHASE_NAMES)
+                   for name in phase_names)):
+        raise ValueError("invalid native event phase names")
     with _native_resource_scope(runtime, target, lane=lane, stream=stream, context=context,
             owner_role="slot_event_custody", scope_id="slot_event_scope") as (lifecycle, owners, operation):
         def create(timing):
@@ -208,9 +231,12 @@ def _prepare_render_events(runtime, target, stream, *, lane, diagnostic, context
                 event = (runtime.cuda.Event(enable_timing=timing) if lane == "cuda"
                          else runtime.Event(device=target, enable_timing=timing))
                 owners.append(event)
-                ordinal = _event_ordinal(event, cuda=lane == "cuda", lifecycle=lifecycle, allow_unbound=True)
-                lifecycle.adopt_returned_device_owner(event, actual_device_ordinal=ordinal,
-                    role="slot_event", operation_id="slot_event_create")
+                if lifecycle is not None:
+                    ordinal = _event_ordinal(event, cuda=lane == "cuda", lifecycle=lifecycle, allow_unbound=True)
+                    lifecycle.adopt_returned_device_owner(event, actual_device_ordinal=ordinal,
+                        role="slot_event", operation_id="slot_event_create")
+                elif event.device is not None and event.device != target:
+                    raise ValueError("native event differs from its target device")
                 return event
 
         def record(event):
@@ -219,11 +245,14 @@ def _prepare_render_events(runtime, target, stream, *, lane, diagnostic, context
                     event.record(stream)
                 else:
                     stream.record_event(event)
-                _require_ready_event_target(event, cuda=lane == "cuda", lifecycle=lifecycle)
+                if lifecycle is not None:
+                    _require_ready_event_target(event, cuda=lane == "cuda", lifecycle=lifecycle)
+                elif event.device != target:
+                    raise ValueError("native event record differs from its target device")
 
         completion = create(False)
         pairs = []
-        for phase in phases:
+        for phase in phase_names:
             start, end = create(True), create(True)
             record(start)
             record(end)
@@ -241,13 +270,10 @@ def _prepare_render_events(runtime, target, stream, *, lane, diagnostic, context
 
 def _prepare_fixed_render_graph(session, runtime, target, stream, *, readiness, profile, shadows, pass_mode):
     """Bind the ten provisional warmup frames using existing renderer builders."""
-    from dataclasses import replace
-    from optical_worker.render_parameters import (
-        bind_render_parameters, load_frozen_render_sequence, NATIVE_SCALAR_ORDER, decode_native_scalars,
-    )
+    from optical_worker.render_parameters import load_frozen_render_sequence
 
     controller = session.bound_controller()
-    scene, first, second, outputs = session.fixed_render_storage
+    scene, _, _, outputs = session.fixed_render_storage
     diagnostic = pass_mode == "diagnostic_profiled"
     allocated_diagnostic = (outputs.traversal_diagnostics if session.lane == "warp"
                             else bool(outputs.shadow_traversal_counters))
@@ -256,7 +282,6 @@ def _prepare_fixed_render_graph(session, runtime, target, stream, *, readiness, 
     frames = []
     session._hold_runtime_owner(frames, "provisional_render_frames")
     sequence = session.render_source.sequence
-    source = sequence.to_payload()
     prepared = session.prepared_input
     if (session.render_source.packed_scene is not prepared.source.packed_scene_owner
             or sequence.canonical_bytes != load_frozen_render_sequence(prepared.manifest.case_id).canonical_bytes):
@@ -269,66 +294,22 @@ def _prepare_fixed_render_graph(session, runtime, target, stream, *, readiness, 
         with stream_scope:
             if session.lane == "warp":
                 from optical_worker import warp_setup
-                from optics.warp_native_render import (
-                    WarpDirectLightRenderCommandFactory, WarpCameraParameters, WarpRenderQueryParameters,
-                )
-                from optics.execution import normalize_output_profile
+                from optics.warp_native_render import WarpDirectLightRenderCommandFactory
 
-                render_profile = normalize_output_profile(profile)
                 compiled_owner = session.warp_modules
                 warp_setup.validate_module_set(session, compiled_owner)
                 factory = WarpDirectLightRenderCommandFactory.prepare(
                     prepared_input=session.prepared_input, readiness=readiness, local_scene=scene,
                     device=target, stream=stream, _context=_create_upload_context(controller, runtime, target, stream))
             else:
-                from optics.cuda_direct_light import CudaCameraParameters
                 compiled_owner = session.cuda_extensions()
                 factory, cuda_context = _require_cuda_render_factory(session, compiled_owner)
             session._hold_runtime_owner(factory, "provisional_render_factory")
-            for index in range(10):
-                parameters = bind_render_parameters(sequence, sample_index=index, profile=profile,
-                    shadows=shadows, pass_mode=pass_mode,
-                    role_to_mask=session.render_source.packed_scene.role_to_mask)
-                payload = parameters.to_payload()
-                scalars = decode_native_scalars(payload)
-                values = dict(zip(NATIVE_SCALAR_ORDER, scalars, strict=True))
-                camera_values = dict(width=payload["width"], height=payload["height"],
-                    fx=values["fx"], fy=values["fy"], cx=values["cx"], cy=values["cy"],
-                    origin=scalars[4:7], rotation=scalars[7:16])
-                colors = dict(ambient_rgb=scalars[17:20], background_rgb=scalars[20:23],
-                              shadow_bias=values["shadow_bias"])
-                if session.lane == "warp":
-                    frame = source["frames"][index % len(source["frames"])]
-                    query = WarpRenderQueryParameters(
-                        num_rays=payload["width"] * payload["height"], frame_id=payload["frame_id"],
-                        sim_time=float.fromhex(payload["sim_time_f64"]), env_idx=payload["env_idx"],
-                        sensor_id=payload["sensor_id"], max_distance=values["max_distance"],
-                        sensor_role=frame["sensor_role"], sensor_role_mask=payload["sensor_role_mask"])
-                    camera = WarpCameraParameters(query=query, **camera_values)
-                    # Each frame's metadata view borrows the same immutable R0
-                    # BVH allocations; no rebuild, refit or extra upload occurs.
-                    bvh = replace(second, frame_id=query.frame_id, env_idx=query.env_idx)
-                    session._hold_runtime_owner(bvh, "provisional_fixed_bvh_view")
-                    compiled = warp_setup.validate_module_set(session, compiled_owner)
-                    bundle = factory.seal_camera(world=first, bvh=bvh, camera=camera, buffers=outputs,
-                        output_profile=render_profile, shadows=shadows, traversal_diagnostics=diagnostic, **colors,
-                        _context=_create_upload_context(controller, runtime, target, stream))
-                else:
-                    camera = CudaCameraParameters(**camera_values)
-                    inputs = replace(first, sensor_role_mask=payload["sensor_role_mask"],
-                                     max_distance=values["max_distance"])
-                    bundle = factory.bind_direct_light(first_hit_inputs=inputs, shade_inputs=second,
-                        buffers=outputs, camera=camera, output_profile=profile, shadows=shadows, **colors)
-                session._hold_runtime_owner(bundle, "provisional_render_bundle")
-                frames.append((parameters, bundle))
-                if session.lane == "warp":
-                    if (warp_setup.validate_module_set(session, compiled_owner) is not compiled
-                            or any(command.module_exec is not compiled[2].executable
-                                   or command.kernel.module is not compiled[2].module for command in bundle.commands)):
-                        raise ValueError("recorded render commands differ from the compiled executable")
-                    bundle.validate_resolved_parameters(parameters)
-                else:
-                    bundle._cuda_transaction_stage_evidence().validate_render_parameters(payload)
+            for index in range(SETUP_WARMUP_FRAME_COUNT):
+                frames.append(_bind_fixed_render_frame(
+                    session, runtime, target, stream, factory=factory, compiled_owner=compiled_owner,
+                    index=index, profile=profile, shadows=shadows, pass_mode=pass_mode,
+                    owner_prefix="provisional"))
             if session.lane == "cuda":
                 actual_factory, actual_context = _require_cuda_render_factory(session, compiled_owner)
                 if actual_factory is not factory or actual_context is not cuda_context:
@@ -341,6 +322,69 @@ def _prepare_fixed_render_graph(session, runtime, target, stream, *, readiness, 
                 diagnostic=diagnostic, context=_create_upload_context(controller, runtime, target, stream))
             return _FixedRenderPreparation(readiness, compiled_owner, factory, tuple(frames), completion, events,
                                            profile, shadows, pass_mode)
+
+
+def _bind_fixed_render_frame(session, runtime, target, stream, *, factory, compiled_owner,
+                             index, profile, shadows, pass_mode, owner_prefix):
+    """Bind one canonical frame over retained storage for setup or final plans."""
+    from dataclasses import replace
+    from optical_worker.render_parameters import bind_render_parameters, NATIVE_SCALAR_ORDER, decode_native_scalars
+
+    controller = session.bound_controller()
+    controller._require_setup()
+    controller.require_adopted(factory, session.fixed_render_storage)
+    _, first, second, outputs = session.fixed_render_storage
+    sequence = session.render_source.sequence
+    parameters = bind_render_parameters(sequence, sample_index=index, profile=profile,
+        shadows=shadows, pass_mode=pass_mode,
+        role_to_mask=session.render_source.packed_scene.role_to_mask)
+    payload = parameters.to_payload()
+    scalars = decode_native_scalars(payload)
+    values = dict(zip(NATIVE_SCALAR_ORDER, scalars, strict=True))
+    camera_values = dict(width=payload["width"], height=payload["height"],
+        fx=values["fx"], fy=values["fy"], cx=values["cx"], cy=values["cy"],
+        origin=scalars[4:7], rotation=scalars[7:16])
+    colors = dict(ambient_rgb=scalars[17:20], background_rgb=scalars[20:23],
+                  shadow_bias=values["shadow_bias"])
+    if session.lane == "warp":
+        from optical_worker import warp_setup
+        from optics.warp_native_render import WarpCameraParameters, WarpRenderQueryParameters
+        from optics.execution import normalize_output_profile
+
+        source = sequence.to_payload()
+        frame = source["frames"][index % len(source["frames"])]
+        query = WarpRenderQueryParameters(
+            num_rays=payload["width"] * payload["height"], frame_id=payload["frame_id"],
+            sim_time=float.fromhex(payload["sim_time_f64"]), env_idx=payload["env_idx"],
+            sensor_id=payload["sensor_id"], max_distance=values["max_distance"],
+            sensor_role=frame["sensor_role"], sensor_role_mask=payload["sensor_role_mask"])
+        camera = WarpCameraParameters(query=query, **camera_values)
+        # Frame metadata borrows the same immutable R0 world/BVH allocations.
+        bvh = replace(second, frame_id=query.frame_id, env_idx=query.env_idx)
+        session._hold_runtime_owner(bvh, owner_prefix + "_fixed_bvh_view")
+        compiled = warp_setup.validate_module_set(session, compiled_owner)
+        bundle = factory.seal_camera(world=first, bvh=bvh, camera=camera, buffers=outputs,
+            output_profile=normalize_output_profile(profile), shadows=shadows,
+            traversal_diagnostics=pass_mode == "diagnostic_profiled", **colors,
+            _context=_create_upload_context(controller, runtime, target, stream))
+    else:
+        from optics.cuda_direct_light import CudaCameraParameters
+
+        camera = CudaCameraParameters(**camera_values)
+        inputs = replace(first, sensor_role_mask=payload["sensor_role_mask"],
+                         max_distance=values["max_distance"])
+        bundle = factory.bind_direct_light(first_hit_inputs=inputs, shade_inputs=second,
+            buffers=outputs, camera=camera, output_profile=profile, shadows=shadows, **colors)
+    session._hold_runtime_owner(bundle, owner_prefix + "_render_bundle")
+    if session.lane == "warp":
+        if (warp_setup.validate_module_set(session, compiled_owner) is not compiled
+                or any(command.module_exec is not compiled[2].executable
+                       or command.kernel.module is not compiled[2].module for command in bundle.commands)):
+            raise ValueError("recorded render commands differ from the compiled executable")
+        bundle.validate_resolved_parameters(parameters)
+    else:
+        bundle._cuda_transaction_stage_evidence().validate_render_parameters(payload)
+    return parameters, bundle
 
 
 class NativeWorkerPreparationAborted(RuntimeError):

@@ -527,6 +527,7 @@ class CudaLbvhRebuildStage:
 
         with transaction.enqueue_stage(self):
             transaction.record_diagnostic_start("acceleration_kernel")
+            transaction.before_native_launch()
             self._launch_bound_entry()
             transaction.record_diagnostic_end("acceleration_kernel")
 

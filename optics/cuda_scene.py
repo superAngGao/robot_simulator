@@ -517,8 +517,10 @@ class CudaSceneUpdateStage:
         with transaction.enqueue_stage(self):
             transaction.record_diagnostic_start("scene_update_kernel")
             if self._triangle_entry is not None:
+                transaction.before_native_launch()
                 self._triangle_entry(*self._triangle_args)
             if self._plane_entry is not None:
+                transaction.before_native_launch()
                 self._plane_entry(*self._plane_args)
             transaction.record_diagnostic_end("scene_update_kernel")
 

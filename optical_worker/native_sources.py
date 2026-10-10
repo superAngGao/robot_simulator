@@ -107,6 +107,7 @@ _COMMON = (
 )
 _WARP = ("optical_worker/warp_setup.py", "optics/warp_native_render.py", "optics/warp_timeline.py")
 _CUDA = (
+    "optical_worker/cuda_arena.py",
     "optics/_cuda_direct_light_source.py",
     "optics/_cuda_lbvh_source.py",
     "optics/_cuda_scene_source.py",

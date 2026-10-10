@@ -483,3 +483,48 @@ def test_foreign_event_is_quarantined_before_record_or_wait(allocation):
     assert p.controller.guardian.state == 'TRANSFERRED_TO_QUARANTINE'
     summary = p.controller.termination_evidence.lifecycle.to_payload()['summary']
     assert summary['emergency_sync_attempt_count'] == 0
+
+
+@pytest.mark.parametrize('allocation', ['cuda'], indirect=True)
+@pytest.mark.parametrize('entry', ['arena_r0', 'arena_r1', 'compatibility'])
+@pytest.mark.parametrize('diagnostic', [False, True])
+def test_standalone_event_builders_wait_after_all_initialization(allocation, monkeypatch, entry, diagnostic):
+    import sys
+    from optics import cuda_arena, cuda_direct_light
+
+    p = allocation
+    actions = []
+
+    class Event:
+        def __init__(self, *, enable_timing):
+            assert p.state.device is p.target and p.state.stream is p.stream
+            self.device, self.timing = None, enable_timing
+            actions.append(('create', self))
+
+        def record(self, stream):
+            assert stream is p.stream and p.state.device is p.target
+            self.device = p.target
+            actions.append(('record', self))
+
+        def synchronize(self):
+            assert not self.timing
+            assert actions[-1] == ('record', self)
+            created = [event for kind, event in actions if kind == 'create']
+            recorded = [event for kind, event in actions if kind == 'record']
+            assert len(created) == len(recorded) and set(created) == set(recorded)
+            actions.append(('wait', self))
+
+    p.runtime.cuda.Event = Event
+    monkeypatch.setitem(sys.modules, 'torch', p.runtime)
+    monkeypatch.setattr(cuda_direct_light, 'torch', p.runtime)
+    context = NS(device=p.target, stream=p.stream, _validate_identity=lambda: None)
+    if entry == 'compatibility':
+        names = ('raygen_kernel',) if diagnostic else ()
+        completion, pairs = cuda_direct_light._prepare_compatibility_events(context, names)
+    else:
+        boundary = 'R0' if entry == 'arena_r0' else 'R1'
+        names = setup._render_phase_names(boundary=boundary, diagnostic=diagnostic)
+        completion, pairs = cuda_arena._prepare_events(context, boundary=boundary, diagnostic=diagnostic)
+    assert tuple(pairs) == names
+    assert actions[-2:] == [('record', completion), ('wait', completion)]
+    assert p.state.device == 0 and p.state.stream is None

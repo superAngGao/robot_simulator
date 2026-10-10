@@ -67,7 +67,7 @@ from .native_arena import (
 )
 from .scene_contract import SCENE_ARRAY_SEMANTICS
 
-CUDA_NATIVE_ARENA_PLAN_SCHEMA_VERSION = "q54.p12.4.cuda-arena-plan.v1"
+CUDA_NATIVE_ARENA_PLAN_SCHEMA_VERSION = "q54.p12.4.cuda-arena-plan.v2"
 CUDA_NATIVE_ARENA_RESOURCE_SCHEMA_VERSION = "q54.p12.4.cuda-arena-resource.v1"
 CUDA_DEVICE_ONLY_DELIVERY_SCHEMA_VERSION = "q54.p12.4.cuda-device-only-delivery.v1"
 _SUPPORTED_BOUNDARIES = frozenset({"R0", "R1", "R2"})
@@ -202,6 +202,7 @@ class CudaArenaPlanEvidence:
     terminal_event_token: str
     diagnostic_phase_names: tuple[str, ...]
     plan_binding_sha256: str
+    render_sample_index: int | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != CUDA_NATIVE_ARENA_PLAN_SCHEMA_VERSION:
@@ -222,6 +223,10 @@ class CudaArenaPlanEvidence:
             or self.transform_frame_index < 0
         ):
             raise ValueError("CUDA arena transform frame index is invalid")
+        if self.render_sample_index is not None and (
+            type(self.render_sample_index) is not int or self.render_sample_index < 0
+        ):
+            raise ValueError("CUDA arena render sample index is invalid")
         if (
             not isinstance(self.stage_names, tuple)
             or not self.stage_names
@@ -719,12 +724,40 @@ class CudaActiveArenaSample:
             raise
         return completion
 
-    def resolve(self) -> None:
+    def resolve(self, *, _guarded_controller=None) -> None:
+        """Observe completion, then commit the lease after any guard has disarmed.
+
+        The standalone arena keeps its existing untimed wait. The closed worker
+        supplies its actual controller: waiting inside that controller's scope
+        must not release transaction holds until COMPLETE/DISARMED succeeds.
+        No caller-provided completion flag or serialized ticket is accepted.
+        """
         self._require_state("COMPLETION_RECORDED", operation="resolve")
         lease = self._require_lease()
         try:
             self._assert_configuration_stable()
-            self.completion.event.synchronize()
+            if _guarded_controller is None:
+                self.completion.event.synchronize()
+            else:
+                from optical_worker.guarded_lifecycle import NativeGuardedSetupLifecycle
+
+                controller = _guarded_controller
+                if type(controller) is not NativeGuardedSetupLifecycle:
+                    raise TypeError("CUDA resolution requires the exact guarded controller")
+                context = self._transaction._context
+                if (controller._lane_id != "cuda"
+                        or controller.target_device_ordinal != int(context.device.index)
+                        or controller.unknown_device_scope
+                        or controller.possible_dirty_device_ordinals != (controller.target_device_ordinal,)):
+                    raise ValueError("CUDA resolution differs from the retained exact target scope")
+                controller.require_adopted(self, self._transaction, context.stream, self.completion.event)
+                with controller.segment("resolve"):
+                    ticket = controller._guard_ticket
+                    self.completion.event.synchronize()
+                controller._guard_client.require_completed_ticket(ticket)
+            # A successful device wait is only an observation. In particular,
+            # a lost DISARMED acknowledgement above leaves the lease unresolved.
+            self._assert_configuration_stable()
             lease.resolve_terminal_completion()
         except BaseException as exc:
             _retain_failure_without_masking(lease, f"CUDA terminal resolution failure: {exc}")
@@ -849,8 +882,8 @@ class _CudaSlotGraph:
     completion_event: object
     diagnostic_events: Mapping[str, tuple[object, object]]
     resource_records: tuple[CudaArenaResourceRecord, ...]
-    targets: Mapping[int | None, CudaArenaPlanTarget]
-    executables: Mapping[int | None, _CudaExecutableTarget]
+    targets: Mapping[tuple[int | None, int | None], CudaArenaPlanTarget]
+    executables: Mapping[tuple[int | None, int | None], _CudaExecutableTarget]
     owners: tuple[object, ...]
 
 
@@ -926,9 +959,13 @@ class CudaNativeOpticalArena:
         *,
         transform_frame_index: int | None,
         planned_acquisition_offset: int = 0,
+        render_sample_index: int | None = None,
     ) -> CudaArenaPlanTarget:
         """Select the deterministic non-reserving slot/frame graph outside timing."""
 
+        for index in (transform_frame_index, render_sample_index):
+            if index is not None and (type(index) is not int or index < 0):
+                raise ValueError("CUDA arena frame selection requires nonnegative integer indices")
         self._validate_configuration()
         lifecycle = self._control.lifecycle_evidence()
         planned = plan_native_optical_acquisition(
@@ -937,7 +974,7 @@ class CudaNativeOpticalArena:
             planned_acquisition_offset=planned_acquisition_offset,
         )
         try:
-            return self._slots[planned.slot_id].targets[transform_frame_index]
+            return self._slots[planned.slot_id].targets[transform_frame_index, render_sample_index]
         except KeyError as exc:
             raise ValueError("CUDA arena transform frame is not part of the sealed graph") from exc
 
@@ -995,6 +1032,7 @@ class CudaNativeOpticalArena:
         expected_target = self.plan_target(
             transform_frame_index=target.evidence.transform_frame_index,
             planned_acquisition_offset=planned_acquisition_offset,
+            render_sample_index=target.evidence.render_sample_index,
         )
         if target is not expected_target:
             raise NativeOpticalArenaProtocolError("CUDA plan target is stale or not arena-owned")
@@ -1130,6 +1168,8 @@ class CudaNativeOpticalArena:
             if set(slot.targets) != set(slot.executables):
                 raise NativeOpticalArenaProtocolError("CUDA arena target/executable keys changed")
             for key, target in slot.targets.items():
+                if key != (target.evidence.transform_frame_index, target.evidence.render_sample_index):
+                    raise NativeOpticalArenaProtocolError("CUDA arena frame selection changed")
                 executable = slot.executables[key]
                 executable.validate_bound()
                 _validate_target_evidence(self.spec, slot, target, executable)
@@ -1256,7 +1296,7 @@ def build_cuda_dynamic_optical_arena(
             boundary=spec.boundary,
             diagnostic=diagnostic,
         )
-        templates: dict[int | None, tuple[CudaOpticalTransactionTemplate, object]] = {}
+        templates: dict[tuple[int | None, int | None], tuple[CudaOpticalTransactionTemplate, object]] = {}
         activation_capability = context._new_controlled_transaction_capability()
         for frame_index, transform in enumerate(frozen_transforms):
             scene_stage = scene_factory.bind(transforms=transform, outputs=world)
@@ -1269,7 +1309,7 @@ def build_cuda_dynamic_optical_arena(
                 diagnostic_events=diagnostic_events,
                 _activation_capability=activation_capability,
             )
-            templates[frame_index] = (template, activation_capability)
+            templates[frame_index, None] = (template, activation_capability)
         slot_builds.append(
             {
                 "slot_id": slot_id,
@@ -1394,7 +1434,7 @@ def build_cuda_fixed_optical_arena(
                 "render": render_buffers,
                 "completion": completion,
                 "diagnostics": diagnostic_events,
-                "templates": {None: (template, activation_capability)},
+                "templates": {(None, None): (template, activation_capability)},
                 "stage_owners": (render_stage,),
             }
         )
@@ -1512,9 +1552,9 @@ def _seal_cuda_arena(
         )
         slot_manifests.append(manifest)
         slot_resource_records.append(records)
-        targets: dict[int | None, CudaArenaPlanTarget] = {}
-        executables: dict[int | None, _CudaExecutableTarget] = {}
-        for frame_index, controlled_template in templates.items():
+        targets: dict[tuple[int | None, int | None], CudaArenaPlanTarget] = {}
+        executables: dict[tuple[int | None, int | None], _CudaExecutableTarget] = {}
+        for (frame_index, render_sample_index), controlled_template in templates.items():
             template, activation_capability = controlled_template
             runtime_sha256 = _runtime_stage_evidence_sha256(template)
             plan_payload = {
@@ -1524,6 +1564,7 @@ def _seal_cuda_arena(
                 "slot_storage_manifest_sha256": manifest.slot_storage_manifest_sha256,
                 "slot_resource_contract_sha256": manifest.slot_storage_manifest_sha256,
                 "transform_frame_index": frame_index,
+                "render_sample_index": render_sample_index,
                 "stage_names": list(template.stage_names),
                 "ordered_runtime_stage_evidence_sha256": runtime_sha256,
                 "terminal_event_token": terminal_event_token,
@@ -1536,6 +1577,7 @@ def _seal_cuda_arena(
                 slot_storage_manifest_sha256=manifest.slot_storage_manifest_sha256,
                 slot_resource_contract_sha256=manifest.slot_storage_manifest_sha256,
                 transform_frame_index=frame_index,
+                render_sample_index=render_sample_index,
                 stage_names=tuple(template.stage_names),
                 ordered_runtime_stage_evidence_sha256=runtime_sha256,
                 terminal_event_token=terminal_event_token,
@@ -1583,8 +1625,8 @@ def _seal_cuda_arena(
                 _acceleration_output_arrays=MappingProxyType(acceleration_output_arrays),
                 _runtime_stage_evidence=tuple(template.stage_evidence),
             )
-            targets[frame_index] = target
-            executables[frame_index] = _CudaExecutableTarget(
+            targets[frame_index, render_sample_index] = target
+            executables[frame_index, render_sample_index] = _CudaExecutableTarget(
                 target=target,
                 transaction_template=template,
                 activation_capability=activation_capability,
@@ -1758,26 +1800,12 @@ def _prepare_events(
     diagnostic: bool,
 ) -> tuple[object, Mapping[str, tuple[object, object]]]:
     import torch
+    from optical_worker.native_setup import _prepare_native_events, _render_phase_names
 
-    phase_names: tuple[str, ...] = ()
-    if diagnostic:
-        phase_names = (() if boundary == "R0" else ("scene_update_kernel", "acceleration_kernel")) + (
-            "raygen_kernel",
-            "first_hit_kernel",
-            "shade_kernel",
-        )
-    with context.activate():
-        completion = torch.cuda.Event(enable_timing=False)
-        completion.record(context.stream)
-        diagnostics: dict[str, tuple[object, object]] = {}
-        for name in phase_names:
-            start = torch.cuda.Event(enable_timing=True)
-            end = torch.cuda.Event(enable_timing=True)
-            start.record(context.stream)
-            end.record(context.stream)
-            diagnostics[name] = (start, end)
-    completion.synchronize()
-    return completion, MappingProxyType(diagnostics)
+    context._validate_identity()
+    completion, pairs = _prepare_native_events(torch, context.device, context.stream, lane="cuda",
+        phase_names=_render_phase_names(boundary=boundary, diagnostic=diagnostic))
+    return completion, MappingProxyType({name: (start, end) for name, start, end in pairs})
 
 
 def _runtime_stage_evidence_sha256(template: CudaOpticalTransactionTemplate) -> str:
@@ -1830,6 +1858,7 @@ def _validate_target_evidence(
         "slot_storage_manifest_sha256": evidence.slot_storage_manifest_sha256,
         "slot_resource_contract_sha256": evidence.slot_resource_contract_sha256,
         "transform_frame_index": evidence.transform_frame_index,
+        "render_sample_index": evidence.render_sample_index,
         "stage_names": list(evidence.stage_names),
         "ordered_runtime_stage_evidence_sha256": evidence.ordered_runtime_stage_evidence_sha256,
         "terminal_event_token": evidence.terminal_event_token,

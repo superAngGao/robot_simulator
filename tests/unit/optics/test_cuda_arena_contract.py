@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 
 from optics.cuda_arena import (
     CUDA_NATIVE_ARENA_PLAN_SCHEMA_VERSION,
@@ -8,6 +9,7 @@ from optics.cuda_arena import (
     CudaArenaLogicalResourceView,
     CudaArenaPlanEvidence,
     CudaArenaResourceRecord,
+    CudaNativeOpticalArena,
 )
 
 
@@ -86,3 +88,36 @@ def test_cuda_plan_evidence_rejects_noncanonical_sequence_types():
     }
     with pytest.raises(ValueError, match="stage names"):
         CudaArenaPlanEvidence(**values)
+
+
+@pytest.mark.parametrize("transform", [None, 3])
+def test_camera_sample_selection_is_independent_of_transform_replay(transform):
+    # Exercise the real selector and FIFO planner without requiring GPU storage.
+    targets = {(transform, sample): object() for sample in (0, 1)}
+    session = SimpleNamespace(
+        _validate_configuration=lambda: None,
+        _slots=(SimpleNamespace(targets={}), SimpleNamespace(targets=targets)),
+        _control=SimpleNamespace(lifecycle_evidence=lambda: SimpleNamespace(
+            next_acquire_slot_id=1, slots=(SimpleNamespace(generation=4), SimpleNamespace(generation=3)))),
+    )
+    for sample in (0, 1):
+        assert CudaNativeOpticalArena.plan_target(
+            session, transform_frame_index=transform, render_sample_index=sample) is targets[transform, sample]
+    with pytest.raises(ValueError, match="sealed graph"):
+        CudaNativeOpticalArena.plan_target(session, transform_frame_index=transform, render_sample_index=2)
+
+
+@pytest.mark.parametrize("selector", ["render_sample_index", "transform_frame_index"])
+@pytest.mark.parametrize("index", [True, 1.0, -1])
+def test_frame_selection_rejects_noninteger_or_negative_indices(selector, index):
+    indices = dict(transform_frame_index=None, render_sample_index=None)
+    indices[selector] = index
+    with pytest.raises(ValueError, match="indices"):
+        CudaNativeOpticalArena.plan_target(object(), **indices)
+
+
+def test_legacy_cuda_provenance_adapter_uses_the_production_implementation():
+    from benchmarks.optical import cuda_arena as legacy
+    from optical_worker import cuda_arena as production
+
+    assert legacy.build_cuda_c3_binding_from_arena_target is production.build_cuda_c3_binding_from_arena_target

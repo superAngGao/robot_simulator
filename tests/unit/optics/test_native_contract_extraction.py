@@ -73,7 +73,10 @@ def test_single_definitions_preserve_all_bodies_and_alias_identities(old, new):
         added = {"_derive_fixed_fixture", "_prepared_fixed_fixture",
                  "build_prepared_warp_fixed_render_inputs", "build_prepared_cuda_fixed_render_inputs"}
         changed = {"CanonicalFixedRenderFixtureHost", "_derive_fixed_fixture_arrays",
-                   "build_prepared_cuda_scene_update_factory", "build_prepared_cuda_lbvh_rebuild_factory"}
+                   "build_prepared_cuda_scene_update_factory", "build_prepared_cuda_lbvh_rebuild_factory",
+                   # Input-precision v4 validates indexed source geometry and
+                   # composes original binary64 SpatialTransforms for fixtures.
+                   "_validate_packed_scene_case", "_fixed_instance_transform"}
         assert set(merged) == set(old_definitions) | added
         assert {name for name in old_definitions if merged[name] != old_definitions[name]} == changed
     else:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from contextlib import contextmanager
 
 import optics.cuda_direct_light as cuda_direct_light
 import optics.cuda_timeline as cuda_timeline
@@ -66,3 +67,44 @@ def test_cuda_shade_extension_abi_uses_fixed_diagnostic_arguments():
         signature = source[start : source.index(");", start)]
         counter_positions = [signature.index(f"traversal_counter_{index}") for index in range(9)]
         assert counter_positions == sorted(counter_positions)
+
+
+@pytest.mark.parametrize("triangles,planes", [(False, False), (True, False), (False, True), (True, True)])
+def test_scene_launch_latches_follow_actual_entries_not_diagnostic_phases(triangles, planes):
+    from optics.cuda_scene import CudaSceneUpdateStage
+
+    calls = []
+    stage = object.__new__(CudaSceneUpdateStage)
+    for name, present in (("triangle", triangles), ("plane", planes)):
+        object.__setattr__(stage, "_" + name + "_entry",
+                           (lambda *args, name=name: calls.append(name)) if present else None)
+        object.__setattr__(stage, "_" + name + "_args", ())
+
+    class Transaction:
+        @contextmanager
+        def enqueue_stage(self, actual):
+            assert actual is stage
+            yield
+
+        def record_diagnostic_start(self, name):
+            calls.append("start")
+
+        def record_diagnostic_end(self, name):
+            calls.append("end")
+
+        def before_native_launch(self):
+            calls.append("launch")
+
+    stage.enqueue(Transaction())
+    assert calls == ["start", *(["launch", "triangle"] if triangles else []),
+                     *(["launch", "plane"] if planes else []), "end"]
+
+
+def test_native_launch_outside_active_transaction_stage_rejects():
+    transaction = object.__new__(cuda_timeline.CudaOpticalTransaction)
+    transaction._state = "validated_open"
+    transaction._active_stage = None
+    transaction._poison_reason = None
+    with pytest.raises(CudaOpticalTransactionPoisonedError, match="active CUDA stage"):
+        transaction.before_native_launch()
+    assert transaction.state == "poisoned"

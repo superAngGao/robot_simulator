@@ -496,10 +496,12 @@ class CudaDirectLightRenderStage:
                 raygen_entry = self._raygen_entry
                 if raygen_entry is None:  # pragma: no cover - rejected during validation.
                     raise RuntimeError("CUDA raygen extension entry is not prepared")
+                transaction.before_native_launch()
                 raygen_entry(*self._raygen_args)
                 transaction.record_diagnostic_end("raygen_kernel")
 
             transaction.record_diagnostic_start("first_hit_kernel")
+            transaction.before_native_launch()
             module.first_hit_rays_out(
                 output.origins,
                 output.directions,
@@ -545,6 +547,7 @@ class CudaDirectLightRenderStage:
             shade_entry = self._shade_entry
             if shade_entry is None:  # pragma: no cover - rejected during bind/transaction validation.
                 raise RuntimeError("CUDA shade extension entry is not prepared")
+            transaction.before_native_launch()
             shade_entry(*self._shade_args)
             transaction.record_diagnostic_end("shade_kernel")
 
@@ -1108,19 +1111,12 @@ def _prepare_compatibility_events(
     context: CudaOpticalExecutionContext,
     phase_names: tuple[str, ...],
 ) -> tuple[object, dict[str, tuple[object, object]]]:
-    with context.activate():
-        completion = torch.cuda.Event()
-        diagnostics = {
-            name: (torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True))
-            for name in phase_names
-        }
-        events = [completion]
-        for start, end in diagnostics.values():
-            events.extend((start, end))
-        for event in events:
-            event.record(context.stream)
-    events[-1].synchronize()
-    return completion, diagnostics
+    from optical_worker.native_setup import _prepare_native_events
+
+    context._validate_identity()
+    completion, pairs = _prepare_native_events(torch, context.device, context.stream, lane="cuda",
+                                              phase_names=phase_names)
+    return completion, {name: (start, end) for name, start, end in pairs}
 
 
 class CudaDeviceBvhOpticalExecutor:

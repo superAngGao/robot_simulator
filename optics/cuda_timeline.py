@@ -756,6 +756,17 @@ class CudaOpticalTransaction:
             raise
         self._diagnostic_state[name] = 1
 
+    def before_native_launch(self) -> None:
+        """Check the active stage immediately before an actual extension call.
+
+        Setup overrides this boundary to declare possible device submission.
+        It is independent of optional diagnostic event recording.
+        """
+        self._require_execution_authority(operation="enqueue")
+        if (self._state != "enqueuing" or self._active_stage is None
+                or self._active_stage is not self._stages[self._next_stage]):
+            self._protocol_failure("native launch requires the exact active CUDA stage")
+
     def record_diagnostic_end(self, name: str) -> None:
         pair = self._diagnostic_pair(name)
         if pair is None:
@@ -1032,9 +1043,13 @@ class _CudaSetupTransaction(CudaOpticalTransaction):
         if self.has_diagnostic_phase(name):
             with _warmup_leaf(self, "warmup_phase_start", "event_record"):
                 super().record_diagnostic_start(name)
-        # The original stage calls this immediately before each native
-        # entry, also with diagnostics off. Declare possible submission
-        # before returning to that entry; enqueue_stage observes failures.
+
+    def before_native_launch(self):
+        from optical_worker.warmup import _warmup_leaf
+
+        super().before_native_launch()
+        # Latch every actual native entry, including separate triangle/plane
+        # updates. Empty phases and diagnostic records are not kernel launches.
         with _warmup_leaf(self, "warmup_cuda_launch", "warmup_launch"):
             pass
 

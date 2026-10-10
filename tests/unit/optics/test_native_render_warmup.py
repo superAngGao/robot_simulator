@@ -159,7 +159,7 @@ def test_rebinding_or_copying_prepared_warmup_cannot_execute(executable_graph, m
     x = executable_graph
     original = warmup._run_fixed_render_warmups
     def run(authority):
-        transaction = warmup._SETUP_WARMUPS[x.session][1][0]
+        transaction = warmup._SETUP_WARMUPS[x.session].transactions[0]
         if attack == 'copied_authority':
             return original(replace(authority))
         if attack == 'copied_transaction':
@@ -188,7 +188,7 @@ def test_warp_actual_execution_plan_and_cursor_are_frozen(executable_graph, monk
     x = executable_graph
     original = warmup._run_fixed_render_warmups
     def run(authority):
-        transactions = warmup._SETUP_WARMUPS[x.session][1]
+        transactions = warmup._SETUP_WARMUPS[x.session].transactions
         for index, transaction in enumerate(transactions):
             for name, value in (('_groups', ((), (), ())),
                                 ('_groups', tuple(reversed(transaction._groups))),

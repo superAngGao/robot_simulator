@@ -85,6 +85,7 @@ def test_literal_lane_catalogs_have_no_losing_optical_modules():
     assert set(warp) - set(cuda) == {"optical_worker/warp_setup.py", "optics/warp_native_render.py",
                                    "optics/warp_timeline.py"}
     assert set(cuda) - set(warp) == {
+        "optical_worker/cuda_arena.py",
         "optics/cuda_extension_loading.py", "optics/cuda_extension_recipes.py",
         "optics/_cuda_scene_source.py", "optics/_cuda_direct_light_source.py",
         "optics/_cuda_lbvh_source.py", "optics/cuda_arena.py", "optics/cuda_direct_light.py",
