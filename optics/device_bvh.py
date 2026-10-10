@@ -15,6 +15,7 @@ from .device_scene import (
     _validate_disjoint_warp_storage,
     _validate_warp_array,
     _validate_warp_stream,
+    _warp_command_snapshots,
     _warp_storage_manifest_sha256,
     _warp_world_scene_arrays,
 )
@@ -132,6 +133,8 @@ class WarpBvhRefitCommandBundle:
 
     __slots__ = (
         "_commands",
+        "_descriptors",
+        "_binding_signature",
         "_poisoned",
         "_sealed",
         "bvh",
@@ -144,23 +147,54 @@ class WarpBvhRefitCommandBundle:
         self,
         *,
         commands: tuple[object, ...],
+        descriptors: tuple[object, ...],
         evidence: WarpBvhRefitCommandEvidence,
         world: WarpWorldSceneBuffers,
         bvh: DeviceOpticalBvh,
         stream: object,
     ) -> None:
         self._commands = commands
+        self._descriptors = descriptors
         self._poisoned = False
         self.evidence = evidence
         self.world = world
         self.bvh = bvh
         self.stream = stream
+        self._binding_signature = self._bundle_signature()
         self._sealed = True
 
     def __setattr__(self, name: str, value: object) -> None:
         if getattr(self, "_sealed", False):
             raise AttributeError("Warp BVH-refit command bundle is immutable")
         object.__setattr__(self, name, value)
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError("Warp BVH-refit command bundle is immutable")
+
+    def _bundle_signature(self) -> tuple:
+        return (
+            id(self._commands), id(self._descriptors), id(self.world), id(self.bvh), id(self.stream),
+            id(self.evidence), self.evidence.sha256,
+            _warp_command_snapshots(self._commands, self._descriptors, self.bvh.device),
+        )
+
+    def validate_bound(self) -> None:
+        """Recheck actual refit operands and storage before granting execution."""
+        if not self._sealed or self._poisoned or self._bundle_signature() != self._binding_signature:
+            raise ValueError("Warp refit command binding changed after sealing")
+        _validate_warp_stream(self.stream, device=self.bvh.device)
+        if (
+            self.evidence.stream_handle != int(self.stream.cuda_stream)
+            or self.evidence.device_ordinal != int(self.bvh.device.ordinal)
+            or self.evidence.dispatch_count != len(self._commands)
+            or self.evidence.input_storage_sha256 != _warp_storage_manifest_sha256(
+                _warp_refit_input_arrays(self.world, self.bvh)
+            )
+            or self.evidence.output_storage_sha256 != _warp_storage_manifest_sha256(
+                _warp_refit_output_arrays(self.bvh)
+            )
+        ):
+            raise ValueError("Warp refit command evidence differs from its bound storage")
 
     @property
     def dispatch_count(self) -> int:
@@ -306,8 +340,9 @@ class WarpBvhRefitCommandFactory:
         from optical_worker.native_setup import _warp_command_recording
 
         ready_event = bvh.ready_event if bvh is not self.topology else None
+        descriptors = []
         with _warp_command_recording(wp, bvh.device, self.stream, context=_context,
-                                     ready_event=ready_event) as record:
+                                     ready_event=ready_event, _descriptors=descriptors) as record:
             commands: list[object] = []
             dispatches: list[dict[str, object]] = []
             if bvh.num_nodes > 0:
@@ -377,6 +412,7 @@ class WarpBvhRefitCommandFactory:
         )
         return WarpBvhRefitCommandBundle(
             commands=tuple(commands),
+            descriptors=tuple(descriptors),
             evidence=evidence,
             world=world,
             bvh=bvh,

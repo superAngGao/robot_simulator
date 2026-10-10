@@ -9,6 +9,67 @@ from optics import device_bvh, device_scene
 from tests.unit.optics.test_native_output_allocation import allocation as allocation
 
 
+def _kernel(name, arguments):
+    return NS(func=NS(__name__=name), adj=NS(args=tuple(NS(label=f"arg{i}") for i in range(arguments))))
+
+
+@pytest.mark.parametrize(
+    "mutation", [None, "pointer", "scalar", "dispatch", "kernel", "params_addr", "shape"]
+)
+def test_dynamic_packed_command_inspection_checks_actual_operands(monkeypatch, mutation):
+    import ctypes
+
+    from optics import warp_native_render
+
+    class Bounds(ctypes.Structure):
+        _fields_ = [("ndim", ctypes.c_int32), ("size", ctypes.c_int32), ("shape", ctypes.c_int32 * 4)]
+
+    class ArrayDescriptor(ctypes.Structure):
+        _fields_ = [("data", ctypes.c_uint64), ("ndim", ctypes.c_int32), ("shape", ctypes.c_int32 * 4),
+                    ("strides", ctypes.c_int32 * 4), ("grad", ctypes.c_uint64)]
+
+    class Array:
+        shape, strides, ptr, grad = (1, 3), (12, 4), 4096, None
+
+    class Launch:
+        pass
+
+    device, kernel, array = object(), object(), Array()
+    descriptor = warp_native_render._WarpRenderDescriptor("dynamic", kernel, 1, ("bounds_min", "env_idx"),
+                                                         (array, 0))
+    command = Launch()
+    command.kernel, command.device = kernel, device
+    command.adjoint, command.max_blocks, command.block_dim = False, 0, 256
+    command.bounds = Bounds(1, 1, (ctypes.c_int32 * 4)(1, 1, 1, 1))
+    command.params = [command.bounds, ArrayDescriptor(4096, 2, (ctypes.c_int32 * 4)(1, 3, 0, 0),
+                                                    (ctypes.c_int32 * 4)(12, 4, 0, 0), 0), ctypes.c_int32(0)]
+    command.params_addr = [ctypes.addressof(value) for value in command.params]
+    command.module_exec = object()
+    command.hooks = NS(forward=1, backward=0, forward_smem_bytes=0, backward_smem_bytes=0)
+    monkeypatch.setattr(warp_native_render, "wp", NS(array=Array, Launch=Launch))
+    monkeypatch.setattr(warp_native_render, "_WarpArrayDescriptor", ArrayDescriptor, raising=False)
+    monkeypatch.setattr(warp_native_render, "_render_array_layout",
+                        lambda value, **kwargs: (value.shape, value.strides, value.ptr, 12))
+    original = device_scene._warp_command_snapshots((command,), (descriptor,), device)
+    if mutation == "pointer":
+        command.params[1].data += 12
+    elif mutation == "scalar":
+        command.params[2].value = 1
+    elif mutation == "dispatch":
+        command.bounds.size = 2
+    elif mutation == "kernel":
+        command.kernel = object()
+    elif mutation == "params_addr":
+        command.params_addr[1] += 1
+    elif mutation == "shape":
+        command.params[1].shape[0] = 2
+    if mutation is None:
+        assert device_scene._warp_command_snapshots((command,), (descriptor,), device) == original
+    else:
+        with pytest.raises(ValueError, match="recorded"):
+            device_scene._warp_command_snapshots((command,), (descriptor,), device)
+
+
 @pytest.mark.parametrize("allocation", ["warp"], indirect=True)
 @pytest.mark.parametrize("fault", [None, "wait", "foreign", "unadopted"])
 def test_refit_ready_dependency_precedes_recording(allocation, fault):  # noqa: F811
@@ -73,7 +134,10 @@ def test_scene_recording_retains_partial_commands_and_original_failure(allocatio
         monkeypatch.setattr(device_scene, name, lambda *args: None)
     for name in ("_warp_scene_command_inputs", "_warp_world_scene_arrays", "_warp_local_scene_arrays"):
         monkeypatch.setattr(device_scene, name, lambda *args: ())
-    kernels = (object(), object())
+    # This suite isolates returned-owner custody; packed native arguments are
+    # checked separately using ctypes metadata and real-device mutations.
+    monkeypatch.setattr(device_scene, "_warp_command_snapshots", lambda *args: ())
+    kernels = (_kernel("triangles", 15), _kernel("planes", 11))
     for name, kernel in zip(
         ("_update_triangles_derived_aabb_world_kernel", "_update_planes_world_kernel"), kernels
     ):
@@ -174,7 +238,8 @@ def test_refit_recording_keeps_leaf_before_internal_failure(allocation, monkeypa
         monkeypatch.setattr(device_bvh, name, lambda *args, **kwargs: None)
     for name in ("_warp_refit_input_arrays", "_warp_refit_output_arrays", "_warp_world_scene_arrays"):
         monkeypatch.setattr(device_bvh, name, lambda *args: ())
-    kernels = (object(), object())
+    monkeypatch.setattr(device_bvh, "_warp_command_snapshots", lambda *args: ())
+    kernels = (_kernel("leaf", 7), _kernel("internal", 6))
     for name, kernel in zip(("_refit_bvh_leaf_bounds_kernel", "_refit_bvh_internal_bounds_kernel"), kernels):
         monkeypatch.setattr(device_bvh, name, kernel, raising=False)
     entered = []

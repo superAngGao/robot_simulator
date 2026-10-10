@@ -98,11 +98,15 @@ def test_warp_topology_digest_binds_leaf_size_and_split_strategy():
     assert len({host_bvh_topology_sha256(value) for value in variants}) == len(variants)
 
 
-def test_warp_scene_bundle_is_immutable_and_poison_is_fail_closed():
+def test_warp_scene_bundle_is_immutable_and_poison_is_fail_closed(monkeypatch):
+    from optics import device_scene
+
+    monkeypatch.setattr(device_scene, "_warp_command_snapshots", lambda *args: ())
     bundle = WarpSceneUpdateCommandBundle(
         commands=(_FailingCommand(),),
+        descriptors=(object(),),
         evidence=_scene_evidence(),
-        local_scene=object(),
+        local_scene=SimpleNamespace(device=object()),
         transforms=object(),
         outputs=object(),
         stream=SimpleNamespace(cuda_stream=1),
@@ -116,12 +120,16 @@ def test_warp_scene_bundle_is_immutable_and_poison_is_fail_closed():
         bundle.stream = object()
 
 
-def test_warp_refit_bundle_is_immutable_and_poison_is_fail_closed():
+def test_warp_refit_bundle_is_immutable_and_poison_is_fail_closed(monkeypatch):
+    from optics import device_bvh
+
+    monkeypatch.setattr(device_bvh, "_warp_command_snapshots", lambda *args: ())
     bundle = WarpBvhRefitCommandBundle(
         commands=(_FailingCommand(),),
+        descriptors=(object(),),
         evidence=_refit_evidence(),
         world=object(),
-        bvh=object(),
+        bvh=SimpleNamespace(device=object()),
         stream=object(),
     )
     with pytest.raises(RuntimeError, match="injected launch failure"):

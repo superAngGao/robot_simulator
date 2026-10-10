@@ -1496,7 +1496,7 @@ def _output_array_allocation(runtime, target, *, lane, stream=None, context=None
 
 
 @contextmanager
-def _warp_command_recording(runtime, target, stream, *, context=None, ready_event=None):
+def _warp_command_recording(runtime, target, stream, *, context=None, ready_event=None, _descriptors=None):
     """Record existing kernel definitions, retaining each return before the next leaf."""
     with _native_resource_scope(runtime, target, lane="warp", stream=stream, context=context,
             owner_role="slot_command_custody", scope_id="slot_command_scope") as (lifecycle, owners, operation):
@@ -1519,6 +1519,13 @@ def _warp_command_recording(runtime, target, stream, *, context=None, ready_even
                     lifecycle.adopt_returned_device_owner(result,
                         actual_device_ordinal=int(result.device.ordinal),
                         role="slot_recorded_command", operation_id="slot_record_command")
+                if _descriptors is not None:
+                    from optics.warp_native_render import _WarpRenderDescriptor
+
+                    _descriptors.append(_WarpRenderDescriptor(
+                        entry_id=kernel.func.__name__, kernel=kernel, dim=dim,
+                        argument_names=tuple(argument.label for argument in kernel.adj.args),
+                        arguments=tuple(inputs)))
                 return result
         yield record
 

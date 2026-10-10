@@ -63,6 +63,7 @@ def _validate_dynamic_stages(bundle, parameters, stream, dynamic_stages):
         if type(scene) is not WarpSceneUpdateCommandBundle or type(refit) is not WarpBvhRefitCommandBundle:
             raise TypeError("Warp dynamic execution requires exact recorded stages")
         scene.validate_bound()
+        refit.validate_bound()
         _validate_replay_views(scene, bundle.binding.factory.prepared_input)
         bound = bundle.binding
         selected = (
@@ -229,7 +230,8 @@ class _WarpRecordedTransaction:
     def _validate_before_enqueue(self):
         self.bundle.validate_resolved_parameters(self.parameters)
         if self._dynamic_stages:
-            self._dynamic_stages[0].validate_bound()
+            for stage in self._dynamic_stages:
+                stage.validate_bound()
 
     def _launch(self, command):
         raise RuntimeError("recorded commands have no execution authority")
