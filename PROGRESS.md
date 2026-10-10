@@ -1938,8 +1938,12 @@ Next milestone:
       both lanes; native custody/raw replay passes. Both frame10 RGB images are
       identical; all614400 pixels match CPU RGB within2.98e-8. Evidence and
       original driver failures are preserved in implementation-notev7.
-      The second mandatory row, diagnostic/failure/all-channel checks and fresh
-      independent R1 review remain pending. No final sample or speed result is claimed.
+      Both mandatory rows and diagnostic variants now pass the eight real
+      row/lane/pass cases at98315da; twelve targeted native-return/adoption
+      failures atf15aa62 pass. Original diagnostic-driver failures are retained.
+      All frame10 output channels match CPU under unchanged tolerances;
+      implementation-notev8 consolidates the candidate and raw evidence.
+      Fresh independent R1 review is pending. No final sample or speed result is claimed.
       R1/full C4 follow-up and fresh whole review remain mandatory.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
