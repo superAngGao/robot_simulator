@@ -1,37 +1,92 @@
 """Real arena/guard coordination with a CPU stand-in for the device event."""
 
 from types import SimpleNamespace as NS
+from contextlib import nullcontext
+from dataclasses import dataclass
 
 import pytest
 
 from optical_worker.guarded_lifecycle import NativeGuardedSetupLifecycle
 from optical_worker.lifecycle import DeviceScopeDescriptor
-from optics.cuda_arena import CudaActiveArenaSample
+from optics.cuda_arena import CudaPreparedArenaSample, _CudaExecutableTarget
+from optics import cuda_timeline as timeline
 from optics.native_arena import NativeOpticalArenaProtocolError
 from tests.support.guarded_peer import Peer
 from tests.unit.optics.test_native_optical_arena import _arena, _plan
 
 
 @pytest.fixture
-def completed_sample():
+def completed_sample(monkeypatch):
+    @dataclass(frozen=True)
+    class Device:
+        index: int
+        type: str = "cuda"
+
+    device = Device(1)
+    stream = NS(device=device, cuda_stream=17)
+    calls = []
+
+    class Event:
+        def __init__(self):
+            self.device = device
+
+        def record(self, selected):
+            assert selected is stream
+            calls.append("record")
+
+        def synchronize(self):
+            calls.append("wait")
+
+    monkeypatch.setattr(timeline, "torch", NS(device=lambda value: value,
+        cuda=NS(is_available=lambda: True, Event=Event,
+                device=lambda value: nullcontext(), stream=lambda value: nullcontext())))
+    context = timeline.CudaOpticalExecutionContext(device=device, stream=stream)
+
+    class Stage:
+        cuda_transaction_stage_name = "cpu_resolution_stage"
+
+        def _validate_cuda_transaction_stage(self, actual):
+            assert actual is context
+
+        def _assert_cuda_transaction_stage_stable(self, actual):
+            assert actual is context
+
+        def _cuda_transaction_stage_evidence(self):
+            return "cpu_resolution_evidence"
+
+        def enqueue(self, transaction):
+            with transaction.enqueue_stage(self):
+                transaction.before_native_launch()
+
+    stage, event = Stage(), Event()
+    capability = context._new_controlled_transaction_capability()
+    template = context.prepare_transaction_template(stages=(stage,), completion_event=event,
+                                                    _activation_capability=capability)
+    template._bind_arena_plan_identity(capability, slot_id=0, terminal_event_token="event:0",
+        transform_frame_index=0, plan_binding_sha256="d" * 64, ordered_runtime_stage_evidence_sha256="e" * 64)
+    transaction = template._activate_with_capability(capability)
     arena = _arena()
     plan = _plan(arena)
+    target = NS(evidence=NS(sha256="f" * 64, slot_id=0))
+    provenance = NS(plan_binding_sha256="d" * 64, ordered_runtime_stage_evidence_sha256="e" * 64,
+                   c3_one_shot_binding_sha256="a" * 64, ordered_stage_evidence_sha256="b" * 64,
+                   dataflow_binding_sha256="c" * 64)
+    executable = _CudaExecutableTarget(target=target, transaction_template=template,
+                                       activation_capability=capability, render_stage=stage)
+    acquire_authority = object()
+    prepared = CudaPreparedArenaSample(control_plan=plan, target=target, provenance=provenance,
+        transaction=transaction, executable=executable, arena_acquire_authority=acquire_authority)
+    sample = prepared._active
     lease = arena.acquire(plan)
-    lease.begin_enqueue()
-    lease.record_completion()
-    calls = []
-    event = NS(synchronize=lambda: calls.append("wait"))
-    context = NS(device=NS(index=1), stream=object())
-    transaction = NS(_context=context, _stages=(), _completion_event=event, _diagnostic_events=())
-    executable = NS(transaction_template=NS(stages=(), completion_event=event), activation_capability=object())
-    sample = CudaActiveArenaSample(
-        target=NS(evidence=NS(sha256="a" * 64)), provenance=object(), transaction=transaction,
-        executable=executable, arena_acquire_authority=object())
-    # Only the device binding is synthetic. Exercise the production lease,
-    # immutable active-sample checks, guard client and supervisor state machine.
-    object.__setattr__(sample, "_control_lease", lease)
-    object.__setattr__(sample, "_completion", NS(event=event))
-    object.__setattr__(sample, "_state", "COMPLETION_RECORDED")
+    authority = transaction._mint_arena_execution_authority(prepared._execution_capability, lease,
+                                                           active_owner=sample)
+    sample._activate(lease, execution_authority=authority, arena_acquire_authority=acquire_authority)
+    sample.enqueue()
+    sample.finish()
+    assert calls == ["record"]
+    calls.clear()
+    # Native operations and C3 inputs are CPU fixtures. Context, controlled
+    # template, minted authority, transaction, lease and guard are production.
     return NS(arena=arena, lease=lease, sample=sample, calls=calls, event=event, transaction=transaction)
 
 
@@ -132,9 +187,51 @@ def test_failed_resolution_retains_unresolved_generation(guarded_sample, monkeyp
 
 def test_guarded_resolution_rejects_wrong_target_before_wait(guarded_sample):
     x, controller = guarded_sample
-    x.transaction._context.device.index = 0
-    with pytest.raises(ValueError, match="target scope"):
+    x.transaction._context.device = type(x.transaction._context.device)(0)
+    with pytest.raises(timeline.CudaOpticalTimelineError, match="device identity"):
         x.sample.resolve(_guarded_controller=controller)
     assert not x.calls
     assert x.arena.lifecycle_evidence().completion_resolution_count == 0
     assert x.lease.state == "RETAINED_POISONED"
+
+
+@pytest.mark.parametrize("boundary", ["before_wait", "during_wait", "during_ack"])
+@pytest.mark.parametrize("mutation", ["stream", "coherent_stream", "device", "handle", "event_device"])
+def test_resolution_binding_drift_never_releases_holds(guarded_sample, monkeypatch, boundary, mutation):
+    x, controller = guarded_sample
+    context = x.transaction._context
+    replacement = NS(device=context.device, cuda_stream=context.stream_handle + 1)
+
+    def mutate():
+        if mutation in {"stream", "coherent_stream"}:
+            context.stream = replacement
+            if mutation == "coherent_stream":
+                context.stream_handle = replacement.cuda_stream
+        elif mutation == "device":
+            context.device = type(context.device)(0)
+        elif mutation == "handle":
+            context.stream.cuda_stream += 1
+        else:
+            x.event.device = type(context.device)(0)
+
+    if boundary == "before_wait":
+        mutate()
+    elif boundary == "during_wait":
+        def wait():
+            x.calls.append("wait")
+            mutate()
+        x.event.synchronize = wait
+    else:
+        original = controller._guard_client.complete
+        def complete(ticket):
+            original(ticket)
+            mutate()
+        monkeypatch.setattr(controller._guard_client, "complete", complete)
+
+    with pytest.raises((timeline.CudaOpticalTimelineError, NativeOpticalArenaProtocolError, ValueError)):
+        x.sample.resolve(_guarded_controller=controller)
+    evidence = x.arena.lifecycle_evidence()
+    assert x.calls == ([] if boundary == "before_wait" else ["wait"])
+    assert x.sample.state == "POISONED" and x.lease.state == "RETAINED_POISONED"
+    assert evidence.completion_resolution_count == evidence.slot_reclaim_count == 0
+    assert evidence.slots[0].transaction_hold_count == evidence.slots[0].device_result_hold_count == 1

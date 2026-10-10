@@ -735,7 +735,7 @@ class CudaActiveArenaSample:
         self._require_state("COMPLETION_RECORDED", operation="resolve")
         lease = self._require_lease()
         try:
-            self._assert_configuration_stable()
+            self._validate_resolution_binding()
             if _guarded_controller is None:
                 self.completion.event.synchronize()
             else:
@@ -757,13 +757,33 @@ class CudaActiveArenaSample:
                 controller._guard_client.require_completed_ticket(ticket)
             # A successful device wait is only an observation. In particular,
             # a lost DISARMED acknowledgement above leaves the lease unresolved.
-            self._assert_configuration_stable()
+            self._validate_resolution_binding()
             lease.resolve_terminal_completion()
         except BaseException as exc:
             _retain_failure_without_masking(lease, f"CUDA terminal resolution failure: {exc}")
             object.__setattr__(self, "_state", "POISONED")
             raise
         object.__setattr__(self, "_state", "PAYLOAD_READY")
+
+    def _validate_resolution_binding(self) -> None:
+        """Untimed recheck of the original template, authority and terminal scope."""
+        from .cuda_timeline import _validate_cuda_event
+
+        self._assert_configuration_stable()
+        self._executable.validate_bound()
+        authority = self._execution_authority
+        authority._assert_registered(self._transaction)
+        if (authority._phase != "COMPLETION_RECORDED"
+                or authority._require_live_lease() is not self._require_lease()):
+            raise NativeOpticalArenaProtocolError("CUDA resolution lost its recorded lease authority")
+        completion = self.completion
+        context = self._transaction._context
+        if (completion is not self._transaction.completion
+                or completion.event is not self._executable.transaction_template.completion_event
+                or completion.device != context.device
+                or completion.stream_handle != context.stream_handle):
+            raise NativeOpticalArenaProtocolError("CUDA resolution differs from its sealed terminal scope")
+        _validate_cuda_event(completion.event, device=context.device, name="terminal completion")
 
     def release_device_result(self) -> None:
         self._require_state("PAYLOAD_READY", operation="device-result release")

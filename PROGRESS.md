@@ -1884,7 +1884,15 @@ Next milestone:
       consolidation work: setup sequencing/state-based failure routing, event
       initialization, explicit CUDA native-leaf latching, shared setup/final
       graph assembly, guarded wait versus resolution commit, and positional
-      warmup bookkeeping. Its full report is archived unchanged. Next coherent
+      warmup bookkeeping. Its full report is archived unchanged. Consolidation
+      commit1934ac7 shares event initialization/frame binding, makes CUDA launch
+      latching explicit and delays supervised lease resolution until DISARMED;
+      named warmup fields replace positional state. Fresh both-lane960 Go2
+      regressions pass all ten original CPU channels at that revision. Independent
+      code-reviewv1 found mutable context rebinding during resolve (P2) and an
+      empty-LBVH hook discrepancy (P3); both have authored repairs, with162 CPU
+      checks including unchanged reviewer repros passing. Fresh repair review
+      remains pending; see systematic-refactor implementation-notev3. Next coherent
       implementation is observed R0 warmup through final readiness/origin,
       actual C3/arena graph/dormant plans, one seal and guarded final barrier;
       readiness alone is not a completed integration. R1/full C4 follow-up and

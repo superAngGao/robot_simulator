@@ -213,7 +213,7 @@ def _run_fixed_render_warmups(authority):
                                 runtime.synchronize_event(completion.event)
                             else:
                                 completion.event.synchronize()
-                        if index == 9:
+                        if index == SETUP_WARMUP_FRAME_COUNT - 1:
                             session.audit()
                             session.external.audit()
                     finally:

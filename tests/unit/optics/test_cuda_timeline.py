@@ -108,3 +108,35 @@ def test_native_launch_outside_active_transaction_stage_rejects():
     with pytest.raises(CudaOpticalTransactionPoisonedError, match="active CUDA stage"):
         transaction.before_native_launch()
     assert transaction.state == "poisoned"
+
+
+@pytest.mark.parametrize("populated", [False, True])
+@pytest.mark.parametrize("diagnostic", [False, True])
+def test_lbvh_launch_latch_requires_an_actual_native_entry(populated, diagnostic):
+    from optics.cuda_lbvh import CudaLbvhRebuildStage
+
+    calls = []
+    stage = object.__new__(CudaLbvhRebuildStage)
+    object.__setattr__(stage, "_extension_entry", (lambda: calls.append("native")) if populated else None)
+    object.__setattr__(stage, "_extension_args", ())
+
+    class Transaction:
+        @contextmanager
+        def enqueue_stage(self, actual):
+            assert actual is stage
+            yield
+
+        def record_diagnostic_start(self, name):
+            if diagnostic:
+                calls.append("start")
+
+        def record_diagnostic_end(self, name):
+            if diagnostic:
+                calls.append("end")
+
+        def before_native_launch(self):
+            calls.append("launch")
+
+    stage.enqueue(Transaction())
+    assert calls == (["start"] if diagnostic else []) + (["launch", "native"] if populated else []) + (
+        ["end"] if diagnostic else [])
