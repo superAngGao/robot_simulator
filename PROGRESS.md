@@ -1975,6 +1975,15 @@ Next milestone:
       no replay requirement is relaxed. Compact terminal error replies and
       journal recovery address the separately reproduced nesting defect.
       Current CPU worker/protocol regression:60 passed,9 Linux-only skips.
+      Native-state-reader designv1 is independently approved for implementation.
+      Candidate4dcf73d moves input-stage observations into one captured production
+      reader and removes the duplicate test query/state implementation. Source
+      policy/catalogv18 and the integrated contract are updated together. CPU
+      affected regressions pass352 with4 environment/platform skips; worker/C0
+      regressions pass103 with9 Linux-only skips. Implementation-notev1 records
+      exact evidence. Fresh exact-code/native-call preflight is pending; no new
+      GPU run or final-sample acceptance is claimed. The real-device rerun and
+      complete physical/numerical/failure matrix remain required.
       R1/full C4 follow-up and fresh whole review remain mandatory.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
