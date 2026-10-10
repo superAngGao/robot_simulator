@@ -1913,8 +1913,10 @@ Next milestone:
       CPU regressions and original reviewer counterexample confirm the change.
       Implementation-notev5 records exact proof and its limits. Actual47114b0
       both-lane Go2 native disposal now exits with zero extra synchronization;
-      six owned PIDs are absent. Fresh independent re-review remains pending; M1 shared
-      setup/failure routing remains open. No final sample or speed result is claimed.
+      six owned PIDs are absent. Fresh independent code-reviewv4 approves with
+      comments the complete bounded R0 preparation/fault-disposal candidate
+      640cf9f; F1 is closed. M1 shared setup/failure routing remains open.
+      No final sample or speed result is claimed.
       R1/full C4 follow-up and fresh whole review remain mandatory.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain

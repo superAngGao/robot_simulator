@@ -115,7 +115,16 @@ archived. No install, reset, broad signal or performance measurement occurred.
 
 ## Continuation
 
-Fresh review must close F1 against the actual repair and native evidence.
+Fresh independent review completed: Approve with comments at exact candidate
+640cf9f24490e9bf7d259c37ec9adfb0412ac1ba; F1 is closed. The report is archived
+verbatim as systematic-refactor__code-review__codex__v4.md. Its CLI JSONL records
+session 01a123fb-c6c2-75e0-b4a6-b47ad4b1f7de, independently started without the
+implementation conversation. The reviewer ran 569 passing tests with four
+platform/asset skips, the unchanged original repro, eight independent probes,
+all 90 source/AST checks, and replayed the native archives with unchanged Linux
+production validators. Its exact scope and listed native/IPC/matrix limitations
+remain authoritative. Reviewer and author test/native sessions are terminal.
+
 M1 remains open: consolidate repeated optical-stage orchestration and failure
 routing within existing owners. Do not introduce another workflow engine.
 Then continue the approved R1 update/refit-or-rebuild/render composition and
