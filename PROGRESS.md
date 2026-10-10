@@ -2097,6 +2097,16 @@ Next milestone:
       All4 asset/POSIX skips were supplemented successfully on primary Linux
       at exactf623889, using an isolated CPU checkout; owned processes exited.
       No native GPU campaign or integrated approval is claimed.
+      Original-RESOLVE reader admission and shared prepared copy/wait are now
+      implemented in the author candidate. Both lanes reuse one staging set
+      across four CPU-backed generations under each original resolve ticket;
+      copied/early/repeated access and copy/event/query/exit failures reject
+      without committing resolution or reclaim. Known foreign event scope is
+      retained alongside unknown scope and offline replay checks those facts.
+      The104 related CPU cases pass. Fixed-driver physical observation,
+      persistence/numerical comparison, EXECUTE diagnostics and complete G3-G5
+      acceptance remain unfinished. This is not a native result or independent
+      integrated approval; the full C4 objective and later closed gates remain.
       Author full source
       regression passes317 with13 Windows skips, all13 supplemented successfully
       on primary Linux. Separately the approvedfc23b4e

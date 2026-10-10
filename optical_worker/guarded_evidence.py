@@ -412,9 +412,34 @@ class _Replay:
             self.operation_count = operation_count
             self.work_counts = work_counts
             self.permit = permit
+        elif operation == "final_scope_observed":
+            exact_fields(details, {"device_ordinals"})
+            _require(
+                self.version == WORKER_LIFECYCLE_VERSION and self.controller == "RUNNING"
+                and self.guardian == "SEALED" and self.guard_state == "ARMED"
+                and self.guard is not None and self.guard["role"] == "resolve"
+                and not self.failed and not self.body_returned and not self.notifications
+                and self.active_sample is not None
+                and self.worker_samples[self.active_sample] == "COMPLETION_RECORDED",
+                "final native scope requires the original pending resolve",
+            )
+            ordinals = details["device_ordinals"]
+            _require(type(ordinals) is list and bool(ordinals), "final foreign scope is empty")
+            for ordinal in ordinals:
+                bounded_integer(ordinal, 1023)
+                _require(ordinal != self.config.device_ordinal, "final foreign scope contains the target")
+            _require(sorted(set(ordinals)) == ordinals, "final foreign scope is not canonical")
+            self._declare_scope(
+                ordinals, False, source="final_native_observation", reason="observed_foreign_scope",
+            )
         elif operation == "dirty_ordinal_added":
             exact_fields(details, {"device_ordinal", "source", "reason"})
-            self._active_setup()
+            if details["source"] == "final_native_observation":
+                _require(self.version == WORKER_LIFECYCLE_VERSION and self.guard_state == "ARMED"
+                         and self.guard is not None and self.guard["role"] == "resolve"
+                         and self.guardian == "SEALED", "final dirty notification is outside resolve")
+            else:
+                self._active_setup()
             ordinal = bounded_integer(details["device_ordinal"], 1023)
             expected = ("dirty", ordinal, _identifier(details["source"]), _identifier(details["reason"]))
             _require(

@@ -37,7 +37,10 @@ from .native_setup import (
 _NO_READER_SCOPE = nullcontext()
 
 
-def _leaf(lifecycle, operation, kind, runtime_identity):
+def _leaf(lifecycle, operation, kind, runtime_identity, final_reader=None):
+    if final_reader is not None:
+        lifecycle._require_resolution_reader(final_reader, after_wait=True)
+        return
     _enter_device_leaf(
         lifecycle,
         _descriptor(lifecycle, operation_id=operation, leaf_kind=kind, runtime_identity=runtime_identity),
@@ -149,10 +152,12 @@ def _prepare_readback_host(name, shape, dtype, lifecycle, runtime, cuda, retaine
     return host, view
 
 
-def _copy_readback_array(name, view, device_array, lifecycle, runtime, stream, cuda, reader, scopes=None):
+def _copy_readback_array(name, view, device_array, lifecycle, runtime, stream, cuda, reader,
+                         scopes=None, final_reader=None):
     _leaf(
         lifecycle, _array_operation_id("validation_d2h", name), "device_to_host_copy",
         "torch_copy_explicit_stream_v1" if cuda else "warp_copy_explicit_stream_v1",
+        final_reader,
     )
     with reader.operation("copy") if reader is not None else _NO_READER_SCOPE:
         if cuda:
@@ -182,13 +187,14 @@ def _prepare_readback_event(lifecycle, runtime, target, stream, cuda, retained, 
     return event
 
 
-def _record_wait_readback(event, lifecycle, runtime, stream, cuda, reader):
+def _record_wait_readback(event, lifecycle, runtime, stream, cuda, reader, final_reader=None):
     lifecycle.require_adopted(event, stream)
     _leaf(
         lifecycle,
         "validation_event_record",
         "event_record",
         "torch_event_record_indexed_stream_v1" if cuda else "warp_stream_record_event_v1",
+        final_reader,
     )
     if cuda:
         with reader.operation("event_record") if reader is not None else _NO_READER_SCOPE:
@@ -198,6 +204,9 @@ def _record_wait_readback(event, lifecycle, runtime, stream, cuda, reader):
             _warp_record_event_exact(stream, event)
     actual_ordinal = _event_ordinal(event, cuda=cuda, lifecycle=lifecycle)
     if actual_ordinal != lifecycle.target_device_ordinal:
+        if final_reader is not None:
+            lifecycle._retain_final_foreign_scope(final_reader, (actual_ordinal,))
+            raise ValueError("final diagnostic readback event moved to a foreign device")
         # The next wait would touch this observed device. Commit that scope
         # before the controller rejects foreign-device work; never wait first.
         _enter_device_leaf(
@@ -216,6 +225,7 @@ def _record_wait_readback(event, lifecycle, runtime, stream, cuda, reader):
         "validation_event_wait",
         "event_wait",
         "torch_event_synchronize_v1" if cuda else "warp_synchronize_event_v1",
+        final_reader,
     )
     if cuda:
         with reader.operation("event_wait") if reader is not None else _NO_READER_SCOPE:
@@ -237,9 +247,10 @@ class _PreparedNativeReadback:
     copies: tuple
     event: object
     device_scope: object
+    final_graph: object = None
 
 
-def _prepare_native_readback(arrays, lifecycle, runtime, target, stream, cuda, retained):
+def _prepare_native_readback(arrays, lifecycle, runtime, target, stream, cuda, retained, *, final_graph=None):
     """Prepare reusable diagnostic operands and initialize actual event storage.
 
     The caller owns the original setup ticket and an already-adopted custody
@@ -254,6 +265,17 @@ def _prepare_native_readback(arrays, lifecycle, runtime, target, stream, cuda, r
             or (target.index if cuda else target.ordinal) != lifecycle.target_device_ordinal):
         raise ValueError("prepared readback differs from its retained native target")
     lifecycle.require_adopted(retained, runtime, target, stream)
+    if final_graph is not None:
+        from .native_setup import _FINAL_RENDER_GRAPHS, _FinalRenderGraph
+
+        if (type(final_graph) is not _FinalRenderGraph
+                or _FINAL_RENDER_GRAPHS.get(final_graph.origin.session) is not final_graph
+                or final_graph.origin.session.phase != "preparing_fixed_final_graph"
+                or final_graph.origin.session.bound_controller() is not lifecycle
+                or final_graph.runtime is not runtime or final_graph.target is not target
+                or final_graph.stream is not stream):
+            raise ValueError("final readback preparation lost its original graph")
+        lifecycle.require_adopted(final_graph)
     observations, copies = [], []
     retained.extend((observations, copies))
     for name, shape, dtype, device_array in arrays:
@@ -277,7 +299,8 @@ def _prepare_native_readback(arrays, lifecycle, runtime, target, stream, cuda, r
         # Torch events are lazy. A wrapper alone is not prepared native storage.
         _record_wait_readback(event, lifecycle, runtime, stream, cuda, None)
     prepared = _PreparedNativeReadback(
-        lifecycle, runtime, target, stream, cuda, tuple(observations), tuple(copies), event, device_scope,
+        lifecycle, runtime, target, stream, cuda, tuple(observations), tuple(copies),
+        event, device_scope, final_graph,
     )
     retained.append(prepared)
     lifecycle.adopt_host_owner(
@@ -286,29 +309,49 @@ def _prepare_native_readback(arrays, lifecycle, runtime, target, stream, cuda, r
     return prepared
 
 
-def _copy_prepared_native_readback(prepared, lifecycle):
-    """Reuse prepared operands under an original setup guard.
-
-    Final RESOLVE use stays closed until its separately bound D1 observation
-    aperture is implemented. This helper never creates or completes a ticket.
-    """
-    if type(prepared) is not _PreparedNativeReadback or prepared.lifecycle is not lifecycle:
-        raise ValueError("prepared readback belongs to another lifecycle")
-    lifecycle._require_setup()
-    lifecycle.require_adopted(prepared, prepared.event, prepared.stream)
-    if prepared.cuda:
-        same_target = prepared.stream.device == prepared.target and prepared.event.device == prepared.target
-    else:
-        same_target = prepared.stream.device is prepared.target and prepared.event.device is prepared.target
-    if not same_target:
-        raise ValueError("prepared readback native target changed")
-    if not prepared.cuda:
-        _leaf(lifecycle, "indexed_validation_scope", "runtime_import_or_init", "warp_scoped_device_v1")
-    with prepared.device_scope:
-        for name, view, device_array, scopes in prepared.copies:
-            _copy_readback_array(name, view, device_array, lifecycle, prepared.runtime,
-                                 prepared.stream, prepared.cuda, None, scopes)
-        _record_wait_readback(
-            prepared.event, lifecycle, prepared.runtime, prepared.stream, prepared.cuda, None,
-        )
+def _copy_prepared_native_readback(prepared, lifecycle, *, final_reader=None):
+    """Copy under the original setup ticket or exact post-wait RESOLVE extent."""
+    try:
+        if type(prepared) is not _PreparedNativeReadback or prepared.lifecycle is not lifecycle:
+            raise ValueError("prepared readback belongs to another lifecycle")
+        if final_reader is None:
+            lifecycle._require_setup()
+            if prepared.final_graph is not None:
+                raise ValueError("final output readback requires its original completed terminal wait")
+        else:
+            lifecycle._require_resolution_reader(final_reader, after_wait=True)
+            if (prepared.final_graph is None or prepared.final_graph is not lifecycle._final_admission
+                    or lifecycle._resolution_copy_started):
+                raise ValueError("final readback is foreign or already consumed in this resolution")
+        lifecycle.require_adopted(prepared, prepared.event, prepared.stream)
+        if final_reader is not None:
+            actual_ordinal = _event_ordinal(prepared.event, cuda=prepared.cuda, lifecycle=lifecycle)
+            if actual_ordinal != lifecycle.target_device_ordinal:
+                lifecycle._retain_final_foreign_scope(final_reader, (actual_ordinal,))
+                raise ValueError("final diagnostic readback event moved to a foreign device")
+        if prepared.cuda:
+            same_target = (prepared.stream.device == prepared.target
+                           and prepared.event.device == prepared.target)
+        else:
+            same_target = (prepared.stream.device is prepared.target
+                           and prepared.event.device is prepared.target)
+        if not same_target:
+            raise ValueError("prepared readback native target changed")
+        if final_reader is not None:
+            lifecycle._resolution_copy_started = True
+        if not prepared.cuda:
+            _leaf(lifecycle, "indexed_validation_scope", "runtime_import_or_init",
+                  "warp_scoped_device_v1", final_reader)
+        with prepared.device_scope:
+            for name, view, device_array, scopes in prepared.copies:
+                _copy_readback_array(name, view, device_array, lifecycle, prepared.runtime,
+                                     prepared.stream, prepared.cuda, None, scopes, final_reader)
+            _record_wait_readback(
+                prepared.event, lifecycle, prepared.runtime, prepared.stream,
+                prepared.cuda, None, final_reader,
+            )
+    except BaseException as error:
+        if final_reader is not None:
+            final_reader._fail(error)
+        raise
     return prepared.observations

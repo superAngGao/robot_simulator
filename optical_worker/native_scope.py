@@ -62,6 +62,8 @@ class NativeStateReader:
                     "native query outside the original terminal sync",
                 )
                 c._guard_client.require_live_ticket(c._guard_ticket, role="emergency")
+            elif c._resolution_ticket is not None:
+                c._require_resolution_reader(self)
             else:
                 c._require_setup()
             _require(require_reader(self.session) is self, "native reader identity changed")
@@ -445,6 +447,8 @@ class NativeStateReader:
     def snapshot(self, site, edge, operation, before=None):
         self._ticket()
         try:
+            _require(self.controller._resolution_ticket is None,
+                     "final native observations cannot emit input custody snapshots")
             pristine = site == "runtime_stream" and edge == "before"
             state = self._state(pristine)
             observation = self.session.runtime_observation

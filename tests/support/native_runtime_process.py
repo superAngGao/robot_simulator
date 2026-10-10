@@ -1044,7 +1044,7 @@ def _prepared_worker_readback(session):
             arrays = tuple((name, tuple(value.shape), str(value.dtype).removeprefix("torch."), value)
                            for name, value in outputs.tensor_items())
         held["readback"] = _prepare_native_readback(
-            arrays, controller, runtime, target, stream, session.lane == "cuda", retained,
+            arrays, controller, runtime, target, stream, session.lane == "cuda", retained, final_graph=graph,
         )
         return graph
 

@@ -102,6 +102,11 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
         self._native_source_session = None
         self._post_reclaim_proof = None
         self._worker_resolution = None
+        self._resolution_ticket = None
+        self._resolving_owner = None
+        self._resolving_event = None
+        self._resolution_wait_returned = False
+        self._resolution_copy_started = False
         super().__init__(
             lane_id=lane_id,
             target_device_ordinal=configuration.device_ordinal,
@@ -399,14 +404,106 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
             raise ValueError("invalid terminal observation runtime")
         with self.segment("resolve"):
             ticket = self._guard_ticket
-            if self._lane_id == "cuda":
-                event.synchronize()
-            else:
-                runtime.synchronize_event(event)
+            self._resolution_ticket = ticket
+            self._resolving_owner, self._resolving_event = owner, event
+            self._resolution_wait_returned = False
+            self._resolution_copy_started = False
+            try:
+                self._wait_resolving_terminal(event, runtime)
+            finally:
+                self._resolution_ticket = None
+                self._resolving_owner = self._resolving_event = None
+                self._resolution_wait_returned = False
+                self._resolution_copy_started = False
         self._guard_client.require_completed_ticket(ticket)
         if record is not None:
             self._worker_resolution = (record, ticket)
         return ticket
+
+    def _wait_resolving_terminal(self, event, runtime):
+        """The original wait leaf; fixed diagnostics may surround this entry."""
+        self._check_running()
+        ticket = self._resolution_ticket
+        if (ticket is None or ticket is not self._guard_ticket or not self._context_active
+                or event is not self._resolving_event or self._resolution_wait_returned):
+            self._reject_closed_entry("terminal wait is outside its original resolution extent")
+        self._guard_client.require_live_ticket(ticket, role="resolve")
+        if self._lane_id == "cuda":
+            if runtime is not None:
+                self._reject_closed_entry("CUDA terminal wait cannot select another runtime")
+            event.synchronize()
+        else:
+            runtime.synchronize_event(event)
+        self._resolution_wait_returned = True
+
+    def _require_resolution_reader(self, reader, *, after_wait=False):
+        """Bind read-only diagnostics to the original pending worker generation.
+
+        This does not arm/complete a guard or resolve a lease. It is not a setup
+        exception: ordinary setup APIs remain unavailable inside RESOLVE.
+        """
+        from .native_scope import require_reader
+        from .native_setup import _FINAL_RENDER_GRAPHS
+
+        self._check_running()
+        worker = self._worker_session
+        if worker is None:
+            self._reject_closed_entry("final native observation requires the original worker")
+        source = worker._require_native_binding()
+        graph, record = worker._graph, worker._active_sample
+        ticket, owner = self._resolution_ticket, self._resolving_owner
+        if (source.phase != "fixed_final_graph_admitted" or source.failed
+                or graph is None or graph is not self._final_graph or graph is not self._final_admission
+                or _FINAL_RENDER_GRAPHS.get(source) is not graph or self.guardian.state != "SEALED"
+                or not worker._handling or record is None or record.state != "COMPLETION_RECORDED"
+                or type(record.index) is not int or not 0 <= record.index < len(worker._samples)
+                or worker._samples[record.index] is not record
+                or owner is None or record.active is not owner or self._worker_resolution is not None
+                or ticket is None or ticket is not self._guard_ticket or not self._context_active
+                or after_wait and not self._resolution_wait_returned):
+            self._reject_closed_entry("final native observation is outside its original pending resolution")
+        self._guard_client.require_live_ticket(ticket, role="resolve")
+        if (require_reader(source) is not reader or reader.controller is not self
+                or reader.module is not graph.runtime or reader.target is not graph.target
+                or reader.stream is not graph.stream or self._resolving_event is not owner.completion.event
+                or record.plan is not graph.samples[record.index]):
+            self._reject_closed_entry("final native observation lost its original reader or graph binding")
+        plan = record.plan
+        if self._lane_id == "cuda":
+            context = graph.factory.context
+            if (owner is not plan._active or owner._transaction._context is not context
+                    or context.stream is not graph.stream or context.device != graph.target):
+                self._reject_closed_entry("final native observation lost its original CUDA transaction")
+            lease, control_plan = owner._control_lease, plan._control_plan
+        else:
+            if (owner is not plan or owner._transaction.runtime is not graph.runtime
+                    or owner._transaction.stream is not graph.stream
+                    or owner._transaction.target is not graph.target):
+                self._reject_closed_entry("final native observation lost its original Warp transaction")
+            lease, control_plan = owner._lease, plan._plan
+        if (lease is None or lease is not control_plan._live_lease
+                or lease.state != "COMPLETION_RECORDED"
+                or lease.evidence.generation != control_plan.evidence.expected_generation):
+            self._reject_closed_entry("final native observation lost its live lease generation")
+        graph.arena._control._slot_for_live_lease(lease)
+        self.require_adopted(reader, reader.binding, owner, owner._transaction, graph.stream,
+                             graph.target, self._resolving_event)
+        return record
+
+    def _retain_final_foreign_scope(self, reader, ordinals):
+        """Failure-only metadata: retain known foreign ordinals plus unknown scope."""
+        self._require_resolution_reader(reader)
+        if (type(ordinals) is not tuple or not ordinals
+                or any(type(value) is not int or not 0 <= value <= 1023
+                       or value == self.target_device_ordinal for value in ordinals)
+                or tuple(sorted(set(ordinals))) != ordinals):
+            raise ValueError("final foreign observation requires exact distinct non-target ordinals")
+        self._record("final_scope_observed", {"device_ordinals": list(ordinals)})
+        for ordinal in ordinals:
+            self._add_dirty_ordinal(
+                ordinal, source="final_native_observation", reason="observed_foreign_scope",
+            )
+        self._set_unknown_scope(source="final_native_observation", reason="native_observation_failed")
 
     def commit_target_barrier(self, *, _source_session=None, _graph=None, **_kwargs):
         """Seal one locally registered graph and observe its final target barrier."""

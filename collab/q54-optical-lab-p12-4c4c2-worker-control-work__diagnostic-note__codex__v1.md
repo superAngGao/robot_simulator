@@ -707,3 +707,74 @@ Tool93542 is terminal0. Closure records runner4135439 and pytest4135517 absent
 from `/proc`, exit0, exactf623889 and tracked-clean checkout; local copy
 `prepared_readback_cpu_posix_closure_v1.json`. Preparation-side evidence is now
 complete for these listed CPU checks, not the G1-G5 implementation or C4.
+
+## Original RESOLVE reader and prepared copy admission (after9b392b8)
+
+The immediately preceding goal turn answered the owner's status question; it
+made no implementation progress. This continuation revalidated the dirty tree
+and implements the original-RESOLVE part of approved D1. This remains author
+work in the coherent G1-G5 packet, not an independently approved checkpoint.
+
+The original terminal wait is a factored leaf inside the same resolve segment.
+The controller retains its exact live ticket, pending owner/event and whether
+that wait returned. Those anchors are cleared before DISARMED on both paths.
+The reader checks original source/worker/graph/record/transaction/live lease and
+generation, retained stream/target/event, owning thread, SEALED guardian and
+admitted source phase. The actual record must still occupy its original worker
+sample slot. Copied records, tickets or readers cannot substitute. Normal
+worker resolution does not install or call a diagnostic reader. EXECUTE reader
+admission remains closed; setup APIs are not relaxed to permit general resolve
+work, and final raw queries cannot append input-custody snapshots.
+
+Prepared final staging now binds its original registered graph before seal.
+The shared copy/record/wait bodies permit that staging only after the original
+terminal wait returned, inside its original live resolve ticket, once per
+resolution. Their failure boundary includes pre-copy metadata validation and
+scope exit. A foreign readback event is recorded before any wait as known
+foreign scope plus unknown scope, using the same live/offline lifecycle reducer;
+no new guard or emergency target synchronization is introduced. Failures retain
+the unresolved generation and quarantine the original graph. Input readback and
+setup-only reusable staging retain their existing admission paths.
+
+CPU evidence uses original worker dispatch, final graph, guardian, arena and
+native exact-copy/event helper bodies, with native getter/copy/event endpoints
+modeled. It does not prove GPU allocation behavior, physical scope restoration,
+renderer output, sentinels or numerical agreement:
+- Original reader admission:16passed19.01s before extending getter-failure
+  cases. `final_resolve_reader_v2.txt` SHA256
+  27f535ee1cc7033d775dd8684789958026f8afe9a7464d7fadd3d166fd4e62e6.
+- Initial final readback:18passed31.97s. `final_resolve_readback_v1.txt` SHA256
+  bad20175ec19131b8a5e00b7c4b94b59dce9539c535f7392876453940fbaae41.
+- Expanded reader/readback plus original preparation/input-readback regression:
+  104passed69.61s, no skips. `final_resolve_readback_v2.txt` SHA256
+  72dc446bf6d2d6bab638929bab2e98eff895ed17ac6b013818bae93517143992.
+  Tool70304 exited0. Both lanes copy four distinct CPU-backed generations into
+  the same host objects; every copy and copy-event wait uses the original live
+  resolve ticket before DISARMED/arena resolution. Negative cases cover early
+  copy, copied staging, duplicate copy, copy/record/wait/exit failure, missing or
+  foreign event device before/after record, original getter failure with raw
+  prefix retention, and attempted final input-custody snapshot. Live evidence
+  independently replays; a forged target ordinal in the foreign fact rejects.
+
+The fixed native correctness driver still only prepares staging. Its final
+scope/leaf facade, separate final-observation artifact/parser, original-wait
+copy invocation, CPU comparison/persistence before release, EXECUTE observation
+and prepared sentinels remain to be connected. Tests invoking shared copy at
+the original wait leaf are not proof that this entire driver is implemented.
+Complete G3 work/capacity, G4 OS fault/exit, G5 recovery and coherent independent
+code/native preflight remain mandatory. No native job or performance comparison
+was launched; all later gates and whole-C4 acceptance remain closed.
+
+Additional author regression before freezing the source:
+- Guarded lifecycle/shared reducer atomicity:126passed7.85s, no skips;
+  `final_resolve_reducer_regression_v1.txt` SHA256
+  e41a15b71d707fd8fc7f016a124fbd8644e5e1f3ce74c7fd82b58854f5755741.
+- Broader460-case run stopped at342passed/1failed224.67s. Both lanes' actual
+  1/120/600-sample worker cycles passed. The source-policy reader test fetches
+  `git show HEAD:optical_worker/native_scope.py`; the uncommitted candidate
+  still had old HEAD bytes with the new worktree pin, so its initial positive
+  assertion correctly rejected them. No test or policy is relaxed: freeze
+  source/pin/catalog together before rerunning the source checks and remaining
+  graph cases. `final_resolve_regression_v1.txt` SHA256
+  e9eca8b665da3131aeacc73e9023602086bdb4ed48613f510f8180ca971afad9.
+  Tool2655 exited1. These are partial results, not460 passing cases.
