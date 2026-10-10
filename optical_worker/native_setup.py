@@ -302,8 +302,8 @@ def _session_prepare_fixed_render_storage(session, *, traversal_diagnostics=Fals
             "fixed render storage requires completed compilation, once",
         )
         session._require_setup_condition(
-            session.prepared_input.manifest.input_contract == "fixed_native_scene_v1",
-            "fixed render storage requires canonical R0 input",
+            session.prepared_input.manifest.input_contract in {"fixed_native_scene_v1", "canonical_native_replay_v1"},
+            "fixed render storage requires canonical R0 or R1 input",
         )
         controller = session.bound_controller()
         with controller.segment("setup"):
@@ -489,6 +489,9 @@ def _prepare_fixed_render_storage(session, runtime, target, stream, *, traversal
     )
 
     prepared = session.prepared_input
+    if prepared.manifest.input_contract == "canonical_native_replay_v1":
+        return _prepare_dynamic_render_storage(
+            session, runtime, target, stream, traversal_diagnostics=traversal_diagnostics)
     if session.render_source.packed_scene is not prepared.source.packed_scene_owner:
         raise ValueError("fixed render storage requires its original render source")
     case = get_case(prepared.manifest.case_id)
@@ -532,6 +535,113 @@ def _prepare_fixed_render_storage(session, runtime, target, stream, *, traversal
 
 
 @dataclass(frozen=True, eq=False)
+class _DynamicRenderStorage:
+    scene: object
+    world: object
+    acceleration: object
+    outputs: object
+    topology: object = None
+    workspace: object = None
+
+
+def _prepare_dynamic_render_storage(session, runtime, target, stream, *, traversal_diagnostics):
+    """One R1 slot, using existing update, topology and allocation implementations."""
+    from dataclasses import replace
+    from optical_worker.cases import get_case
+
+    prepared = session.prepared_input
+    if (prepared.manifest.input_contract != "canonical_native_replay_v1"
+            or session.render_source.packed_scene is not prepared.source.packed_scene_owner):
+        raise ValueError("dynamic storage requires its original canonical replay source")
+    case = get_case(prepared.manifest.case_id)
+    controller = session.bound_controller()
+    controller._require_setup()
+    controller.require_adopted(prepared, runtime, target, stream)
+    session._runtime_leaf("dynamic_storage_scope", "runtime_import_or_init")
+    device_scope = runtime.cuda.device(target) if session.lane == "cuda" else runtime.ScopedDevice(target)
+    stream_scope = runtime.cuda.stream(stream) if session.lane == "cuda" else runtime.ScopedStream(stream)
+    with device_scope, stream_scope:
+        topology = workspace = None
+        if session.lane == "warp":
+            from optics.device_scene import allocate_warp_world_scene_buffers
+            from optics.device_bvh import build_device_bvh_from_snapshot
+            from optics.warp_native_render import allocate_warp_direct_light_buffers
+            from optical_worker.native_input import (
+                build_prepared_warp_scene_update_factory, build_prepared_warp_transform_inputs,
+            )
+            from optical_worker import warp_setup
+
+            compiled = warp_setup.validate_module_set(session, session.warp_modules)
+            initial_factory = build_prepared_warp_scene_update_factory(prepared, stream=stream)
+            session._hold_runtime_owner(initial_factory, "initial_scene_factory")
+            scene = initial_factory.local_scene
+            session._hold_runtime_owner(scene, "dynamic_local_scene")
+            world = allocate_warp_world_scene_buffers(scene, stream=stream,
+                _context=_create_upload_context(controller, runtime, target, stream))
+            session._hold_runtime_owner(world, "dynamic_world_buffers")
+            transforms = build_prepared_warp_transform_inputs(prepared, 0)
+            session._hold_runtime_owner(transforms, "initial_scene_transforms")
+            commands = initial_factory.seal(transforms=transforms, outputs=world,
+                _context=_create_upload_context(controller, runtime, target, stream))
+            session._hold_runtime_owner(commands, "initial_scene_commands")
+            if (warp_setup.validate_module_set(session, session.warp_modules) is not compiled
+                    or any(command.module_exec is not compiled[0].executable
+                           or command.kernel.module is not compiled[0].module for command in commands._commands)):
+                raise ValueError("initial scene commands differ from the compiled executable")
+            # This untimed initial snapshot establishes the immutable tree.
+            # It is not one of the ten observed complete warmup transactions.
+            context = _create_upload_context(controller, runtime, target, stream)
+            with _native_resource_scope(runtime, target, lane="warp", stream=stream, context=context,
+                    owner_role="initial_scene_custody", scope_id="initial_scene_scope") as (_, _, operation):
+                for command in commands._commands:
+                    with operation("initial_scene_launch", "warmup_launch"):
+                        command.launch(stream=stream)
+            completion, _ = _prepare_native_events(runtime, target, stream, lane="warp", phase_names=(),
+                context=_create_upload_context(controller, runtime, target, stream))
+            session._hold_runtime_owner(completion, "initial_scene_completion")
+            snapshot = world.as_snapshot(scene, frame_id=0, sim_time=0.0, env_idx=0)
+            session._hold_runtime_owner(snapshot, "initial_scene_snapshot")
+            topology = build_device_bvh_from_snapshot(snapshot, device=target, stream=stream,
+                _context=_create_upload_context(controller, runtime, target, stream))
+            session._hold_runtime_owner(topology, "dynamic_immutable_topology")
+            with _output_array_allocation(runtime, target, lane="warp", stream=stream,
+                    context=_create_upload_context(controller, runtime, target, stream)) as empty:
+                bounds_min = empty("dynamic_bvh_bounds_min", (topology.num_nodes, 3), runtime.float32)
+                bounds_max = empty("dynamic_bvh_bounds_max", (topology.num_nodes, 3), runtime.float32)
+            acceleration = replace(topology, bounds_min=bounds_min, bounds_max=bounds_max, ready_event=None,
+                                   resources=(topology, bounds_min, bounds_max))
+            session._hold_runtime_owner(acceleration, "dynamic_slot_bvh")
+            outputs = allocate_warp_direct_light_buffers(num_rays=case.width * case.height, device=target,
+                stream=stream, traversal_diagnostics=traversal_diagnostics,
+                _context=_create_upload_context(controller, runtime, target, stream))
+        else:
+            from optics.cuda_scene import allocate_cuda_world_scene_buffers
+            from optics.cuda_lbvh import allocate_cuda_lbvh_buffers, allocate_cuda_lbvh_workspace
+            from optics.cuda_direct_light import allocate_cuda_direct_light_buffers
+
+            _require_cuda_render_factory(session, session.cuda_extensions())
+            _, scene_factory, lbvh_factory, _ = session.cuda_factories
+            scene = scene_factory.local_scene
+            session._hold_runtime_owner(scene, "dynamic_local_scene")
+            world = allocate_cuda_world_scene_buffers(scene,
+                _context=_create_upload_context(controller, runtime, target, stream))
+            session._hold_runtime_owner(world, "dynamic_world_buffers")
+            workspace = allocate_cuda_lbvh_workspace(lbvh_factory.requirements,
+                _context=_create_upload_context(controller, runtime, target, stream))
+            session._hold_runtime_owner(workspace, "dynamic_lbvh_workspace")
+            acceleration = allocate_cuda_lbvh_buffers(primitive_count=scene.num_triangles, device=target,
+                _context=_create_upload_context(controller, runtime, target, stream))
+            session._hold_runtime_owner(acceleration, "dynamic_slot_bvh")
+            outputs = allocate_cuda_direct_light_buffers(num_rays=case.width * case.height, device=target,
+                direct_light=True, traversal_diagnostics=traversal_diagnostics,
+                _context=_create_upload_context(controller, runtime, target, stream))
+        session._hold_runtime_owner(outputs, "dynamic_render_outputs")
+        storage = _DynamicRenderStorage(scene, world, acceleration, outputs, topology, workspace)
+        session._hold_runtime_owner(storage, "dynamic_render_storage")
+    return storage
+
+
+@dataclass(frozen=True, eq=False)
 class _FixedRenderPreparation:
     """Retained provisional graph; not warmup, final readiness or sample authority."""
 
@@ -544,14 +654,63 @@ class _FixedRenderPreparation:
     profile: str
     shadows: bool
     pass_mode: str
+    dynamic_factories: tuple = ()
 
 
-def _prepare_render_events(runtime, target, stream, *, lane, diagnostic, context):
+@dataclass(frozen=True, eq=False)
+class _DynamicFrameStages:
+    """The existing three native stages and their fixed replay selection."""
+
+    stages: tuple
+    transform_frame_index: int
+
+    @property
+    def render(self):
+        return self.stages[2]
+
+
+def _frame_stages(bundle):
+    return bundle.stages if type(bundle) is _DynamicFrameStages else (bundle,)
+
+
+def _prepare_dynamic_factories(session, runtime, target, stream, compiled):
+    storage = session.fixed_render_storage
+    if type(storage) is not _DynamicRenderStorage:
+        return ()
+    prepared = session.prepared_input
+    controller = session.bound_controller()
+    session._runtime_leaf("dynamic_scene_factory", "runtime_import_or_init")
+    if session.lane == "warp":
+        from optics.device_scene import WarpSceneUpdateCommandFactory
+        from optical_worker.native_input import build_prepared_warp_bvh_refit_factory
+
+        scene = WarpSceneUpdateCommandFactory(storage.scene, stream=stream,
+            native_input_manifest_sha256=prepared.manifest.sha256, input_contract=prepared.manifest.input_contract)
+        session._hold_runtime_owner(scene, "dynamic_scene_factory")
+        acceleration = build_prepared_warp_bvh_refit_factory(prepared, storage.topology, stream=stream,
+            _context=_create_upload_context(controller, runtime, target, stream))
+    else:
+        from optical_worker.native_input import (
+            build_prepared_cuda_scene_update_factory, build_prepared_cuda_lbvh_rebuild_factory,
+        )
+
+        _, context = _require_cuda_render_factory(session, compiled)
+        scene = build_prepared_cuda_scene_update_factory(prepared, context=context, extensions=compiled)
+        session._hold_runtime_owner(scene, "dynamic_scene_factory")
+        session._runtime_leaf("dynamic_acceleration_factory", "runtime_import_or_init")
+        acceleration = build_prepared_cuda_lbvh_rebuild_factory(prepared, context=context, extensions=compiled)
+    session._hold_runtime_owner(acceleration, "dynamic_acceleration_factory")
+    factories = (scene, acceleration)
+    session._hold_runtime_owner(factories, "dynamic_stage_factories")
+    return factories
+
+
+def _prepare_render_events(runtime, target, stream, *, lane, diagnostic, context, boundary="R0"):
     """Initialize and complete one slot's events under the caller's setup guard."""
     if context is None or type(diagnostic) is not bool:
         raise TypeError("render events require a guarded context and exact diagnostic mode")
     return _prepare_native_events(runtime, target, stream, lane=lane,
-        phase_names=_render_phase_names(boundary="R0", diagnostic=diagnostic), context=context)
+        phase_names=_render_phase_names(boundary=boundary, diagnostic=diagnostic), context=context)
 
 
 def _prepare_native_events(runtime, target, stream, *, lane, phase_names, context=None):
@@ -613,7 +772,12 @@ def _prepare_fixed_render_graph(session, runtime, target, stream, *, readiness, 
     from optical_worker.render_parameters import load_frozen_render_sequence
 
     controller = session.bound_controller()
-    scene, _, _, outputs = session.fixed_render_storage
+    storage = session.fixed_render_storage
+    dynamic = type(storage) is _DynamicRenderStorage
+    if dynamic:
+        scene, outputs = storage.scene, storage.outputs
+    else:
+        scene, _, _, outputs = storage
     diagnostic = pass_mode == "diagnostic_profiled"
     allocated_diagnostic = (outputs.traversal_diagnostics if session.lane == "warp"
                             else bool(outputs.shadow_traversal_counters))
@@ -645,27 +809,30 @@ def _prepare_fixed_render_graph(session, runtime, target, stream, *, readiness, 
                 compiled_owner = session.cuda_extensions()
                 factory, cuda_context = _require_cuda_render_factory(session, compiled_owner)
             session._hold_runtime_owner(factory, "provisional_render_factory")
+            dynamic_factories = _prepare_dynamic_factories(session, runtime, target, stream, compiled_owner)
             for index in range(SETUP_WARMUP_FRAME_COUNT):
                 frames.append(_bind_fixed_render_frame(
                     session, runtime, target, stream, factory=factory, compiled_owner=compiled_owner,
                     index=index, profile=profile, shadows=shadows, pass_mode=pass_mode,
-                    owner_prefix="provisional"))
+                    owner_prefix="provisional", dynamic_factories=dynamic_factories))
             if session.lane == "cuda":
                 actual_factory, actual_context = _require_cuda_render_factory(session, compiled_owner)
                 if actual_factory is not factory or actual_context is not cuda_context:
                     raise ValueError("CUDA render factory changed during frame binding")
                 for _, bundle in frames:
-                    if bundle.renderer is not factory:
+                    if _frame_stages(bundle)[-1].renderer is not factory:
                         raise ValueError("CUDA render stage differs from its retained factory")
-                    bundle._validate_cuda_transaction_stage(cuda_context)
+                    for stage in _frame_stages(bundle):
+                        stage._validate_cuda_transaction_stage(cuda_context)
             completion, events = _prepare_render_events(runtime, target, stream, lane=session.lane,
-                diagnostic=diagnostic, context=_create_upload_context(controller, runtime, target, stream))
+                diagnostic=diagnostic, boundary="R1" if dynamic else "R0",
+                context=_create_upload_context(controller, runtime, target, stream))
             return _FixedRenderPreparation(readiness, compiled_owner, factory, tuple(frames), completion, events,
-                                           profile, shadows, pass_mode)
+                                           profile, shadows, pass_mode, dynamic_factories)
 
 
 def _bind_fixed_render_frame(session, runtime, target, stream, *, factory, compiled_owner,
-                             index, profile, shadows, pass_mode, owner_prefix):
+                             index, profile, shadows, pass_mode, owner_prefix, dynamic_factories=()):
     """Bind one canonical frame over retained storage for setup or final plans."""
     from dataclasses import replace
     from optical_worker.render_parameters import bind_render_parameters, NATIVE_SCALAR_ORDER, decode_native_scalars
@@ -673,7 +840,16 @@ def _bind_fixed_render_frame(session, runtime, target, stream, *, factory, compi
     controller = session.bound_controller()
     controller._require_setup()
     controller.require_adopted(factory, session.fixed_render_storage)
-    _, first, second, outputs = session.fixed_render_storage
+    storage = session.fixed_render_storage
+    dynamic = type(storage) is _DynamicRenderStorage
+    if dynamic:
+        first, second, outputs = storage.world, storage.acceleration, storage.outputs
+        if len(dynamic_factories) != 2:
+            raise ValueError("dynamic frame requires its scene and acceleration factories")
+        controller.require_adopted(dynamic_factories, *dynamic_factories)
+        transform_index = index % session.prepared_input.manifest.transform_frame_count
+    else:
+        _, first, second, outputs = storage
     sequence = session.render_source.sequence
     parameters = bind_render_parameters(sequence, sample_index=index, profile=profile,
         shadows=shadows, pass_mode=pass_mode,
@@ -706,14 +882,23 @@ def _bind_fixed_render_frame(session, runtime, target, stream, *, factory, compi
         bundle = factory.seal_camera(world=first, bvh=bvh, camera=camera, buffers=outputs,
             output_profile=normalize_output_profile(profile), shadows=shadows,
             traversal_diagnostics=pass_mode == "diagnostic_profiled", **colors,
+            transform_frame_index=transform_index if dynamic else None,
             _context=_create_upload_context(controller, runtime, target, stream))
     else:
         from optics.cuda_direct_light import CudaCameraParameters
 
         camera = CudaCameraParameters(**camera_values)
-        inputs = replace(first, sensor_role_mask=payload["sensor_role_mask"],
-                         max_distance=values["max_distance"])
-        bundle = factory.bind_direct_light(first_hit_inputs=inputs, shade_inputs=second,
+        if dynamic:
+            from optics.cuda_direct_light import _dynamic_first_hit_inputs, _shade_inputs
+
+            inputs = _dynamic_first_hit_inputs(scene=storage.scene, world=first, lbvh=second,
+                sensor_role_mask=payload["sensor_role_mask"], max_distance=values["max_distance"])
+            shade = _shade_inputs(storage.scene)
+        else:
+            inputs = replace(first, sensor_role_mask=payload["sensor_role_mask"],
+                             max_distance=values["max_distance"])
+            shade = second
+        bundle = factory.bind_direct_light(first_hit_inputs=inputs, shade_inputs=shade,
             buffers=outputs, camera=camera, output_profile=profile, shadows=shadows, **colors)
     session._hold_runtime_owner(bundle, owner_prefix + "_render_bundle")
     if session.lane == "warp":
@@ -724,7 +909,39 @@ def _bind_fixed_render_frame(session, runtime, target, stream, *, factory, compi
         bundle.validate_resolved_parameters(parameters)
     else:
         bundle._cuda_transaction_stage_evidence().validate_render_parameters(payload)
-    return parameters, bundle
+    if not dynamic:
+        return parameters, bundle
+    scene_factory, acceleration_factory = dynamic_factories
+    if session.lane == "warp":
+        from optical_worker.native_input import build_prepared_warp_transform_inputs
+
+        transforms = build_prepared_warp_transform_inputs(session.prepared_input, transform_index)
+        session._hold_runtime_owner(transforms, owner_prefix + "_replay_view")
+        update = scene_factory.seal(transforms=transforms, outputs=storage.world,
+            _context=_create_upload_context(controller, runtime, target, stream))
+        session._hold_runtime_owner(update, owner_prefix + "_scene_bundle")
+        acceleration = acceleration_factory.seal(world=storage.world, bvh=storage.acceleration,
+            _context=_create_upload_context(controller, runtime, target, stream))
+        session._hold_runtime_owner(acceleration, owner_prefix + "_acceleration_bundle")
+        if warp_setup.validate_module_set(session, compiled_owner) is not compiled:
+            raise ValueError("dynamic recording changed its compiled modules")
+        for stage, owner in ((update, compiled[0]), (acceleration, compiled[1])):
+            if any(command.module_exec is not owner.executable or command.kernel.module is not owner.module
+                   for command in stage._commands):
+                raise ValueError("dynamic commands differ from their compiled executable")
+    else:
+        from optical_worker.native_input import build_prepared_cuda_transform_inputs
+
+        transforms = build_prepared_cuda_transform_inputs(session.prepared_input, transform_index)
+        session._hold_runtime_owner(transforms, owner_prefix + "_replay_view")
+        update = scene_factory.bind(transforms=transforms, outputs=storage.world)
+        session._hold_runtime_owner(update, owner_prefix + "_scene_bundle")
+        acceleration = acceleration_factory.bind(world=storage.world, outputs=storage.acceleration,
+                                                   workspace=storage.workspace)
+        session._hold_runtime_owner(acceleration, owner_prefix + "_acceleration_bundle")
+    stages = _DynamicFrameStages((update, acceleration, bundle), transform_index)
+    session._hold_runtime_owner(stages, owner_prefix + "_dynamic_stages")
+    return parameters, stages
 
 
 class NativeWorkerPreparationAborted(RuntimeError):
@@ -1397,64 +1614,70 @@ def _upload_cuda_native_input(source, *, context):
     return result
 
 
+def _upload_warp_array(lifecycle, wp, target, stream, name, value):
+    """One adopted host staging / allocation / explicit-stream copy body."""
+    import numpy as np
+
+    host = np.array(value, copy=True, order="C")
+    lifecycle.adopt_host_owner(
+        host,
+        role="warp_h2d_host_staging",
+        operation_id=_array_operation_id("warp_stage", name),
+    )
+    host_array = wp.array(
+        host,
+        dtype=warp_dtype_from_host_dtype(wp, value.dtype),
+        device="cpu",
+        copy=False,
+    )
+    lifecycle.adopt_host_owner(
+        host_array,
+        role="warp_h2d_cpu_array_view",
+        operation_id=_array_operation_id("warp_host_view", name),
+    )
+    _enter_device_leaf(
+        lifecycle,
+        _descriptor(
+            lifecycle,
+            operation_id=_array_operation_id("warp_allocate", name),
+            leaf_kind="allocation",
+            runtime_identity="warp_empty_explicit_device_v1",
+        ),
+    )
+    destination = _warp_empty_exact(
+        wp,
+        shape=tuple(host.shape),
+        dtype=warp_dtype_from_host_dtype(wp, value.dtype),
+        target=target,
+    )
+    lifecycle.adopt_returned_device_owner(
+        destination,
+        actual_device_ordinal=int(destination.device.ordinal),
+        role="warp_a2_device_array",
+        operation_id=_array_operation_id("warp_allocate", name),
+    )
+    lifecycle.require_adopted(host, host_array, destination, stream)
+    _enter_device_leaf(
+        lifecycle,
+        _descriptor(
+            lifecycle,
+            operation_id=_array_operation_id("warp_upload", name),
+            leaf_kind="host_to_device_copy",
+            runtime_identity="warp_copy_explicit_stream_v1",
+        ),
+    )
+    _warp_copy_exact(wp, destination, host_array, stream)
+    return destination
+
+
 def _upload_warp_native_input(source, *, context):
     """Single allocation/upload implementation; the caller owns failure policy."""
     lifecycle, wp, target, stream = _consume_upload_context(context)
-    import numpy as np
-
     prepared: dict[str, Any] = {}
     with wp.ScopedDevice(target):
         for manifest in source.manifest.arrays:
             value = source.arrays[manifest.name]
-            host = np.array(value, copy=True, order="C")
-            lifecycle.adopt_host_owner(
-                host,
-                role="warp_h2d_host_staging",
-                operation_id=_array_operation_id("warp_stage", manifest.name),
-            )
-            host_array = wp.array(
-                host,
-                dtype=warp_dtype_from_host_dtype(wp, value.dtype),
-                device="cpu",
-                copy=False,
-            )
-            lifecycle.adopt_host_owner(
-                host_array,
-                role="warp_h2d_cpu_array_view",
-                operation_id=_array_operation_id("warp_host_view", manifest.name),
-            )
-            _enter_device_leaf(
-                lifecycle,
-                _descriptor(
-                    lifecycle,
-                    operation_id=_array_operation_id("warp_allocate", manifest.name),
-                    leaf_kind="allocation",
-                    runtime_identity="warp_empty_explicit_device_v1",
-                ),
-            )
-            destination = _warp_empty_exact(
-                wp,
-                shape=tuple(host.shape),
-                dtype=warp_dtype_from_host_dtype(wp, value.dtype),
-                target=target,
-            )
-            lifecycle.adopt_returned_device_owner(
-                destination,
-                actual_device_ordinal=int(destination.device.ordinal),
-                role="warp_a2_device_array",
-                operation_id=_array_operation_id("warp_allocate", manifest.name),
-            )
-            lifecycle.require_adopted(host, host_array, destination, stream)
-            _enter_device_leaf(
-                lifecycle,
-                _descriptor(
-                    lifecycle,
-                    operation_id=_array_operation_id("warp_upload", manifest.name),
-                    leaf_kind="host_to_device_copy",
-                    runtime_identity="warp_copy_explicit_stream_v1",
-                ),
-            )
-            _warp_copy_exact(wp, destination, host_array, stream)
+            destination = _upload_warp_array(lifecycle, wp, target, stream, manifest.name, value)
             prepared[manifest.name] = destination
 
         ready_owners = []

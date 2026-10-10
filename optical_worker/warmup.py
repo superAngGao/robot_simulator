@@ -72,6 +72,7 @@ class WarmupCompletionEvidence:
 
 
 def _require_warmup_transaction(transaction):
+    from .native_setup import _frame_stages
     entry = _TRANSACTION_WARMUPS.get(transaction)
     if entry is None:
         raise ValueError("setup transaction has no registered warmup authority")
@@ -93,13 +94,15 @@ def _require_warmup_transaction(transaction):
             or authority.stream.device != authority.target):
         raise ValueError("setup warmup lost its original session, guard or exact target scope")
     graph, bundle = authority.graph, authority.graph.frames[index][1]
+    stages = _frame_stages(bundle)
     if session.lane == "warp":
-        if (transaction.bundle is not bundle or transaction.stream is not authority.stream
+        if (transaction.bundle is not stages[-1] or transaction._dynamic_stages != stages[:-1]
+                or transaction.stream is not authority.stream
                 or transaction.target is not authority.target or transaction.runtime is not authority.runtime
                 or transaction._terminal.event is not graph.completion_event
                 or transaction._diagnostics is not graph.diagnostic_events):
             raise ValueError("Warp setup transaction binding changed")
-    elif (transaction._context is not graph.factory.context or transaction._stages != (bundle,)
+    elif (transaction._context is not graph.factory.context or transaction._stages != stages
             or transaction._completion_event is not graph.completion_event
             or transaction._diagnostic_events != graph.diagnostic_events):
         raise ValueError("CUDA setup transaction binding changed")
@@ -117,15 +120,16 @@ def _warmup_leaf(transaction, name, kind):
 
 def _prepare_cuda_transaction(bundle, context, graph):
     from optics.cuda_timeline import _CudaSetupTransaction
+    from .native_setup import _frame_stages
 
-    template = context.prepare_transaction_template(stages=(bundle,), completion_event=graph.completion_event,
+    template = context.prepare_transaction_template(stages=_frame_stages(bundle), completion_event=graph.completion_event,
         diagnostic_events={name: (start, end) for name, start, end in graph.diagnostic_events})
     return _CudaSetupTransaction(_template=template)
 
 
 def _prepare_fixed_render_warmups(session, runtime, target, stream):
     from .native_setup import (_FixedRenderPreparation, _create_upload_context,
-                               _native_resource_scope, _require_cuda_render_factory)
+                               _native_resource_scope, _require_cuda_render_factory, _frame_stages)
 
     controller = session.bound_controller()
     graph = session.fixed_render_graph
@@ -158,14 +162,15 @@ def _prepare_fixed_render_warmups(session, runtime, target, stream):
                                                    runtime, target, stream, stream.cuda_stream)
         session._hold_runtime_owner(authority, "setup_warmup_authority")
         for parameters, bundle in graph.frames:
+            stages = _frame_stages(bundle)
             if session.lane == "warp":
-                transaction = _WarpSetupTransaction(bundle=bundle, parameters=parameters, runtime=runtime,
+                transaction = _WarpSetupTransaction(bundle=stages[-1], parameters=parameters, runtime=runtime,
                     target=target, stream=stream, completion_event=graph.completion_event,
-                    diagnostic_events=graph.diagnostic_events)
+                    diagnostic_events=graph.diagnostic_events, dynamic_stages=stages[:-1])
             else:
-                if bundle.renderer is not factory:
+                if stages[-1].renderer is not factory:
                     raise ValueError("warmup CUDA stage differs from its issued renderer")
-                bundle._cuda_transaction_stage_evidence().validate_render_parameters(parameters.to_payload())
+                stages[-1]._cuda_transaction_stage_evidence().validate_render_parameters(parameters.to_payload())
                 transaction = _prepare_cuda_transaction(bundle, cuda_context, graph)
             transactions.append(transaction)
             session._hold_runtime_owner(transaction, "setup_warmup_transaction")
@@ -176,7 +181,8 @@ def _prepare_fixed_render_warmups(session, runtime, target, stream):
 
 
 def _run_fixed_render_warmups(authority):
-    from .native_setup import _create_upload_context, _native_resource_scope, _require_cuda_render_factory
+    from .native_setup import (_create_upload_context, _native_resource_scope,
+                               _require_cuda_render_factory, _frame_stages)
 
     session, controller, graph = authority.session, authority.controller, authority.graph
     record = _SETUP_WARMUPS.get(session)
@@ -201,7 +207,8 @@ def _run_fixed_render_warmups(authority):
                             transaction.enqueue()
                         else:
                             _require_cuda_render_factory(session, graph.compiled_modules)
-                            graph.frames[index][1].enqueue(transaction)
+                            for stage in _frame_stages(graph.frames[index][1]):
+                                stage.enqueue(transaction)
                         completion = transaction.finish()
                         if transaction.completion is not completion or completion.event is not graph.completion_event:
                             raise ValueError("warmup terminal differs from its actual transaction")

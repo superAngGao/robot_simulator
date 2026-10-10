@@ -112,6 +112,55 @@ class CudaShadeInputs:
         )
 
 
+def _dynamic_first_hit_inputs(
+    *,
+    scene: object,
+    world: object,
+    lbvh: object,
+    sensor_role_mask: int,
+    max_distance: float,
+) -> CudaFirstHitInputs:
+    return CudaFirstHitInputs(
+        plane_normal_world=world.plane_normal_world,
+        plane_point_world=world.plane_point_world,
+        plane_numeric_instance_id=scene.arrays["plane_numeric_instance_id"],
+        plane_source_order_key=scene.arrays["plane_source_order_key"],
+        plane_role_mask=scene.arrays["plane_role_mask"],
+        plane_material_index=scene.arrays["plane_material_index"],
+        num_planes=scene.num_planes,
+        triangle_v0_world=world.triangle_v0_world,
+        triangle_e1_world=world.triangle_e1_world,
+        triangle_e2_world=world.triangle_e2_world,
+        triangle_normal_world=world.triangle_normal_world,
+        triangle_numeric_instance_id=scene.arrays["triangle_numeric_instance_id"],
+        triangle_source_order_key=scene.arrays["triangle_source_order_key"],
+        triangle_role_mask=scene.arrays["triangle_role_mask"],
+        triangle_material_index=scene.arrays["triangle_material_index"],
+        bvh_bounds_min=lbvh.node_bounds_min,
+        bvh_bounds_max=lbvh.node_bounds_max,
+        bvh_left=lbvh.left,
+        bvh_right=lbvh.right,
+        bvh_start=lbvh.start,
+        bvh_count=lbvh.count,
+        bvh_prim_ids=lbvh.sorted_primitive_ids,
+        num_bvh_nodes=lbvh.node_count,
+        sensor_role_mask=sensor_role_mask,
+        max_distance=float(max_distance),
+    )
+
+
+def _shade_inputs(scene: object) -> CudaShadeInputs:
+    return CudaShadeInputs(
+        material_albedo_rgb=scene.arrays["material_albedo_rgb"],
+        light_kind=scene.arrays["light_kind"],
+        light_position_or_direction_world=scene.arrays["light_position_or_direction_world"],
+        light_intensity=scene.arrays["light_intensity"],
+        light_color_rgb=scene.arrays["light_color_rgb"],
+        num_lights=scene.num_lights,
+    )
+
+
+
 @dataclass(frozen=True)
 class CudaCameraParameters:
     """Host scalar camera parameters bound before native enqueue."""

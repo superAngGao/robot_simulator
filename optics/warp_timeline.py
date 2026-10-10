@@ -25,12 +25,15 @@ class _WarpRecordedTransaction:
     stream: object
     _stream_handle: int
     _groups: tuple
+    _dynamic_stages: tuple
     _next_phase: int
     _diagnostics: tuple
     _terminal: WarpOpticalCompletion
     _state: str
 
-    def __init__(self, *, bundle, parameters, runtime, target, stream, completion_event, diagnostic_events):
+    def __init__(self, *, bundle, parameters, runtime, target, stream, completion_event, diagnostic_events,
+                 dynamic_stages=()):
+        from optical_worker.native_setup import _render_phase_names
         from .warp_native_render import WarpDirectLightRenderCommandBundle
 
         if hasattr(self, "_state"):
@@ -41,8 +44,31 @@ class _WarpRecordedTransaction:
         factory = bundle.binding.factory
         if factory.device is not target or factory.stream is not stream:
             raise ValueError("Warp setup transaction differs from its recorded scope")
-        phases = ("raygen_kernel", "first_hit_kernel", "shade_kernel")
-        expected = phases if bundle.binding.traversal_diagnostics else ()
+        if type(dynamic_stages) is not tuple or len(dynamic_stages) not in (0, 2):
+            raise ValueError("Warp dynamic execution requires exactly scene update and refit")
+        if dynamic_stages:
+            from .device_scene import WarpSceneUpdateCommandBundle
+            from .device_bvh import WarpBvhRefitCommandBundle, _warp_bvh_immutable_arrays
+
+            scene, refit = dynamic_stages
+            if type(scene) is not WarpSceneUpdateCommandBundle or type(refit) is not WarpBvhRefitCommandBundle:
+                raise TypeError("Warp dynamic execution requires exact recorded stages")
+            scene.validate_bound()
+            bound = bundle.binding
+            selected = (parameters.to_payload()["frame_id"] - 1) % factory.prepared_input.manifest.transform_frame_count
+            if (scene.stream is not stream or refit.stream is not stream
+                    or scene.outputs is not bound.world or refit.world is not bound.world
+                    or scene.local_scene is not factory.local_scene
+                    or scene.transforms.transform_frame_index != selected or bound.transform_frame_index != selected
+                    or refit.bvh.bounds_min is not bound.bvh.bounds_min
+                    or refit.bvh.bounds_max is not bound.bvh.bounds_max
+                    or any(a is not b for (_, a), (_, b) in zip(
+                        _warp_bvh_immutable_arrays(refit.bvh), _warp_bvh_immutable_arrays(bound.bvh), strict=True))):
+                raise ValueError("Warp dynamic stage dataflow or replay selection differs from render")
+        elif bundle.binding.transform_frame_index is not None:
+            raise ValueError("Warp replay render requires its preceding update and refit")
+        expected = _render_phase_names(boundary="R1" if dynamic_stages else "R0",
+                                       diagnostic=bundle.binding.traversal_diagnostics)
         if tuple(name for name, _, _ in diagnostic_events) != expected:
             raise ValueError("Warp setup diagnostics differ from the recorded variant")
         events = (completion_event, *(event for _, start, end in diagnostic_events for event in (start, end)))
@@ -63,6 +89,8 @@ class _WarpRecordedTransaction:
             }:
                 phase = 2
             groups[phase].append(command)
+        if dynamic_stages:
+            groups = [dynamic_stages[0]._commands, dynamic_stages[1]._commands, *groups]
         for name, value in (
             ("bundle", bundle),
             ("parameters", parameters),
@@ -71,6 +99,7 @@ class _WarpRecordedTransaction:
             ("stream", stream),
             ("_stream_handle", stream.cuda_stream),
             ("_groups", tuple(tuple(group) for group in groups)),
+            ("_dynamic_stages", dynamic_stages),
             ("_next_phase", 0),
             ("_diagnostics", diagnostic_events),
             ("_terminal", WarpOpticalCompletion(completion_event, self, bundle)),
@@ -133,6 +162,8 @@ class _WarpRecordedTransaction:
 
     def _validate_before_enqueue(self):
         self.bundle.validate_resolved_parameters(self.parameters)
+        if self._dynamic_stages:
+            self._dynamic_stages[0].validate_bound()
 
     def _launch(self, command):
         raise RuntimeError("recorded commands have no execution authority")

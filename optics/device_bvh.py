@@ -570,8 +570,20 @@ def build_device_bvh_from_snapshot(
     split_strategy: str = "sort",
     device=None,
     stream=None,
+    _context=None,
 ) -> DeviceOpticalBvh:
-    """Build a median-split triangle BVH and upload flat buffers to device."""
+    """Build the existing median topology, with optional guarded setup custody.
+
+    Captured primitive metadata remains the scene's immutable native input.
+    Legacy callers retain their copied metadata; slot bounds can later replace
+    the initial bounds without rebuilding the immutable topology.
+    """
+    from optical_worker.native_readback import _readback_native_arrays
+    from optical_worker.native_setup import (
+        _create_upload_context, _native_resource_scope, _prepare_native_events,
+        _upload_warp_array,
+    )
+
     total_start = time.perf_counter()
     _require_warp()
     if leaf_size <= 0:
@@ -580,126 +592,92 @@ def build_device_bvh_from_snapshot(
         raise ValueError("split_strategy must be 'sort' or 'partition'")
     if snapshot.triangle_aabb_min is None or snapshot.triangle_aabb_max is None:
         raise ValueError("build_device_bvh_from_snapshot requires AABB snapshot buffers")
-    wp.init()
-    resolved_device = snapshot.scene.device if device is None else wp.get_device(device)
+    if _context is None:
+        wp.init()
+    resolved_device = snapshot.scene.device if device is None else (
+        device if _context is not None else wp.get_device(device))
     if resolved_device != snapshot.scene.device:
         raise ValueError("DeviceOpticalBvh device must match DeviceOpticalSceneSnapshot device")
-
-    device_to_host_start = time.perf_counter()
-    _synchronize_event(snapshot.ready_event)
     scene = snapshot.scene
-    aabb_min = np.asarray(snapshot.triangle_aabb_min.numpy(), dtype=np.float32)
-    aabb_max = np.asarray(snapshot.triangle_aabb_max.numpy(), dtype=np.float32)
-    source_keys = np.asarray(scene.triangle_source_order_key.numpy(), dtype=np.int64)
-    primitive_global_id = np.asarray(scene.triangle_primitive_global_id.numpy(), dtype=np.int32)
-    primitive_instance_index = np.asarray(scene.triangle_instance_index.numpy(), dtype=np.int32)
-    primitive_index_within_instance = np.asarray(
-        scene.triangle_primitive_index_within_instance.numpy(),
-        dtype=np.int32,
-    )
-    primitive_geometry_index = np.asarray(scene.triangle_geometry_index.numpy(), dtype=np.int32)
-    primitive_geometry_primitive_index = np.asarray(
-        scene.triangle_geometry_primitive_index.numpy(),
-        dtype=np.int32,
-    )
-    device_to_host_ms = (time.perf_counter() - device_to_host_start) * 1000.0
+    with _native_resource_scope(wp, resolved_device, lane="warp", stream=stream, context=_context,
+            owner_role="initial_bvh_custody", scope_id="initial_bvh_scope") as (lifecycle, owners, operation):
+        device_to_host_start = time.perf_counter()
+        arrays = (
+            ("triangle_aabb_min", snapshot.triangle_aabb_min, np.dtype("float32")),
+            ("triangle_aabb_max", snapshot.triangle_aabb_max, np.dtype("float32")),
+            ("triangle_source_order_key", scene.triangle_source_order_key, np.dtype("int64")),
+        )
+        metadata = {
+            "primitive_global_id": scene.triangle_primitive_global_id,
+            "primitive_instance_index": scene.triangle_instance_index,
+            "primitive_index_within_instance": scene.triangle_primitive_index_within_instance,
+            "primitive_geometry_index": scene.triangle_geometry_index,
+            "primitive_geometry_primitive_index": scene.triangle_geometry_primitive_index,
+            "primitive_source_order_key": scene.triangle_source_order_key,
+        }
+        if lifecycle is None:
+            _synchronize_event(snapshot.ready_event)
+            observations = [(name, np.asarray(value.numpy(), dtype=dtype)) for name, value, dtype in arrays]
+            host_metadata = {name: np.asarray(value.numpy(), dtype=np.int32)
+                             for name, value in metadata.items() if name != "primitive_source_order_key"}
+            host_metadata["primitive_source_order_key"] = observations[-1][1]
+        else:
+            lifecycle.require_adopted(snapshot, scene, *(value for _, value, _ in arrays), *metadata.values())
+            if snapshot.ready_event is not None:
+                lifecycle.require_adopted(snapshot.ready_event)
+                if snapshot.ready_event.device is not resolved_device:
+                    raise ValueError("initial BVH snapshot event differs from its target")
+                with operation("initial_bvh_snapshot_wait", "event_wait"):
+                    wp.synchronize_event(snapshot.ready_event)
+            observations = _readback_native_arrays(
+                tuple((name, tuple(value.shape), dtype, value) for name, value, dtype in arrays),
+                lifecycle, wp, resolved_device, stream, False, owners)
+        aabb_min, aabb_max, source_keys = (value for _, value in observations)
+        device_to_host_ms = (time.perf_counter() - device_to_host_start) * 1000.0
 
-    host_build_start = time.perf_counter()
-    host_bvh = build_host_median_bvh(
-        aabb_min,
-        aabb_max,
-        source_keys,
-        leaf_size=int(leaf_size),
-        split_strategy=split_strategy,
-    )
-    topology_sha256 = host_bvh_topology_sha256(host_bvh)
-    host_build_ms = (time.perf_counter() - host_build_start) * 1000.0
+        host_build_start = time.perf_counter()
+        host_bvh = build_host_median_bvh(aabb_min, aabb_max, source_keys,
+                                       leaf_size=int(leaf_size), split_strategy=split_strategy)
+        owners.append(host_bvh)
+        topology_sha256 = host_bvh_topology_sha256(host_bvh)
+        host_build_ms = (time.perf_counter() - host_build_start) * 1000.0
 
-    upload_start = time.perf_counter()
-    with _scoped_stream(stream):
-        bounds_min = _wp_array(host_bvh["bounds_min"], dtype=wp.float32, device=resolved_device)
-        bounds_max = _wp_array(host_bvh["bounds_max"], dtype=wp.float32, device=resolved_device)
-        left = _wp_array(host_bvh["left"], dtype=wp.int32, device=resolved_device)
-        right = _wp_array(host_bvh["right"], dtype=wp.int32, device=resolved_device)
-        start = _wp_array(host_bvh["start"], dtype=wp.int32, device=resolved_device)
-        count = _wp_array(host_bvh["count"], dtype=wp.int32, device=resolved_device)
-        node_depth = _wp_array(host_bvh["node_depth"], dtype=wp.int32, device=resolved_device)
-        level_ranges = _wp_array(host_bvh["level_ranges"], dtype=wp.int32, device=resolved_device)
-        prim_ids = _wp_array(host_bvh["prim_ids"], dtype=wp.int32, device=resolved_device)
-        primitive_global_id_wp = _wp_array(primitive_global_id, dtype=wp.int32, device=resolved_device)
-        primitive_instance_index_wp = _wp_array(
-            primitive_instance_index, dtype=wp.int32, device=resolved_device
-        )
-        primitive_index_within_instance_wp = _wp_array(
-            primitive_index_within_instance,
-            dtype=wp.int32,
-            device=resolved_device,
-        )
-        primitive_geometry_index_wp = _wp_array(
-            primitive_geometry_index, dtype=wp.int32, device=resolved_device
-        )
-        primitive_geometry_primitive_index_wp = _wp_array(
-            primitive_geometry_primitive_index,
-            dtype=wp.int32,
-            device=resolved_device,
-        )
-        primitive_source_order_key_wp = _wp_array(source_keys, dtype=wp.int64, device=resolved_device)
-        ready_event = (stream or wp.get_stream(resolved_device)).record_event()
-    upload_ms = (time.perf_counter() - upload_start) * 1000.0
-    stats = replace(
-        host_bvh["stats"],
-        device_to_host_ms=device_to_host_ms,
-        host_build_ms=host_build_ms,
-        upload_ms=upload_ms,
-        total_ms=(time.perf_counter() - total_start) * 1000.0,
-        split_strategy=split_strategy,
-    )
-
-    resources = (
-        bounds_min,
-        bounds_max,
-        left,
-        right,
-        start,
-        count,
-        node_depth,
-        level_ranges,
-        prim_ids,
-        primitive_global_id_wp,
-        primitive_instance_index_wp,
-        primitive_index_within_instance_wp,
-        primitive_geometry_index_wp,
-        primitive_geometry_primitive_index_wp,
-        primitive_source_order_key_wp,
-    )
-    return DeviceOpticalBvh(
-        device=resolved_device,
-        frame_id=snapshot.frame_id,
-        env_idx=snapshot.env_idx,
-        bounds_min=bounds_min,
-        bounds_max=bounds_max,
-        left=left,
-        right=right,
-        start=start,
-        count=count,
-        node_depth=node_depth,
-        level_ranges=level_ranges,
-        prim_ids=prim_ids,
-        primitive_global_id=primitive_global_id_wp,
-        primitive_instance_index=primitive_instance_index_wp,
-        primitive_index_within_instance=primitive_index_within_instance_wp,
-        primitive_geometry_index=primitive_geometry_index_wp,
-        primitive_geometry_primitive_index=primitive_geometry_primitive_index_wp,
-        primitive_source_order_key=primitive_source_order_key_wp,
-        stats=stats,
-        topology_origin_id=(
-            WARP_BVH_TOPOLOGY_ORIGIN_ID if int(leaf_size) == 4 and split_strategy == "sort" else None
-        ),
-        scene_contract_sha256=scene.scene_contract_sha256,
-        topology_sha256=topology_sha256,
-        ready_event=ready_event,
-        resources=resources,
-    )
+        upload_start = time.perf_counter()
+        uploaded = {}
+        owners.append(uploaded)
+        for name in ("bounds_min", "bounds_max", "left", "right", "start", "count",
+                     "node_depth", "level_ranges", "prim_ids"):
+            value = host_bvh[name]
+            if lifecycle is None:
+                uploaded[name] = _wp_array(value, dtype=wp.float32 if name.startswith("bounds_") else wp.int32,
+                                           device=resolved_device)
+            else:
+                uploaded[name] = _upload_warp_array(lifecycle, wp, resolved_device, stream,
+                                                    "initial_bvh_" + name, value)
+        if lifecycle is None:
+            metadata = {name: _wp_array(value, dtype=wp.int64 if name == "primitive_source_order_key" else wp.int32,
+                                       device=resolved_device) for name, value in host_metadata.items()}
+            ready_event = (stream or wp.get_stream(resolved_device)).record_event()
+        else:
+            context = _create_upload_context(lifecycle, wp, resolved_device, stream)
+            ready_event, _ = _prepare_native_events(wp, resolved_device, stream, lane="warp",
+                                                    phase_names=(), context=context)
+        owners.append(ready_event)
+        upload_ms = (time.perf_counter() - upload_start) * 1000.0
+        stats = replace(host_bvh["stats"], device_to_host_ms=device_to_host_ms,
+                        host_build_ms=host_build_ms, upload_ms=upload_ms,
+                        total_ms=(time.perf_counter() - total_start) * 1000.0,
+                        split_strategy=split_strategy)
+        result = DeviceOpticalBvh(device=resolved_device, frame_id=snapshot.frame_id,
+            env_idx=snapshot.env_idx, **uploaded, **metadata, stats=stats,
+            topology_origin_id=(WARP_BVH_TOPOLOGY_ORIGIN_ID
+                                if int(leaf_size) == 4 and split_strategy == "sort" else None),
+            scene_contract_sha256=scene.scene_contract_sha256, topology_sha256=topology_sha256,
+            ready_event=ready_event, resources=(snapshot, *uploaded.values(), *metadata.values(), ready_event))
+        owners.append(result)
+        if lifecycle is not None:
+            lifecycle.adopt_host_owner(result, role="initial_bvh_topology", operation_id="initial_bvh_topology")
+    return result
 
 
 def refit_device_bvh_from_snapshot(

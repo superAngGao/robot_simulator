@@ -77,7 +77,8 @@ def executable_graph(graph_session, monkeypatch, diagnostic, request):
         class Bundle:
             def __init__(self, factory, camera, **kwargs):
                 self.camera = camera
-                self.binding = NS(factory=factory, traversal_diagnostics=kwargs['traversal_diagnostics'])
+                self.binding = NS(factory=factory, traversal_diagnostics=kwargs['traversal_diagnostics'],
+                                  transform_frame_index=kwargs['transform_frame_index'])
                 ids = render._render_command_ids(ray_source='camera', num_rays=camera.query.num_rays,
                     shadows=kwargs['shadows'], diagnostics=kwargs['traversal_diagnostics'])
                 self.descriptors = tuple(NS(entry_id=name) for name in ids)

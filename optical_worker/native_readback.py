@@ -89,20 +89,34 @@ def _readback_prepared_native_input(source, prepared, *, lifecycle, runtime, tar
 
 
 def _readback_held_input(source, prepared, lifecycle, runtime, target, stream, cuda, retained):
-    import numpy as np
-
     from .native_input import _validate_native_input_host_observations
+
+    arrays = tuple((row.name, row.shape, row.dtype, prepared.arrays[row.name])
+                   for row in source.manifest.arrays)
+    observations = _readback_native_arrays(arrays, lifecycle, runtime, target, stream, cuda, retained)
+
+    assert_prepared_storage_registered(prepared)
+    report = _validate_native_input_host_observations(source, prepared, observations)
+    retained.append(report)
+    lifecycle.adopt_host_owner(
+        report, role="native_input_validation_report", operation_id="native_input_validation_report"
+    )
+    return report
+
+
+def _readback_native_arrays(arrays, lifecycle, runtime, target, stream, cuda, retained):
+    """Shared setup D2H body; caller retains the list and owns the active guard."""
+    import numpy as np
 
     observations = []
     retained.append(observations)
-    for manifest in source.manifest.arrays:
-        device_array = prepared.arrays[manifest.name]
-        host = np.empty(manifest.shape, dtype=np.dtype(manifest.dtype), order="C")
+    for name, shape, dtype, device_array in arrays:
+        host = np.empty(shape, dtype=np.dtype(dtype), order="C")
         retained.append(host)
         lifecycle.adopt_host_owner(
             host,
             role="validation_d2h_host_storage",
-            operation_id=_array_operation_id("validation_host", manifest.name),
+            operation_id=_array_operation_id("validation_host", name),
         )
         if cuda:
             view = runtime.from_numpy(host)
@@ -114,12 +128,12 @@ def _readback_held_input(source, prepared, lifecycle, runtime, target, stream, c
         lifecycle.adopt_host_owner(
             view,
             role="validation_d2h_host_view",
-            operation_id=_array_operation_id("validation_view", manifest.name),
+            operation_id=_array_operation_id("validation_view", name),
         )
         lifecycle.require_adopted(host, view, device_array, stream)
         _leaf(
             lifecycle,
-            _array_operation_id("validation_d2h", manifest.name),
+            _array_operation_id("validation_d2h", name),
             "device_to_host_copy",
             "torch_copy_explicit_stream_v1" if cuda else "warp_copy_explicit_stream_v1",
         )
@@ -127,7 +141,7 @@ def _readback_held_input(source, prepared, lifecycle, runtime, target, stream, c
             _torch_copy_exact(runtime, view, device_array, stream)
         else:
             _warp_copy_exact(runtime, view, device_array, stream)
-        observations.append((manifest.name, host))
+        observations.append((name, host))
 
     _leaf(
         lifecycle,
@@ -180,10 +194,4 @@ def _readback_held_input(source, prepared, lifecycle, runtime, target, stream, c
     else:
         _warp_wait_event_host_exact(runtime, event)
 
-    assert_prepared_storage_registered(prepared)
-    report = _validate_native_input_host_observations(source, prepared, observations)
-    retained.append(report)
-    lifecycle.adopt_host_owner(
-        report, role="native_input_validation_report", operation_id="native_input_validation_report"
-    )
-    return report
+    return observations

@@ -51,3 +51,46 @@ execution and C3/arena plans; ten observed warmups/final barrier; native and
 numerical evidence and a fresh independent review. This partial change does not
 open product PREPARE, measured submission, C2f or any performance/selection gate.
 The full C4 goal and final systematic refactor review remain outstanding.
+
+## Continued R1 storage and warmup composition (not yet accepted)
+
+The original guarded input readback loop is now shared with initial topology
+readback; the existing Warp staging/allocation/upload body is extracted once
+and reused by a2 and derived tree arrays. The existing median BVH builder has
+an internal guarded-context path. Captured metadata uses the original immutable
+prepared scene allocations; legacy callers still receive their original copied
+metadata semantics. Both paths use the same host topology algorithm.
+
+A named dynamic storage record owns world, slot acceleration, render outputs,
+immutable Warp topology and CUDA workspace. Warp executes initial frame0 scene
+commands under setup custody, observes completion, builds the original leaf4/sort
+topology, and allocates distinct mutable slot bounds. This initial snapshot is
+not counted among the ten complete warmups. CUDA reuses its world/LBVH/workspace
+allocators. Every returned owner is held before subsequent fallible work.
+
+Provisional frame construction selects the exact replay index, creates actual
+scene-update/refit or rebuild stages and reuses the original camera/render bind.
+The existing Warp recorded executor now accepts the two fixed preceding stages;
+CUDA uses its original three-stage template. The same ten-warmup driver runs
+both five-phase variants with one terminal event per transaction and completion
+credited only after DISARMED. Final R1 graph/C3/arena adaptation is STILL PENDING;
+this partial code cannot pass the existing R0-only final admission.
+
+Following readback/upload extraction, guarded-readback/dynamic-recording/native-
+command units passed48 checks in3.30s. Existing R0 warmup/preparation/final graph
+regressions are being run. A fake R0 render binding needed its real protocol's
+transform_frame_index=None field after explicit replay-stage validation was
+added; the fixture was corrected instead of weakening production validation.
+Native dynamic execution and full frozen-candidate review remain required.
+
+The running R0 warmup/preparation/final graph selection completed216 passed in
+265.57s. The last CUDA input-view helper relocation followed that run and needs
+its own regression check: the two existing helpers now live with their input
+classes in cuda_direct_light, and cuda_arena re-exports them. The provisional
+R1 renderer can reuse them without importing the final arena before its admitted
+phase. No source-admission phase was widened for this relocation.
+
+The current draft catalog is regenerated after these changes; the earlier
+catalog digest above records the initial590e333 snapshot, not later source bytes.
+Real legacy Warp scene/refit regression will run from a clean remote snapshot;
+it does not replace the required captured R1 worker validation.
