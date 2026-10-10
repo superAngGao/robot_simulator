@@ -678,3 +678,32 @@ per-generation persistence/CPU comparison/sentinels, G3 allocation/capacity,
 complete G4/G5 fault/OS evidence and independent coherent packet acceptance
 remain mandatory. Formal speed comparison and every later product gate stay
 closed; continue the unchanged full C4 objective.
+
+### POSIX/Go2 CPU supplement for exactf623889
+
+The implementation above is committed as
+f62388974b1bc787b082315bc8510db5b4e6e9a9. Changed readback/new tests pass Ruff;
+native_setup and the older driver have the same83 preexisting diagnostics as
+858417e after path/line normalization, with none added
+(`prepared_readback_lint_{baseline,candidate}_v2.json`). Git whitespace passes.
+
+Primary SSH transport is reachable; hosthd03-gpu2-0031, original isolated
+binding worktreea3d750bbaf79d760a6727e56146d277e1cb3b770 was tracked clean.
+A separate shared-object clone at
+`/data2/shared/ang.gao/c4-prepared-readback-cpu-f623889-v1/repo` checks out the
+exactf623889 commit from a Git bundle. The original worktree/branch and existing
+native campaigns were not changed. The four Windows-skipped cases were run
+with Python3.12.13, the pinned Go2 asset directory and bytecode disabled:
+
+`python -u -m pytest tests/unit/optics/test_native_sources.py -k 'real_go2_cpu_materialization or actual_posix_checkout' -v -ra --disable-warnings --maxfail=1`
+
+Result:4passed,39deselected,17.26s, no skips. These are CPU materialization and
+real POSIX checkout-byte checks; the cold materializer asserts neither Torch
+nor Warp runtime was imported. No GPU/native worker execution was launched.
+Remote `pytest.txt` is972bytes, SHA256
+7003cce07911a3a41eb2f13e26abc58668bd9b739f19fa0a226db446a26cea20;
+local copy `../c4_assets/prepared_readback_cpu_posix_v1.txt`.
+Tool93542 is terminal0. Closure records runner4135439 and pytest4135517 absent
+from `/proc`, exit0, exactf623889 and tracked-clean checkout; local copy
+`prepared_readback_cpu_posix_closure_v1.json`. Preparation-side evidence is now
+complete for these listed CPU checks, not the G1-G5 implementation or C4.

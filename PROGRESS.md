@@ -2094,6 +2094,9 @@ Next milestone:
       integration checks pass; broader regression is485passed with4 asset/POSIX
       skips. D1 final-resolve admission and actual final-generation numerical
       comparison remain unimplemented, so this is preparation progress only.
+      All4 asset/POSIX skips were supplemented successfully on primary Linux
+      at exactf623889, using an isolated CPU checkout; owned processes exited.
+      No native GPU campaign or integrated approval is claimed.
       Author full source
       regression passes317 with13 Windows skips, all13 supplemented successfully
       on primary Linux. Separately the approvedfc23b4e
