@@ -150,6 +150,37 @@ def test_upload_body_matches_approved_pre_extraction_ast(lane):
     assert ids.changed == 5
     new_function = getattr(native_setup, f"_upload_{lane}_native_input")
     new = ast.parse(inspect.getsource(new_function)).body[0]
+    if lane == "warp":
+        # Inline the shared per-array body for the historical comparison. This
+        # retains every allocation/copy/adoption node rather than exempting the
+        # new helper from the original register-before-copy regression.
+        import copy
+
+        helper = ast.parse(inspect.getsource(native_setup._upload_warp_array)).body[0]
+        assert [arg.arg for arg in helper.args.args] == ["lifecycle", "wp", "target", "stream", "name", "value"]
+        assert ast.dump(helper.body[1]) == ast.dump(ast.parse("import numpy as np").body[0])
+        assert ast.dump(helper.body[-1]) == ast.dump(ast.parse("return destination").body[0])
+        expected_call = ast.parse(
+            "destination = _upload_warp_array(lifecycle, wp, target, stream, manifest.name, value)"
+        ).body[0]
+
+        class BindName(ast.NodeTransformer):
+            def visit_Name(self, node):
+                return ast.parse("manifest.name", mode="eval").body if node.id == "name" else node
+
+        class InlineArray(ast.NodeTransformer):
+            count = 0
+
+            def visit_Assign(self, node):
+                if ast.dump(node) == ast.dump(expected_call):
+                    self.count += 1
+                    return [BindName().visit(copy.deepcopy(statement)) for statement in helper.body[2:-1]]
+                return self.generic_visit(node)
+
+        inline = InlineArray()
+        new = inline.visit(new)
+        assert inline.count == 1
+        new.body.insert(2, copy.deepcopy(helper.body[1]))
     new_start = next(
         i for i, n in enumerate(new.body) if isinstance(n, ast.Import) and n.names[0].name == "numpy"
     )

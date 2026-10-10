@@ -94,3 +94,41 @@ The current draft catalog is regenerated after these changes; the earlier
 catalog digest above records the initial590e333 snapshot, not later source bytes.
 Real legacy Warp scene/refit regression will run from a clean remote snapshot;
 it does not replace the required captured R1 worker validation.
+
+## Verification of working production snapshot7ae02b6
+
+Exact production revision:7ae02b60659075470c21907cf950f52a0723d0ec.
+Remote clean detached worktree:/data2/shared/ang.gao/robot_sim_dynamic_graph_7ae02b6.
+The primary robot_sim interpreter ran the existing
+ tests/gpu/test_optical_warp_native_commands.py
+with -B -m pytest -q -rs -p no:cacheprovider and a dedicated scratch basetemp:
+9 passed in16.10s, no skips. CUDA_VISIBLE_DEVICES=1 confines these legacy tests
+to physical GPU1 (seen as logical0); this is NOT target1/ambient0 scope proof.
+The suite covers actual canonical scene update/refit, fresh bounds/traversal,
+slot bounds ownership, alias/stream drift, command reordering, empty triangles
+and noncanonical topology rejection. It exercises the legacy builder interface,
+not the new captured dynamic storage/warmup session.
+
+Raw directory c4_assets/c4-dynamic-legacy-gpu-7ae02b6, mirrored from primary
+/data2/shared/ang.gao/c4-dynamic-legacy-gpu-7ae02b6, contains request/result,
+GPU UUID mapping and pytest log. Log SHA256
+84c1baed5cf2e2469cc09b12487f7567b2d2a4ecbbcf8b3dfb244fc6312111b0;
+result SHA256 e1a2c68b6395c549f2b43e34b1cc247db11b418f5fdf042c2f7cd4e0242dc42e.
+Wrapper922815 and pytest922822 were observed absent after tool44914 returned0.
+No other GPU processes were signaled or reset. The remote candidate stayed clean.
+
+Fresh local CUDA arena contract/resolution, guarded readback and dynamic command
+checks passed75 in6.28s after the input-view helper relocation. Native-upload core
+and guarded binding initially passed88 with one AST-comparison failure because
+the test assumed NumPy's import remained in the outer upload function. The test
+now inlines the exact shared helper body, with strict argument/call/return shape
+checks, before comparing all original allocation/copy/adoption AST nodes. It
+does not exempt the helper's operations. That unchanged-behavior assertion and
+binding suites now pass89 in5.23s. The repair changes tests only; production
+bytes remain7ae02b6. Current production catalog SHA256
+ d365c2e54c3d29534bc8c79c87c12ce9c66fdfef2caf844f10f0944b039512bd.
+
+Next work is the R1 final factory/C3/arena composition and exact row admission,
+then full captured native R1 success/failure/numerical verification and fresh
+independent review as one coherent packet. C2f and subsequent full C4 acceptance
+remain outstanding; do not report these legacy GPU tests as that acceptance.
