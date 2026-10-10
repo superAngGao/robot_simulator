@@ -3234,280 +3234,43 @@ class _SourceSession:
 
 
 
+    def _retained_setup_input(self):
+        """The exact upload record; optical orchestration does not own this registry."""
+        return _UPLOADED_INPUTS.get(self)
+
+    @staticmethod
+    def _require_setup_condition(condition, message):
+        _require(condition, message)
+
     def prepare_cuda_factories(self):
-        """Parent setup foundation only: no slots, warmups or execution readiness."""
-        try:
-            self.check_live()
-            _require(self.lane == "cuda" and self.phase == "input_validated",
-                     "CUDA factory preparation requires this session's validated input, once")
-            controller = self.bound_controller()
-            with controller.segment("setup"):
-                self.phase = "preparing_cuda_factories"
-                record = _UPLOADED_INPUTS.get(self)
-                _require(record is not None and record[1] is self.prepared_input
-                         and self.validation_report is not None,
-                         "CUDA factories require the original uploaded and validated input")
-                runtime_record, prepared = record
-                module, target, stream = self._validate_runtime_binding_record(runtime_record[0], runtime_record)
-                controller.require_adopted(prepared)
-                extensions = self.cuda_extensions()
-                from optical_worker.native_setup import _prepare_cuda_factory_owners
+        from optical_worker.native_setup import _session_prepare_cuda_factories
 
-                try:
-                    factories = _prepare_cuda_factory_owners(self, prepared, module, target, stream, extensions)
-                except BaseException:
-                    if not controller._terminating and not controller._replay.unknown:
-                        try:
-                            controller.mark_unknown_device_scope(
-                                source="partial_cuda_factory_preparation", reason="cuda_factories_not_completed")
-                        except BaseException as scope_error:
-                            self.runtime_owners.append(scope_error)
-                    raise
-                self.cuda_factories = factories
-                self.audit()
-                self.external.audit()
-            self.phase = "cuda_factories_ready"
-            # The six input phases remain unchanged. This is a later parent
-            # setup guard, not another input phase or a final readiness record.
-            self.runtime_observation.checkpoint()
-            return factories
-        except BaseException as error:
-            self.fail(error)
-            raise
-
-    def _fail_warp_preparation(self, error, runtime_record):
-        controller = self.bound_controller()
-        if (controller.termination_evidence is not None or controller._terminating
-                or controller._replay.failed or controller._guard_client.state != "IDLE"):
-            self.fail(error)
-            return
-        synchronize = None
-        try:
-            _require(not controller._replay.compromised, "existing scope requires quarantine")
-            _require(self.lane == "warp" and runtime_record is not None,
-                     "no retained Warp runtime for idle disposal")
-            module, target, _stream = self._validate_runtime_binding_resources(runtime_record[0], runtime_record)
-            setup = self.modules["optical_worker.native_setup"][0]
-            _require(sys.modules.get("optical_worker.native_setup") is setup, "setup module identity drift")
-
-            def synchronize():
-                setup._warp_synchronize_target_exact(module, target)
-        except BaseException as custody_error:
-            self.runtime_owners.append(custody_error)
-            controller.mark_unknown_device_scope(
-                source="warp_preparation_failure", reason="runtime_custody_not_validated")
-        self._retain_failure(error)
-        # Preserve the actual IDLE history. The existing lifecycle alone chooses
-        # quarantine or its one emergency target synchronization and release.
-        controller.terminate(fault="setup_failure", detection_phase="warp_preparation_idle_failure",
-                             emergency_target_synchronize=synchronize)
+        return _session_prepare_cuda_factories(self)
 
     def prepare_warp_modules(self):
-        """Compile existing optical modules; does not issue execution readiness."""
-        uploaded = _UPLOADED_INPUTS.get(self)
-        runtime_record = None if uploaded is None else uploaded[0]
-        try:
-            self.check_live()
-            _require(self.lane == "warp" and self.phase == "input_validated"
-                     and not self.warp_preparation_started,
-                     "Warp module preparation requires this session's validated input, once")
-            self.warp_preparation_started = True
-            controller = self.bound_controller()
-            # This must precede adopted-resource APIs: their compromised-scope
-            # rejection poisons normal work, even when no segment is active.
-            _require(controller._guard_client.state == "IDLE" and not controller._context_active
-                     and controller._guard_reference is None and not controller._replay.compromised,
-                     "Warp module preparation requires healthy IDLE target scope")
-            _require(uploaded is not None and uploaded[1] is self.prepared_input
-                     and self.validation_report is not None,
-                     "Warp modules require the original uploaded and validated input")
-            binding = runtime_record[0]
-            self._validate_runtime_binding_resources(binding, runtime_record)
-            controller.require_adopted(self.prepared_input)
-            records = []
-            with controller.segment("setup"):
-                self.phase = "preparing_warp_modules"
-                self.audit()
-                self.external.audit()
-                from optical_worker import warp_setup
+        from optical_worker.native_setup import _session_prepare_warp_modules
 
-                warp_setup.validate_compilation_inputs(self)
-                warp_setup.validate_warp_cache(self, binding.module)
-                self._runtime_leaf("warp_optical_imports", "runtime_import_or_init")
-                from optics import device_scene, device_bvh, warp_native_render
-
-                for index, imported in enumerate((device_scene, device_bvh, warp_native_render)):
-                    python_module, module, definitions = warp_setup.definition_owners(self, index)
-                    _require(python_module is imported, "Warp captured module identity drift")
-                    self._hold_runtime_owner(module, "warp_imported_module")
-                    self._hold_runtime_owner(definitions, "warp_imported_definitions")
-                self.audit()
-                self.external.audit()
-            for index in range(3):
-                with controller.segment("setup"):
-                    self._validate_runtime_binding_record(binding, runtime_record)
-                    self.audit()
-                    self.external.audit()
-                    records.append(warp_setup.compile_module(self, binding, index))
-                    self.audit()
-                    self.external.audit()
-            self.warp_modules = warp_setup.issue_module_set(self, binding, tuple(records))
-            self.phase = "warp_modules_ready"
-            self.runtime_observation.checkpoint()
-            return self.warp_modules
-        except BaseException as error:
-            self._fail_warp_preparation(error, runtime_record)
-            raise
+        return _session_prepare_warp_modules(self)
 
     def prepare_fixed_render_storage(self, *, traversal_diagnostics=False):
-        """One supervised R0 storage construction, without execution readiness."""
-        try:
-            self.check_live()
-            expected_phase = "cuda_factories_ready" if self.lane == "cuda" else "warp_modules_ready"
-            _require(self.phase == expected_phase and type(traversal_diagnostics) is bool,
-                     "fixed render storage requires completed compilation, once")
-            _require(self.prepared_input.manifest.input_contract == "fixed_native_scene_v1",
-                     "fixed render storage requires canonical R0 input")
-            controller = self.bound_controller()
-            with controller.segment("setup"):
-                self.phase = "preparing_fixed_render_storage"
-                uploaded = _UPLOADED_INPUTS.get(self)
-                _require(uploaded is not None and uploaded[1] is self.prepared_input
-                         and self.validation_report is not None,
-                         "fixed render storage requires the original validated upload")
-                record, prepared = uploaded
-                module, target, stream = self._validate_runtime_binding_record(record[0], record)
-                controller.require_adopted(prepared)
-                self.audit()
-                self.external.audit()
-                if self.lane == "warp":
-                    from optical_worker import warp_setup
+        from optical_worker.native_setup import _session_prepare_fixed_render_storage
 
-                    warp_setup.validate_module_set(self, self.warp_modules)
-                else:
-                    self.cuda_extensions()
-                from optical_worker.native_setup import _prepare_fixed_render_storage
-
-                storage = _prepare_fixed_render_storage(
-                    self, module, target, stream, traversal_diagnostics=traversal_diagnostics)
-                self._hold_runtime_owner(storage, "fixed_render_storage")
-                self.fixed_render_storage = storage
-                if self.lane == "warp":
-                    warp_setup.validate_module_set(self, self.warp_modules)
-                self.audit()
-                self.external.audit()
-            self.phase = "fixed_render_storage_ready"
-            self.runtime_observation.checkpoint()
-            return storage
-        except BaseException as error:
-            self.fail(error)
-            raise
+        return _session_prepare_fixed_render_storage(self, traversal_diagnostics=traversal_diagnostics)
 
     def prepare_fixed_render_graph(self, *, profile, shadows, pass_mode):
-        """Prepare provisional frame commands/events, without executing optical work."""
-        try:
-            self.check_live()
-            _require(self.phase == "fixed_render_storage_ready", "fixed render graph requires its storage, once")
-            _require(type(profile) is str and profile in {"direct_light_full", "rgb_preview", "render_only"}
-                     and type(shadows) is bool and type(pass_mode) is str
-                     and pass_mode in {"primary_unprofiled", "diagnostic_profiled"},
-                     "invalid fixed render graph modes")
-            controller = self.bound_controller()
-            with controller.segment("setup"):
-                self.phase = "preparing_fixed_render_graph"
-                uploaded = _UPLOADED_INPUTS.get(self)
-                _require(uploaded is not None and uploaded[1] is self.prepared_input
-                         and self.validation_report is not None,
-                         "fixed render graph requires the original validated upload")
-                record, prepared = uploaded
-                module, target, stream = self._validate_runtime_binding_record(record[0], record)
-                controller.require_adopted(prepared, self.fixed_render_storage)
-                self.audit()
-                self.external.audit()
-                if self.lane == "warp":
-                    from optical_worker import warp_setup
-                    compiled = warp_setup.validate_module_set(self, self.warp_modules)
-                else:
-                    compiled = self.cuda_extensions()
-                from optical_worker.native_input import certify_native_readiness
-                from optical_worker.native_setup import _prepare_fixed_render_graph
+        from optical_worker.native_setup import _session_prepare_fixed_render_graph
 
-                readiness = certify_native_readiness(prepared, self.validation_report,
-                                                     compile_complete=True, warmup_frames_completed=0)
-                self._hold_runtime_owner(readiness, "provisional_input_readiness")
-                graph = _prepare_fixed_render_graph(self, module, target, stream, readiness=readiness,
-                    profile=profile, shadows=shadows, pass_mode=pass_mode)
-                self._hold_runtime_owner(graph, "provisional_fixed_render_graph")
-                if self.lane == "warp":
-                    _require(warp_setup.validate_module_set(self, self.warp_modules) is compiled,
-                             "render recording changed its compiled modules")
-                else:
-                    _require(self.cuda_extensions() is compiled, "render binding changed its CUDA extensions")
-                self.audit()
-                self.external.audit()
-            self.fixed_render_graph = graph
-            self.phase = "fixed_render_graph_ready"
-            self.runtime_observation.checkpoint()
-            return graph
-        except BaseException as error:
-            self.fail(error)
-            raise
+        return _session_prepare_fixed_render_graph(self, profile=profile, shadows=shadows, pass_mode=pass_mode)
 
     def run_fixed_render_warmups(self):
-        """Execute and observe ten setup-only frames; no final/sample authority."""
-        try:
-            self.check_live()
-            _require(self.phase == "fixed_render_graph_ready", "fixed render warmups require their graph, once")
-            with self.bound_controller().segment("setup"):
-                self.phase = "warming_fixed_render_graph"
-                uploaded = _UPLOADED_INPUTS.get(self)
-                _require(uploaded is not None and uploaded[1] is self.prepared_input,
-                         "warmup requires the original uploaded input")
-                record, prepared = uploaded
-                runtime, target, stream = self._validate_runtime_binding_record(record[0], record)
-                from optical_worker.warmup import _prepare_fixed_render_warmups, _run_fixed_render_warmups
+        from optical_worker.native_setup import _session_run_fixed_render_warmups
 
-                authority = _prepare_fixed_render_warmups(self, runtime, target, stream)
-            evidence = _run_fixed_render_warmups(authority)
-            self.fixed_render_warmups = evidence
-            self.phase = "fixed_render_warmups_ready"
-            self.runtime_observation.checkpoint()
-            return evidence
-        except BaseException as error:
-            self.fail(error)
-            raise
+        return _session_run_fixed_render_warmups(self)
 
     def prepare_fixed_final_graph(self, *, sample_count):
-        """Fixed-driver R0 composition and barrier; product IPC remains closed."""
-        try:
-            self.check_live()
-            _require(self.phase == "fixed_render_warmups_ready", "final graph requires observed warmups, once")
-            controller = self.bound_controller()
-            with controller.segment("setup"):
-                self.phase = "preparing_fixed_final_graph"
-                uploaded = _UPLOADED_INPUTS.get(self)
-                _require(uploaded is not None and uploaded[1] is self.prepared_input,
-                         "final graph requires the original uploaded input")
-                record, _prepared = uploaded
-                runtime, target, stream = self._validate_runtime_binding_record(record[0], record)
-                self.audit()
-                self.external.audit()
-                from optical_worker.native_setup import _prepare_fixed_final_graph
-                from optical_worker.arena import _spec_for_final_graph
+        from optical_worker.native_setup import _session_prepare_fixed_final_graph
 
-                spec = _spec_for_final_graph(self, sample_count=sample_count)
-                graph = _prepare_fixed_final_graph(self, runtime, target, stream,
-                                                   spec=spec, sample_count=sample_count)
-                self.audit()
-                self.external.audit()
-            self.final_render_graph = graph
-            self.phase = "fixed_final_graph_ready"
-            self.final_quiescence = controller.commit_target_barrier(_source_session=self, _graph=graph)
-            self.phase = "fixed_final_graph_admitted"
-            return graph
-        except BaseException as error:
-            self.fail(error)
-            raise
+        return _session_prepare_fixed_final_graph(self, sample_count=sample_count)
 
     def check_import_topology(self):
         """Pure CPU integrity, also usable by terminal stdlib after poison."""

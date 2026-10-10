@@ -8,6 +8,7 @@ guardian already exist.
 from __future__ import annotations
 
 
+import sys
 import weakref
 from collections.abc import Callable
 from contextlib import contextmanager, nullcontext
@@ -95,6 +96,345 @@ def _cuda_artifact_exec_exact(torch, target, stream, delegate, module):
         with torch.cuda.stream(stream):
             delegate.exec_module(module)
 
+@contextmanager
+def _optical_setup_operation(session):
+    """One failure boundary for the explicit optical preparation stages."""
+    source_checked = False
+    try:
+        session.check_live()
+        source_checked = True
+        yield
+    except BaseException as error:
+        try:
+            _fail_optical_preparation(session, error, source_integrity_failed=not source_checked)
+        except BaseException as disposal_error:
+            # A secondary retention/diagnostic failure must not replace the
+            # original stage exception. The source still owns partial intake.
+            session.failures.append(disposal_error)
+            try:
+                session.fail(error)
+            except BaseException as retention_error:
+                session.failures.append(retention_error)
+        raise
+
+
+def _fail_optical_preparation(session, error, *, source_integrity_failed):
+    controller = session.bound_controller()
+    controller._hold_failure(error)
+    healthy_idle = (
+        not source_integrity_failed
+        and controller.termination_evidence is None
+        and not controller._terminating
+        and not controller._replay.failed
+        and controller._guard_client.state == "IDLE"
+    )
+    synchronize = None
+    if (
+        healthy_idle
+        and not controller._replay.compromised
+        and not controller._replay.may_cancel_without_sync
+    ):
+        try:
+            uploaded = session._retained_setup_input()
+            session._require_setup_condition(uploaded is not None, "no retained runtime for idle disposal")
+            record = uploaded[0]
+            module, target, _stream = session._validate_runtime_binding_resources(record[0], record)
+            setup = session.modules["optical_worker.native_setup"][0]
+            session._require_setup_condition(
+                sys.modules.get("optical_worker.native_setup") is setup, "setup module identity drift"
+            )
+
+            def synchronize():
+                if session.lane == "warp":
+                    setup._warp_synchronize_target_exact(module, target)
+                else:
+                    with module.cuda.device(target):
+                        module.cuda.synchronize(target)
+        except BaseException as custody_error:
+            controller._hold_failure(custody_error)
+            session.runtime_owners.append(custody_error)
+            controller.mark_unknown_device_scope(
+                source="optical_preparation_failure", reason="runtime_custody_not_validated"
+            )
+    try:
+        session._retain_failure(error)
+    except BaseException as retention_error:
+        controller._fail_guard("operation", retention_error)
+    if not healthy_idle:
+        controller._fail_guard("operation", error)
+    if controller.termination_evidence is None and not controller._terminating:
+        controller.terminate(
+            fault="setup_failure",
+            detection_phase="optical_preparation_failure",
+            emergency_target_synchronize=synchronize,
+        )
+
+
+def _validated_optical_input(session):
+    uploaded = session._retained_setup_input()
+    session._require_setup_condition(
+        uploaded is not None
+        and uploaded[1] is session.prepared_input
+        and session.validation_report is not None,
+        "optical preparation requires the original uploaded and validated input",
+    )
+    record, prepared = uploaded
+    runtime, target, stream = session._validate_runtime_binding_record(record[0], record)
+    session.bound_controller().require_adopted(prepared)
+    return prepared, runtime, target, stream
+
+
+def _audit_optical_setup(session):
+    session.audit()
+    session.external.audit()
+
+
+def _publish_optical_stage(session, *, preparing, ready):
+    """Checkpoint the completed guard before making its result usable."""
+    session._require_setup_condition(session.phase == preparing, "optical preparation phase changed")
+    session.runtime_observation.checkpoint()
+    session.check_live()
+    session._require_setup_condition(session.phase == preparing, "optical preparation phase changed")
+    session.phase = ready
+
+
+def _session_prepare_cuda_factories(session):
+    """Parent setup foundation only: no slots, warmups or execution readiness."""
+    with _optical_setup_operation(session):
+        session._require_setup_condition(
+            session.lane == "cuda" and session.phase == "input_validated",
+            "CUDA factory preparation requires this session's validated input, once",
+        )
+        controller = session.bound_controller()
+        with controller.segment("setup"):
+            session.phase = "preparing_cuda_factories"
+            prepared, module, target, stream = _validated_optical_input(session)
+            extensions = session.cuda_extensions()
+
+            try:
+                factories = _prepare_cuda_factory_owners(
+                    session, prepared, module, target, stream, extensions
+                )
+            except BaseException:
+                if not controller._terminating and not controller._replay.unknown:
+                    try:
+                        controller.mark_unknown_device_scope(
+                            source="partial_cuda_factory_preparation", reason="cuda_factories_not_completed"
+                        )
+                    except BaseException as scope_error:
+                        session.runtime_owners.append(scope_error)
+                raise
+            session.cuda_factories = factories
+            _audit_optical_setup(session)
+        # The six input phases remain unchanged. This is a later parent
+        # setup guard, not another input phase or a final readiness record.
+        _publish_optical_stage(session, preparing="preparing_cuda_factories", ready="cuda_factories_ready")
+        return factories
+
+
+def _session_prepare_warp_modules(session):
+    """Compile existing optical modules; does not issue execution readiness."""
+    uploaded = session._retained_setup_input()
+    runtime_record = None if uploaded is None else uploaded[0]
+    with _optical_setup_operation(session):
+        session._require_setup_condition(
+            session.lane == "warp"
+            and session.phase == "input_validated"
+            and not session.warp_preparation_started,
+            "Warp module preparation requires this session's validated input, once",
+        )
+        session.warp_preparation_started = True
+        controller = session.bound_controller()
+        # This must precede adopted-resource APIs: their compromised-scope
+        # rejection poisons normal work, even when no segment is active.
+        session._require_setup_condition(
+            controller._guard_client.state == "IDLE"
+            and not controller._context_active
+            and controller._guard_reference is None
+            and not controller._replay.compromised,
+            "Warp module preparation requires healthy IDLE target scope",
+        )
+        session._require_setup_condition(
+            uploaded is not None
+            and uploaded[1] is session.prepared_input
+            and session.validation_report is not None,
+            "Warp modules require the original uploaded and validated input",
+        )
+        binding = runtime_record[0]
+        session._validate_runtime_binding_resources(binding, runtime_record)
+        controller.require_adopted(session.prepared_input)
+        records = []
+        with controller.segment("setup"):
+            session.phase = "preparing_warp_modules"
+            _audit_optical_setup(session)
+            from optical_worker import warp_setup
+
+            warp_setup.validate_compilation_inputs(session)
+            warp_setup.validate_warp_cache(session, binding.module)
+            session._runtime_leaf("warp_optical_imports", "runtime_import_or_init")
+            from optics import device_scene, device_bvh, warp_native_render
+
+            for index, imported in enumerate((device_scene, device_bvh, warp_native_render)):
+                python_module, module, definitions = warp_setup.definition_owners(session, index)
+                session._require_setup_condition(
+                    python_module is imported, "Warp captured module identity drift"
+                )
+                session._hold_runtime_owner(module, "warp_imported_module")
+                session._hold_runtime_owner(definitions, "warp_imported_definitions")
+            _audit_optical_setup(session)
+        for index in range(3):
+            with controller.segment("setup"):
+                session._validate_runtime_binding_record(binding, runtime_record)
+                _audit_optical_setup(session)
+                records.append(warp_setup.compile_module(session, binding, index))
+                _audit_optical_setup(session)
+        session.warp_modules = warp_setup.issue_module_set(session, binding, tuple(records))
+        _publish_optical_stage(session, preparing="preparing_warp_modules", ready="warp_modules_ready")
+        return session.warp_modules
+
+
+def _session_prepare_fixed_render_storage(session, *, traversal_diagnostics=False):
+    """One supervised R0 storage construction, without execution readiness."""
+    with _optical_setup_operation(session):
+        expected_phase = "cuda_factories_ready" if session.lane == "cuda" else "warp_modules_ready"
+        session._require_setup_condition(
+            session.phase == expected_phase and type(traversal_diagnostics) is bool,
+            "fixed render storage requires completed compilation, once",
+        )
+        session._require_setup_condition(
+            session.prepared_input.manifest.input_contract == "fixed_native_scene_v1",
+            "fixed render storage requires canonical R0 input",
+        )
+        controller = session.bound_controller()
+        with controller.segment("setup"):
+            session.phase = "preparing_fixed_render_storage"
+            prepared, module, target, stream = _validated_optical_input(session)
+            _audit_optical_setup(session)
+            if session.lane == "warp":
+                from optical_worker import warp_setup
+
+                warp_setup.validate_module_set(session, session.warp_modules)
+            else:
+                session.cuda_extensions()
+
+            storage = _prepare_fixed_render_storage(
+                session, module, target, stream, traversal_diagnostics=traversal_diagnostics
+            )
+            session._hold_runtime_owner(storage, "fixed_render_storage")
+            session.fixed_render_storage = storage
+            if session.lane == "warp":
+                warp_setup.validate_module_set(session, session.warp_modules)
+            _audit_optical_setup(session)
+        _publish_optical_stage(
+            session, preparing="preparing_fixed_render_storage", ready="fixed_render_storage_ready"
+        )
+        return storage
+
+
+def _session_prepare_fixed_render_graph(session, *, profile, shadows, pass_mode):
+    """Prepare provisional frame commands/events, without executing optical work."""
+    with _optical_setup_operation(session):
+        session._require_setup_condition(
+            session.phase == "fixed_render_storage_ready", "fixed render graph requires its storage, once"
+        )
+        session._require_setup_condition(
+            type(profile) is str
+            and profile in {"direct_light_full", "rgb_preview", "render_only"}
+            and type(shadows) is bool
+            and type(pass_mode) is str
+            and pass_mode in {"primary_unprofiled", "diagnostic_profiled"},
+            "invalid fixed render graph modes",
+        )
+        controller = session.bound_controller()
+        with controller.segment("setup"):
+            session.phase = "preparing_fixed_render_graph"
+            prepared, module, target, stream = _validated_optical_input(session)
+            controller.require_adopted(session.fixed_render_storage)
+            _audit_optical_setup(session)
+            if session.lane == "warp":
+                from optical_worker import warp_setup
+
+                compiled = warp_setup.validate_module_set(session, session.warp_modules)
+            else:
+                compiled = session.cuda_extensions()
+            from optical_worker.native_input import certify_native_readiness
+
+            readiness = certify_native_readiness(
+                prepared, session.validation_report, compile_complete=True, warmup_frames_completed=0
+            )
+            session._hold_runtime_owner(readiness, "provisional_input_readiness")
+            graph = _prepare_fixed_render_graph(
+                session,
+                module,
+                target,
+                stream,
+                readiness=readiness,
+                profile=profile,
+                shadows=shadows,
+                pass_mode=pass_mode,
+            )
+            session._hold_runtime_owner(graph, "provisional_fixed_render_graph")
+            if session.lane == "warp":
+                session._require_setup_condition(
+                    warp_setup.validate_module_set(session, session.warp_modules) is compiled,
+                    "render recording changed its compiled modules",
+                )
+            else:
+                session._require_setup_condition(
+                    session.cuda_extensions() is compiled, "render binding changed its CUDA extensions"
+                )
+            _audit_optical_setup(session)
+        session.fixed_render_graph = graph
+        _publish_optical_stage(
+            session, preparing="preparing_fixed_render_graph", ready="fixed_render_graph_ready"
+        )
+        return graph
+
+
+def _session_run_fixed_render_warmups(session):
+    """Execute and observe ten setup-only frames; no final/sample authority."""
+    with _optical_setup_operation(session):
+        session._require_setup_condition(
+            session.phase == "fixed_render_graph_ready", "fixed render warmups require their graph, once"
+        )
+        with session.bound_controller().segment("setup"):
+            session.phase = "warming_fixed_render_graph"
+            _prepared, runtime, target, stream = _validated_optical_input(session)
+            from optical_worker.warmup import _prepare_fixed_render_warmups, _run_fixed_render_warmups
+
+            authority = _prepare_fixed_render_warmups(session, runtime, target, stream)
+        evidence = _run_fixed_render_warmups(authority)
+        session.fixed_render_warmups = evidence
+        _publish_optical_stage(
+            session, preparing="warming_fixed_render_graph", ready="fixed_render_warmups_ready"
+        )
+        return evidence
+
+
+def _session_prepare_fixed_final_graph(session, *, sample_count):
+    """Fixed-driver R0 composition and barrier; product IPC remains closed."""
+    with _optical_setup_operation(session):
+        session._require_setup_condition(
+            session.phase == "fixed_render_warmups_ready", "final graph requires observed warmups, once"
+        )
+        controller = session.bound_controller()
+        with controller.segment("setup"):
+            session.phase = "preparing_fixed_final_graph"
+            _prepared, runtime, target, stream = _validated_optical_input(session)
+            _audit_optical_setup(session)
+
+            from optical_worker.arena import _spec_for_final_graph
+
+            spec = _spec_for_final_graph(session, sample_count=sample_count)
+            graph = _prepare_fixed_final_graph(
+                session, runtime, target, stream, spec=spec, sample_count=sample_count
+            )
+            _audit_optical_setup(session)
+        session.final_render_graph = graph
+        session.phase = "fixed_final_graph_ready"
+        session.final_quiescence = controller.commit_target_barrier(_source_session=session, _graph=graph)
+        session.phase = "fixed_final_graph_admitted"
+        return graph
 
 def _prepare_cuda_factory_owners(session, prepared, torch, target, stream, extensions):
     """Reuse ordinary factories and retain each return inside its device scope."""

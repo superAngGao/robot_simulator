@@ -369,6 +369,27 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                         raise RuntimeError("Warp module reuse replaced a compiled executable")
             if (directory / "failure.json").exists() or (directory / "fault_entered.json").exists():
                 raise RuntimeError("positive native case has a failure marker")
+        elif fault == "runtime_optical_idle_entry":
+            marker = json.loads((directory / "fault_entered.json").read_bytes())
+            failure = json.loads((directory / "failure.json").read_bytes())
+            scope = json.loads((directory / "idle_sync_scope.json").read_bytes())
+            summary = worker["summary"]
+            completed = 7 if lane == "cuda" else 6
+            if (result["worker_returncode"] != 74 or control["normal_complete_count"] != completed
+                    or control["arm_count"] != completed + 1 or control["deadline_expired"] or control["kill_requested"]
+                    or marker != {"fault": fault, "boundary": "post_input_idle", "guard": None}
+                    or failure["type"] != "SourceBootstrapError"
+                    or failure["message"] != "fixed render storage requires completed compilation, once"
+                    or summary["disposition"] != "aborted_synced_exit" or summary["release_status"] != "completed"
+                    or summary["emergency_sync_attempt_count"] != 1
+                    or any(event["operation"] == "guard_failed" for event in worker["transition_trace"])
+                    or scope["before"] != scope["after"]):
+                raise RuntimeError("optical idle failure did not preserve its original completed guards and scope")
+            inside = scope["inside"]
+            if ([item["ordinal"] for item in inside["primary_contexts"] if item["active"]] != [1]
+                    or (inside["logical_device"] != 1 or inside["raw_device"] != 1
+                        if lane == "cuda" else inside["default_device"] != 1 or inside["current_context_device"] != 1)):
+                raise RuntimeError("optical idle disposal synchronized outside its exact target")
         elif fault in RUNTIME_FINAL_GRAPH_FAULTS:
             marker = json.loads((directory / "fault_entered.json").read_bytes())
             partial = json.loads((directory / "final_graph_partial.json").read_bytes())

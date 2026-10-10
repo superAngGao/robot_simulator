@@ -32,17 +32,18 @@ def test_compilation_inventory_covers_actual_kernel_function_and_struct_declarat
 
 
 @pytest.fixture
-def prepared_session(monkeypatch):
+def prepared_session(monkeypatch, request):
+    lane = getattr(request, "param", "warp")
     peer = Peer()
-    controller = NativeGuardedSetupLifecycle(lane_id="warp", channel=peer.channel, configuration=peer.config)
+    controller = NativeGuardedSetupLifecycle(lane_id=lane, channel=peer.channel, configuration=peer.config)
     session = object.__new__(bootstrap._SourceSession)
-    session.lane, session.phase = "warp", "input_validated"
+    session.lane, session.phase = lane, "input_validated"
     session.failed, session.failures, session.runtime_owners = False, [], []
     session.warp_preparation_started = False
     session.canonical_input, session.prepared_input, session.validation_report = object(), object(), object()
     session.runtime_observation = bootstrap._RuntimeObservation(session)
     session.modules = {"optical_worker.native_setup": (native_setup, None, "complete")}
-    wp = ModuleType("warp")
+    wp = ModuleType("warp" if lane == "warp" else "torch")
     runtime = object()
     wp.config = SimpleNamespace(quiet=True)
     target = SimpleNamespace(is_cuda=True, ordinal=controller.target_device_ordinal, runtime=runtime)
@@ -51,7 +52,12 @@ def prepared_session(monkeypatch):
         audit=lambda: controller._require_setup(), records={"warp": {"module": wp},
             "warp._src.context": {"module": SimpleNamespace(runtime=runtime)},
             "warp._src.types": {"module": SimpleNamespace()}})
-    monkeypatch.setitem(sys.modules, "warp", wp)
+    if lane == "cuda":
+        target.index, target.type = target.ordinal, "cuda"
+        wp._C = runtime
+        session.external.records = {"torch": {"module": wp}}
+        monkeypatch.setenv("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
+    monkeypatch.setitem(sys.modules, wp.__name__, wp)
     monkeypatch.setitem(bootstrap._SOURCE_CUSTODY, session,
         (controller, controller.guardian, peer.config, controller._guard_client.configuration,
          peer.channel, NativeGuardedSetupLifecycle, GuardConfiguration))
@@ -79,6 +85,9 @@ def prepared_session(monkeypatch):
     syncs = []
     monkeypatch.setattr(native_setup, "_warp_synchronize_target_exact",
                         lambda actual_wp, actual_target: syncs.append((actual_wp, actual_target)))
+    if lane == "cuda":
+        wp.cuda = SimpleNamespace(device=lambda actual: nullcontext(),
+                                  synchronize=lambda actual: syncs.append((wp, actual)))
     checkpoints = []
     monkeypatch.setattr(session.runtime_observation, "checkpoint", lambda: checkpoints.append(True))
     imports = []

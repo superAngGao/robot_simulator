@@ -31,6 +31,7 @@ RUNTIME_NATIVE_FAULTS = (
     "runtime_ready_wait_before_raise", "runtime_ready_wait_after_raise", "runtime_ready_wait_hang",
     "runtime_owner_register_raise", "runtime_storage_audit_raise", "runtime_readback_copy_after_raise",
     "runtime_terminal_cleanup_hang", "runtime_terminal_exit_hang",
+    "runtime_optical_idle_entry",
 )
 RUNTIME_PHASES = ("setup_definitions", "external_environment", "canonical_materialization",
                   "runtime_initialization", "native_upload", "input_validation")
@@ -102,7 +103,7 @@ def _install_runtime_fault(fault, entry, session, controller, directory):
     All wrappers and their real return values are retained by the already held
     source session. The production source closure has no fault selector.
     """
-    if fault in {"runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang", "runtime_artifacts_success"} or fault in RUNTIME_ACK_FAULTS + RUNTIME_OBSERVATION_FAULTS + RUNTIME_WARP_MODULE_FAULTS + RUNTIME_FIXED_STORAGE_FAULTS + RUNTIME_RENDER_GRAPH_CASES:
+    if fault in {"runtime_success", "runtime_terminal_sync_raise", "runtime_terminal_sync_hang", "runtime_artifacts_success", "runtime_optical_idle_entry"} or fault in RUNTIME_ACK_FAULTS + RUNTIME_OBSERVATION_FAULTS + RUNTIME_WARP_MODULE_FAULTS + RUNTIME_FIXED_STORAGE_FAULTS + RUNTIME_RENDER_GRAPH_CASES:
         return None
     state = {"fired": False, "returned": [], "originals": []}
     session.runtime_owners.append(state)
@@ -364,6 +365,45 @@ def _install_upload_fault(fault, session, controller, injection, directory):
 def _write(directory, name, payload):
     data = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     _write_bytes(directory, name, data)
+
+
+def _observe_optical_idle_failure(session, controller, binding, observer, directory):
+    """An out-of-order real stage call after actual native input validation."""
+    states = {}
+    original_control_sync = controller._synchronize
+    runtime = binding.module.cuda if session.lane == "cuda" else binding.module
+    sync_name = "synchronize" if session.lane == "cuda" else "synchronize_device"
+    original_runtime_sync = getattr(runtime, sync_name)
+    session.runtime_owners.extend((states, original_control_sync, original_runtime_sync))
+
+    def runtime_sync(target):
+        observer._ticket()
+        assert target is binding.target
+        states["inside"] = observer._state(False)
+        return original_runtime_sync(target)
+
+    def control_sync(synchronize):
+        def observed():
+            observer._ticket()
+            states["before"] = observer._state(False)
+            try:
+                return synchronize()
+            finally:
+                states["after"] = observer._state(False)
+                _write(directory, "idle_sync_scope.json", states)
+        return original_control_sync(observed)
+
+    controller._synchronize = control_sync
+    setattr(runtime, sync_name, runtime_sync)
+    try:
+        assert controller._guard_client.state == "IDLE" and session.phase == "input_validated"
+        _write(directory, "fault_entered.json", {"fault": "runtime_optical_idle_entry",
+            "boundary": "post_input_idle", "guard": controller._guard_reference})
+        session.prepare_fixed_render_storage()
+        raise AssertionError("out-of-order optical storage preparation was admitted")
+    finally:
+        controller._synchronize = original_control_sync
+        setattr(runtime, sync_name, original_runtime_sync)
 
 
 def _write_bytes(directory, name, data):
@@ -1364,7 +1404,7 @@ def child(fault, fd, directory):
         observe()
         injection = _install_runtime_fault(fault, entry, session, controller, directory)
         scope_observer = (_NativeScopeObserver(session, controller, directory, environment_payload, fault)
-                          if fault in RUNTIME_OBSERVATION_FAULTS + RUNTIME_ARTIFACT_FAULTS + RUNTIME_WARP_MODULE_FAULTS + RUNTIME_FIXED_STORAGE_FAULTS + RUNTIME_RENDER_GRAPH_CASES else None)
+                          if fault == "runtime_optical_idle_entry" or fault in RUNTIME_OBSERVATION_FAULTS + RUNTIME_ARTIFACT_FAULTS + RUNTIME_WARP_MODULE_FAULTS + RUNTIME_FIXED_STORAGE_FAULTS + RUNTIME_RENDER_GRAPH_CASES else None)
         phase = "setup_definitions"
         session.import_setup_definitions()
         observe()
@@ -1402,6 +1442,9 @@ def child(fault, fd, directory):
                 "final_execution_readiness_issued": False,
             },
         )
+        if fault == "runtime_optical_idle_entry":
+            phase = "optical_idle_entry"
+            _observe_optical_idle_failure(session, controller, binding, scope_observer, directory)
         if fault in RUNTIME_ARTIFACT_FAULTS or (fault in RUNTIME_FIXED_STORAGE_FAULTS + RUNTIME_RENDER_GRAPH_CASES and request["lane"] == "cuda"):
             phase = "cuda_factory_preparation"
             session.prepare_cuda_factories()

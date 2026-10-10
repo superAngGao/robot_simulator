@@ -1916,6 +1916,12 @@ Next milestone:
       six owned PIDs are absent. Fresh independent code-reviewv4 approves with
       comments the complete bounded R0 preparation/fault-disposal candidate
       640cf9f; F1 is closed. M1 shared setup/failure routing remains open.
+      M1 consolidation is now implemented in an isolated working candidate:
+      six entries delegate to existing native_setup, sharing input/audit checks,
+      checkpoint-before-ready publication and state-based fault disposal.
+      Original Warp-specific idle routing is removed without replacing its
+      semantics. CPU regressions and new exception/publication counterexamples
+      pass (implementation-notev6); native validation and fresh review are pending.
       No final sample or speed result is claimed.
       R1/full C4 follow-up and fresh whole review remain mandatory.
       C4c2 runtime, C4c3-c4,
