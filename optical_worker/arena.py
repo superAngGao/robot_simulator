@@ -43,11 +43,10 @@ class _FrozenNativeRow:
         return json.loads(self.case_bytes)
 
 
-def _admit_fixed_row(session, *, row_id, case_id, sample_count, pass_mode):
+def select_native_worker_row(*, row_id, case_id, sample_count, pass_mode):
+    """CPU metadata preflight only; this does not register a source or GPU authority."""
     from .native_sources import _read_contained
 
-    if session.phase != "materializing" or session in _CAPTURED_ROWS:
-        raise ValueError("row admission must precede materialization and runtime initialization, once")
     if (
         type(row_id) is not str
         or type(case_id) is not str
@@ -61,10 +60,19 @@ def _admit_fixed_row(session, *, row_id, case_id, sample_count, pass_mode):
     if hashlib.sha256(canonical_json_bytes(gate)).hexdigest() != _FROZEN_GATE_SHA256:
         raise ValueError("row gate differs from the reviewed frozen data")
     row = next((item for item in gate["mandatory_rows"] if item["row_id"] == row_id), None)
-    if row is None or row["case_id"] != case_id or row["boundary"] not in {"R0", "R1"}:
+    if (row is None or row["case_id"] != case_id or row["boundary"] not in {"R0", "R1"}
+            or row.get("payload") not in {None, "none", "native_only"}):
         raise ValueError("fixed final graph accepts only its frozen R0/R1 row/case")
-    admission = _FrozenNativeRow(
+    return _FrozenNativeRow(
         canonical_json_bytes(row), canonical_json_bytes(gate["cases"][case_id]), sample_count, pass_mode
+    )
+
+
+def _admit_fixed_row(session, *, row_id, case_id, sample_count, pass_mode):
+    if session.phase != "materializing" or session in _CAPTURED_ROWS:
+        raise ValueError("row admission must precede materialization and runtime initialization, once")
+    admission = select_native_worker_row(
+        row_id=row_id, case_id=case_id, sample_count=sample_count, pass_mode=pass_mode,
     )
     session._hold_runtime_owner(admission, "frozen_row_admission")
     _CAPTURED_ROWS[session] = admission

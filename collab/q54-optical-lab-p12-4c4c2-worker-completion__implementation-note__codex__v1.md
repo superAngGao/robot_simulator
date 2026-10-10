@@ -5,7 +5,7 @@ Version: 1
 Date: 2026-10-10
 Status: draft
 Related Files: runtime-integration design-request/review codex v3; systematic-refactor gap-review v1; systematic-refactor code-review v7
-Owner Summary: R1 preparation/final composition is independently approved and integrated into this development branch. The next deliverable is the complete worker request/token/submission/resolve/reclaim/close path. Current prework is not C2f approval or activation, and provides no speed result.
+Owner Summary: R1 preparation/final composition is independently approved. The shared worker dispatcher now drives native arena submit/resolve/reclaim and guarded close in CPU integration tests. Full native PREPARE/transport/process acceptance and independent review are still incomplete. This is an implementation checkpoint, not C2f approval, activation or a speed result.
 
 ## Baseline and current state
 
@@ -43,13 +43,78 @@ integrates that approved baseline with the following unreviewed C2f prework:
   implemented. An initial unit failure caught the normalized request retaining
   v1; it was corrected before commit330037f.
 
-The merged catalog v17 has90 entries, SHA256
+The merged pre-implementation catalog v17 had90 entries, SHA256
 8b72add231f6f6cec8471c401d75a9943b04987368f3e280e659f3b0c4df4489.
 The one catalog merge conflict was resolved from the actual staged Git LF source
 bodies, preserving both the approved R1 repair and worker prework. All90 digests
 and existing AST checks passed. Updating the protocol's existing exact source
 pin did not add an AST exception. Catalog/source contracts will be frozen again
 for the complete C2f review candidate.
+
+## Current worker integration, not yet an acceptance candidate
+
+Work continues from40679f0402a1ee5fe369ed6d478cf3ed586aefc0 under the approved
+runtime-integration designv3. The v3 manifest and worker evidence have explicit
+v2 request dispatch; old C0 mode remains separate. The captured source owns
+the one worker/controller binding before native setup. Worker/row CPU definitions
+load in the existing supervised definition-import segment, so PREPARE does not
+attempt an unguarded late repository import.
+
+The existing serial dispatcher now connects PREPARE to the existing source
+setup methods; EXECUTE to acquire/enqueue/finish; RESOLVE to the exact guarded
+terminal wait; RELEASE to device-result release and reclaim; CANCEL to the
+common arena drain operation. Possible-submission facts become sticky before
+the first native leaf. Normal close cross-checks actual arena counts, holds,
+tokens, setup origin and idle guard, keeps the graph through ACK writing, then
+uses the existing guardian release. Reparsed idle evidence cannot authorize
+release. A cleanup failure retains remaining custody and requires hard exit.
+
+The parsed resolution record binds the specific next resolve guard sequence;
+a prior sample's completed wait cannot resolve a later sample. Idle evidence
+also binds the actual preceding guarded trace. These descriptive records do not
+replace the registered source, active arena object or actual wait ticket.
+
+Integration exposed a real lane difference: CUDA burned a generation on
+pre-enqueue failure, while Warp only poisoned its active wrapper. The existing
+CUDA cancel/retain helpers now live in the common native arena module and both
+lanes call them. No second slot cancellation or GPU cleanup algorithm was added.
+Tests inject failures before the first enqueue and after a launch/event call;
+the former frees the burned generation, the latter preserves possible submission
+and selects supervised failure cleanup. Product renderer/kernel code is unchanged.
+
+The new CPU fixture binds before real setup construction and uses the production
+worker, graph, arena and guard implementations. It doubles native allocation,
+launch and event calls, and manually publishes the prepared test batch after the
+actual final graph/barrier. It therefore does NOT validate the full PREPARE
+handler, cold native manifest/bootstrap launch, real transport or GPU numerics.
+It checks FIFO/consumed tokens, cancellation while pending, ACK-before-release,
+copied proof rejection, stale wait replay, failed wait/lost DISARMED, cleanup
+failure, pre-leaf generation cancellation, submit-then-raise, every R2/S row's
+early rejection, and oversized response rejection before token allocation.
+
+Latest CPU regression command (Python3.14, no Warp installation):
+
+```text
+python -m pytest tests/unit/optics/test_integrated_worker_lifecycle.py tests/unit/benchmarks/test_closed_worker_protocol.py tests/unit/optics/test_guarded_lifecycle.py tests/unit/optics/test_warp_arena.py tests/unit/optics/test_native_optical_arena.py tests/unit/optics/test_cuda_arena_resolution.py -q --disable-warnings --maxfail=2
+235 passed in67.31s
+```
+
+Earlier in this checkpoint, the protocol/guard/final-graph regression run passed
+193 in190.75s; the intermediate integrated/common-arena run passed106 in56.71s.
+These overlap and must not be added as distinct coverage. Initial integration
+fixture failures were corrected: its generator scopes did not model reusable
+Warp scope objects, and its cleanup fault tried to replace a read-only instance
+method instead of the guardian class method. A collection error in the new
+preflight tests was fixed by declaring their diagnostic fixture dependency.
+Ruff passes the changed worker/protocol/guard and arena implementation plus
+the new integration test. All90 staged LF source bodies pass the existing AST
+policy with refreshed exact source pins; no new AST exception was introduced.
+
+Current catalogv17 SHA256:
+7535eb47f6c9a2fa746eddd3337a0da698b915d85aa5ee9b0bc030ce145ec643.
+Policy SHA256:
+08a940137df8d0cf82ccd287f1fbf1aa4ad8201d59d5bb25c7ff6c7f0f83a466.
+These are author checkpoint identities, not independently reviewed releases.
 
 ## Verification recorded so far
 
@@ -85,9 +150,16 @@ arena, hold and guard state; ACK-before-cleanup and parent-observed/reaped exit.
 Preserve the historical submission latch and the existing ordered failure
 disposition, including no retry after failed normal guards.
 
-The current worker still rejects product PREPARE and the guarded lifecycle still
-rejects final sample submission. Those are incomplete implementation points,
-not evidence of C2f completion. Validate the actual integrated worker for all six
+The product launcher still rejects GPU PREPARE. Final submission now requires
+the exact source-bound native worker and active serial EXECUTE; standalone
+captured setup graphs still cannot submit. Before a review candidate, complete
+the native v3 runtime-contract/manifest construction and validation, fixed native
+driver through the SAME framed loop, pre-GPU bounded trace-capacity checks,
+preallocated sample/ticket/trace work and fixed acquire work-count checks.
+Current guarded recording still reconstructs descriptive trace containers; it
+does not yet satisfy the approved no-per-sample-container requirement. Complete
+request/response/arena/guard/parent-exit evidence binding and post-ACK bounded
+process supervision. Validate the actual integrated worker for all six
 R0 and two R1 rows in both lanes, original CPU oracle channels and tolerances,
 real Go2, dual-GPU scope, all required setup/post-submit/transport/ACK/cleanup
 failures, hangs and process closure. Only then freeze one coherent candidate for

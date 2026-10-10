@@ -72,6 +72,8 @@ def executable_graph(graph_session, monkeypatch, diagnostic, request):
         if state.fail == kind:
             raise failure
 
+    state.action = action
+
     if p.lane == 'warp':
         compiled = warp_setup.validate_module_set(session, session.warp_modules)
         class Bundle:
@@ -84,7 +86,7 @@ def executable_graph(graph_session, monkeypatch, diagnostic, request):
                 self.descriptors = tuple(NS(entry_id=name) for name in ids)
                 self.commands = tuple(NS(module_exec=compiled[2].executable,
                     kernel=NS(module=compiled[2].module), launch=lambda *, stream, name=name:
-                    action('launch', name)) for name in ids)
+                    state.action('launch', name)) for name in ids)
 
             def validate_resolved_parameters(self, parameters):
                 assert self.camera.query.frame_id == parameters.to_payload()['frame_id']
@@ -99,14 +101,14 @@ def executable_graph(graph_session, monkeypatch, diagnostic, request):
     else:
         module = session.cuda_factories[-1].module
         for name in vars(module):
-            setattr(module, name, lambda *args, name=name: action('launch', name))
+            setattr(module, name, lambda *args, name=name: state.action('launch', name))
 
     profile, shadows = getattr(request, 'param', ('direct_light_full', True))
     graph = session.prepare_fixed_render_graph(profile=profile, shadows=shadows,
         pass_mode='diagnostic_profiled' if diagnostic else 'primary_unprofiled')
     event_type = p.runtime.Event
-    monkeypatch.setattr(event_type, 'record', lambda event, stream: action('record', event))
-    monkeypatch.setattr(event_type, 'synchronize', lambda event: action('wait', event))
+    monkeypatch.setattr(event_type, 'record', lambda event, stream: state.action('record', event))
+    monkeypatch.setattr(event_type, 'synchronize', lambda event: state.action('wait', event))
     initial_completes = sum(row['operation'] == 'normal_disarmed' for row in controller._guard_events)
     return NS(g=g, f=f, p=p, session=session, controller=controller, graph=graph, calls=calls,
               state=state, failure=failure, initial_completes=initial_completes)

@@ -9,8 +9,6 @@ C4/B3 activation review.
 
 from __future__ import annotations
 
-from optical_worker.native_setup import _require_captured_arena_admission
-
 import hashlib
 import json
 import threading
@@ -19,6 +17,8 @@ import weakref
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
+
+from optical_worker.native_setup import _require_captured_arena_admission
 
 NATIVE_OPTICAL_ARENA_LAYOUT_SCHEMA_VERSION = "optics.native-optical-arena-layout.v1"
 NATIVE_OPTICAL_ARENA_SPEC_SCHEMA_VERSION = "optics.native-optical-arena-spec.v1"
@@ -692,6 +692,28 @@ class C4ActiveOutputLease:
 
     def reclaim(self) -> None:
         self._arena._reclaim(self)
+
+
+def _retain_failure_without_masking(lease: C4ActiveOutputLease, reason: str) -> None:
+    try:
+        lease.mark_submitted_failure(reason)
+    except BaseException:
+        # A failed transition may already have poisoned the control plane.
+        # Preserve the original failure rather than a second poison rejection.
+        pass
+
+
+def _retain_or_cancel_enqueue_failure_without_masking(lease: C4ActiveOutputLease, reason: str) -> bool:
+    try:
+        if lease.state == "LEASED":
+            lease.cancel_before_enqueue()
+            return True
+        lease.mark_submitted_failure(reason)
+    except BaseException:
+        # Both lanes burn an unsubmitted generation, or retain a submitted one.
+        # Cleanup details must not replace the original authority/stage failure.
+        pass
+    return False
 
 
 class NativeOpticalArena:

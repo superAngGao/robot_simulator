@@ -27,6 +27,9 @@ from .wait_supervision import GuardSupervisorEvidence
 
 LIFECYCLE_VERSION = "q54.p12.4.setup-lifecycle.v3"
 FINAL_LIFECYCLE_VERSION = "q54.p12.4.setup-lifecycle.v4"
+WORKER_LIFECYCLE_VERSION = "q54.p12.4.setup-lifecycle.v5"
+WORKER_TERMINATION_VERSION = "q54.p12.4.transport-termination.v4"
+POST_RECLAIM_IDLE_VERSION = "q54.p12.4.post-reclaim-idle.v1"
 TERMINATION_VERSION = "q54.p12.4.transport-termination.v3"
 VALIDATION_VERSION = "q54.p12.4.guarded-custody-validation.v1"
 FAILURE_KINDS = frozenset(
@@ -99,7 +102,16 @@ class _Replay:
     """One reducer for both live descriptive snapshots and parsed records."""
 
     def __init__(self, configuration: GuardConfiguration, lane: str, *, version=LIFECYCLE_VERSION):
-        self.version = _enum(version, {LIFECYCLE_VERSION, FINAL_LIFECYCLE_VERSION})
+        self.version = _enum(version, {LIFECYCLE_VERSION, FINAL_LIFECYCLE_VERSION, WORKER_LIFECYCLE_VERSION})
+        self.worker_manifest = None
+        self.worker_samples = None
+        self.active_sample = None
+        self.next_sample = 0
+        self.cancel_only = False
+        self.sample_submission_latched = False
+        self.sample_resolve_sequence = None
+        self.idle_proof = None
+        self.normal_close = False
         self.final_graph = None
         self.final_guard = None
         self.final_barrier_returned = False
@@ -144,11 +156,12 @@ class _Replay:
 
     @property
     def final_quiescence_current(self):
-        # Submission remains closed in this grammar. A later normal segment
-        # invalidates this pre-sample proof even if it has no returned leaf.
-        return (self.version == FINAL_LIFECYCLE_VERSION and self.final_quiescence is not None
+        # Final setup is historical after submission or any later normal wait.
+        return (self.version in {FINAL_LIFECYCLE_VERSION, WORKER_LIFECYCLE_VERSION}
+                and self.final_quiescence is not None
                 and self.final_guard == self.last_completed_guard and self.guard_state == "IDLE"
                 and self.next_sequence == self.final_guard["sequence"] + 1
+                and not self.sample_submission_latched
                 and not self.failed and not self.terminal_failed and not self.compromised)
 
     @property
@@ -192,12 +205,23 @@ class _Replay:
             "release_status": self.release,
             "disposition": self.disposition,
         }
-        if self.version == FINAL_LIFECYCLE_VERSION:
+        if self.version in {FINAL_LIFECYCLE_VERSION, WORKER_LIFECYCLE_VERSION}:
             result["final_setup"] = {
                 "graph": self.final_graph,
                 "barrier_guard": self.final_guard,
                 "barrier_returned": self.final_barrier_returned,
                 "quiescence_sha256": self.final_quiescence,
+            }
+        if self.version == WORKER_LIFECYCLE_VERSION:
+            result["worker"] = {
+                "manifest_sha256": self.worker_manifest,
+                "samples": self.worker_samples,
+                "active_sample": self.active_sample,
+                "next_sample": self.next_sample,
+                "cancel_only": self.cancel_only,
+                "historical_submission_latched": self.sample_submission_latched,
+                "post_reclaim_idle_sha256": self.idle_proof,
+                "normal_close_ack_committed": self.normal_close,
             }
         return result
 
@@ -470,7 +494,8 @@ class _Replay:
             )
         elif operation == "final_graph_sealed":
             exact_fields(details, {"graph_sha256", "readiness_sha256", "coverage_sha256"})
-            _require(self.version == FINAL_LIFECYCLE_VERSION and self.final_graph is None
+            _require(self.version in {FINAL_LIFECYCLE_VERSION, WORKER_LIFECYCLE_VERSION}
+                     and self.final_graph is None
                      and self.controller == "RUNNING" and self.guard_state == "IDLE"
                      and self.guardian == "SEALED" and not self.failed and not self.compromised,
                      "invalid final graph seal")
@@ -482,7 +507,8 @@ class _Replay:
         elif operation == "final_target_barrier_started":
             exact_fields(details, set())
             self._active_setup()
-            _require(self.version == FINAL_LIFECYCLE_VERSION and self.final_graph is not None
+            _require(self.version in {FINAL_LIFECYCLE_VERSION, WORKER_LIFECYCLE_VERSION}
+                     and self.final_graph is not None
                      and self.final_guard is None and self.guardian == "SEALED"
                      and not self.compromised and self.dirty == {self.config.device_ordinal},
                      "final barrier requires one sealed exact-target graph")
@@ -490,19 +516,118 @@ class _Replay:
         elif operation == "final_target_barrier_returned":
             exact_fields(details, set())
             self._active_setup()
-            _require(self.version == FINAL_LIFECYCLE_VERSION and self.final_guard == guard
+            _require(self.version in {FINAL_LIFECYCLE_VERSION, WORKER_LIFECYCLE_VERSION}
+                     and self.final_guard == guard
                      and not self.final_barrier_returned and self.guardian == "SEALED",
                      "final barrier return has no exact started guard")
             self.final_barrier_returned = True
         elif operation == "setup_barrier_succeeded":
             exact_fields(details, {"evidence_sha256"})
-            _require(self.version == FINAL_LIFECYCLE_VERSION and self.final_barrier_returned
+            _require(self.version in {FINAL_LIFECYCLE_VERSION, WORKER_LIFECYCLE_VERSION}
+                     and self.final_barrier_returned
                      and self.final_quiescence is None and self.guard_state == "IDLE"
                      and self.guardian == "SEALED" and self.controller == "RUNNING"
                      and not self.failed and not self.compromised
                      and self.last_completed_guard == self.final_guard,
                      "final quiescence requires its exact DISARMED barrier")
             self.final_quiescence = _digest(details["evidence_sha256"])
+        elif operation == "worker_bound":
+            exact_fields(details, {"runtime_manifest_sha256"})
+            _require(self.version == WORKER_LIFECYCLE_VERSION and self.worker_manifest is None
+                     and self.controller == "RUNNING" and self.guard_state == "IDLE"
+                     and self.guardian == "CONSTRUCTING" and not self.failed and not self.dirty,
+                     "worker binding must precede native work")
+            self.worker_manifest = _digest(details["runtime_manifest_sha256"])
+        elif operation == "worker_prepared":
+            exact_fields(details, {"sample_count", "graph_sha256", "token_registry_sha256"})
+            _require(self.worker_manifest is not None and self.worker_samples is None
+                     and self.final_quiescence_current
+                     and details["graph_sha256"] == self.final_graph["graph_sha256"],
+                     "worker preparation requires the admitted final graph")
+            count = bounded_integer(details["sample_count"], 1_000_000, minimum=1)
+            _digest(details["token_registry_sha256"])
+            self.worker_samples = ["PREPARED"] * count
+        elif operation in {"sample_acquired", "sample_submission_latched", "sample_completion_recorded",
+                           "sample_resolved", "sample_reclaimed", "sample_cancelled"}:
+            exact_fields(details, {"sample_index", "resolve_sequence"}
+                         if operation == "sample_resolved" else {"sample_index"})
+            _require(self.version == WORKER_LIFECYCLE_VERSION and self.worker_samples is not None
+                     and self.controller == "RUNNING" and self.guard_state == "IDLE"
+                     and not self.failed and not self.compromised and self.idle_proof is None,
+                     "sample transition requires a healthy prepared worker")
+            index = bounded_integer(details["sample_index"], len(self.worker_samples) - 1)
+            state = self.worker_samples[index]
+            if operation == "sample_acquired":
+                _require(state == "PREPARED" and not self.cancel_only and self.active_sample is None
+                         and index == self.next_sample, "sample acquire is not next FIFO")
+                self.active_sample = index
+                self.worker_samples[index] = "ACQUIRED"
+            elif operation == "sample_cancelled":
+                _require(state == "PREPARED", "only unacquired samples may cancel")
+                self.cancel_only = True
+                self.worker_samples[index] = "CANCELLED"
+            else:
+                _require(self.active_sample == index, "sample transition differs from active generation")
+                if operation == "sample_submission_latched":
+                    _require(state == "ACQUIRED", "duplicate or unacquired submission latch")
+                    self.worker_samples[index] = "SUBMISSION_POSSIBLE"
+                    self.sample_submission_latched = True
+                elif operation == "sample_completion_recorded":
+                    _require(state == "SUBMISSION_POSSIBLE", "completion without possible submission")
+                    self.worker_samples[index] = "COMPLETION_RECORDED"
+                    self.sample_resolve_sequence = self.next_sequence
+                    self.next_sample += 1
+                elif operation == "sample_resolved":
+                    bounded_integer(details["resolve_sequence"], MAX_SEQUENCE)
+                    _require(state == "COMPLETION_RECORDED" and self.last_completed_guard is not None
+                             and self.last_completed_guard == {
+                                 "sequence": self.sample_resolve_sequence, "role": "resolve"}
+                             and details["resolve_sequence"] == self.sample_resolve_sequence,
+                             "resolution requires an acknowledged terminal wait")
+                    self.worker_samples[index] = "RESOLVED_HELD"
+                else:
+                    _require(state == "RESOLVED_HELD", "reclaim before resolution")
+                    self.worker_samples[index] = "RECLAIMED"
+                    self.active_sample = None
+        elif operation == "post_reclaim_idle":
+            exact_fields(details, {"evidence"})
+            proof = PostReclaimIdleEvidence.from_payload(details["evidence"]).to_payload()
+            _require(self.version == WORKER_LIFECYCLE_VERSION and self.worker_samples is not None
+                     and self.active_sample is None and self.controller == "RUNNING"
+                     and self.guard_state == "IDLE" and not self.failed and not self.compromised
+                     and self.idle_proof is None
+                     and all(state in {"RECLAIMED", "CANCELLED"} for state in self.worker_samples)
+                     and proof["session_identity"] == self.config.session and proof["lane"] == self.lane
+                     and proof["target"] == self.config.device_ordinal
+                     and proof["setup_quiescence_sha256"] == self.final_quiescence
+                     and proof["prepared_graph_sha256"] == self.final_graph["graph_sha256"]
+                     and proof["submitted_count"] == self.worker_samples.count("RECLAIMED")
+                     and proof["cancelled_count"] == self.worker_samples.count("CANCELLED")
+                     and proof["historical_submission_latched"] == self.sample_submission_latched,
+                     "idle proof differs from actual replayed samples")
+            self.idle_proof = canonical_sha256(proof)
+        elif operation == "normal_close_ack_committed":
+            exact_fields(details, {"evidence_sha256"})
+            _require(self.version == WORKER_LIFECYCLE_VERSION and self.idle_proof is not None
+                     and details["evidence_sha256"] == self.idle_proof
+                     and self.controller == "RUNNING" and self.guard_state == "IDLE"
+                     and not self.failed and not self.compromised, "close has no idle proof")
+            self.normal_close = True
+            self.controller, self.custody = "TERMINATING", "retained"
+        elif operation == "normal_close_release_authorized":
+            exact_fields(details, set())
+            _require(self.normal_close and self.controller == "TERMINATING"
+                     and self.guard_state == "IDLE" and self.guardian == "SEALED"
+                     and self.release == "not_authorized" and not self.terminal_failed,
+                     "normal cleanup must follow the written close ACK")
+            self.guardian, self.release = "RELEASE_AUTHORIZED", "authorized"
+        elif operation == "normal_close_completed":
+            exact_fields(details, set())
+            _require(self.normal_close and self.controller == "TERMINATING"
+                     and self.guard_state == "IDLE" and self.release == "completed"
+                     and self.guardian == "RELEASED" and not self.terminal_failed,
+                     "normal close did not complete cleanup")
+            self.disposition, self.controller = "clean_reclaimed_exit", "TERMINAL_INTENT"
         elif operation == "termination_started":
             exact_fields(details, {"fault", "detection_phase"})
             _enum(details["fault"], _FAULT_KINDS)
@@ -692,8 +817,61 @@ def replay_lifecycle(configuration, lane, trace, *, version=LIFECYCLE_VERSION):
     _require(type(trace) is list and bool(trace), "empty lifecycle trace")
     replay = _Replay(GuardConfiguration.from_payload(configuration), lane, version=version)
     for event in trace:
+        if event.get("operation") == "post_reclaim_idle":
+            prefix = {"schema_version": version, "configuration": configuration, "lane_id": lane,
+                      "record_kind": "prefix", "transition_trace": trace[:replay.index],
+                      "guardian_coverage": replay.coverage(), "summary": replay.summary()}
+            _require(event["details"]["evidence"]["guard_evidence_sha256"] == canonical_sha256(prefix),
+                     "idle proof does not bind its actual preceding guarded trace")
         replay.apply(event)
     return replay
+
+
+@dataclass(frozen=True, slots=True)
+class PostReclaimIdleEvidence:
+    """Descriptive replay record; only the controller's exact live instance can close."""
+
+    _encoded: bytes
+
+    @classmethod
+    def from_payload(cls, value):
+        p = exact_fields(value, {
+            "schema_version", "session_identity", "lane", "target", "setup_quiescence_sha256",
+            "prepared_graph_sha256", "arena_identity", "arena_lifecycle_sha256", "token_registry_sha256",
+            "submitted_count", "resolved_count", "reclaimed_count", "cancelled_count",
+            "remaining_prepared", "remaining_pending", "remaining_resolved", "active_leases",
+            "device_holds", "external_holds", "slot_states", "guard_evidence_sha256",
+            "historical_submission_latched",
+        })
+        _require(p["schema_version"] == POST_RECLAIM_IDLE_VERSION, "wrong post-reclaim idle version")
+        _identifier(p["session_identity"])
+        arena = p["arena_identity"]
+        _require(type(arena) is str and arena.startswith("arena:") and len(arena) == 38
+                 and all(c in "0123456789abcdef" for c in arena[6:]), "invalid native arena identity")
+        _enum(p["lane"], {"cuda", "warp"})
+        bounded_integer(p["target"], 1023)
+        for name in ("setup_quiescence_sha256", "prepared_graph_sha256", "arena_lifecycle_sha256",
+                     "token_registry_sha256", "guard_evidence_sha256"):
+            _digest(p[name])
+        for name in ("submitted_count", "resolved_count", "reclaimed_count", "cancelled_count"):
+            bounded_integer(p[name], 1_000_000)
+        _require(p["submitted_count"] == p["resolved_count"] == p["reclaimed_count"],
+                 "idle proof has unresolved or unreclaimed submissions")
+        for name in ("remaining_prepared", "remaining_pending", "remaining_resolved",
+                     "active_leases", "device_holds", "external_holds"):
+            _require(type(p[name]) is int and p[name] == 0, "idle proof contains live samples or holds")
+        _require(p["slot_states"] == ["FREE"], "worker idle proof requires its single free slot")
+        _require(type(p["historical_submission_latched"]) is bool
+                 and p["historical_submission_latched"] == (p["submitted_count"] > 0),
+                 "historical submission latch differs from completed samples")
+        return cls(canonical_json_bytes(p))
+
+    def to_payload(self):
+        return json.loads(self._encoded)
+
+    @property
+    def sha256(self):
+        return canonical_sha256(self.to_payload())
 
 
 @dataclass(frozen=True, slots=True)
@@ -714,7 +892,7 @@ class GuardedLifecycleEvidence:
                 "summary",
             },
         )
-        _enum(root["schema_version"], {LIFECYCLE_VERSION, FINAL_LIFECYCLE_VERSION})
+        _enum(root["schema_version"], {LIFECYCLE_VERSION, FINAL_LIFECYCLE_VERSION, WORKER_LIFECYCLE_VERSION})
         kind = _enum(root["record_kind"], {"prefix", "terminal"})
         replay = replay_lifecycle(root["configuration"], root["lane_id"], root["transition_trace"],
                                   version=root["schema_version"])
@@ -744,15 +922,21 @@ class GuardedTerminationEvidence:
     @classmethod
     def from_payload(cls, value):
         root = exact_fields(value, {"schema_version", "lifecycle"})
-        _require(root["schema_version"] == TERMINATION_VERSION, "wrong termination version")
         lifecycle = GuardedLifecycleEvidence.from_payload(root["lifecycle"])
+        expected = (WORKER_TERMINATION_VERSION
+                    if root["lifecycle"]["schema_version"] == WORKER_LIFECYCLE_VERSION
+                    else TERMINATION_VERSION)
+        _require(root["schema_version"] == expected, "wrong termination version")
         _require(
             lifecycle.to_payload()["record_kind"] == "terminal", "termination requires terminal lifecycle"
         )
         return cls(lifecycle)
 
     def to_payload(self):
-        return {"schema_version": TERMINATION_VERSION, "lifecycle": self.lifecycle.to_payload()}
+        payload = self.lifecycle.to_payload()
+        version = (WORKER_TERMINATION_VERSION if payload["schema_version"] == WORKER_LIFECYCLE_VERSION
+                   else TERMINATION_VERSION)
+        return {"schema_version": version, "lifecycle": payload}
 
     @property
     def sha256(self):

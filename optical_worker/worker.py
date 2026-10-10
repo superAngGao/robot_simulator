@@ -9,6 +9,7 @@ import select
 import sys
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from .lifecycle import NativeWorkerSetupLifecycle, TransportTerminationEvidence
@@ -16,19 +17,39 @@ from .manifest import validate_repository_import_ledger
 from .native_setup import NativeWorkerPreparationAborted
 from .protocol import (
     CLOSED_WORKER_EVIDENCE_VERSION,
-    CLOSED_WORKER_PROTOCOL_VERSION,
     FRAME_HEADER_BYTES,
+    INTEGRATED_WORKER_EVIDENCE_VERSION,
     MAX_REQUEST_BYTES,
     MAX_RESPONSE_BYTES,
     ClosedNativeLaneWorkerEvidence,
     ClosedWorkerProtocolError,
     ClosedWorkerRuntimeManifest,
+    IntegratedWorkerRuntimeManifest,
+    canonical_json_bytes,
     canonical_sha256,
     decode_canonical_message,
     decode_frame_header,
     encode_framed_message,
     validate_request,
 )
+
+_NATIVE_WORKERS = {}
+
+
+def _no_legacy_abort(_device_ordinal):
+    raise ClosedWorkerProtocolError("integrated workers cannot use the legacy A/K channel")
+
+
+@dataclass(eq=False, slots=True)
+class _WorkerSample:
+    index: int
+    prepared_token: str
+    pending_token: str
+    resolved_token: str
+    plan: object = None
+    active: object = None
+    state: str = "PREPARED"
+    submission_possible: bool = False
 
 
 class ClosedWorkerSession:
@@ -49,6 +70,57 @@ class ClosedWorkerSession:
         self._termination: TransportTerminationEvidence | None = None
         self._close_ack_sequence: int | None = None
         self._emergency_sync_notifier = emergency_sync_notifier
+        self._native_source = None
+        self._graph = None
+        self._samples = ()
+        self._tokens = {}
+        self._active_sample = None
+        self._next_sample = 0
+        self._cancel_only = False
+        self._native_operation = None
+        self._handling = False
+        self._idle_proof = None
+
+    @classmethod
+    def from_source_session(cls, manifest, source):
+        """Bind the same serial dispatcher to its captured native source owner."""
+        from .native_source_policy import NATIVE_AST_POLICY_SHA256
+
+        if type(manifest) is not IntegratedWorkerRuntimeManifest:
+            raise ClosedWorkerProtocolError("native worker requires the exact v3 manifest")
+        manifest = IntegratedWorkerRuntimeManifest.from_payload(manifest.to_payload())
+        source.check_live()
+        controller = source.bound_controller()
+        snapshot = source.snapshot
+        environment = source.runtime_observation.environment
+        if (source in _NATIVE_WORKERS or source.phase != "imported"
+                or Path(manifest.repository_root).resolve() != source.root
+                or manifest.repository_revision != source.revision or manifest.lane_id != source.lane
+                or manifest.source_catalog_sha256 != source.catalog_sha256
+                or manifest.ast_policy_sha256 != NATIVE_AST_POLICY_SHA256
+                or [(s.relative_path, s.sha256) for s in manifest.source_digests]
+                != [(s.relative_path, s.sha256) for s in snapshot.sources]
+                or dict(manifest.guard_configuration) != controller._guard_client.configuration.to_payload()
+                or environment is None or environment.sha256 != manifest.runtime_environment_sha256
+                or source.runtime_observation.inputs["case_id"] != manifest.case_id):
+            raise ClosedWorkerProtocolError("native manifest differs from its actual captured source session")
+        _NATIVE_WORKERS[source] = None
+        worker = cls(manifest, emergency_sync_notifier=_no_legacy_abort)
+        worker._native_source = source
+        worker._lifecycle = controller
+        worker._session_identity = controller._session_identity
+        source._hold_runtime_owner(worker, "closed_worker_session")
+        _NATIVE_WORKERS[source] = worker
+        controller.bind_worker(worker)
+        return worker
+
+    def _require_native_binding(self):
+        source = self._native_source
+        if (source is None or _NATIVE_WORKERS.get(source) is not self
+                or source.bound_controller() is not self._lifecycle):
+            raise ClosedWorkerProtocolError("worker has no exact source/controller binding")
+        self._lifecycle._check_running()
+        return source
 
     @property
     def terminal(self) -> bool:
@@ -56,9 +128,14 @@ class ClosedWorkerSession:
 
     @property
     def hard_exit_required(self) -> bool:
-        return self._termination is not None and self._termination.disposition in {
+        if self._termination is None:
+            return False
+        disposition = (self._termination.disposition if self._native_source is None
+                       else self._termination.lifecycle.to_payload()["summary"]["disposition"])
+        return disposition in {
             "quarantined_process_exit",
             "multi_or_unknown_device_quarantine_exit",
+            "cleanup_failed_exit",
         }
 
     @property
@@ -66,6 +143,12 @@ class ClosedWorkerSession:
         return self._termination
 
     def adopt_preparation_abort(self, aborted: NativeWorkerPreparationAborted) -> None:
+        if self._native_source is not None:
+            if aborted.evidence is not self._lifecycle.termination_evidence:
+                raise ClosedWorkerProtocolError("native abort is not the actual controller disposition")
+            self._termination = aborted.evidence
+            self._state = "TERMINATED"
+            return
         evidence = TransportTerminationEvidence.from_payload(aborted.evidence.to_payload())
         if (
             self._lifecycle is None
@@ -85,7 +168,18 @@ class ClosedWorkerSession:
         self._state = "TERMINATED"
 
     def handle(self, raw: object) -> dict[str, object]:
-        request = validate_request(raw)
+        if self._handling:
+            raise ClosedWorkerProtocolError("worker request dispatch is not reentrant")
+        if self._native_source is not None:
+            self._lifecycle._check_owner()
+        self._handling = True
+        try:
+            return self._handle(raw)
+        finally:
+            self._handling = False
+
+    def _handle(self, raw: object) -> dict[str, object]:
+        request = validate_request(raw, expected_version=self._manifest.protocol_version)
         sequence = request["sequence"]
         if sequence != self._next_sequence:
             raise ClosedWorkerProtocolError("request sequence is not the next connection sequence")
@@ -100,6 +194,8 @@ class ClosedWorkerSession:
             if operation != "OPEN_FROZEN_SESSION":
                 raise ClosedWorkerProtocolError("OPEN_FROZEN_SESSION must follow HELLO")
             return self._open(sequence, arguments)
+        if self._native_source is not None:
+            return self._handle_native(sequence, operation, arguments)
         if self._state == "SESSION_OPEN_IDLE":
             if operation == "PREPARE_FROZEN_ROW":
                 return self._reject_gpu_preparation(sequence)
@@ -115,7 +211,11 @@ class ClosedWorkerSession:
             if sequence != self._close_ack_sequence:
                 raise ClosedWorkerProtocolError("only the exact close acknowledgement can commit")
             assert self._lifecycle is not None
-            self._lifecycle.commit_clean_close()
+            if self._native_source is None:
+                self._lifecycle.commit_clean_close()
+            else:
+                self._lifecycle.commit_clean_close(_worker=self, _proof=self._idle_proof)
+                self._termination = self._lifecycle.termination_evidence
             self._state = "CLOSE_ACK_COMMITTED"
 
     def terminal_fault_response(
@@ -127,7 +227,16 @@ class ClosedWorkerSession:
         fault: str,
         detection_phase: str,
     ) -> dict[str, object]:
-        if self._lifecycle is not None and self._termination is None:
+        if self._native_source is not None and self._termination is None:
+            from .native_setup import _fail_optical_preparation
+
+            _fail_optical_preparation(
+                self._native_source, sys.exception() or ClosedWorkerProtocolError(message),
+                source_integrity_failed=self._native_source.failed,
+                fault=fault, detection_phase=detection_phase,
+            )
+            self._termination = self._lifecycle.termination_evidence
+        elif self._lifecycle is not None and self._termination is None:
             self._termination = self._lifecycle.terminate(
                 fault=fault,
                 detection_phase=detection_phase,
@@ -147,16 +256,20 @@ class ClosedWorkerSession:
             or arguments["device_ordinal"] != self._manifest.device_ordinal
         ):
             raise ClosedWorkerProtocolError("HELLO does not bind the runtime manifest")
-        self._lifecycle = NativeWorkerSetupLifecycle(
-            lane_id=self._manifest.lane_id,
-            target_device_ordinal=self._manifest.device_ordinal,
-            emergency_sync_notifier=self._emergency_sync_notifier,
-            session_identity=self._session_identity,
-        )
+        if self._native_source is None:
+            self._lifecycle = NativeWorkerSetupLifecycle(
+                lane_id=self._manifest.lane_id,
+                target_device_ordinal=self._manifest.device_ordinal,
+                emergency_sync_notifier=self._emergency_sync_notifier,
+                session_identity=self._session_identity,
+            )
+        else:
+            self._require_native_binding().audit()
         repository_paths = validate_repository_import_ledger(self._manifest)
         executable_digest = hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest()
         evidence = ClosedNativeLaneWorkerEvidence(
-            schema_version=CLOSED_WORKER_EVIDENCE_VERSION,
+            schema_version=(CLOSED_WORKER_EVIDENCE_VERSION if self._native_source is None
+                            else INTEGRATED_WORKER_EVIDENCE_VERSION),
             protocol_version=self._manifest.protocol_version,
             trust_model_version=self._manifest.trust_model_version,
             state_machine_version=self._manifest.state_machine_version,
@@ -173,7 +286,7 @@ class ClosedWorkerSession:
             interpreter_executable_sha256=executable_digest,
             callback_surface_enabled=False,
             object_deserialization_enabled=False,
-            gpu_preparation_enabled=False,
+            gpu_preparation_enabled=self._native_source is not None,
             cuda_capable_module_names=tuple(
                 sorted(name for name in ("numpy", "torch", "warp") if name in sys.modules)
             ),
@@ -193,7 +306,7 @@ class ClosedWorkerSession:
             or arguments["workload_set_sha256"] != self._manifest.workload_set_sha256
         ):
             raise ClosedWorkerProtocolError("OPEN does not match the frozen gate/workload set")
-        self._state = "SESSION_OPEN_IDLE"
+        self._state = "SESSION_OPEN_IDLE" if self._native_source is None else "IDLE_UNPREPARED"
         return self._ok(sequence, {"state": self._state, "result_capable": False})
 
     def _reject_gpu_preparation(self, sequence: int) -> dict[str, object]:
@@ -223,23 +336,189 @@ class ClosedWorkerSession:
             },
         )
 
-    @staticmethod
-    def _ok(sequence: int, payload: Mapping[str, object]) -> dict[str, object]:
+    def _ok(self, sequence: int, payload: Mapping[str, object]) -> dict[str, object]:
         return {
-            "protocol_version": CLOSED_WORKER_PROTOCOL_VERSION,
+            "protocol_version": self._manifest.protocol_version,
             "sequence": sequence,
             "status": "ok",
             "payload": dict(payload),
         }
 
-    @staticmethod
-    def _error(sequence: int, payload: Mapping[str, object]) -> dict[str, object]:
+    def _error(self, sequence: int, payload: Mapping[str, object]) -> dict[str, object]:
         return {
-            "protocol_version": CLOSED_WORKER_PROTOCOL_VERSION,
+            "protocol_version": self._manifest.protocol_version,
             "sequence": sequence,
             "status": "error",
             "payload": dict(payload),
         }
+
+    def _handle_native(self, sequence, operation, arguments):
+        self._require_native_binding()
+        if operation == "PREPARE_FROZEN_ROW" and self._state == "IDLE_UNPREPARED":
+            return self._prepare_native(sequence, arguments)
+        if self._state not in {"PREPARED_IDLE", "SAMPLE_ACTIVE", "DRAINED_IDLE"}:
+            raise ClosedWorkerProtocolError("operation is not legal in the current native worker state")
+        if operation == "EXECUTE_PREPARED_SAMPLE":
+            return self._execute_native(sequence, arguments["prepared_token"])
+        if operation == "RESOLVE_PREPARED_SAMPLE":
+            return self._resolve_native(sequence, arguments["pending_token"])
+        if operation == "RELEASE_RESOLVED_SAMPLE":
+            return self._release_native(sequence, arguments["resolved_token"])
+        if operation == "CANCEL_PREPARED_SAMPLE":
+            return self._cancel_native(sequence, arguments["prepared_token"])
+        if operation == "CLOSE_SESSION":
+            self._idle_proof = self._lifecycle.observe_post_reclaim_idle(self)
+            self._state = "CLOSE_ACK_PENDING"
+            self._close_ack_sequence = sequence
+            return self._ok(sequence, {"state": self._state, "worker_exit": True,
+                                      "post_reclaim_idle": self._idle_proof.to_payload()})
+        raise ClosedWorkerProtocolError("native preparation is single-use and operations are state-bound")
+
+    def _prepare_native(self, sequence, arguments):
+        from .arena import select_native_worker_row
+
+        source = self._require_native_binding()
+        try:
+            row = select_native_worker_row(
+                row_id=arguments["row_id"], case_id=arguments["case_id"],
+                sample_count=arguments["sample_count"], pass_mode=self._manifest.pass_mode,
+            )
+        except ValueError as error:
+            raise ClosedWorkerProtocolError("stage_scope_rejected: " + str(error)) from error
+        if arguments["case_id"] != self._manifest.case_id:
+            raise ClosedWorkerProtocolError("PREPARE case differs from the frozen native session")
+        count = row.sample_count
+        payload = {"state": "PREPARED_IDLE", "prepared_tokens": [], "graph_sha256": "0" * 64}
+        # Each fixed-width token contributes 34 JSON bytes plus a separator.
+        if len(canonical_json_bytes(self._ok(sequence, payload))) + count * 35 - 1 > MAX_RESPONSE_BYTES:
+            raise ClosedWorkerProtocolError("prepared response exceeds the fixed protocol capacity")
+        self._state = "PREPARING"
+        records = []
+        for index in range(count):
+            record = _WorkerSample(index, secrets.token_hex(16), secrets.token_hex(16), secrets.token_hex(16))
+            records.append(record)
+            for token, phase in ((record.prepared_token, "PREPARED"),
+                                 (record.pending_token, "COMPLETION_RECORDED"),
+                                 (record.resolved_token, "RESOLVED_HELD")):
+                if token in self._tokens:
+                    raise ClosedWorkerProtocolError("worker token collision")
+                self._tokens[token] = record, phase
+        self._samples = tuple(records)
+        payload["prepared_tokens"] = [record.prepared_token for record in self._samples]
+        source.configure_external_environment(
+            source.runtime_observation.environment.to_payload(), self._manifest.runtime_environment_sha256,
+        )
+        source.materialize_native_source(
+            arguments["case_id"], go2_model_dir=self._manifest.go2_model_dir,
+            row_id=arguments["row_id"], sample_count=count, pass_mode=self._manifest.pass_mode,
+        )
+        binding = source.initialize_native_runtime()
+        source.upload_native_input(binding)
+        source.validate_native_input()
+        if source.lane == "warp":
+            source.prepare_warp_modules()
+        else:
+            source.prepare_cuda_factories()
+        source.prepare_fixed_render_storage(
+            traversal_diagnostics=self._manifest.pass_mode == "diagnostic_profiled",
+        )
+        source.prepare_fixed_render_graph(
+            profile=row.row["output_profile"], shadows=row.row["shadows"], pass_mode=self._manifest.pass_mode,
+        )
+        source.run_fixed_render_warmups()
+        self._graph = source.prepare_fixed_final_graph(sample_count=count)
+        for record, plan in zip(self._samples, self._graph.samples, strict=True):
+            record.plan = plan
+        payload["graph_sha256"] = self._graph.sha256
+        self._lifecycle.record_worker_transition(self, "worker_prepared", {
+            "sample_count": count, "graph_sha256": self._graph.sha256,
+            "token_registry_sha256": self._token_registry_sha256(),
+        })
+        self._state = "PREPARED_IDLE"
+        return self._ok(sequence, payload)
+
+    def _sample_for_token(self, token, phase):
+        registered = self._tokens.get(token)
+        if (registered is None or registered[1] != phase or registered[0].state != phase
+                or self._samples[registered[0].index] is not registered[0]):
+            raise ClosedWorkerProtocolError("sample token is foreign, consumed or in the wrong state")
+        return registered[0]
+
+    def _execute_native(self, sequence, token):
+        record = self._sample_for_token(token, "PREPARED")
+        if self._cancel_only or self._active_sample is not None or record.index != self._next_sample:
+            raise ClosedWorkerProtocolError("EXECUTE requires the next FIFO sample and a free slot")
+        active = self._graph.arena.acquire(record.plan)
+        from optics.native_arena import NativeOpticalArenaBackpressure
+
+        if isinstance(active, NativeOpticalArenaBackpressure):
+            raise ClosedWorkerProtocolError("worker's single slot is not free")
+        record.active, record.state = active, "ACQUIRED"
+        self._active_sample = record
+        self._native_operation = "execute"
+        self._state = "SAMPLE_ACTIVE"
+        try:
+            self._lifecycle.record_worker_transition(self, "sample_acquired", {"sample_index": record.index})
+            active.enqueue()
+            active.finish()
+            if active.state != "COMPLETION_RECORDED" or not record.submission_possible:
+                raise ClosedWorkerProtocolError("pending token has no actual terminal recording")
+            record.state = "COMPLETION_RECORDED"
+            self._lifecycle.record_worker_transition(
+                self, "sample_completion_recorded", {"sample_index": record.index},
+            )
+            self._next_sample += 1
+        except BaseException:
+            if not record.submission_possible and active.state == "ACQUIRED":
+                active.cancel_before_enqueue()
+            self._state = "POISONED"
+            raise
+        finally:
+            self._native_operation = None
+        return self._ok(sequence, {"pending_token": record.pending_token})
+
+    def _resolve_native(self, sequence, token):
+        record = self._sample_for_token(token, "COMPLETION_RECORDED")
+        if self._active_sample is not record:
+            raise ClosedWorkerProtocolError("pending token is not the active generation")
+        record.active.resolve(_guarded_controller=self._lifecycle)
+        record.state = "RESOLVED_HELD"
+        self._lifecycle.record_worker_transition(self, "sample_resolved", {"sample_index": record.index})
+        return self._ok(sequence, {"resolved_token": record.resolved_token})
+
+    def _release_native(self, sequence, token):
+        record = self._sample_for_token(token, "RESOLVED_HELD")
+        if self._active_sample is not record:
+            raise ClosedWorkerProtocolError("resolved token is not the active generation")
+        record.active.release_device_result()
+        record.active.reclaim()
+        record.state = "RECLAIMED"
+        self._active_sample = None
+        self._lifecycle.record_worker_transition(self, "sample_reclaimed", {"sample_index": record.index})
+        self._update_native_idle()
+        return self._ok(sequence, {"state": "RECLAIMED"})
+
+    def _cancel_native(self, sequence, token):
+        record = self._sample_for_token(token, "PREPARED")
+        if not self._cancel_only:
+            self._graph.arena.begin_drain()
+            self._cancel_only = True
+        record.state = "CANCELLED"
+        self._lifecycle.record_worker_transition(self, "sample_cancelled", {"sample_index": record.index})
+        self._update_native_idle()
+        return self._ok(sequence, {"state": "CANCELLED"})
+
+    def _update_native_idle(self):
+        self._state = ("SAMPLE_ACTIVE" if self._active_sample is not None else
+                       "DRAINED_IDLE" if all(s.state in {"RECLAIMED", "CANCELLED"} for s in self._samples)
+                       else "PREPARED_IDLE")
+
+    def _token_registry_sha256(self):
+        return canonical_sha256([
+            {"index": s.index, "prepared": s.prepared_token, "pending": s.pending_token,
+             "resolved": s.resolved_token, "state": s.state,
+             "submission_possible": s.submission_possible} for s in self._samples
+        ])
 
 
 def _read_exact(
@@ -303,6 +582,7 @@ def run_worker_loop(
     abort_signal_descriptor: int,
     abort_ack_descriptor: int,
     manifest: ClosedWorkerRuntimeManifest,
+    _source_session=None,
 ) -> int:
     abort_signaled = False
 
@@ -326,7 +606,8 @@ def run_worker_loop(
         abort_signaled = True
 
     validate_repository_import_ledger(manifest)
-    session = ClosedWorkerSession(manifest, emergency_sync_notifier=signal_abort_start)
+    session = (ClosedWorkerSession(manifest, emergency_sync_notifier=signal_abort_start)
+               if _source_session is None else _source_session.open_worker(manifest))
     while True:
         sequence = 0
         try:
@@ -349,6 +630,8 @@ def run_worker_loop(
                 if isinstance(candidate, int) and not isinstance(candidate, bool) and candidate >= 0:
                     sequence = candidate
             response = session.handle(raw)
+            if _source_session is not None:
+                _source_session.audit()
             validate_repository_import_ledger(manifest)
             frame = encode_framed_message(response, max_bytes=MAX_RESPONSE_BYTES)
             _write_all(
@@ -358,6 +641,8 @@ def run_worker_loop(
             )
             session.commit_written_response(response["sequence"])
             if session.terminal:
+                if session.hard_exit_required:
+                    os._exit(74)
                 return 0
             continue
         except NativeWorkerPreparationAborted as aborted:

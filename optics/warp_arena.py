@@ -16,6 +16,8 @@ from .native_arena import (
     NativeOpticalArenaResourceManifest,
     NativeOpticalArenaSpec,
     NativeOpticalSlotResourceManifest,
+    _retain_failure_without_masking,
+    _retain_or_cancel_enqueue_failure_without_masking,
 )
 
 
@@ -513,10 +515,7 @@ class WarpPreparedArenaSample:
         self._arena._control._slot_for_live_lease(self._lease)
 
     def _fail(self, error):
-        try:
-            self._lease.mark_submitted_failure(f"Warp execution failed: {error}")
-        except BaseException:
-            pass
+        _retain_failure_without_masking(self._lease, f"Warp execution failed: {error}")
         object.__setattr__(self, "_state", "POISONED")
 
     def enqueue(self):
@@ -528,7 +527,8 @@ class WarpPreparedArenaSample:
                 self._transaction.enqueue()
             object.__setattr__(self, "_state", "ENQUEUED")
         except BaseException as error:
-            self._fail(error)
+            _retain_or_cancel_enqueue_failure_without_masking(self._lease, f"Warp enqueue failed: {error}")
+            object.__setattr__(self, "_state", "POISONED")
             raise
         finally:
             object.__setattr__(self, "_operation", None)

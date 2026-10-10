@@ -18,7 +18,7 @@ from .protocol import ClosedWorkerProtocolError, canonical_sha256
 
 NATIVE_AST_POLICY_VERSION = "q54.p12.4.closed-worker-ast-policy.v17"
 _BOOTSTRAP_PATH = "optical_worker/native_bootstrap.py"
-_BOOTSTRAP_SOURCE_SHA256 = "bc67cbcffbdf78b572a7798ee2471ed94565aaab01093a2357fe10fb1140fce2"
+_BOOTSTRAP_SOURCE_SHA256 = "9e0e1a0d5999ba11c92f6c67bdcbd4bbe1de836f29b68c7ce39149bff8b436d6"
 _BOOTSTRAP_CLASS_PINS = {
     "_RuntimeObservation": "cfb64f25a4bf1774a5e67128ac7e1b3b5a06ab9800ddd2f9b51d39e2b9537b3e",
     "_CapturedSourceLoader": "92da4e467035fe308c4ec6af32f2d05831adc7e5015f5f400545d1541ad5556b",
@@ -27,7 +27,7 @@ _BOOTSTRAP_CLASS_PINS = {
     "_ExternalAdmission": "157107d2ca7210f687ec3898d072231ccb993f061647cc740982262c8b004070",
     "_ExternalNamespaceLoader": "524801ff222139e86fa76fa918b42a20ee61d6bcfe9e783542c880da3cad46bf",
     "_RuntimeSetupBinding": "85bf4bb6a12a3ab17807393c27993ca319e5b614eda9c14d4f1d6c0b042f6112",
-    "_SourceSession": "705215b9cdbca058092c98c0aaec1ae1071c9e0fbf1f29b55c27ba63bef8a6bd",
+    "_SourceSession": "39a978830eb3ff21e9119797b893f93fa4c0e54df06f84bcac28049d2ec21723",
 }
 _BOOTSTRAP_IMPORTS = frozenset(("importlib.abc", "importlib.machinery", "importlib.util"))
 _BOOTSTRAP_USES = frozenset((
@@ -47,7 +47,7 @@ _SNAPSHOT_FUNCTION_SHA256 = "9a2e94c9dbd653d0c8f3c9a8c45e258ebfff71413083856e976
 # Existing CPU regex construction is not Python code compilation. Keep this
 # exception release-pinned; do not generally admit arbitrary obj.compile().
 _REGEX_SOURCE_PINS = {
-    "optical_worker/protocol.py": "03064071f9a015309ecbb1e4be8bae73b4c15e3574473fdca0ed34e4f5bf9893",
+    "optical_worker/protocol.py": "9073b4846817586c106783dfdb5a123ec10a86797f53be832bd5964fa20441ab",
     "optical_worker/lifecycle.py": "2ca76eac3b72fc99f22d6c671e51a9a86724609575b0d61c5b101d3f7a6334dc"
 }
 _CTYPES_ATTRIBUTES = frozenset(("addressof", "c_float", "c_double", "c_int64", "c_int32"))

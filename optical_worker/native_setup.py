@@ -118,7 +118,8 @@ def _optical_setup_operation(session):
         raise
 
 
-def _fail_optical_preparation(session, error, *, source_integrity_failed):
+def _fail_optical_preparation(session, error, *, source_integrity_failed,
+                              fault="setup_failure", detection_phase="optical_preparation_failure"):
     controller = session.bound_controller()
     controller._hold_failure(error)
     healthy_idle = (
@@ -164,8 +165,8 @@ def _fail_optical_preparation(session, error, *, source_integrity_failed):
         controller._fail_guard("operation", error)
     if controller.termination_evidence is None and not controller._terminating:
         controller.terminate(
-            fault="setup_failure",
-            detection_phase="optical_preparation_failure",
+            fault=fault,
+            detection_phase=detection_phase,
             emergency_target_synchronize=synchronize,
         )
 

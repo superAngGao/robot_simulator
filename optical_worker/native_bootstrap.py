@@ -55,6 +55,9 @@ _SETUP_DEFINITIONS = MappingProxyType(
     {
         "optical_worker.native_setup": "optical_worker/native_setup.py",
         "optical_worker.native_contract": "optical_worker/native_contract.py",
+        "optical_worker.worker": "optical_worker/worker.py",
+        "optical_worker.arena": "optical_worker/arena.py",
+        "optical_worker.cases": "optical_worker/cases.py",
     }
 )
 _EXTERNAL_CONTRACT_DEFINITIONS = MappingProxyType(
@@ -2553,18 +2556,29 @@ class _SourceSession:
             controller = self.bound_controller()
             with controller.segment("setup"):
                 self.phase = "importing"
-                from optical_worker import native_setup
+                from optical_worker import arena, native_setup, worker
 
                 _require(
                     native_setup is self.modules["optical_worker.native_setup"][0],
                     "setup definition module changed",
                 )
+                _require(arena is self.modules["optical_worker.arena"][0]
+                         and worker is self.modules["optical_worker.worker"][0],
+                         "worker definition module changed")
                 self.audit()
             self.phase = "imported"
             self._runtime_phase_completed("setup_definitions")
         except BaseException as error:
             self.fail(error)
             raise
+
+    def open_worker(self, manifest):
+        """Bind the production dispatcher after CPU definitions, before native imports."""
+        self.check_live()
+        _require(self.phase == "imported", "native worker binding must precede runtime configuration")
+        from optical_worker.worker import ClosedWorkerSession
+
+        return ClosedWorkerSession.from_source_session(manifest, self)
 
     def configure_runtime_custody(self, environment_payload, trusted_launch_inputs):
         """Bind upstream CPU facts before C2d3 work; source-only custody stays C2d2."""

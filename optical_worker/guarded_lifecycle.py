@@ -13,8 +13,11 @@ from contextlib import contextmanager
 from .guarded_evidence import (
     FINAL_LIFECYCLE_VERSION,
     LIFECYCLE_VERSION,
+    POST_RECLAIM_IDLE_VERSION,
+    WORKER_LIFECYCLE_VERSION,
     GuardedLifecycleEvidence,
     GuardedTerminationEvidence,
+    PostReclaimIdleEvidence,
     replay_lifecycle,
 )
 from .lifecycle import (
@@ -95,6 +98,9 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
         self._final_sealed_coverage = None
         self._final_barrier_ticket = None
         self._final_admission = None
+        self._worker_session = None
+        self._post_reclaim_proof = None
+        self._worker_resolution = None
         super().__init__(
             lane_id=lane_id,
             target_device_ordinal=configuration.device_ordinal,
@@ -326,6 +332,16 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
         Callers validate their sealed transaction before and after this wait.
         This method never commits a lease or drops any resource hold.
         """
+        record = None
+        if self._worker_session is not None:
+            worker = self._worker_session
+            self._require_worker(worker)
+            record = worker._active_sample
+            if (record is None or record.state != "COMPLETION_RECORDED"
+                    or owner is not record.active or transaction is not owner._transaction
+                    or event is not owner.completion.event or stream is not worker._graph.stream
+                    or target is not worker._graph.target or self._worker_resolution is not None):
+                self._reject_closed_entry("terminal wait is not the worker's exact pending sample")
         ordinal = target.index if self._lane_id == "cuda" else target.ordinal
         if (self.target_device_ordinal != ordinal or self.unknown_device_scope
                 or self.possible_dirty_device_ordinals != (ordinal,)
@@ -345,6 +361,8 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
             else:
                 runtime.synchronize_event(event)
         self._guard_client.require_completed_ticket(ticket)
+        if record is not None:
+            self._worker_resolution = (record, ticket)
         return ticket
 
     def commit_target_barrier(self, *, _source_session=None, _graph=None, **_kwargs):
@@ -371,7 +389,8 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
         try:
             graph_sha256 = graph.sha256
             readiness_sha256 = graph.origin.readiness.sha256
-            self._evidence_version = FINAL_LIFECYCLE_VERSION
+            if self._worker_session is None:
+                self._evidence_version = FINAL_LIFECYCLE_VERSION
             self.seal_guardian()
             self._final_sealed_coverage = canonical_json_bytes(self.guardian.coverage_payload())
             coverage_sha256 = self.guardian.coverage_sha256
@@ -407,11 +426,188 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
                                emergency_target_synchronize=None)
             raise
 
-    def latch_measured_sample_submission(self):
-        self._reject_closed_entry("measured submission remains closed in C2d1")
+    def bind_worker(self, worker):
+        """Bind once, before native setup, to the source-owned serial dispatcher."""
+        from .worker import _NATIVE_WORKERS, ClosedWorkerSession
 
-    def commit_clean_close(self):
-        self._reject_closed_entry("guarded cleanup requires supervised terminal custody")
+        self._check_running()
+        if (type(worker) is not ClosedWorkerSession or self._worker_session is not None
+                or _NATIVE_WORKERS.get(worker._native_source) is not worker
+                or worker._native_source.bound_controller() is not self
+                or worker._native_source.phase != "imported"
+                or self.guardian.state != "CONSTRUCTING" or self._context_active
+                or self._guard_client.state != "IDLE" or self.possible_dirty_device_ordinals):
+            self._reject_closed_entry("worker binding must precede native work")
+        self.require_adopted(worker)
+        self._worker_session = worker
+        self._evidence_version = WORKER_LIFECYCLE_VERSION
+        self._record("worker_bound", {"runtime_manifest_sha256": worker._manifest.sha256})
+
+    def _require_worker(self, worker):
+        from .worker import _NATIVE_WORKERS, ClosedWorkerSession
+
+        self._check_running()
+        if (type(worker) is not ClosedWorkerSession or worker is not self._worker_session
+                or _NATIVE_WORKERS.get(worker._native_source) is not worker
+                or worker._native_source.bound_controller() is not self
+                or worker._lifecycle is not self or self._context_active
+                or self._guard_client.state != "IDLE"):
+            self._reject_closed_entry("operation requires the exact idle worker/controller")
+        graph = worker._graph
+        if graph is not None:
+            from .native_setup import _FINAL_RENDER_GRAPHS
+
+            if (graph is not self._final_admission or graph is not self._final_graph
+                    or _FINAL_RENDER_GRAPHS.get(worker._native_source) is not graph
+                    or worker._native_source.phase != "fixed_final_graph_admitted"
+                    or worker._native_source.failed or self.guardian.state != "SEALED"):
+                self._reject_closed_entry("worker lost its admitted final graph")
+
+    def record_worker_transition(self, worker, operation, details):
+        """Record observed arena facts; supplied labels cannot authorize a transition."""
+        self._require_worker(worker)
+        graph = worker._graph
+        if graph is None or self._post_reclaim_proof is not None:
+            self._reject_closed_entry("worker transition has no active admitted graph")
+        if operation == "worker_prepared":
+            if (len(worker._samples) != len(graph.samples)
+                    or any(record.plan is not plan for record, plan in zip(worker._samples, graph.samples))
+                    or details != {"sample_count": len(worker._samples), "graph_sha256": graph.sha256,
+                                   "token_registry_sha256": worker._token_registry_sha256()}):
+                self._reject_closed_entry("worker preparation differs from actual plans")
+        else:
+            if set(details) != {"sample_index"} or type(details["sample_index"]) is not int:
+                self._reject_closed_entry("worker transition has invalid sample index")
+            index = details["sample_index"]
+            if not 0 <= index < len(worker._samples):
+                self._reject_closed_entry("worker sample index is outside its prepared batch")
+            record = worker._samples[index]
+            active = record.active
+            if operation == "sample_cancelled":
+                if (record.state != "CANCELLED" or active is not None or not worker._cancel_only
+                        or graph.arena._control.state != "DRAINING"):
+                    self._reject_closed_entry("cancellation did not drain an unacquired sample")
+            else:
+                original = record.plan if self._lane_id == "warp" else record.plan._active
+                if active is not original:
+                    self._reject_closed_entry("sample active owner differs from its prepared plan")
+                expected = {
+                    "sample_acquired": ("ACQUIRED", "ACQUIRED"),
+                    "sample_completion_recorded": ("COMPLETION_RECORDED", "COMPLETION_RECORDED"),
+                    "sample_resolved": ("RESOLVED_HELD", "PAYLOAD_READY"),
+                    "sample_reclaimed": ("RECLAIMED", "RECLAIMED"),
+                }.get(operation)
+                if expected is None or (record.state, active.state) != expected:
+                    self._reject_closed_entry("worker transition differs from actual arena state")
+                if operation == "sample_reclaimed":
+                    if worker._active_sample is not None:
+                        self._reject_closed_entry("reclaimed sample remains active")
+                elif worker._active_sample is not record:
+                    self._reject_closed_entry("sample is not the current worker generation")
+                if operation == "sample_resolved":
+                    resolution = self._worker_resolution
+                    if resolution is None or resolution[0] is not record:
+                        self._reject_closed_entry("sample has no exact completed terminal wait")
+                    self._guard_client.require_completed_ticket(resolution[1])
+                    details = dict(details, resolve_sequence=resolution[1].sequence)
+                    self._worker_resolution = None
+        self._record(operation, details)
+
+    def latch_measured_sample_submission(self):
+        worker = self._worker_session
+        if worker is None:
+            self._reject_closed_entry("measured submission remains closed in C2d1")
+        self._require_worker(worker)
+        record = worker._active_sample
+        if (record is None or worker._native_operation != "execute" or not worker._handling
+                or record.state != "ACQUIRED" or record.active is None
+                or self._post_reclaim_proof is not None):
+            self._reject_closed_entry("sample submission is outside its serial EXECUTE")
+        # Sticky before the first possible leaf, including submit-then-raise.
+        # Later leaves preserve this fact; a successful-return count cannot reset it.
+        self._measured_sample_submission_latched = True
+        if not record.submission_possible:
+            record.submission_possible = True
+            self._record("sample_submission_latched", {"sample_index": record.index})
+
+    def _post_reclaim_payload(self, worker, guard_sha256):
+        from .protocol import canonical_sha256
+
+        self._require_worker(worker)
+        graph = worker._graph
+        if (graph is None or worker._active_sample is not None or worker._native_operation is not None
+                or self._worker_resolution is not None or not worker._samples
+                or any(record.state not in {"RECLAIMED", "CANCELLED"} for record in worker._samples)):
+            self._reject_closed_entry("close requires every worker sample to be consumed")
+        control = graph.arena._control
+        if control._active_fifo or control._prepared_registry or control.state not in {"OPEN", "DRAINING"}:
+            self._reject_closed_entry("close requires the actual arena to be idle")
+        arena = control.lifecycle_evidence()
+        reclaimed = sum(record.state == "RECLAIMED" for record in worker._samples)
+        if (arena.terminal_event_record_count != reclaimed or arena.completion_resolution_count != reclaimed
+                or arena.slot_reclaim_count != reclaimed
+                or any(slot.transaction_hold_count or slot.delivery_device_hold_count
+                       for slot in arena.slots)
+                or self.quiescence_evidence is None
+                or self.quiescence_evidence.sha256 != self._replay.final_quiescence
+                or self.quiescence_evidence.prepared_graph_sha256 != graph.sha256):
+            self._reject_closed_entry("worker counts differ from actual arena/quiescence facts")
+        return {
+            "schema_version": POST_RECLAIM_IDLE_VERSION, "session_identity": self._session_identity,
+            "lane": self._lane_id, "target": self.target_device_ordinal,
+            "setup_quiescence_sha256": self.quiescence_evidence.sha256,
+            "prepared_graph_sha256": graph.sha256, "arena_identity": arena.arena_token,
+            "arena_lifecycle_sha256": canonical_sha256(arena.to_payload()),
+            "token_registry_sha256": worker._token_registry_sha256(),
+            "submitted_count": arena.terminal_event_record_count,
+            "resolved_count": arena.completion_resolution_count, "reclaimed_count": arena.slot_reclaim_count,
+            "cancelled_count": len(worker._samples) - reclaimed,
+            "remaining_prepared": 0, "remaining_pending": 0, "remaining_resolved": 0,
+            "active_leases": len(control._active_fifo),
+            "device_holds": sum(slot.device_result_hold_count for slot in arena.slots),
+            "external_holds": arena.external_hold_count, "slot_states": [slot.state for slot in arena.slots],
+            "guard_evidence_sha256": guard_sha256,
+            "historical_submission_latched": self._measured_sample_submission_latched,
+        }
+
+    def observe_post_reclaim_idle(self, worker):
+        if self._post_reclaim_proof is not None:
+            self._reject_closed_entry("post-reclaim idle observation is single-use")
+        payload = self._post_reclaim_payload(worker, self.evidence().sha256)
+        proof = PostReclaimIdleEvidence.from_payload(payload)
+        self._record("post_reclaim_idle", {"evidence": proof.to_payload()})
+        self._post_reclaim_proof = proof
+        return proof
+
+    def commit_clean_close(self, *, _worker=None, _proof=None):
+        if _worker is None or _proof is None or _proof is not self._post_reclaim_proof:
+            self._reject_closed_entry("guarded cleanup requires its exact post-reclaim idle proof")
+        observed = _proof.to_payload()
+        if (self._post_reclaim_payload(_worker, observed["guard_evidence_sha256"]) != observed
+                or self._guard_events[-1]["operation"] != "post_reclaim_idle"
+                or _worker._state != "CLOSE_ACK_PENDING"):
+            self._reject_closed_entry("close proof is stale or is not pending its ACK")
+        self._record("normal_close_ack_committed", {"evidence_sha256": _proof.sha256})
+        self._terminating = True
+        self._retain_controller()
+        self.guardian.authorize_release(self._guardian_authority)
+        self._record("normal_close_release_authorized", {})
+        self._record("ordinary_cleanup_started", {})
+        try:
+            _worker._graph.arena.close()
+            self.guardian.release_whole_graph(self._guardian_authority)
+        except BaseException as error:
+            self._hold_failure(error)
+            disposition = self._cleanup_failed()
+            self._record("terminal_intent", {"disposition": disposition})
+        else:
+            if self._terminal_fault:
+                disposition = self._cleanup_failed()
+                self._record("terminal_intent", {"disposition": disposition})
+            else:
+                self._record("guardian_released", {})
+                self._record("normal_close_completed", {})
+        self._termination_evidence = GuardedTerminationEvidence(self.evidence())
 
     def evidence(self):
         with self._event_lock:

@@ -30,7 +30,11 @@ from .cuda_direct_light import (
     CudaFirstHitInputs,
     CudaShadeInputs,
     allocate_cuda_direct_light_buffers,
+)
+from .cuda_direct_light import (
     _dynamic_first_hit_inputs as _dynamic_first_hit_inputs,
+)
+from .cuda_direct_light import (
     _shade_inputs as _shade_inputs,
 )
 from .cuda_lbvh import (
@@ -41,7 +45,6 @@ from .cuda_lbvh import (
     allocate_cuda_lbvh_workspace,
 )
 from .cuda_scene import (
-    CudaOpticalLocalScene,
     CudaSceneTransformInputs,
     CudaSceneUpdateStageFactory,
     CudaWorldSceneBuffers,
@@ -65,6 +68,8 @@ from .native_arena import (
     NativeOpticalArenaResourceManifest,
     NativeOpticalArenaSpec,
     NativeOpticalSlotResourceManifest,
+    _retain_failure_without_masking,
+    _retain_or_cancel_enqueue_failure_without_masking,
     plan_native_optical_acquisition,
 )
 from .scene_contract import SCENE_ARRAY_SEMANTICS
@@ -861,7 +866,8 @@ class CudaActiveArenaSample:
             tuple(id(stage) for stage in self._transaction._stages),
             id(self._transaction._completion_event),
             getattr(self._transaction._completion_event, "cuda_event", None),
-            tuple((name, id(start), getattr(start, "cuda_event", None), id(end), getattr(end, "cuda_event", None))
+            tuple((name, id(start), getattr(start, "cuda_event", None),
+                   id(end), getattr(end, "cuda_event", None))
                   for name, start, end in self._transaction._diagnostic_events),
         )
 
@@ -1174,7 +1180,8 @@ class CudaNativeOpticalArena:
                     slot.slot_id,
                     id(slot.completion_event),
                     getattr(slot.completion_event, "cuda_event", None),
-                    tuple((name, id(start), getattr(start, "cuda_event", None), id(end), getattr(end, "cuda_event", None))
+                    tuple((name, id(start), getattr(start, "cuda_event", None),
+                           id(end), getattr(end, "cuda_event", None))
                           for name, (start, end) in slot.diagnostic_events.items()),
                     tuple((key, id(value)) for key, value in slot.targets.items()),
                     tuple((key, id(value)) for key, value in slot.executables.items()),
@@ -1776,6 +1783,7 @@ def _prepare_events(
     diagnostic: bool,
 ) -> tuple[object, Mapping[str, tuple[object, object]]]:
     import torch
+
     from optical_worker.native_setup import _prepare_native_events, _render_phase_names
 
     context._validate_identity()
@@ -2243,34 +2251,6 @@ def _validate_global_storage_disjointness(
     ]
     if len(event_handles) != len(set(event_handles)):
         raise ValueError("CUDA arena events must be identity-unique across slots")
-
-
-def _retain_failure_without_masking(lease: C4ActiveOutputLease, reason: str) -> None:
-    try:
-        lease.mark_submitted_failure(reason)
-    except Exception:
-        # The transition which failed may already have poisoned the control
-        # plane.  Never replace the original CUDA/protocol exception with the
-        # idempotency rejection from a second poison attempt.
-        pass
-
-
-def _retain_or_cancel_enqueue_failure_without_masking(
-    lease: C4ActiveOutputLease,
-    reason: str,
-) -> bool:
-    try:
-        if lease.state == "LEASED":
-            lease.cancel_before_enqueue()
-            return True
-        else:
-            lease.mark_submitted_failure(reason)
-    except Exception:
-        # Before the first enqueue, cancellation is the only safe disposition;
-        # after it, retain the generation through poison. Never replace the
-        # original authority/stage failure with cleanup protocol details.
-        pass
-    return False
 
 
 def _event_token(event: object, *, slot_id: int, name: str) -> str:

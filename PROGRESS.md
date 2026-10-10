@@ -1959,10 +1959,14 @@ Next milestone:
       only; C2f must still integrate actual worker execution, guarded resolution,
       token release/reclaim and close/ACK/observed exit in one complete packet.
       C2f development now integrates that approved baseline; worker-completion
-      implementation-notev1 records unreviewed timeout, shared drain and explicit
-      protocol-v2 prework. Actual worker dispatch and final submission remain
-      unimplemented/closed; these prerequisites are not C2f acceptance.
-      No final sample or speed result is claimed.
+      implementation-notev1 records the unreviewed worker integration: the shared
+      dispatcher drives native arena execution, guarded resolution, cancellation,
+      reclaim and ACK-before-release in CPU tests. Both lanes now share the same
+      pre-enqueue failure cancellation/retention helper. Latest affected CPU run
+      passes235, with native calls doubled; full native PREPARE/transport/process
+      acceptance, bounded preallocated traces and independent review remain open.
+      Product activation and performance measurement remain closed. No native
+      final-sample acceptance or speed result is claimed.
       R1/full C4 follow-up and fresh whole review remain mandatory.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain

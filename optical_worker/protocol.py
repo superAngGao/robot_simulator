@@ -8,6 +8,7 @@ import re
 import struct
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import PurePosixPath, PureWindowsPath
 from types import MappingProxyType
 from typing import Final, Literal
 
@@ -17,6 +18,9 @@ CLOSED_WORKER_TRUST_MODEL_VERSION: Final = "q54.p12.4.closed-worker-trust-model.
 CLOSED_WORKER_RUNTIME_MANIFEST_VERSION: Final = "q54.p12.4.closed-worker-runtime-manifest.v2"
 CLOSED_WORKER_EVIDENCE_VERSION: Final = "q54.p12.4.closed-worker-evidence.v2"
 CLOSED_WORKER_STATE_MACHINE_VERSION: Final = "q54.p12.4.closed-worker-state-machine.v2"
+INTEGRATED_WORKER_RUNTIME_MANIFEST_VERSION: Final = "q54.p12.4.closed-worker-runtime-manifest.v3"
+INTEGRATED_WORKER_EVIDENCE_VERSION: Final = "q54.p12.4.closed-worker-evidence.v3"
+INTEGRATED_WORKER_STATE_MACHINE_VERSION: Final = "q54.p12.4.closed-worker-state-machine.v3"
 
 MAX_REQUEST_BYTES: Final = 64 * 1024
 MAX_RESPONSE_BYTES: Final = 4 * 1024 * 1024
@@ -34,6 +38,16 @@ _RELATIVE_PATH_RE = re.compile(r"(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9_.\-/]{1
 
 class ClosedWorkerProtocolError(RuntimeError):
     """A request, response, frame, or runtime manifest is invalid."""
+
+
+def _worker_versions(*, integrated):
+    return {
+        "protocol_version": (INTEGRATED_WORKER_PROTOCOL_VERSION if integrated
+                             else CLOSED_WORKER_PROTOCOL_VERSION),
+        "trust_model_version": CLOSED_WORKER_TRUST_MODEL_VERSION,
+        "state_machine_version": (INTEGRATED_WORKER_STATE_MACHINE_VERSION if integrated
+                                  else CLOSED_WORKER_STATE_MACHINE_VERSION),
+    }
 
 
 def canonical_json_bytes(value: object) -> bytes:
@@ -190,40 +204,16 @@ class ClosedWorkerRuntimeManifest:
 
     @classmethod
     def from_payload(cls, payload: object) -> "ClosedWorkerRuntimeManifest":
-        fields = {
-            "schema_version",
-            "protocol_version",
-            "trust_model_version",
-            "state_machine_version",
-            "interpreter_executable",
-            "python_version",
-            "environment",
-            "environment_sha256",
-            "site_package_paths",
-            "repository_root",
-            "repository_revision",
-            "repository_clean",
-            "worker_script_relative_path",
-            "lane_id",
-            "device_ordinal",
-            "gate_relative_path",
-            "gate_sha256",
-            "workload_set_sha256",
-            "source_digests",
-            "source_manifest_sha256",
-            "ast_policy_sha256",
-            "control_idle_timeout_ms",
-            "response_write_timeout_ms",
-            "abort_watchdog_ms",
-            "gpu_preparation_enabled",
-        }
+        integrated = cls is IntegratedWorkerRuntimeManifest
+        if cls not in (ClosedWorkerRuntimeManifest, IntegratedWorkerRuntimeManifest):
+            raise ClosedWorkerProtocolError("runtime manifest type is not a supported closed mode")
+        fields = set(cls.__dataclass_fields__)
         if not isinstance(payload, Mapping) or set(payload) != fields:
             raise ClosedWorkerProtocolError("closed-worker runtime manifest fields are invalid")
         versions = {
-            "schema_version": CLOSED_WORKER_RUNTIME_MANIFEST_VERSION,
-            "protocol_version": CLOSED_WORKER_PROTOCOL_VERSION,
-            "trust_model_version": CLOSED_WORKER_TRUST_MODEL_VERSION,
-            "state_machine_version": CLOSED_WORKER_STATE_MACHINE_VERSION,
+            "schema_version": (INTEGRATED_WORKER_RUNTIME_MANIFEST_VERSION if integrated
+                               else CLOSED_WORKER_RUNTIME_MANIFEST_VERSION),
+            **_worker_versions(integrated=integrated),
         }
         for name, expected in versions.items():
             if payload[name] != expected:
@@ -274,10 +264,12 @@ class ClosedWorkerRuntimeManifest:
                 raise ClosedWorkerProtocolError(f"runtime manifest {name} is invalid")
         if payload["repository_clean"] is not True:
             raise ClosedWorkerProtocolError("closed worker requires a clean repository")
-        if payload["gpu_preparation_enabled"] is not False:
+        if not integrated and payload["gpu_preparation_enabled"] is not False:
             raise ClosedWorkerProtocolError(
                 "C4c0 runtime manifest must keep product GPU preparation disabled"
             )
+        if integrated and payload["gpu_preparation_enabled"] is not True:
+            raise ClosedWorkerProtocolError("native validation manifest requires its preparation capability")
         for name in (
             "control_idle_timeout_ms",
             "response_write_timeout_ms",
@@ -297,10 +289,10 @@ class ClosedWorkerRuntimeManifest:
         if payload["source_manifest_sha256"] != source_hash:
             raise ClosedWorkerProtocolError("runtime manifest source digest is invalid")
         return cls(
-            schema_version=CLOSED_WORKER_RUNTIME_MANIFEST_VERSION,
-            protocol_version=CLOSED_WORKER_PROTOCOL_VERSION,
-            trust_model_version=CLOSED_WORKER_TRUST_MODEL_VERSION,
-            state_machine_version=CLOSED_WORKER_STATE_MACHINE_VERSION,
+            schema_version=versions["schema_version"],
+            protocol_version=versions["protocol_version"],
+            trust_model_version=versions["trust_model_version"],
+            state_machine_version=versions["state_machine_version"],
             interpreter_executable=payload["interpreter_executable"],
             python_version=payload["python_version"],
             environment=MappingProxyType(dict(environment)),
@@ -321,7 +313,8 @@ class ClosedWorkerRuntimeManifest:
             control_idle_timeout_ms=payload["control_idle_timeout_ms"],
             response_write_timeout_ms=payload["response_write_timeout_ms"],
             abort_watchdog_ms=payload["abort_watchdog_ms"],
-            gpu_preparation_enabled=False,
+            gpu_preparation_enabled=integrated,
+            **(_integrated_manifest_arguments(payload) if integrated else {}),
         )
 
     def to_payload(self) -> dict[str, object]:
@@ -356,6 +349,57 @@ class ClosedWorkerRuntimeManifest:
     @property
     def sha256(self) -> str:
         return canonical_sha256(self.to_payload())
+
+
+def _integrated_manifest_arguments(payload):
+    from .wait_protocol import GuardConfiguration
+
+    configuration = GuardConfiguration.from_payload(payload["guard_configuration"])
+    if configuration.device_ordinal != payload["device_ordinal"]:
+        raise ClosedWorkerProtocolError("worker guard differs from its exact target")
+    for name in ("source_catalog_sha256", "runtime_environment_sha256"):
+        if type(payload[name]) is not str or _SHA256_RE.fullmatch(payload[name]) is None:
+            raise ClosedWorkerProtocolError("invalid integrated worker source/environment digest")
+    _identifier(payload["case_id"], label="integrated worker case")
+    if payload["pass_mode"] not in {"primary_unprofiled", "diagnostic_profiled"}:
+        raise ClosedWorkerProtocolError("invalid frozen worker pass mode")
+    asset = payload["go2_model_dir"]
+    if asset is not None and (
+        type(asset) is not str
+        or not (PurePosixPath(asset).is_absolute() or PureWindowsPath(asset).is_absolute())
+    ):
+        raise ClosedWorkerProtocolError("worker asset path must be a frozen absolute path")
+    return {
+        "guard_configuration": MappingProxyType(configuration.to_payload()),
+        "source_catalog_sha256": payload["source_catalog_sha256"],
+        "runtime_environment_sha256": payload["runtime_environment_sha256"],
+        "case_id": payload["case_id"],
+        "pass_mode": payload["pass_mode"],
+        "go2_model_dir": asset,
+    }
+
+
+@dataclass(frozen=True)
+class IntegratedWorkerRuntimeManifest(ClosedWorkerRuntimeManifest):
+    """Exact v3 native mode; never inferred from a v1 request or old manifest."""
+
+    guard_configuration: Mapping[str, object]
+    source_catalog_sha256: str
+    runtime_environment_sha256: str
+    case_id: str
+    pass_mode: str
+    go2_model_dir: str | None
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            **super().to_payload(),
+            "guard_configuration": dict(self.guard_configuration),
+            "source_catalog_sha256": self.source_catalog_sha256,
+            "runtime_environment_sha256": self.runtime_environment_sha256,
+            "case_id": self.case_id,
+            "pass_mode": self.pass_mode,
+            "go2_model_dir": self.go2_model_dir,
+        }
 
 
 @dataclass(frozen=True)
@@ -409,12 +453,13 @@ class ClosedNativeLaneWorkerEvidence:
         }
         if not isinstance(payload, Mapping) or set(payload) != fields:
             raise ClosedWorkerProtocolError("closed-worker evidence fields are invalid")
-        if (
-            payload["schema_version"] != CLOSED_WORKER_EVIDENCE_VERSION
-            or payload["protocol_version"] != CLOSED_WORKER_PROTOCOL_VERSION
-            or payload["trust_model_version"] != CLOSED_WORKER_TRUST_MODEL_VERSION
-            or payload["state_machine_version"] != CLOSED_WORKER_STATE_MACHINE_VERSION
-        ):
+        integrated = payload["schema_version"] == INTEGRATED_WORKER_EVIDENCE_VERSION
+        versions = {
+            "schema_version": (INTEGRATED_WORKER_EVIDENCE_VERSION if integrated
+                               else CLOSED_WORKER_EVIDENCE_VERSION),
+            **_worker_versions(integrated=integrated),
+        }
+        if any(payload[name] != expected for name, expected in versions.items()):
             raise ClosedWorkerProtocolError("closed-worker evidence version is invalid")
         for name in (
             "runtime_manifest_sha256",
@@ -441,10 +486,11 @@ class ClosedNativeLaneWorkerEvidence:
         for name in (
             "callback_surface_enabled",
             "object_deserialization_enabled",
-            "gpu_preparation_enabled",
         ):
             if payload[name] is not False:
                 raise ClosedWorkerProtocolError(f"closed-worker evidence {name} must remain false")
+        if payload["gpu_preparation_enabled"] is not integrated:
+            raise ClosedWorkerProtocolError("worker capability differs from its evidence version")
         modules = payload["cuda_capable_module_names"]
         if not isinstance(modules, list) or modules:
             raise ClosedWorkerProtocolError("C4c0 worker imported CUDA-capable modules before activation")
@@ -460,10 +506,10 @@ class ClosedNativeLaneWorkerEvidence:
         ):
             raise ClosedWorkerProtocolError("closed-worker repository import ledger is invalid")
         return cls(
-            schema_version=CLOSED_WORKER_EVIDENCE_VERSION,
-            protocol_version=CLOSED_WORKER_PROTOCOL_VERSION,
-            trust_model_version=CLOSED_WORKER_TRUST_MODEL_VERSION,
-            state_machine_version=CLOSED_WORKER_STATE_MACHINE_VERSION,
+            schema_version=versions["schema_version"],
+            protocol_version=versions["protocol_version"],
+            trust_model_version=versions["trust_model_version"],
+            state_machine_version=versions["state_machine_version"],
             runtime_manifest_sha256=payload["runtime_manifest_sha256"],
             source_manifest_sha256=payload["source_manifest_sha256"],
             ast_policy_sha256=payload["ast_policy_sha256"],
@@ -477,7 +523,7 @@ class ClosedNativeLaneWorkerEvidence:
             interpreter_executable_sha256=payload["interpreter_executable_sha256"],
             callback_surface_enabled=False,
             object_deserialization_enabled=False,
-            gpu_preparation_enabled=False,
+            gpu_preparation_enabled=integrated,
             cuda_capable_module_names=(),
             repository_module_paths=tuple(repository_paths),
             repository_import_ledger_sha256=payload["repository_import_ledger_sha256"],
