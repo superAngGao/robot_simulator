@@ -75,7 +75,9 @@ RUNTIME_WARP_MODULE_FAULTS = ("runtime_warp_modules_success", *RUNTIME_WARP_ADMI
                              *RUNTIME_WARP_IDLE_FAULTS, *RUNTIME_WARP_COMPILE_FAULTS)
 RUNTIME_FIXED_STORAGE_FAULTS = tuple("runtime_fixed_storage_" + name for name in (
     "success", "diagnostics", "allocate_raise", "adoption_raise", "allocate_hang"))
-RUNTIME_FINAL_GRAPH_CASES = ("runtime_final_graph_success", "runtime_final_graph_diagnostics")
+RUNTIME_FINAL_GRAPH_FAULTS = ("runtime_final_graph_sync_raise",)
+RUNTIME_FINAL_GRAPH_CASES = ("runtime_final_graph_success", "runtime_final_graph_diagnostics",
+                           *RUNTIME_FINAL_GRAPH_FAULTS)
 RUNTIME_RENDER_WARMUP_CASES = ("runtime_render_warmup_success", "runtime_render_warmup_diagnostics",
                              "runtime_render_warmup_geometry", *RUNTIME_FINAL_GRAPH_CASES)
 # Fixed diagnostic selection for tracing RGB discrepancies to camera/first hit.
@@ -1149,7 +1151,7 @@ def _run_observed_render_warmups(session, controller, binding, observer, directo
     return evidence
 
 
-def _prepare_observed_final_graph(session, controller, binding, observer, directory):
+def _prepare_observed_final_graph(session, controller, binding, observer, directory, fault):
     """Observe the production final graph and barrier without submitting a sample."""
     from optical_worker import native_setup
 
@@ -1158,7 +1160,7 @@ def _prepare_observed_final_graph(session, controller, binding, observer, direct
     sync_name = "synchronize" if session.lane == "cuda" else "synchronize_device"
     original_sync = getattr(runtime, sync_name)
     original_complete = controller._guard_client.complete
-    observations = {}
+    observations = {"row": session.fixed_row.row}
 
     def prepare(*args, **kwargs):
         observer._ticket()
@@ -1185,6 +1187,11 @@ def _prepare_observed_final_graph(session, controller, binding, observer, direct
                             barrier_scope=observer._state(False), barrier_returned=False)
         original_sync(target)
         observations["barrier_returned"] = True
+        if fault == "runtime_final_graph_sync_raise":
+            _write(directory, "fault_entered.json", {"fault": fault, "boundary": "final_target_barrier",
+                "guard": dict(controller._guard_reference)})
+            _write(directory, "prefix.json", controller.evidence().to_payload())
+            raise RuntimeError("fixed final target sync failure after native return")
 
     def complete(ticket):
         if controller._final_barrier_ticket is ticket:
@@ -1206,11 +1213,18 @@ def _prepare_observed_final_graph(session, controller, binding, observer, direct
         assert controller._final_sealed_coverage == coverage
         _write(directory, "final_graph_binding.json", dict(observations,
             graph_sha256=graph.sha256, readiness=graph.origin.readiness.to_payload(),
-            quiescence=session.final_quiescence.to_payload(), row=session.fixed_row.row,
+            quiescence=session.final_quiescence.to_payload(),
             frame_ids=[parameters.to_payload()["frame_id"] for parameters, _ in graph.frames],
             plans=[sample._plan.evidence.to_payload() if session.lane == "warp"
                    else sample._control_plan.evidence.to_payload() for sample in graph.samples],
             sample_submission_count=0, acquire_cancel_observed=True))
+    except BaseException:
+        _write(directory, "final_graph_partial.json", dict(observations,
+            admitted=controller._final_admission is not None,
+            quiescent=controller.quiescence_evidence is not None,
+            guardian_state=controller.guardian.state,
+            sealed_coverage_retained=controller._final_sealed_coverage is not None))
+        raise
     finally:
         native_setup._prepare_fixed_final_graph = original_prepare
         setattr(runtime, sync_name, original_sync)
@@ -1660,7 +1674,7 @@ def child(fault, fd, directory):
             observe()
         if fault in RUNTIME_FINAL_GRAPH_CASES:
             phase = "fixed_final_graph"
-            _prepare_observed_final_graph(session, controller, binding, scope_observer, directory)
+            _prepare_observed_final_graph(session, controller, binding, scope_observer, directory, fault)
             session.runtime_observation.checkpoint()
             observe()
         phase = "terminal_disposal"

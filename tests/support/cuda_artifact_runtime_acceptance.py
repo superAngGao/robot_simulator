@@ -280,7 +280,8 @@ def run_case(repository, revision, environment_path, environment, directory, lan
     )
     from tests.support.runtime_custody_launch import capture_runtime_custody_inputs
     from tests.support.native_runtime_process import (RUNTIME_FIXED_STORAGE_FAULTS, RUNTIME_RENDER_GRAPH_CASES,
-                                                      RUNTIME_RENDER_WARMUP_CASES, RUNTIME_FINAL_GRAPH_CASES)
+                                                      RUNTIME_RENDER_WARMUP_CASES, RUNTIME_FINAL_GRAPH_CASES,
+                                                      RUNTIME_FINAL_GRAPH_FAULTS)
 
     request = {"root": str(repository), "revision": revision, "lane": lane,
                "catalog_sha256": hashlib.sha256((repository / CATALOG_PATH).read_bytes()).hexdigest(),
@@ -326,7 +327,8 @@ def run_case(repository, revision, environment_path, environment, directory, lan
         final_case = fault in RUNTIME_FINAL_GRAPH_CASES
         storage_case = fault in RUNTIME_FIXED_STORAGE_FAULTS or graph_case
         successful = fault in {"runtime_artifacts_success", "runtime_scope_success", "runtime_warp_modules_success",
-                               "runtime_fixed_storage_success", "runtime_fixed_storage_diagnostics"} or graph_case
+                               "runtime_fixed_storage_success", "runtime_fixed_storage_diagnostics"} or (
+                                   graph_case and fault not in RUNTIME_FINAL_GRAPH_FAULTS)
         if successful:
             expected_phases = (12 if lane == "warp" else 8) if storage_case else (
                 11 if fault == "runtime_warp_modules_success" else (7 if lane == "cuda" else 6))
@@ -360,6 +362,23 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                         raise RuntimeError("Warp module reuse replaced a compiled executable")
             if (directory / "failure.json").exists() or (directory / "fault_entered.json").exists():
                 raise RuntimeError("positive native case has a failure marker")
+        elif fault in RUNTIME_FINAL_GRAPH_FAULTS:
+            marker = json.loads((directory / "fault_entered.json").read_bytes())
+            partial = json.loads((directory / "final_graph_partial.json").read_bytes())
+            guard = {"sequence": 26 if lane == "warp" else 22, "role": "setup"}
+            summary = worker["summary"]
+            if (result["worker_returncode"] != 74 or control["deadline_expired"] or control["kill_requested"]
+                    or marker != {"fault": fault, "boundary": "final_target_barrier", "guard": guard}
+                    or partial["barrier_guard"] != guard or not partial["barrier_returned"]
+                    or partial["admitted"] or partial["quiescent"] or not partial["sealed_coverage_retained"]
+                    or partial["guardian_state"] != "TRANSFERRED_TO_QUARANTINE"
+                    or summary["disposition"] != "quarantined_process_exit" or summary["custody"] != "full_quarantine"
+                    or summary["emergency_sync_attempt_count"] != 0
+                    or summary["final_setup"]["quiescence_sha256"] is not None
+                    or summary["final_setup"]["barrier_returned"]
+                    or control["normal_complete_count"] != guard["sequence"]
+                    or control["arm_count"] != guard["sequence"] + 1):
+                raise RuntimeError("final barrier failure did not retain its exact sealed graph and exit")
         else:
             if result["worker_returncode"] == 0 or not (directory / "fault_entered.json").is_file():
                 raise RuntimeError("fixed fault did not reach its intended real boundary")
@@ -504,12 +523,15 @@ def run_case(repository, revision, environment_path, environment, directory, lan
         if storage_case:
             storage_fault = ("runtime_fixed_storage_" + ("diagnostics" if fault.endswith("diagnostics") else "success")
                              if graph_case else fault)
-            _validate_fixed_storage(directory, lane, case, storage_fault, successful=successful)
+            _validate_fixed_storage(directory, lane, case, storage_fault, successful=successful or final_case)
         final_row = None
         if final_case:
-            final = json.loads((directory / "final_graph_binding.json").read_bytes())
+            final = json.loads((directory / ("final_graph_binding.json" if successful else "final_graph_partial.json")).read_bytes())
             gate = json.loads((repository / "benchmarks/results/q54_p12_4/gate.json").read_bytes())
             final_row = next(row for row in gate["mandatory_rows"] if row["row_id"] == final["row"]["row_id"])
+            if final_row != final["row"] or final_row["case_id"] != case or final_row["boundary"] != "R0":
+                raise RuntimeError("final graph row differs from its frozen case")
+        if final_case and successful:
             from optical_worker.protocol import canonical_sha256
             final_summary = worker["summary"]["final_setup"]
             if (final_row != final["row"] or final_row["case_id"] != case or final_row["boundary"] != "R0"
