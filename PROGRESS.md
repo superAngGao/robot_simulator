@@ -2021,7 +2021,10 @@ Next milestone:
       safely exited after one emergency target sync; raw evidence is preserved.
       Candidate0be9876 binds that value through the original sealed CUDA context
       and retains exact stream/event/sample/transaction ownership; fresh code
-      preflight is running. The predecessor22b1db0 reader's real20case
+      preflight approves exact0be9876 for bounded native validation (39 fresh
+      independent CPU cases). Author related regression passes293/no skips.
+      Complete report is archived; repaired native probe is prepared but waits
+      for the current matrix to finish. The predecessor22b1db0 reader's real20case
       input/Go2/foreign-scope matrix is also running. No speed result is claimed.
       See terminal-target implementation-notev1 and native
       worker source audit implementation-notev1 for exact scope and evidence.

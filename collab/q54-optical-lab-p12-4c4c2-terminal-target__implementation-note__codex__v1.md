@@ -90,7 +90,26 @@ returned agent thread limit reached; the owner-authorized equivalent fresh
 CLI session01a12555-9ed3-79c3-9b48-a811e5677ae7 is reviewing it, started
 2026-10-10T10:22:10Z, parent37896/reviewer42004. Request SHA
 c566fee8ca14d4376da3eca348291294e64422067c9d4a18140f9708d86ecc43.
-No verdict or native execution permission for the candidate is presumed.
+The review has completed with Approve for exact0be9876 bounded native
+validation. Full report is archived verbatim as
+`q54-optical-lab-p12-4c4c2-terminal-target__code-preflight-review__codex__v1.md`,
+SHA60cd3eadf2127be281529e8d4bed7cf90e979e8ac28bce9cd665d8aa817abb6d.
+Independent evidence:27 focused committed cases, one original-method
+reproduction and11 additional boundary/order cases passed, no skips;91source
+pins/AST checks passed. It explicitly permits equal device values on the
+original context while rejecting substituted wait arguments/native resources.
+The native failure lifecycle/framed evidence was independently replayed.
+CLI exited0; parent/reviewer PIDs are absent, frozen checkout including ignored
+files remains clean. This approves the bounded correction/preflight only.
+
+Clean server checkout `/data2/shared/ang.gao/robot_sim_worker_0be9876` is ready
+at the exact candidate. The unchanged native probe driver and launch ledger
+are prepared there, but have not run. They wait for the existing reader matrix
+below to end and its owned processes to be checked. Initial bundle authoring
+with a raw object as positive ref produced an empty-bundle refusal; it was
+corrected by bundling the named HEAD including evidence commits, then selecting
+the exact0be9876 candidate for the new detached checkout. No old checkout or
+running matrix source was edited.
 
 ## Concurrent reader validation, separate unchanged candidate
 
