@@ -137,6 +137,40 @@ def test_control_channel_eof_is_a_terminal_state_transition_not_cleanup_authorit
 
 
 @pytest.mark.skipif(os.name != "posix", reason="reviewed closed-worker launcher is Linux-only")
+def test_idle_timeout_records_original_fault_and_reaps_worker(tmp_path):
+    from optical_worker.protocol import (
+        FRAME_HEADER_BYTES, MAX_RESPONSE_BYTES, decode_canonical_message, decode_frame_header,
+    )
+
+    root = Path(__file__).resolve().parents[3]
+    manifest = replace(build_closed_worker_runtime_manifest(root, lane_id="warp", device_ordinal=0),
+                       control_idle_timeout_ms=1000)
+    manifest_path = tmp_path / "idle-timeout-runtime.json"
+    write_closed_worker_runtime_manifest(manifest_path, manifest)
+    proxy = ClosedWorkerLaneProxy(manifest_path=manifest_path, artifact_root=tmp_path / "artifacts")
+    try:
+        proxy.hello_and_open()
+        assert proxy.wait_supervisor(timeout_seconds=10.0) == 0
+        supervisor = json.loads(proxy.supervisor_evidence_path.read_bytes())
+        assert supervisor["worker_return_code"] == 64
+        assert not supervisor["parent_lost"] and not supervisor["watchdog_killed_worker"]
+        encoded = proxy.termination_journal_path.read_bytes()
+        records = []
+        while encoded:
+            size = decode_frame_header(encoded[:FRAME_HEADER_BYTES], max_bytes=MAX_RESPONSE_BYTES)
+            end = FRAME_HEADER_BYTES + size
+            records.append(decode_canonical_message(encoded[FRAME_HEADER_BYTES:end], max_bytes=MAX_RESPONSE_BYTES))
+            encoded = encoded[end:]
+        assert records[0] == {"kind": "worker_loop_fault", "fault": "control_idle_timeout",
+                              "exception_type": "TimeoutError", "message": "control channel idle timeout"}
+        assert records[-1]["kind"] == "transport_termination"
+        assert records[-1]["evidence"]["disposition"] == "cancelled_before_submission_exit"
+    finally:
+        proxy.close_transport()
+        proxy.wait_supervisor(timeout_seconds=10.0)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="reviewed closed-worker launcher is Linux-only")
 def test_supervisor_watchdog_kills_hung_emergency_sync_while_parent_is_alive(tmp_path):
     root = Path(__file__).resolve().parents[3]
     supervisor_script = root / "tools" / "optical_closed_worker_supervisor.py"
