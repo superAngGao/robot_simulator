@@ -822,6 +822,26 @@ class _NativeScopeObserver:
                         destination.copy_(source, non_blocking=True)
                 original = stream_only_copy
             def wrapper(*args, _original=original, _site=site, **kwargs):
+                if (_site in {"empty", "copy", "event_create", "event_record", "event_wait"}
+                        and self.session.phase not in {"initializing_runtime", "uploading", "validating_input"}):
+                    # Shared transfer helpers also run inside later target
+                    # scopes. Those are not a2 ambient-scope receipts.
+                    self._ticket()
+                    before = self._state(False)
+                    result = _original(*args, **kwargs)
+                    if result is not None:
+                        self.held.append(result)
+                    after = self._state(False)
+                    assert before == after, "shared transfer changed its caller's native scope"
+                    assert before["target_current_stream"] == self.stream.cuda_stream
+                    assert [r["ordinal"] for r in before["primary_contexts"] if r["active"]] == [1]
+                    if self.session.lane == "warp":
+                        assert before["default_device"] == before["current_context_device"] == 1
+                    else:
+                        assert before["logical_device"] == before["raw_device"] == 1
+                    self.raw.append({"shared_helper": _site, "phase": self.session.phase,
+                                     "before": before, "after": after})
+                    return result
                 opening = self.snapshot(_site, "before", self._latest_leaf())
                 result = _original(*args, **kwargs)
                 if result is not None:
