@@ -105,6 +105,7 @@ class _Replay:
         self.version = _enum(version, {LIFECYCLE_VERSION, FINAL_LIFECYCLE_VERSION, WORKER_LIFECYCLE_VERSION})
         self.worker_manifest = None
         self.worker_samples = None
+        self.remaining_samples = None
         self.active_sample = None
         self.next_sample = 0
         self.cancel_only = False
@@ -237,16 +238,18 @@ class _Replay:
         )
 
     def _declare_scope(self, ordinals, unknown, *, source, reason):
-        # Validate the complete declaration before changing any live field.
+        # Setup may allocate. Stage all growing containers before publishing any
+        # field so allocation failure cannot leave a partially declared scope.
         for ordinal in ordinals:
             bounded_integer(ordinal, 1023)
+        dirty = self.dirty.copy()
+        notifications = self.notifications.copy()
         for ordinal in ordinals:
-            if ordinal not in self.dirty:
-                self.dirty.add(ordinal)
-                self.notifications.append(("dirty", ordinal, source, reason))
+            if ordinal not in dirty:
+                dirty.add(ordinal)
+                notifications.append(("dirty", ordinal, source, reason))
         if unknown and not self.unknown:
-            self.unknown = True
-            self.notifications.append(
+            notifications.append(
                 (
                     "unknown",
                     None,
@@ -256,10 +259,14 @@ class _Replay:
                     else "owner_device_unknown",
                 )
             )
+        self.dirty = dirty
+        self.notifications = notifications
+        self.unknown = self.unknown or unknown
 
     def apply(self, event, *, preceding_evidence_sha256=None):
         event = exact_fields(event, {"index", "epoch", "operation", "guard", "details"})
         _require(bounded_integer(event["index"]) == self.index, "noncontiguous lifecycle trace")
+        following_index = self.index + 1
         operation = event["operation"]
         _require(
             type(operation) is str and self.controller != "TERMINAL_INTENT", "event after terminal intent"
@@ -290,7 +297,7 @@ class _Replay:
                 and expected_epoch == 0,
                 "trace must begin at the exact guardian",
             )
-            self.index += 1
+            self.index = following_index
             return
         if operation == "normal_arm_started":
             exact_fields(details, set())
@@ -342,9 +349,11 @@ class _Replay:
                 self.guard_state == "COMPLETE_PENDING" and not self.failed and not self.compromised,
                 "unexpected DISARMED",
             )
-            self.last_completed_guard = dict(self.guard)
+            completed_guard = dict(self.guard)
+            complete_count = self.complete_count + 1
+            self.last_completed_guard = completed_guard
             self.guard_state, self.guard = "IDLE", None
-            self.complete_count += 1
+            self.complete_count = complete_count
         elif operation == "guard_failed":
             exact_fields(details, {"failure_kind"})
             _enum(details["failure_kind"], FAILURE_KINDS)
@@ -365,14 +374,15 @@ class _Replay:
                 and (self.descriptor is None or self.descriptor_started),
                 "descriptor overlap",
             )
-            self.descriptor = _descriptor(details["descriptor"])
-            self.descriptor_started = False
+            descriptor = _descriptor(details["descriptor"])
             self._declare_scope(
-                self.descriptor.device_ordinals,
-                self.descriptor.unreturned_resource_possible,
-                source=self.descriptor.scope_source,
+                descriptor.device_ordinals,
+                descriptor.unreturned_resource_possible,
+                source=descriptor.scope_source,
                 reason="pre_leaf_descriptor",
             )
+            self.descriptor = descriptor
+            self.descriptor_started = False
         elif operation == "setup_operation_started":
             exact_fields(details, {"descriptor_sha256", "operation_id", "leaf_kind"})
             self._active_setup()
@@ -392,12 +402,16 @@ class _Replay:
                 },
                 "descriptor identity drift",
             )
-            self.descriptor_started = True
-            self.operation_count += 1
-            self.work_counts[self.descriptor.leaf_kind] = (
+            operation_count = self.operation_count + 1
+            work_counts = self.work_counts.copy()
+            work_counts[self.descriptor.leaf_kind] = (
                 self.work_counts.get(self.descriptor.leaf_kind, 0) + 1
             )
-            self.permit = (self.descriptor.sha256, self.operation_count)
+            permit = (self.descriptor.sha256, operation_count)
+            self.descriptor_started = True
+            self.operation_count = operation_count
+            self.work_counts = work_counts
+            self.permit = permit
         elif operation == "dirty_ordinal_added":
             exact_fields(details, {"device_ordinal", "source", "reason"})
             self._active_setup()
@@ -409,8 +423,11 @@ class _Replay:
                 and ordinal not in self.notified_dirty,
                 "unexpected/repeated dirty notification",
             )
-            self.notifications.pop(0)
-            self.notified_dirty.add(ordinal)
+            notified_dirty = self.notified_dirty.copy()
+            notified_dirty.add(ordinal)
+            notifications = self.notifications[1:]
+            self.notifications = notifications
+            self.notified_dirty = notified_dirty
         elif operation == "unknown_scope_set":
             exact_fields(details, {"source", "reason"})
             _identifier(details["source"])
@@ -423,7 +440,7 @@ class _Replay:
                     self.notifications[0] == ("unknown", None, details["source"], details["reason"]),
                     "unknown scope notification order",
                 )
-                self.notifications.pop(0)
+                self.notifications = self.notifications[1:]
             self.unknown, self.notified_unknown = True, True
         elif operation == "low_level_leaf_entered":
             exact_fields(details, {"descriptor_sha256", "operation_sequence"})
@@ -435,8 +452,9 @@ class _Replay:
                 and not self.notifications,
                 "invalid/unsafe leaf permit",
             )
+            entered = self.entered + 1
             self.permit = None
-            self.entered += 1
+            self.entered = entered
         elif operation == "owner_adopted":
             exact_fields(details, {"sequence", "role", "owner_type", "device_scope", "operation_id"})
             _require(
@@ -451,6 +469,7 @@ class _Replay:
                 type(details["owner_type"]) is str and bool(details["owner_type"]), "invalid owner type label"
             )
             scope = details["device_scope"]
+            records = [*self.records, dict(details)]
             if scope != HOST_OWNER:
                 self._active_setup()
                 _require(not self.notifications, "owner adoption interrupts scope notifications")
@@ -461,7 +480,7 @@ class _Replay:
                     self._declare_scope(
                         (scope,), False, source="returned_owner", reason="returned_owner_device"
                     )
-            self.records.append(dict(details))
+            self.records = records
         elif operation in {"guardian_sealed", "guardian_partial_frozen", "guardian_quarantine_transferred"}:
             exact_fields(details, {"coverage_sha256"})
             if operation == "guardian_sealed":
@@ -550,6 +569,7 @@ class _Replay:
             count = bounded_integer(details["sample_count"], 1_000_000, minimum=1)
             _digest(details["token_registry_sha256"])
             self.worker_samples = ["PREPARED"] * count
+            self.remaining_samples = count
         elif operation in {"sample_acquired", "sample_submission_latched", "sample_completion_recorded",
                            "sample_resolved", "sample_reclaimed", "sample_cancelled"}:
             exact_fields(details, {"sample_index", "resolve_sequence"}
@@ -567,8 +587,10 @@ class _Replay:
                 self.worker_samples[index] = "ACQUIRED"
             elif operation == "sample_cancelled":
                 _require(state == "PREPARED", "only unacquired samples may cancel")
+                remaining_samples = self.remaining_samples - 1
                 self.cancel_only = True
                 self.worker_samples[index] = "CANCELLED"
+                self.remaining_samples = remaining_samples
             else:
                 _require(self.active_sample == index, "sample transition differs from active generation")
                 if operation == "sample_submission_latched":
@@ -577,9 +599,10 @@ class _Replay:
                     self.sample_submission_latched = True
                 elif operation == "sample_completion_recorded":
                     _require(state == "SUBMISSION_POSSIBLE", "completion without possible submission")
+                    following_sample = self.next_sample + 1
                     self.worker_samples[index] = "COMPLETION_RECORDED"
                     self.sample_resolve_sequence = self.next_sequence
-                    self.next_sample += 1
+                    self.next_sample = following_sample
                 elif operation == "sample_resolved":
                     bounded_integer(details["resolve_sequence"], MAX_SEQUENCE)
                     _require(state == "COMPLETION_RECORDED" and self.last_completed_guard is not None
@@ -590,8 +613,10 @@ class _Replay:
                     self.worker_samples[index] = "RESOLVED_HELD"
                 else:
                     _require(state == "RESOLVED_HELD", "reclaim before resolution")
+                    remaining_samples = self.remaining_samples - 1
                     self.worker_samples[index] = "RECLAIMED"
                     self.active_sample = None
+                    self.remaining_samples = remaining_samples
         elif operation == "post_reclaim_idle":
             exact_fields(details, {"evidence"})
             proof = PostReclaimIdleEvidence.from_payload(details["evidence"]).to_payload()
@@ -602,6 +627,7 @@ class _Replay:
                      and self.active_sample is None and self.controller == "RUNNING"
                      and self.guard_state == "IDLE" and not self.failed and not self.compromised
                      and self.idle_proof is None
+                     and self.remaining_samples == 0
                      and all(state in {"RECLAIMED", "CANCELLED"} for state in self.worker_samples)
                      and proof["session_identity"] == self.config.session and proof["lane"] == self.lane
                      and proof["target"] == self.config.device_ordinal
@@ -816,7 +842,7 @@ class _Replay:
         else:
             raise GuardProtocolError("unknown guarded lifecycle transition")
         self.epoch = expected_epoch
-        self.index += 1
+        self.index = following_index
 
 
 def replay_lifecycle(configuration, lane, trace, *, version=LIFECYCLE_VERSION):

@@ -18,7 +18,7 @@ from .guarded_evidence import (
     GuardedLifecycleEvidence,
     GuardedTerminationEvidence,
     PostReclaimIdleEvidence,
-    replay_lifecycle,
+    _Replay,
 )
 from .lifecycle import (
     _FAULT_KINDS,
@@ -92,7 +92,7 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
         self._terminating = False
         self._failure_holds = []
         self._termination_evidence = None
-        self._replay = None
+        self._replay = _Replay(configuration, lane_id)
         self._evidence_version = LIFECYCLE_VERSION
         self._final_graph = None
         self._final_sealed_coverage = None
@@ -114,7 +114,7 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
             epoch = (
                 1
                 if operation == "descriptor_observed"
-                else (0 if self._replay is None else self._replay.epoch)
+                else self._replay.epoch
             )
             event = {
                 "index": len(self._guard_events),
@@ -123,11 +123,24 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
                 "guard": None if self._guard_reference is None else dict(self._guard_reference),
                 "details": dict(details),
             }
-            candidate = [*self._guard_events, event]
-            replay = replay_lifecycle(self._guard_client.configuration.to_payload(), self._lane_id, candidate,
-                                      version=self._evidence_version)
+            # Hash the actual prefix only at the untimed close boundary. The
+            # caller's descriptive digest cannot substitute for that binding.
+            prefix_sha256 = self.evidence().sha256 if operation == "post_reclaim_idle" else None
+            previous_version = self._replay.version
+            if self._evidence_version not in {
+                LIFECYCLE_VERSION, FINAL_LIFECYCLE_VERSION, WORKER_LIFECYCLE_VERSION,
+            }:
+                raise GuardProtocolError("unknown guarded lifecycle version")
+            # Reserve publication before changing reducer state. A failed list
+            # growth or rejected transition must leave both views unchanged.
             self._guard_events.append(event)
-            self._replay = replay
+            self._replay.version = self._evidence_version
+            try:
+                self._replay.apply(event, preceding_evidence_sha256=prefix_sha256)
+            except BaseException:
+                self._guard_events.pop()
+                self._replay.version = previous_version
+                raise
 
     def _append(self, operation, details):
         # Inherited facts are attached at occurrence, not zipped after setup.
@@ -567,6 +580,7 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
         graph = worker._graph
         if (graph is None or worker._active_sample is not None or worker._native_operation is not None
                 or self._worker_resolution is not None or not worker._samples
+                or self._replay.remaining_samples != 0
                 or any(record.state not in {"RECLAIMED", "CANCELLED"} for record in worker._samples)):
             self._reject_closed_entry("close requires every worker sample to be consumed")
         control = graph.arena._control

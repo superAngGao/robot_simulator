@@ -2050,6 +2050,13 @@ Next milestone:
       612 fresh CPU checks plus independently verified/replayed native archives.
       Complete final-worker correctness/refactor/fault acceptance remains open;
       this is not whole C2f/C4 or later-gate approval.
+      Continuing control-layer refactor now applies only new lifecycle events
+      to the shared live reducer and removes the per-release full sample scan.
+      Offline evidence still fully replays the trace and checks close counts.
+      Baseline counterexamples and current CPU verification are recorded in
+      worker-control-work diagnostic-notev1. Preallocation/capacity, complete
+      native final-output/fault evidence and independent integrated acceptance
+      remain unfinished; no renderer speed comparison or later gate is claimed.
       Author full source
       regression passes317 with13 Windows skips, all13 supplemented successfully
       on primary Linux. Separately the approvedfc23b4e

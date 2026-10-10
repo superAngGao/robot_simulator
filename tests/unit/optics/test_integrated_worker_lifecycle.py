@@ -16,7 +16,7 @@ import pytest
 from optical_worker import protocol as p
 from optical_worker.manifest import build_integrated_worker_runtime_manifest
 from optical_worker.worker import ClosedWorkerSession, _WorkerSample
-from tests.unit.optics.test_native_final_graph import final_session
+from tests.unit.optics.test_native_final_graph import final_sample_count, final_session
 from tests.unit.optics.test_native_render_preparation import graph_session
 from tests.unit.optics.test_native_render_warmup import executable_graph
 from tests.unit.optics.test_prepared_fixed_render_inputs import fixed_inputs, fixed_storage_session
@@ -52,7 +52,7 @@ def bound_worker(fixed_storage_session, tmp_path, diagnostic):
 
 
 @pytest.fixture
-def worker_graph(bound_worker, final_session):
+def worker_graph(bound_worker, final_session, final_sample_count):
     x, worker = final_session, bound_worker
     # The setup fixtures prepared native storage and warmed it with CPU leaves.
     # Final plans, sealing, target barrier and sample execution are production code.
@@ -72,7 +72,7 @@ def worker_graph(bound_worker, final_session):
 
     x.p.runtime.ScopedDevice = lambda owner: Scope(owner, "device")
     x.p.runtime.ScopedStream = lambda owner: Scope(owner, "stream")
-    graph = x.session.prepare_fixed_final_graph(sample_count=2)
+    graph = x.session.prepare_fixed_final_graph(sample_count=final_sample_count)
     worker._graph = graph
     worker._samples = tuple(_WorkerSample(i, secrets.token_hex(16), secrets.token_hex(16),
                                          secrets.token_hex(16), plan=plan)
@@ -83,7 +83,7 @@ def worker_graph(bound_worker, final_session):
                              (record.resolved_token, "RESOLVED_HELD")):
             worker._tokens[token] = record, state
     x.controller.record_worker_transition(worker, "worker_prepared", {
-        "sample_count": 2, "graph_sha256": graph.sha256,
+        "sample_count": final_sample_count, "graph_sha256": graph.sha256,
         "token_registry_sha256": worker._token_registry_sha256(),
     })
     worker._state = "PREPARED_IDLE"
@@ -115,6 +115,63 @@ def run_sample(worker, index):
     pending = request(worker, "EXECUTE_PREPARED_SAMPLE", prepared_token=record.prepared_token)["payload"]
     resolved = request(worker, "RESOLVE_PREPARED_SAMPLE", pending_token=pending["pending_token"])["payload"]
     request(worker, "RELEASE_RESOLVED_SAMPLE", resolved_token=resolved["resolved_token"])
+
+
+@pytest.mark.parametrize("final_sample_count", [1, 120, 600], indirect=True)
+@pytest.mark.parametrize("guard_operation_timeout_ms", [60_000])
+def test_execute_reduces_only_its_three_new_facts(worker_graph, monkeypatch, guard_operation_timeout_ms):
+    """Count the actual dispatcher work, including any accidentally replayed history."""
+    from optical_worker.guarded_evidence import _Replay
+
+    x = worker_graph
+    reducer = x.controller._replay
+    original = _Replay.apply
+    calls = []
+
+    def observed(state, event, **kwargs):
+        calls.append((state, event["operation"]))
+        return original(state, event, **kwargs)
+
+    monkeypatch.setattr(_Replay, "apply", observed)
+    for record in x.worker._samples:
+        calls.clear()
+        pending = request(x.worker, "EXECUTE_PREPARED_SAMPLE", prepared_token=record.prepared_token)["payload"]
+        assert calls == [(reducer, operation) for operation in (
+            "sample_acquired", "sample_submission_latched", "sample_completion_recorded",
+        )]
+        assert x.controller._replay is reducer
+        resolved = request(x.worker, "RESOLVE_PREPARED_SAMPLE", pending_token=pending["pending_token"])["payload"]
+        request(x.worker, "RELEASE_RESOLVED_SAMPLE", resolved_token=resolved["resolved_token"])
+        assert reducer.remaining_samples == len(x.worker._samples) - record.index - 1
+    # This explicitly performs full independent replay at the evidence boundary.
+    payload = x.controller.evidence().to_payload()
+    assert payload["summary"] == reducer.summary()
+
+
+def test_idle_update_does_not_walk_the_prepared_batch(worker_graph):
+    x = worker_graph
+
+    class NoIteration(tuple):
+        def __iter__(self):
+            raise AssertionError("idle update scanned all prepared samples")
+
+    original = x.worker._samples
+    x.worker._samples = NoIteration(original)
+    try:
+        x.worker._update_native_idle()
+        assert x.worker._state == "PREPARED_IDLE"
+    finally:
+        x.worker._samples = original
+    first, second = original
+    request(x.worker, "CANCEL_PREPARED_SAMPLE", prepared_token=second.prepared_token)
+    assert x.controller._replay.remaining_samples == 1
+    assert x.worker._state == "PREPARED_IDLE"
+    request(x.worker, "CANCEL_PREPARED_SAMPLE", prepared_token=first.prepared_token)
+    assert x.controller._replay.remaining_samples == 0
+    assert x.worker._state == "DRAINED_IDLE"
+    response = request(x.worker, "CLOSE_SESSION")
+    assert response["payload"]["post_reclaim_idle"]["cancelled_count"] == 2
+    x.worker.commit_written_response(response["sequence"])
 
 
 @pytest.fixture

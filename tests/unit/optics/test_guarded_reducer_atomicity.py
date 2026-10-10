@@ -50,3 +50,46 @@ def test_invalid_fields_at_each_real_story_step_leave_state_unchanged(kind):
         state.apply(event)
     assert state.summary() == payload["summary"]
     assert state.coverage() == payload["guardian_coverage"]
+
+
+@pytest.mark.parametrize("allocation", ["scope_notification", "scope_ordinal", "work_counter"])
+def test_setup_container_allocation_failure_precedes_all_state_changes(allocation):
+    payload = story("foreign")
+    state = _Replay(GuardConfiguration.from_payload(payload["configuration"]), payload["lane_id"])
+    target = "setup_operation_started" if allocation == "work_counter" else "descriptor_observed"
+    for event in payload["transition_trace"]:
+        if event["operation"] == target:
+            break
+        state.apply(event)
+    before = deepcopy(vars(state))
+
+    class FullNotifications(list):
+        def copy(self):
+            return self
+
+        def append(self, value):
+            raise MemoryError("scope notification allocation")
+
+    class FullOrdinals(set):
+        def copy(self):
+            return self
+
+        def add(self, value):
+            raise MemoryError("scope ordinal allocation")
+
+    class FullCounters(dict):
+        def copy(self):
+            return self
+
+        def __setitem__(self, key, value):
+            raise MemoryError("work counter allocation")
+
+    if allocation == "scope_notification":
+        state.notifications = FullNotifications(state.notifications)
+    elif allocation == "scope_ordinal":
+        state.dirty = FullOrdinals(state.dirty)
+    else:
+        state.work_counts = FullCounters(state.work_counts)
+    with pytest.raises(MemoryError):
+        state.apply(event)
+    assert vars(state) == before

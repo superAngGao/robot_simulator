@@ -211,3 +211,68 @@ c4-worker-control-baseline-cpu-cf7f5a6-v1-* in c4_assets. Both runs block
 torch/warp/cupy imports and perform no native/GPU work. Six recorded owned CPU
 PIDs3026067,3026072,3026253,3026254,3034182,3034187 are absent; closure JSON is
 retained. These are diagnostic/check outcomes, not full refactor acceptance.
+
+## Incremental live reducer implementation (author work, after925d606)
+
+The live controller now retains one `_Replay` and applies only the new event.
+It no longer builds a copy of the entire trace and reconstructs the reducer on
+each record. Full replay remains in `GuardedLifecycleEvidence.from_payload` at
+the untimed evidence boundary. The post-reclaim event still verifies the hash
+of the actual preceding prefix, computed locally rather than accepted from the
+submitted descriptive proof. Existing v3/v4/v5 serialized schemas are unchanged.
+
+Trace append happens before reducer application, under the original event lock;
+allocation failure therefore precedes state mutation. On rejected application,
+the appended event is removed and the prior reducer version restored. Reducer
+setup branches stage growing collections, descriptor hashes and counters before
+publishing their state. Three injected allocation failures reproduce partial
+mutation in the925d606 reducer and preserve all fields after this change.
+This does not claim atomicity against arbitrary asynchronous interpreter faults.
+
+The same reducer now tracks remaining samples, decrementing only on validated
+cancel/reclaim transitions. Worker idle updates use that count rather than
+walking the whole prepared batch after every release. Close still checks the
+actual worker/arena records and the full replayed sample states; the counter
+does not independently authorize resource release.
+
+Author counterexamples and verification:
+- Isolated baseline checkout `../c4_incremental_baseline_925d606` retains exact
+  production925d606 with four copied current test/fixture files. From that
+  checkout, the original one-sample Warp EXECUTE invokes the reducer1581times
+  (1578more than the three new facts), failing the new test. Raw output:
+  `worker_incremental_baseline_v2.txt`. The earlier v1 invocation started from
+  the main checkout, so imported main production modules and is invalid as
+  baseline evidence. Its exact owned Python PID464/parent45024 was stopped;
+  identity and raw output are retained, tool13953closed with exit-1.
+- Baseline allocation-failure counterexamples:3failed/12deselected in0.37s,
+  `worker_incremental_atomic_baseline_v1.txt`. Current reducer tests:15passed
+  in0.20s, including the three counterexamples and prior malformed-event cases.
+- Initial incremental regression before the remaining-count/fixture changes:
+  282passed/no skips in61.01s. This is not the final snapshot verification.
+- Scale-probe draft v1 failed fixture admission because its requested count
+  differed from the originally captured row. The shared final-graph fixture now
+  takes its count before original row admission; no captured row is rewritten.
+- Scale-probe v2:Warp1/120passed, Warp600 errored during setup on guard EOF.
+  The original CPU peer's operation budget is5000ms. The scale test now declares
+  60000ms before constructing either guard endpoint, leaving all production
+  deadlines and default fixtures unchanged. This is an operation-count probe,
+  not elapsed-time or native setup-time acceptance.
+- Final regression:473passed/no skips,6scale cases deselected in131.43s;
+  `worker_incremental_regression_v1.txt`, tool36489exit0. This covers lifecycle,
+  shared reducer/fixtures, integrated dispatcher, final graph and guard core.
+  The separate scale run is still live at2026-10-10T20:19:22+08:00:Python38428,
+  parent47260, started20:11:18, tool24882. It writes
+  `worker_incremental_counts_v3.txt`; no terminal result is yet claimed.
+  Resume by polling that same handle/process, not by launching a duplicate.
+  Source catalog refresh validates all91 prospective LF sources under
+  the unchanged AST policy; current catalog SHA256
+  2706cbe713011091db8354c996c39d516813c0f1abe9d555eec8f0828365fa92.
+
+Remaining scope is explicit: live event dictionaries/list growth, arena trace
+records, authorities/scopes/tickets and other per-sample allocations still need
+preparation; exact pre-GPU trace/journal capacity admission is unfinished. The
+count tests instrument the lifecycle reducer inside the actual dispatcher with
+CPU native leaves; they do not prove whole-dispatch fixed work/allocation limits
+or native speed. This is continuing G3 implementation, not its acceptance or a
+substitute for the coherent G1-G5 packet, independent review, or full C4 goal.
+No changed production source has been deployed for native execution.

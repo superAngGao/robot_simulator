@@ -234,7 +234,12 @@ def test_final_warp_graph_consumes_same_slot_and_new_readiness(executable_graph,
 
 
 @pytest.fixture
-def final_session(executable_graph, monkeypatch):
+def final_sample_count(request):
+    return getattr(request, "param", 2)
+
+
+@pytest.fixture
+def final_session(executable_graph, monkeypatch, final_sample_count):
     from optical_worker import cuda_arena as adapter
     from optics import cuda_arena
 
@@ -248,7 +253,7 @@ def final_session(executable_graph, monkeypatch):
         x.session,
         row_id="r0_asymmetric_full_shadow",
         case_id=x.session.prepared_input.manifest.case_id,
-        sample_count=2,
+        sample_count=final_sample_count,
         pass_mode=x.graph.pass_mode,
     )
     x.session.phase = "fixed_render_warmups_ready"

@@ -121,7 +121,7 @@ def test_fixed_views_reject_lost_identity_before_scene_construction(fixed_inputs
 
 
 @pytest.fixture
-def fixed_storage_session(fixed_inputs, monkeypatch, fail_at):
+def fixed_storage_session(fixed_inputs, monkeypatch, fail_at, request):
     from optical_worker.native_bootstrap import _SourceSession, _UPLOADED_INPUTS, SourceBootstrapError
     from optical_worker.guarded_lifecycle import NativeGuardedSetupLifecycle
     from optical_worker import warp_setup
@@ -129,7 +129,16 @@ def fixed_storage_session(fixed_inputs, monkeypatch, fail_at):
     from tests.support.guarded_peer import Peer
 
     p = fixed_inputs
-    peer = Peer()
+    configuration = None
+    if 'guard_operation_timeout_ms' in request.fixturenames:
+        from optical_worker.wait_protocol import GuardConfiguration
+        import secrets
+
+        # Large CPU operation-count probes still use the real guard, with a
+        # test-declared budget fixed before either endpoint is constructed.
+        configuration = GuardConfiguration(
+            secrets.token_hex(16), 1, 1000, request.getfixturevalue('guard_operation_timeout_ms'))
+    peer = Peer(configuration=configuration)
     controller = NativeGuardedSetupLifecycle(lane_id=p.lane, channel=peer.channel, configuration=peer.config)
     stream = NS(device=p.device, cuda_stream=123)
     state = NS(device=0, stream=None, arrays=[], calls=0)

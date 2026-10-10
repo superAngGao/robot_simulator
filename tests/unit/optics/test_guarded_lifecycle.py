@@ -53,6 +53,30 @@ def terminate(controller, sync=None):
     )
 
 
+@pytest.mark.parametrize("failure", ["publication", "validation"])
+def test_rejected_record_preserves_live_reducer_and_trace(peer, failure):
+    controller = lifecycle(peer)
+    reducer = controller._replay
+    before_state = copy.deepcopy(vars(reducer))
+    before_trace = copy.deepcopy(controller._guard_events)
+
+    class FullTrace(list):
+        def append(self, event):
+            raise MemoryError("trace growth failed")
+
+    if failure == "publication":
+        controller._guard_events = FullTrace(controller._guard_events)
+        expected = MemoryError
+    else:
+        expected = GuardProtocolError
+    with pytest.raises(expected):
+        controller._record("guardian_sealed", {"coverage_sha256": "0" * 64})
+    assert controller._replay is reducer
+    assert vars(reducer) == before_state
+    assert controller._guard_events == before_trace
+    controller.evidence()
+
+
 def test_cpu_cancel_is_guarded_without_sync(peer):
     controller = lifecycle(peer)
     observed = []

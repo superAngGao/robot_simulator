@@ -512,7 +512,7 @@ class ClosedWorkerSession:
 
     def _update_native_idle(self):
         self._state = ("SAMPLE_ACTIVE" if self._active_sample is not None else
-                       "DRAINED_IDLE" if all(s.state in {"RECLAIMED", "CANCELLED"} for s in self._samples)
+                       "DRAINED_IDLE" if self._lifecycle._replay.remaining_samples == 0
                        else "PREPARED_IDLE")
 
     def _token_registry_sha256(self):
