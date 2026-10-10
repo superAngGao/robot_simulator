@@ -139,7 +139,10 @@ def test_control_channel_eof_is_a_terminal_state_transition_not_cleanup_authorit
 @pytest.mark.skipif(os.name != "posix", reason="reviewed closed-worker launcher is Linux-only")
 def test_idle_timeout_records_original_fault_and_reaps_worker(tmp_path):
     from optical_worker.protocol import (
-        FRAME_HEADER_BYTES, MAX_RESPONSE_BYTES, decode_canonical_message, decode_frame_header,
+        FRAME_HEADER_BYTES,
+        MAX_RESPONSE_BYTES,
+        decode_canonical_message,
+        decode_frame_header,
     )
 
     root = Path(__file__).resolve().parents[3]
@@ -159,7 +162,9 @@ def test_idle_timeout_records_original_fault_and_reaps_worker(tmp_path):
         while encoded:
             size = decode_frame_header(encoded[:FRAME_HEADER_BYTES], max_bytes=MAX_RESPONSE_BYTES)
             end = FRAME_HEADER_BYTES + size
-            records.append(decode_canonical_message(encoded[FRAME_HEADER_BYTES:end], max_bytes=MAX_RESPONSE_BYTES))
+            records.append(
+                decode_canonical_message(encoded[FRAME_HEADER_BYTES:end], max_bytes=MAX_RESPONSE_BYTES)
+            )
             encoded = encoded[end:]
         assert records[0] == {"kind": "worker_loop_fault", "fault": "control_idle_timeout",
                               "exception_type": "TimeoutError", "message": "control channel idle timeout"}
