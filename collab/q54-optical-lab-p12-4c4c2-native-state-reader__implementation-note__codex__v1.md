@@ -79,6 +79,21 @@ These are CPU models/source checks, not real-device evidence.
 - Release authoring validated all 91 normalized prospective LF sources before
   commit; the source regression suite then checked the committed release.
 
+Server CPU supplement on `tileops-dev`, clean detached candidate at
+`/data2/shared/ang.gao/robot_sim_native_reader_4dcf73d`, used the existing
+`robot_sim` Python without installing or changing dependencies. Real Go2 CPU
+materialization for both lanes/resolutions, actual POSIX release-byte capture,
+and `test_optical_closed_worker.py` passed **15 tests in 142.17s**, no skips.
+The two selected source-test functions were
+`test_real_go2_cpu_materialization_has_no_unlisted_imports` and
+`test_actual_posix_checkout_catalog_matches_reviewed_git_bytes`.
+`ROBOT_SIM_TEST_GO2_MODEL_DIR` was the frozen
+`/data2/shared/ang.gao/c2d2_frozen_assets/mujoco_menagerie/unitree_go2`.
+The C0 idle-timeout case waited under its original deadline; it was not restarted.
+These checks execute no GPU reader or render workload. Driver PID2311197,
+pytest2311198 and observed idle-timeout supervisor/worker2313541/2313544 were
+absent after terminal exit0; the remote candidate remained clean at4dcf73d.
+
 ## Review and remaining work
 
 Built-in fresh reviewer creation returned `agent thread limit reached`.
