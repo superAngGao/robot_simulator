@@ -1943,7 +1943,11 @@ Next milestone:
       failures atf15aa62 pass. Original diagnostic-driver failures are retained.
       All frame10 output channels match CPU under unchanged tolerances;
       implementation-notev8 consolidates the candidate and raw evidence.
-      Fresh independent R1 review is pending. No final sample or speed result is claimed.
+      Fresh independent code-reviewv6 requests changes atba394c6: F1 reproduces
+      admission of changed native Warp scene/refit command operands despite
+      unchanged Python bindings. Positive/fault/numeric evidence is verified,
+      but R1 remains unapproved pending repair and fresh independent review.
+      No final sample or speed result is claimed.
       R1/full C4 follow-up and fresh whole review remain mandatory.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
