@@ -63,6 +63,7 @@ _EXTERNAL_CONTRACT_DEFINITIONS = MappingProxyType(
 _MATERIALIZATION_SOURCES = MappingProxyType(
     {
         "optical_worker.assets": "optical_worker/assets.py",
+        "optical_worker.arena": "optical_worker/arena.py",
         "optical_worker.camera_contract": "optical_worker/camera_contract.py",
         "optical_worker.cases": "optical_worker/cases.py",
         "optical_worker.lane_contract": "optical_worker/lane_contract.py",
@@ -130,6 +131,9 @@ _RUNTIME_PHASES = frozenset(
         "fixed_render_graph_ready",
         "warming_fixed_render_graph",
         "fixed_render_warmups_ready",
+        "preparing_fixed_final_graph",
+        "fixed_final_graph_ready",
+        "fixed_final_graph_admitted",
     }
 )
 _VALIDATION_SOURCES = MappingProxyType(
@@ -2357,6 +2361,7 @@ class _SourceSession:
         self.runtime_owners = []
         self.render_source, self.canonical_input, self.prepared_input = None, None, None
         self.validation_report = None
+        self.fixed_row = None
         self.warp_preparation_started = False
         self.runtime_observation = _RuntimeObservation(self)
         self.loaders, self.modules, self.trace = {}, {}, []
@@ -2383,29 +2388,41 @@ class _SourceSession:
                               "preparing_warp_modules", "warp_modules_ready",
                               "preparing_fixed_render_storage", "fixed_render_storage_ready",
                               "preparing_fixed_render_graph", "fixed_render_graph_ready",
-                              "warming_fixed_render_graph", "fixed_render_warmups_ready"}:
+                              "warming_fixed_render_graph", "fixed_render_warmups_ready",
+                              "preparing_fixed_final_graph", "fixed_final_graph_ready", "fixed_final_graph_admitted"}:
                 admitted = admitted | _VALIDATION_SOURCES
             if self.lane == "cuda" and self.phase not in {"materializing", "materialized"}:
                 admitted = admitted | _CUDA_ARTIFACT_SOURCES
             if self.lane == "cuda" and self.phase in {"preparing_cuda_factories", "cuda_factories_ready",
                                                     "preparing_fixed_render_storage", "fixed_render_storage_ready",
                                                     "preparing_fixed_render_graph", "fixed_render_graph_ready",
-                                                    "warming_fixed_render_graph", "fixed_render_warmups_ready"}:
+                                                    "warming_fixed_render_graph", "fixed_render_warmups_ready",
+                              "preparing_fixed_final_graph", "fixed_final_graph_ready", "fixed_final_graph_admitted"}:
                 admitted = admitted | _CUDA_FACTORY_SOURCES
             if self.lane == "warp" and self.phase not in {"materializing", "materialized"}:
                 admitted = admitted | _WARP_SETUP_SOURCES
             if self.lane == "warp" and self.phase in {"preparing_warp_modules", "warp_modules_ready",
                                                     "preparing_fixed_render_storage", "fixed_render_storage_ready",
                                                     "preparing_fixed_render_graph", "fixed_render_graph_ready",
-                                                    "warming_fixed_render_graph", "fixed_render_warmups_ready"}:
+                                                    "warming_fixed_render_graph", "fixed_render_warmups_ready",
+                              "preparing_fixed_final_graph", "fixed_final_graph_ready", "fixed_final_graph_admitted"}:
                 admitted = admitted | _WARP_MODULE_SOURCES
             if self.lane == "warp" and self.phase in {"preparing_fixed_render_graph", "fixed_render_graph_ready",
-                                                    "warming_fixed_render_graph", "fixed_render_warmups_ready"}:
+                                                    "warming_fixed_render_graph", "fixed_render_warmups_ready",
+                              "preparing_fixed_final_graph", "fixed_final_graph_ready", "fixed_final_graph_admitted"}:
                 admitted = admitted | _WARP_RENDER_SOURCES
-            if self.phase in {"warming_fixed_render_graph", "fixed_render_warmups_ready"}:
+            if self.phase in {"warming_fixed_render_graph", "fixed_render_warmups_ready",
+                              "preparing_fixed_final_graph", "fixed_final_graph_ready", "fixed_final_graph_admitted"}:
                 admitted = admitted | {"optical_worker.warmup": "optical_worker/warmup.py"}
                 if self.lane == "warp":
                     admitted = admitted | {"optics.warp_timeline": "optics/warp_timeline.py"}
+            if self.phase in {"preparing_fixed_final_graph", "fixed_final_graph_ready", "fixed_final_graph_admitted"}:
+                admitted = admitted | {"optics.native_arena": "optics/native_arena.py"}
+                if self.lane == "warp":
+                    admitted = admitted | {"optics.warp_arena": "optics/warp_arena.py"}
+                else:
+                    admitted = admitted | {"optics.cuda_arena": "optics/cuda_arena.py",
+                                           "optical_worker.cuda_arena": "optical_worker/cuda_arena.py"}
             return admitted
         raise SourceBootstrapError("invalid CPU source phase")
 
@@ -2681,7 +2698,8 @@ class _SourceSession:
             self.fail(error)
             raise
 
-    def materialize_native_source(self, case_id, *, go2_model_dir=None):
+    def materialize_native_source(self, case_id, *, go2_model_dir=None,
+                                  row_id=None, sample_count=None, pass_mode=None):
         """Fixed canonical CPU path; no supplied arrays, callbacks or readiness."""
         try:
             self.check_live()
@@ -2699,6 +2717,11 @@ class _SourceSession:
             controller = self.bound_controller()
             with controller.segment("setup"):
                 self.phase = "materializing"
+                if row_id is not None or sample_count is not None or pass_mode is not None:
+                    from optical_worker.arena import _admit_fixed_row
+
+                    self.fixed_row = _admit_fixed_row(self, row_id=row_id, case_id=case_id,
+                                                     sample_count=sample_count, pass_mode=pass_mode)
                 self.external.bind_materialization_case(case_id)
                 self._runtime_leaf("canonical_dependency_import", "runtime_import_or_init")
                 from optical_worker.assets import preflight_case_asset
@@ -3450,6 +3473,38 @@ class _SourceSession:
             self.phase = "fixed_render_warmups_ready"
             self.runtime_observation.checkpoint()
             return evidence
+        except BaseException as error:
+            self.fail(error)
+            raise
+
+    def prepare_fixed_final_graph(self, *, sample_count):
+        """Fixed-driver R0 composition and barrier; product IPC remains closed."""
+        try:
+            self.check_live()
+            _require(self.phase == "fixed_render_warmups_ready", "final graph requires observed warmups, once")
+            controller = self.bound_controller()
+            with controller.segment("setup"):
+                self.phase = "preparing_fixed_final_graph"
+                uploaded = _UPLOADED_INPUTS.get(self)
+                _require(uploaded is not None and uploaded[1] is self.prepared_input,
+                         "final graph requires the original uploaded input")
+                record, _prepared = uploaded
+                runtime, target, stream = self._validate_runtime_binding_record(record[0], record)
+                self.audit()
+                self.external.audit()
+                from optical_worker.native_setup import _prepare_fixed_final_graph
+                from optical_worker.arena import _spec_for_final_graph
+
+                spec = _spec_for_final_graph(self, sample_count=sample_count)
+                graph = _prepare_fixed_final_graph(self, runtime, target, stream,
+                                                   spec=spec, sample_count=sample_count)
+                self.audit()
+                self.external.audit()
+            self.final_render_graph = graph
+            self.phase = "fixed_final_graph_ready"
+            self.final_quiescence = controller.commit_target_barrier(_source_session=self, _graph=graph)
+            self.phase = "fixed_final_graph_admitted"
+            return graph
         except BaseException as error:
             self.fail(error)
             raise

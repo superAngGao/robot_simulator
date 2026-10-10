@@ -9,6 +9,8 @@ C4/B3 activation review.
 
 from __future__ import annotations
 
+from optical_worker.native_setup import _require_captured_arena_admission
+
 import hashlib
 import json
 import threading
@@ -938,6 +940,7 @@ class NativeOpticalArena:
         """Perform measured O(1) identity/state activation for an exact plan."""
 
         with self._lock:
+            _require_captured_arena_admission(self)
             self._require_arena_state("OPEN", operation="acquire")
             self._validate_frozen_lightweight()
             if not isinstance(plan, C4PreparedSamplePlan):

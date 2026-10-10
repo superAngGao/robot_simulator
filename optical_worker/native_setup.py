@@ -411,6 +411,251 @@ def _descriptor(
     )
 
 
+
+_FINAL_READINESS_ORIGINS = {}
+_FINAL_RENDER_GRAPHS = {}
+_CAPTURED_ARENAS = {}
+
+
+@dataclass(frozen=True, eq=False)
+class FinalReadinessOrigin:
+    """Observed upstream facts; no reference to the later graph or barrier."""
+
+    session: object
+    prepared: object
+    warmups: object
+    compiled_modules: object
+    readiness: object
+
+
+@dataclass(frozen=True, eq=False)
+class _FinalRenderGraph:
+    origin: FinalReadinessOrigin
+    runtime: object
+    target: object
+    stream: object
+    spec: object
+    factory: object
+    frames: tuple
+    arena: object
+    samples: tuple
+
+    @property
+    def sha256(self):
+        from .protocol import canonical_sha256
+
+        return canonical_sha256({
+            "schema_version": "q54.p12.4.final-render-graph.v1",
+            "native_readiness_sha256": self.origin.readiness.sha256,
+            "warmup_completion": self.origin.warmups.to_payload(),
+            "arena_spec_sha256": self.spec.sha256,
+            "arena_resources_sha256": self.arena.resource_manifest.sha256,
+            "sample_plan_sha256s": [sample._control_plan.evidence.sha256
+                if self.spec.lane == "cuda" else sample._plan.evidence.sha256 for sample in self.samples],
+        })
+
+
+def _require_final_graph(session, graph):
+    if (type(graph) is not _FinalRenderGraph or _FINAL_RENDER_GRAPHS.get(session) is not graph
+            or graph.origin.session is not session or _FINAL_READINESS_ORIGINS.get(session) is not graph.origin
+            or graph.origin.prepared is not session.prepared_input
+            or graph.origin.warmups is not session.fixed_render_warmups
+            or _CAPTURED_ARENAS.get(graph.arena._control, (None,))[0] is not session
+            or session.phase != "fixed_final_graph_ready"):
+        raise ValueError("final barrier requires the exact registered completed graph")
+    session.check_live()
+    controller = session.bound_controller()
+    controller.require_adopted(graph, graph.origin, graph.runtime, graph.target, graph.stream,
+                               graph.arena, graph.origin.readiness)
+    if graph.spec.lane == "cuda":
+        graph.arena._validate_configuration()
+    else:
+        graph.arena._control._validate_frozen()
+        graph.arena._validate_native_scope()
+        if (graph.stream is not graph.arena._stream or graph.target is not graph.arena._device
+                or graph.stream.cuda_stream != graph.arena._stream_handle):
+            raise ValueError("final Warp graph lost its original native scope")
+        for parameters, bundle in graph.frames:
+            bundle.validate_resolved_parameters(parameters)
+    return graph
+
+
+def _require_captured_arena_admission(control):
+    """Fixed-cost acquisition check; standalone arenas retain their own contract."""
+    retained = _CAPTURED_ARENAS.get(control)
+    if retained is None:
+        return
+    session, controller, guardian = retained
+    graph = _FINAL_RENDER_GRAPHS.get(session)
+    if (graph is None or graph.arena._control is not control
+            or session.phase != "fixed_final_graph_admitted" or session.failed
+            or controller._final_admission is not graph or controller.guardian is not guardian
+            or guardian.state != "SEALED" or controller._terminating
+            or controller._replay.controller != "RUNNING" or controller._replay.failed):
+        raise ValueError("captured arena has no acknowledged final target barrier")
+
+
+def _require_final_readiness_origin(session, prepared, readiness):
+    """Reuse observed input validation without another unguarded GPU readback."""
+    from .native_contract import assert_prepared_storage_registered
+
+    origin = _FINAL_READINESS_ORIGINS.get(session)
+    if (type(origin) is not FinalReadinessOrigin or origin.session is not session
+            or origin.prepared is not prepared or origin.readiness is not readiness
+            or session.prepared_input is not prepared
+            or session.fixed_render_warmups is not origin.warmups
+            or session.phase != "preparing_fixed_final_graph"):
+        raise ValueError("final C3 requires its exact locally observed readiness origin")
+    session.check_live()
+    session.bound_controller()._require_setup()
+    session.bound_controller().require_adopted(origin, prepared, readiness, origin.warmups)
+    assert_prepared_storage_registered(prepared)
+    return origin
+
+
+def _prepare_fixed_final_graph(session, runtime, target, stream, *, spec, sample_count):
+    """Compose final R0 factories/C3/arena plans over the warmed physical slot.
+
+    The fixed trusted driver supplies a previously frozen-row-derived spec.
+    This private construction is not product row admission or barrier success.
+    """
+    from dataclasses import replace
+    from optics.native_arena import NativeOpticalArenaSpec
+    from .native_input import certify_native_readiness
+    from .warmup import require_observed_warmups
+
+    observed = require_observed_warmups(session, session.fixed_render_warmups)
+    if session in _FINAL_RENDER_GRAPHS:
+        raise ValueError("final graph construction is one-shot")
+    if (type(spec) is not NativeOpticalArenaSpec or spec.boundary != "R0"
+            or spec.lane != session.lane or spec.payload != "native_only" or spec.ring_depth != 1
+            or type(sample_count) is not int or not 1 <= sample_count <= 1_000_000):
+        raise ValueError("final graph requires a fixed R0 spec and protocol-bounded sample count")
+    provisional = session.fixed_render_graph
+    prepared = session.prepared_input
+    if (spec.case_id != prepared.manifest.case_id or spec.case_sha256 != prepared.manifest.case_sha256
+            or spec.native_input_manifest_sha256 != prepared.manifest.sha256
+            or spec.native_readiness_sha256 != provisional.readiness.sha256
+            or spec.scene_contract_sha256 != prepared.manifest.scene_contract_sha256
+            or spec.fixed_render_fixture_sha256 != prepared.manifest.fixed_render_fixture_sha256
+            or spec.device_ordinal != prepared.device_ordinal
+            or spec.output_profile != provisional.profile or spec.shadows != provisional.shadows
+            or spec.diagnostic_mode != provisional.pass_mode):
+        raise ValueError("final graph spec differs from its actual warmed input/mode")
+    controller = session.bound_controller()
+    controller._require_setup()
+    controller.require_adopted(prepared, provisional, observed, session.fixed_render_storage)
+    _FINAL_RENDER_GRAPHS[session] = None
+    session.phase = "preparing_fixed_final_graph"
+    if session.lane == "warp":
+        from . import warp_setup
+        compiled = session.warp_modules
+        warp_setup.validate_module_set(session, compiled)
+    else:
+        compiled = session.cuda_extensions()
+    if compiled is not observed.compiled_modules or observed.readiness is not provisional.readiness:
+        raise ValueError("final graph differs from the warmed compiled/readiness owners")
+    readiness = certify_native_readiness(prepared, session.validation_report, compile_complete=True,
+                                         warmup_frames_completed=len(observed.completions))
+    session._hold_runtime_owner(readiness, "final_input_readiness")
+    before, after = provisional.readiness.to_payload(), readiness.to_payload()
+    before["warmup_frames_completed"] = after["warmup_frames_completed"]
+    if before != after or readiness is provisional.readiness:
+        raise ValueError("final readiness changed more than its observed warmup count")
+    origin = FinalReadinessOrigin(session, prepared, observed, compiled, readiness)
+    session._hold_runtime_owner(origin, "final_readiness_origin")
+    _FINAL_READINESS_ORIGINS[session] = origin
+    final_spec = replace(spec, native_readiness_sha256=readiness.sha256)
+    scene, first, second, outputs = session.fixed_render_storage
+    frames, samples = [], []
+    session._hold_runtime_owner(frames, "final_render_frames")
+    session._hold_runtime_owner(samples, "final_render_samples")
+    session._runtime_leaf("final_render_graph_scope", "runtime_import_or_init")
+    device_scope = runtime.cuda.device(target) if session.lane == "cuda" else runtime.ScopedDevice(target)
+    stream_scope = runtime.cuda.stream(stream) if session.lane == "cuda" else runtime.ScopedStream(stream)
+    with device_scope, stream_scope:
+        if session.lane == "warp":
+            from optics.warp_native_render import WarpDirectLightRenderCommandFactory
+            from optics.warp_arena import WarpNativeOpticalArena
+
+            factory = WarpDirectLightRenderCommandFactory.prepare(
+                prepared_input=prepared, readiness=readiness, local_scene=scene, device=target, stream=stream,
+                _context=_create_upload_context(controller, runtime, target, stream))
+        else:
+            from optics.cuda_direct_light import CudaDirectLightNativeRenderer
+            from optics.cuda_arena import _seal_cuda_arena, cuda_execution_stream_token
+            from .cuda_arena import build_cuda_c3_binding_from_arena_target
+
+            _, context = _require_cuda_render_factory(session, compiled)
+            if (spec.execution_stream_token != cuda_execution_stream_token(context)
+                    or spec.primitive_count != int(first.triangle_v0_world.shape[0]) or spec.node_capacity != first.num_bvh_nodes):
+                raise ValueError("final CUDA spec differs from warmed physical inputs")
+            factory = CudaDirectLightNativeRenderer.prepare(context, extensions=compiled)
+        session._hold_runtime_owner(factory, "final_render_factory")
+        if factory is provisional.factory:
+            raise ValueError("final graph cannot reuse its provisional factory identity")
+        for index in range(sample_count):
+            frames.append(_bind_fixed_render_frame(
+                session, runtime, target, stream, factory=factory, compiled_owner=compiled,
+                index=index, profile=provisional.profile, shadows=provisional.shadows,
+                pass_mode=provisional.pass_mode, owner_prefix="final"))
+        frozen_frames = tuple(frames)
+        if session.lane == "warp":
+            arena = WarpNativeOpticalArena(spec=final_spec, runtime=runtime, frames=frozen_frames,
+                completion_event=provisional.completion_event, diagnostic_events=provisional.diagnostic_events)
+        else:
+            templates = {}
+            session._hold_runtime_owner(templates, "final_cuda_templates")
+            diagnostics = {name: (start, end) for name, start, end in provisional.diagnostic_events}
+            # One capability owns this slot's shared events, as in the existing
+            # replay arena. Each camera still has its own template/plan identity.
+            capability = context._new_controlled_transaction_capability()
+            session._hold_runtime_owner(capability, "final_cuda_template_capability")
+            for index, (_, bundle) in enumerate(frames):
+                template = context.prepare_transaction_template(stages=(bundle,),
+                    completion_event=provisional.completion_event, diagnostic_events=diagnostics,
+                    _activation_capability=capability)
+                session._hold_runtime_owner(template, "final_cuda_template")
+                templates[None, index] = (template, capability)
+            runtime_arrays = {name: prepared.arrays[name] for name in prepared.manifest.scene_array_names}
+            fixture_arrays = {name: prepared.arrays[name] for name in prepared.manifest.fixed_render_fixture_arrays}
+            arena = _seal_cuda_arena(spec=final_spec, slot_builds=({
+                "slot_id": 0, "world": None, "lbvh": None, "render": outputs,
+                "completion": provisional.completion_event, "diagnostics": diagnostics,
+                "templates": templates, "stage_owners": frozen_frames,
+            },), session_objects=(origin, factory, context, stream, first, second, prepared),
+                session_tensors=tuple(runtime_arrays.items()) + tuple(fixture_arrays.items()),
+                runtime_scene_arrays=runtime_arrays, derived_fixture_arrays=fixture_arrays)
+        session._hold_runtime_owner(arena, "final_render_arena")
+        _CAPTURED_ARENAS[arena._control] = (session, controller, controller.guardian)
+        for index in range(sample_count):
+            if session.lane == "warp":
+                sample = arena.prepare_sample(render_sample_index=index, planned_acquisition_offset=index)
+            else:
+                plan_target = arena.plan_target(transform_frame_index=None, render_sample_index=index,
+                                                planned_acquisition_offset=index)
+                binding = build_cuda_c3_binding_from_arena_target(plan_target,
+                    prepared_input=prepared, native_readiness=readiness, _captured_session=session)
+                provenance = arena.bind_c3_provenance(target=plan_target, binding=binding,
+                    prepared_input=prepared, native_readiness=readiness)
+                sample = arena.prepare_sample(target=plan_target, provenance=provenance,
+                                               planned_acquisition_offset=index)
+                session._hold_runtime_owner(sample._active, "final_active_sample")
+                session._hold_runtime_owner(sample._active._transaction, "final_transaction")
+            session._hold_runtime_owner(sample, "final_prepared_sample")
+            if session.lane == "warp":
+                session._hold_runtime_owner(sample._transaction, "final_transaction")
+            samples.append(sample)
+        if session.lane == "warp":
+            warp_setup.validate_module_set(session, compiled)
+        elif session.cuda_extensions() is not compiled:
+            raise ValueError("final graph changed its warmed CUDA modules")
+    graph = _FinalRenderGraph(origin, runtime, target, stream, final_spec, factory, frozen_frames, arena, tuple(samples))
+    session._hold_runtime_owner(graph, "final_render_graph")
+    _FINAL_RENDER_GRAPHS[session] = graph
+    return graph
+
+
 def _enter_device_leaf(
     lifecycle: NativeWorkerSetupLifecycle,
     descriptor: DeviceScopeDescriptor,

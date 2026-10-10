@@ -750,11 +750,8 @@ class CudaActiveArenaSample:
                         or controller.unknown_device_scope
                         or controller.possible_dirty_device_ordinals != (controller.target_device_ordinal,)):
                     raise ValueError("CUDA resolution differs from the retained exact target scope")
-                controller.require_adopted(self, self._transaction, context.stream, self.completion.event)
-                with controller.segment("resolve"):
-                    ticket = controller._guard_ticket
-                    self.completion.event.synchronize()
-                controller._guard_client.require_completed_ticket(ticket)
+                controller.observe_terminal_completion(owner=self, transaction=self._transaction,
+                    event=self.completion.event, stream=context.stream, target=context.device)
             # A successful device wait is only an observation. In particular,
             # a lost DISARMED acknowledgement above leaves the lease unresolved.
             self._validate_resolution_binding()
@@ -861,7 +858,9 @@ class CudaActiveArenaSample:
             id(self._transaction._context),
             tuple(id(stage) for stage in self._transaction._stages),
             id(self._transaction._completion_event),
-            tuple((name, id(start), id(end)) for name, start, end in self._transaction._diagnostic_events),
+            getattr(self._transaction._completion_event, "cuda_event", None),
+            tuple((name, id(start), getattr(start, "cuda_event", None), id(end), getattr(end, "cuda_event", None))
+                  for name, start, end in self._transaction._diagnostic_events),
         )
 
     def _assert_configuration_stable(self) -> None:
@@ -1172,6 +1171,9 @@ class CudaNativeOpticalArena:
                 (
                     slot.slot_id,
                     id(slot.completion_event),
+                    getattr(slot.completion_event, "cuda_event", None),
+                    tuple((name, id(start), getattr(start, "cuda_event", None), id(end), getattr(end, "cuda_event", None))
+                          for name, (start, end) in slot.diagnostic_events.items()),
                     tuple((key, id(value)) for key, value in slot.targets.items()),
                     tuple((key, id(value)) for key, value in slot.executables.items()),
                 )

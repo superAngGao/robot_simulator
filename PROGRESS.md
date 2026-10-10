@@ -1898,8 +1898,13 @@ Next milestone:
       notev3. Next coherent
       implementation is observed R0 warmup through final readiness/origin,
       actual C3/arena graph/dormant plans, one seal and guarded final barrier;
-      readiness alone is not a completed integration. R1/full C4 follow-up and
-      fresh whole review remain mandatory.
+      readiness alone is not a completed integration. Active uncommitted work
+      (implementation-notev4) composes new final factories/C3/arena plans over
+      warmed storage in both lanes and adds the Warp adapter over the existing
+      control plane. CPU composition tests pass. Source-session row admission, final sealing and
+      guarded target barrier are implemented, including pre-barrier acquisition
+      rejection. Both-lane native validation and independent review remain open.
+      R1/full C4 follow-up and fresh whole review remain mandatory.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
       closed. The design

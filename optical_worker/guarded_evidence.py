@@ -26,6 +26,7 @@ from .wait_protocol import (
 from .wait_supervision import GuardSupervisorEvidence
 
 LIFECYCLE_VERSION = "q54.p12.4.setup-lifecycle.v3"
+FINAL_LIFECYCLE_VERSION = "q54.p12.4.setup-lifecycle.v4"
 TERMINATION_VERSION = "q54.p12.4.transport-termination.v3"
 VALIDATION_VERSION = "q54.p12.4.guarded-custody-validation.v1"
 FAILURE_KINDS = frozenset(
@@ -97,7 +98,13 @@ def _descriptor(value: object) -> DeviceScopeDescriptor:
 class _Replay:
     """One reducer for both live descriptive snapshots and parsed records."""
 
-    def __init__(self, configuration: GuardConfiguration, lane: str):
+    def __init__(self, configuration: GuardConfiguration, lane: str, *, version=LIFECYCLE_VERSION):
+        self.version = _enum(version, {LIFECYCLE_VERSION, FINAL_LIFECYCLE_VERSION})
+        self.final_graph = None
+        self.final_guard = None
+        self.final_barrier_returned = False
+        self.final_quiescence = None
+        self.last_completed_guard = None
         self.config = configuration
         self.lane = _enum(lane, {"warp", "cuda"})
         self.index = 0
@@ -149,7 +156,7 @@ class _Replay:
         }
 
     def summary(self):
-        return {
+        result = {
             "controller_state": self.controller,
             "guardian_state": self.guardian,
             "guard_state": self.guard_state,
@@ -171,6 +178,14 @@ class _Replay:
             "release_status": self.release,
             "disposition": self.disposition,
         }
+        if self.version == FINAL_LIFECYCLE_VERSION:
+            result["final_setup"] = {
+                "graph": self.final_graph,
+                "barrier_guard": self.final_guard,
+                "barrier_returned": self.final_barrier_returned,
+                "quiescence_sha256": self.final_quiescence,
+            }
+        return result
 
     def _active_setup(self):
         _require(
@@ -288,6 +303,7 @@ class _Replay:
                 self.guard_state == "COMPLETE_PENDING" and not self.failed and not self.compromised,
                 "unexpected DISARMED",
             )
+            self.last_completed_guard = dict(self.guard)
             self.guard_state, self.guard = "IDLE", None
             self.complete_count += 1
         elif operation == "guard_failed":
@@ -438,6 +454,41 @@ class _Replay:
                 _digest(details["coverage_sha256"]) == canonical_sha256(self.coverage()),
                 "guardian coverage does not replay",
             )
+        elif operation == "final_graph_sealed":
+            exact_fields(details, {"graph_sha256", "readiness_sha256", "coverage_sha256"})
+            _require(self.version == FINAL_LIFECYCLE_VERSION and self.final_graph is None
+                     and self.controller == "RUNNING" and self.guard_state == "IDLE"
+                     and self.guardian == "SEALED" and not self.failed and not self.compromised,
+                     "invalid final graph seal")
+            for value in details.values():
+                _digest(value)
+            _require(details["coverage_sha256"] == canonical_sha256(self.coverage()),
+                     "final graph coverage differs from the immutable seal")
+            self.final_graph = dict(details)
+        elif operation == "final_target_barrier_started":
+            exact_fields(details, set())
+            self._active_setup()
+            _require(self.version == FINAL_LIFECYCLE_VERSION and self.final_graph is not None
+                     and self.final_guard is None and self.guardian == "SEALED"
+                     and not self.compromised and self.dirty == {self.config.device_ordinal},
+                     "final barrier requires one sealed exact-target graph")
+            self.final_guard = dict(guard)
+        elif operation == "final_target_barrier_returned":
+            exact_fields(details, set())
+            self._active_setup()
+            _require(self.version == FINAL_LIFECYCLE_VERSION and self.final_guard == guard
+                     and not self.final_barrier_returned and self.guardian == "SEALED",
+                     "final barrier return has no exact started guard")
+            self.final_barrier_returned = True
+        elif operation == "setup_barrier_succeeded":
+            exact_fields(details, {"evidence_sha256"})
+            _require(self.version == FINAL_LIFECYCLE_VERSION and self.final_barrier_returned
+                     and self.final_quiescence is None and self.guard_state == "IDLE"
+                     and self.guardian == "SEALED" and self.controller == "RUNNING"
+                     and not self.failed and not self.compromised
+                     and self.last_completed_guard == self.final_guard,
+                     "final quiescence requires its exact DISARMED barrier")
+            self.final_quiescence = _digest(details["evidence_sha256"])
         elif operation == "termination_started":
             exact_fields(details, {"fault", "detection_phase"})
             _enum(details["fault"], _FAULT_KINDS)
@@ -622,10 +673,10 @@ class _Replay:
         self.index += 1
 
 
-def replay_lifecycle(configuration, lane, trace):
+def replay_lifecycle(configuration, lane, trace, *, version=LIFECYCLE_VERSION):
     """Derive descriptive state only; never register an execution object."""
     _require(type(trace) is list and bool(trace), "empty lifecycle trace")
-    replay = _Replay(GuardConfiguration.from_payload(configuration), lane)
+    replay = _Replay(GuardConfiguration.from_payload(configuration), lane, version=version)
     for event in trace:
         replay.apply(event)
     return replay
@@ -649,9 +700,10 @@ class GuardedLifecycleEvidence:
                 "summary",
             },
         )
-        _require(root["schema_version"] == LIFECYCLE_VERSION, "wrong lifecycle version")
+        _enum(root["schema_version"], {LIFECYCLE_VERSION, FINAL_LIFECYCLE_VERSION})
         kind = _enum(root["record_kind"], {"prefix", "terminal"})
-        replay = replay_lifecycle(root["configuration"], root["lane_id"], root["transition_trace"])
+        replay = replay_lifecycle(root["configuration"], root["lane_id"], root["transition_trace"],
+                                  version=root["schema_version"])
         _require((kind == "terminal") == (replay.disposition is not None), "prefix/terminal mismatch")
         _require(
             canonical_json_bytes(root["summary"]) == canonical_json_bytes(replay.summary()),

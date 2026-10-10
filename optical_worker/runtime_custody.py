@@ -257,7 +257,7 @@ class _RuntimeReplay:
                 self.leaf_operations[event["index"]] = operation
                 self.leaf_descriptors[event["index"]] = descriptor
         self.adoptions = {e["details"]["sequence"]: e for e in self.trace if e["operation"] == "owner_adopted"}
-        replay = _LifecycleReplay(self.config, self.lane)
+        replay = _LifecycleReplay(self.config, self.lane, version=self.lifecycle["schema_version"])
         self.guards, self.native_emergency = [], []
         for event in self.trace:
             replay.apply(event)

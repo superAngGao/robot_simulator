@@ -122,7 +122,7 @@ def _validate_fixed_storage(directory, lane, case, fault, *, successful):
         raise RuntimeError("fixed storage replaced the original failure")
 
 
-def _validate_render_graph(directory, lane, fault, *, trace):
+def _validate_render_graph(directory, lane, fault, *, trace, final_row=None):
     data = json.loads((directory / "render_graph_binding.json").read_bytes())
     diagnostic = fault.endswith("diagnostics")
     guard = {"sequence": 12 if lane == "warp" else 8, "role": "setup"}
@@ -136,7 +136,8 @@ def _validate_render_graph(directory, lane, fault, *, trace):
     if (data["guard"] != guard or data["before"] != data["after"]
             or data["warmup_frames_completed"] != 0 or data["sample_submission_count"] != 0
             or data["final_execution_readiness_issued"] is not False
-            or data["profile"] != "direct_light_full" or data["shadows"] is not True
+            or data["profile"] != ("direct_light_full" if final_row is None else final_row["output_profile"])
+            or data["shadows"] is not (True if final_row is None else final_row["shadows"])
             or data["pass_mode"] != ("diagnostic_profiled" if diagnostic else "primary_unprofiled")
             or data["diagnostic_phases"] != (["raygen_kernel", "first_hit_kernel", "shade_kernel"] if diagnostic else [])
             or [row["frame_id"] for row in data["frames"]] != list(range(1, 11))
@@ -279,7 +280,7 @@ def run_case(repository, revision, environment_path, environment, directory, lan
     )
     from tests.support.runtime_custody_launch import capture_runtime_custody_inputs
     from tests.support.native_runtime_process import (RUNTIME_FIXED_STORAGE_FAULTS, RUNTIME_RENDER_GRAPH_CASES,
-                                                      RUNTIME_RENDER_WARMUP_CASES)
+                                                      RUNTIME_RENDER_WARMUP_CASES, RUNTIME_FINAL_GRAPH_CASES)
 
     request = {"root": str(repository), "revision": revision, "lane": lane,
                "catalog_sha256": hashlib.sha256((repository / CATALOG_PATH).read_bytes()).hexdigest(),
@@ -322,6 +323,7 @@ def run_case(repository, revision, environment_path, environment, directory, lan
             raise RuntimeError("worker performed ordinary Python cleanup")
         graph_case = fault in RUNTIME_RENDER_GRAPH_CASES
         warmup_case = fault in RUNTIME_RENDER_WARMUP_CASES
+        final_case = fault in RUNTIME_FINAL_GRAPH_CASES
         storage_case = fault in RUNTIME_FIXED_STORAGE_FAULTS or graph_case
         successful = fault in {"runtime_artifacts_success", "runtime_scope_success", "runtime_warp_modules_success",
                                "runtime_fixed_storage_success", "runtime_fixed_storage_diagnostics"} or graph_case
@@ -330,6 +332,7 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                 11 if fault == "runtime_warp_modules_success" else (7 if lane == "cuda" else 6))
             expected_phases += int(graph_case)
             expected_phases += 12 * int(warmup_case)  # prepare, ten completions, diagnostic readback
+            expected_phases += 2 * int(final_case)  # final composition, final target barrier
             if (result["worker_returncode"] != 0 or error or result["stderr"]
                     or control["normal_complete_count"] != expected_phases
                     or control["arm_count"] != expected_phases + 1
@@ -502,8 +505,31 @@ def run_case(repository, revision, environment_path, environment, directory, lan
             storage_fault = ("runtime_fixed_storage_" + ("diagnostics" if fault.endswith("diagnostics") else "success")
                              if graph_case else fault)
             _validate_fixed_storage(directory, lane, case, storage_fault, successful=successful)
+        final_row = None
+        if final_case:
+            final = json.loads((directory / "final_graph_binding.json").read_bytes())
+            gate = json.loads((repository / "benchmarks/results/q54_p12_4/gate.json").read_bytes())
+            final_row = next(row for row in gate["mandatory_rows"] if row["row_id"] == final["row"]["row_id"])
+            from optical_worker.protocol import canonical_sha256
+            final_summary = worker["summary"]["final_setup"]
+            if (final_row != final["row"] or final_row["case_id"] != case or final_row["boundary"] != "R0"
+                    or final["before"] != final["after"] or final["before"] != final["after_barrier"]
+                    or not final["barrier_returned"] or final["sample_submission_count"] != 0
+                    or final["acquire_cancel_observed"] is not True or final["frame_ids"] != [1, 2, 3]
+                    or [plan["expected_generation"] for plan in final["plans"]] != [1, 2, 3]
+                    or final["readiness"]["warmup_frames_completed"] != 10
+                    or final_summary["quiescence_sha256"] != canonical_sha256(final["quiescence"])
+                    or final_summary["barrier_guard"] != final["barrier_guard"]
+                    or final_summary["graph"]["graph_sha256"] != final["graph_sha256"]):
+                raise RuntimeError("final graph does not match its frozen row and acknowledged target barrier")
+            state = final["barrier_scope"]
+            if (state["target_current_stream"] != state["held_stream"]["handle"]
+                    or [item["ordinal"] for item in state["primary_contexts"] if item["active"]] != [1]
+                    or (state["default_device"] != 1 or state["current_context_device"] != 1
+                        if lane == "warp" else state["logical_device"] != 1 or state["raw_device"] != 1)):
+                raise RuntimeError("final barrier ran outside its exact target scope")
         if graph_case:
-            _validate_render_graph(directory, lane, fault, trace=worker["transition_trace"])
+            _validate_render_graph(directory, lane, fault, trace=worker["transition_trace"], final_row=final_row)
         if warmup_case:
             _validate_render_warmups(directory, lane, case, fault, trace=worker["transition_trace"], request=request)
         raw_path = directory / "runtime_custody.json"

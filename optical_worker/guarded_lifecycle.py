@@ -12,6 +12,7 @@ from contextlib import contextmanager
 
 from .guarded_evidence import (
     LIFECYCLE_VERSION,
+    FINAL_LIFECYCLE_VERSION,
     GuardedLifecycleEvidence,
     GuardedTerminationEvidence,
     replay_lifecycle,
@@ -89,6 +90,11 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
         self._failure_holds = []
         self._termination_evidence = None
         self._replay = None
+        self._evidence_version = LIFECYCLE_VERSION
+        self._final_graph = None
+        self._final_sealed_coverage = None
+        self._final_barrier_ticket = None
+        self._final_admission = None
         super().__init__(
             lane_id=lane_id,
             target_device_ordinal=configuration.device_ordinal,
@@ -111,7 +117,8 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
                 "details": dict(details),
             }
             candidate = [*self._guard_events, event]
-            replay = replay_lifecycle(self._guard_client.configuration.to_payload(), self._lane_id, candidate)
+            replay = replay_lifecycle(self._guard_client.configuration.to_payload(), self._lane_id, candidate,
+                                      version=self._evidence_version)
             self._guard_events.append(event)
             self._replay = replay
 
@@ -313,8 +320,92 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
                 self._fail_guard("protocol", error)
         raise error
 
-    def commit_target_barrier(self, **_kwargs):
-        self._reject_closed_entry("final graph/barrier admission is not implemented in C2d1")
+    def observe_terminal_completion(self, *, owner, transaction, event, stream, target, runtime=None):
+        """Observe one native terminal under the existing resolve guard.
+
+        Callers validate their sealed transaction before and after this wait.
+        This method never commits a lease or drops any resource hold.
+        """
+        ordinal = target.index if self._lane_id == "cuda" else target.ordinal
+        if (self.target_device_ordinal != ordinal or self.unknown_device_scope
+                or self.possible_dirty_device_ordinals != (ordinal,)
+                or stream.device != target or event.device != target):
+            raise ValueError("terminal observation differs from its retained target scope")
+        self.require_adopted(owner, transaction, stream, event)
+        if self._lane_id == "warp":
+            if runtime is None:
+                raise TypeError("Warp observation needs its retained runtime")
+            self.require_adopted(runtime)
+        elif self._lane_id != "cuda" or runtime is not None:
+            raise ValueError("invalid terminal observation runtime")
+        with self.segment("resolve"):
+            ticket = self._guard_ticket
+            if self._lane_id == "cuda":
+                event.synchronize()
+            else:
+                runtime.synchronize_event(event)
+        self._guard_client.require_completed_ticket(ticket)
+        return ticket
+
+    def commit_target_barrier(self, *, _source_session=None, _graph=None, **_kwargs):
+        """Seal one locally registered graph and observe its final target barrier."""
+        from .native_setup import _require_final_graph
+        from .protocol import canonical_json_bytes, canonical_sha256
+
+        if _kwargs or _source_session is None or _graph is None:
+            self._reject_closed_entry("final barrier requires its registered source graph")
+        self._check_running()
+        if (self._context_active or self._guard_client.state != "IDLE" or self._final_graph is not None
+                or self.guardian.state != "CONSTRUCTING"):
+            self._reject_closed_entry("final barrier is one-shot from healthy unsealed setup")
+        graph = _require_final_graph(_source_session, _graph)
+        if _source_session.bound_controller() is not self:
+            self._reject_closed_entry("final graph belongs to another guarded controller")
+        ordinal = graph.target.index if self._lane_id == "cuda" else graph.target.ordinal
+        if (ordinal != self.target_device_ordinal or graph.stream.device != graph.target
+                or self.unknown_device_scope or self.possible_dirty_device_ordinals != (ordinal,)):
+            self._reject_closed_entry("final barrier requires the retained exact target")
+        # All graph owners exist before sealing. The guard client/channel and
+        # controller retain later CPU observations without adding GPU resources.
+        self._final_graph = graph
+        try:
+            graph_sha256 = graph.sha256
+            readiness_sha256 = graph.origin.readiness.sha256
+            self._evidence_version = FINAL_LIFECYCLE_VERSION
+            self.seal_guardian()
+            self._final_sealed_coverage = canonical_json_bytes(self.guardian.coverage_payload())
+            coverage_sha256 = self.guardian.coverage_sha256
+            self._record("final_graph_sealed", {"graph_sha256": graph_sha256,
+                "readiness_sha256": readiness_sha256, "coverage_sha256": coverage_sha256})
+            with self.segment("setup"):
+                ticket = self._guard_ticket
+                self._final_barrier_ticket = ticket
+                self._record("final_target_barrier_started", {})
+                if self._lane_id == "cuda":
+                    with graph.runtime.cuda.device(graph.target), graph.runtime.cuda.stream(graph.stream):
+                        graph.runtime.cuda.synchronize(graph.target)
+                else:
+                    with graph.runtime.ScopedDevice(graph.target), graph.runtime.ScopedStream(graph.stream):
+                        graph.runtime.synchronize_device(graph.target)
+                self._record("final_target_barrier_returned", {})
+            self._guard_client.require_completed_ticket(ticket)
+            _require_final_graph(_source_session, graph)
+            if (graph.sha256 != graph_sha256 or graph.origin.readiness.sha256 != readiness_sha256
+                    or canonical_json_bytes(self.guardian.coverage_payload()) != self._final_sealed_coverage
+                    or canonical_sha256(self.guardian.coverage_payload()) != coverage_sha256
+                    or graph.stream.device != graph.target):
+                raise WorkerSetupProtocolError("final graph or sealed coverage changed during its barrier")
+            evidence = super().commit_target_barrier(a2_readiness_sha256=readiness_sha256,
+                                                     prepared_graph_sha256=graph_sha256)
+            self._final_admission = graph
+            return evidence
+        except BaseException as error:
+            self._hold_failure(error)
+            if self.termination_evidence is None and not self._terminating:
+                self._fail_guard("operation", error)
+                self.terminate(fault="setup_failure", detection_phase="final_target_barrier",
+                               emergency_target_synchronize=None)
+            raise
 
     def latch_measured_sample_submission(self):
         self._reject_closed_entry("measured submission remains closed in C2d1")
@@ -326,7 +417,7 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
         with self._event_lock:
             return GuardedLifecycleEvidence.from_payload(
                 {
-                    "schema_version": LIFECYCLE_VERSION,
+                    "schema_version": self._evidence_version,
                     "configuration": self._guard_client.configuration.to_payload(),
                     "lane_id": self._lane_id,
                     "record_kind": "terminal" if self._replay.disposition else "prefix",

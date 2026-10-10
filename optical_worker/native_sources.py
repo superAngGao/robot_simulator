@@ -32,6 +32,7 @@ CATALOG_PATH = "optical_worker/data/native_sources/v17.json"
 _COMMON = (
     "optical_worker/__init__.py",
     "optical_worker/assets.py",
+    "optical_worker/arena.py",
     "optical_worker/camera_contract.py",
     "optical_worker/cases.py",
     "optical_worker/runtime_phases.py",
@@ -105,7 +106,7 @@ _COMMON = (
     "tools/optical_closed_worker.py",
     "tools/optical_closed_worker_supervisor.py",
 )
-_WARP = ("optical_worker/warp_setup.py", "optics/warp_native_render.py", "optics/warp_timeline.py")
+_WARP = ("optical_worker/warp_setup.py", "optics/warp_native_render.py", "optics/warp_timeline.py", "optics/warp_arena.py")
 _CUDA = (
     "optical_worker/cuda_arena.py",
     "optics/_cuda_direct_light_source.py",

@@ -166,6 +166,7 @@ def graph_session(fixed_storage_session, monkeypatch, diagnostic):
     class Event:
         def __init__(self, *, enable_timing, device=None):
             self.device = None if p.lane == 'cuda' else device
+            self.cuda_event = id(self)
             events.append(self)
 
         def record(self, stream):

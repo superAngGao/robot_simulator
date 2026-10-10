@@ -238,7 +238,7 @@ def require_observed_warmups(session, evidence):
     """Validate local issuance before future final-readiness construction."""
     if (type(evidence) is not WarmupCompletionEvidence or _COMPLETED_WARMUPS.get(session) is not evidence
             or evidence.session is not session or evidence.prepared is not session.prepared_input
-            or evidence.graph is not session.fixed_render_graph or session.phase != "fixed_render_warmups_ready"
+            or evidence.graph is not session.fixed_render_graph or session.phase not in {"fixed_render_warmups_ready", "preparing_fixed_final_graph"}
             or len(evidence.completions) != SETUP_WARMUP_FRAME_COUNT):
         raise ValueError("warmup completion was not observed by this exact session")
     session.check_live()

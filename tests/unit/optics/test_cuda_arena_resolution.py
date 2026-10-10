@@ -29,6 +29,7 @@ def completed_sample(monkeypatch):
     class Event:
         def __init__(self):
             self.device = device
+            self.cuda_event = id(self)
 
         def record(self, selected):
             assert selected is stream

@@ -75,8 +75,9 @@ RUNTIME_WARP_MODULE_FAULTS = ("runtime_warp_modules_success", *RUNTIME_WARP_ADMI
                              *RUNTIME_WARP_IDLE_FAULTS, *RUNTIME_WARP_COMPILE_FAULTS)
 RUNTIME_FIXED_STORAGE_FAULTS = tuple("runtime_fixed_storage_" + name for name in (
     "success", "diagnostics", "allocate_raise", "adoption_raise", "allocate_hang"))
+RUNTIME_FINAL_GRAPH_CASES = ("runtime_final_graph_success", "runtime_final_graph_diagnostics")
 RUNTIME_RENDER_WARMUP_CASES = ("runtime_render_warmup_success", "runtime_render_warmup_diagnostics",
-                             "runtime_render_warmup_geometry")
+                             "runtime_render_warmup_geometry", *RUNTIME_FINAL_GRAPH_CASES)
 # Fixed diagnostic selection for tracing RGB discrepancies to camera/first hit.
 # These are existing outputs, not additional kernels or product payloads.
 WARMUP_GEOMETRY_CHANNELS = ("origins", "directions", "hit_mask", "range_m", "position_world",
@@ -845,7 +846,8 @@ class _NativeScopeObserver:
                         "preparing_warp_modules", "warp_modules_ready",
                         "preparing_fixed_render_storage", "fixed_render_storage_ready",
                         "preparing_fixed_render_graph", "fixed_render_graph_ready",
-                        "warming_fixed_render_graph", "fixed_render_warmups_ready"}:
+                        "warming_fixed_render_graph", "fixed_render_warmups_ready",
+                        "preparing_fixed_final_graph", "fixed_final_graph_ready", "fixed_final_graph_admitted"}:
                     # Compilation gets downstream raw observations, never an
                     # input-phase readback receipt with a different meaning.
                     return original_scope(target)
@@ -1044,7 +1046,9 @@ def _prepare_observed_render_graph(session, controller, binding, observer, direc
     native_setup._prepare_fixed_render_graph = prepare
     controller.adopt_returned_device_owner = adopt
     try:
-        return session.prepare_fixed_render_graph(profile="direct_light_full", shadows=True,
+        row = None if session.fixed_row is None else session.fixed_row.row
+        return session.prepare_fixed_render_graph(profile="direct_light_full" if row is None else row["output_profile"],
+            shadows=True if row is None else row["shadows"],
             pass_mode="diagnostic_profiled" if fault.endswith("diagnostics") else "primary_unprofiled")
     finally:
         native_setup._prepare_fixed_render_graph = original_prepare
@@ -1143,6 +1147,74 @@ def _run_observed_render_warmups(session, controller, binding, observer, directo
     # warmup checkpoint; observe() must consume this current validated cut.
     session.runtime_observation.checkpoint()
     return evidence
+
+
+def _prepare_observed_final_graph(session, controller, binding, observer, directory):
+    """Observe the production final graph and barrier without submitting a sample."""
+    from optical_worker import native_setup
+
+    original_prepare = native_setup._prepare_fixed_final_graph
+    runtime = binding.module.cuda if session.lane == "cuda" else binding.module
+    sync_name = "synchronize" if session.lane == "cuda" else "synchronize_device"
+    original_sync = getattr(runtime, sync_name)
+    original_complete = controller._guard_client.complete
+    observations = {}
+
+    def prepare(*args, **kwargs):
+        observer._ticket()
+        before = observer._state(False)
+        graph = original_prepare(*args, **kwargs)
+        after = observer._state(False)
+        assert before == after
+        assert controller.guardian.state == "CONSTRUCTING"
+        assert graph.origin.readiness.warmup_frames_completed == 10
+        try:
+            graph.arena.acquire(graph.samples[0])
+        except ValueError as error:
+            assert "acknowledged final" in str(error)
+        else:
+            raise AssertionError("final arena admitted a sample before the barrier")
+        observations.update(before=before, after=after, prepare_guard=dict(controller._guard_reference))
+        return graph
+
+    def synchronize(target):
+        observer._ticket()
+        assert target is binding.target and controller.guardian.state == "SEALED"
+        assert controller.quiescence_evidence is None and controller._final_admission is None
+        observations.update(barrier_guard=dict(controller._guard_reference),
+                            barrier_scope=observer._state(False), barrier_returned=False)
+        original_sync(target)
+        observations["barrier_returned"] = True
+
+    def complete(ticket):
+        if controller._final_barrier_ticket is ticket:
+            observer._ticket()
+            assert controller.quiescence_evidence is None and controller._final_admission is None
+            observations["after_barrier"] = observer._state(False)
+            assert observations["after_barrier"] == observations["before"]
+        return original_complete(ticket)
+
+    native_setup._prepare_fixed_final_graph = prepare
+    setattr(runtime, sync_name, synchronize)
+    controller._guard_client.complete = complete
+    try:
+        graph = session.prepare_fixed_final_graph(sample_count=3)
+        assert controller._final_admission is graph and session.phase == "fixed_final_graph_admitted"
+        coverage = controller._final_sealed_coverage
+        active = graph.arena.acquire(graph.samples[0])
+        active.cancel_before_enqueue()
+        assert controller._final_sealed_coverage == coverage
+        _write(directory, "final_graph_binding.json", dict(observations,
+            graph_sha256=graph.sha256, readiness=graph.origin.readiness.to_payload(),
+            quiescence=session.final_quiescence.to_payload(), row=session.fixed_row.row,
+            frame_ids=[parameters.to_payload()["frame_id"] for parameters, _ in graph.frames],
+            plans=[sample._plan.evidence.to_payload() if session.lane == "warp"
+                   else sample._control_plan.evidence.to_payload() for sample in graph.samples],
+            sample_submission_count=0, acquire_cancel_observed=True))
+    finally:
+        native_setup._prepare_fixed_final_graph = original_prepare
+        setattr(runtime, sync_name, original_sync)
+        controller._guard_client.complete = original_complete
 
 
 def _unrecorded_module_observations(admission):
@@ -1282,7 +1354,14 @@ def child(fault, fd, directory):
         session.configure_external_environment(environment_payload, request["environment_sha256"])
         observe()
         phase = "canonical_materialization"
-        session.materialize_native_source(request["case_id"], go2_model_dir=request["go2_model_dir"])
+        row_arguments = {}
+        if fault in RUNTIME_FINAL_GRAPH_CASES:
+            row_id = {"asymmetric_synthetic_7x3_v1": "r0_asymmetric_full_shadow",
+                      "go2_static_960x640_v1": "r0_go2_960_render_only_shadow",
+                      "go2_static_1920x1080_v1": "r0_go2_1080_render_only_shadow"}[request["case_id"]]
+            row_arguments = {"row_id": row_id, "sample_count": 3,
+                             "pass_mode": "diagnostic_profiled" if fault.endswith("diagnostics") else "primary_unprofiled"}
+        session.materialize_native_source(request["case_id"], go2_model_dir=request["go2_model_dir"], **row_arguments)
         observe()
         phase = "runtime_initialization"
         binding = session.initialize_native_runtime()
@@ -1578,6 +1657,11 @@ def child(fault, fd, directory):
             phase = "fixed_render_warmups"
             _run_observed_render_warmups(session, controller, binding, scope_observer, directory,
                                          geometry=fault == 'runtime_render_warmup_geometry')
+            observe()
+        if fault in RUNTIME_FINAL_GRAPH_CASES:
+            phase = "fixed_final_graph"
+            _prepare_observed_final_graph(session, controller, binding, scope_observer, directory)
+            session.runtime_observation.checkpoint()
             observe()
         phase = "terminal_disposal"
 

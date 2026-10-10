@@ -40,6 +40,7 @@ def build_cuda_c3_binding_from_arena_target(
     *,
     prepared_input: CudaPreparedNativeInput,
     native_readiness: NativeReadinessEvidence,
+    _captured_session=None,
 ):
     """Bind exact a2 allocations/readiness to one immutable C4 target."""
 
@@ -48,7 +49,12 @@ def build_cuda_c3_binding_from_arena_target(
     assert_cuda_arena_a2_authority(prepared_input, native_readiness)
     if prepared_input.source is None:
         raise ValueError("CUDA C3 arena adapter requires the canonical a2 source owner")
-    validate_prepared_native_input(prepared_input.source, prepared_input)
+    if _captured_session is None:
+        validate_prepared_native_input(prepared_input.source, prepared_input)
+    else:
+        from .native_setup import _require_final_readiness_origin
+
+        _require_final_readiness_origin(_captured_session, prepared_input, native_readiness)
     _validate_target_a2_allocations(target, prepared_input)
     spec = target._spec
     if (
