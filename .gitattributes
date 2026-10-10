@@ -1,2 +1,2 @@
 # Frozen canonical JSONL records require identical LF framing on every host.
-optical_worker/data/render_sequences/v1/*.jsonl text eol=lf
+optical_worker/data/render_sequences/*/*.jsonl text eol=lf
