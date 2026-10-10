@@ -47,7 +47,7 @@ _SNAPSHOT_FUNCTION_SHA256 = "9a2e94c9dbd653d0c8f3c9a8c45e258ebfff71413083856e976
 # Existing CPU regex construction is not Python code compilation. Keep this
 # exception release-pinned; do not generally admit arbitrary obj.compile().
 _REGEX_SOURCE_PINS = {
-    "optical_worker/protocol.py": "38ff7919ee1b41656a50cf1d6c4fa3280a1f867aac07baaf4a4adbc4189a6470",
+    "optical_worker/protocol.py": "03064071f9a015309ecbb1e4be8bae73b4c15e3574473fdca0ed34e4f5bf9893",
     "optical_worker/lifecycle.py": "2ca76eac3b72fc99f22d6c671e51a9a86724609575b0d61c5b101d3f7a6334dc"
 }
 _CTYPES_ATTRIBUTES = frozenset(("addressof", "c_float", "c_double", "c_int64", "c_int32"))

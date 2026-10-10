@@ -12,6 +12,7 @@ from types import MappingProxyType
 from typing import Final, Literal
 
 CLOSED_WORKER_PROTOCOL_VERSION: Final = "q54.p12.4.closed-worker-protocol.v1"
+INTEGRATED_WORKER_PROTOCOL_VERSION: Final = "q54.p12.4.closed-worker-protocol.v2"
 CLOSED_WORKER_TRUST_MODEL_VERSION: Final = "q54.p12.4.closed-worker-trust-model.v2"
 CLOSED_WORKER_RUNTIME_MANIFEST_VERSION: Final = "q54.p12.4.closed-worker-runtime-manifest.v2"
 CLOSED_WORKER_EVIDENCE_VERSION: Final = "q54.p12.4.closed-worker-evidence.v2"
@@ -508,14 +509,25 @@ def _token(value: object, *, label: str) -> str:
     return value
 
 
-def validate_request(value: object) -> dict[str, object]:
+def _require_protocol_version(actual: object, expected: str, *, kind: str) -> None:
+    if type(expected) is not str or expected not in {
+        CLOSED_WORKER_PROTOCOL_VERSION,
+        INTEGRATED_WORKER_PROTOCOL_VERSION,
+    }:
+        raise ClosedWorkerProtocolError("unsupported configured protocol version")
+    if actual != expected:
+        raise ClosedWorkerProtocolError(f"{kind} protocol version is invalid")
+
+
+def validate_request(
+    value: object, *, expected_version: str = CLOSED_WORKER_PROTOCOL_VERSION,
+) -> dict[str, object]:
     request = _require_exact_fields(
         value,
         {"protocol_version", "sequence", "operation", "arguments"},
         label="closed-worker request",
     )
-    if request["protocol_version"] != CLOSED_WORKER_PROTOCOL_VERSION:
-        raise ClosedWorkerProtocolError("request protocol version is invalid")
+    _require_protocol_version(request["protocol_version"], expected_version, kind="request")
     sequence = request["sequence"]
     if not isinstance(sequence, int) or isinstance(sequence, bool) or not 0 <= sequence < 2**63:
         raise ClosedWorkerProtocolError("request sequence is invalid")
@@ -583,21 +595,22 @@ def validate_request(value: object) -> dict[str, object]:
     else:
         _require_exact_fields(arguments, set(), label="CLOSE_SESSION arguments")
     return {
-        "protocol_version": CLOSED_WORKER_PROTOCOL_VERSION,
+        "protocol_version": expected_version,
         "sequence": sequence,
         "operation": operation,
         "arguments": dict(arguments),
     }
 
 
-def validate_response_envelope(value: object) -> dict[str, object]:
+def validate_response_envelope(
+    value: object, *, expected_version: str = CLOSED_WORKER_PROTOCOL_VERSION,
+) -> dict[str, object]:
     response = _require_exact_fields(
         value,
         {"protocol_version", "sequence", "status", "payload"},
         label="closed-worker response",
     )
-    if response["protocol_version"] != CLOSED_WORKER_PROTOCOL_VERSION:
-        raise ClosedWorkerProtocolError("response protocol version is invalid")
+    _require_protocol_version(response["protocol_version"], expected_version, kind="response")
     if response["status"] not in {"ok", "error"}:
         raise ClosedWorkerProtocolError("response status is invalid")
     sequence = response["sequence"]

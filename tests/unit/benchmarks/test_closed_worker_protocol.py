@@ -19,11 +19,13 @@ from optical_worker.lifecycle import (
 )
 from optical_worker.protocol import (
     CLOSED_WORKER_PROTOCOL_VERSION,
+    INTEGRATED_WORKER_PROTOCOL_VERSION,
     MAX_REQUEST_BYTES,
     ClosedWorkerProtocolError,
     canonical_json_bytes,
     decode_canonical_message,
     validate_request,
+    validate_response_envelope,
 )
 from optical_worker.worker import ClosedWorkerSession
 
@@ -101,6 +103,28 @@ def test_request_schema_rejects_dynamic_operations_handles_and_extra_fields():
     ):
         with pytest.raises(ClosedWorkerProtocolError):
             validate_request(changed)
+
+
+@pytest.mark.parametrize("version", [CLOSED_WORKER_PROTOCOL_VERSION, INTEGRATED_WORKER_PROTOCOL_VERSION])
+def test_protocol_version_is_fixed_by_the_session_not_negotiated_by_messages(version):
+    request = {"protocol_version": version, "sequence": 2,
+               "operation": "PREPARE_FROZEN_ROW", "arguments": {
+                   "row_id": "r1_dynamic_full_shadow", "case_id": "synthetic_dynamic_rigid_960x640_v1",
+                   "repeat_index": 0, "sample_count": 3}}
+    response = {"protocol_version": version, "sequence": 2, "status": "ok",
+                "payload": {"prepared_tokens": ["a" * 32]}}
+    assert validate_request(request, expected_version=version) == request
+    assert validate_response_envelope(response, expected_version=version) == response
+    other = (INTEGRATED_WORKER_PROTOCOL_VERSION if version == CLOSED_WORKER_PROTOCOL_VERSION
+             else CLOSED_WORKER_PROTOCOL_VERSION)
+    for value, validator in ((request, validate_request), (response, validate_response_envelope)):
+        with pytest.raises(ClosedWorkerProtocolError, match="protocol version is invalid"):
+            validator(value, expected_version=other)
+        with pytest.raises(ClosedWorkerProtocolError, match="unsupported configured"):
+            validator({**value, "protocol_version": "future"}, expected_version="future")
+        if version == INTEGRATED_WORKER_PROTOCOL_VERSION:
+            with pytest.raises(ClosedWorkerProtocolError, match="protocol version is invalid"):
+                validator(value)
 
 
 def test_repository_import_ledger_rejects_loaded_repo_module_outside_allowlist(
