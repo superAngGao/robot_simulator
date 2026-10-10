@@ -2023,9 +2023,17 @@ Next milestone:
       and retains exact stream/event/sample/transaction ownership; fresh code
       preflight approves exact0be9876 for bounded native validation (39 fresh
       independent CPU cases). Author related regression passes293/no skips.
-      Complete report is archived; repaired native probe is prepared but waits
-      for the current matrix to finish. The predecessor22b1db0 reader's real20case
-      input/Go2/foreign-scope matrix is also running. No speed result is claimed.
+      The repaired0be9876 native probe has now passed both lanes: each resolved
+      and reclaimed two samples and closed normally, with all owned processes
+      absent. This is a small asymmetric-scene protocol/lifecycle result, not
+      final numerical or performance acceptance. The predecessor22b1db0 reader
+      matrix ended with16 passes,1 failure and3 unexecuted cases. The failure
+      selected an obsolete dependency profile before foreign-stream injection;
+      all four foreign/unknown-stream cases need a corrected runner rerun.
+      Fresh independent preflight approves exactfc23b4e for the one additional
+      Warp exit-not-restored fault (21 independent CPU cases); its native run
+      remains pending. Complete report and raw attempts are preserved. See
+      terminal-target test-evidencev1. No speed result is claimed.
       See terminal-target implementation-notev1 and native
       worker source audit implementation-notev1 for exact scope and evidence.
       R1/full C4 follow-up and fresh whole review remain mandatory.
