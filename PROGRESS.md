@@ -1851,13 +1851,20 @@ Next milestone:
       05f04d0 additionally migrates CUDA renderer v10 and both native scalar
       bindings; 167 host regression checks pass, and actual CUDA v10 compilation
       succeeds with contraction disabled. Implementation-note v2 records that
-      evidence and the f64-ray/intensity readback delta. Canonical integration
-      tests currently stop at stale workload digests; identity/native-manifest/
-      source-pin migration, full native matrix and fresh independent code review
-      remain required. Work remains on implementation/c4-input-precision;
-      no later gate is opened and the original812ca29 oracle is unchanged.
-      No native intensity or
-      performance result is available. Whole C4 remains incomplete.
+      evidence and the f64-ray/intensity readback delta. Checkpoint3c1a08f
+      completes canonical scene/fixture/sequence identity migration, native-input
+      v4, gate/resultv15 and source catalogv17. Original/new actual materialization
+      comparisons preserve source keys, camera/light/replay values and explicitly
+      enumerate22293 newly retained Go2 faces. Fresh supervised Warp and CUDA
+      R0 runs at960x640 and1920x1080 complete all ten warmups, then compare every
+      pixel of frame10 and all ten channels with the unchanged original812ca29
+      CPU frames: zero tolerance failures in all four runs. Actual f64 rays and
+      native intensity are included. All owned native PIDs are absent. The new
+      three-recipe CUDA deployment compiles and verifies successfully. See
+      input-precision implementation-notev3 for exact identities and raw evidence.
+      Full R1/profile/frame/failure verification and fresh independent amendment
+      review remain required. Work remains on implementation/c4-input-precision;
+      no timing result or later gate is issued. Whole C4 remains incomplete.
       Fixed R0 storage native-reviewv1 approves the14-case campaign at3d6692b:
       eight positives, four guarded raises and two deadline kills independently
       replayed; all29 author PIDs absent. Raw archive SHA256 is

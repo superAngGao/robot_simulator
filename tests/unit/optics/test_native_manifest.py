@@ -12,12 +12,13 @@ import pytest
 
 from optical_worker.native_manifest import NativeArrayManifest, NativeInputManifest, _sha256_payload
 
-DATA = Path(__file__).parent / "data/native_manifests"
+DATA = Path(__file__).parent / "data/native_manifests/v4"
 HASHES = {
-    "asymmetric_synthetic_7x3_v1": "f65056b303775f4d13ad1a48660467cbae06a9d9dbe09fc5596a341ba5af6728",
-    "synthetic_dynamic_rigid_960x640_v1": "fd63ec133149ac62ef49e37534783d8c3d4e9b6f21132fa90ac02b606187b023",
-    "go2_static_960x640_v1": "ac3d950309917168d0bb5758e9916adcffcbb17bd68f6611e4fe0f3bdfed3a12",
-    "go2_static_1920x1080_v1": "4785c42146d8707453654eefbc4c94e38e683ec4b5659536240e6b1048b2279e",
+    "asymmetric_synthetic_7x3_v1": "419b42d55dd781d0b742a98a53dcd551519ea5967df0276616c8f0d40ffd8685",
+    "synthetic_dynamic_rigid_960x640_v1": "c6446f651085885d08ce0d5267fc323c0f5803031e7cd7344de45c883b6cce2c",
+    "go2_static_960x640_v1": "5b531cdb18d074f023a3f5be3706283f7df08936e4dbcb7eb208732e67eb64d8",
+    "go2_static_1920x1080_v1": "a83c7d85d066031ab8efcc3f403b83603fe549132f3beb65439b4cd5beb63a0c",
+    "go2_static_1920x1080_v1.replay": "bdde7391418e1bddb65d4bfdbc39911d7e3e3bf8c86ce117fa2fa37015a21c90",
 }
 
 
@@ -57,7 +58,7 @@ def test_retained_real_cpu_manifest_bytes_and_immutable_parse(case, digest):
     lambda p: p["arrays"][0].update(nbytes=999),
     lambda p: p["arrays"][0].update(c_contiguous=1),
     lambda p: p["arrays"][0].update(dtype=">f4"),
-    lambda p: p["arrays"][0].update(dtype="<f8"),
+    lambda p: p["arrays"][0].update(dtype="<f2"),
     lambda p: p["arrays"][0].update(content_sha256="0" * 64),
     lambda p: p.update(content_sha256="0" * 64),
     lambda p: p.update(scene_array_names=["missing"]),
@@ -88,10 +89,29 @@ def test_replay_layout_must_match_frame_count_even_with_updated_content_hash():
         NativeInputManifest.from_payload(p)
 
 
+@pytest.mark.parametrize(
+    "case", ["synthetic_dynamic_rigid_960x640_v1", "go2_static_1920x1080_v1.replay"]
+)
+def test_double_query_representation_preserves_float32_replay(case):
+    p = payload(case)
+    replay = [row for row in p["arrays"] if row["name"].startswith("replay_")]
+    assert len(replay) == 2 and all(row["dtype"] == "<f4" for row in replay)
+    for row in replay:
+        row["dtype"] = "<f8"
+        row["nbytes"] *= 2
+    p["content_sha256"] = _sha256_payload(p["arrays"])
+    with pytest.raises(ValueError, match="replay array layout"):
+        NativeInputManifest.from_payload(p)
+
+
 def test_scalar_and_zero_extent_and_generic_constructor_compatibility():
     base = dict(name="a", semantic="a", dtype="<f4", c_contiguous=True, content_sha256="a" * 64)
     assert NativeArrayManifest.from_payload(dict(base, shape=[], nbytes=4)).shape == ()
     assert NativeArrayManifest.from_payload(dict(base, shape=[3, 0, 2], nbytes=0)).nbytes == 0
+    double = dict(base, dtype="<f8")
+    assert NativeArrayManifest.from_payload(dict(double, shape=[2, 3], nbytes=48)).dtype == "<f8"
+    with pytest.raises(ValueError):
+        NativeArrayManifest.from_payload(dict(double, shape=[2, 3], nbytes=24))
     canonical = NativeInputManifest.from_payload(payload())
     generic = replace(canonical, semantics={"gain": 1.5}, input_contract=None,
                       scene_contract_sha256=None)
@@ -100,6 +120,13 @@ def test_scalar_and_zero_extent_and_generic_constructor_compatibility():
     assert generic.result_capable is False
     with pytest.raises(ValueError):
         NativeInputManifest.from_payload(generic.to_payload())
+
+
+@pytest.mark.parametrize("case", [name for name in HASHES if not name.endswith(".replay")])
+def test_previous_precision_manifest_is_not_current_input(case):
+    previous = json.loads((DATA.parent / (case + ".json")).read_bytes())
+    with pytest.raises(ValueError):
+        NativeInputManifest.from_payload(previous)
 
 
 def test_manifest_import_and_replay_are_stdlib_only():

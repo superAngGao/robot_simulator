@@ -47,6 +47,8 @@ def test_render_cleanup_ledger_covers_durable_and_comparison_only_paths():
         "optical_worker/data/resolved_cameras/v1/asymmetric_synthetic_7x3_v1.jsonl",
         *(f"optical_worker/data/render_sequences/v1/{case}.jsonl"
           for case in RESOLVED_RENDER_SEQUENCE_SHA256),
+        *(f"tests/unit/optics/data/native_manifests/{case}.json"
+          for case in RESOLVED_RENDER_SEQUENCE_SHA256),
         "tests/unit/benchmarks/test_optical_render_migration.py",
         "tests/unit/optics/test_native_contract_extraction.py",
     }

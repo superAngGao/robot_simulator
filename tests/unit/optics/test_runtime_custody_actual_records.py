@@ -160,7 +160,8 @@ def test_go2_cross_case_rejected_even_when_all_arrays_and_downstream_hashes_matc
     other = "go2_static_1920x1080_v1" if inputs["case_id"] == "go2_static_960x640_v1" else "go2_static_960x640_v1"
     # Use the retained real CPU manifest, not an invented replacement hash.
     root = Path(os.environ["ROBOT_SIM_REPO_ROOT"])
-    alternate = json.loads((root / "tests/unit/optics/data/native_manifests" / (other + ".json")).read_bytes())
+    manifest_path = root / "tests/unit/optics/data/native_manifests/v4" / (other + ".json")
+    alternate = json.loads(manifest_path.read_bytes())
     storage = event(payload, "prepared_storage")["details"]
     actual = storage["manifest"]
     assert actual["case_id"] != alternate["case_id"]
