@@ -169,7 +169,7 @@ class _Replay:
         no_setup = self.descriptor is None and not self.dirty and not self.unknown
         return no_setup or self.final_quiescence_current
 
-    def coverage(self):
+    def coverage(self, *, guardian_state=None):
         counts = {}
         for record in self.records:
             key = str(record["device_scope"])
@@ -177,7 +177,7 @@ class _Replay:
         return {
             "schema_version": GUARDIAN_COVERAGE_SCHEMA_VERSION,
             "session_identity": self.config.session,
-            "state": self.guardian,
+            "state": self.guardian if guardian_state is None else guardian_state,
             "records": self.records,
             "per_device_resource_counts": dict(sorted(counts.items())),
         }
@@ -237,8 +237,10 @@ class _Replay:
         )
 
     def _declare_scope(self, ordinals, unknown, *, source, reason):
+        # Validate the complete declaration before changing any live field.
         for ordinal in ordinals:
             bounded_integer(ordinal, 1023)
+        for ordinal in ordinals:
             if ordinal not in self.dirty:
                 self.dirty.add(ordinal)
                 self.notifications.append(("dirty", ordinal, source, reason))
@@ -255,7 +257,7 @@ class _Replay:
                 )
             )
 
-    def apply(self, event):
+    def apply(self, event, *, preceding_evidence_sha256=None):
         event = exact_fields(event, {"index", "epoch", "operation", "guard", "details"})
         _require(bounded_integer(event["index"]) == self.index, "noncontiguous lifecycle trace")
         operation = event["operation"]
@@ -267,7 +269,6 @@ class _Replay:
         _require(type(details) is dict, "event details must be an object")
         expected_epoch = 1 if operation == "descriptor_observed" else self.epoch
         _require(bounded_integer(event["epoch"], 1) == expected_epoch, "setup epoch drift")
-        self.epoch = expected_epoch
         if operation in {"normal_arm_started", "terminal_arm_started"}:
             _require(
                 guard is not None and guard["sequence"] == self.next_sequence,
@@ -286,7 +287,7 @@ class _Replay:
                     "target_device_ordinal": self.config.device_ordinal,
                 }
                 and guard is None
-                and self.epoch == 0,
+                and expected_epoch == 0,
                 "trace must begin at the exact guardian",
             )
             self.index += 1
@@ -306,8 +307,8 @@ class _Replay:
         elif operation == "guard_armed":
             exact_fields(details, set())
             _require(self.guard_state == "ARM_PENDING", "ACK without pending ARM")
-            self.guard_state = "ARMED"
-            self.next_sequence = next_sequence(guard["sequence"])
+            following_sequence = next_sequence(guard["sequence"])
+            self.guard_state, self.next_sequence = "ARMED", following_sequence
         elif operation == "normal_body_returned":
             exact_fields(details, set())
             _require(
@@ -472,13 +473,13 @@ class _Replay:
                     and not self.notifications,
                     "invalid guardian seal",
                 )
-                self.guardian = "SEALED"
+                guardian_state = "SEALED"
             elif operation == "guardian_partial_frozen":
                 _require(
                     self.controller == "TERMINATING" and self.guardian in {"CONSTRUCTING", "SEALED"},
                     "invalid guardian partial freeze",
                 )
-                self.guardian = "PARTIAL_FROZEN"
+                guardian_state = "PARTIAL_FROZEN"
             else:
                 _require(
                     self.controller == "TERMINATING"
@@ -487,11 +488,13 @@ class _Replay:
                     and self.release == "not_authorized",
                     "invalid guardian quarantine transfer",
                 )
-                self.guardian = "TRANSFERRED_TO_QUARANTINE"
+                guardian_state = "TRANSFERRED_TO_QUARANTINE"
             _require(
-                _digest(details["coverage_sha256"]) == canonical_sha256(self.coverage()),
+                _digest(details["coverage_sha256"]) == canonical_sha256(
+                    self.coverage(guardian_state=guardian_state)),
                 "guardian coverage does not replay",
             )
+            self.guardian = guardian_state
         elif operation == "final_graph_sealed":
             exact_fields(details, {"graph_sha256", "readiness_sha256", "coverage_sha256"})
             _require(self.version in {FINAL_LIFECYCLE_VERSION, WORKER_LIFECYCLE_VERSION}
@@ -592,6 +595,9 @@ class _Replay:
         elif operation == "post_reclaim_idle":
             exact_fields(details, {"evidence"})
             proof = PostReclaimIdleEvidence.from_payload(details["evidence"]).to_payload()
+            _require(preceding_evidence_sha256 is not None
+                     and proof["guard_evidence_sha256"] == preceding_evidence_sha256,
+                     "idle proof does not bind its actual preceding guarded trace")
             _require(self.version == WORKER_LIFECYCLE_VERSION and self.worker_samples is not None
                      and self.active_sample is None and self.controller == "RUNNING"
                      and self.guard_state == "IDLE" and not self.failed and not self.compromised
@@ -809,6 +815,7 @@ class _Replay:
             self.disposition, self.controller = expected, "TERMINAL_INTENT"
         else:
             raise GuardProtocolError("unknown guarded lifecycle transition")
+        self.epoch = expected_epoch
         self.index += 1
 
 
@@ -817,13 +824,13 @@ def replay_lifecycle(configuration, lane, trace, *, version=LIFECYCLE_VERSION):
     _require(type(trace) is list and bool(trace), "empty lifecycle trace")
     replay = _Replay(GuardConfiguration.from_payload(configuration), lane, version=version)
     for event in trace:
+        prefix_sha256 = None
         if event.get("operation") == "post_reclaim_idle":
             prefix = {"schema_version": version, "configuration": configuration, "lane_id": lane,
                       "record_kind": "prefix", "transition_trace": trace[:replay.index],
                       "guardian_coverage": replay.coverage(), "summary": replay.summary()}
-            _require(event["details"]["evidence"]["guard_evidence_sha256"] == canonical_sha256(prefix),
-                     "idle proof does not bind its actual preceding guarded trace")
-        replay.apply(event)
+            prefix_sha256 = canonical_sha256(prefix)
+        replay.apply(event, preceding_evidence_sha256=prefix_sha256)
     return replay
 
 

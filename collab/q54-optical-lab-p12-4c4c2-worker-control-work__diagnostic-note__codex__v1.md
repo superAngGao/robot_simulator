@@ -99,3 +99,67 @@ an actual native run or a proposal to allow that sample count.
 No reader regression, two-sample normal exit or this diagnostic completes C2f
 or C4. The original whole objective, full failure coverage, systematic cleanup,
 independent acceptance and later C4 stages remain required.
+
+## Integrated implementation in progress (2026-10-10)
+
+The following author changes belong to the one G1–G5 packet, not independent
+stage completion or reviewed native code. D1 final-observation design v2 is in
+fresh review session01a1259f-a957-7071-9142-7b4593996629 at208f32c;
+tool71384, reviewer45132/launcher20728. V1's full report is archived verbatim.
+Its F1 corrected scope inflation (all120 CPU camera values do not mandate all120
+full-resolution numeric images); F2 requires exact sequence-bound request
+deadline retirement/expiry arbitration. That new diagnostic aperture is not yet
+implemented. Separate full reader acceptance reviews frozen1286cbb, production
+cf7f5a6, session01a125a2-0c60-7aa3-8736-a5b6c3a977f7, tool72080,
+reviewer40760/launcher46608. Neither candidate includes these moving author edits.
+
+- Shared reducer prerequisite: rejecting a bad descriptor or bad coverage hash
+  previously changed epoch/guardian state. Two direct original-core repros failed
+  before the change. Epoch and guardian changes now follow validation; declared
+  ordinals validate before mutation. The actual preceding-prefix hash remains
+  computed at its untimed boundary, while apply itself now requires the binding
+  for post_reclaim_idle. Live _record still reconstructs/replays; switching it
+  awaits reserved storage and full failure-atomic publication. No fixed-work or
+  allocation-free claim is made yet.
+- Journal: original short-write repro retained97of555bytes while returning
+  normally. The writer now advances over positive short writes, fsyncs only a
+  complete frame, and returns incomplete on zero/error/interrupt/fsync failure
+  without replacing the original fault or retrying a failed frame. Raw partial
+  bytes remain. Full enclosing request/journal-stall supervision and F3 coverage
+  remain part of the packet; this loop alone does not supply that supervision.
+- Existing fixed worker supervisor now checks actual CLOSE ACK-to-exit timeout
+  and client failure, fences command transport (close fallback on shutdown error),
+  and enters the existing core's terminal path. It records ACK, timeout/fence,
+  actual exit and reaping separately. Existing earlier guard deadlines are not
+  renewed. OS child tests cover this exact policy/core with modeled ACKs; they
+  are not yet the required actual integrated native CLOSE fault matrix. Legacy
+  C0 proxy behavior is not claimed changed or integrated by this work.
+
+Author evidence in local c4_assets:
+- worker_journal_before_v2.txt: actual555-byte frame truncated to97by old writer.
+  The earlier draft used an overlong string rejected before writing; it was
+  corrected before the meaningful repro and is not short-write evidence.
+- reducer_atomic_before_v1.txt:2original invalid-transition mutation failures.
+- worker_journal_after_v1.txt:63passed/no skips in79.37s (journal + existing
+  integrated worker tests), before the later reducer change.
+- worker_completion_control_v1.txt:77passed/no skips in92.85s with original
+  dispatcher, both lanes' CPU native leaves, reducer prefix and journal checks.
+- worker_completion_reducer_regression_v1.txt:311passed/11Windows platform skips
+  in8.82s. The11 historical CUDA codec cases require a POSIX parser host and a
+  pinned retained input archive; they still need an actual run for these changes.
+- worker_completion_io_v2:16passed/no skips in0.75s after transport-close fallback;
+  actual owned CPU subprocesses were waited/reaped by the tests.
+- worker_reducer_mutations_v1:12passed/no skips in0.21s, including malformed fields
+  at every step in ten independently authored failure/cleanup stories; complete
+  reducer state stays equal on rejection and original valid stories still match.
+- Three new test files pass Ruff; this is not a clean whole-repository lint claim.
+  All91 prospective LF source catalog entries pass the unchanged AST policy;
+  updated catalog SHA256e214c22f1a8a7a749f9f9295bb3598e1c786820a8aea8824bad8ff08edf84f45.
+
+Outstanding G3 still includes pre-GPU exact capacity admission, preallocated
+event/arena/authority/scope/ticket storage, atomic incremental record publication,
+bounded identity checks and remaining-sample bookkeeping, then full1/120/600
+operation/allocation proof. G2 final-output staging/oracle and G4/G5 complete
+actual worker/fault/transport evidence are also open. These author changes have
+not been deployed for native use or independently accepted. Preserve the complete
+packet and subsequent C4 objective; do not promote these local passes to a gate.

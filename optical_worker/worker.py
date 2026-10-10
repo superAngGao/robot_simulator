@@ -567,13 +567,26 @@ def _write_all(descriptor: int, payload: bytes, *, timeout_ms: int) -> None:
         view = view[count:]
 
 
-def _journal(descriptor: int, payload: Mapping[str, object]) -> None:
+def _journal(descriptor: int, payload: Mapping[str, object]) -> bool:
+    """Persist one bounded frame without replacing the original worker fault.
+
+    Each successful write must advance the frame. Failure leaves its actual
+    prefix on disk; recovery must reject it rather than infer a terminal record.
+    OS waits belong to the enclosing supervision policy; this helper starts or
+    refreshes no deadline. No failed-frame retry or recursive write is attempted.
+    """
     try:
         encoded = encode_framed_message(dict(payload), max_bytes=MAX_RESPONSE_BYTES)
-        os.write(descriptor, encoded)
+        remaining = memoryview(encoded)
+        while remaining:
+            count = os.write(descriptor, remaining)
+            if count <= 0 or count > len(remaining):
+                return False
+            remaining = remaining[count:]
         os.fsync(descriptor)
+        return True
     except BaseException:
-        pass
+        return False
 
 
 def run_worker_loop(

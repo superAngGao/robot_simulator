@@ -257,6 +257,33 @@ def test_copied_idle_proof_cannot_authorize_cleanup(worker_graph):
     assert not x.controller._measured_sample_submission_latched
 
 
+@pytest.mark.parametrize("prefix", ["missing", "forged", "actual"])
+def test_shared_reducer_requires_actual_prefix_before_idle_commit(worker_graph, prefix):
+    from copy import deepcopy
+
+    from optical_worker.guarded_evidence import replay_lifecycle
+    from optical_worker.wait_protocol import GuardProtocolError
+
+    x = worker_graph
+    for record in x.worker._samples:
+        request(x.worker, "CANCEL_PREPARED_SAMPLE", prepared_token=record.prepared_token)
+    preceding = x.controller.evidence().sha256
+    request(x.worker, "CLOSE_SESSION")
+    trace = x.controller._guard_events
+    event = trace[-1]
+    assert event["operation"] == "post_reclaim_idle"
+    state = replay_lifecycle(x.controller._guard_client.configuration.to_payload(), x.session.lane,
+                             trace[:-1], version=x.controller._evidence_version)
+    before = deepcopy(vars(state))
+    if prefix == "actual":
+        state.apply(event, preceding_evidence_sha256=preceding)
+        assert state.summary() == x.controller._replay.summary()
+    else:
+        with pytest.raises(GuardProtocolError, match="preceding guarded trace"):
+            state.apply(event, preceding_evidence_sha256=None if prefix == "missing" else "0" * 64)
+        assert vars(state) == before
+
+
 def test_consumed_and_out_of_order_tokens_cannot_submit_again(worker_graph):
     x = worker_graph
     first, second = x.worker._samples

@@ -358,6 +358,10 @@ def _native_worker_requests(channel, directory, request, stop, deadline, outcome
         record["response"] = response
         if response["sequence"] != sequence or response["status"] != "ok":
             raise RuntimeError("native request did not succeed: " + operation)
+        if operation == "CLOSE_SESSION":
+            # Timestamp the actual complete successful response separately from
+            # proof parsing, cleanup and observed/reaped process exit.
+            outcome["close_ack_observed_ns"] = time.monotonic_ns()
         return response["payload"]
 
     try:
@@ -386,7 +390,7 @@ def _native_worker_requests(channel, directory, request, stop, deadline, outcome
         proof = PostReclaimIdleEvidence.from_payload(close["post_reclaim_idle"])
         if proof.to_payload()["reclaimed_count"] != len(tokens):
             raise RuntimeError("close did not account for all actual submitted samples")
-        outcome.update(completed=True, close_ack_observed_ns=time.monotonic_ns())
+        outcome.update(completed=True)
     except BaseException as error:
         outcome.update(completed=False, error_type=type(error).__name__, error=str(error))
     finally:
@@ -395,6 +399,37 @@ def _native_worker_requests(channel, directory, request, stop, deadline, outcome
             channel.shutdown(socket.SHUT_WR)
         except OSError:
             pass
+
+
+def _observe_worker_client_exit(core, command, stop, outcome, now_ns):
+    """Bound post-ACK exit and client failure with the original supervisor.
+
+    This executes on the supervisor thread even if its request client or the
+    worker is stalled. Protocol completion and process completion stay separate.
+    """
+    if "terminal_transport_closed_ns" in outcome:
+        return
+    acknowledged = outcome.get("close_ack_observed_ns")
+    expired = (acknowledged is not None
+               and now_ns >= acknowledged + core.configuration.operation_timeout_ms * 1_000_000)
+    if not expired and outcome.get("completed") is not False:
+        return
+    if expired:
+        outcome["close_exit_wait_expired_ns"] = now_ns
+    stop.set()
+    try:
+        command.shutdown(socket.SHUT_RDWR)
+    except OSError as shutdown_error:
+        outcome["terminal_shutdown_error"] = type(shutdown_error).__name__
+        try:
+            command.close()
+        except OSError as close_error:
+            outcome["terminal_close_error"] = type(close_error).__name__
+    outcome["terminal_transport_closed_ns"] = now_ns
+    # fault() retains an earlier operation/emergency deadline and fences guard
+    # ACK writes. It cannot grant a worker completion, release or second sync.
+    if core.state not in {"TERMINATING", "EXITED"}:
+        core.fault("process_observation_failed")
 
 
 def _read_worker_lifecycle(directory, *, native_worker_mode):
@@ -497,7 +532,11 @@ def supervise(fault, liveness_fd, directory):
             code = process.poll()
             if code is not None:
                 core.observe_exit(code)
+                if native_worker_mode:
+                    client_outcome["worker_exit_observed_ns"] = time.monotonic_ns()
                 break
+            if native_worker_mode:
+                _observe_worker_client_exit(core, command, client_stop, client_outcome, time.monotonic_ns())
             core.tick()
             if core.kill_required:
                 core.record_kill_request()
@@ -563,6 +602,8 @@ def supervise(fault, liveness_fd, directory):
                 if core.state != "TERMINATING":
                     raise
         process.wait(timeout=1)
+        if native_worker_mode:
+            client_outcome["worker_reaped_ns"] = time.monotonic_ns()
         if client is not None:
             client.join(timeout=1)
             if client.is_alive():
