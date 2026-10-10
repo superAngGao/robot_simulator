@@ -626,7 +626,7 @@ def _validate_triangle_abi_binding(stage: CudaSceneUpdateStage) -> None:
         stage.transforms,
         stage.outputs,
     )
-    if not _fixed_abi_arguments_match(stage._triangle_args, expected, scalar_index=7):
+    if not _fixed_abi_arguments_match(stage._triangle_args, expected, scalar_index=8):
         raise ValueError("CUDA triangle scene-update ABI binding changed")
 
 

@@ -798,7 +798,7 @@ if _HAS_WARP:
         out_min = t_min
         out_max = t_max
         if wp.abs(direction) <= _QUERY_DIR_EPS:
-            if origin < wp.float64(lower) - _QUERY_TIE_EPS or origin > wp.float64(upper) + _QUERY_TIE_EPS:
+            if origin < wp.float64(lower) or origin > wp.float64(upper):
                 hit = False
         else:
             # Slab and triangle predicates use the same intermediate precision.
@@ -935,7 +935,9 @@ if _HAS_WARP:
                         out_nx = wp.float64(triangle_normal[triangle_index, 0])
                         out_ny = wp.float64(triangle_normal[triangle_index, 1])
                         out_nz = wp.float64(triangle_normal[triangle_index, 2])
-                        ndotd = out_nx * dx + out_ny * dy + out_nz * dz
+                        # Facing uses the original geometric normal; rounding
+                        # the shading buffer can reverse this sign at grazing angles.
+                        ndotd = (nx / area) * dx + (ny / area) * dy + (nz / area) * dz
                         if ndotd > wp.float64(0.0):
                             out_nx = -out_nx
                             out_ny = -out_ny
