@@ -1225,10 +1225,12 @@ def _run_observed_render_warmups(session, controller, binding, observer, directo
         context = native_setup._create_upload_context(controller, binding.module, binding.target, binding.stream)
         with original_scope(binding.module, binding.target, lane=session.lane, stream=binding.stream,
                 context=context, owner_role='warmup_rgb_host_custody', scope_id='warmup_rgb_readback_scope') as (_, owners, operation):
+            storage = session.fixed_render_storage
+            outputs = storage.outputs if type(storage) is native_setup._DynamicRenderStorage else storage[3]
+            channels_by_name = dict(outputs.arrays if session.lane == 'warp' else outputs.tensor_items())
+
             def readback(name):
-                storage = session.fixed_render_storage
-                outputs = storage.outputs if type(storage) is native_setup._DynamicRenderStorage else storage[3]
-                value = getattr(outputs, name)
+                value = channels_by_name[name]
                 operation_id = 'warmup_' + name + '_readback'
                 with operation(operation_id, 'device_to_host_copy'):
                     host = value.numpy() if session.lane == 'warp' else value.detach().cpu()
