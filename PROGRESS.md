@@ -2042,7 +2042,11 @@ Next milestone:
       Fresh independent preflight approves exactcf7f5a6 (211 independent CPU
       cases); all four original native foreign/unknown-stream cases now pass,
       and their11 owned process identities are absent in OS/GPU checks. The
-      full17-case reader/input regression is running at the same revision.
+      full17-case reader/input regression passed at the same revision (no skips),
+      followed by both lanes' actual two-sample framed worker probe. All owned
+      native processes exited; raw archives and closure are recorded in the
+      stream-adoption-order implementation note. Whole-reader independent
+      acceptance and complete final-worker correctness remain open.
       Author full source
       regression passes317 with13 Windows skips, all13 supplemented successfully
       on primary Linux. Separately the approvedfc23b4e

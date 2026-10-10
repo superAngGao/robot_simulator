@@ -153,10 +153,49 @@ it does not claim an actual driver malfunction.
 
 ## Remaining full objective
 
-After independent preflight, rerun the four original foreign/unknown cases and
-normal-path regressions on the frozen repair, then obtain the complete reader
-hardware assessment. Final-worker physical/numerical proof, whole fixed-work
+The four original foreign/unknown cases and the complete reader/input regression
+have now passed on the exact frozen repair; completed evidence follows below.
+Obtain the complete reader hardware assessment. Final-worker physical/numerical proof, whole fixed-work
 and preallocation refactor, remaining worker faults/close/F3, C2f and subsequent
 C4 stages remain unfinished. No speed comparison or later gate opens. This
 bounded fix is not the goal's completion, and existing per-event history
 copy/replay complexity still requires systematic consolidation.
+
+## Completed current-revision native regression and framed probe
+
+The17-case campaign above ended2026-10-10T11:34:35.192660Z, exit0:
+17passed/no skips in1371.78s. All eight normal combinations passed (both lanes,
+asymmetric/dynamic/Go2 960/Go2 1920), as did six getter/after-return/after-append
+faults, missing Warp outer scope, CUDA C1 copy and actual Warp exit-not-restored.
+All17 external live process identity chains were captured with zero observer
+errors. The recorded37 owned PIDs (wrapper/driver/pytest plus34 workers and
+supervisors) are absent from OS and GPU inventories. The stale local observation
+SSH46448 (parent5164, creation2026-10-10T19:11:41.6893550+08:00) was closed only
+after remote terminal exit and full scoped closure, matching exact command and
+creation identity; no remote native process was killed or restarted.
+
+Archive c4-reader-cf7f5a6-native-scope-v1-evidence-v1.tar.gz:378raw files,
+185829259bytes plus inventory. SHA256
+5e54d56e64de3e65c09c73df0f47a9ecfbfd6e9e37a41fc3ae41f003336fd652;
+inventory b2e7f21eae437b9317d888e83dffc0143aa6dc39d77c4ecb0a28c3e7dad1b91b.
+Downloaded local c4_assets copy matches the remote archive hash.
+
+After that closure, currentcf7f5a6 actual framed worker probe ran at
+/data2/shared/ang.gao/c4-worker-cf7f5a6d9f-probe from11:37:30.418783Z to
+11:41:54.329307Z. Both original lanes passed two asymmetric FULL/shadow samples
+with resolve/release/reclaim and normal close, exit0. The unchanged approved
+driver is run_worker_matrix_0be9876.py, SHA256
+89ef276136c74efd830d8c4b476d62893e8d67148317f598d808dd2d93375ca3;
+its revision argument selects exactcf7f5a6, not the older name in the script.
+Wrapper2968488, driver2968498, Warp supervisor2968884/worker2968889 and CUDA
+supervisor2973774/worker2973792 are all absent from OS/GPU inventories.
+Tool82063 returned exit0. This probe retains its two-sample scope; it is not
+the missing final-output CPU oracle, full worker-fault or constant-work proof.
+
+Archive c4-worker-cf7f5a6d9f-probe-evidence-v1.tar.gz:93raw files,
+13829929bytes plus inventory. SHA256
+700412e637e00bda645431ba6bd20067b15f8f8095ccf600efdc318c6c936a7c;
+inventory f0a94c77744d34e6f32f909e59d8e3d0b4aa542cf5267dcf70f390d576f73964.
+Local downloaded archive hash matches. No wall-clock duration here is a
+renderer timing or backend speed comparison. Independent full reader acceptance
+and all remaining C2f/C4 work are still open.
