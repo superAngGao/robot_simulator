@@ -205,6 +205,24 @@ review exited0; its original report and launch/exit records remain in c4_assets.
 
 ## Remaining integrated acceptance
 
+The terminal-journal reader is now factored out of the fixed supervisor for
+direct verification. Six CPU regressions pass in13.64s: both lanes recover the
+actual terminal record over a stale prefix; digest mismatch and truncated
+frames reject. Legacy mode still uses its original persisted prefix. Running
+that same reader and production custody-artifact validator on the64 preserved
+probe files recovers CUDA's actual2491-event quarantined_process_exit and
+Warp's2021-event clean_reclaimed_exit. This is historical-record replay, not a
+fresh GPU execution. Ruff, py_compile and diff whitespace checks pass.
+
+Native-state-reader designv1 is frozen at1472b5fd2eba898bc53ef1c0ef2b5dbcbb80b056,
+committed LF SHA2560b6dab55c496e730219dfbb253b7d9530dff40faa6c90676c71a2b90e0f41ca5.
+Fresh CLI design review is running in separate detached
+c4_native_reader_design_review (built-in spawn reported agent thread limit).
+ReviewerPID1956/launcher440 started2026-10-10T08:16:48Z; requestSHA256
+61199f93ba2e75ae4bfa7cae90e97d98ea820436edd7d9b4e4ed67a75d8da1f5.
+The candidate remains unchanged. No reader implementation or new native reader
+run precedes the required design and code/native preflight reviews.
+
 Follow runtime-integration design v3 sections4,7,8,9. Reuse the existing
 ClosedWorkerSession parser/serial loop, captured source setup orchestration,
 NativeGuardedSetupLifecycle, both native arenas and their guarded resolvers.

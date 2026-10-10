@@ -380,3 +380,32 @@ def test_native_fault_reply_fits_frozen_codec_and_binds_full_separate_evidence(w
     assert decoded["payload"]["disposition"] == "aborted_synced_exit"
     assert "termination_evidence" not in decoded["payload"]
     assert x.worker.termination_evidence is terminal
+
+
+@pytest.mark.parametrize("corruption", [None, "digest", "truncated"])
+def test_supervisor_reads_actual_terminal_journal_over_stale_prefix(worker_graph, tmp_path, corruption):
+    from optical_worker.worker import _journal
+    from tests.support.guarded_custody_process import _read_worker_lifecycle
+
+    x = worker_graph
+    prefix = x.controller.evidence().to_payload()
+    (tmp_path / "prefix.json").write_text(json.dumps(prefix), encoding="utf8")
+    run_sample(x.worker, 0)
+    terminal = x.controller.terminate(fault="channel_eof", detection_phase="request_loop",
+                                      emergency_target_synchronize=lambda: None)
+    journal = tmp_path / "worker_journal.bin"
+    with journal.open("wb") as output:
+        _journal(output.fileno(), {"kind": "worker_loop_fault", "message": "original failure"})
+        _journal(output.fileno(), {"kind": "transport_termination", "evidence": terminal.to_payload(),
+                                  "evidence_sha256": "0" * 64 if corruption == "digest" else terminal.sha256})
+    if corruption == "truncated":
+        journal.write_bytes(journal.read_bytes()[:-1])
+    if corruption is not None:
+        with pytest.raises(RuntimeError, match="digest mismatch|partial frame"):
+            _read_worker_lifecycle(tmp_path, native_worker_mode=True)
+    else:
+        recovered = _read_worker_lifecycle(tmp_path, native_worker_mode=True)
+        assert recovered == terminal.lifecycle.to_payload()
+        assert recovered != prefix
+        # The legacy driver continues to use its own persisted prefix.
+        assert _read_worker_lifecycle(tmp_path, native_worker_mode=False) == prefix
