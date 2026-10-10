@@ -147,3 +147,24 @@ resolution file passes after repair. Earlier123-test preparation/graph/Warp run
 had122 passes and the original CUDA event-drift failure; the following68-test
 run had67 passes and only that error-type regression. Native evidence and fresh
 independent review are still pending; this freeze is an author test candidate.
+
+First real Go2 final preparation at c59edc74d7d766eb71bd4b7f81d94045440cb889
+
+The remote isolated tree /data2/shared/ang.gao/robot_sim_final_graph_wip was
+clean at the exact candidate. Warp GPU1/ambient0, Go2960, frozen render-only
+shadow row completed ten warmups, final graph construction, final target barrier
+and acquire/cancel. It restored native ambient state. Original raw directory:
+/data2/shared/ang.gao/c4-final-graph-c59edc74d7-warp-runtime_final_graph_success.
+
+This run is NOT accepted end to end: the supervisor's combined-artifact validator
+replayed the explicitly v4 worker trace using its default v3 and raised
+GuardProtocolError: invalid final graph seal. The worker's recorded terminal
+state is aborted_synced_exit with completed release, but the top-level native
+acceptance failed. Author parent75699, supervisor75759 and worker75765 were all
+queried absent after the command exited1. No signal or GPU reset was issued.
+The repair forwards the already validated nested version through that remaining
+replay call and adds a two-lane CPU combined-artifact regression. A fresh native
+run is required. Original evidence is preserved unchanged.
+
+Frozen-candidate local source/policy/final-graph/CUDA-resolution/Warp-arena check
+completed262 passed,4 platform skips in87.26s; no performance assertion follows.

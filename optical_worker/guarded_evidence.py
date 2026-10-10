@@ -786,7 +786,8 @@ def validate_custody_artifact(value):
         worker["summary"]["normal_complete_count"] <= supervisor["summary"]["normal_complete_count"],
         "worker completion count exceeds supervisor",
     )
-    replay = replay_lifecycle(worker["configuration"], worker["lane_id"], worker["transition_trace"])
+    replay = replay_lifecycle(worker["configuration"], worker["lane_id"], worker["transition_trace"],
+                              version=worker["schema_version"])
     bounded_tail = (
         worker["record_kind"] == "terminal"
         or replay.controller == "TERMINATING"

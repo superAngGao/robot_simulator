@@ -341,6 +341,18 @@ def test_final_barrier_admits_only_after_exact_sync_and_ack(executable_graph, mo
                 evidence["summary"]["final_setup"]["quiescence_sha256"] == x.session.final_quiescence.sha256
             )
             legacy = dict(evidence, schema_version="q54.p12.4.setup-lifecycle.v3")
+            # CPU supervisor story verifies version propagation through the
+            # combined artifact validator; it makes no real-process exit claim.
+            from optical_worker.guarded_evidence import validate_custody_artifact
+            from tests.unit.optics.test_guarded_evidence_fixtures import artifact
+
+            operations = {"normal_arm_started": "ARM", "normal_complete_started": "COMPLETE"}
+            steps = [
+                (operations[event["operation"]], event["guard"]["sequence"], "setup", True)
+                for event in evidence["transition_trace"]
+                if event["operation"] in operations
+            ]
+            validate_custody_artifact(artifact(evidence, steps))
             from optical_worker.wait_protocol import GuardProtocolError
 
             with pytest.raises(GuardProtocolError):
