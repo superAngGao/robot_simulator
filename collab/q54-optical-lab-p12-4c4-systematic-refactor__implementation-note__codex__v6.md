@@ -100,3 +100,79 @@ This note does not claim M1 approval or full C4. Continue the approved R1
 composition, C2f token/resolve/reclaim/close, numeric/native failure matrices,
 C4c3/c4 and C4d/B3 and final systematic whole-C4 review. Performance, backend
 selection, results/baselines/a3b and shipping remain closed.
+
+The initial pending-evidence statements above describe the frozen handoff.
+The following completed evidence and independent verdict supersede them.
+
+## Native verification at the frozen M1 candidate
+
+Candidate c3472f22f1d52bfb6c853bf95cef4040cf666316 is clean; its production
+optics/optical_worker bytes equal624a71f11f2c4e0766fa6b3f03be3c90460e0850.
+The count-only driver repair does not change production code or the catalog.
+
+On primary tileops-dev, exact Python3.12.13 robot_sim/Warp1.12.0/Torch2.9.1+cu128,
+H200 target1 and frozen Go2 assets, all five sequential acceptance drivers
+returned0. Raw worker exit74 is expected for injected failures, not a successful
+worker render completion.
+
+| Native case | Lane | Normal completed guards | Emergency syncs | Worker exit / disposition |
+| --- | --- | --- | --- | --- |
+| post-input healthy-IDLE out-of-order optical entry | CUDA | 6 | 1 | 74 / aborted_synced_exit |
+| post-input healthy-IDLE out-of-order optical entry | Warp | 6 | 1 | 74 / aborted_synced_exit |
+| complete R0 final preparation | Warp | 27 | 0 | 0 / cancelled_before_submission_exit |
+| complete R0 final preparation | CUDA | 23 | 0 | 0 / cancelled_before_submission_exit |
+| original Warp module aggregate issuance failure | Warp | 10 | 1 | 74 / aborted_synced_exit |
+
+All five release_status values are completed; supervisors observed EXITED,
+without deadline expiry or requested kill. Idle-entry observers verify actual
+target1 synchronization and prior-scope restoration under the existing emergency
+guard. CUDA prior state is logical0/raw1; do not describe it as raw0. Final
+preparation includes actual ten warmups, final graph/barrier and acquire/cancel;
+it does not execute a final measured sample. The initial624 failed driver
+remains a failed assertion with no result.json, separately preserved.
+
+Linux source/catalog-policy/bootstrap suites at624:293 passed,1 Windows-only
+skip in131.97s, including real Go2 and POSIX source checks unavailable locally.
+The wrapper returned0; the production bytes match c347 as described above.
+
+Archive c4_assets/c4-setup-orchestration-native-evidence-v1.tar.gz and the same
+basename under /data2/shared/ang.gao:16432007 bytes,191 unique members,SHA256
+ e41a65b368720b1f083c47896a3a51b08a5a28b51ffe4809984cc3da88fee90e.
+It preserves all six raw runs, driver scripts, matrix log, CPU command/results/log,
+environment contract and process closure. The closure joins each recorded
+parent/supervisor/worker PID and verifies20 owned PIDs absent, including matrix
+and CPU wrapper. This is scoped process closure, not a claim about unrelated
+host processes. Original author sessions23548 and86204 are terminal0.
+
+These facts do not establish R1, C2f, final-sample numerics/performance, product
+activation or whole C4. The fixed native drivers remain the existing acceptance
+surface; no shipping/selection gate is opened.
+
+## Independent verdict and continuation
+
+Fresh reviewer01a12422-6645-7760-929a-0aacefd5bce4 returned Approve with comments
+for exactc3472f22f1d52bfb6c853bf95cef4040cf666316, base6db106c. Full report is
+archived byte-for-byte as systematic-refactor code-review v5, SHA256
+2039240945f6992716091b1c67651ef0b5c6e987288299260b8c9d275b58a082.
+M1 is closed within that bounded scope. The fresh reviewer inspected the whole
+delta, actual custody/phase flows, all90 committed source bodies and replayed
+all six native records using production validators on primary Linux.
+
+Main independent CPU selection:618 passed,13 skipped,4 failed in481.49s.
+The four failures are the pre-existing graph-observer fixture missing fixed_row;
+the reviewer independently reproduced all four on base. Independent additional
+probes plus provisional preparation:102 passed in18.61s. The twelve added
+independent cases cover pending/active guard and secondary disposal/final-idle
+exceptions. These facts are not an all-green full-suite claim.
+
+N1 remains a nonblocking fixture follow-up in the approved revision. A working
+repair initializing fixed_row=None exists in separate R1 branch c4_dynamic_graph,
+with all four existing mutation/observer cases passing; that later delta remains
+unreviewed. The R1 working commit590e333 also begins scene/refit recording reuse;
+it is incomplete, not R1 acceptance. Continue its full composition and the
+remaining C4 obligations. No new gate is opened by this evidence-only record.
+
+Reviewer tool session51894 returned0 and its report file was verified. Native
+and author CPU sessions are terminal. The independent report documents its
+completed child-test/SSH sessions and scoped process closure. This archival
+commit contains only the unchanged report and factual evidence/progress updates.

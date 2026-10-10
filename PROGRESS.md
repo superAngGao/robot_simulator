@@ -1921,7 +1921,13 @@ Next milestone:
       checkpoint-before-ready publication and state-based fault disposal.
       Original Warp-specific idle routing is removed without replacing its
       semantics. CPU regressions and new exception/publication counterexamples
-      pass (implementation-notev6); native validation and fresh review are pending.
+      pass (implementation-notev6). Five exactc3472f2 native cases pass:
+      both-lane IDLE disposal/final preparation and original Warp issuance failure.
+      Linux source/bootstrap/policy checks pass293 with1 platform skip. Fresh
+      independent code-reviewv5 approves with comments M1 atc3472f2; its four
+      pre-existing observer-fixture failures are reproduced on base and retained
+      as nonblocking N1. Separate unreviewed R1 work590e333 fixes that fixture
+      and begins shared scene/refit command recording; full R1 composition remains.
       No final sample or speed result is claimed.
       R1/full C4 follow-up and fresh whole review remain mandatory.
       C4c2 runtime, C4c3-c4,
