@@ -272,6 +272,34 @@ def test_registered_upload_source_cannot_be_lost_before_consumption(readback_cas
             c.lifecycle._require_setup()
 
 
+@pytest.mark.parametrize("field", ["lifecycle", "runtime", "target", "stream", "source_session"])
+def test_caught_context_drift_poisons_original_authority(readback_case, monkeypatch, field):
+    from optical_worker.native_setup import (
+        _create_upload_context,
+        _upload_cuda_native_input,
+        _upload_warp_native_input,
+    )
+
+    c = readback_case
+    with pytest.raises(WorkerSetupProtocolError):
+        with c.lifecycle.segment():
+            session, reader = _bind(c, monkeypatch)
+            session.phase = "uploading"
+            context = _create_upload_context(c.lifecycle, c.runtime, c.target, c.stream)
+            original = getattr(context, field)
+            object.__setattr__(context, field, None)
+            upload = _upload_cuda_native_input if session.lane == "cuda" else _upload_warp_native_input
+            with pytest.raises(ValueError, match="unregistered, consumed or has changed"):
+                upload(c.source, context=context)
+            assert c.lifecycle._replay.failed
+            assert c.state.trace == [] and c.state.scope_entries == 0 and reader.raw == []
+            object.__setattr__(context, field, original)
+            _create_upload_context(c.lifecycle, c.runtime, c.target, c.stream)
+    summary = c.lifecycle.termination_evidence.lifecycle.to_payload()["summary"]
+    assert summary["normal_complete_count"] == summary["emergency_sync_attempt_count"] == 0
+    assert summary["release_status"] == "not_authorized"
+
+
 @pytest.mark.parametrize("readback_case", ["cuda"], indirect=True)
 @pytest.mark.parametrize("fault", [None, "stream_exit", "after_query", "after_append"])
 def test_artifact_pairs_surround_real_loader_and_retain_return(readback_case, monkeypatch, fault):

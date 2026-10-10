@@ -355,80 +355,92 @@ class NativeStateReader:
 
     def _state(self, pristine):
         self._ticket()
-        ctypes = self.ctypes
-        held = (
-            None
-            if pristine
-            else {
-                "ordinal": int(
-                    self.stream.device.index if self.session.lane == "cuda" else self.stream.device.ordinal
-                ),
-                "handle": int(self.stream.cuda_stream),
-            }
-        )
-        if self.session.lane == "cuda":
-            raw = ctypes.c_int(-1)
-            raw_device = self._result("cudaGetDevice", self.raw_device(ctypes.byref(raw)), raw.value)
-            contexts = [
-                {"ordinal": i, "active": self._getter("_cuda_hasPrimaryContext", self.primary, i)}
-                for i in range(self.count)
-            ]
-            initialized = vars(sys.modules["torch.cuda"])["_initialized"]
-            if pristine:
-                self.raw.append(
-                    {"cold_raw_device": raw_device, "primary_contexts": contexts, "initialized": initialized}
+        try:
+            ctypes = self.ctypes
+            held = (
+                None
+                if pristine
+                else {
+                    "ordinal": int(
+                        self.stream.device.index
+                        if self.session.lane == "cuda"
+                        else self.stream.device.ordinal
+                    ),
+                    "handle": int(self.stream.cuda_stream),
+                }
+            )
+            if self.session.lane == "cuda":
+                raw = ctypes.c_int(-1)
+                raw_device = self._result("cudaGetDevice", self.raw_device(ctypes.byref(raw)), raw.value)
+                contexts = [
+                    {"ordinal": i, "active": self._getter("_cuda_hasPrimaryContext", self.primary, i)}
+                    for i in range(self.count)
+                ]
+                initialized = vars(sys.modules["torch.cuda"])["_initialized"]
+                if pristine:
+                    self.raw.append(
+                        {
+                            "cold_raw_device": raw_device,
+                            "primary_contexts": contexts,
+                            "initialized": initialized,
+                        }
+                    )
+                    _require(
+                        raw_device == 0
+                        and initialized is False
+                        and (not any((row["active"] for row in contexts))),
+                        "native scope prerequisite or state mismatch",
+                    )
+                return {
+                    "initialized": initialized,
+                    "logical_device": 0 if pristine else self._getter("_cuda_getDevice", self.logical),
+                    "logical_basis": "cold_source_derived" if pristine else "native_return",
+                    "raw_device": raw_device,
+                    "primary_contexts": contexts,
+                    "target_current_stream": None
+                    if pristine
+                    else self._getter(
+                        "_cuda_getCurrentRawStream", self.stream_query, self.controller.target_device_ordinal
+                    ),
+                    "held_stream": held,
+                }
+            context = ctypes.c_void_p()
+            current = self._result("cuCtxGetCurrent", self.context_get(ctypes.byref(context)), context.value)
+            ordinal = None
+            if current is not None:
+                device = ctypes.c_int(-1)
+                handle = self._result(
+                    "cuCtxGetDevice", self.context_device(ctypes.byref(device)), device.value
                 )
-                _require(
-                    raw_device == 0
-                    and initialized is False
-                    and (not any((row["active"] for row in contexts))),
-                    "native scope prerequisite or state mismatch",
+                ordinal = self.devices.index(handle)
+            contexts = []
+            for index, device in enumerate(self.devices):
+                flags, active = (ctypes.c_uint(), ctypes.c_int(-1))
+                self._result(
+                    "cuDevicePrimaryCtxGetState",
+                    self.primary(device, ctypes.byref(flags), ctypes.byref(active)),
+                    {"ordinal": index, "flags": flags.value, "active": active.value},
+                )
+                _require(active.value in (0, 1), "native scope prerequisite or state mismatch")
+                contexts.append({"ordinal": index, "flags": flags.value, "active": active.value == 1})
+            stream = None
+            if not pristine:
+                _require(self.cache_established, "original Warp native cache prerequisite is absent")
+                stream = int(
+                    self._getter("wp_cuda_context_get_stream", self.stream_query, self.target_context) or 0
                 )
             return {
-                "initialized": initialized,
-                "logical_device": 0 if pristine else self._getter("_cuda_getDevice", self.logical),
-                "logical_basis": "cold_source_derived" if pristine else "native_return",
-                "raw_device": raw_device,
+                "default_device": self.runtime.default_device.ordinal,
+                "current_context": current,
+                "current_context_device": ordinal,
                 "primary_contexts": contexts,
-                "target_current_stream": None
-                if pristine
-                else self._getter(
-                    "_cuda_getCurrentRawStream", self.stream_query, self.controller.target_device_ordinal
-                ),
+                "target_context": None if pristine else self.target_context,
+                "target_current_stream": stream,
                 "held_stream": held,
             }
-        context = ctypes.c_void_p()
-        current = self._result("cuCtxGetCurrent", self.context_get(ctypes.byref(context)), context.value)
-        ordinal = None
-        if current is not None:
-            device = ctypes.c_int(-1)
-            handle = self._result("cuCtxGetDevice", self.context_device(ctypes.byref(device)), device.value)
-            ordinal = self.devices.index(handle)
-        contexts = []
-        for index, device in enumerate(self.devices):
-            flags, active = (ctypes.c_uint(), ctypes.c_int(-1))
-            self._result(
-                "cuDevicePrimaryCtxGetState",
-                self.primary(device, ctypes.byref(flags), ctypes.byref(active)),
-                {"ordinal": index, "flags": flags.value, "active": active.value},
-            )
-            _require(active.value in (0, 1), "native scope prerequisite or state mismatch")
-            contexts.append({"ordinal": index, "flags": flags.value, "active": active.value == 1})
-        stream = None
-        if not pristine:
-            _require(self.cache_established, "original Warp native cache prerequisite is absent")
-            stream = int(
-                self._getter("wp_cuda_context_get_stream", self.stream_query, self.target_context) or 0
-            )
-        return {
-            "default_device": self.runtime.default_device.ordinal,
-            "current_context": current,
-            "current_context_device": ordinal,
-            "primary_contexts": contexts,
-            "target_context": None if pristine else self.target_context,
-            "target_current_stream": stream,
-            "held_stream": held,
-        }
+        except BaseException as error:
+            self._fail(error)
+            raise
 
     def snapshot(self, site, edge, operation, before=None):
         self._ticket()

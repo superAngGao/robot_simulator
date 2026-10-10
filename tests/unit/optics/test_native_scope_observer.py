@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from optical_worker.guarded_lifecycle import NativeGuardedSetupLifecycle
-from optical_worker.lifecycle import DeviceScopeDescriptor
+from optical_worker.lifecycle import DeviceScopeDescriptor, WorkerSetupProtocolError
 from optical_worker.native_bootstrap import _RuntimeObservation
 from optical_worker.native_scope import NativeStateReader
 from tests.support.guarded_peer import Peer
@@ -378,6 +378,114 @@ def test_reader_query_is_limited_to_healthy_terminal_sync(warp_cache_model, fail
                                      emergency_target_synchronize=synchronize)
     assert end.lifecycle.to_payload()["summary"]["release_status"] == (
         "not_authorized" if failed else "completed")
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+@pytest.mark.parametrize("failure", ["native_result", "getter_exception"])
+def test_caught_raw_query_failure_cannot_resume_or_release(warp_cache_model, terminal, failure):
+    from optical_worker import native_scope
+    from tests.support.native_runtime_process import _NativeScopeProbe
+
+    value, model = warp_cache_model
+    controller = value.controller
+    _prepare_model_query(value)
+    value.session.modules = {"optical_worker.native_scope": (native_scope,)}
+    probe = object.__new__(_NativeScopeProbe)
+    probe.session = value.session
+
+    def exercise():
+        getter_name = "stream_query" if failure == "getter_exception" else "context_get"
+        original = getattr(value, getter_name)
+        original_error = RuntimeError("modeled raw getter failure")
+
+        def broken(out):
+            if failure == "getter_exception":
+                raise original_error
+            return 999
+
+        setattr(value, getter_name, broken)
+        with pytest.raises(RuntimeError):
+            probe._state(False)
+        assert controller._replay.terminal_failed if terminal else controller._replay.failed
+        if failure == "getter_exception":
+            assert any(error is original_error for error in value.held)
+        else:
+            assert value.raw[-1] == {"getter": "cuCtxGetCurrent", "result": 999, "value": None}
+        setattr(value, getter_name, original)
+        calls = list(model.getter_calls)
+        with pytest.raises(ValueError, match="sticky failure"):
+            probe._state(False)
+        assert model.getter_calls == calls
+
+    if terminal:
+        controller.terminate(fault="setup_failure", detection_phase="input_validated",
+                             emergency_target_synchronize=exercise)
+    else:
+        with pytest.raises(WorkerSetupProtocolError):
+            with controller.segment():
+                exercise()
+    summary = controller.termination_evidence.lifecycle.to_payload()["summary"]
+    assert summary["release_status"] == "not_authorized"
+    assert summary["normal_complete_count"] == 1  # Only the earlier cache preparation.
+    assert summary["emergency_sync_attempt_count"] == int(terminal)
+
+
+@pytest.mark.parametrize("failure", [None, "before", "after"])
+def test_later_helper_diagnostic_uses_same_query_failure_boundary(warp_cache_model, failure):
+    from optical_worker import native_scope
+    from tests.support.native_runtime_process import _NativeScopeProbe
+
+    value, model = warp_cache_model
+    _prepare_model_query(value)
+    value.session.modules = {"optical_worker.native_scope": (native_scope,)}
+    value.session.phase = "preparing_fixed_render_storage"
+    value.session.runtime_owners = []
+    value.runtime.default_device.ordinal = 1
+
+    def current(out):
+        out._obj.value = 9000
+        return 0
+
+    def device(out):
+        out._obj.value = 1
+        return 0
+
+    value.context_get, value.context_device = current, device
+    owner, calls = object(), []
+
+    def helper():
+        calls.append(True)
+        if failure == "after":
+            value.context_get = lambda out: 999
+        return owner
+
+    setup = SimpleNamespace(**{"_warp_" + name: helper for name in (
+        "empty_exact", "copy_exact", "event_exact", "record_event_exact", "wait_event_host_exact")})
+    probe = object.__new__(_NativeScopeProbe)
+    probe.session, probe.originals = value.session, []
+    probe._install_shared_diagnostics(setup)
+    if failure == "before":
+        value.context_get = lambda out: 999
+    if failure:
+        with pytest.raises(WorkerSetupProtocolError):
+            with value.controller.segment():
+                with pytest.raises(RuntimeError, match="cuCtxGetCurrent=999"):
+                    setup._warp_empty_exact()
+                assert value.controller._replay.failed
+                getter_calls = list(model.getter_calls)
+                with pytest.raises(ValueError, match="sticky failure"):
+                    setup._warp_empty_exact()
+                assert model.getter_calls == getter_calls
+        summary = value.controller.termination_evidence.lifecycle.to_payload()["summary"]
+        assert summary["release_status"] == "not_authorized"
+        assert summary["emergency_sync_attempt_count"] == 0
+    else:
+        with value.controller.segment():
+            assert setup._warp_empty_exact() is owner
+        assert value.raw[-1]["shared_helper"] == "empty"
+    assert calls == ([] if failure == "before" else [True])
+    assert (owner in value.session.runtime_owners) is (failure != "before")
+    assert value.session.runtime_observation.journal == []
 
 
 @pytest.mark.parametrize("boundary", ["after_sync", "failed_sync", "cleanup"])

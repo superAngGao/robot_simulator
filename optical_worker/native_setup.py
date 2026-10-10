@@ -1411,27 +1411,30 @@ def _create_upload_context(lifecycle, runtime, target, stream):
 
 
 def _consume_upload_context(context):
+    from .guarded_lifecycle import NativeGuardedSetupLifecycle
+
     if type(context) is not _NativeUploadContext:
         raise TypeError("upload core requires its exact internal context")
     record = _UPLOAD_CONTEXTS.pop(id(context), None)
-    if (
-        record is None
-        or record[0]() is not context
-        or record[1] is not context.lifecycle
-        or record[2] is not context.runtime
-        or record[3] is not context.target
-        or record[4] is not context.stream
-        or record[5] is not context.source_session
-    ):
+    if record is None or record[0]() is not context:
         raise ValueError("upload context is unregistered, consumed or has changed")
-    context.lifecycle.require_adopted(context)
-    from .guarded_lifecycle import NativeGuardedSetupLifecycle
-
-    if type(context.lifecycle) is NativeGuardedSetupLifecycle:
-        with context.lifecycle._observe_public_operation():
-            if context.lifecycle._bound_source_session() is not context.source_session:
+    # Use registered authority before inspecting replaceable context fields.
+    lifecycle = record[1]
+    guarded = type(lifecycle) is NativeGuardedSetupLifecycle
+    with lifecycle._observe_public_operation() if guarded else nullcontext():
+        if (
+            lifecycle is not context.lifecycle
+            or record[2] is not context.runtime
+            or record[3] is not context.target
+            or record[4] is not context.stream
+            or record[5] is not context.source_session
+        ):
+            raise ValueError("upload context is unregistered, consumed or has changed")
+        lifecycle.require_adopted(context)
+        if guarded:
+            if lifecycle._bound_source_session() is not record[5]:
                 raise ValueError("upload context lost its original source")
-    return context.lifecycle, context.runtime, context.target, context.stream
+        return lifecycle, context.runtime, context.target, context.stream
 
 
 @contextmanager
