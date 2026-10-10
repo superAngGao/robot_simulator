@@ -15,6 +15,7 @@ import pytest
 
 from optical_worker import native_bootstrap as bootstrap
 from optical_worker import native_setup
+from optical_worker.native_scope import NativeStateReader
 from optical_worker.guarded_lifecycle import NativeGuardedSetupLifecycle
 from optical_worker.wait_protocol import GuardConfiguration
 from tests.support.guarded_peer import Peer
@@ -32,6 +33,10 @@ def runtime_session(monkeypatch):
     monkeypatch.setenv("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
     session = object.__new__(bootstrap._SourceSession)
     session.runtime_observation = bootstrap._RuntimeObservation(session)
+    session.runtime_observation.environment = SimpleNamespace(to_payload=lambda: {})
+    # This unit session has no captured environment/input inventory to replay.
+    monkeypatch.setattr(session.runtime_observation, "checkpoint", lambda: None)
+    session._native_scope_record = None
     session.lane, session.phase = "cuda", "materialized"
     session.failed, session.failures = False, []
     session.runtime_owners = []
@@ -49,6 +54,16 @@ def runtime_session(monkeypatch):
         controller._check_running()
 
     session.check_live, session.audit = check, check
+    controller._native_source_session = session
+    # Keep actual reader construction, identity binding and guardian adoption.
+    # This binding-only fixture performs no native queries and emits no native
+    # scope facts; reader state/receipt behavior has its own integration tests.
+    def omitted_snapshot(reader, site, edge, operation, before=None):
+        reader._ticket()
+        return (len(session.runtime_observation.journal), operation)
+    monkeypatch.setattr(NativeStateReader, "_initialize_queries", lambda reader: reader._ticket())
+    monkeypatch.setattr(NativeStateReader, "snapshot", omitted_snapshot)
+    session._check_cuda_deferred_state = lambda module: None
     # This fixture isolates runtime-binding ownership with a simulated Torch;
     # it has no inventoried extension files or canonical input. Artifact file
     # loading is exercised by test_cuda_artifact_replay and real cold acceptance.
@@ -70,7 +85,7 @@ def runtime_session(monkeypatch):
             GuardConfiguration,
         ),
     )
-    controller.adopt_host_owner(session, role="unit_source", operation_id="unit_source")
+    controller.adopt_host_owner(session, role="captured_source_session", operation_id="unit_source")
     controller.adopt_host_owner(module, role="unit_module", operation_id="unit_module")
     controller.adopt_host_owner(
         session.canonical_input, role="unit_source_arrays", operation_id="unit_source_arrays"
@@ -169,7 +184,7 @@ def test_file_loader_owned_native_root_is_not_adopted_twice(runtime_session):
     before = controller.guardian.resource_count
     binding = session.initialize_native_runtime()
     assert binding.runtime is module._C
-    assert controller.guardian.resource_count == before + 3  # target, stream, binding only
+    assert controller.guardian.resource_count == before + 4  # target, reader, stream, binding
     before = controller.guardian.resource_count
     session._hold_runtime_owner(module._C, "alternate_root_role")
     assert controller.guardian.resource_count == before
