@@ -1984,6 +1984,16 @@ Next milestone:
       exact evidence. Fresh exact-code/native-call preflight is pending; no new
       GPU run or final-sample acceptance is claimed. The real-device rerun and
       complete physical/numerical/failure matrix remain required.
+      Reader preflightv1 requested changes for terminal query eligibility and
+      captured-input source/reader identity admission. Consolidated repair
+      candidate5d804f7 uses existing lifecycle and guardian custody, with155
+      reader/upload/readback CPU regressions passing. Fresh independent
+      preflightv2 is running on a separate frozen checkout; no new native run
+      is authorized yet. Broader CPU regression reached347 passes/4 skips and
+      exposed two old runtime-binding fixture failures, also reproduced at4dc.
+      Implementation-notev2 records that failure and the separate fixture repair;
+      the two affected/previously unrun files then pass82 CPU cases. Clean exact5d deployment is ready on
+      the primary server. Formal speed comparison remains closed.
       R1/full C4 follow-up and fresh whole review remain mandatory.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
