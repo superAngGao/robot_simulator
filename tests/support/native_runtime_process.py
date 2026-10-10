@@ -45,7 +45,8 @@ RUNTIME_CUDA_ONLY_FAULTS = ("runtime_c1_stream_only_copy", "runtime_module_repla
                             "runtime_interpreter_alias_after_raise")
 RUNTIME_OBSERVATION_FAULTS = ("runtime_scope_success", "runtime_scope_getter_error",
                             "runtime_scope_after_return_raise", "runtime_scope_after_append_raise",
-                            "runtime_scope_missing_warp_scope", "runtime_scope_c1_copy")
+                            "runtime_scope_missing_warp_scope", "runtime_scope_c1_copy",
+                            "runtime_scope_warp_exit_not_restored")
 RUNTIME_ARTIFACT_FAULTS = ("runtime_artifacts_success", "runtime_artifacts_create_after_raise",
                          "runtime_artifacts_exec_after_raise", "runtime_artifacts_entry_adoption_raise",
                          "runtime_artifacts_factory_after_raise", "runtime_artifacts_factory_hang")
@@ -519,15 +520,42 @@ class _NativeScopeProbe:
                 with module.cuda.stream(stream):
                     destination.copy_(source, non_blocking=True)
             setup._torch_copy_exact = stream_only_copy
-        elif fault == "runtime_scope_missing_warp_scope":
+        elif fault in {"runtime_scope_missing_warp_scope", "runtime_scope_warp_exit_not_restored"}:
             original = reader_type.binding_returned
             self.originals.append(original)
             def binding_returned(reader, binding):
                 result = original(reader, binding)
                 original_scope = reader.module.ScopedDevice
                 probe.originals.append(original_scope)
+
+                class UnrestoredExit:
+                    def __init__(self, target):
+                        self.original = original_scope(target)
+
+                    def __enter__(self):
+                        return self.original.__enter__()
+
+                    def __exit__(self, kind, value, traceback):
+                        if kind is not None:
+                            return self.original.__exit__(kind, value, traceback)
+                        # Fixed test fault: omit the native context pop while
+                        # restoring the Python default exactly as ScopedDevice
+                        # does. Real production queries must observe the still
+                        # current target context after this void-like return.
+                        self.original.device.runtime.default_device = self.original.saved_device
+                        _write(directory, "fault_entered.json", {
+                            "fault": fault, "boundary": "readback_exit_omitted_context_pop",
+                            "guard": controller._guard_reference,
+                            "lifecycle_event_count": len(controller._guard_events),
+                        })
+                        return None
+
                 def scope(target):
                     if session.phase == "validating_input":
+                        if fault == "runtime_scope_warp_exit_not_restored":
+                            value = UnrestoredExit(target)
+                            probe.originals.append(value)
+                            return value
                         from contextlib import nullcontext
                         _write(directory, "fault_entered.json", {
                             "fault": fault, "boundary": "omit_readback_scope_for_negative_control"})

@@ -32,7 +32,8 @@ pytestmark = [pytest.mark.gpu, pytest.mark.skipif(
 @pytest.mark.parametrize("lane,case,fault", [
     (lane, case, "runtime_scope_success") for lane in ("warp", "cuda") for case in CASES
 ] + [(lane, CASES[0], fault) for lane in ("warp", "cuda") for fault in NEGATIVE]
-  + [("warp", CASES[0], "runtime_scope_missing_warp_scope"), ("cuda", CASES[0], "runtime_scope_c1_copy")])
+  + [("warp", CASES[0], "runtime_scope_missing_warp_scope"), ("cuda", CASES[0], "runtime_scope_c1_copy"),
+     ("warp", CASES[0], "runtime_scope_warp_exit_not_restored")])
 def test_actual_native_scope_under_original_guard(tmp_path, lane, case, fault):
     go2 = case.startswith("go2_")
     filename, digest, deadline = (GO2_PROFILES if go2 else PROFILES)[lane]
@@ -96,6 +97,23 @@ def test_actual_native_scope_under_original_guard(tmp_path, lane, case, fault):
             assert not (tmp_path / "terminal_sync_entered.json").exists()
             assert not (tmp_path / "input_validation_report.json").exists()
             assert (tmp_path / "native_scope_diagnostic.json").exists()
+            if fault == "runtime_scope_warp_exit_not_restored":
+                assert marker["boundary"] == "readback_exit_omitted_context_pop"
+                assert marker["guard"] == {"sequence": 5, "role": "setup"}
+                assert worker["custody"] == "full_quarantine" and worker["guarded_segment_failed"] is True
+                diagnostic = json.loads((tmp_path / "native_scope_diagnostic.json").read_bytes())
+                observations = [row for row in diagnostic["raw"]
+                                if row.get("site") == "readback_scope" and row.get("edge") == "after"]
+                assert len(observations) == 1
+                state = observations[0]["state"]
+                assert state["default_device"] == 0
+                assert state["current_context"] == state["target_context"] is not None
+                assert state["current_context_device"] == 1
+                assert [row["ordinal"] for row in state["primary_contexts"] if row["active"]] == [1]
+                after = artifact["worker"]["transition_trace"][marker["lifecycle_event_count"]:]
+                assert not {"normal_complete_started", "normal_arm_started", "terminal_arm_started",
+                            "emergency_sync_started", "ordinary_cleanup_started"} & {
+                                row["operation"] for row in after}
         print(json.dumps({"fault": fault, "lane": lane, "case": case, "worker_pid": result["worker_pid"],
                           "supervisor_pid": supervisor.pid, "worker_returncode": result["worker_returncode"],
                           "selection": selection["selection"]}))
