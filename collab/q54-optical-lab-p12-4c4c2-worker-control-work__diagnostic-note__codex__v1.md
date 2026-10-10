@@ -551,3 +551,56 @@ Tool37192 is terminal0. Catalog SHA256
 f6758b695b4804034ad5cdec53d5ed23e9a477033037f16f84a0ba64ba9e070b.
 No native job was launched. The scope remains unreviewed author work in the
 required coherent G1-G5 packet, with the full C4 objective still active.
+
+## Request-loop fault retention and failed journal append boundary (after9ef12cf)
+
+Following the first-hit commit, original-loop CPU counterexamples exposed two
+remaining G5 defects. Although `_journal` already reports unsuccessful full
+write/fsync, the loop ignored that result and appended subsequent handler and
+terminal records behind the failed frame. It now stops further journal writes
+after that first failure, retains the actual prefix and still follows its
+original termination/response/exit path. There is no frame retry, new journal
+service, relaxed parser, fabricated terminal evidence or release permission.
+
+The loop also called `terminal_fault_response` after leaving the exception
+handler. Its `sys.exception()` fallback therefore constructed a new protocol
+exception from the message instead of retaining the actual triggering error.
+The loop now passes the caught exception explicitly to the existing native
+failure handler. Direct callers retain the previous optional fallback. The EOF
+branch retains its original EOFError instead of replacing that object too.
+
+The new tests execute the original request loop and actual file writes with
+CPU transport/session doubles. Both initial-fault and secondary-handler frame
+failures cover zero writes, raised writes and fsync failure, plus successful
+complete framed journals. Five caught exception categories retain identity at
+the original native-failure helper call. This is not an OS/GPU worker campaign,
+actual resource-disposal proof or a complete compact-response/full-record join.
+
+Evidence under `../c4_assets`:
+- Against unchanged worker production7304975 (also present in9ef12cf), the
+  initial six failed-append counterexamples all fail (6deselected,0.83s):
+  `worker_journal_append_baseline_v1.txt`,43074bytes, SHA256
+  d42b9bb72bbad98bc4e53c3bf80c8202308a1186e550e62e5113ea4fde365bd3.
+- The original exception identity counterexample fails (12deselected,0.33s):
+  `worker_original_fault_baseline_v1.txt`,5826bytes, SHA256
+  2253f7f795fc4d9e5b66d83381a4da889bc36acc52983c310906bae866f63cac.
+- Expanded journal/loop set:23passed0.38s;
+  `worker_journal_faults_candidate_v2.txt`,204bytes, SHA256
+  b7809dc0b355f5c7b5eb080a1bc7eeb7e1a5eed8f1e7f5f81b1d9b6a861e0ea7.
+- Journal, close supervision, worker lifecycle and guarded lifecycle regression:
+  230passed,9deselected,59.19s; `worker_journal_faults_regression_v1.txt`,
+  67700bytes, SHA256
+  8245ad974d71ce6935bbb013857db2e41e1f8d0fe12fbf45adee6c32f6018e63.
+  The9 scale cases passed in the preceding421 run; they were not rerun for
+  this terminal fault-path change. Do not attribute that421 result to these
+  later worker bytes. One later test-signature line wrap has no behavior change.
+  Tool4526 is terminal0. Both changed Python files pass Ruff; Git whitespace
+  passes. Unchanged AST policy accepts91 sources, catalog SHA256
+  f84f73152e2462c99b3b8d052a5318dd7222b15ea438021f588c492db93ebbd2.
+
+G5 is still incomplete: explicit incomplete recovery outcomes, complete
+original-worker/OS fault matrix and exact response/terminal/supervisor joins
+remain required together with G3 trace/terminal capacity reservation. G1/G2
+final native observation/staging/numerical work and full fixed-work proof are
+also outstanding. Neither commit is an independently approved packet, a native
+deployment, a speed comparison or permission to open a later gate.

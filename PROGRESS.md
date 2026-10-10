@@ -2083,6 +2083,11 @@ Next milestone:
       including both1/120/600 worker cycles, pass after correcting a preexisting
       missing field in the warmup test fixture. This remains author refactor
       evidence, not native final-output validation or a speed comparison.
+      Request-loop terminal faults now retain the original exception and stop
+      journal appends after a failed frame/fsync. Original counterexamples fail
+      before repair;230 related CPU checks pass afterward. Complete persistence
+      recovery/OS faults and the integrated independent/native packet remain
+      unfinished; see the same worker-control-work note for exact evidence.
       Author full source
       regression passes317 with13 Windows skips, all13 supplemented successfully
       on primary Linux. Separately the approvedfc23b4e

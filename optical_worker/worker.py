@@ -222,12 +222,14 @@ class ClosedWorkerSession:
         message: str,
         fault: str,
         detection_phase: str,
+        cause: BaseException | None = None,
     ) -> dict[str, object]:
         if self._native_source is not None and self._termination is None:
             from .native_setup import _fail_optical_preparation
 
             _fail_optical_preparation(
-                self._native_source, sys.exception() or ClosedWorkerProtocolError(message),
+                self._native_source,
+                cause if cause is not None else sys.exception() or ClosedWorkerProtocolError(message),
                 source_integrity_failed=self._native_source.failed,
                 fault=fault, detection_phase=detection_phase,
             )
@@ -674,8 +676,8 @@ def run_worker_loop(
         except TimeoutError as timeout:
             exc = timeout
             fault = "control_idle_timeout" if "idle" in str(exc) else "response_write_timeout"
-        except EOFError:
-            exc = EOFError("control channel EOF")
+        except EOFError as eof:
+            exc = eof
             fault = "channel_eof"
         except BrokenPipeError as broken:
             exc = broken
@@ -687,7 +689,7 @@ def run_worker_loop(
             exc = unexpected
             fault = "dispatcher_failure"
 
-        _journal(
+        journal_complete = _journal(
             journal_descriptor,
             {
                 "kind": "worker_loop_fault",
@@ -703,6 +705,7 @@ def run_worker_loop(
                 message=str(exc),
                 fault=fault,
                 detection_phase="request_loop",
+                cause=exc,
             )
             frame = encode_framed_message(response, max_bytes=MAX_RESPONSE_BYTES)
             _write_all(
@@ -711,15 +714,19 @@ def run_worker_loop(
                 timeout_ms=manifest.response_write_timeout_ms,
             )
         except BaseException as termination_error:
-            _journal(
-                journal_descriptor,
-                {
-                    "kind": "termination_handler_failure",
-                    "exception_type": type(termination_error).__name__,
-                    "message": str(termination_error),
-                },
-            )
-        if session.termination_evidence is not None:
+            if journal_complete:
+                journal_complete = _journal(
+                    journal_descriptor,
+                    {
+                        "kind": "termination_handler_failure",
+                        "exception_type": type(termination_error).__name__,
+                        "message": str(termination_error),
+                    },
+                )
+        # A failed frame may have left a partial header/body. Appending another
+        # frame cannot repair that prefix and would conceal its failure boundary.
+        # Preserve it for the supervisor's incomplete-evidence handling.
+        if journal_complete and session.termination_evidence is not None:
             _journal(
                 journal_descriptor,
                 {
