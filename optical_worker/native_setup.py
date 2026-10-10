@@ -1254,10 +1254,18 @@ def _output_array_allocation(runtime, target, *, lane, stream=None, context=None
 
 
 @contextmanager
-def _warp_command_recording(runtime, target, stream, *, context=None):
+def _warp_command_recording(runtime, target, stream, *, context=None, ready_event=None):
     """Record existing kernel definitions, retaining each return before the next leaf."""
     with _native_resource_scope(runtime, target, lane="warp", stream=stream, context=context,
             owner_role="slot_command_custody", scope_id="slot_command_scope") as (lifecycle, owners, operation):
+        if ready_event is not None:
+            with operation("slot_command_input_wait", "event_wait"):
+                owners.append(ready_event)
+                if lifecycle is not None:
+                    lifecycle.require_adopted(ready_event, stream)
+                    if ready_event.device is not target:
+                        raise ValueError("recorded command dependency differs from its target")
+                stream.wait_event(ready_event)
         def record(kernel, *, dim, inputs):
             with operation("slot_record_command", "compile_or_jit"):
                 # Hold operands before record_cmd can initialize a native entry.

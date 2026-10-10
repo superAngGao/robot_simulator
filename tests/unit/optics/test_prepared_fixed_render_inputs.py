@@ -180,6 +180,7 @@ def fixed_storage_session(fixed_inputs, monkeypatch, fail_at):
     # method, allocation/view builders, guard and owner handling all execute.
     session = object.__new__(_SourceSession)
     session.lane, session.prepared_input, session.render_source = p.lane, p.prepared, p.render
+    session.fixed_row = None
     session.phase = 'warp_modules_ready' if p.lane == 'warp' else 'cuda_factories_ready'
     session.validation_report, session.warp_modules = object(), object()
     session.runtime_owners, session.failures = [], []

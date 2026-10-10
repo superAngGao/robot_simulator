@@ -215,46 +215,56 @@ class WarpBvhRefitCommandFactory:
         native_input_topology_sha256: str,
         scene_contract_sha256: str,
         input_contract: str,
+        _context=None,
     ) -> None:
+        from optical_worker.native_setup import _native_resource_scope
+
         _require_warp()
-        if (
-            not _sha256_text(native_input_manifest_sha256)
-            or not _sha256_text(native_input_topology_sha256)
-            or not _sha256_text(scene_contract_sha256)
-            or not input_contract
-        ):
-            raise ValueError("Warp BVH-refit provenance must be non-empty")
-        _validate_warp_stream(stream, device=topology.device)
-        _validate_warp_bvh_storage(topology)
-        if topology.scene_contract_sha256 != scene_contract_sha256:
-            raise ValueError("Warp BVH topology belongs to a different scene contract")
-        if not _sha256_text(topology.topology_sha256):
-            raise ValueError("Warp BVH lacks canonical topology evidence")
-        if topology.topology_origin_id != WARP_BVH_TOPOLOGY_ORIGIN_ID:
-            raise ValueError("Warp refit requires the frozen leaf-4 topology origin")
-        if topology.stats.leaf_size != 4 or topology.stats.split_strategy != "sort":
-            raise ValueError("Warp refit requires leaf_size=4 and split_strategy='sort'")
-        if topology.ready_event is not None:
-            stream.wait_event(topology.ready_event)
-        self.topology = topology
-        self.stream = stream
-        self.native_input_manifest_sha256 = native_input_manifest_sha256
-        self.native_input_topology_sha256 = native_input_topology_sha256
-        self.scene_contract_sha256 = scene_contract_sha256
-        self.input_contract = input_contract
-        self._frozen_device_ordinal = int(topology.device.ordinal)
-        self._frozen_stream_handle = int(stream.cuda_stream)
-        self._frozen_scene_contract_sha256 = topology.scene_contract_sha256
-        self._frozen_topology_origin_id = topology.topology_origin_id
-        self._frozen_topology_sha256 = topology.topology_sha256
-        self._frozen_immutable_storage_sha256 = _warp_storage_manifest_sha256(
-            _warp_bvh_immutable_arrays(topology)
-        )
-        self._frozen_topology_facts = _warp_bvh_topology_facts(topology)
-        self._frozen_native_input_manifest_sha256 = native_input_manifest_sha256
-        self._frozen_native_input_topology_sha256 = native_input_topology_sha256
-        self._frozen_input_contract = input_contract
-        self._sealed = True
+        with _native_resource_scope(wp, topology.device, lane="warp", stream=stream, context=_context,
+                owner_role="refit_factory_custody", scope_id="refit_factory_scope") as (lifecycle, owners, operation):
+            if (
+                not _sha256_text(native_input_manifest_sha256)
+                or not _sha256_text(native_input_topology_sha256)
+                or not _sha256_text(scene_contract_sha256)
+                or not input_contract
+            ):
+                raise ValueError("Warp BVH-refit provenance must be non-empty")
+            _validate_warp_stream(stream, device=topology.device)
+            _validate_warp_bvh_storage(topology)
+            if topology.scene_contract_sha256 != scene_contract_sha256:
+                raise ValueError("Warp BVH topology belongs to a different scene contract")
+            if not _sha256_text(topology.topology_sha256):
+                raise ValueError("Warp BVH lacks canonical topology evidence")
+            if topology.topology_origin_id != WARP_BVH_TOPOLOGY_ORIGIN_ID:
+                raise ValueError("Warp refit requires the frozen leaf-4 topology origin")
+            if topology.stats.leaf_size != 4 or topology.stats.split_strategy != "sort":
+                raise ValueError("Warp refit requires leaf_size=4 and split_strategy='sort'")
+            if topology.ready_event is not None:
+                with operation("refit_topology_ready_wait", "event_wait"):
+                    if lifecycle is not None:
+                        lifecycle.require_adopted(topology.ready_event, stream)
+                        if topology.ready_event.device is not topology.device:
+                            raise ValueError("refit topology event differs from its target")
+                    stream.wait_event(topology.ready_event)
+            self.topology = topology
+            self.stream = stream
+            self.native_input_manifest_sha256 = native_input_manifest_sha256
+            self.native_input_topology_sha256 = native_input_topology_sha256
+            self.scene_contract_sha256 = scene_contract_sha256
+            self.input_contract = input_contract
+            self._frozen_device_ordinal = int(topology.device.ordinal)
+            self._frozen_stream_handle = int(stream.cuda_stream)
+            self._frozen_scene_contract_sha256 = topology.scene_contract_sha256
+            self._frozen_topology_origin_id = topology.topology_origin_id
+            self._frozen_topology_sha256 = topology.topology_sha256
+            self._frozen_immutable_storage_sha256 = _warp_storage_manifest_sha256(
+                _warp_bvh_immutable_arrays(topology)
+            )
+            self._frozen_topology_facts = _warp_bvh_topology_facts(topology)
+            self._frozen_native_input_manifest_sha256 = native_input_manifest_sha256
+            self._frozen_native_input_topology_sha256 = native_input_topology_sha256
+            self._frozen_input_contract = input_contract
+            self._sealed = True
 
     def __setattr__(self, name: str, value: object) -> None:
         if getattr(self, "_sealed", False):
@@ -266,6 +276,7 @@ class WarpBvhRefitCommandFactory:
         *,
         world: WarpWorldSceneBuffers,
         bvh: DeviceOpticalBvh | None = None,
+        _context=None,
     ) -> WarpBvhRefitCommandBundle:
         """Validate and record one immutable refit plan outside timing."""
 
@@ -274,8 +285,6 @@ class WarpBvhRefitCommandFactory:
         if not isinstance(world, WarpWorldSceneBuffers):
             raise TypeError("world must be WarpWorldSceneBuffers")
         _validate_matching_warp_bvh_topology(self.topology, bvh)
-        if bvh.ready_event is not None and bvh is not self.topology:
-            self.stream.wait_event(bvh.ready_event)
         if wp.get_device(world.device) != wp.get_device(bvh.device):
             raise ValueError("Warp BVH and world-scene output devices must match")
         for name in ("triangle_aabb_min", "triangle_aabb_max"):
@@ -294,60 +303,57 @@ class WarpBvhRefitCommandFactory:
             output_arrays,
         )
 
-        commands: list[object] = []
-        dispatches: list[dict[str, object]] = []
-        if bvh.num_nodes > 0:
-            commands.append(
-                wp.launch(
-                    _refit_bvh_leaf_bounds_kernel,
-                    dim=bvh.num_nodes,
-                    inputs=(
-                        world.triangle_aabb_min,
-                        world.triangle_aabb_max,
-                        bvh.start,
-                        bvh.count,
-                        bvh.prim_ids,
-                        bvh.bounds_min,
-                        bvh.bounds_max,
-                    ),
-                    device=bvh.device,
-                    stream=self.stream,
-                    record_tape=False,
-                    record_cmd=True,
-                )
-            )
-            dispatches.append({"kernel": "refit_bvh_leaf_bounds", "dim": bvh.num_nodes})
-            for depth in range(bvh.stats.max_depth - 1, -1, -1):
-                level_start, level_end = bvh.stats.level_ranges[depth]
-                level_count = int(level_end - level_start)
-                if level_count <= 0:
-                    continue
+        from optical_worker.native_setup import _warp_command_recording
+
+        ready_event = bvh.ready_event if bvh is not self.topology else None
+        with _warp_command_recording(wp, bvh.device, self.stream, context=_context,
+                                     ready_event=ready_event) as record:
+            commands: list[object] = []
+            dispatches: list[dict[str, object]] = []
+            if bvh.num_nodes > 0:
                 commands.append(
-                    wp.launch(
-                        _refit_bvh_internal_bounds_kernel,
-                        dim=level_count,
+                    record(
+                        _refit_bvh_leaf_bounds_kernel,
+                        dim=bvh.num_nodes,
                         inputs=(
-                            int(level_start),
-                            bvh.left,
-                            bvh.right,
+                            world.triangle_aabb_min,
+                            world.triangle_aabb_max,
+                            bvh.start,
                             bvh.count,
+                            bvh.prim_ids,
                             bvh.bounds_min,
                             bvh.bounds_max,
                         ),
-                        device=bvh.device,
-                        stream=self.stream,
-                        record_tape=False,
-                        record_cmd=True,
                     )
                 )
-                dispatches.append(
-                    {
-                        "kernel": "refit_bvh_internal_bounds",
-                        "depth": depth,
-                        "level_start": int(level_start),
-                        "dim": level_count,
-                    }
-                )
+                dispatches.append({"kernel": "refit_bvh_leaf_bounds", "dim": bvh.num_nodes})
+                for depth in range(bvh.stats.max_depth - 1, -1, -1):
+                    level_start, level_end = bvh.stats.level_ranges[depth]
+                    level_count = int(level_end - level_start)
+                    if level_count <= 0:
+                        continue
+                    commands.append(
+                        record(
+                            _refit_bvh_internal_bounds_kernel,
+                            dim=level_count,
+                            inputs=(
+                                int(level_start),
+                                bvh.left,
+                                bvh.right,
+                                bvh.count,
+                                bvh.bounds_min,
+                                bvh.bounds_max,
+                            ),
+                        )
+                    )
+                    dispatches.append(
+                        {
+                            "kernel": "refit_bvh_internal_bounds",
+                            "depth": depth,
+                            "level_start": int(level_start),
+                            "dim": level_count,
+                        }
+                    )
 
         evidence = WarpBvhRefitCommandEvidence(
             schema_version=WARP_BVH_REFIT_COMMAND_SCHEMA_VERSION,

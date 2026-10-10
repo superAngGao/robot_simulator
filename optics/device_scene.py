@@ -490,6 +490,7 @@ class WarpSceneUpdateCommandFactory:
         *,
         transforms: WarpSceneTransformInputs,
         outputs: WarpWorldSceneBuffers,
+        _context=None,
     ) -> WarpSceneUpdateCommandBundle:
         """Validate and record an immutable command bundle outside timing."""
 
@@ -507,59 +508,54 @@ class WarpSceneUpdateCommandFactory:
         )
         _validate_disjoint_warp_storage(protected_arrays, output_arrays)
 
-        commands: list[object] = []
-        if scene.num_triangles > 0:
-            commands.append(
-                wp.launch(
-                    _update_triangles_derived_aabb_world_kernel,
-                    dim=scene.num_triangles,
-                    inputs=(
-                        scene.geometry_vertices_local,
-                        scene.triangle_vertex_indices,
-                        scene.triangle_instance_index,
-                        scene.instance_body_index,
-                        scene.instance_X_body_geometry_R,
-                        scene.instance_X_body_geometry_r,
-                        transforms.x_world_R,
-                        transforms.x_world_r,
-                        int(transforms.env_idx),
-                        outputs.triangle_v0_world,
-                        outputs.triangle_e1_world,
-                        outputs.triangle_e2_world,
-                        outputs.triangle_normal_world,
-                        outputs.triangle_aabb_min,
-                        outputs.triangle_aabb_max,
-                    ),
-                    device=scene.device,
-                    stream=self.stream,
-                    record_tape=False,
-                    record_cmd=True,
+        from optical_worker.native_setup import _warp_command_recording
+
+        with _warp_command_recording(wp, scene.device, self.stream, context=_context) as record:
+            commands: list[object] = []
+            if scene.num_triangles > 0:
+                commands.append(
+                    record(
+                        _update_triangles_derived_aabb_world_kernel,
+                        dim=scene.num_triangles,
+                        inputs=(
+                            scene.geometry_vertices_local,
+                            scene.triangle_vertex_indices,
+                            scene.triangle_instance_index,
+                            scene.instance_body_index,
+                            scene.instance_X_body_geometry_R,
+                            scene.instance_X_body_geometry_r,
+                            transforms.x_world_R,
+                            transforms.x_world_r,
+                            int(transforms.env_idx),
+                            outputs.triangle_v0_world,
+                            outputs.triangle_e1_world,
+                            outputs.triangle_e2_world,
+                            outputs.triangle_normal_world,
+                            outputs.triangle_aabb_min,
+                            outputs.triangle_aabb_max,
+                        ),
+                    )
                 )
-            )
-        if scene.num_planes > 0:
-            commands.append(
-                wp.launch(
-                    _update_planes_world_kernel,
-                    dim=scene.num_planes,
-                    inputs=(
-                        scene.plane_normal_local,
-                        scene.plane_point_local,
-                        scene.plane_instance_index,
-                        scene.instance_body_index,
-                        scene.instance_X_body_geometry_R,
-                        scene.instance_X_body_geometry_r,
-                        transforms.x_world_R,
-                        transforms.x_world_r,
-                        int(transforms.env_idx),
-                        outputs.plane_normal_world,
-                        outputs.plane_point_world,
-                    ),
-                    device=scene.device,
-                    stream=self.stream,
-                    record_tape=False,
-                    record_cmd=True,
+            if scene.num_planes > 0:
+                commands.append(
+                    record(
+                        _update_planes_world_kernel,
+                        dim=scene.num_planes,
+                        inputs=(
+                            scene.plane_normal_local,
+                            scene.plane_point_local,
+                            scene.plane_instance_index,
+                            scene.instance_body_index,
+                            scene.instance_X_body_geometry_R,
+                            scene.instance_X_body_geometry_r,
+                            transforms.x_world_R,
+                            transforms.x_world_r,
+                            int(transforms.env_idx),
+                            outputs.plane_normal_world,
+                            outputs.plane_point_world,
+                        ),
+                    )
                 )
-            )
         dispatches = _warp_scene_dispatch_plan(scene)
 
         evidence = WarpSceneUpdateCommandEvidence(

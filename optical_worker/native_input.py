@@ -766,6 +766,7 @@ def build_prepared_warp_bvh_refit_factory(
     bvh: object,
     *,
     stream: object,
+    _context=None,
 ):
     """Bind one actual Warp topology to the exact prepared scene provenance."""
 
@@ -789,6 +790,7 @@ def build_prepared_warp_bvh_refit_factory(
         native_input_topology_sha256=manifest.topology_sha256,
         scene_contract_sha256=manifest.scene_contract_sha256,
         input_contract=manifest.input_contract,
+        _context=_context,
     )
 
 

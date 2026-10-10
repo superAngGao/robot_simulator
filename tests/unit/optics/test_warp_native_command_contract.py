@@ -46,6 +46,11 @@ def test_warp_timed_enqueue_only_launches_prebound_commands():
 
     for factory_type in (WarpSceneUpdateCommandFactory, WarpBvhRefitCommandFactory):
         source = inspect.getsource(factory_type.seal)
+        from optical_worker.native_setup import _warp_command_recording
+
+        assert "_warp_command_recording" in source
+        assert "wp.launch" not in source
+        source = inspect.getsource(_warp_command_recording)
         assert "record_cmd=True" in source
         assert "record_tape=False" in source
 
