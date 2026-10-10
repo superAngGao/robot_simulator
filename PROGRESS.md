@@ -1847,9 +1847,14 @@ Next milestone:
       kernels on CPU resolve all ten channels at279 selected previous-failure
       pixels; CUDA scene v3 compiles under the existing isolated build service.
       This is not native GPU or whole-amendment acceptance. Input-precision
-      implementation-note v1 records evidence and the mandatory continuation:
-      CUDA rendering, scalar/identity/source-pin migration, full native matrix
-      and fresh independent code review. Work remains on implementation/c4-input-precision;
+      implementation-note v1 records the geometry/Warp evidence. Checkpoint
+      05f04d0 additionally migrates CUDA renderer v10 and both native scalar
+      bindings; 167 host regression checks pass, and actual CUDA v10 compilation
+      succeeds with contraction disabled. Implementation-note v2 records that
+      evidence and the f64-ray/intensity readback delta. Canonical integration
+      tests currently stop at stale workload digests; identity/native-manifest/
+      source-pin migration, full native matrix and fresh independent code review
+      remain required. Work remains on implementation/c4-input-precision;
       no later gate is opened and the original812ca29 oracle is unchanged.
       No native intensity or
       performance result is available. Whole C4 remains incomplete.

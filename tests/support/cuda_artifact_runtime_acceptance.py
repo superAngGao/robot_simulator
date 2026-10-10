@@ -258,10 +258,12 @@ def _validate_render_warmups(directory, lane, case, fault, *, trace, request):
             shape = [workload.width * workload.height]
             if name in {'origins', 'directions', 'position_world', 'normal_world'}:
                 shape.append(3)
-            dtype = 'int32' if name in {'hit_mask', 'numeric_instance_id', 'material_index'} else 'float32'
+            dtype = ('float64' if name in {'origins', 'directions'} else
+                     'int32' if name in {'hit_mask', 'numeric_instance_id', 'material_index'} else 'float32')
             raw = (directory / ('warmup_' + name + '.bin')).read_bytes()
             if (row['shape'] != shape or row['dtype'] != dtype or row['bytes'] != len(raw)
-                    or len(raw) != math.prod(shape) * 4 or row['sha256'] != hashlib.sha256(raw).hexdigest()):
+                    or len(raw) != math.prod(shape) * (8 if dtype == 'float64' else 4)
+                    or row['sha256'] != hashlib.sha256(raw).hexdigest()):
                 raise RuntimeError('diagnostic geometry channel differs from its native ABI/readback')
             expected_copies.append('warmup_' + name + '_readback')
     if ([row['operation_id'] for row in copies] != expected_copies

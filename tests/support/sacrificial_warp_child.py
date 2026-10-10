@@ -181,8 +181,8 @@ def main():
                 max_distance=50.0,
             )
             for name, values in (("origins", rays.origins_world), ("directions", rays.directions_world)):
-                host = driver.host(np.asarray(values, dtype=np.float32).copy())
-                view = driver.host(wp.array(host, dtype=wp.float32, device="cpu", copy=False))
+                host = driver.host(np.asarray(values, dtype=np.float64).copy())
+                view = driver.host(wp.array(host, dtype=wp.float64, device="cpu", copy=False))
                 driver.leaf(
                     f"resident_{name}",
                     lambda name=name, view=view: wp.copy(
@@ -218,7 +218,7 @@ def main():
         host_results = {}
         host_views = {}
         for name, value in case.buffers.arrays:
-            dtype = np.int32 if value.dtype is wp.int32 else np.float32
+            dtype = {wp.int32: np.int32, wp.float32: np.float32, wp.float64: np.float64}[value.dtype]
             host_results[name] = driver.host(np.empty(value.shape, dtype=dtype), "inspection_storage")
             host_views[name] = driver.host(
                 wp.array(host_results[name], dtype=value.dtype, device="cpu", copy=False), "inspection_view"
@@ -231,7 +231,7 @@ def main():
                     lambda value=value: wp.empty(value.shape, dtype=value.dtype, device=driver.target),
                     produces_owner=True,
                 )
-                dtype = np.int32 if value.dtype is wp.int32 else np.float32
+                dtype = {wp.int32: np.int32, wp.float32: np.float32, wp.float64: np.float64}[value.dtype]
                 first_host_results[name] = driver.host(
                     np.empty(value.shape, dtype=dtype), "first_inspection_storage"
                 )

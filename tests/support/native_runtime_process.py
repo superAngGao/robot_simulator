@@ -80,7 +80,7 @@ RUNTIME_RENDER_WARMUP_CASES = ("runtime_render_warmup_success", "runtime_render_
 # Fixed diagnostic selection for tracing RGB discrepancies to camera/first hit.
 # These are existing outputs, not additional kernels or product payloads.
 WARMUP_GEOMETRY_CHANNELS = ("origins", "directions", "hit_mask", "range_m", "position_world",
-                          "normal_world", "numeric_instance_id", "material_index")
+                          "normal_world", "numeric_instance_id", "material_index", "intensity")
 RUNTIME_RENDER_GRAPH_CASES = ("runtime_render_graph_success", "runtime_render_graph_diagnostics",
                             *RUNTIME_RENDER_WARMUP_CASES)
 RUNTIME_FAULTS = (RUNTIME_NATIVE_FAULTS + RUNTIME_ACK_FAULTS + RUNTIME_PARENT_FAULTS
