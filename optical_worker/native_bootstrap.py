@@ -2868,11 +2868,13 @@ class _SourceSession:
                         # or its ordinal validation may itself fail.
                         self.runtime_owners.append(stream)
                         self._observe_runtime_return("runtime_stream", stream)
-                        reader.stream_returned(stream, opening)
+                        # Preserve known returned-device scope even if the
+                        # subsequent reader prerequisite/query rejects it.
                         _require(type(stream.device.index) is int, "CUDA stream has no indexed device")
                         self._hold_runtime_owner(
                             stream, "torch_runtime_stream", device_ordinal=stream.device.index
                         )
+                        reader.stream_returned(stream, opening)
                     else:
                         import warp as module
 
@@ -2896,10 +2898,10 @@ class _SourceSession:
                         stream = module.get_stream(target)
                         self.runtime_owners.append(stream)
                         self._observe_runtime_return("runtime_stream", stream)
-                        reader.stream_returned(stream, opening)
                         self._hold_runtime_owner(
                             stream, "warp_runtime_stream", device_ordinal=int(stream.device.ordinal)
                         )
+                        reader.stream_returned(stream, opening)
                 except BaseException:
                     if not controller._terminating:
                         controller.mark_unknown_device_scope(

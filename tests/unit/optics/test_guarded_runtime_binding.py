@@ -15,21 +15,33 @@ import pytest
 
 from optical_worker import native_bootstrap as bootstrap
 from optical_worker import native_setup
-from optical_worker.native_scope import NativeStateReader
 from optical_worker.guarded_lifecycle import NativeGuardedSetupLifecycle
+from optical_worker.lifecycle import WorkerSetupProtocolError
+from optical_worker.native_scope import NativeStateReader
 from optical_worker.wait_protocol import GuardConfiguration
 from tests.support.guarded_peer import Peer
 
 
 @pytest.fixture
-def runtime_session(monkeypatch):
+def runtime_session(monkeypatch, request):
+    lane = getattr(request, "param", "cuda")
     peer = Peer()
-    controller = NativeGuardedSetupLifecycle(lane_id="cuda", channel=peer.channel, configuration=peer.config)
-    module = ModuleType("torch")
+    controller = NativeGuardedSetupLifecycle(lane_id=lane, channel=peer.channel, configuration=peer.config)
+    module = ModuleType("torch" if lane == "cuda" else "warp")
     module._C = ModuleType("torch._C")
     module.device = lambda kind, ordinal: SimpleNamespace(type=kind, index=ordinal)
     module.cuda = SimpleNamespace(Stream=lambda *, device: SimpleNamespace(device=device, cuda_stream=412))
-    monkeypatch.setitem(sys.modules, "torch", module)
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    if lane == "warp":
+        from optical_worker import warp_setup
+
+        module.init = lambda: None
+        module.get_device = lambda name: SimpleNamespace(is_cuda=True, ordinal=int(name.split(":")[1]))
+        module.get_stream = lambda device: SimpleNamespace(device=device, cuda_stream=412)
+        monkeypatch.setattr(warp_setup, "configure_warp_cache", lambda *_: None)
+        monkeypatch.setattr(
+            NativeStateReader, "_warp_cache_precondition", lambda reader, **_: reader._ticket()
+        )
     monkeypatch.setenv("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
     session = object.__new__(bootstrap._SourceSession)
     session.runtime_observation = bootstrap._RuntimeObservation(session)
@@ -37,7 +49,7 @@ def runtime_session(monkeypatch):
     # This unit session has no captured environment/input inventory to replay.
     monkeypatch.setattr(session.runtime_observation, "checkpoint", lambda: None)
     session._native_scope_record = None
-    session.lane, session.phase = "cuda", "materialized"
+    session.lane, session.phase = lane, "materialized"
     session.failed, session.failures = False, []
     session.runtime_owners = []
     session.canonical_input = object()
@@ -48,6 +60,8 @@ def runtime_session(monkeypatch):
         bind_materialization_case=lambda case: materialization_steps.append(("bind", case)),
         finish_materialization=lambda: materialization_steps.append(("finish", None)),
     )
+    if lane == "warp":
+        session.external.records["warp._src.context"] = {"module": SimpleNamespace(runtime=module._C)}
 
     def check():
         bootstrap._require(not session.failed, "unit source session failed")
@@ -285,6 +299,39 @@ def test_returned_stream_survives_adoption_failure_in_original_session_graph(run
     assert (
         controller.termination_evidence.lifecycle.to_payload()["summary"]["emergency_sync_attempt_count"] == 0
     )
+
+
+@pytest.mark.parametrize("runtime_session", ["cuda", "warp"], indirect=True)
+@pytest.mark.parametrize("ordinal", [0, 1])
+def test_returned_stream_device_is_recorded_before_reader_rejection(runtime_session, monkeypatch, ordinal):
+    session, controller, module, _ = runtime_session
+    device = SimpleNamespace(type="cuda", index=ordinal, ordinal=ordinal)
+    stream = SimpleNamespace(device=device, cuda_stream=417)
+    if session.lane == "cuda":
+        module.cuda.Stream = lambda **_: stream
+    else:
+        module.get_stream = lambda _: stream
+    observed = []
+    original = NativeStateReader.snapshot
+
+    def reject_after(reader, site, edge, operation, before=None):
+        if site == "runtime_stream" and edge == "after":
+            observed.append(controller.guardian.contains_exact_owner(stream))
+            raise RuntimeError("modeled after-query failure")
+        return original(reader, site, edge, operation, before)
+
+    monkeypatch.setattr(NativeStateReader, "snapshot", reject_after)
+    with pytest.raises((RuntimeError, WorkerSetupProtocolError)):
+        session.initialize_native_runtime()
+    summary = controller.termination_evidence.lifecycle.to_payload()["summary"]
+    assert summary["possible_dirty_device_ordinals"] == ([0, 1] if ordinal == 0 else [1])
+    assert observed == ([] if ordinal == 0 else [True])
+    assert controller.guardian.contains_exact_owner(stream)
+    assert any(owner is stream for owner in session.runtime_owners)
+    assert summary["unknown_device_scope"] and summary["custody"] == "full_quarantine"
+    assert summary["emergency_sync_attempt_count"] == summary["normal_complete_count"] == 0
+    assert summary["release_status"] == "not_authorized"
+    assert bootstrap._RUNTIME_BINDINGS[session] is None
 
 
 def test_upload_entry_rejects_stream_rebind_without_calling_shared_core(runtime_session, monkeypatch):
