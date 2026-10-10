@@ -79,9 +79,22 @@ Candidate `c4_worker_acceptance_gap_review`; scratch
 `c4_assets/worker_acceptance_gap_scratch_v1`; tool12466; CLI42716,
 launcher13204; start11:13:08Z. Packet SHA256
 e85b1fbc0ac97eabf0603faa41ede8f7de53869b49f24999c3ce5fcc4199646f.
-Its report is pending. It may identify a narrow design supplement if existing
-guard/source or sealed-resource constraints conflict with final validation;
-it cannot grant hardware success, product activation or a later gate.
+The review completed with Request changes for the remaining integrated scope,
+not withdrawal of the preparation/repair approvals. Its complete report is
+archived verbatim as worker-acceptance gap-design-boundary-review v1, SHA256
+f6b5c260bea9fe5e8d4a088860ccf340d01b2940b0c53ae80671c2e14e0658f4.
+Tool12466 returned exit0; CLI42716 and launcher13204 are absent. It identifies
+one narrow final-observation policy supplement and existing required work in
+final numerical staging, complete fixed-work/capacity, close supervision and
+full journal recovery. It cannot grant hardware success or a later gate.
+
+A separate CPU encoded lower bound is retained in
+c4_assets/worker_trace_capacity_lower_bound_v1.json. The current PREPARE response
+formula admits119830 tokens under4194304 bytes, while only the three mandatory
+EXECUTE records per sample already require at least35949000 bytes. This excludes
+all setup/resolve/reclaim/close/summary/coverage and separators. _journal uses
+the same4194304-byte envelope ceiling. This is a capacity counterexample, not
+an actual native run or a proposal to allow that sample count.
 
 No reader regression, two-sample normal exit or this diagnostic completes C2f
 or C4. The original whole objective, full failure coverage, systematic cleanup,
