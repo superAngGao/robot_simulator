@@ -2034,6 +2034,15 @@ Next milestone:
       Warp exit-not-restored fault (21 independent CPU cases); its native run
       remains pending. Complete report and raw attempts are preserved. See
       terminal-target test-evidencev1. No speed result is claimed.
+      The corrected foreign-stream runner reached a real regression: stream
+      reader rejection preceded device-owner adoption, so known foreign0 was
+      absent from the quarantined dirty-device record. Candidatecf7f5a6 moves
+      existing adoption before reader validation in both lanes; four original
+      CPU counterexamples fail before repair,125 related CPU cases pass after.
+      Fresh independent preflight is pending. Separately the approvedfc23b4e
+      actual Warp exit-not-restored fault passed, preserving the contradictory
+      native state and no-sync/no-release quarantine. Both rounds' owned native
+      processes exited. See stream-adoption-order implementation-notev1.
       See terminal-target implementation-notev1 and native
       worker source audit implementation-notev1 for exact scope and evidence.
       R1/full C4 follow-up and fresh whole review remain mandatory.
