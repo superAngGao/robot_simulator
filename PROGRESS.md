@@ -1958,6 +1958,10 @@ Next milestone:
       report is archived unchanged. This approves preparation/final composition
       only; C2f must still integrate actual worker execution, guarded resolution,
       token release/reclaim and close/ACK/observed exit in one complete packet.
+      C2f development now integrates that approved baseline; worker-completion
+      implementation-notev1 records unreviewed timeout, shared drain and explicit
+      protocol-v2 prework. Actual worker dispatch and final submission remain
+      unimplemented/closed; these prerequisites are not C2f acceptance.
       No final sample or speed result is claimed.
       R1/full C4 follow-up and fresh whole review remain mandatory.
       C4c2 runtime, C4c3-c4,
