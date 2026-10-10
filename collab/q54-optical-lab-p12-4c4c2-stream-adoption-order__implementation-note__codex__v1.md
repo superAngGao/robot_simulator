@@ -3,9 +3,9 @@ Stage: Bounded repair and native evidence
 Author: Codex
 Version: v1
 Date: 2026-10-10
-Status: in_review
+Status: implemented
 Related Files: native-state-reader design-request v1 and code-preflight-review v3; runtime-integration design-request v3; terminal-target test-evidence v1; warp-exit-fault test-code-preflight-review v1
-Owner Summary: The corrected foreign-stream runner reached a real ownership-order regression. Candidate cf7f5a6 moves the existing returned-stream adoption before reader validation. No new mechanism or weaker assertion is introduced. The independent preflight is pending. Separately, the approved actual Warp exit-not-restored test passed.
+Owner Summary: The corrected foreign-stream runner reached a real ownership-order regression. Candidate cf7f5a6 moves the existing returned-stream adoption before reader validation. No new mechanism or weaker assertion is introduced. Fresh independent preflight approves this repair for bounded native validation; the four-case native rerun is active. Separately, the approved actual Warp exit-not-restored test passed.
 
 ## Corrected harness and real regression
 
@@ -84,9 +84,25 @@ the owner-authorized equivalent new CLI session was started without author
 conversation. Session01a12574-b4a1-7d92-b575-8308db14ce63, CLI37468,
 launcher47368, started2026-10-10T10:56:07Z, task handle38556.
 Request SHA256fcdc80ac8386d290a9a5c7f8a9431b8ef98bab01847e56b1ff393cf502599c08.
-Review is bounded code/native preflight, pending, with no GPU permission
-assumed before its verdict. Candidate stays frozen; evidence-only updates
-outside that checkout do not alter it.
+Fresh review returned Approve for bounded native validation of the exact
+four-file delta. It independently passed211 CPU cases with no skips, reproduced
+the old order defect, checked parser adjacency and all91 LF sources, and
+replayed the preserved original real failure. Full report is archived verbatim
+as stream-adoption-order code-preflight-reviewv1; working-file SHA256
+745068d126713b352c49e5c36a9278d55d0641db77547d2d43c2eaa7e706fb8e.
+Tool38556 exited0; CLI37468 and parent47368 are absent. Frozen checkout remains
+clean including ignored files. This is preflight, not whole hardware acceptance.
+
+After confirming earlier native rounds remain closed, started exactcf7f5a6's
+four-case native rerun at2026-10-10T11:07:06.017857Z. Remote campaign
+`/data2/shared/ang.gao/c4-reader-cf7f5a6-foreign-scope-v1`, wrapper2868772,
+driver2868786, tool10186. Runner SHA256
+de6f3cc93f73180f6c2e2c8f677d159328f215323efb1b61e895cb179f1f6211.
+Same four cases, original assertions and exact current profiles; no result is
+claimed before terminal evidence. A complete17-case reader/input regression
+runner is also prepared and collection-verified, awaiting this native round's
+completion and closure. Its SHA256 is
+ab65b9aae54e929e3a3086a6d291f73517bda1b2a141bae8f93e0ec176b579ea.
 
 ## Actual Warp exit-not-restored evidence
 

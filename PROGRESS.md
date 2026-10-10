@@ -2039,7 +2039,10 @@ Next milestone:
       absent from the quarantined dirty-device record. Candidatecf7f5a6 moves
       existing adoption before reader validation in both lanes; four original
       CPU counterexamples fail before repair,125 related CPU cases pass after.
-      Fresh independent preflight is pending. Separately the approvedfc23b4e
+      Fresh independent preflight approves exactcf7f5a6 (211 independent CPU
+      cases); original four-case native rerun is now active. Author full source
+      regression passes317 with13 Windows skips, all13 supplemented successfully
+      on primary Linux. Separately the approvedfc23b4e
       actual Warp exit-not-restored fault passed, preserving the contradictory
       native state and no-sync/no-release quarantine. Both rounds' owned native
       processes exited. See stream-adoption-order implementation-notev1.
