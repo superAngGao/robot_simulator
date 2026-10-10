@@ -24,6 +24,65 @@ class CudaOpticalTransactionPoisonedError(CudaOpticalTimelineError):
     """Raised after an enqueued transaction loses safe reuse evidence."""
 
 
+_CUDA_BINDING_MISSING = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _CudaBindingSnapshot:
+    """Prepared host bindings and tensor metadata, checked without rebuilding manifests.
+
+    This is a stability check, not execution authority. Callers still perform
+    their complete ABI/provenance validation before capturing these bindings.
+    """
+
+    owner: object
+    identities: tuple
+    values: tuple
+    mappings: tuple
+    tensors: tuple
+
+    @classmethod
+    def capture(cls, owner, *, identities=(), values=(), mappings=(), tensors=(), sequences=()):
+        for sequence in sequences:
+            if type(sequence) is not tuple:
+                raise TypeError("CUDA binding sequences must be immutable tuples")
+        unique_tensors = {id(tensor): tensor for tensor in tensors}
+        return cls(
+            owner,
+            tuple((owner, name, getattr(owner, name)) for owner, names in identities for name in names),
+            tuple((owner, name, getattr(owner, name, _CUDA_BINDING_MISSING))
+                  for owner, names in values for name in names),
+            tuple((mapping, tuple(mapping.items())) for mapping in mappings),
+            tuple(
+                (tensor, tensor.data_ptr(), tuple(tensor.shape), tensor.stride(), tensor.dtype,
+                 tensor.device, tensor.numel() * tensor.element_size())
+                for tensor in unique_tensors.values()
+            ),
+        )
+
+    def matches(self, owner) -> bool:
+        if owner is not self.owner:
+            return False
+        for owner, name, original in self.identities:
+            if getattr(owner, name, _CUDA_BINDING_MISSING) is not original:
+                return False
+        for owner, name, original in self.values:
+            if getattr(owner, name, _CUDA_BINDING_MISSING) != original:
+                return False
+        for mapping, entries in self.mappings:
+            if len(mapping) != len(entries):
+                return False
+            for name, original in entries:
+                if mapping.get(name, _CUDA_BINDING_MISSING) is not original:
+                    return False
+        for tensor, pointer, shape, stride, dtype, device, nbytes in self.tensors:
+            if (tensor.data_ptr() != pointer or tensor.shape != shape or tensor.stride() != stride
+                    or tensor.dtype != dtype or tensor.device != device
+                    or tensor.numel() * tensor.element_size() != nbytes):
+                return False
+        return True
+
+
 _CONTROLLED_TEMPLATE_CAPABILITIES: weakref.WeakKeyDictionary[object, object] = weakref.WeakKeyDictionary()
 _CONTROLLED_TRANSACTION_CAPABILITIES: weakref.WeakKeyDictionary[object, object] = weakref.WeakKeyDictionary()
 _CONTROLLED_TRANSACTION_EXECUTION_AUTHORITIES: weakref.WeakKeyDictionary[

@@ -55,6 +55,7 @@ from .cuda_timeline import (
     CudaOpticalExecutionContext,
     CudaOpticalTransaction,
     CudaOpticalTransactionTemplate,
+    _CudaBindingSnapshot,
 )
 from .execution import OpticalOutputProfile, normalize_output_profile
 from .native_arena import (
@@ -853,29 +854,27 @@ class CudaActiveArenaSample:
         object.__setattr__(self, "_control_lease", lease)
         object.__setattr__(self, "_state", "ACQUIRED")
 
-    def _configuration_signature(self) -> tuple[object, ...]:
-        return (
-            id(self._target),
-            self._target.evidence.sha256,
-            self._provenance,
-            id(self._transaction),
-            id(self._executable),
-            id(self._executable.transaction_template),
-            id(self._executable.activation_capability),
-            id(self._device_result_view),
-            tuple(id(stage) for stage in self._executable.transaction_template.stages),
-            id(self._executable.transaction_template.completion_event),
-            id(self._transaction._context),
-            tuple(id(stage) for stage in self._transaction._stages),
-            id(self._transaction._completion_event),
-            getattr(self._transaction._completion_event, "cuda_event", None),
-            tuple((name, id(start), getattr(start, "cuda_event", None),
-                   id(end), getattr(end, "cuda_event", None))
-                  for name, start, end in self._transaction._diagnostic_events),
+    def _configuration_signature(self) -> _CudaBindingSnapshot:
+        transaction = self._transaction
+        event_values = [(transaction._completion_event, ("cuda_event",))]
+        for _, start, end in transaction._diagnostic_events:
+            event_values.extend(((start, ("cuda_event",)), (end, ("cuda_event",))))
+        return _CudaBindingSnapshot.capture(
+            self,
+            identities=(
+                (self, ("_target", "_provenance", "_transaction", "_executable", "_device_result_view")),
+                (self._target, ("evidence",)),
+                (self._executable, ("transaction_template", "activation_capability")),
+                (self._executable.transaction_template, ("_stages", "_completion_event")),
+                (transaction, ("_context", "_stages", "_completion_event", "_diagnostic_events")),
+            ),
+            values=event_values,
+            sequences=(transaction._stages, transaction._diagnostic_events,
+                       self._executable.transaction_template.stages),
         )
 
     def _assert_configuration_stable(self) -> None:
-        if self._configuration_signature() != self._frozen_signature:
+        if not self._frozen_signature.matches(self):
             raise NativeOpticalArenaProtocolError("CUDA active sample changed after preparation")
 
     def _assert_after_submission_stable(

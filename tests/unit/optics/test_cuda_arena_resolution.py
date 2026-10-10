@@ -210,6 +210,22 @@ def test_prepared_execution_scope_rejects_copy_early_finish_and_reentry(prepared
     assert x.calls == ["record"]
 
 
+def test_active_sample_never_rebuilds_configuration_signature(prepared_sample, monkeypatch):
+    x = prepared_sample
+
+    def late_signature(*args):
+        pytest.fail("active CUDA sample rebuilt its configuration signature")
+
+    monkeypatch.setattr(type(x.sample), "_configuration_signature", late_signature)
+    acquire_sample(x)
+    x.sample.enqueue()
+    x.sample.finish()
+    x.sample.resolve()
+    x.sample.release_device_result()
+    x.sample.reclaim()
+    assert x.calls == ["record", "wait"]
+
+
 @pytest.fixture
 def guarded_sample(completed_sample):
     x = completed_sample

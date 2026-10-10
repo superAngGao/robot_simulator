@@ -452,27 +452,24 @@ class CudaLbvhRebuildStageFactory:
         stage._freeze()
         return stage
 
-    def _factory_signature(self) -> tuple[object, ...]:
-        return (
-            id(self.context),
-            self.context.device,
-            self.context.stream_handle,
-            id(self.context.stream),
-            self.primitive_count,
-            self.requirements,
-            self.requirements.sha256,
-            id(self.module),
-            id(self._entry),
-            CUDA_LBVH_EXTENSION_ABI_VERSION,
-            _CUDA_LBVH_EXTENSION_SOURCE_SHA256,
-            self.native_input_manifest_sha256,
-            self.scene_contract_sha256,
-            self.input_contract,
+    def _factory_signature(self):
+        from .cuda_timeline import _CudaBindingSnapshot
+
+        return _CudaBindingSnapshot.capture(
+            self,
+            identities=(
+                (self, ("context", "primitive_count", "requirements", "module", "_entry",
+                        "native_input_manifest_sha256", "scene_contract_sha256", "input_contract")),
+                (self.context, ("stream",)),
+                (self.requirements, tuple(self.requirements.__dataclass_fields__)),
+            ),
+            values=((self.context, ("device", "stream_handle")),),
+            sequences=(self.requirements.compute_capability,),
         )
 
     def _assert_stable(self) -> None:
         self.context._validate_identity()
-        if self._factory_signature() != self._frozen_signature:
+        if not self._frozen_signature.matches(self):
             raise ValueError("CUDA LBVH rebuild factory changed after construction")
 
 
@@ -512,7 +509,7 @@ class CudaLbvhRebuildStage:
         self._extension_entry = extension_entry
         self._extension_args = extension_args
         self.evidence = evidence
-        self._binding_signature: tuple[object, ...] | None = None
+        self._binding_signature = None
 
     def __setattr__(self, name: str, value: object) -> None:
         if getattr(self, "_sealed", False) or getattr(self, "_binding_signature", None) is not None:
@@ -591,27 +588,30 @@ class CudaLbvhRebuildStage:
     def _assert_cuda_transaction_stage_stable(self, context: object) -> None:
         if context is not self.factory.context:
             raise ValueError("CUDA LBVH rebuild stage execution context changed")
-        if self._binding_signature is None or self._stage_signature() != self._binding_signature:
+        self.factory._assert_stable()
+        if self._binding_signature is None or not self._binding_signature.matches(self):
             raise ValueError("CUDA LBVH rebuild stage binding changed after validation")
 
     def _cuda_transaction_stage_evidence(self) -> CudaLbvhRebuildStageEvidence:
         return self.evidence
 
-    def _stage_signature(self) -> tuple[object, ...]:
-        return (
-            self.factory._factory_signature(),
-            id(self.world),
-            id(self.outputs),
-            id(self.workspace),
-            id(self._extension_entry),
-            id(self._extension_args),
-            self.evidence,
-            _storage_manifest_sha256(_world_aabb_items(self.world)),
-            _storage_manifest_sha256(self.outputs.tensor_items()),
-            self.workspace.coverage_sha256,
-            tuple(id(resource) for resource in self.world.resources),
-            tuple(id(resource) for resource in self.outputs.resources),
-            tuple(id(resource) for resource in self.workspace.resources),
+    def _stage_signature(self):
+        from .cuda_timeline import _CudaBindingSnapshot
+
+        return _CudaBindingSnapshot.capture(
+            self,
+            identities=(
+                (self, ("factory", "world", "outputs", "workspace", "_extension_entry",
+                        "_extension_args", "evidence")),
+                (self.world, tuple(self.world.__dataclass_fields__)),
+                (self.outputs, tuple(self.outputs.__dataclass_fields__)),
+                (self.workspace, tuple(self.workspace.__dataclass_fields__)),
+                (self.workspace.requirements, tuple(self.workspace.requirements.__dataclass_fields__)),
+            ),
+            tensors=(self.world.triangle_aabb_min, self.world.triangle_aabb_max, self.workspace.storage,
+                     *(value for _, value in self.outputs.tensor_items())),
+            sequences=(self.world.resources, self.outputs.resources, self.workspace.resources,
+                       self._extension_args, self.workspace.requirements.compute_capability),
         )
 
 

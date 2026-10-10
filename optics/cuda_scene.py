@@ -434,27 +434,26 @@ class CudaSceneUpdateStageFactory:
         stage._freeze()
         return stage
 
-    def _factory_signature(self) -> tuple[object, ...]:
-        return (
-            id(self.context),
-            self.context.device,
-            self.context.stream_handle,
-            id(self.context.stream),
-            id(self.local_scene),
-            self.local_scene.scene_contract_sha256,
-            _storage_manifest_sha256(_local_scene_items(self.local_scene)),
-            id(self.module),
-            id(self._triangle_entry),
-            id(self._plane_entry),
-            CUDA_SCENE_EXTENSION_ABI_VERSION,
-            _CUDA_SCENE_EXTENSION_SOURCE_SHA256,
-            self.native_input_manifest_sha256,
-            self.input_contract,
+    def _factory_signature(self):
+        from .cuda_timeline import _CudaBindingSnapshot
+
+        return _CudaBindingSnapshot.capture(
+            self,
+            identities=(
+                (self, ("context", "local_scene", "module", "_triangle_entry", "_plane_entry",
+                        "native_input_manifest_sha256", "input_contract")),
+                (self.context, ("stream",)),
+                (self.local_scene, tuple(self.local_scene.__dataclass_fields__)),
+            ),
+            values=((self.context, ("device", "stream_handle")),),
+            mappings=(self.local_scene.arrays,),
+            tensors=self.local_scene.arrays.values(),
+            sequences=(self.local_scene.resources,),
         )
 
     def _assert_stable(self) -> None:
         self.context._validate_identity()
-        if self._factory_signature() != self._frozen_signature:
+        if not self._frozen_signature.matches(self):
             raise ValueError("CUDA scene-update factory changed after construction")
 
 
@@ -497,7 +496,7 @@ class CudaSceneUpdateStage:
         self._plane_entry = plane_entry
         self._plane_args = plane_args
         self.evidence = evidence
-        self._binding_signature: tuple[object, ...] | None = None
+        self._binding_signature = None
 
     def __setattr__(self, name: str, value: object) -> None:
         if getattr(self, "_sealed", False) or getattr(self, "_binding_signature", None) is not None:
@@ -551,26 +550,29 @@ class CudaSceneUpdateStage:
     def _assert_cuda_transaction_stage_stable(self, context: object) -> None:
         if context is not self.factory.context:
             raise ValueError("CUDA scene stage execution context changed")
-        if self._binding_signature is None or self._stage_signature() != self._binding_signature:
+        self.factory._assert_stable()
+        if self._binding_signature is None or not self._binding_signature.matches(self):
             raise ValueError("CUDA scene stage binding changed after validation")
 
     def _cuda_transaction_stage_evidence(self) -> CudaSceneUpdateStageEvidence:
         return self.evidence
 
-    def _stage_signature(self) -> tuple[object, ...]:
-        return (
-            self.factory._factory_signature(),
-            id(self.transforms),
-            id(self.outputs),
-            id(self._triangle_entry),
-            id(self._triangle_args),
-            id(self._plane_entry),
-            id(self._plane_args),
-            self.evidence,
-            _transform_binding_signature(self.transforms),
-            _storage_manifest_sha256(_scene_input_items(self.factory.local_scene, self.transforms)),
-            _storage_manifest_sha256(self.outputs.tensor_items()),
-            tuple(id(resource) for resource in self.outputs.resources),
+    def _stage_signature(self):
+        from .cuda_timeline import _CudaBindingSnapshot
+
+        return _CudaBindingSnapshot.capture(
+            self,
+            identities=(
+                (self, ("factory", "transforms", "outputs", "_triangle_entry", "_triangle_args",
+                        "_plane_entry", "_plane_args", "evidence")),
+                (self.transforms, tuple(self.transforms.__dataclass_fields__)),
+                (self.outputs, tuple(self.outputs.__dataclass_fields__)),
+            ),
+            tensors=(self.transforms.x_world_R, self.transforms.x_world_r,
+                     *(value for _, value in self.outputs.tensor_items())),
+            sequences=(
+                self.transforms.resources, self.outputs.resources, self._triangle_args, self._plane_args,
+            ),
         )
 
 
@@ -836,20 +838,6 @@ def _scene_input_items(
     return _local_scene_items(scene) + (
         ("x_world_R", transforms.x_world_R),
         ("x_world_r", transforms.x_world_r),
-    )
-
-
-def _transform_binding_signature(
-    transforms: CudaSceneTransformInputs,
-) -> tuple[object, ...]:
-    return (
-        id(transforms.x_world_R),
-        id(transforms.x_world_r),
-        transforms.env_idx,
-        transforms.input_contract,
-        transforms.transform_replay_sha256,
-        transforms.transform_frame_index,
-        tuple(id(resource) for resource in transforms.resources),
     )
 
 

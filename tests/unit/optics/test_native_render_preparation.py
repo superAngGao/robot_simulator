@@ -349,6 +349,44 @@ def test_cuda_graph_checks_returned_stages_before_events(graph_session, monkeypa
     assert g.f.controller.guardian.state == 'TRANSFERRED_TO_QUARANTINE'
 
 
+@pytest.mark.parametrize('fixed_inputs', ['cuda'], indirect=True)
+@pytest.mark.parametrize('fail_at', [None])
+@pytest.mark.parametrize('diagnostic', [False, True])
+@pytest.mark.parametrize('drift', [None, 'pointer', 'shape', 'field', 'camera', 'abi', 'copy'])
+def test_render_stability_uses_prepared_bindings_and_detects_storage_drift(
+    graph_session, monkeypatch, diagnostic, drift,
+):
+    from copy import copy
+
+    from optics import cuda_direct_light as cuda
+
+    graph = graph_session.f.session.prepare_fixed_render_graph(profile='direct_light_full', shadows=True,
+        pass_mode='diagnostic_profiled' if diagnostic else 'primary_unprofiled')
+    stage = graph.frames[0][1]
+
+    def late_signature(*args):
+        pytest.fail('render execution rebuilt its binding signature')
+
+    monkeypatch.setattr(cuda, '_render_binding_signature', late_signature)
+    if drift == 'pointer':
+        stage.buffers.origins.storage.data = stage.buffers.origins.storage.data.copy()
+    elif drift == 'shape':
+        stage.buffers.origins.shape = (1, 3)
+    elif drift == 'field':
+        object.__setattr__(stage.buffers, 'origins', stage.buffers.directions)
+    elif drift == 'camera':
+        object.__setattr__(stage.camera, 'width', stage.camera.width + 1)
+    elif drift == 'abi':
+        object.__setattr__(stage, '_shade_args', tuple(list(stage._shade_args)))
+    elif drift == 'copy':
+        stage = copy(stage)
+    if drift is None:
+        stage._assert_cuda_transaction_stage_stable(stage.renderer.context)
+    else:
+        with pytest.raises(ValueError, match='changed'):
+            stage._assert_cuda_transaction_stage_stable(stage.renderer.context)
+
+
 @pytest.mark.parametrize('allocation', ['warp'], indirect=True)
 @pytest.mark.parametrize('failed', [False, True])
 def test_original_render_factory_is_retained_before_public_load(allocation, monkeypatch, failed):

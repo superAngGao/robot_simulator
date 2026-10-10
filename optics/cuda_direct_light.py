@@ -13,7 +13,7 @@ from .cuda_extension_loading import load_cuda_extension
 
 from sensing.optical import OpticalPinholeCameraSpec, OpticalRaySensorSpec
 
-from .cuda_timeline import CudaOpticalExecutionContext, CudaOpticalTransaction
+from .cuda_timeline import CudaOpticalExecutionContext, CudaOpticalTransaction, _CudaBindingSnapshot
 from .device_channel import channel_to_torch
 from .execution import OpticalComputeResult, OpticalOutputProfile, normalize_output_profile
 from .output_contract import SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES
@@ -481,7 +481,7 @@ class CudaDirectLightRenderStage:
             )
             self._shade_entry = getattr(renderer.module, self._shade_entry_name, None)
         self._shade_args = self._bind_shade_arguments()
-        self._binding_signature: tuple[object, ...] | None = None
+        self._binding_signature: _CudaBindingSnapshot | None = None
 
     def _bind_shade_arguments(self) -> tuple[object, ...]:
         shade = self.shade_inputs
@@ -692,7 +692,7 @@ class CudaDirectLightRenderStage:
     def _assert_cuda_transaction_stage_stable(self, context: CudaOpticalExecutionContext) -> None:
         if context is not self.renderer.context:
             raise ValueError("CUDA render stage execution context changed")
-        if self._binding_signature is None or _render_binding_signature(self) != self._binding_signature:
+        if self._binding_signature is None or not self._binding_signature.matches(self):
             raise ValueError("CUDA render stage binding changed after validation")
 
     def _cuda_transaction_stage_evidence(self) -> CudaDirectLightStageEvidence:
@@ -1036,48 +1036,26 @@ def _validate_render_storage_disjointness(stage: CudaDirectLightRenderStage) -> 
         output_spans.append((start, end, label))
 
 
-def _render_binding_signature(stage: CudaDirectLightRenderStage) -> tuple[object, ...]:
+def _render_binding_signature(stage: CudaDirectLightRenderStage) -> _CudaBindingSnapshot:
     tensors = [value for _, value in stage.first_hit_inputs.tensor_items()]
+    sequences = [stage._raygen_args, stage._shade_args, stage.ambient_rgb, stage.background_rgb,
+                 stage.buffers.shadow_traversal_counters]
+    identities = [
+        (stage, ("renderer", "first_hit_inputs", "shade_inputs", "_prepared_evidence", "buffers", "camera",
+                 "output_profile", "shadows", "ambient_rgb", "background_rgb", "shadow_bias",
+                 "_raygen_entry", "_raygen_args", "_shade_entry_name", "_shade_entry", "_shade_args")),
+        (stage.renderer, ("context", "module")),
+        (stage.first_hit_inputs, tuple(stage.first_hit_inputs.__dataclass_fields__)),
+        (stage.buffers, tuple(stage.buffers.__dataclass_fields__)),
+    ]
     if stage.shade_inputs is not None:
         tensors.extend(value for _, value in stage.shade_inputs.tensor_items())
+        identities.append((stage.shade_inputs, tuple(stage.shade_inputs.__dataclass_fields__)))
+    if stage.camera is not None:
+        identities.append((stage.camera, tuple(stage.camera.__dataclass_fields__)))
+        sequences.extend((stage.camera.origin, stage.camera.rotation))
     tensors.extend(stage.buffers.resource_tuple())
-    storage = tuple(
-        (
-            id(value),
-            int(value.data_ptr()),
-            tuple(value.shape),
-            tuple(value.stride()),
-            value.dtype,
-            value.device,
-        )
-        for value in tensors
-    )
-    return (
-        id(stage.renderer),
-        id(stage.renderer.context),
-        id(stage.renderer.module),
-        id(stage.first_hit_inputs),
-        stage.first_hit_inputs.max_distance,
-        stage.first_hit_inputs.sensor_role_mask,
-        stage.first_hit_inputs.num_planes,
-        stage.first_hit_inputs.num_bvh_nodes,
-        id(stage.shade_inputs),
-        None if stage.shade_inputs is None else stage.shade_inputs.num_lights,
-        id(stage._prepared_evidence),
-        id(stage.buffers),
-        stage.camera,
-        stage.output_profile,
-        stage.shadows,
-        stage.ambient_rgb,
-        stage.background_rgb,
-        stage.shadow_bias,
-        id(stage._raygen_entry),
-        id(stage._raygen_args),
-        stage._shade_entry_name,
-        id(stage._shade_entry),
-        id(stage._shade_args),
-        storage,
-    )
+    return _CudaBindingSnapshot.capture(stage, identities=identities, tensors=tensors, sequences=sequences)
 
 
 def _shade_extension_entry_name(*, shadows: bool, traversal_diagnostics: bool) -> str:

@@ -2072,6 +2072,12 @@ Next milestone:
       have CPU regression evidence. These author changes still require the
       coherent integrated review/native campaign; complete allocation/capacity,
       physical/numerical and fault/persistence requirements remain open.
+      R1 scene/LBVH, render and active-sample stability now compare prepared
+      bindings and live tensor metadata rather than rebuilding manifests,
+      hashes and signature containers. Mutable argument/resource lists reject
+      at preparation. CPU drift counterexamples, original R1 transaction and
+      both1/120/600 worker cycles pass at the recorded revisions; these remain
+      author evidence pending full native/integrated acceptance.
       Author full source
       regression passes317 with13 Windows skips, all13 supplemented successfully
       on primary Linux. Separately the approvedfc23b4e

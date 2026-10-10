@@ -430,3 +430,71 @@ G2 numerical readback and the complete fault/persistence matrix remain open.
 No renderer timings, native deployment, integrated independent approval or
 later gate activation are claimed. Continue the coherent G1-G5 implementation
 and mandatory review/native campaign toward the unchanged full C4 objective.
+
+## CUDA binding stability without runtime manifest rebuilding (afterde0dd3f)
+
+The previous turn committedde0dd3f and completed its stated CPU evidence; it
+was progress, not C4 acceptance. The main tree was clean at that revision
+before this continuation. No remote execution or pending native job was used.
+
+Inspection found that R1 stage checks still recomputed scene/workspace storage
+manifests and SHA256 values, while render and active-sample checks rebuilt
+nested signature containers. These checks now share a prepared, readonly
+`_CudaBindingSnapshot` in the existing timeline module. It records original
+owner/field bindings and tensor metadata after the original complete ABI and
+provenance validation. Runtime checks compare the original objects, data
+pointer, shape, stride, dtype, indexed device value and byte extent. Scene
+mapping entries are also checked; tensor metadata checks are deduplicated by
+original tensor identity during preparation. No renderer/kernel algorithm or
+execution authority is implemented by this helper.
+
+Snapshot owner identity prevents a copied stage from validating a different
+object through the original snapshot. Fixed argument/resource sequences must
+be actual immutable tuples before capture; a mutable list cannot be accepted
+and later changed behind an identity-only comparison. Hashes remain in the
+untimed ABI/provenance construction and evidence paths. The obsolete transform
+signature builder was removed. Active-sample checks retain original event
+handle observations, including diagnostic events, without rebuilding tuples.
+
+Evidence (Python3.14, CPU arrays/native-call doubles):
+- The unchanged two selected counterexamples fail against productionde0dd3f
+  in `../c4_arena_fixed_work`: the R1 scene stability check reaches the original
+  manifest hash, and active enqueue rebuilds its configuration signature.
+ 2failed/45deselected1.31s; `cuda_binding_baseline_v1.txt` (10066bytes,
+  SHA25612c89417ee89d6b2376f3c896378a726ed659d458bf7159c7e511e7f04065f1a).
+  Baseline CWD/revision were checked, only two test modules were copied; those
+  copies were removed/restored after the run, leaving its tracked tree clean.
+- Initial focused drift/no-rebuild checks:34passed/117deselected3.32s;
+  `cuda_binding_counterexamples_v1.txt` (236bytes,
+  SHA25650005c99153abfd3217142f4643c26af8e9693f0d6ff5e154a6fbf76a38cdef5).
+- Complete selected regression, including both1/120/600 worker cycles, actual
+  production R1 transaction with CPU leaves, warmup normal/diagnostic/failure,
+  final graph/barrier and worker lifecycle:429passed/no skips312.28s;
+  `cuda_binding_regression_v1.txt` (128236bytes,
+  SHA25660d22e8b4d461106fe0488949489425e70444fc5413f8468313f2faef656893f).
+  The CUDA worker cycles forbid late binding-snapshot construction in addition
+  to the preceding authority/scope/completion/profile constructor checks.
+- After adding the preparation-only immutable-tuple requirement, the affected
+  dynamic binding, arena resolution, render preparation and warmup set passes
+  215checks41.35s. `cuda_binding_immutable_v1.txt` (532bytes,
+  SHA256266cbe2e8b3a215f77ef3714569257b871b5d6ded1624e400b18cfbc5a1926b4).
+  The429 run precedes this added admission check; do not attribute it to the
+  final bytes. A subsequent one-line wrap has no behavior change.
+- New/helper/timeline/arena/worker-test Ruff checks and Git whitespace pass.
+  The three older CUDA stage modules plus render-preparation test have the
+  same60 preexisting Ruff findings asde0dd3f, with no new diagnostic after
+  normalizing path/line movement (`cuda_binding_lint_{baseline,candidate}_v2.json`).
+  This is not a claim that whole-repository lint is clean. The unchanged AST
+  policy accepts all91 LF sources; final catalog SHA256
+  ff32bf78307afda62d9d365ce5ff10089e40f3f97a4d518694556ef01a31bdbe.
+  Logs are under `../c4_assets`; tools11034/12787/49730 are terminal0 and a
+  scoped OS query found no remaining matching test Python process.
+
+Tensor contents may change as intended, but tensor/field/storage replacement
+and shape/stride/dtype/device drift reject. Equal indexed device values remain
+valid. These CPU tests do not prove native numerical correctness or globally
+allocation-free execution. Remaining runtime work includes the first-hit
+argument/callable binding, other arena/template signatures, Warp/worker/guard
+records and capacity admission. D1/G2 observation/readback, complete G4/G5
+fault/persistence evidence and the integrated independent/native review remain
+mandatory. No speed comparison or later gate has opened.

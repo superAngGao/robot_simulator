@@ -169,7 +169,8 @@ def test_execute_reduces_only_its_three_new_facts(worker_graph, monkeypatch, gua
             pytest.fail("CUDA dispatcher created an execution authority/scope/completion after preparation")
 
         for cls in (cuda_timeline._CudaArenaLiveExecutionAuthority, cuda_timeline._CudaArenaExecutionScope,
-                    cuda_timeline.CudaOpticalCompletion, cuda_timeline.CudaDeferredProfile):
+                    cuda_timeline.CudaOpticalCompletion, cuda_timeline.CudaDeferredProfile,
+                    cuda_timeline._CudaBindingSnapshot):
             monkeypatch.setattr(cls, "__init__", late_creation)
         monkeypatch.setattr(cuda_timeline.CudaOpticalExecutionContext, "activate", late_creation)
     for record in x.worker._samples:
