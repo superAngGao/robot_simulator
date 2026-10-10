@@ -472,6 +472,8 @@ class CudaDirectLightRenderStage:
                 camera.rotation[7],
                 camera.rotation[8],
             )
+        self._first_hit_entry = getattr(renderer.module, "first_hit_rays_out", None)
+        self._first_hit_args = self._bind_first_hit_arguments()
         self._shade_entry_name: str | None = None
         self._shade_entry: object | None = None
         if shade_inputs is not None:
@@ -482,6 +484,46 @@ class CudaDirectLightRenderStage:
             self._shade_entry = getattr(renderer.module, self._shade_entry_name, None)
         self._shade_args = self._bind_shade_arguments()
         self._binding_signature: _CudaBindingSnapshot | None = None
+
+    def _bind_first_hit_arguments(self) -> tuple[object, ...]:
+        first, output = self.first_hit_inputs, self.buffers
+        return (
+            output.origins,
+            output.directions,
+            first.max_distance,
+            first.plane_normal_world,
+            first.plane_point_world,
+            first.plane_numeric_instance_id,
+            first.plane_source_order_key,
+            first.plane_role_mask,
+            first.plane_material_index,
+            first.num_planes,
+            first.triangle_v0_world,
+            first.triangle_e1_world,
+            first.triangle_e2_world,
+            first.triangle_normal_world,
+            first.triangle_numeric_instance_id,
+            first.triangle_source_order_key,
+            first.triangle_role_mask,
+            first.triangle_material_index,
+            first.bvh_bounds_min,
+            first.bvh_bounds_max,
+            first.bvh_left,
+            first.bvh_right,
+            first.bvh_start,
+            first.bvh_count,
+            first.bvh_prim_ids,
+            first.num_bvh_nodes,
+            first.sensor_role_mask,
+            output.hit_mask,
+            output.range_m,
+            output.position_world,
+            output.normal_world,
+            output.numeric_instance_id,
+            output.material_index,
+            output.bvh_stack_overflow_count,
+            output.bvh_max_stack_depth,
+        )
 
     def _bind_shade_arguments(self) -> tuple[object, ...]:
         shade = self.shade_inputs
@@ -536,9 +578,6 @@ class CudaDirectLightRenderStage:
         return arguments
 
     def enqueue(self, transaction: CudaOpticalTransaction) -> None:
-        module = self.renderer.module
-        first = self.first_hit_inputs
-        output = self.buffers
         with transaction.enqueue_stage(self):
             if self.camera is not None:
                 transaction.record_diagnostic_start("raygen_kernel")
@@ -550,44 +589,11 @@ class CudaDirectLightRenderStage:
                 transaction.record_diagnostic_end("raygen_kernel")
 
             transaction.record_diagnostic_start("first_hit_kernel")
+            first_hit_entry = self._first_hit_entry
+            if first_hit_entry is None:  # pragma: no cover - rejected during validation.
+                raise RuntimeError("CUDA first-hit extension entry is not prepared")
             transaction.before_native_launch()
-            module.first_hit_rays_out(
-                output.origins,
-                output.directions,
-                first.max_distance,
-                first.plane_normal_world,
-                first.plane_point_world,
-                first.plane_numeric_instance_id,
-                first.plane_source_order_key,
-                first.plane_role_mask,
-                first.plane_material_index,
-                first.num_planes,
-                first.triangle_v0_world,
-                first.triangle_e1_world,
-                first.triangle_e2_world,
-                first.triangle_normal_world,
-                first.triangle_numeric_instance_id,
-                first.triangle_source_order_key,
-                first.triangle_role_mask,
-                first.triangle_material_index,
-                first.bvh_bounds_min,
-                first.bvh_bounds_max,
-                first.bvh_left,
-                first.bvh_right,
-                first.bvh_start,
-                first.bvh_count,
-                first.bvh_prim_ids,
-                first.num_bvh_nodes,
-                first.sensor_role_mask,
-                output.hit_mask,
-                output.range_m,
-                output.position_world,
-                output.normal_world,
-                output.numeric_instance_id,
-                output.material_index,
-                output.bvh_stack_overflow_count,
-                output.bvh_max_stack_depth,
-            )
+            first_hit_entry(*self._first_hit_args)
             transaction.record_diagnostic_end("first_hit_kernel")
 
             if self.shade_inputs is None:
@@ -616,6 +622,10 @@ class CudaDirectLightRenderStage:
             direct_light=self.shade_inputs is not None,
             camera=self.camera is not None,
         )
+        if getattr(self.renderer.module, "first_hit_rays_out", None) is not self._first_hit_entry:
+            raise ValueError("prepared CUDA renderer is missing stable first_hit_rays_out")
+        if not _fixed_arguments_match(self._first_hit_args, self._bind_first_hit_arguments()):
+            raise ValueError("CUDA first-hit fixed ABI changed")
         prepared_raygen = getattr(self.renderer.module, "pinhole_camera_rays_out", None)
         if self.camera is not None:
             if not callable(prepared_raygen) or prepared_raygen is not self._raygen_entry:
@@ -660,10 +670,7 @@ class CudaDirectLightRenderStage:
             if not callable(prepared_entry) or prepared_entry is not self._shade_entry:
                 raise ValueError(f"prepared CUDA renderer is missing stable {expected_entry_name}")
             expected_args = self._bind_shade_arguments()
-            if len(expected_args) != len(self._shade_args) or any(
-                (actual != wanted if isinstance(wanted, (int, float)) else actual is not wanted)
-                for actual, wanted in zip(self._shade_args, expected_args)
-            ):
+            if not _fixed_arguments_match(self._shade_args, expected_args):
                 raise ValueError("CUDA shade fixed ABI changed")
         if len(self.ambient_rgb) != 3 or len(self.background_rgb) != 3:
             raise ValueError("CUDA direct-light RGB scalars must have three components")
@@ -1036,14 +1043,27 @@ def _validate_render_storage_disjointness(stage: CudaDirectLightRenderStage) -> 
         output_spans.append((start, end, label))
 
 
+def _fixed_arguments_match(actual, expected) -> bool:
+    if type(actual) is not tuple or len(actual) != len(expected):
+        return False
+    for value, wanted in zip(actual, expected, strict=True):
+        if isinstance(wanted, (int, float)):
+            if type(value) is not type(wanted) or value != wanted:
+                return False
+        elif value is not wanted:
+            return False
+    return True
+
+
 def _render_binding_signature(stage: CudaDirectLightRenderStage) -> _CudaBindingSnapshot:
     tensors = [value for _, value in stage.first_hit_inputs.tensor_items()]
-    sequences = [stage._raygen_args, stage._shade_args, stage.ambient_rgb, stage.background_rgb,
-                 stage.buffers.shadow_traversal_counters]
+    sequences = [stage._raygen_args, stage._first_hit_args, stage._shade_args,
+                 stage.ambient_rgb, stage.background_rgb, stage.buffers.shadow_traversal_counters]
     identities = [
         (stage, ("renderer", "first_hit_inputs", "shade_inputs", "_prepared_evidence", "buffers", "camera",
                  "output_profile", "shadows", "ambient_rgb", "background_rgb", "shadow_bias",
-                 "_raygen_entry", "_raygen_args", "_shade_entry_name", "_shade_entry", "_shade_args")),
+                 "_raygen_entry", "_raygen_args", "_first_hit_entry", "_first_hit_args",
+                 "_shade_entry_name", "_shade_entry", "_shade_args")),
         (stage.renderer, ("context", "module")),
         (stage.first_hit_inputs, tuple(stage.first_hit_inputs.__dataclass_fields__)),
         (stage.buffers, tuple(stage.buffers.__dataclass_fields__)),

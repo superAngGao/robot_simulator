@@ -498,3 +498,56 @@ argument/callable binding, other arena/template signatures, Warp/worker/guard
 records and capacity admission. D1/G2 observation/readback, complete G4/G5
 fault/persistence evidence and the integrated independent/native review remain
 mandatory. No speed comparison or later gate has opened.
+
+## Prepared first-hit ABI and direct stream metadata checks (after7304975)
+
+Current author work binds the CUDA first-hit callable and its35 positional
+arguments during stage preparation, like the existing raygen/shade paths.
+Enqueue uses those exact retained objects. Untimed full validation compares the
+original module entry and argument ABI; the prepared stability snapshot detects
+later field/tuple changes. The shared argument comparison rejects mutable lists
+and equal-valued scalars of the wrong type. The native diagnostic collector now
+observes the actual bound callable, not a fresh module namespace lookup.
+Context validation compares the already indexed device value and exact integer
+stream handle without constructing another device or coercing changed metadata.
+
+The C++ declaration supplies the independent35-name ABI-order check. Actual
+prepared graph/transaction CPU tests forbid late callable lookup, argument
+construction and device construction. Against unchanged production7304975 in
+`../c4_arena_fixed_work`, both late-work counterexamples fail; only their two
+test modules were copied, then restored, leaving the baseline tracked clean.
+The focused candidate run passes170checks14.31s. These are CPU native-call
+doubles, not GPU numerical or performance results.
+
+The wider first run stopped with325passed/1failed113.92s: the existing warmup
+test constructed `render_graph_binding.json` without `phase_launch_counts`.
+That same failure reproduces at production7304975 (1failed3.07s). The test's
+R0 graph fixture now supplies its expected raygen/first-hit/shade launch counts;
+the replay validator is unchanged. No field is made optional or defaulted.
+
+Raw logs under `../c4_assets`:
+- `cuda_fixed_first_hit_v1.txt`:532bytes, SHA256
+  47be7bb8ccf8769fe4cce9a806dc83558a7940360471e434e2f449a8cc1a638a.
+- `cuda_fixed_first_hit_baseline_v1.txt`:11374bytes, SHA256
+  6d5a24707a04d5360ce56bd5a5f6b649d5bcc97b7e728a3cb506d33409c72ad0.
+- `cuda_fixed_first_hit_regression_v1.txt`:113252bytes, SHA256
+  55bc6d216174a1086088bb31c666a9d7193eaa10b92fb90d70d6dc040621dcf4.
+- `warmup_fixture_baseline_7304975.txt`:16536bytes, SHA256
+  46d77695a0a6289b1256c20e191506066ecff5607ccd52530eaabf3c1d337fcb.
+
+Ruff comparison of the six affected Python modules/tests reports no added
+diagnostics (128baseline,126candidate; two preexisting long lines removed).
+This is not whole-repository lint acceptance. Source catalog remains subject
+to the unchanged91-source AST policy. Full packet acceptance, native final
+observations/numerical validation, complete fixed-work/capacity and faults,
+independent review and later C4 stages remain open.
+
+After the fixture repair, the complete selected regression passes421checks,
+no skips,327.06s, including both1/120/600 worker cycles, binding/timeline,
+warmup/final graph and actual graph/warmup evidence-helper tests. Log
+`cuda_fixed_first_hit_regression_v2.txt`:126878bytes, SHA256
+ee2a83e634afefea9c93c634a315ddcd30556374cb09df80c5d71ac20f44aa43.
+Tool37192 is terminal0. Catalog SHA256
+f6758b695b4804034ad5cdec53d5ed23e9a477033037f16f84a0ba64ba9e070b.
+No native job was launched. The scope remains unreviewed author work in the
+required coherent G1-G5 packet, with the full C4 objective still active.

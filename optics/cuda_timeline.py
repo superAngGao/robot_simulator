@@ -534,9 +534,12 @@ class CudaOpticalExecutionContext:
             yield
 
     def _validate_identity(self) -> None:
-        if torch.device(getattr(self.stream, "device", "cpu")) != self.device:
+        # The constructor already resolves the indexed device. Native stream
+        # metadata supplies a device value; validation need not construct one.
+        if getattr(self.stream, "device", None) != self.device:
             raise CudaOpticalTimelineError("CUDA optical stream device identity changed")
-        if int(getattr(self.stream, "cuda_stream", 0)) != self.stream_handle:
+        handle = getattr(self.stream, "cuda_stream", None)
+        if type(handle) is not int or handle != self.stream_handle:
             raise CudaOpticalTimelineError("CUDA optical stream handle identity changed")
 
 

@@ -43,7 +43,12 @@ def test_warmup_observer_readback_and_tamper_replay(executable_graph, diagnostic
     (tmp_path / 'render_graph_binding.json').write_text(json.dumps({
         'readiness_sha256': x.graph.readiness.sha256, 'compiled_modules_identity': id(x.graph.compiled_modules),
         'profile': x.graph.profile, 'shadows': x.graph.shadows, 'pass_mode': x.graph.pass_mode,
-        'event_ids': [id(x.graph.completion_event)], 'frames': [{'bundle_id': id(bundle)} for _, bundle in x.graph.frames]}))
+        'event_ids': [id(x.graph.completion_event)],
+        # This fixture prepares R0: raygen, first-hit and shade. Warp records
+        # separate reset/compute commands for the latter two phases.
+        'frames': [{'bundle_id': id(bundle),
+                    'phase_launch_counts': [1, 2, 2] if x.p.lane == 'warp' else [1, 1, 1]}
+                   for _, bundle in x.graph.frames]}))
     (tmp_path / 'input_validation_report.json').write_text(json.dumps({'manifest_sha256': x.session.prepared_input.manifest.sha256}))
     original = native_setup._native_resource_scope
     result = _run_observed_render_warmups(x.session, x.controller,

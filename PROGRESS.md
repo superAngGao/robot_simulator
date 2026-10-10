@@ -2078,6 +2078,11 @@ Next milestone:
       at preparation. CPU drift counterexamples, original R1 transaction and
       both1/120/600 worker cycles pass at the recorded revisions; these remain
       author evidence pending full native/integrated acceptance.
+      First-hit now uses its prepared callable/35-argument ABI, and CUDA stream
+      validation reuses its indexed device value. The related421 CPU checks,
+      including both1/120/600 worker cycles, pass after correcting a preexisting
+      missing field in the warmup test fixture. This remains author refactor
+      evidence, not native final-output validation or a speed comparison.
       Author full source
       regression passes317 with13 Windows skips, all13 supplemented successfully
       on primary Linux. Separately the approvedfc23b4e

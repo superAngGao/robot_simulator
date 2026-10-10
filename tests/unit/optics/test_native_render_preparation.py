@@ -387,6 +387,61 @@ def test_render_stability_uses_prepared_bindings_and_detects_storage_drift(
             stage._assert_cuda_transaction_stage_stable(stage.renderer.context)
 
 
+@pytest.mark.parametrize('fixed_inputs', ['cuda'], indirect=True)
+@pytest.mark.parametrize('fail_at', [None])
+@pytest.mark.parametrize('diagnostic', [False])
+def test_first_hit_executes_the_prepared_entry_without_late_lookup_or_argument_build(
+    graph_session, monkeypatch,
+):
+    g = graph_session
+    renderer = g.f.session.cuda_factories[-1]
+    calls = []
+    for name in vars(renderer.module):
+        monkeypatch.setattr(renderer.module, name, lambda *args: None)
+    monkeypatch.setattr(renderer.module, 'first_hit_rays_out', lambda *args: calls.append(args))
+    graph = g.f.session.prepare_fixed_render_graph(profile='direct_light_full', shadows=True,
+                                                  pass_mode='primary_unprofiled')
+    stage = graph.frames[0][1]
+    transaction = renderer.context.begin_transaction(stages=(stage,), completion_event=graph.completion_event)
+
+    def late_lookup(*args):
+        pytest.fail('first-hit execution looked up the module entry or rebuilt its arguments')
+
+    monkeypatch.setattr(renderer.module, 'first_hit_rays_out', late_lookup)
+    monkeypatch.setattr(type(stage), '_bind_first_hit_arguments', late_lookup, raising=False)
+    stage.enqueue(transaction)
+    assert len(calls) == 1 and len(calls[0]) == 35
+    assert all(actual is expected for actual, expected in zip(calls[0], stage._first_hit_args, strict=True))
+
+
+@pytest.mark.parametrize('fixed_inputs', ['cuda'], indirect=True)
+@pytest.mark.parametrize('fail_at', [None])
+@pytest.mark.parametrize('diagnostic', [False])
+@pytest.mark.parametrize('attack', ['entry', 'tensor', 'scalar', 'scalar_type', 'length', 'mutable'])
+def test_first_hit_preflight_rejects_changed_fixed_abi(graph_session, attack):
+    g = graph_session
+    graph = g.f.session.prepare_fixed_render_graph(profile='direct_light_full', shadows=True,
+                                                  pass_mode='primary_unprofiled')
+    stage = graph.frames[0][1]
+    if attack == 'entry':
+        object.__setattr__(stage, '_first_hit_entry', lambda *args: None)
+    else:
+        args = list(stage._first_hit_args)
+        if attack == 'tensor':
+            args[0] = args[1]
+        elif attack == 'scalar':
+            args[2] += 1.0
+        elif attack == 'scalar_type':
+            args[9] = float(args[9])
+        elif attack == 'length':
+            args.pop()
+        object.__setattr__(stage, '_first_hit_args', args if attack == 'mutable' else tuple(args))
+    with pytest.raises(ValueError, match='first_hit_rays_out|first-hit fixed ABI'):
+        stage._validate_cuda_transaction_stage(stage.renderer.context)
+    with pytest.raises(ValueError, match='binding changed'):
+        stage._assert_cuda_transaction_stage_stable(stage.renderer.context)
+
+
 @pytest.mark.parametrize('allocation', ['warp'], indirect=True)
 @pytest.mark.parametrize('failed', [False, True])
 def test_original_render_factory_is_retained_before_public_load(allocation, monkeypatch, failed):

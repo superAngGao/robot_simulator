@@ -200,6 +200,29 @@ def test_prepared_scope_binds_original_stream_and_indexed_device_value(scope_tra
         assert not x.state.calls and x.transaction.state == "poisoned"
 
 
+def test_execution_validates_device_value_without_reconstructing_it(scope_transaction, monkeypatch):
+    x = scope_transaction
+
+    def late_device(*args):
+        pytest.fail("execution reconstructed a device value")
+
+    monkeypatch.setattr(cuda_timeline.torch, "device", late_device)
+    with x.transaction.enqueue_stage(x.stage):
+        x.transaction.record_diagnostic_start("phase")
+        x.transaction.record_diagnostic_end("phase")
+    assert x.transaction.finish().recorded
+
+
+@pytest.mark.parametrize("handle", [17.0, "17", True, None])
+def test_stream_handle_metadata_cannot_change_type(scope_transaction, handle):
+    x = scope_transaction
+    x.stream.cuda_stream = handle
+    with pytest.raises(CudaOpticalTimelineError, match="handle identity changed"):
+        with x.transaction.enqueue_stage(x.stage):
+            pytest.fail("invalid stream handle reached execution")
+    assert not x.state.calls
+
+
 def test_cuda_shade_extension_abi_uses_fixed_diagnostic_arguments():
     source = cuda_direct_light._CPP_SOURCE
     cuda_source = cuda_direct_light._CUDA_SOURCE
@@ -226,6 +249,38 @@ def test_cuda_shade_extension_abi_uses_fixed_diagnostic_arguments():
         signature = source[start : source.index(");", start)]
         counter_positions = [signature.index(f"traversal_counter_{index}") for index in range(9)]
         assert counter_positions == sorted(counter_positions)
+
+
+def test_prepared_first_hit_arguments_follow_the_declared_cpp_abi():
+    import re
+
+    source = cuda_direct_light._CPP_SOURCE
+    start = source.index("void first_hit_rays_out(")
+    names = re.findall(r"(?:torch::Tensor|double|int64_t)\s+(\w+)", source[start:source.index(");", start)])
+    assert len(names) == 35
+    arguments = {name: object() for name in names}
+    output_names = {
+        "origins", "directions", "hit_mask", "range_m", "position_world", "normal_world",
+        "numeric_instance_id", "material_index", "bvh_stack_overflow_count", "bvh_max_stack_depth",
+    }
+    aliases = {
+        "plane_normals": "plane_normal_world", "plane_points": "plane_point_world",
+        "plane_numeric_ids": "plane_numeric_instance_id", "plane_source_keys": "plane_source_order_key",
+        "plane_role_masks": "plane_role_mask", "plane_material_indices": "plane_material_index",
+        "triangle_v0": "triangle_v0_world", "triangle_e1": "triangle_e1_world",
+        "triangle_e2": "triangle_e2_world",
+        "triangle_normal": "triangle_normal_world", "triangle_numeric_ids": "triangle_numeric_instance_id",
+        "triangle_source_keys": "triangle_source_order_key", "triangle_role_masks": "triangle_role_mask",
+        "triangle_material_indices": "triangle_material_index",
+    }
+    stage = object.__new__(cuda_direct_light.CudaDirectLightRenderStage)
+    stage.buffers = NS(**{name: arguments[name] for name in output_names})
+    stage.first_hit_inputs = NS(**{
+        aliases.get(name, name): value for name, value in arguments.items() if name not in output_names
+    })
+    actual = stage._bind_first_hit_arguments()
+    assert len(actual) == len(names)
+    assert all(value is arguments[name] for name, value in zip(names, actual, strict=True))
 
 
 @pytest.mark.parametrize("triangles,planes", [(False, False), (True, False), (False, True), (True, True)])

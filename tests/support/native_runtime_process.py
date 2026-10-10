@@ -843,7 +843,8 @@ def _prepare_observed_render_graph(session, controller, binding, observer, direc
                     stage._validate_cuda_transaction_stage(context)
                 bundle._cuda_transaction_stage_evidence().validate_render_parameters(parameters.to_payload())
                 entries = [{"id": id(bundle._raygen_entry), "expected_entry": id(issued_module.pinhole_camera_rays_out)},
-                           {"id": id(renderer.module.first_hit_rays_out), "expected_entry": id(issued_module.first_hit_rays_out)},
+                           {"id": id(bundle._first_hit_entry),
+                            "expected_entry": id(issued_module.first_hit_rays_out)},
                            {"id": id(bundle._shade_entry), "expected_entry": id(getattr(issued_module, bundle._shade_entry_name))}]
             phase_launch_counts = [1, 2, 2] if session.lane == "warp" else [1, 1, 1]
             if len(stages) == 3:
