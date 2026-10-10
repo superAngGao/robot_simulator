@@ -489,6 +489,7 @@ class CudaPreparedArenaSample:
         "_executable",
         "_execution_capability",
         "_frozen_signature",
+        "_identity_reference",
         "_provenance",
         "_sealed",
         "_target",
@@ -506,6 +507,7 @@ class CudaPreparedArenaSample:
         arena_acquire_authority: object,
     ) -> None:
         object.__setattr__(self, "_sealed", False)
+        object.__setattr__(self, "_identity_reference", weakref.ref(self))
         active = CudaActiveArenaSample(
             target=target,
             provenance=provenance,
@@ -520,6 +522,7 @@ class CudaPreparedArenaSample:
             c3_one_shot_binding_sha256=provenance.c3_one_shot_binding_sha256,
             ordered_stage_evidence_sha256=provenance.ordered_stage_evidence_sha256,
             dataflow_binding_sha256=provenance.dataflow_binding_sha256,
+            control_plan=control_plan,
         )
         object.__setattr__(self, "_control_plan", control_plan)
         object.__setattr__(self, "_target", target)

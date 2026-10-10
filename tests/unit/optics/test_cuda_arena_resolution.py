@@ -1,22 +1,22 @@
 """Real arena/guard coordination with a CPU stand-in for the device event."""
 
-from types import SimpleNamespace as NS
 from contextlib import nullcontext
 from dataclasses import dataclass
+from types import SimpleNamespace as NS
 
 import pytest
 
 from optical_worker.guarded_lifecycle import NativeGuardedSetupLifecycle
 from optical_worker.lifecycle import DeviceScopeDescriptor
-from optics.cuda_arena import CudaPreparedArenaSample, _CudaExecutableTarget
 from optics import cuda_timeline as timeline
+from optics.cuda_arena import CudaPreparedArenaSample, _CudaExecutableTarget
 from optics.native_arena import NativeOpticalArenaProtocolError
 from tests.support.guarded_peer import Peer
 from tests.unit.optics.test_native_optical_arena import _arena, _plan
 
 
 @pytest.fixture
-def completed_sample(monkeypatch):
+def prepared_sample(monkeypatch):
     @dataclass(frozen=True)
     class Device:
         index: int
@@ -77,18 +77,137 @@ def completed_sample(monkeypatch):
     acquire_authority = object()
     prepared = CudaPreparedArenaSample(control_plan=plan, target=target, provenance=provenance,
         transaction=transaction, executable=executable, arena_acquire_authority=acquire_authority)
-    sample = prepared._active
-    lease = arena.acquire(plan)
-    authority = transaction._mint_arena_execution_authority(prepared._execution_capability, lease,
-                                                           active_owner=sample)
-    sample._activate(lease, execution_authority=authority, arena_acquire_authority=acquire_authority)
-    sample.enqueue()
-    sample.finish()
-    assert calls == ["record"]
-    calls.clear()
     # Native operations and C3 inputs are CPU fixtures. Context, controlled
     # template, minted authority, transaction, lease and guard are production.
-    return NS(arena=arena, lease=lease, sample=sample, calls=calls, event=event, transaction=transaction)
+    return NS(arena=arena, plan=plan, prepared=prepared, sample=prepared._active,
+              acquire_authority=acquire_authority, calls=calls, event=event,
+              transaction=transaction, stage=stage)
+
+
+def acquire_sample(x):
+    x.lease = x.arena.acquire(x.plan)
+    authority = x.transaction._mint_arena_execution_authority(
+        x.prepared._execution_capability, x.lease, active_owner=x.sample)
+    x.sample._activate(x.lease, execution_authority=authority,
+                       arena_acquire_authority=x.acquire_authority)
+    return authority
+
+
+@pytest.fixture
+def completed_sample(prepared_sample):
+    x = prepared_sample
+    acquire_sample(x)
+    x.sample.enqueue()
+    x.sample.finish()
+    assert x.calls == ["record"]
+    x.calls.clear()
+    return x
+
+
+def test_prepared_authority_is_dormant_and_raw_rejection_does_not_consume_scopes(prepared_sample):
+    x = prepared_sample
+    authority = timeline._PREPARED_CUDA_ARENA_EXECUTION_CAPABILITIES[x.prepared._execution_capability]
+    with pytest.raises(timeline.CudaOpticalTimelineError, match="active arena lease"):
+        x.stage.enqueue(x.transaction)
+    with pytest.raises(NativeOpticalArenaProtocolError, match="exact timeline-minted identity"):
+        with x.transaction._authorize_arena_execution(authority, operation="enqueue"):
+            pytest.fail("dormant authority executed")
+    assert not x.calls and x.transaction.state == "validated_open"
+    assert acquire_sample(x) is authority
+    x.sample.enqueue()
+    x.sample.finish()
+    assert x.calls == ["record"]
+
+
+def test_acquire_and_execution_reuse_prepared_authority_scopes_and_completion(prepared_sample, monkeypatch):
+    x = prepared_sample
+    completion = x.transaction._prepared_completion
+    assert not completion.recorded
+
+    def late_creation(*args, **kwargs):
+        pytest.fail("execution created an application authority/scope/completion")
+
+    for cls in (timeline._CudaArenaLiveExecutionAuthority, timeline._CudaArenaExecutionScope,
+                timeline.CudaOpticalCompletion, timeline.CudaDeferredProfile):
+        monkeypatch.setattr(cls, "__init__", late_creation)
+    monkeypatch.setattr(x.transaction._context, "activate", late_creation)
+    monkeypatch.setattr(timeline.torch.cuda, "device", late_creation)
+    monkeypatch.setattr(timeline.torch.cuda, "stream", late_creation)
+    acquire_sample(x)
+    x.sample.enqueue()
+    assert x.sample.finish() is completion
+    assert completion.recorded and x.calls == ["record"]
+
+
+def test_cancel_retires_original_prepared_authority_and_rejects_saved_scope(prepared_sample):
+    import weakref
+
+    x = prepared_sample
+    authority = acquire_sample(x)
+    scope = x.transaction._authorize_arena_execution(authority, operation="enqueue")
+    x.sample.cancel_before_enqueue()
+    assert id(x.lease) not in timeline._BOUND_C4_LEASE_EXECUTION_AUTHORITIES
+    assert authority not in timeline._MINTED_CUDA_ARENA_EXECUTION_AUTHORITIES
+    with pytest.raises(NativeOpticalArenaProtocolError):
+        scope.__enter__()
+    assert not x.calls
+    # The registry must not keep the retired active owner/transaction cycle alive.
+    reference = weakref.ref(authority)
+    del scope, authority
+    object.__setattr__(x.sample, "_execution_authority", None)
+    import gc
+    gc.collect()
+    assert reference() is None
+
+
+def test_prepared_capability_copy_and_replay_cannot_activate_twice(prepared_sample):
+    import copy
+
+    x = prepared_sample
+    capability = x.prepared._execution_capability
+    lease = x.arena.acquire(x.plan)
+    with pytest.raises(timeline.CudaOpticalTimelineError, match="not registered"):
+        x.transaction._mint_arena_execution_authority(copy.copy(capability), lease, active_owner=x.sample)
+    authority = x.transaction._mint_arena_execution_authority(capability, lease, active_owner=x.sample)
+    with pytest.raises(timeline.CudaOpticalTimelineError, match="not registered"):
+        x.transaction._mint_arena_execution_authority(capability, lease, active_owner=x.sample)
+    x.sample._activate(lease, execution_authority=authority, arena_acquire_authority=x.acquire_authority)
+    x.sample.cancel_before_enqueue()
+
+
+def test_dropped_dormant_preparation_leaves_no_strong_authority_registration(prepared_sample):
+    import gc
+    import weakref
+
+    x = prepared_sample
+    authority = timeline._PREPARED_CUDA_ARENA_EXECUTION_CAPABILITIES[x.prepared._execution_capability]
+    reference, lease_id = weakref.ref(authority), id(authority._lease)
+    x.prepared = None
+    del authority
+    gc.collect()
+    assert reference() is None
+    assert lease_id not in timeline._BOUND_C4_LEASE_EXECUTION_AUTHORITIES
+    assert not x.calls
+
+
+def test_prepared_execution_scope_rejects_copy_early_finish_and_reentry(prepared_sample):
+    import copy
+
+    x = prepared_sample
+    authority = acquire_sample(x)
+    enqueue_scope = x.transaction._authorize_arena_execution(authority, operation="enqueue")
+    finish_scope = x.transaction._authorize_arena_execution(authority, operation="finish")
+    with pytest.raises(NativeOpticalArenaProtocolError, match="enqueued C4 lease"):
+        finish_scope.__enter__()
+    with pytest.raises(NativeOpticalArenaProtocolError, match="single-use and exact"):
+        copy.copy(enqueue_scope).__enter__()
+    x.sample.enqueue()
+    with pytest.raises(NativeOpticalArenaProtocolError, match="single-use and exact"):
+        enqueue_scope.__enter__()
+    x.sample.finish()
+    with pytest.raises(NativeOpticalArenaProtocolError, match="single-use and exact"):
+        finish_scope.__enter__()
+    assert x.calls == ["record"]
 
 
 @pytest.fixture
@@ -183,7 +302,8 @@ def test_failed_resolution_retains_unresolved_generation(guarded_sample, monkeyp
     assert x.calls == ["wait"]
     if failure_at != "binding_drift":
         assert controller.guardian.state == "TRANSFERRED_TO_QUARANTINE"
-        assert controller.termination_evidence.lifecycle.to_payload()["summary"]["emergency_sync_attempt_count"] == 0
+        summary = controller.termination_evidence.lifecycle.to_payload()["summary"]
+        assert summary["emergency_sync_attempt_count"] == 0
 
 
 def test_guarded_resolution_rejects_wrong_target_before_wait(guarded_sample):

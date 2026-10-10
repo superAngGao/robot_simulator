@@ -2064,6 +2064,14 @@ Next milestone:
       Shared arena acquire reuses original binding identities/weak keys instead
       of rebuilding hashes or walking owners. This remains unaccepted author
       work in the complete refactor; required native and whole-path proof remain.
+      CUDA authority, stage/device/stream scopes, completion and diagnostic
+      pairs are now prepared before execution. CPU counterexamples reproduce
+      late creation in the prior source; actual1/120/600 worker cycles reject
+      those constructors after preparation and pass. Original scope unwind,
+      dormant/copy/retired authority rejection and failed completion publication
+      have CPU regression evidence. These author changes still require the
+      coherent integrated review/native campaign; complete allocation/capacity,
+      physical/numerical and fault/persistence requirements remain open.
       Author full source
       regression passes317 with13 Windows skips, all13 supplemented successfully
       on primary Linux. Separately the approvedfc23b4e

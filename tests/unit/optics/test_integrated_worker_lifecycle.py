@@ -162,14 +162,28 @@ def test_execute_reduces_only_its_three_new_facts(worker_graph, monkeypatch, gua
         return original(state, event, **kwargs)
 
     monkeypatch.setattr(_Replay, "apply", observed)
+    if x.p.lane == "cuda":
+        from optics import cuda_timeline
+
+        def late_creation(*args, **kwargs):
+            pytest.fail("CUDA dispatcher created an execution authority/scope/completion after preparation")
+
+        for cls in (cuda_timeline._CudaArenaLiveExecutionAuthority, cuda_timeline._CudaArenaExecutionScope,
+                    cuda_timeline.CudaOpticalCompletion, cuda_timeline.CudaDeferredProfile):
+            monkeypatch.setattr(cls, "__init__", late_creation)
+        monkeypatch.setattr(cuda_timeline.CudaOpticalExecutionContext, "activate", late_creation)
     for record in x.worker._samples:
         calls.clear()
-        pending = request(x.worker, "EXECUTE_PREPARED_SAMPLE", prepared_token=record.prepared_token)["payload"]
+        pending = request(
+            x.worker, "EXECUTE_PREPARED_SAMPLE", prepared_token=record.prepared_token,
+        )["payload"]
         assert calls == [(reducer, operation) for operation in (
             "sample_acquired", "sample_submission_latched", "sample_completion_recorded",
         )]
         assert x.controller._replay is reducer
-        resolved = request(x.worker, "RESOLVE_PREPARED_SAMPLE", pending_token=pending["pending_token"])["payload"]
+        resolved = request(
+            x.worker, "RESOLVE_PREPARED_SAMPLE", pending_token=pending["pending_token"],
+        )["payload"]
         request(x.worker, "RELEASE_RESOLVED_SAMPLE", resolved_token=resolved["resolved_token"])
         assert reducer.remaining_samples == len(x.worker._samples) - record.index - 1
     # This explicitly performs full independent replay at the evidence boundary.
@@ -622,7 +636,9 @@ def test_fixed_request_client_retains_failed_wire_prefix_and_original_error(
 
     from optical_worker.wait_supervision import GuardSupervisorCore
     from tests.support.guarded_custody_process import (
-        _native_worker_requests, _observe_worker_client_exit, _WorkerRequestObservation,
+        _native_worker_requests,
+        _observe_worker_client_exit,
+        _WorkerRequestObservation,
     )
 
     manifest = bound_worker._manifest

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-import pytest
 from contextlib import contextmanager
+from dataclasses import dataclass
+from types import SimpleNamespace as NS
+
+import pytest
 
 import optics.cuda_direct_light as cuda_direct_light
 import optics.cuda_timeline as cuda_timeline
@@ -39,6 +42,162 @@ def test_deferred_profile_resolution_is_explicit():
     profile = CudaDeferredProfile((("raygen_kernel", _Event(1.25), _Event(3.75)),))
 
     assert profile.resolve_ms() == (("raygen_kernel", 2.5),)
+
+
+@pytest.fixture
+def scope_transaction(monkeypatch):
+    """CPU native-scope model: save the ambient state at entry, as Torch does."""
+    @dataclass(frozen=True)
+    class Device:
+        index: int
+        type: str = "cuda"
+
+    target = Device(1)
+    stream = NS(device=target, cuda_stream=17)
+    state = NS(device=Device(0), stream=object(), calls=[], fault=None)
+    failure = RuntimeError("original scope failure")
+
+    @contextmanager
+    def scope(owner, kind):
+        previous = getattr(state, kind)
+        state.calls.append(kind + "_enter")
+        setattr(state, kind, owner)
+        try:
+            if state.fault == kind + "_enter":
+                raise failure
+            yield
+        finally:
+            setattr(state, kind, previous)
+            state.calls.append(kind + "_exit")
+            if state.fault == kind + "_exit":
+                raise failure
+
+    class Event:
+        device = target
+
+        def record(self, actual):
+            assert actual is stream and state.stream is stream and state.device == target
+            state.calls.append("record")
+            if state.fault == "record":
+                raise failure
+
+    monkeypatch.setattr(cuda_timeline, "torch", NS(device=lambda value: value,
+        cuda=NS(is_available=lambda: True, Event=Event,
+                device=lambda value: scope(value, "device"), stream=lambda value: scope(value, "stream"))))
+    context = CudaOpticalExecutionContext(device=target, stream=stream)
+
+    class Stage:
+        cuda_transaction_stage_name = "scope_stage"
+
+        def _validate_cuda_transaction_stage(self, actual):
+            assert actual is context
+
+        def _assert_cuda_transaction_stage_stable(self, actual):
+            assert actual is context
+
+    stage = Stage()
+    transaction = context.begin_transaction(stages=(stage,), completion_event=Event(),
+        diagnostic_events={"phase": (Event(), Event())})
+    assert not state.calls
+    return NS(context=context, stage=stage, transaction=transaction, state=state,
+              target=target, stream=stream, failure=failure, Device=Device)
+
+
+@pytest.mark.parametrize(
+    "fault", [None, "device_enter", "stream_enter", "stream_exit", "device_exit", "leaf"],
+)
+def test_prepared_stage_scope_restores_entry_time_ambient_and_preserves_failure(
+    scope_transaction, fault,
+):
+    x = scope_transaction
+    # Preparation used device 0; execution must restore the new device/stream.
+    ambient_device, ambient_stream = x.Device(2), object()
+    x.state.device, x.state.stream, x.state.fault = ambient_device, ambient_stream, fault
+
+    def run():
+        with x.transaction.enqueue_stage(x.stage):
+            assert x.state.device == x.target and x.state.stream is x.stream
+            if fault == "leaf":
+                raise x.failure
+
+    if fault is None:
+        run()
+        assert x.transaction._next_stage == 1
+    else:
+        with pytest.raises(RuntimeError) as caught:
+            run()
+        assert caught.value is x.failure
+        assert x.transaction.state == "poisoned" and x.transaction._next_stage == 0
+    assert x.transaction._active_stage is None
+    assert x.state.device == ambient_device and x.state.stream is ambient_stream
+    assert x.state.calls.count("device_enter") == x.state.calls.count("device_exit") == 1
+    assert x.state.calls.count("stream_enter") == x.state.calls.count("stream_exit")
+    assert x.state.calls.count("stream_enter") == (fault != "device_enter")
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_prepared_completion_publishes_only_after_original_event_record(
+    scope_transaction, monkeypatch, failure,
+):
+    x = scope_transaction
+    transaction = x.transaction
+    completion = transaction._prepared_completion
+    profile = completion.deferred_profile
+    with pytest.raises(CudaOpticalTimelineError, match="unavailable"):
+        transaction.completion
+    assert not completion.recorded
+
+    def unexpected_creation(*args, **kwargs):
+        pytest.fail("timed path created a scope/completion/profile")
+
+    monkeypatch.setattr(x.context, "activate", unexpected_creation)
+    monkeypatch.setattr(CudaOpticalCompletion, "__init__", unexpected_creation)
+    monkeypatch.setattr(CudaDeferredProfile, "__init__", unexpected_creation)
+    with transaction.enqueue_stage(x.stage):
+        transaction.record_diagnostic_start("phase")
+        transaction.before_native_launch()
+        transaction.record_diagnostic_end("phase")
+    if failure:
+        x.state.fault = "record"
+        with pytest.raises(RuntimeError) as caught:
+            transaction.finish()
+        assert caught.value is x.failure
+        assert not completion.recorded and transaction.state == "poisoned"
+        with pytest.raises(CudaOpticalTimelineError, match="unavailable"):
+            transaction.completion
+    else:
+        assert transaction.finish() is completion and completion.recorded
+        assert transaction.completion.deferred_profile is profile
+    prior = tuple(x.state.calls)
+    with pytest.raises(CudaOpticalTimelineError):
+        transaction.finish()
+    assert tuple(x.state.calls) == prior
+
+
+@pytest.mark.parametrize(
+    "replacement", ["equal_device", "foreign_device", "equal_handle_stream", "new_handle"],
+)
+def test_prepared_scope_binds_original_stream_and_indexed_device_value(scope_transaction, replacement):
+    x = scope_transaction
+    if replacement == "equal_device":
+        x.context.device = x.Device(1)
+        assert x.context.device is not x.target
+    elif replacement == "foreign_device":
+        x.context.device = x.Device(2)
+        x.context.stream = NS(device=x.context.device, cuda_stream=x.stream.cuda_stream)
+    elif replacement == "equal_handle_stream":
+        x.context.stream = NS(device=x.target, cuda_stream=x.stream.cuda_stream)
+    else:
+        x.context.stream_handle = 23
+        x.stream.cuda_stream = 23
+    if replacement == "equal_device":
+        with x.transaction.enqueue_stage(x.stage):
+            assert x.state.stream is x.stream and x.state.device == x.target
+    else:
+        with pytest.raises(CudaOpticalTimelineError, match="scope binding changed"):
+            with x.transaction.enqueue_stage(x.stage):
+                pytest.fail("rebound prepared scope entered")
+        assert not x.state.calls and x.transaction.state == "poisoned"
 
 
 def test_cuda_shade_extension_abi_uses_fixed_diagnostic_arguments():

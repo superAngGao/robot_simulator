@@ -358,3 +358,75 @@ D1 final physical/numerical validation and complete G4/G5 fault/persistence
 evidence. Arena checks and the successful scale probes do not complete those
 requirements, C2f or C4, and do not approve renderer speed comparisons. The
 coherent implementation still awaits independent review/native preflight.
+
+## Prepared CUDA execution objects (continuing G3, afterf22a8b9)
+
+The previous status turn freshly checked the pending authority/completion
+changes:111 related CPU cases passed,9 scale cases deselected,56.68s
+(`../c4_assets/cuda_prepared_authority_v2.txt`, tool27930 terminal0). This was
+progress evidence for that intermediate source, not whole-path acceptance.
+
+CUDA preparation now creates the exact dormant execution authority and its
+enqueue/finish scopes. Acquire activates that original authority against its
+exact prevalidated lease; it no longer constructs an authority, rehashes lease
+evidence, or inserts new authority-registration tuples. Prepared registrations
+alone do not authorize execution. Retirement removes the live strong owner
+registration; dropping a dormant preparation clears its weak lease entry.
+Copied capabilities, early finish, scope copies/reentry and retired scopes
+are rejected without granting another execution.
+
+Each transaction prepares its stage generators, original Torch device/stream
+scope objects, terminal scope, completion and optional deferred profile.
+`enqueue_stage` and the original stage body both check authority/order: raw
+dormant access cannot consume a prepared generator, and retrieving a scope
+does not authorize entering it later. Scope entry checks the original stream
+identity/handle and indexed device value. The original native context managers
+still save ambient state at entry and restore it on unwind. Diagnostic event
+pairs are prepared once. Completion stays unpublished/unrecorded until the
+original terminal event record succeeds; failures retain the original error.
+
+Before this change, read-only inspection of the pinned remote Torch source
+confirmed that device/StreamContext save prior state in `__enter__`, not their
+constructors. StreamContext's constructor device index only controls its
+unavailable-device branch. This inspection did not import Torch or execute
+candidate code on the remote host. Actual GPU restoration still requires the
+pending integrated native preflight/campaign.
+
+Verification used local Python3.14 CPU native leaves:
+- The same scratch driver `test_prepared_cuda_allocation_regression.py` fails
+  both counterexamples against exact productionf22a8b9 in
+  `../c4_arena_fixed_work`: new authority creation on acquire and new scope
+  creation on enqueue. Only its two current fixture/test modules were copied
+  into that baseline tree; CWD was the baseline root. Those copies were then
+  restored, leaving the baseline tracked tree clean. Candidate:2passed2.29s;
+  baseline:2failed2.76s. Raw files `cuda_prepared_allocation_baseline_v1.txt`
+  (9480bytes,SHA25657946b7e0ac55c4c302ac736e83a89aab95fe7098ded2960fffb59c014119fac)
+  and `cuda_prepared_allocation_candidate_v1.txt`
+  (1262bytes,SHA2569c4df2522ebcdf77eb4bb2590792ddedc02abab4a9f32d4ce57afa0cf1701195).
+- Related preparation/final-graph/worker regression:287passed,9 scale cases
+  deselected,130.55s. `cuda_prepared_scopes_v1.txt` (88338bytes,
+  SHA256f5ca753bc3d470602b3d1c02ad4146421b2c44af1783893776ed97b49b8ba656).
+- Actual1/120/600 CPU-leaf worker cycles pass both lanes, retaining the same
+  three-new-facts and7N preparation assertions. CUDA cycles additionally forbid
+  late authority/scope/completion/profile constructors and context activation
+  factories.9passed,77 deselected,161.69s. `cuda_prepared_scopes_scale_v1.txt`
+  (3584bytes,SHA25667f10a57b799da820376cd420a490036578be5cdb224352a11c2368f9f0d01dd).
+- Warmup original authority, normal/diagnostic, record/launch/wait/ACK failures:
+  58passed29.37s. `cuda_prepared_scopes_warmup_v1.txt` (18196bytes,
+  SHA256771aa13ce31aed9f714fe465ae087d71472b66b6c7870f72fad12d7447b3fea3).
+- After line wrapping/import cleanup,52 affected timeline/resolution checks
+  pass3.35s; `cuda_prepared_scopes_final_v1.txt` (204bytes,
+  SHA256e10476d94ba9be56598cd6bc1d4e527a451f907a7b1c47a8c276df846dd66dc3).
+  The287/9/58 runs preceded those formatting edits; production behavior did
+  not change. Ruff and Git whitespace checks pass. The91-source LF catalog
+  passes the unchanged AST policy; SHA256
+  65e48904d47c31e1e7af42ca94c957f1be91f87780c87e13f9095a0a849eb981.
+  All listed logs are under `../c4_assets`; tools61572/50791/74296 are terminal0.
+
+This removes specific application-object creation, not every whole-worker
+allocation. Active/stage stability signatures, lifecycle/arena trace records,
+guard tickets, response/trace capacity admission, D1 physical observations,
+G2 numerical readback and the complete fault/persistence matrix remain open.
+No renderer timings, native deployment, integrated independent approval or
+later gate activation are claimed. Continue the coherent G1-G5 implementation
+and mandatory review/native campaign toward the unchanged full C4 objective.
