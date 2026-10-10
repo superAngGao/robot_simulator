@@ -154,7 +154,8 @@ no field. Fresh targeted replay covers all24 admission-progression mutations
 across both lanes/resolutions plus the four preservation checks:28 passed,
 252 deselected in35.84s. It includes all12 original failures. No full-suite
 rerun at8d7defd or combined new-revision280-pass claim is made. The16 earlier
-skips are absent component occurrences in the particular actual records.
+conditional skips do not prove scenarios requiring component occurrences or
+zero-size arrays absent from the particular actual records.
 No production source, catalog, guard, lifecycle or admission rule changed.
 
 Exact one-shot launchers `replay_precision_runtime_custody_v1.py` and v2, and
