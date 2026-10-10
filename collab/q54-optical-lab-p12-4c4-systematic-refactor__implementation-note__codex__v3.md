@@ -93,7 +93,29 @@ also rejected an empty bundle before transfer; named HEAD packaging succeeded.
 
 ## Open scope
 
-Fresh repair review is still required. M1/M4 final integration, both-lane final
+Fresh repair review is complete for bounded code/CPU coordination only.
+M1/M4 final integration, both-lane final
 readiness/origin/C3/arena/barrier, R1, lifecycle/failure/native precision matrices,
 systematic whole review and all remaining C4 work remain open. No timing or
 backend-selection claim exists. All later product/measurement gates stay closed.
+
+
+## Completed independent follow-up and repair validation
+
+Fresh CLI reviewer session `01a1238c-de57-7003-820a-553df2bba1ef` exited zero.
+Its full report is archived verbatim in systematic-refactor code-review v2;
+SHA256 `20b2a341f1cdc87e579f787db20dcc86b23cfdce1db487d74ffda5993ee4325e`.
+Verdict: Approve, bounded code and CPU coordination at
+`99eb1f3aff0436134346d08b2be4f235a910b19d` only. Original F1/C1
+are closed in that scope. Reviewer independently ran 162 original/repair,
+70 additional and 361 structural checks; counts overlap author coverage.
+Native guarded final-arena resolution and whole-C4 acceptance remain open.
+
+Author repair validation at that clean candidate: local 460 passed,4 skipped
+in132.11s; Linux CPU-only with actual Go2 assets249 passed in41.02s.
+Repair CPU launch parent4064533 and pytest4064579 were observed absent.
+Archive c4-execution-refactor-repair-cpu-v1.tar.gz was downloaded and its
+SHA256 verified locally:
+`e75bdafd106dca43255225d5e1ab48255c13a3e3f543f4bf4af9609c39175dde`.
+The earlier native archive remains evidence for1934ac7, not repaired99eb1f3.
+This follow-up records evidence only and changes no code, design or gate.
