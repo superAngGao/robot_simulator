@@ -233,12 +233,9 @@ def test_final_warp_graph_consumes_same_slot_and_new_readiness(executable_graph,
     assert len(graph.sha256) == 64
 
 
-@pytest.mark.parametrize("fixed_inputs", ["cuda", "warp"], indirect=True)
-@pytest.mark.parametrize("failure", [None, "sync", "disarmed", "stream_drift", "event_drift"])
-def test_final_barrier_admits_only_after_exact_sync_and_ack(executable_graph, monkeypatch, failure):
+@pytest.fixture
+def final_session(executable_graph, monkeypatch):
     from optical_worker import cuda_arena as adapter
-    from optical_worker import native_setup
-    from optical_worker.guarded_evidence import GuardedLifecycleEvidence
     from optics import cuda_arena
 
     x = executable_graph
@@ -284,6 +281,16 @@ def test_final_barrier_admits_only_after_exact_sync_and_ack(executable_graph, mo
                 signature, tensor=TensorMetadata(tensor), owner_token=owner_token
             ),
         )
+    return x
+
+
+@pytest.mark.parametrize("fixed_inputs", ["cuda", "warp"], indirect=True)
+@pytest.mark.parametrize("failure", [None, "sync", "disarmed", "stream_drift", "event_drift"])
+def test_final_barrier_admits_only_after_exact_sync_and_ack(final_session, monkeypatch, failure):
+    from optical_worker import native_setup
+    from optical_worker.guarded_evidence import GuardedLifecycleEvidence
+
+    x = final_session
     barrier_calls = []
     complete = x.controller._guard_client.complete
     original_prepare = native_setup._prepare_fixed_final_graph
@@ -384,3 +391,83 @@ def test_final_barrier_admits_only_after_exact_sync_and_ack(executable_graph, mo
         assert x.f.state.device == 0 and x.f.state.stream is None
     finally:
         monkeypatch.setattr(x.controller._guard_client, "complete", complete)
+
+
+@pytest.mark.parametrize("fixed_inputs", ["cuda", "warp"], indirect=True)
+@pytest.mark.parametrize("fault", ["channel_eof", "parent_lost"])
+@pytest.mark.parametrize("cancel_acquired", [False, True])
+def test_quiescent_termination_uses_existing_barrier(final_session, fault, cancel_acquired):
+    from copy import deepcopy
+
+    from optical_worker.guarded_evidence import replay_lifecycle
+    from optical_worker.wait_protocol import GuardProtocolError
+
+    x = final_session
+    syncs = []
+    def synchronize(target):
+        assert target is x.p.device
+        syncs.append("final")
+    if x.session.lane == "cuda":
+        x.p.runtime.cuda.synchronize = synchronize
+    else:
+        x.p.runtime.synchronize_device = synchronize
+    graph = x.session.prepare_fixed_final_graph(sample_count=2)
+    if cancel_acquired:
+        graph.arena.acquire(graph.samples[0]).cancel_before_enqueue()
+    def unnecessary_sync():
+        pytest.fail("quiescent final graph synchronized again")
+    terminal = x.controller.terminate(fault=fault, detection_phase="test_final_idle",
+        emergency_target_synchronize=unnecessary_sync).lifecycle.to_payload()
+    assert syncs == ["final"]
+    summary = terminal["summary"]
+    assert summary["disposition"] == "cancelled_before_submission_exit"
+    assert summary["release_status"] == "completed"
+    assert summary["emergency_sync_attempt_count"] == 0
+    assert summary["possible_dirty_device_ordinals"] == [1]
+    assert summary["final_setup"]["quiescence_sha256"] == x.session.final_quiescence.sha256
+    assert x.f.state.device == 0 and x.f.state.stream is None
+    # A new v4 story cannot ask for an unnecessary target synchronization.
+    forged = deepcopy(terminal["transition_trace"])
+    index = next(i for i, event in enumerate(forged) if event["operation"] == "terminal_arm_started")
+    forged[index]["details"]["purpose"] = "target_sync"
+    with pytest.raises(GuardProtocolError, match="wrong terminal purpose"):
+        replay_lifecycle(terminal["configuration"], terminal["lane_id"], forged[:index + 1],
+                         version=terminal["schema_version"])
+
+
+@pytest.mark.parametrize("fixed_inputs", ["cuda", "warp"], indirect=True)
+@pytest.mark.parametrize("change", ["missing_proof", "latched", "unknown", "later_guard", "cleanup_ack"])
+def test_final_termination_keeps_uncertain_state_conservative(final_session, monkeypatch, change):
+    x = final_session
+    if x.session.lane == "cuda":
+        x.p.runtime.cuda.synchronize = lambda target: None
+    else:
+        x.p.runtime.synchronize_device = lambda target: None
+    x.session.prepare_fixed_final_graph(sample_count=2)
+    if change == "missing_proof":
+        x.controller._quiescence = None
+    elif change == "latched":
+        x.controller._measured_sample_submission_latched = True
+    elif change == "unknown":
+        x.controller.mark_unknown_device_scope(source="test_final_scope", reason="late_unknown_scope")
+    elif change == "later_guard":
+        with x.controller.segment("resolve"):
+            pass
+    else:
+        def failed_arm(role):
+            raise RuntimeError("cleanup guard acknowledgement unavailable")
+        monkeypatch.setattr(x.controller._guard_client, "arm", failed_arm)
+    syncs = []
+    terminal = x.controller.terminate(fault="channel_eof", detection_phase="test_final_idle",
+        emergency_target_synchronize=lambda: syncs.append("emergency")).lifecycle.to_payload()
+    summary = terminal["summary"]
+    if change == "later_guard":
+        assert syncs == ["emergency"]
+        assert summary["disposition"] == "aborted_synced_exit"
+        assert summary["release_status"] == "completed"
+    else:
+        assert syncs == []
+        assert "quarantine" in summary["disposition"]
+        assert summary["release_status"] != "completed"
+        assert x.controller.guardian.state == "TRANSFERRED_TO_QUARANTINE"
+    assert summary["possible_dirty_device_ordinals"] == [1]

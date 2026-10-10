@@ -76,8 +76,12 @@ RUNTIME_WARP_MODULE_FAULTS = ("runtime_warp_modules_success", *RUNTIME_WARP_ADMI
 RUNTIME_FIXED_STORAGE_FAULTS = tuple("runtime_fixed_storage_" + name for name in (
     "success", "diagnostics", "allocate_raise", "adoption_raise", "allocate_hang"))
 RUNTIME_FINAL_GRAPH_FAULTS = ("runtime_final_graph_sync_raise",)
+RUNTIME_FINAL_IDLE_FAULTS = {
+    "runtime_final_graph_channel_eof": "channel_eof",
+    "runtime_final_graph_parent_lost": "parent_lost",
+}
 RUNTIME_FINAL_GRAPH_CASES = ("runtime_final_graph_success", "runtime_final_graph_diagnostics",
-                           *RUNTIME_FINAL_GRAPH_FAULTS)
+                           *RUNTIME_FINAL_GRAPH_FAULTS, *RUNTIME_FINAL_IDLE_FAULTS)
 RUNTIME_RENDER_WARMUP_CASES = ("runtime_render_warmup_success", "runtime_render_warmup_diagnostics",
                              "runtime_render_warmup_geometry", *RUNTIME_FINAL_GRAPH_CASES)
 # Fixed diagnostic selection for tracing RGB discrepancies to camera/first hit.
@@ -1701,7 +1705,9 @@ def child(fault, fd, directory):
             scope_observer.synchronize(synchronize)
 
         terminal = controller.terminate(
-            fault="setup_failure",
+            # Fixed driver injection at the actual native post-barrier state.
+            # This tests disposal, not the still-closed product request loop.
+            fault=RUNTIME_FINAL_IDLE_FAULTS.get(fault, "setup_failure"),
             detection_phase="fixed_runtime_driver",
             emergency_target_synchronize=synchronize if scope_observer is None else observed_synchronize,
         )
@@ -1710,7 +1716,8 @@ def child(fault, fd, directory):
         persist_final()
         if fault == "runtime_terminal_exit_hang":
             injection[1]("after_terminal_evidence_before_hard_exit")
-        os._exit(0 if result["summary"]["disposition"] == "aborted_synced_exit" else 74)
+        os._exit(0 if result["summary"]["disposition"] in {
+            "cancelled_before_submission_exit", "aborted_synced_exit"} else 74)
     except BaseException as error:
         # Use the SAME source/controller failure policy. Do not retry sync or
         # return a reusable Python disposition after partially submitted work.

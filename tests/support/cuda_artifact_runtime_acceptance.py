@@ -281,7 +281,7 @@ def run_case(repository, revision, environment_path, environment, directory, lan
     from tests.support.runtime_custody_launch import capture_runtime_custody_inputs
     from tests.support.native_runtime_process import (RUNTIME_FIXED_STORAGE_FAULTS, RUNTIME_RENDER_GRAPH_CASES,
                                                       RUNTIME_RENDER_WARMUP_CASES, RUNTIME_FINAL_GRAPH_CASES,
-                                                      RUNTIME_FINAL_GRAPH_FAULTS)
+                                                      RUNTIME_FINAL_GRAPH_FAULTS, RUNTIME_FINAL_IDLE_FAULTS)
 
     request = {"root": str(repository), "revision": revision, "lane": lane,
                "catalog_sha256": hashlib.sha256((repository / CATALOG_PATH).read_bytes()).hexdigest(),
@@ -341,9 +341,16 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                     or control["deadline_expired"] or control["kill_requested"]):
                 raise RuntimeError("positive native case did not complete its exact guarded path")
             summary = worker["summary"]
-            if (summary["disposition"] != "aborted_synced_exit" or summary["release_status"] != "completed"
-                    or summary["emergency_sync_attempt_count"] != 1):
-                raise RuntimeError("positive case did not finish its original terminal disposal")
+            expected_disposition = "cancelled_before_submission_exit" if final_case else "aborted_synced_exit"
+            if (summary["disposition"] != expected_disposition or summary["release_status"] != "completed"
+                    or summary["emergency_sync_attempt_count"] != (0 if final_case else 1)
+                    or (directory / "terminal_sync_entered.json").exists() == final_case):
+                raise RuntimeError("positive case did not finish its state-appropriate terminal disposal")
+            if fault in RUNTIME_FINAL_IDLE_FAULTS:
+                started = [event for event in worker["transition_trace"]
+                           if event["operation"] == "termination_started"]
+                if len(started) != 1 or started[0]["details"]["fault"] != RUNTIME_FINAL_IDLE_FAULTS[fault]:
+                    raise RuntimeError("final idle fault was not consumed by the native lifecycle")
             if lane == "cuda" and not (directory / "cuda_factory_binding.json").is_file():
                 raise RuntimeError("captured CUDA factory bindings were not observed")
             if fault == "runtime_warp_modules_success" or (storage_case and lane == "warp"):

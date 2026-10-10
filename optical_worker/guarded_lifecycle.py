@@ -11,8 +11,8 @@ import threading
 from contextlib import contextmanager
 
 from .guarded_evidence import (
-    LIFECYCLE_VERSION,
     FINAL_LIFECYCLE_VERSION,
+    LIFECYCLE_VERSION,
     GuardedLifecycleEvidence,
     GuardedTerminationEvidence,
     replay_lifecycle,
@@ -501,6 +501,18 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
                 raise error
             if fault not in _FAULT_KINDS or not _valid_identifier(detection_phase):
                 raise WorkerSetupProtocolError("invalid terminal fault/phase")
+            if self._replay.final_quiescence_current:
+                proof = self.quiescence_evidence
+                if (proof is None or self._state != "SETUP_QUIESCENT"
+                        or self._measured_sample_submission_latched
+                        or self._final_graph is None or self._final_admission is not self._final_graph
+                        or self.guardian.state != "SEALED"
+                        or proof.sha256 != self._replay.final_quiescence
+                        or proof.epoch != self._epoch or proof.target_device_ordinal != self._target
+                        or proof.setup_operation_count != self._operation_count
+                        or proof.guardian_coverage_sha256 != self.guardian.coverage_sha256
+                        or proof.prepared_graph_sha256 != self._final_graph.sha256):
+                    self._fail_guard("protocol", WorkerSetupProtocolError("final quiescence binding changed"))
             self._hold_failure(sys.exception())
             if self._guard_client.state != "IDLE" or self._replay.failed:
                 self._fail_guard("operation")
@@ -547,7 +559,7 @@ class NativeGuardedSetupLifecycle(NativeWorkerSetupLifecycle):
                 disposition = None
                 purpose = (
                     "cpu_cancel"
-                    if not self._replay.dirty and self._replay.descriptor is None
+                    if self._replay.may_cancel_without_sync
                     else "target_sync"
                 )
         if disposition is None:

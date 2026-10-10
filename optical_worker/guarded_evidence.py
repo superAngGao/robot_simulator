@@ -142,6 +142,20 @@ class _Replay:
     def compromised(self):
         return self.unknown or any(d != self.config.device_ordinal for d in self.dirty)
 
+    @property
+    def final_quiescence_current(self):
+        # Submission remains closed in this grammar. A later normal segment
+        # invalidates this pre-sample proof even if it has no returned leaf.
+        return (self.version == FINAL_LIFECYCLE_VERSION and self.final_quiescence is not None
+                and self.final_guard == self.last_completed_guard and self.guard_state == "IDLE"
+                and self.next_sequence == self.final_guard["sequence"] + 1
+                and not self.failed and not self.terminal_failed and not self.compromised)
+
+    @property
+    def may_cancel_without_sync(self):
+        no_setup = self.descriptor is None and not self.dirty and not self.unknown
+        return no_setup or self.final_quiescence_current
+
     def coverage(self):
         counts = {}
         for record in self.records:
@@ -525,7 +539,7 @@ class _Replay:
                 and guard["role"] == "emergency",
                 "terminal ARM predecessor",
             )
-            no_work = self.descriptor is None and not self.dirty and not self.unknown
+            no_work = self.may_cancel_without_sync
             _require(
                 (purpose == "cpu_cancel") == no_work
                 and (no_work or self.dirty == {self.config.device_ordinal}),
