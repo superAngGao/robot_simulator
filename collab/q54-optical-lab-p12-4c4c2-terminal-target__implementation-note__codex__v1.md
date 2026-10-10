@@ -82,8 +82,8 @@ passes and one test-construction failure: copy.copy of the sealed owner raised
 before controller admission. That test now supplies an uninitialized exact-type
 replacement. All six replacement negatives subsequently passed in11.72s.
 The distinct-device two-sample positive passed in the first run. Related
-guarded lifecycle/evidence, CUDA resolution/timeline and finalgraph checks are
-running; their result is not yet claimed.
+guarded lifecycle/evidence, CUDA resolution/timeline and finalgraph checks
+completed:293 passed without skips in197.81s, exit0 (tool session6357).
 
 Fresh review is frozen at `../c4_terminal_target_review_v1`. Built-in spawn
 returned agent thread limit reached; the owner-authorized equivalent fresh
