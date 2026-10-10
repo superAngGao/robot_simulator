@@ -95,7 +95,7 @@ def test_camera_sample_selection_is_independent_of_transform_replay(transform):
     # Exercise the real selector and FIFO planner without requiring GPU storage.
     targets = {(transform, sample): object() for sample in (0, 1)}
     session = SimpleNamespace(
-        _validate_configuration=lambda: None,
+        _validate_configuration=lambda **kwargs: None,
         _slots=(SimpleNamespace(targets={}), SimpleNamespace(targets=targets)),
         _control=SimpleNamespace(lifecycle_evidence=lambda: SimpleNamespace(
             next_acquire_slot_id=1, slots=(SimpleNamespace(generation=4), SimpleNamespace(generation=3)))),

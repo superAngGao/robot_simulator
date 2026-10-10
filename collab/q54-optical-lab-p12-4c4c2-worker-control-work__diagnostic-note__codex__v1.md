@@ -260,10 +260,13 @@ Author counterexamples and verification:
 - Final regression:473passed/no skips,6scale cases deselected in131.43s;
   `worker_incremental_regression_v1.txt`, tool36489exit0. This covers lifecycle,
   shared reducer/fixtures, integrated dispatcher, final graph and guard core.
-  The separate scale run is still live at2026-10-10T20:19:22+08:00:Python38428,
-  parent47260, started20:11:18, tool24882. It writes
-  `worker_incremental_counts_v3.txt`; no terminal result is yet claimed.
-  Resume by polling that same handle/process, not by launching a duplicate.
+  The separate scale run ended with5passed/1error/75deselected in699.57s:
+  CUDA600 failed during final-graph preparation at guard COMPLETE with an
+  aborted connection. Python38428/parent47260 and tool24882 are terminal.
+  `worker_incremental_counts_v3.txt` is retained (8562bytes, SHA256
+  66a17d33640cecfd4636ac49c5a652d35c92f4bc630efe6d4a9b09d58bd32e9d).
+  This changed the next action to profiling and eliminating repeated batch
+  validation, rather than increasing the guard budget again. Repair is below.
   Source catalog refresh validates all91 prospective LF sources under
   the unchanged AST policy; current catalog SHA256
   2706cbe713011091db8354c996c39d516813c0f1abe9d555eec8f0828365fa92.
@@ -276,3 +279,82 @@ CPU native leaves; they do not prove whole-dispatch fixed work/allocation limits
 or native speed. This is continuing G3 implementation, not its acceptance or a
 substitute for the coherent G1-G5 packet, independent review, or full C4 goal.
 No changed production source has been deployed for native execution.
+
+## Arena preparation/identity consolidation (continuing G3, afteraabc375)
+
+Work used isolated `../c4_arena_fixed_work` while the originalaabc375 scale run
+was still live, preserving its executing source snapshot. This is author
+implementation in the same G1-G5 packet, not another product/acceptance gate.
+
+Actual CPU profiling of the original dispatcher established the missing
+preparation cost. At120 CUDA samples, `_validate_target_evidence` ran57960times:
+four per-plan operations each revisited all120 targets, plus three whole-graph
+checks. `worker_preparation_cuda_120_v1.json` has187650bytes, SHA256
+7437c6064a69abe50e95f6a18ea4a8d2dde8e55b62e9ec3f9f34489764651ddd.
+The1/120 preparation probes passed in63.54s total (profiling overhead included).
+Four first-EXECUTE profiles at1/120 samples across both CPU fixture lanes also
+passed; their CPU elapsed times are not native performance measurements.
+Scratch drivers and outputs are `worker_preparation_profile_v1*`,
+`test_worker_preparation_profile_v1.py`, `worker_hotpath_profile_v1*`,
+`test_worker_hotpath_profile_v1.py`, and `worker_hotpath_{lane}_{count}_v1.json`.
+
+Changes:
+- CUDA preparation validates the selected target on plan selection/provenance/
+  transaction preparation. Full target validation remains at arena seal and
+  both final-barrier admission edges. Target/executable maps require immutable
+  mapping proxies; the arena owns a separate immutable target identity index.
+  Selected and full checks both bind that original index, and original target
+  storage/event/stage validation remains. No unrelated target scan is performed
+  per plan, and no native pointer check is waived.
+- Shared arena preparation performs metadata/hash validation before acquire.
+  Acquire checks exact prevalidated evidence/lease objects plus the current
+  FIFO slot/generation. Frozen spec/manifest and privately copied read-only
+  owner-map identity replace repeated owner traversal. Copying equal evidence
+  cannot replace its original live object. Reflective in-place mutation of
+  frozen objects is outside the existing trusted-worker claim; public mutation
+  remains rejected and replacement attacks are covered.
+- Prepared plans retain their original weak-reference registration key.
+  Acquire reuses that key; no new weak reference or hash payload is created.
+  The callback is prepared once per arena. Discarded speculative plans still
+  disappear, and competing/foreign/stale plans retain their rejection behavior.
+
+Verification (local Python3.14, CPU leaves, no native deployment):
+- Originalaabc375 fails four new counterexamples: acquire calls hashing;
+  equal copied plan/lease evidence is accepted; acquire line work grows with
+  owner count (311/549/1509lines at1/120/600 owners). One original plan-copy
+  rejection passes; the new registration-key case is inapplicable to baseline
+  and explicitly deselected. Raw `arena_fixed_binding_baseline_v2.txt`:
+  4failed/1passed/1deselected in1.35s,13226bytes, SHA256
+  2ebd386ff9168033a8c692f44a2627e1a20e7c202f0f9f60fa8374dc4bc50d58.
+  Baselinev1 ran from the changed checkout and is invalid as baseline evidence;
+  its six passes are not attributed to original code. V2 ran from exactaabc375.
+- Six new prepared-arena checks pass in0.33s, including no-hash/payload/weakref
+  tripwires, equal-copy/foreign-key rejection, and constant resource-count work.
+  The preexisting native/Warp/CUDA/dynamic arena set passed83cases in14.50s
+  before the selected-target preparation change.
+- Shared arena/CUDA contract/final graph/worker regression:204passed/no skips,
+  six scale cases deselected in123.88s, `arena_selected_target_regression_v1.txt`
+  SHA2564493d5c7b1e3b243db5716f4f14177594098e34c59ea6093b44b40c75319fced.
+- Scale tests:9passed/no skips/77deselected in169.12s. Both lanes completed
+  actual1/120/600-sample dispatcher lifecycles with CPU leaves, and each EXECUTE
+  applied exactly its three new reducer facts. CUDA preparation checked exactly
+  7/840/4200targets for1/120/600samples. The same60000ms test guard budget was
+  retained; no additional timeout increase. `arena_worker_scale_v1.txt`:
+  3582bytes, SHA256cc08638c90d584562501c3ad06b24113554c5df5dfb53ca7fe10a8d29f256203.
+- After adding the final full-audit original-index identity cross-check,
+  the affected final-barrier normal/fault cases passed20checks/48deselected
+  in21.45s. Earlier204/9 runs used the immediately preceding loaded code;
+  do not claim they executed this last additional comparison.
+  `arena_final_admission_identity_v1.txt` SHA256
+  ad5d6400912ba1030d940130eddb40fb8323fb04e7e0c577565e38b0a4ac5909.
+- All tool sessions24882/63068/66568/76165/84016/57645/85007 are terminal.
+  Final OS query found no remaining matching profile/scale/regression Python
+  process. Source refresh passes unchanged AST policy for all91 LF sources;
+  current catalog SHA25625090cbdeedef29c78a8675797a683f5582a6a7936f702cf5c1777979a236f8e.
+
+The complete worker still needs prepared trace buffers/events/authorities/
+scopes/tickets, exact capacity admission and whole-path allocation proof, plus
+D1 final physical/numerical validation and complete G4/G5 fault/persistence
+evidence. Arena checks and the successful scale probes do not complete those
+requirements, C2f or C4, and do not approve renderer speed comparisons. The
+coherent implementation still awaits independent review/native preflight.

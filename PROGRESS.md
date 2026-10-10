@@ -2057,6 +2057,13 @@ Next milestone:
       worker-control-work diagnostic-notev1. Preallocation/capacity, complete
       native final-output/fault evidence and independent integrated acceptance
       remain unfinished; no renderer speed comparison or later gate is claimed.
+      Subsequent actual scale probing exposed quadratic CUDA target validation
+      during preparation. Selected-target checks plus original whole-graph
+      seal/barrier checks reduce120-sample target checks from57960to840, and
+      both CPU fixture lanes now complete1/120/600-sample dispatcher probes.
+      Shared arena acquire reuses original binding identities/weak keys instead
+      of rebuilding hashes or walking owners. This remains unaccepted author
+      work in the complete refactor; required native and whole-path proof remain.
       Author full source
       regression passes317 with13 Windows skips, all13 supplemented successfully
       on primary Linux. Separately the approvedfc23b4e

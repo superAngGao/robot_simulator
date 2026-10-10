@@ -592,7 +592,7 @@ class _SlotRecord:
 class C4PreparedSamplePlan:
     """Arena-issued prevalidated plan that cannot itself authorize output."""
 
-    __slots__ = ("_arena_authority", "_evidence", "_live_lease", "_sealed", "__weakref__")
+    __slots__ = ("_arena_authority", "_evidence", "_live_lease", "_registry_key", "_sealed", "__weakref__")
 
     def __init__(
         self,
@@ -600,6 +600,7 @@ class C4PreparedSamplePlan:
         arena_authority: object,
         evidence: C4PreparedSamplePlanEvidence,
         live_lease: "C4ActiveOutputLease",
+        discard_registration,
         _key: object,
     ) -> None:
         if _key is not _LIVE_AUTHORITY_KEY:
@@ -607,6 +608,7 @@ class C4PreparedSamplePlan:
         object.__setattr__(self, "_arena_authority", arena_authority)
         object.__setattr__(self, "_evidence", evidence)
         object.__setattr__(self, "_live_lease", live_lease)
+        object.__setattr__(self, "_registry_key", weakref.ref(self, discard_registration))
         object.__setattr__(self, "_sealed", True)
 
     def __setattr__(self, name: str, value: object) -> None:
@@ -730,6 +732,7 @@ class NativeOpticalArena:
             "_resource_manifest_snapshot",
             "_resource_owners",
             "_owner_binding_snapshot",
+            "_discard_prepared_registration",
             "_slots",
             "_frozen_signature",
             "_sealed",
@@ -767,24 +770,29 @@ class NativeOpticalArena:
         self._authority = object()
         self._arena_token = f"arena:{uuid.uuid4().hex}"
         self._spec = canonical_spec
-        self._spec_snapshot = NativeOpticalArenaSpec.from_payload(canonical_spec.to_payload())
+        self._spec_snapshot = canonical_spec
         self._resource_manifest = canonical_manifest
-        self._resource_manifest_snapshot = NativeOpticalArenaResourceManifest.from_payload(
-            canonical_manifest.to_payload()
-        )
+        self._resource_manifest_snapshot = canonical_manifest
         self._resource_owners = MappingProxyType(dict(resource_owners))
-        self._owner_binding_snapshot = tuple(
-            (token, self._resource_owners[token]) for token in sorted(self._resource_owners)
-        )
+        self._owner_binding_snapshot = self._resource_owners
         self._slots = tuple(_SlotRecord(manifest=slot) for slot in canonical_manifest.slots)
-        self._prepared_registry: weakref.WeakKeyDictionary[
-            C4PreparedSamplePlan,
+        self._prepared_registry: dict[
+            weakref.ReferenceType[C4PreparedSamplePlan],
             tuple[
                 C4PreparedSamplePlanEvidence,
                 C4ActiveOutputLease,
                 C4ActiveLeaseBindingEvidence,
             ],
-        ] = weakref.WeakKeyDictionary()
+        ] = {}
+        arena_ref = weakref.ref(self)
+
+        def discard_registration(key):
+            arena = arena_ref()
+            if arena is not None:
+                with arena._lock:
+                    arena._prepared_registry.pop(key, None)
+
+        self._discard_prepared_registration = discard_registration
         self._active_fifo: list[C4ActiveOutputLease] = []
         self._next_acquire_slot_id = 0
         self._state = "OPEN"
@@ -891,12 +899,14 @@ class NativeOpticalArena:
                 terminal_event_token=slot.manifest.terminal_event_token,
                 planned_acquisition_offset=planned_acquisition_offset,
             )
+            self._validate_prepared_plan(prepared_evidence, slot, expected_generation=expected_generation)
+            prepared_sha256 = prepared_evidence.sha256
             lease_token = _canonical_sha256(
                 {
                     "arena_token": self._arena_token,
                     "slot_id": slot.manifest.slot_id,
                     "generation": expected_generation,
-                    "prepared_slot_plan_sha256": prepared_evidence.sha256,
+                    "prepared_slot_plan_sha256": prepared_sha256,
                     "nonce": uuid.uuid4().hex,
                 }
             )
@@ -910,7 +920,7 @@ class NativeOpticalArena:
                 slot_storage_manifest_sha256=slot.manifest.slot_storage_manifest_sha256,
                 generation=expected_generation,
                 lease_token=lease_token,
-                prepared_slot_plan_sha256=prepared_evidence.sha256,
+                prepared_slot_plan_sha256=prepared_sha256,
                 row_id=self._spec.row_id,
                 case_id=self._spec.case_id,
                 boundary=self._spec.boundary,
@@ -949,9 +959,10 @@ class NativeOpticalArena:
                 arena_authority=self._authority,
                 evidence=prepared_evidence,
                 live_lease=lease,
+                discard_registration=self._discard_prepared_registration,
                 _key=_LIVE_AUTHORITY_KEY,
             )
-            self._prepared_registry[plan] = (
+            self._prepared_registry[plan._registry_key] = (
                 prepared_evidence,
                 lease,
                 active_evidence,
@@ -965,18 +976,26 @@ class NativeOpticalArena:
             _require_captured_arena_admission(self)
             self._require_arena_state("OPEN", operation="acquire")
             self._validate_frozen_lightweight()
-            if not isinstance(plan, C4PreparedSamplePlan):
+            if type(plan) is not C4PreparedSamplePlan:
                 raise NativeOpticalArenaProtocolError("prepared plan is not owned by this arena")
-            registered = self._prepared_registry.get(plan)
+            key = plan._registry_key
+            if type(key) is not weakref.ReferenceType or key() is not plan:
+                raise NativeOpticalArenaProtocolError("prepared plan is not owned by this arena")
+            registered = self._prepared_registry.get(key)
             if registered is None or plan._arena_authority is not self._authority:
                 raise NativeOpticalArenaProtocolError("prepared plan is not owned by this arena")
-            if plan.evidence != registered[0]:
+            if plan.evidence is not registered[0]:
                 raise NativeOpticalArenaProtocolError("prepared plan evidence changed after seal")
-            if plan._live_lease is not registered[1] or plan._live_lease.evidence != registered[2]:
+            if plan._live_lease is not registered[1] or plan._live_lease.evidence is not registered[2]:
                 raise NativeOpticalArenaProtocolError("prepared plan live lease changed after seal")
             evidence = plan.evidence
             slot = self._slots[self._next_acquire_slot_id]
-            self._validate_plan_for_slot(evidence, slot)
+            # Full immutable metadata and its digests were checked in prepare.
+            # Only the live FIFO position and generation can advance afterwards.
+            if (slot.manifest is not self._resource_manifest.slots[self._next_acquire_slot_id]
+                    or evidence.slot_id != self._next_acquire_slot_id
+                    or evidence.expected_generation != slot.generation + 1):
+                raise NativeOpticalArenaProtocolError("prepared plan slot/generation is stale or not arena-owned")
             if slot.state != "FREE":
                 self._backpressure_count += 1
                 self._record_transition("acquire_backpressure", slot=slot)
@@ -991,8 +1010,6 @@ class NativeOpticalArena:
             lease = plan._live_lease
             if lease._arena_authority is not self._authority:
                 raise NativeOpticalArenaProtocolError("prepared plan live lease authority changed")
-            if lease.evidence.prepared_slot_plan_sha256 != evidence.sha256:
-                raise NativeOpticalArenaProtocolError("prepared plan live lease binding changed")
             slot.generation = evidence.expected_generation
             slot.state = "LEASED"
             slot.lease = lease
@@ -1007,7 +1024,7 @@ class NativeOpticalArena:
             slot.external_hold_count = 0
             self._active_fifo.append(lease)
             self._next_acquire_slot_id = (slot.manifest.slot_id + 1) % self._spec.ring_depth
-            del self._prepared_registry[plan]
+            del self._prepared_registry[key]
             self._record_transition("acquired", slot=slot)
             return lease
 
@@ -1213,11 +1230,13 @@ class NativeOpticalArena:
         slot = self._slots[evidence.slot_id]
         if slot.lease is not lease or slot.generation != evidence.generation:
             raise NativeOpticalArenaProtocolError("C4 lease is stale or not active")
-        if slot.lease_evidence is None or evidence != slot.lease_evidence:
+        if slot.lease_evidence is None or evidence is not slot.lease_evidence:
             raise NativeOpticalArenaProtocolError("C4 live lease evidence changed after activation")
         return slot
 
-    def _validate_plan_for_slot(self, evidence: C4PreparedSamplePlanEvidence, slot: _SlotRecord) -> None:
+    def _validate_prepared_plan(
+        self, evidence: C4PreparedSamplePlanEvidence, slot: _SlotRecord, *, expected_generation: int,
+    ) -> None:
         expected = {
             "arena_spec_sha256": self._spec.sha256,
             "arena_resource_manifest_sha256": self._resource_manifest.sha256,
@@ -1225,7 +1244,7 @@ class NativeOpticalArena:
             "ring_depth": self._spec.ring_depth,
             "slot_id": slot.manifest.slot_id,
             "slot_storage_manifest_sha256": slot.manifest.slot_storage_manifest_sha256,
-            "expected_generation": slot.generation + 1,
+            "expected_generation": expected_generation,
             "row_id": self._spec.row_id,
             "case_id": self._spec.case_id,
             "boundary": self._spec.boundary,
@@ -1340,13 +1359,12 @@ class NativeOpticalArena:
     def _validate_frozen_lightweight(self) -> None:
         """Check the prevalidated immutable graph without rebuilding a manifest."""
 
-        if self._spec != self._spec_snapshot or self._resource_manifest != self._resource_manifest_snapshot:
+        if self._spec is not self._spec_snapshot or self._resource_manifest is not self._resource_manifest_snapshot:
             raise NativeOpticalArenaProtocolError("sealed arena specification/resources changed")
-        if len(self._resource_owners) != len(self._owner_binding_snapshot):
+        # The constructor privately copies owners into a read-only mapping;
+        # neither its entries nor these frozen records have a mutable public API.
+        if self._resource_owners is not self._owner_binding_snapshot:
             raise NativeOpticalArenaProtocolError("sealed arena resource owners changed")
-        for token, owner in self._owner_binding_snapshot:
-            if self._resource_owners.get(token) is not owner:
-                raise NativeOpticalArenaProtocolError("sealed arena resource owners changed")
 
 
 def _validate_arena_spec_payload(payload: Mapping[str, object]) -> None:

@@ -941,6 +941,11 @@ class CudaNativeOpticalArena:
         object.__setattr__(self, "_sealed", False)
         object.__setattr__(self, "_control", control)
         object.__setattr__(self, "_slots", tuple(slots))
+        for slot in self._slots:
+            if (type(slot) is not _CudaSlotGraph
+                    or type(slot.targets) is not MappingProxyType
+                    or type(slot.executables) is not MappingProxyType):
+                raise ValueError("CUDA arena requires immutable slot target/executable maps")
         executions = {
             id(executable.target): executable
             for slot in self._slots
@@ -948,7 +953,7 @@ class CudaNativeOpticalArena:
         }
         if len(executions) != sum(len(slot.targets) for slot in self._slots):
             raise ValueError("CUDA arena executable targets must be identity-unique")
-        object.__setattr__(self, "_execution_by_target_id", executions)
+        object.__setattr__(self, "_execution_by_target_id", MappingProxyType(executions))
         object.__setattr__(self, "_acquire_authority", object())
         object.__setattr__(self, "_session_owners", tuple(session_owners))
         object.__setattr__(self, "_session_resource_records", tuple(session_resource_records))
@@ -993,7 +998,6 @@ class CudaNativeOpticalArena:
         for index in (transform_frame_index, render_sample_index):
             if index is not None and (type(index) is not int or index < 0):
                 raise ValueError("CUDA arena frame selection requires nonnegative integer indices")
-        self._validate_configuration()
         lifecycle = self._control.lifecycle_evidence()
         planned = plan_native_optical_acquisition(
             next_acquire_slot_id=lifecycle.next_acquire_slot_id,
@@ -1001,9 +1005,11 @@ class CudaNativeOpticalArena:
             planned_acquisition_offset=planned_acquisition_offset,
         )
         try:
-            return self._slots[planned.slot_id].targets[transform_frame_index, render_sample_index]
+            target = self._slots[planned.slot_id].targets[transform_frame_index, render_sample_index]
         except KeyError as exc:
             raise ValueError("CUDA arena transform frame is not part of the sealed graph") from exc
+        self._validate_configuration(target=target)
+        return target
 
     def bind_c3_provenance(
         self,
@@ -1015,7 +1021,7 @@ class CudaNativeOpticalArena:
     ) -> CudaArenaC3Provenance:
         """Issue one bounded C3 provenance capability for an arena-owned plan."""
 
-        self._validate_configuration()
+        self._validate_configuration(target=target)
         self._execution_for_target(target)
         _validate_live_a2_binding(target, prepared_input, native_readiness)
         _validate_c3_adapter_authority(
@@ -1055,7 +1061,7 @@ class CudaNativeOpticalArena:
     ) -> CudaPreparedArenaSample:
         """Create all per-generation Python state outside measured acquire."""
 
-        self._validate_configuration()
+        self._validate_configuration(target=target)
         expected_target = self.plan_target(
             transform_frame_index=target.evidence.transform_frame_index,
             planned_acquisition_offset=planned_acquisition_offset,
@@ -1174,6 +1180,7 @@ class CudaNativeOpticalArena:
 
     def _configuration_identity(self) -> tuple[object, ...]:
         return (
+            id(self._execution_by_target_id),
             tuple(id(slot) for slot in self._slots),
             tuple(
                 (
@@ -1183,8 +1190,8 @@ class CudaNativeOpticalArena:
                     tuple((name, id(start), getattr(start, "cuda_event", None),
                            id(end), getattr(end, "cuda_event", None))
                           for name, (start, end) in slot.diagnostic_events.items()),
-                    tuple((key, id(value)) for key, value in slot.targets.items()),
-                    tuple((key, id(value)) for key, value in slot.executables.items()),
+                    id(slot.targets),
+                    id(slot.executables),
                 )
                 for slot in self._slots
             ),
@@ -1192,9 +1199,23 @@ class CudaNativeOpticalArena:
             tuple(record.to_payload()["storage_token"] for record in self._session_resource_records),
         )
 
-    def _validate_configuration(self) -> None:
+    def _validate_configuration(self, *, target: CudaArenaPlanTarget | None = None) -> None:
         if self._configuration_signature() != self._frozen_signature:
             raise NativeOpticalArenaProtocolError("CUDA arena resource graph changed after seal")
+        if target is not None:
+            # Maps are immutable and checked by identity. Validate the selected
+            # target's live storage each time, without revisiting every other
+            # camera/transaction. Seal and final admission still check them all.
+            executable = self._execution_for_target(target)
+            slot_id = target.evidence.slot_id
+            if type(slot_id) is not int or not 0 <= slot_id < len(self._slots):
+                raise NativeOpticalArenaProtocolError("CUDA arena target slot changed")
+            slot = self._slots[slot_id]
+            key = (target.evidence.transform_frame_index, target.evidence.render_sample_index)
+            if slot.targets.get(key) is not target or slot.executables.get(key) is not executable:
+                raise NativeOpticalArenaProtocolError("CUDA arena frame selection changed")
+            _validate_target_evidence(self.spec, slot, target, executable)
+            return
         for slot in self._slots:
             if set(slot.targets) != set(slot.executables):
                 raise NativeOpticalArenaProtocolError("CUDA arena target/executable keys changed")
@@ -1202,7 +1223,8 @@ class CudaNativeOpticalArena:
                 if key != (target.evidence.transform_frame_index, target.evidence.render_sample_index):
                     raise NativeOpticalArenaProtocolError("CUDA arena frame selection changed")
                 executable = slot.executables[key]
-                executable.validate_bound()
+                if self._execution_for_target(target) is not executable:
+                    raise NativeOpticalArenaProtocolError("CUDA arena target/executable binding changed")
                 _validate_target_evidence(self.spec, slot, target, executable)
 
     def _execution_for_target(self, target: CudaArenaPlanTarget) -> _CudaExecutableTarget:

@@ -117,6 +117,35 @@ def run_sample(worker, index):
     request(worker, "RELEASE_RESOLVED_SAMPLE", resolved_token=resolved["resolved_token"])
 
 
+@pytest.fixture
+def target_validation_calls(monkeypatch):
+    from optics import cuda_arena
+
+    original = cuda_arena._validate_target_evidence
+    calls = []
+
+    def observed(spec, slot, target, executable):
+        calls.append(target)
+        return original(spec, slot, target, executable)
+
+    monkeypatch.setattr(cuda_arena, "_validate_target_evidence", observed)
+    return calls
+
+
+@pytest.mark.parametrize("fixed_inputs", ["cuda"], indirect=True)
+@pytest.mark.parametrize("final_sample_count", [1, 120, 600], indirect=True)
+@pytest.mark.parametrize("guard_operation_timeout_ms", [60_000])
+def test_preparation_checks_each_target_without_revisiting_the_batch(
+    target_validation_calls, worker_graph, final_sample_count, guard_operation_timeout_ms,
+):
+    # Three whole-graph checks (seal and both barrier edges) plus four selected
+    # checks per plan. Formerly each selected operation repeated the whole graph.
+    assert len(target_validation_calls) == 7 * final_sample_count
+    distinct = {id(target) for target in target_validation_calls}
+    assert len(distinct) == final_sample_count
+    assert worker_graph.worker._state == "PREPARED_IDLE"
+
+
 @pytest.mark.parametrize("final_sample_count", [1, 120, 600], indirect=True)
 @pytest.mark.parametrize("guard_operation_timeout_ms", [60_000])
 def test_execute_reduces_only_its_three_new_facts(worker_graph, monkeypatch, guard_operation_timeout_ms):
