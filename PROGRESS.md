@@ -1946,7 +1946,12 @@ Next milestone:
       Fresh independent code-reviewv6 requests changes atba394c6: F1 reproduces
       admission of changed native Warp scene/refit command operands despite
       unchanged Python bindings. Positive/fault/numeric evidence is verified,
-      but R1 remains unapproved pending repair and fresh independent review.
+      but that candidate was not approved. Repair13d17dd reuses the renderer's
+      packed-command inspector for scene/refit final validation. Six real native
+      command mutations now reject; eight normal row/lane/pass cases and all
+      eight CPU numerical comparisons pass. CPU regressions pass278 and the
+      real Warp scene/refit suite passes9. Implementation-notev9 records exact
+      scope and evidence; R1 remains pending fresh independent re-review.
       No final sample or speed result is claimed.
       R1/full C4 follow-up and fresh whole review remain mandatory.
       C4c2 runtime, C4c3-c4,
