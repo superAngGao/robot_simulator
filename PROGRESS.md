@@ -1862,9 +1862,17 @@ Next milestone:
       native intensity are included. All owned native PIDs are absent. The new
       three-recipe CUDA deployment compiles and verifies successfully. See
       input-precision implementation-notev3 for exact identities and raw evidence.
-      Full R1/profile/frame/failure verification and fresh independent amendment
-      review remain required. Work remains on implementation/c4-input-precision;
-      no timing result or later gate is issued. Whole C4 remains incomplete.
+      Independent precision gap-reviewv1 then reproduced three actual defects:
+      indexed CUDA scene ABI scalar position, rounded-normal facing, and Warp's
+      extra parallel-slab tolerance. Repair5e79749 fixes them in existing code;
+      fresh gap-reviewv2 approves repair code/CPU evidence only, with mandatory
+      native closure pending. Fresh repaired-source960 Go2 R0 runs in both lanes
+      pass all ten original CPU channels; all owned processes are gone. See
+      input-precision implementation-notev4 for raw evidence and scope. Full
+      R1/profile/frame/failure verification and fresh native/amendment review
+      remain required. Integration continues in implementation/c4-final-graph,
+      preserving the clean precision candidate and unfinished refactor work.
+      No timing result or later gate is issued. Whole C4 remains incomplete.
       Fixed R0 storage native-reviewv1 approves the14-case campaign at3d6692b:
       eight positives, four guarded raises and two deadline kills independently
       replayed; all29 author PIDs absent. Raw archive SHA256 is
