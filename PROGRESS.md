@@ -2015,7 +2015,15 @@ Next milestone:
       15 primary-server CPU passes/no skips. Fresh independent preflight
       approved exact22b1db0 for bounded native validation (245 independent CPU
       passes, no skips); complete report is archived. The fresh same-driver
-      double-lane probe is running; no outcome or speed result is claimed. See native
+      double-lane probe completed: Warp passed two samples/normal close; CUDA
+      now passes PREPARE and first EXECUTE but RESOLVE rejects its context's
+      equal indexed device value as a different retained target object. It
+      safely exited after one emergency target sync; raw evidence is preserved.
+      Candidate0be9876 binds that value through the original sealed CUDA context
+      and retains exact stream/event/sample/transaction ownership; fresh code
+      preflight is running. The predecessor22b1db0 reader's real20case
+      input/Go2/foreign-scope matrix is also running. No speed result is claimed.
+      See terminal-target implementation-notev1 and native
       worker source audit implementation-notev1 for exact scope and evidence.
       R1/full C4 follow-up and fresh whole review remain mandatory.
       C4c2 runtime, C4c3-c4,
