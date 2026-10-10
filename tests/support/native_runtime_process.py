@@ -83,8 +83,11 @@ RUNTIME_FINAL_IDLE_FAULTS = {
 }
 RUNTIME_FINAL_GRAPH_CASES = ("runtime_final_graph_success", "runtime_final_graph_diagnostics",
                            *RUNTIME_FINAL_GRAPH_FAULTS, *RUNTIME_FINAL_IDLE_FAULTS)
+RUNTIME_RENDER_WARMUP_FAULTS = tuple("runtime_render_warmup_" + name for name in (
+    "scene_raise", "acceleration_raise", "render_raise", "wait_raise"))
 RUNTIME_RENDER_WARMUP_CASES = ("runtime_render_warmup_success", "runtime_render_warmup_diagnostics",
-                             "runtime_render_warmup_geometry", *RUNTIME_FINAL_GRAPH_CASES)
+                             "runtime_render_warmup_geometry", *RUNTIME_FINAL_GRAPH_CASES,
+                             *RUNTIME_RENDER_WARMUP_FAULTS)
 # Fixed diagnostic selection for tracing RGB discrepancies to camera/first hit.
 # These are existing outputs, not additional kernels or product payloads.
 WARMUP_GEOMETRY_CHANNELS = ("origins", "directions", "hit_mask", "range_m", "position_world",
@@ -1153,7 +1156,7 @@ def _prepare_observed_render_graph(session, controller, binding, observer, direc
         controller.adopt_returned_device_owner = original_adopt
 
 
-def _run_observed_render_warmups(session, controller, binding, observer, directory, *, geometry=False):
+def _run_observed_render_warmups(session, controller, binding, observer, directory, *, geometry=False, fault=None):
     """Exercise production execution, observe native scope and save diagnostic RGB."""
     import hashlib
     from optical_worker import native_setup
@@ -1178,6 +1181,17 @@ def _run_observed_render_warmups(session, controller, binding, observer, directo
                     row['leaves'].append(leaf)
                     yield
                     leaf['returned'] = True
+                    if fault in RUNTIME_RENDER_WARMUP_FAULTS and len(frames) == 1:
+                        selected_launch = {"runtime_render_warmup_scene_raise": 1,
+                                           "runtime_render_warmup_acceleration_raise": 2,
+                                           "runtime_render_warmup_render_raise": 3}.get(fault)
+                        launched = sum(item['kind'] == 'warmup_launch' for item in row['leaves'])
+                        if ((kind == 'warmup_launch' and launched == selected_launch)
+                                or (kind == 'event_wait' and fault == 'runtime_render_warmup_wait_raise')):
+                            _write(directory, 'fault_entered.json', {
+                                'fault': fault, 'boundary': name, 'guard': dict(controller._guard_reference),
+                                'native_leaf_returned': True, 'launch_count': launched})
+                            raise RuntimeError('dynamic warmup failure after native return: ' + fault)
             yield lifecycle, owners, operation
         # Only a successful original scope permits a further native query.
         row['after'] = observer._state(False)
@@ -1235,8 +1249,17 @@ def _run_observed_render_warmups(session, controller, binding, observer, directo
                 'dtype': 'float32', 'frame_id': parameters['frame_id'], 'sha256': hashlib.sha256(encoded).hexdigest(),
                 'bytes': len(encoded), 'guard': dict(controller._guard_reference)})
             if geometry:
+                from optics.output_contract import (
+                    PRIMARY_DIAGNOSTIC_CHANNEL_NAMES, SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES,
+                )
+
+                names = WARMUP_GEOMETRY_CHANNELS
+                if session.fixed_row is not None:
+                    names += PRIMARY_DIAGNOSTIC_CHANNEL_NAMES
+                    if graph.pass_mode == "diagnostic_profiled":
+                        names += SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES
                 channels = {}
-                for name in WARMUP_GEOMETRY_CHANNELS:
+                for name in names:
                     host, encoded = readback(name)
                     (directory / ('warmup_' + name + '.bin')).write_bytes(encoded)
                     channels[name] = {'dtype': host.dtype.name, 'shape': list(host.shape),
@@ -1372,8 +1395,12 @@ def child(fault, fd, directory):
         "case_id",
         "go2_model_dir",
     }
-    if set(request) != fields:
+    if set(request) not in (fields, fields | {"row_id"}):
         raise ValueError("unexpected fixed runtime configuration field")
+    if "row_id" in request and (fault not in RUNTIME_FINAL_GRAPH_CASES or type(request["row_id"]) is not str):
+        raise ValueError("explicit frozen row selection requires a final graph case")
+    if fault in RUNTIME_RENDER_WARMUP_FAULTS and request["case_id"] != "synthetic_dynamic_rigid_960x640_v1":
+        raise ValueError("dynamic warmup fault requires the frozen dynamic case")
     if fault in RUNTIME_ARTIFACT_FAULTS and request["lane"] != "cuda":
         raise ValueError("fixed CUDA artifact case requires the CUDA lane")
     root = Path(request["root"])
@@ -1472,6 +1499,7 @@ def child(fault, fd, directory):
                       "go2_static_960x640_v1": "r0_go2_960_render_only_shadow",
                       "go2_static_1920x1080_v1": "r0_go2_1080_render_only_shadow",
                       "synthetic_dynamic_rigid_960x640_v1": "r1_dynamic_full_shadow"}[request["case_id"]]
+            row_id = request.get("row_id", row_id)
             row_arguments = {"row_id": row_id, "sample_count": 3,
                              "pass_mode": "diagnostic_profiled" if fault.endswith("diagnostics") else "primary_unprofiled"}
         session.materialize_native_source(request["case_id"], go2_model_dir=request["go2_model_dir"], **row_arguments)
@@ -1772,7 +1800,9 @@ def child(fault, fd, directory):
         if fault in RUNTIME_RENDER_WARMUP_CASES:
             phase = "fixed_render_warmups"
             _run_observed_render_warmups(session, controller, binding, scope_observer, directory,
-                                         geometry=fault == 'runtime_render_warmup_geometry')
+                fault=fault,
+                geometry=(fault == 'runtime_render_warmup_geometry' or (
+                    fault in RUNTIME_FINAL_GRAPH_CASES and session.fixed_row.row["boundary"] == "R1")))
             observe()
         if fault in RUNTIME_FINAL_GRAPH_CASES:
             phase = "fixed_final_graph"

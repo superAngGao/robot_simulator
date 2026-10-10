@@ -126,13 +126,14 @@ def _validate_fixed_storage(directory, lane, case, fault, *, successful):
         raise RuntimeError("fixed storage replaced the original failure")
 
 
-def _validate_render_graph(directory, lane, fault, *, trace, final_row=None):
+def _validate_render_graph(directory, lane, fault, *, trace, final_row=None, case=None):
     data = json.loads((directory / "render_graph_binding.json").read_bytes())
     diagnostic = fault.endswith("diagnostics")
     guard = {"sequence": 12 if lane == "warp" else 8, "role": "setup"}
     kinds = [row["details"]["descriptor"]["leaf_kind"] for row in trace
              if row["guard"] == guard and row["operation"] == "descriptor_observed"]
-    dynamic = final_row is not None and final_row["boundary"] == "R1"
+    dynamic = ((final_row is not None and final_row["boundary"] == "R1")
+               or case == "synthetic_dynamic_rigid_960x640_v1")
     phases = (["scene_update_kernel", "acceleration_kernel"] if dynamic else []) + [
         "raygen_kernel", "first_hit_kernel", "shade_kernel"]
     count = 2 * len(phases) + 1 if diagnostic else 1
@@ -265,19 +266,26 @@ def _validate_render_warmups(directory, lane, case, fault, *, trace, request):
               if row['operation'] == 'descriptor_observed'
               and row['details']['descriptor']['leaf_kind'] == 'device_to_host_copy']
     expected_copies = ['warmup_rgb_readback']
-    if fault == 'runtime_render_warmup_geometry':
+    if (fault == 'runtime_render_warmup_geometry'
+            or (fault.startswith('runtime_final_graph_') and case == 'synthetic_dynamic_rigid_960x640_v1')):
         from tests.support.native_runtime_process import WARMUP_GEOMETRY_CHANNELS
+        from optics.output_contract import PRIMARY_DIAGNOSTIC_CHANNEL_NAMES, SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES
+
+        scalar_names = (() if fault == 'runtime_render_warmup_geometry' else PRIMARY_DIAGNOSTIC_CHANNEL_NAMES)
+        if fault.endswith('diagnostics'):
+            scalar_names += SHADOW_TRAVERSAL_DIAGNOSTIC_CHANNEL_NAMES
+        channels = WARMUP_GEOMETRY_CHANNELS + scalar_names
         geometry = json.loads((directory / 'warmup_geometry.json').read_bytes())
         if (geometry['frame_id'] != rgb['frame_id'] or geometry['guard'] != rgb['guard']
-                or set(geometry['channels']) != set(WARMUP_GEOMETRY_CHANNELS)):
+                or set(geometry['channels']) != set(channels)):
             raise RuntimeError('diagnostic geometry differs from its final-frame RGB')
-        for name in WARMUP_GEOMETRY_CHANNELS:
+        for name in channels:
             row = geometry['channels'][name]
-            shape = [workload.width * workload.height]
+            shape = [1] if name in scalar_names else [workload.width * workload.height]
             if name in {'origins', 'directions', 'position_world', 'normal_world'}:
                 shape.append(3)
             dtype = ('float64' if name in {'origins', 'directions'} else
-                     'int32' if name in {'hit_mask', 'numeric_instance_id', 'material_index'} else 'float32')
+                     'int32' if name in {'hit_mask', 'numeric_instance_id', 'material_index', *scalar_names} else 'float32')
             raw = (directory / ('warmup_' + name + '.bin')).read_bytes()
             if (row['shape'] != shape or row['dtype'] != dtype or row['bytes'] != len(raw)
                     or len(raw) != math.prod(shape) * (8 if dtype == 'float64' else 4)
@@ -289,7 +297,7 @@ def _validate_render_warmups(directory, lane, case, fault, *, trace, request):
         raise RuntimeError('diagnostic RGB lacks its actual completed readback guard')
 
 
-def run_case(repository, revision, environment_path, environment, directory, lane, case, fault):
+def run_case(repository, revision, environment_path, environment, directory, lane, case, fault, *, row_id=None):
     from optical_worker.guarded_evidence import validate_custody_artifact
     from optical_worker.native_sources import CATALOG_PATH
     from optical_worker.runtime_custody import (
@@ -299,6 +307,7 @@ def run_case(repository, revision, environment_path, environment, directory, lan
     from tests.support.native_runtime_process import (RUNTIME_FIXED_STORAGE_FAULTS, RUNTIME_RENDER_GRAPH_CASES,
                                                       RUNTIME_RENDER_WARMUP_CASES, RUNTIME_FINAL_GRAPH_CASES,
                                                       RUNTIME_FINAL_GRAPH_FAULTS, RUNTIME_FINAL_IDLE_FAULTS,
+                                                      RUNTIME_RENDER_WARMUP_FAULTS,
                                                       RUNTIME_PHASES)
 
     request = {"root": str(repository), "revision": revision, "lane": lane,
@@ -308,6 +317,10 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                "guard_configuration": {"protocol_version": "q54.closed-worker.guarded-wait.v1",
                    "session": uuid.uuid4().hex, "device_ordinal": 1,
                    "ack_timeout_ms": 1000, "operation_timeout_ms": 120000}}
+    if row_id is not None:
+        if fault not in RUNTIME_FINAL_GRAPH_CASES or type(row_id) is not str:
+            raise ValueError("explicit frozen row selection requires a final graph case")
+        request["row_id"] = row_id
     inputs = capture_runtime_custody_inputs(request)
     write(directory, "request.json", request)
     write(directory, "runtime_custody_inputs.json", inputs)
@@ -346,7 +359,7 @@ def run_case(repository, revision, environment_path, environment, directory, lan
         storage_case = fault in RUNTIME_FIXED_STORAGE_FAULTS or graph_case
         successful = fault in {"runtime_artifacts_success", "runtime_scope_success", "runtime_warp_modules_success",
                                "runtime_fixed_storage_success", "runtime_fixed_storage_diagnostics"} or (
-                                   graph_case and fault not in RUNTIME_FINAL_GRAPH_FAULTS)
+                                   graph_case and fault not in RUNTIME_FINAL_GRAPH_FAULTS + RUNTIME_RENDER_WARMUP_FAULTS)
         if successful:
             expected_phases = (12 if lane == "warp" else 8) if storage_case else (
                 11 if fault == "runtime_warp_modules_success" else (7 if lane == "cuda" else 6))
@@ -387,6 +400,32 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                         raise RuntimeError("Warp module reuse replaced a compiled executable")
             if (directory / "failure.json").exists() or (directory / "fault_entered.json").exists():
                 raise RuntimeError("positive native case has a failure marker")
+        elif fault in RUNTIME_RENDER_WARMUP_FAULTS:
+            marker = json.loads((directory / "fault_entered.json").read_bytes())
+            failure = json.loads((directory / "failure.json").read_bytes())
+            partial = json.loads((directory / "warmup_partial.json").read_bytes())
+            guard = {"sequence": 14 if lane == "warp" else 10, "role": "setup"}
+            summary = worker["summary"]
+            if (result["worker_returncode"] != 74 or control["deadline_expired"] or control["kill_requested"]
+                    or marker["fault"] != fault or marker["guard"] != guard or not marker["native_leaf_returned"]
+                    or failure["type"] != "RuntimeError"
+                    or failure["message"] != "dynamic warmup failure after native return: " + fault
+                    or failure["phase"] != "fixed_render_warmups"
+                    or summary["disposition"] != "quarantined_process_exit" or summary["custody"] != "full_quarantine"
+                    or summary["emergency_sync_attempt_count"] != 0 or summary["release_status"] != "not_authorized"
+                    or control["normal_complete_count"] != guard["sequence"]
+                    or control["arm_count"] != guard["sequence"] + 1
+                    or len(partial["frames"]) != 1 or partial["frames"][0]["guard"] != guard
+                    or (directory / "warmup_completion.json").exists()
+                    or (directory / "final_graph_binding.json").exists()):
+                raise RuntimeError("dynamic warmup failure lost its failed guard or retained native graph")
+            leaves = partial["frames"][0]["leaves"]
+            expected_launches = {"scene_raise": 1, "acceleration_raise": 2, "render_raise": 3,
+                                 "wait_raise": 7 if lane == "warp" else 5}[fault.removeprefix("runtime_render_warmup_")]
+            if (marker["launch_count"] != expected_launches or not leaves[-1]["returned"]
+                    or leaves[-1]["name"] != marker["boundary"]
+                    or sum(leaf["kind"] == "warmup_launch" for leaf in leaves) != expected_launches):
+                raise RuntimeError("dynamic warmup fault did not follow the selected real native stage")
         elif fault == "runtime_optical_idle_entry":
             marker = json.loads((directory / "fault_entered.json").read_bytes())
             failure = json.loads((directory / "failure.json").read_bytes())
@@ -570,7 +609,7 @@ def run_case(repository, revision, environment_path, environment, directory, lan
         if storage_case:
             storage_fault = ("runtime_fixed_storage_" + ("diagnostics" if fault.endswith("diagnostics") else "success")
                              if graph_case else fault)
-            _validate_fixed_storage(directory, lane, case, storage_fault, successful=successful or final_case)
+            _validate_fixed_storage(directory, lane, case, storage_fault, successful=successful or graph_case)
         final_row = None
         if final_case:
             final = json.loads((directory / ("final_graph_binding.json" if successful else "final_graph_partial.json")).read_bytes())
@@ -598,8 +637,8 @@ def run_case(repository, revision, environment_path, environment, directory, lan
                         if lane == "warp" else state["logical_device"] != 1 or state["raw_device"] != 1)):
                 raise RuntimeError("final barrier ran outside its exact target scope")
         if graph_case:
-            _validate_render_graph(directory, lane, fault, trace=worker["transition_trace"], final_row=final_row)
-        if warmup_case:
+            _validate_render_graph(directory, lane, fault, trace=worker["transition_trace"], final_row=final_row, case=case)
+        if warmup_case and fault not in RUNTIME_RENDER_WARMUP_FAULTS:
             _validate_render_warmups(directory, lane, case, fault, trace=worker["transition_trace"], request=request)
         raw_path = directory / "runtime_custody.json"
         if raw_path.exists():
