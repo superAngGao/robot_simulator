@@ -1862,11 +1862,17 @@ def child(fault, fd, directory):
                         "unrecorded_modules": _unrecorded_module_observations(admission),
                     },
                 )
+            frames = []
+            cursor = error.__traceback__
+            while cursor is not None:
+                frames.append({"file": cursor.tb_frame.f_code.co_filename,
+                               "function": cursor.tb_frame.f_code.co_name, "line": cursor.tb_lineno})
+                cursor = cursor.tb_next
             _write(
                 directory,
                 "failure.json",
                 {"phase": phase, "type": type(error).__name__, "message": str(error)[:1024],
-                 "exception_chain": causes},
+                 "exception_chain": causes, "frames": frames},
             )
             if controller is not None and controller.termination_evidence is not None:
                 _write(directory, "worker.json", controller.termination_evidence.lifecycle.to_payload())
