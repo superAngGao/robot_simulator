@@ -2040,7 +2040,10 @@ Next milestone:
       existing adoption before reader validation in both lanes; four original
       CPU counterexamples fail before repair,125 related CPU cases pass after.
       Fresh independent preflight approves exactcf7f5a6 (211 independent CPU
-      cases); original four-case native rerun is now active. Author full source
+      cases); all four original native foreign/unknown-stream cases now pass,
+      and their11 owned process identities are absent in OS/GPU checks. The
+      full17-case reader/input regression is running at the same revision.
+      Author full source
       regression passes317 with13 Windows skips, all13 supplemented successfully
       on primary Linux. Separately the approvedfc23b4e
       actual Warp exit-not-restored fault passed, preserving the contradictory

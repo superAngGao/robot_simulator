@@ -5,7 +5,7 @@ Version: v1
 Date: 2026-10-10
 Status: implemented
 Related Files: native-state-reader design-request v1 and code-preflight-review v3; runtime-integration design-request v3; terminal-target test-evidence v1; warp-exit-fault test-code-preflight-review v1
-Owner Summary: The corrected foreign-stream runner reached a real ownership-order regression. Candidate cf7f5a6 moves the existing returned-stream adoption before reader validation. No new mechanism or weaker assertion is introduced. Fresh independent preflight approves this repair for bounded native validation; the four-case native rerun is active. Separately, the approved actual Warp exit-not-restored test passed.
+Owner Summary: The corrected foreign-stream runner reached a real ownership-order regression. Candidate cf7f5a6 moves the existing returned-stream adoption before reader validation. No new mechanism or weaker assertion is introduced. Fresh independent preflight approves this repair; all four original native foreign/unknown cases now pass. The full17-case reader/input regression is running. Separately, the approved actual Warp exit-not-restored test passed.
 
 ## Corrected harness and real regression
 
@@ -98,10 +98,28 @@ four-case native rerun at2026-10-10T11:07:06.017857Z. Remote campaign
 `/data2/shared/ang.gao/c4-reader-cf7f5a6-foreign-scope-v1`, wrapper2868772,
 driver2868786, tool10186. Runner SHA256
 de6f3cc93f73180f6c2e2c8f677d159328f215323efb1b61e895cb179f1f6211.
-Same four cases, original assertions and exact current profiles; no result is
-claimed before terminal evidence. A complete17-case reader/input regression
-runner is also prepared and collection-verified, awaiting this native round's
-completion and closure. Its SHA256 is
+Same four cases, original assertions and exact current profiles. This round
+ended2026-10-10T11:10:08.064714Z:4passed,83deselected in181.69s. Both returned
+foreign-stream cases record dirty[0,1]; both pre-return unknown cases retain
+unknown scope. All four workers exited74 with expected whole-graph quarantine,
+zero emergency sync and no ordinary release; every original assertion passed.
+Four real identity chains were observed, with no observer errors. All11 owned
+OS/GPU identities are absent:2868772,2868786,2868791,2868852,2868854,2869783,
+2869786,2872054,2872055,2872841,2872847. Original faulty attempts are preserved.
+
+Archive `c4-reader-cf7f5a6-foreign-scope-v1-evidence-v1.tar.gz` contains96raw
+files,29,000,102bytes, plus inventory. Archive SHA256
+47f16a1092d84f4f0e9aae8b84d0020e0dbaca92993c4c2083dbc1d696a28af6;
+inventory SHA2568971d7f8556edfc4fc84e25340c1060ef2674a7b89b2da5bc769f32cdbcee600.
+Copied to local c4_assets. This is bounded author-observed native success;
+whole-reader independent hardware acceptance remains outstanding.
+
+After this terminal/closure check, complete17-case reader/input regression
+started2026-10-10T11:11:43.042205Z at
+`/data2/shared/ang.gao/c4-reader-cf7f5a6-native-scope-v1`, same exact candidate.
+Wrapper2877617, driver2877625, tool22881. Original cases/assertions are unchanged;
+the same corrected actual-module profile hook and external identity recorder
+are used. No complete outcome is claimed while it runs. Runner SHA256 is
 ab65b9aae54e929e3a3086a6d291f73517bda1b2a141bae8f93e0ec176b579ea.
 
 ## Actual Warp exit-not-restored evidence
