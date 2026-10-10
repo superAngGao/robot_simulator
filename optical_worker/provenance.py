@@ -180,6 +180,24 @@ DYNAMIC_RENDER_SHADE_INPUT_NAMES = (
 _SUPPORTED_OUTPUT_PROFILES = frozenset({"direct_light_full", "rgb_preview", "render_only"})
 
 
+def _dynamic_stage_inputs(runtime, transforms, world, acceleration):
+    """Select the frozen logical arrows from native allocation signatures."""
+    runtime = {value.name: value for value in runtime}
+    transforms = {value.name: value for value in transforms}
+    world = {value.name: value for value in world}
+    acceleration = {value.name: value for value in acceleration}
+    render = runtime | world | acceleration
+    return (
+        tuple(runtime[name] for name in DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES)
+        + tuple(transforms[name] for name in DYNAMIC_TRANSFORM_INPUT_NAMES),
+        tuple(world[name] for name in DYNAMIC_ACCELERATION_INPUT_NAMES),
+        tuple(render[name] for name in (
+            DYNAMIC_RENDER_WORLD_INPUT_NAMES + DYNAMIC_RENDER_METADATA_INPUT_NAMES
+            + DYNAMIC_ACCELERATION_OUTPUT_NAMES + DYNAMIC_RENDER_SHADE_INPUT_NAMES
+        )),
+    )
+
+
 def _canonical_sha256(payload: object) -> str:
     encoded = json.dumps(
         payload,

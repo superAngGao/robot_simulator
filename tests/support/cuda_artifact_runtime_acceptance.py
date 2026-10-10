@@ -81,9 +81,13 @@ def _validate_fixed_storage(directory, lane, case, fault, *, successful):
     data = json.loads((directory / name).read_bytes())
     guard = {"sequence": 11 if lane == "warp" else 7, "role": "setup"}
     diagnostics = fault == "runtime_fixed_storage_diagnostics"
+    dynamic = case == "synthetic_dynamic_rigid_960x640_v1"
     count = (23 if diagnostics else 14) if successful else (2 if "adoption" in fault else 1)
+    if dynamic and successful:
+        count += 10 if lane == "warp" else 26
+    call_count = count + (12 if dynamic and lane == "warp" else 0)
     if (data["guard"] != guard or len(data["arrays"]) != count
-            or len(data["calls"]) != (count if successful else 2)):
+            or len(data["calls"]) != (call_count if successful else 2)):
         raise RuntimeError("fixed storage did not reach its exact allocation boundary")
     ids = [row["id"] for row in data["arrays"]]
     if len(set(ids)) != count or sorted(ids) != data["retained_ids"]:
@@ -113,7 +117,7 @@ def _validate_fixed_storage(directory, lane, case, fault, *, successful):
                 or data["final_execution_readiness_issued"] is not False
                 or sorted(row["id"] for row in data["outputs"]) != sorted(ids)
                 or len({row["name"] for row in data["outputs"]}) != count
-                or data["arrays"][0]["shape"] != [workload.width * workload.height, 3]
+                or (not dynamic and data["arrays"][0]["shape"] != [workload.width * workload.height, 3])
                 or not data["input_ids"]
                 or any(row["view_id"] != row["prepared_id"] for row in data["input_ids"])):
             raise RuntimeError("fixed storage binding differs from its prepared inputs or outputs")
@@ -128,7 +132,10 @@ def _validate_render_graph(directory, lane, fault, *, trace, final_row=None):
     guard = {"sequence": 12 if lane == "warp" else 8, "role": "setup"}
     kinds = [row["details"]["descriptor"]["leaf_kind"] for row in trace
              if row["guard"] == guard and row["operation"] == "descriptor_observed"]
-    count = 7 if diagnostic else 1
+    dynamic = final_row is not None and final_row["boundary"] == "R1"
+    phases = (["scene_update_kernel", "acceleration_kernel"] if dynamic else []) + [
+        "raygen_kernel", "first_hit_kernel", "shade_kernel"]
+    count = 2 * len(phases) + 1 if diagnostic else 1
     if (kinds.count("event_create") != count or kinds.count("event_record") != count
             or kinds.count("event_wait") != 1 or kinds[-1:] != ["event_wait"]
             or "warmup_launch" in kinds or "allocation" in kinds):
@@ -139,9 +146,9 @@ def _validate_render_graph(directory, lane, fault, *, trace, final_row=None):
             or data["profile"] != ("direct_light_full" if final_row is None else final_row["output_profile"])
             or data["shadows"] is not (True if final_row is None else final_row["shadows"])
             or data["pass_mode"] != ("diagnostic_profiled" if diagnostic else "primary_unprofiled")
-            or data["diagnostic_phases"] != (["raygen_kernel", "first_hit_kernel", "shade_kernel"] if diagnostic else [])
+            or data["diagnostic_phases"] != (phases if diagnostic else [])
             or [row["frame_id"] for row in data["frames"]] != list(range(1, 11))
-            or len(set(data["event_ids"])) != (7 if diagnostic else 1)):
+            or len(set(data["event_ids"])) != count):
         raise RuntimeError("provisional render graph has incorrect modes, frames, events or scope")
     before = data["before"]
     if (before["default_device"] != 0 or before["current_context"] is not None
@@ -153,7 +160,11 @@ def _validate_render_graph(directory, lane, fault, *, trace, final_row=None):
         raise RuntimeError("provisional render graph lost distinct frames or event custody")
     command_ids = []
     for frame in data["frames"]:
-        if len(frame["entries"]) != (5 if lane == "warp" else 3):
+        counts = frame["phase_launch_counts"]
+        if (len(counts) != len(phases) or counts[-3:] != ([1, 2, 2] if lane == "warp" else [1, 1, 1])
+                or (dynamic and (counts[0] != (2 if lane == "warp" else 1) or counts[1] < 1))
+                or (dynamic and frame["transform_frame_index"] != (frame["frame_id"] - 1) % 120)
+                or len(frame["entries"]) != (sum(counts) if lane == "warp" else 3)):
             raise RuntimeError("provisional render graph has incomplete native commands")
         for entry in frame["entries"]:
             if lane == "warp":
@@ -204,12 +215,13 @@ def _validate_render_warmups(directory, lane, case, fault, *, trace, request):
             or data['final_execution_readiness_issued'] is not False or len(data['frames']) != 10):
         raise RuntimeError('warmup observations differ from their original graph, input or completed guards')
     launch, record, wait = 'warmup_launch', 'event_record', 'event_wait'
-    if fault.endswith('diagnostics'):
-        kinds = ([record,launch,record,record,launch,launch,record,record,launch,launch,record]
-                 if lane == 'warp' else [record,launch,record] * 3) + [record,wait]
-    else:
-        kinds = [launch] * (5 if lane == 'warp' else 3) + [record,wait]
-    for sequence, row in zip(guards, data['frames'], strict=True):
+    for sequence, row, frame in zip(guards, data['frames'], graph['frames'], strict=True):
+        kinds = []
+        for count in frame['phase_launch_counts']:
+            kinds += ([record] if fault.endswith('diagnostics') else [])
+            kinds += [launch] * count
+            kinds += ([record] if fault.endswith('diagnostics') else [])
+        kinds += [record, wait]
         guard = {'sequence': sequence, 'role': 'setup'}
         if (row['guard'] != guard or row['before'] != row['after']
                 or [leaf['kind'] for leaf in row['leaves']] != kinds
@@ -559,12 +571,12 @@ def run_case(repository, revision, environment_path, environment, directory, lan
             final = json.loads((directory / ("final_graph_binding.json" if successful else "final_graph_partial.json")).read_bytes())
             gate = json.loads((repository / "benchmarks/results/q54_p12_4/gate.json").read_bytes())
             final_row = next(row for row in gate["mandatory_rows"] if row["row_id"] == final["row"]["row_id"])
-            if final_row != final["row"] or final_row["case_id"] != case or final_row["boundary"] != "R0":
+            if final_row != final["row"] or final_row["case_id"] != case or final_row["boundary"] not in {"R0", "R1"}:
                 raise RuntimeError("final graph row differs from its frozen case")
         if final_case and successful:
             from optical_worker.protocol import canonical_sha256
             final_summary = worker["summary"]["final_setup"]
-            if (final_row != final["row"] or final_row["case_id"] != case or final_row["boundary"] != "R0"
+            if (final_row != final["row"] or final_row["case_id"] != case or final_row["boundary"] not in {"R0", "R1"}
                     or final["before"] != final["after"] or final["before"] != final["after_barrier"]
                     or not final["barrier_returned"] or final["sample_submission_count"] != 0
                     or final["acquire_cancel_observed"] is not True or final["frame_ids"] != [1, 2, 3]

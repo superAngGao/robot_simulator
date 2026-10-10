@@ -132,3 +132,29 @@ Next work is the R1 final factory/C3/arena composition and exact row admission,
 then full captured native R1 success/failure/numerical verification and fresh
 independent review as one coherent packet. C2f and subsequent full C4 acceptance
 remain outstanding; do not report these legacy GPU tests as that acceptance.
+
+## Continued final dynamic composition (working candidate)
+
+Final row admission now accepts the frozen mandatory R0/R1 rows only. The same
+final builder constructs fresh scene/acceleration/render factories, chooses
+replay indices separately from camera sample indices, and seals the existing
+CUDA or Warp arena. CUDA retains its existing three-stage transaction; Warp
+uses the same recorded executor and NativeOpticalArena FIFO/lease controller.
+World arrays and refit bounds are slot resources; immutable Warp topology and
+prepared replay arrays are session resources. Both C3 adapters share a small
+logical-input selector in the existing provenance module, whose validator still
+independently checks the complete ordered arrows.
+
+The shared untimed Warp validator checks actual transform roots, view shape,
+strides, frame byte offset and env index against the original prepared replay.
+It checks scene/refit/render physical dataflow at transaction construction and
+final graph validation; acquisition remains the existing fixed-cost path.
+The native observer/acceptance driver is being generalized in place to cover
+dynamic storage and five phases; it is not yet verified on the real worker.
+
+R0 arena/final graph regressions: 87 passed in187.28s on local Python3.14.
+That run preceded the final repeated dataflow checks at final barrier/resolution;
+those changes require the next regression run. All90 prospective LF sources
+pass the existing AST policy; source catalog b9db06834328433d24ee67b697acb0a2d68d2c736e12c2c0a2eb2f9316a39dca.
+Native R1 runs and numerical/failure verification plus independent review remain
+pending. This is still the same unaccepted R1 packet, not R1/C4 acceptance.

@@ -61,8 +61,8 @@ def _admit_fixed_row(session, *, row_id, case_id, sample_count, pass_mode):
     if hashlib.sha256(canonical_json_bytes(gate)).hexdigest() != _FROZEN_GATE_SHA256:
         raise ValueError("row gate differs from the reviewed frozen data")
     row = next((item for item in gate["mandatory_rows"] if item["row_id"] == row_id), None)
-    if row is None or row["case_id"] != case_id or row["boundary"] != "R0":
-        raise ValueError("fixed final graph accepts only its frozen R0 row/case")
+    if row is None or row["case_id"] != case_id or row["boundary"] not in {"R0", "R1"}:
+        raise ValueError("fixed final graph accepts only its frozen R0/R1 row/case")
     admission = _FrozenNativeRow(
         canonical_json_bytes(row), canonical_json_bytes(gate["cases"][case_id]), sample_count, pass_mode
     )
@@ -93,14 +93,20 @@ def _spec_for_final_graph(session, *, sample_count):
 
         context = session.cuda_factories[0]
         stream_token = cuda_execution_stream_token(context)
-        first = session.fixed_render_storage[1]
-        primitive_count, node_capacity = int(first.triangle_v0_world.shape[0]), first.num_bvh_nodes
+        storage = session.fixed_render_storage
+        if row["boundary"] == "R1":
+            primitive_count = int(storage.world.triangle_v0_world.shape[0])
+            node_capacity = storage.acceleration.node_count
+        else:
+            first = storage[1]
+            primitive_count, node_capacity = int(first.triangle_v0_world.shape[0]), first.num_bvh_nodes
     else:
         from optics.warp_arena import warp_execution_stream_token
 
         factory = provisional.factory
         stream_token = warp_execution_stream_token(factory.device, factory.stream)
-        bvh = session.fixed_render_storage[2]
+        bvh = (session.fixed_render_storage.acceleration if row["boundary"] == "R1"
+               else session.fixed_render_storage[2])
         primitive_count, node_capacity = bvh.num_primitives, bvh.num_nodes
     return native_optical_arena_spec_from_row(
         row=row,

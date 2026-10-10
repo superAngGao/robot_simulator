@@ -20,16 +20,12 @@ from .native_input import (
     validate_prepared_native_input,
 )
 from .provenance import (
-    DYNAMIC_ACCELERATION_INPUT_NAMES,
     DYNAMIC_ACCELERATION_OUTPUT_NAMES,
-    DYNAMIC_RENDER_METADATA_INPUT_NAMES,
-    DYNAMIC_RENDER_SHADE_INPUT_NAMES,
-    DYNAMIC_RENDER_WORLD_INPUT_NAMES,
-    DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES,
     DYNAMIC_TRANSFORM_INPUT_NAMES,
     NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
     NativeStageEvidence,
     NativeStorageSignature,
+    _dynamic_stage_inputs,
     _register_cuda_arena_c3_binding_authority,
     build_c3_one_shot_native_execution_binding,
 )
@@ -104,7 +100,6 @@ def build_cuda_c3_binding_from_arena_target(
             prepared_input,
             tuple(target._runtime_scene_arrays),
         )
-        runtime_by_name = {value.name: value for value in runtime_scene}
         transform_by_name = {
             name: _storage_signature(
                 name,
@@ -117,25 +112,14 @@ def build_cuda_c3_binding_from_arena_target(
             _storage_signature(name, tensor, owner_token=slot_owner)
             for name, tensor in target._scene_output_arrays.items()
         )
-        scene_by_name = {value.name: value for value in scene_outputs}
         acceleration_outputs = _ordered_signatures(
             target._acceleration_output_arrays,
             DYNAMIC_ACCELERATION_OUTPUT_NAMES,
             slot_owner,
         )
-        acceleration_by_name = {value.name: value for value in acceleration_outputs}
-        scene_inputs = tuple(
-            runtime_by_name[name] for name in DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES
-        ) + tuple(transform_by_name[name] for name in DYNAMIC_TRANSFORM_INPUT_NAMES)
-        acceleration_inputs = tuple(scene_by_name[name] for name in DYNAMIC_ACCELERATION_INPUT_NAMES)
-        render_names = (
-            DYNAMIC_RENDER_WORLD_INPUT_NAMES
-            + DYNAMIC_RENDER_METADATA_INPUT_NAMES
-            + DYNAMIC_ACCELERATION_OUTPUT_NAMES
-            + DYNAMIC_RENDER_SHADE_INPUT_NAMES
+        scene_inputs, acceleration_inputs, render_inputs = _dynamic_stage_inputs(
+            runtime_scene, tuple(transform_by_name.values()), scene_outputs, acceleration_outputs
         )
-        render_inputs_by_name = runtime_by_name | scene_by_name | acceleration_by_name
-        render_inputs = tuple(render_inputs_by_name[name] for name in render_names)
         stage_evidence = (
             _stage_evidence(
                 name="scene_update",

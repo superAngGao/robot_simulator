@@ -983,10 +983,29 @@ def _prepare_observed_fixed_storage(session, controller, binding, observer, dire
             raise
         after = observer._state(False)
         assert before == after, "render allocation changed ambient device or stream"
-        scene, first, second, outputs = result
+        dynamic = type(result) is native_setup._DynamicRenderStorage
+        if dynamic:
+            scene, first, second, outputs = result.scene, result.world, result.acceleration, result.outputs
+        else:
+            scene, first, second, outputs = result
         prepared = session.prepared_input
         assert scene.resources[0] is prepared
-        if session.lane == "warp":
+        if dynamic:
+            if session.lane == "warp":
+                from optics.device_scene import _warp_local_scene_arrays, _warp_world_scene_arrays
+                from optics.device_bvh import _warp_refit_output_arrays, _warp_bvh_immutable_arrays
+                inputs = list(_warp_local_scene_arrays(scene))
+                output_items = (_warp_world_scene_arrays(first) + _warp_refit_output_arrays(second) + outputs.arrays)
+                assert second.bounds_min is not result.topology.bounds_min
+                assert second.bounds_max is not result.topology.bounds_max
+                assert all(a is b for (_, a), (_, b) in zip(_warp_bvh_immutable_arrays(second),
+                           _warp_bvh_immutable_arrays(result.topology), strict=True))
+            else:
+                inputs = tuple(scene.arrays.items())
+                output_items = (tuple(("world." + n, a) for n, a in first.tensor_items())
+                    + tuple(("lbvh." + n, a) for n, a in second.tensor_items())
+                    + (("workspace", result.workspace.resources[0]),) + outputs.tensor_items())
+        elif session.lane == "warp":
             from optics.device_scene import _warp_world_scene_arrays
             inputs = list(_warp_world_scene_arrays(first)) + [
                 ("bvh_" + name, getattr(second, name)) for name in (
@@ -1058,24 +1077,37 @@ def _prepare_observed_render_graph(session, controller, binding, observer, direc
             renderer, context = native_setup._require_cuda_render_factory(session, result.compiled_modules)
             assert renderer is result.factory and context.stream is binding.stream
             issued_module = session.require_cuda_extension(result.compiled_modules, "robot_sim_cuda_direct_light_v10")
-        for parameters, bundle in result.frames:
-            controller.require_adopted(bundle)
+        for parameters, frame in result.frames:
+            stages = native_setup._frame_stages(frame)
+            bundle = stages[-1]
+            controller.require_adopted(frame, *stages)
             if session.lane == "warp":
                 bundle.validate_resolved_parameters(parameters)
                 entries = []
-                for command in bundle.commands:
-                    controller.require_adopted(command)
-                    assert command.module_exec is compiled[2].executable and command.kernel.module is compiled[2].module
-                    entries.append({"id": id(command), "executable": id(command.module_exec),
-                                    "expected_executable": id(compiled[2].executable)})
+                for stage_index, stage in enumerate(stages):
+                    compiled_index = stage_index if len(stages) == 3 else 2
+                    commands = stage.commands if stage is bundle else stage._commands
+                    for command in commands:
+                        controller.require_adopted(command)
+                        assert command.module_exec is compiled[compiled_index].executable
+                        assert command.kernel.module is compiled[compiled_index].module
+                        entries.append({"id": id(command), "executable": id(command.module_exec),
+                                        "expected_executable": id(compiled[compiled_index].executable)})
             else:
                 assert bundle.renderer is renderer
-                bundle._validate_cuda_transaction_stage(context)
+                for stage in stages:
+                    stage._validate_cuda_transaction_stage(context)
                 bundle._cuda_transaction_stage_evidence().validate_render_parameters(parameters.to_payload())
                 entries = [{"id": id(bundle._raygen_entry), "expected_entry": id(issued_module.pinhole_camera_rays_out)},
                            {"id": id(renderer.module.first_hit_rays_out), "expected_entry": id(issued_module.first_hit_rays_out)},
                            {"id": id(bundle._shade_entry), "expected_entry": id(getattr(issued_module, bundle._shade_entry_name))}]
-            rows.append({"frame_id": parameters.to_payload()["frame_id"], "bundle_id": id(bundle), "entries": entries})
+            phase_launch_counts = [1, 2, 2] if session.lane == "warp" else [1, 1, 1]
+            if len(stages) == 3:
+                phase_launch_counts = ([len(stage._commands) for stage in stages[:2]]
+                    if session.lane == "warp" else [1, 1]) + phase_launch_counts
+            rows.append({"frame_id": parameters.to_payload()["frame_id"], "bundle_id": id(bundle),
+                         "entries": entries, "phase_launch_counts": phase_launch_counts,
+                         "transform_frame_index": frame.transform_frame_index if len(stages) == 3 else None})
         events = (result.completion_event, *(event for _, start, end in result.diagnostic_events for event in (start, end)))
         controller.require_adopted(*events)
         assert {id(event) for event in events} == {row["id"] for row in adoptions if row["role"] == "slot_event"}
@@ -1149,7 +1181,7 @@ def _run_observed_render_warmups(session, controller, binding, observer, directo
     assert all(tx.completion is completion and completion.event is graph.completion_event
                for tx, completion in zip(evidence.transactions, evidence.completions, strict=True))
     _write(directory, 'warmup_completion.json', {'evidence': evidence.to_payload(), 'frames': frames,
-        'bundle_ids': [id(tx.bundle if session.lane == 'warp' else tx._stages[0]) for tx in evidence.transactions],
+        'bundle_ids': [id(tx.bundle if session.lane == 'warp' else tx._stages[-1]) for tx in evidence.transactions],
         'provisional_warmup_count': graph.readiness.warmup_frames_completed,
         'sample_submission_count': 0, 'final_execution_readiness_issued': False})
 
@@ -1160,7 +1192,9 @@ def _run_observed_render_warmups(session, controller, binding, observer, directo
         with original_scope(binding.module, binding.target, lane=session.lane, stream=binding.stream,
                 context=context, owner_role='warmup_rgb_host_custody', scope_id='warmup_rgb_readback_scope') as (_, owners, operation):
             def readback(name):
-                value = getattr(session.fixed_render_storage[3], name)
+                storage = session.fixed_render_storage
+                outputs = storage.outputs if type(storage) is native_setup._DynamicRenderStorage else storage[3]
+                value = getattr(outputs, name)
                 operation_id = 'warmup_' + name + '_readback'
                 with operation(operation_id, 'device_to_host_copy'):
                     host = value.numpy() if session.lane == 'warp' else value.detach().cpu()
@@ -1416,7 +1450,8 @@ def child(fault, fd, directory):
         if fault in RUNTIME_FINAL_GRAPH_CASES:
             row_id = {"asymmetric_synthetic_7x3_v1": "r0_asymmetric_full_shadow",
                       "go2_static_960x640_v1": "r0_go2_960_render_only_shadow",
-                      "go2_static_1920x1080_v1": "r0_go2_1080_render_only_shadow"}[request["case_id"]]
+                      "go2_static_1920x1080_v1": "r0_go2_1080_render_only_shadow",
+                      "synthetic_dynamic_rigid_960x640_v1": "r1_dynamic_full_shadow"}[request["case_id"]]
             row_arguments = {"row_id": row_id, "sample_count": 3,
                              "pass_mode": "diagnostic_profiled" if fault.endswith("diagnostics") else "primary_unprofiled"}
         session.materialize_native_source(request["case_id"], go2_model_dir=request["go2_model_dir"], **row_arguments)

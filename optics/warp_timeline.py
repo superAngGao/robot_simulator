@@ -14,6 +14,82 @@ class WarpOpticalCompletion:
     bundle: object
 
 
+def _validate_replay_views(scene, prepared):
+    """Check real view roots and frame offsets before granting execution."""
+    from .warp_native_render import _render_array_snapshot
+
+    transforms = scene.transforms
+    manifest = prepared.manifest
+    index = transforms.transform_frame_index
+    if (
+        type(index) is not int
+        or not 0 <= index < manifest.transform_frame_count
+        or transforms.input_contract != manifest.input_contract
+        or transforms.transform_replay_sha256 != manifest.transform_replay_sha256
+        or scene.evidence.native_input_manifest_sha256 != manifest.sha256
+    ):
+        raise ValueError("Warp dynamic transforms differ from the prepared replay")
+    for name in ("x_world_R", "x_world_r"):
+        base = prepared.arrays["replay_" + name]
+        view = getattr(transforms, name)
+        actual = _render_array_snapshot(view, name=name, device=scene.local_scene.device)
+        original = _render_array_snapshot(base, name="replay_" + name, device=scene.local_scene.device)
+        frame_bytes = original[6] // manifest.transform_frame_count
+        empty = original[3][1] == 0
+        expected_shape = original[3] if empty else (1, *original[3][1:])
+        if (
+            actual[-1][-1][0] is not base
+            or original[-1][-1][0] is not base
+            or actual[2] is not original[2]
+            or actual[3] != expected_shape
+            or actual[4] != original[4]
+            or actual[6] != frame_bytes
+            or (frame_bytes and actual[5] != original[5] + index * frame_bytes)
+            or (empty and view is not base)
+            or transforms.env_idx != (index if empty else 0)
+        ):
+            raise ValueError("Warp dynamic transform view is not the selected prepared frame")
+
+
+def _validate_dynamic_stages(bundle, parameters, stream, dynamic_stages):
+    """One untimed physical dataflow check for setup and final transactions."""
+    if type(dynamic_stages) is not tuple or len(dynamic_stages) not in (0, 2):
+        raise ValueError("Warp dynamic execution requires exactly scene update and refit")
+    if dynamic_stages:
+        from .device_bvh import WarpBvhRefitCommandBundle, _warp_bvh_immutable_arrays
+        from .device_scene import WarpSceneUpdateCommandBundle
+
+        scene, refit = dynamic_stages
+        if type(scene) is not WarpSceneUpdateCommandBundle or type(refit) is not WarpBvhRefitCommandBundle:
+            raise TypeError("Warp dynamic execution requires exact recorded stages")
+        scene.validate_bound()
+        _validate_replay_views(scene, bundle.binding.factory.prepared_input)
+        bound = bundle.binding
+        selected = (
+            parameters.to_payload()["frame_id"] - 1
+        ) % bundle.binding.factory.prepared_input.manifest.transform_frame_count
+        if (
+            scene.stream is not stream
+            or refit.stream is not stream
+            or scene.outputs is not bound.world
+            or refit.world is not bound.world
+            or scene.local_scene is not bundle.binding.factory.local_scene
+            or scene.transforms.transform_frame_index != selected
+            or bound.transform_frame_index != selected
+            or refit.bvh.bounds_min is not bound.bvh.bounds_min
+            or refit.bvh.bounds_max is not bound.bvh.bounds_max
+            or any(
+                a is not b
+                for (_, a), (_, b) in zip(
+                    _warp_bvh_immutable_arrays(refit.bvh), _warp_bvh_immutable_arrays(bound.bvh), strict=True
+                )
+            )
+        ):
+            raise ValueError("Warp dynamic stage dataflow or replay selection differs from render")
+    elif bundle.binding.transform_frame_index is not None:
+        raise ValueError("Warp replay render requires its preceding update and refit")
+
+
 @dataclass(frozen=True, eq=False, init=False, slots=True, repr=False)
 class _WarpRecordedTransaction:
     """One ordered render and one terminal record; no waits or kernel copies."""
@@ -31,9 +107,20 @@ class _WarpRecordedTransaction:
     _terminal: WarpOpticalCompletion
     _state: str
 
-    def __init__(self, *, bundle, parameters, runtime, target, stream, completion_event, diagnostic_events,
-                 dynamic_stages=()):
+    def __init__(
+        self,
+        *,
+        bundle,
+        parameters,
+        runtime,
+        target,
+        stream,
+        completion_event,
+        diagnostic_events,
+        dynamic_stages=(),
+    ):
         from optical_worker.native_setup import _render_phase_names
+
         from .warp_native_render import WarpDirectLightRenderCommandBundle
 
         if hasattr(self, "_state"):
@@ -44,31 +131,10 @@ class _WarpRecordedTransaction:
         factory = bundle.binding.factory
         if factory.device is not target or factory.stream is not stream:
             raise ValueError("Warp setup transaction differs from its recorded scope")
-        if type(dynamic_stages) is not tuple or len(dynamic_stages) not in (0, 2):
-            raise ValueError("Warp dynamic execution requires exactly scene update and refit")
-        if dynamic_stages:
-            from .device_scene import WarpSceneUpdateCommandBundle
-            from .device_bvh import WarpBvhRefitCommandBundle, _warp_bvh_immutable_arrays
-
-            scene, refit = dynamic_stages
-            if type(scene) is not WarpSceneUpdateCommandBundle or type(refit) is not WarpBvhRefitCommandBundle:
-                raise TypeError("Warp dynamic execution requires exact recorded stages")
-            scene.validate_bound()
-            bound = bundle.binding
-            selected = (parameters.to_payload()["frame_id"] - 1) % factory.prepared_input.manifest.transform_frame_count
-            if (scene.stream is not stream or refit.stream is not stream
-                    or scene.outputs is not bound.world or refit.world is not bound.world
-                    or scene.local_scene is not factory.local_scene
-                    or scene.transforms.transform_frame_index != selected or bound.transform_frame_index != selected
-                    or refit.bvh.bounds_min is not bound.bvh.bounds_min
-                    or refit.bvh.bounds_max is not bound.bvh.bounds_max
-                    or any(a is not b for (_, a), (_, b) in zip(
-                        _warp_bvh_immutable_arrays(refit.bvh), _warp_bvh_immutable_arrays(bound.bvh), strict=True))):
-                raise ValueError("Warp dynamic stage dataflow or replay selection differs from render")
-        elif bundle.binding.transform_frame_index is not None:
-            raise ValueError("Warp replay render requires its preceding update and refit")
-        expected = _render_phase_names(boundary="R1" if dynamic_stages else "R0",
-                                       diagnostic=bundle.binding.traversal_diagnostics)
+        _validate_dynamic_stages(bundle, parameters, stream, dynamic_stages)
+        expected = _render_phase_names(
+            boundary="R1" if dynamic_stages else "R0", diagnostic=bundle.binding.traversal_diagnostics
+        )
         if tuple(name for name, _, _ in diagnostic_events) != expected:
             raise ValueError("Warp setup diagnostics differ from the recorded variant")
         events = (completion_event, *(event for _, start, end in diagnostic_events for event in (start, end)))

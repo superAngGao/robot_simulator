@@ -1033,7 +1033,11 @@ def _require_final_graph(session, graph):
                 or graph.stream.cuda_stream != graph.arena._stream_handle):
             raise ValueError("final Warp graph lost its original native scope")
         for parameters, bundle in graph.frames:
-            bundle.validate_resolved_parameters(parameters)
+            from optics.warp_timeline import _validate_dynamic_stages
+
+            stages = _frame_stages(bundle)
+            stages[-1].validate_resolved_parameters(parameters)
+            _validate_dynamic_stages(stages[-1], parameters, graph.stream, stages[:-1])
     return graph
 
 
@@ -1077,7 +1081,7 @@ def _require_final_readiness_origin(session, prepared, readiness):
 
 
 def _prepare_fixed_final_graph(session, runtime, target, stream, *, spec, sample_count):
-    """Compose final R0 factories/C3/arena plans over the warmed physical slot.
+    """Compose final R0/R1 factories/C3/arena plans over the warmed physical slot.
 
     The fixed trusted driver supplies a previously frozen-row-derived spec.
     This private construction is not product row admission or barrier success.
@@ -1090,17 +1094,24 @@ def _prepare_fixed_final_graph(session, runtime, target, stream, *, spec, sample
     observed = require_observed_warmups(session, session.fixed_render_warmups)
     if session in _FINAL_RENDER_GRAPHS:
         raise ValueError("final graph construction is one-shot")
-    if (type(spec) is not NativeOpticalArenaSpec or spec.boundary != "R0"
+    if (type(spec) is not NativeOpticalArenaSpec or spec.boundary not in {"R0", "R1"}
             or spec.lane != session.lane or spec.payload != "native_only" or spec.ring_depth != 1
             or type(sample_count) is not int or not 1 <= sample_count <= 1_000_000):
-        raise ValueError("final graph requires a fixed R0 spec and protocol-bounded sample count")
+        raise ValueError("final graph requires a fixed R0/R1 spec and protocol-bounded sample count")
     provisional = session.fixed_render_graph
     prepared = session.prepared_input
+    storage = session.fixed_render_storage
+    dynamic = type(storage) is _DynamicRenderStorage
+    if dynamic != (spec.boundary == "R1"):
+        raise ValueError("final graph boundary differs from its warmed physical storage")
     if (spec.case_id != prepared.manifest.case_id or spec.case_sha256 != prepared.manifest.case_sha256
             or spec.native_input_manifest_sha256 != prepared.manifest.sha256
             or spec.native_readiness_sha256 != provisional.readiness.sha256
             or spec.scene_contract_sha256 != prepared.manifest.scene_contract_sha256
             or spec.fixed_render_fixture_sha256 != prepared.manifest.fixed_render_fixture_sha256
+            or spec.input_contract != prepared.manifest.input_contract
+            or spec.transform_replay_sha256 != prepared.manifest.transform_replay_sha256
+            or spec.transform_frame_count != prepared.manifest.transform_frame_count
             or spec.device_ordinal != prepared.device_ordinal
             or spec.output_profile != provisional.profile or spec.shadows != provisional.shadows
             or spec.diagnostic_mode != provisional.pass_mode):
@@ -1129,7 +1140,10 @@ def _prepare_fixed_final_graph(session, runtime, target, stream, *, spec, sample
     session._hold_runtime_owner(origin, "final_readiness_origin")
     _FINAL_READINESS_ORIGINS[session] = origin
     final_spec = replace(spec, native_readiness_sha256=readiness.sha256)
-    scene, first, second, outputs = session.fixed_render_storage
+    if dynamic:
+        scene, first, second, outputs = storage.scene, storage.world, storage.acceleration, storage.outputs
+    else:
+        scene, first, second, outputs = storage
     frames, samples = [], []
     session._hold_runtime_owner(frames, "final_render_frames")
     session._hold_runtime_owner(samples, "final_render_samples")
@@ -1151,21 +1165,26 @@ def _prepare_fixed_final_graph(session, runtime, target, stream, *, spec, sample
 
             _, context = _require_cuda_render_factory(session, compiled)
             if (spec.execution_stream_token != cuda_execution_stream_token(context)
-                    or spec.primitive_count != int(first.triangle_v0_world.shape[0]) or spec.node_capacity != first.num_bvh_nodes):
+                    or spec.primitive_count != int(first.triangle_v0_world.shape[0])
+                    or spec.node_capacity != (second.node_count if dynamic else first.num_bvh_nodes)):
                 raise ValueError("final CUDA spec differs from warmed physical inputs")
             factory = CudaDirectLightNativeRenderer.prepare(context, extensions=compiled)
         session._hold_runtime_owner(factory, "final_render_factory")
         if factory is provisional.factory:
             raise ValueError("final graph cannot reuse its provisional factory identity")
+        dynamic_factories = _prepare_dynamic_factories(session, runtime, target, stream, compiled)
+        if any(final is setup for final, setup in zip(dynamic_factories, provisional.dynamic_factories, strict=True)):
+            raise ValueError("final graph cannot reuse its provisional dynamic factories")
         for index in range(sample_count):
             frames.append(_bind_fixed_render_frame(
                 session, runtime, target, stream, factory=factory, compiled_owner=compiled,
                 index=index, profile=provisional.profile, shadows=provisional.shadows,
-                pass_mode=provisional.pass_mode, owner_prefix="final"))
+                pass_mode=provisional.pass_mode, owner_prefix="final", dynamic_factories=dynamic_factories))
         frozen_frames = tuple(frames)
         if session.lane == "warp":
             arena = WarpNativeOpticalArena(spec=final_spec, runtime=runtime, frames=frozen_frames,
-                completion_event=provisional.completion_event, diagnostic_events=provisional.diagnostic_events)
+                completion_event=provisional.completion_event, diagnostic_events=provisional.diagnostic_events,
+                dynamic_storage=storage if dynamic else None)
         else:
             templates = {}
             session._hold_runtime_owner(templates, "final_cuda_templates")
@@ -1175,19 +1194,24 @@ def _prepare_fixed_final_graph(session, runtime, target, stream, *, spec, sample
             capability = context._new_controlled_transaction_capability()
             session._hold_runtime_owner(capability, "final_cuda_template_capability")
             for index, (_, bundle) in enumerate(frames):
-                template = context.prepare_transaction_template(stages=(bundle,),
+                template = context.prepare_transaction_template(stages=_frame_stages(bundle),
                     completion_event=provisional.completion_event, diagnostic_events=diagnostics,
                     _activation_capability=capability)
                 session._hold_runtime_owner(template, "final_cuda_template")
-                templates[None, index] = (template, capability)
+                transform_index = bundle.transform_frame_index if dynamic else None
+                templates[transform_index, index] = (template, capability)
             runtime_arrays = {name: prepared.arrays[name] for name in prepared.manifest.scene_array_names}
             fixture_arrays = {name: prepared.arrays[name] for name in prepared.manifest.fixed_render_fixture_arrays}
+            session_tensors = tuple(prepared.arrays.items())
+            if dynamic:
+                session_tensors += (("lbvh.workspace", storage.workspace.storage),)
             arena = _seal_cuda_arena(spec=final_spec, slot_builds=({
-                "slot_id": 0, "world": None, "lbvh": None, "render": outputs,
+                "slot_id": 0, "world": first if dynamic else None,
+                "lbvh": second if dynamic else None, "render": outputs,
                 "completion": provisional.completion_event, "diagnostics": diagnostics,
                 "templates": templates, "stage_owners": frozen_frames,
-            },), session_objects=(origin, factory, context, stream, first, second, prepared),
-                session_tensors=tuple(runtime_arrays.items()) + tuple(fixture_arrays.items()),
+            },), session_objects=(origin, factory, context, stream, first, second, prepared, storage, dynamic_factories),
+                session_tensors=session_tensors,
                 runtime_scene_arrays=runtime_arrays, derived_fixture_arrays=fixture_arrays)
         session._hold_runtime_owner(arena, "final_render_arena")
         _CAPTURED_ARENAS[arena._control] = (session, controller, controller.guardian)
@@ -1195,7 +1219,8 @@ def _prepare_fixed_final_graph(session, runtime, target, stream, *, spec, sample
             if session.lane == "warp":
                 sample = arena.prepare_sample(render_sample_index=index, planned_acquisition_offset=index)
             else:
-                plan_target = arena.plan_target(transform_frame_index=None, render_sample_index=index,
+                transform_index = index % prepared.manifest.transform_frame_count if dynamic else None
+                plan_target = arena.plan_target(transform_frame_index=transform_index, render_sample_index=index,
                                                 planned_acquisition_offset=index)
                 binding = build_cuda_c3_binding_from_arena_target(plan_target,
                     prepared_input=prepared, native_readiness=readiness, _captured_session=session)

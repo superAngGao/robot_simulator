@@ -1,6 +1,6 @@
 """Warp recorded commands over the existing native FIFO/lease control plane.
 
-R0 construction consumes already allocated buffers and recorded final frames.
+R0/R1 construction consumes already allocated buffers and recorded final frames.
 It performs no allocation, upload, recording or synchronization on the device.
 This adapter does not grant closed-worker admission or product activation.
 """
@@ -50,41 +50,95 @@ def _storage_signature(name, value, device, owner):
     )
 
 
-def _bind_r0_c3(spec, parameters, bundle, outputs):
-    from optical_worker.native_input import prepared_storage_signatures
+def _bind_c3(spec, parameters, stages, outputs):
+    from optical_worker.native_input import prepared_storage_signatures, prepared_transform_frame_signatures
     from optical_worker.provenance import (
+        DYNAMIC_ACCELERATION_OUTPUT_NAMES,
         NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
         NativeStageEvidence,
+        _dynamic_stage_inputs,
         build_c3_one_shot_native_execution_binding,
     )
 
+    from .device_scene import _warp_world_scene_arrays
+
+    bundle = stages[-1]
     bundle.validate_resolved_parameters(parameters)
     prepared = bundle.binding.factory.prepared_input
+    device = bundle.binding.factory.device
     runtime = prepared_storage_signatures(prepared, prepared.manifest.scene_array_names)
     fixture = prepared_storage_signatures(prepared, prepared.manifest.fixed_render_fixture_arrays)
-    stage = NativeStageEvidence(
-        schema_version=NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
-        stage_name="render",
-        operation_id=spec.renderer_id,
-        output_profile=spec.output_profile,
-        shadows=spec.shadows,
-        scene_contract_sha256=spec.scene_contract_sha256,
-        input_contract=spec.input_contract,
-        transform_replay_sha256=None,
-        transform_frame_index=None,
-        fixed_render_fixture_sha256=spec.fixed_render_fixture_sha256,
-        topology_sha256=None,
-        input_storage=runtime + fixture,
-        output_storage=outputs,
-        dispatch_plan_sha256=bundle.evidence.sha256,
-        bound_render_parameters=parameters,
-        bound_render_parameters_sha256=parameters.sha256,
+    frame_index = bundle.binding.transform_frame_index
+    if spec.boundary == "R0":
+        descriptions = (
+            ("render", spec.renderer_id, runtime + fixture, outputs, bundle.evidence.sha256, None),
+        )
+    else:
+        scene, acceleration, _ = stages
+        # Actual roots, offsets and stage arrows were checked by the shared
+        # recorded-transaction validator. C3 uses canonical logical frame shapes.
+        transforms = prepared_transform_frame_signatures(prepared, frame_index)
+        world = tuple(
+            _storage_signature(name, value, device, "warp-slot-owner:0")
+            for name, value in _warp_world_scene_arrays(scene.outputs)
+        )
+        bvh = tuple(
+            _storage_signature(
+                name,
+                getattr(acceleration.bvh, name.removeprefix("bvh_")),
+                device,
+                "warp-slot-owner:0" if name in ("bvh_bounds_min", "bvh_bounds_max") else "warp-session-owner",
+            )
+            for name in DYNAMIC_ACCELERATION_OUTPUT_NAMES
+        )
+        scene_inputs, acceleration_inputs, render_inputs = _dynamic_stage_inputs(
+            runtime, transforms, world, bvh
+        )
+        descriptions = (
+            (
+                "scene_update",
+                scene.evidence.operation_id,
+                scene_inputs,
+                world,
+                scene.evidence.dispatch_plan_sha256,
+                None,
+            ),
+            (
+                "acceleration",
+                acceleration.evidence.operation_id,
+                acceleration_inputs,
+                bvh,
+                acceleration.evidence.dispatch_plan_sha256,
+                acceleration.evidence.topology_sha256,
+            ),
+            ("render", spec.renderer_id, render_inputs, outputs, bundle.evidence.sha256, None),
+        )
+    evidence = tuple(
+        NativeStageEvidence(
+            schema_version=NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
+            stage_name=name,
+            operation_id=operation,
+            output_profile=spec.output_profile if name == "render" else None,
+            shadows=spec.shadows if name == "render" else None,
+            scene_contract_sha256=spec.scene_contract_sha256,
+            input_contract=spec.input_contract,
+            transform_replay_sha256=spec.transform_replay_sha256,
+            transform_frame_index=frame_index,
+            fixed_render_fixture_sha256=spec.fixed_render_fixture_sha256,
+            topology_sha256=topology,
+            input_storage=inputs,
+            output_storage=stage_outputs,
+            dispatch_plan_sha256=dispatch,
+            bound_render_parameters=parameters if name == "render" else None,
+            bound_render_parameters_sha256=parameters.sha256 if name == "render" else None,
+        )
+        for name, operation, inputs, stage_outputs, dispatch, topology in descriptions
     )
     return build_c3_one_shot_native_execution_binding(
         row_id=spec.row_id,
         case_id=spec.case_id,
         case_sha256=spec.case_sha256,
-        boundary="R0",
+        boundary=spec.boundary,
         lane="warp",
         renderer_id=spec.renderer_id,
         acceleration_class=spec.acceleration_class,
@@ -95,12 +149,12 @@ def _bind_r0_c3(spec, parameters, bundle, outputs):
         native_input_manifest_sha256=spec.native_input_manifest_sha256,
         native_readiness_sha256=spec.native_readiness_sha256,
         scene_contract_sha256=spec.scene_contract_sha256,
-        transform_replay_sha256=None,
-        transform_frame_index=None,
+        transform_replay_sha256=spec.transform_replay_sha256,
+        transform_frame_index=frame_index,
         fixed_render_fixture_sha256=spec.fixed_render_fixture_sha256,
         runtime_scene_storage=runtime,
         derived_fixture_storage=fixture,
-        stage_evidence=(stage,),
+        stage_evidence=evidence,
         bound_render_parameters=parameters,
     )
 
@@ -122,27 +176,45 @@ class WarpNativeOpticalArena:
     _prepared: dict
     _transactions: dict
 
-    def __init__(self, *, spec, runtime, frames, completion_event, diagnostic_events):
+    def __init__(self, *, spec, runtime, frames, completion_event, diagnostic_events, dynamic_storage=None):
         from optical_worker.native_contract import assert_warp_prepared_authority
-        from optical_worker.native_setup import SETUP_WARMUP_FRAME_COUNT, _render_phase_names
+        from optical_worker.native_setup import (
+            SETUP_WARMUP_FRAME_COUNT,
+            _DynamicFrameStages,
+            _DynamicRenderStorage,
+            _frame_stages,
+            _render_phase_names,
+        )
 
+        from .device_bvh import _warp_bvh_immutable_arrays, _warp_refit_output_arrays
+        from .device_scene import _warp_world_scene_arrays
         from .warp_native_render import WarpDirectLightRenderCommandBundle
+        from .warp_timeline import _validate_dynamic_stages
 
         if hasattr(self, "_control"):
             raise RuntimeError("Warp arena cannot be initialized again")
         if (
             type(spec) is not NativeOpticalArenaSpec
             or spec.lane != "warp"
-            or spec.boundary != "R0"
+            or spec.boundary not in {"R0", "R1"}
             or spec.payload != "native_only"
             or spec.ring_depth != 1
         ):
-            raise ValueError("Warp fixed arena requires one native-only R0 slot")
+            raise ValueError("Warp fixed arena requires one native-only R0/R1 slot")
         if type(frames) is not tuple or not frames:
             raise ValueError("Warp arena requires pre-recorded final frames")
-        if any(type(bundle) is not WarpDirectLightRenderCommandBundle for _, bundle in frames):
+        dynamic = spec.boundary == "R1"
+        if dynamic != (type(dynamic_storage) is _DynamicRenderStorage) or (
+            not dynamic and dynamic_storage is not None
+        ):
+            raise ValueError("Warp arena dynamic storage differs from its boundary")
+        if any((type(frame) is _DynamicFrameStages) != dynamic for _, frame in frames):
+            raise TypeError("Warp arena frame stages differ from its boundary")
+        if any(
+            type(_frame_stages(frame)[-1]) is not WarpDirectLightRenderCommandBundle for _, frame in frames
+        ):
             raise TypeError("Warp arena requires exact recorded bundles")
-        factory = frames[0][1].binding.factory
+        factory = _frame_stages(frames[0][1])[-1].binding.factory
         prepared, readiness = factory.prepared_input, factory.readiness
         assert_warp_prepared_authority(prepared, readiness)
         device, stream = factory.device, factory.stream
@@ -155,7 +227,7 @@ class WarpNativeOpticalArena:
         ):
             raise ValueError("Warp arena differs from its final input readiness/scope")
         expected = _render_phase_names(
-            boundary="R0", diagnostic=spec.diagnostic_mode == "diagnostic_profiled"
+            boundary=spec.boundary, diagnostic=spec.diagnostic_mode == "diagnostic_profiled"
         )
         if type(diagnostic_events) is not tuple or tuple(p for p, _, _ in diagnostic_events) != expected:
             raise ValueError("Warp arena diagnostics differ from its frozen pass")
@@ -184,14 +256,34 @@ class WarpNativeOpticalArena:
             )
         ):
             raise ValueError("Warp arena spec differs from its actual prepared input")
-        buffers = frames[0][1].binding.buffers
-        for index, (parameters, bundle) in enumerate(frames):
+        buffers = _frame_stages(frames[0][1])[-1].binding.buffers
+        for index, (parameters, frame) in enumerate(frames):
+            stages = _frame_stages(frame)
+            bundle = stages[-1]
+            _validate_dynamic_stages(bundle, parameters, stream, stages[:-1])
+            selected = index % spec.transform_frame_count if dynamic else None
+            if dynamic and (
+                frame.transform_frame_index != selected
+                or stages[0].outputs is not dynamic_storage.world
+                or stages[1].bvh is not dynamic_storage.acceleration
+                or factory.local_scene is not dynamic_storage.scene
+                or buffers is not dynamic_storage.outputs
+                or any(
+                    a is not b
+                    for (_, a), (_, b) in zip(
+                        _warp_bvh_immutable_arrays(dynamic_storage.acceleration),
+                        _warp_bvh_immutable_arrays(dynamic_storage.topology),
+                        strict=True,
+                    )
+                )
+            ):
+                raise ValueError("Warp dynamic frames differ from their warmed physical slot")
             bundle.validate_resolved_parameters(parameters)
             bound = bundle.binding
             if (
                 bound.factory is not factory
                 or bound.buffers is not buffers
-                or bound.transform_frame_index is not None
+                or bound.transform_frame_index != selected
                 or bound.query.frame_id != index + 1
                 or bound.output_profile.value != spec.output_profile
                 or bound.shadows != spec.shadows
@@ -208,13 +300,22 @@ class WarpNativeOpticalArena:
         )
         # The renderer validates output intervals against every actual input.
         # Group allocation roots once so views do not inflate memory accounting.
-        output_roots = {s.storage_token: s.nbytes for s in outputs}
+        slot_arrays = outputs
+        if dynamic:
+            slot_arrays += tuple(
+                _storage_signature(name, value, device, "warp-slot-owner:0")
+                for name, value in (
+                    _warp_world_scene_arrays(dynamic_storage.world)
+                    + _warp_refit_output_arrays(dynamic_storage.acceleration)
+                )
+            )
+        output_roots = {s.storage_token: s.nbytes for s in slot_arrays}
         event_tokens = tuple(f"warp-event:{id(e):x}" for e in events)
         slot = NativeOpticalSlotResourceManifest(
             schema_version=NATIVE_OPTICAL_SLOT_RESOURCE_SCHEMA_VERSION,
             slot_id=0,
             slot_storage_manifest_sha256=_digest(
-                {"arrays": [s.to_payload() for s in outputs], "events": list(event_tokens)}
+                {"arrays": [s.to_payload() for s in slot_arrays], "events": list(event_tokens)}
             ),
             terminal_event_token=event_tokens[0],
             resource_tokens=(*output_roots, *event_tokens),
@@ -222,7 +323,12 @@ class WarpNativeOpticalArena:
             resource_nbytes=(*output_roots.values(), *((0,) * len(events))),
         )
         input_roots = {}
-        for name, value in prepared.arrays.items():
+        session_arrays = tuple(prepared.arrays.items())
+        if dynamic:
+            session_arrays += _warp_bvh_immutable_arrays(
+                dynamic_storage.topology
+            ) + _warp_refit_output_arrays(dynamic_storage.topology)
+        for name, value in session_arrays:
             storage = _storage_signature(name, value, device, "warp-session-owner")
             if storage.storage_token in output_roots:
                 raise ValueError("Warp arena output aliases an input allocation")
@@ -238,11 +344,11 @@ class WarpNativeOpticalArena:
             total_resource_nbytes=sum(input_roots.values()) + slot.total_resource_nbytes,
         )
         owners = {
-            "warp-session-owner": (factory, prepared, readiness, runtime, device, stream),
+            "warp-session-owner": (factory, prepared, readiness, runtime, device, stream, dynamic_storage),
             "warp-slot-owner:0": (frames, buffers, events),
         }
         control = NativeOpticalArena(spec=spec, resource_manifest=manifest, resource_owners=owners)
-        bindings = tuple(_bind_r0_c3(spec, p, b, outputs) for p, b in frames)
+        bindings = tuple(_bind_c3(spec, p, _frame_stages(b), outputs) for p, b in frames)
         for name, value in (
             ("_control", control),
             ("_runtime", runtime),
@@ -267,15 +373,19 @@ class WarpNativeOpticalArena:
         return self._control.resource_manifest
 
     def prepare_sample(self, *, render_sample_index, planned_acquisition_offset=0):
+        from optical_worker.native_setup import _frame_stages
+
         from .warp_timeline import _WarpArenaTransaction
 
         if type(render_sample_index) is not int or not 0 <= render_sample_index < len(self._frames):
             raise ValueError("Warp sample is outside its final recorded frames")
-        parameters, bundle = self._frames[render_sample_index]
+        parameters, frame = self._frames[render_sample_index]
+        stages = _frame_stages(frame)
+        bundle = stages[-1]
         bundle.validate_resolved_parameters(parameters)
         binding = self._bindings[render_sample_index]
         plan = self._control.prepare_plan(
-            transform_frame_index=None,
+            transform_frame_index=bundle.binding.transform_frame_index,
             c3_one_shot_binding_sha256=binding.sha256,
             ordered_stage_evidence_sha256=_digest([v.to_payload() for v in binding.ordered_stage_evidence]),
             dataflow_binding_sha256=binding.dataflow_binding_sha256,
@@ -284,6 +394,7 @@ class WarpNativeOpticalArena:
         transaction = _WarpArenaTransaction(
             arena=self,
             bundle=bundle,
+            dynamic_stages=stages[:-1],
             parameters=parameters,
             runtime=self._runtime,
             target=self._device,
@@ -432,10 +543,13 @@ class WarpPreparedArenaSample:
             object.__setattr__(self, "_operation", None)
 
     def _validate_resolution(self):
+        from .warp_timeline import _validate_dynamic_stages
+
         self._require("COMPLETION_RECORDED")
         arena, tx = self._arena, self._transaction
         arena._validate_native_scope()
         tx.bundle.validate_resolved_parameters(tx.parameters)
+        _validate_dynamic_stages(tx.bundle, tx.parameters, tx.stream, tx._dynamic_stages)
         if (
             self._lease.state != "COMPLETION_RECORDED"
             or tx.runtime is not arena._runtime
