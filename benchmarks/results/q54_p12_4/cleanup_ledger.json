@@ -169,10 +169,10 @@
       "paths": [
         "optical_worker/render_parameters.py",
         "optical_worker/render_sequence_contract.py",
-        "optical_worker/data/render_sequences/v1/asymmetric_synthetic_7x3_v1.jsonl",
-        "optical_worker/data/render_sequences/v1/synthetic_dynamic_rigid_960x640_v1.jsonl",
-        "optical_worker/data/render_sequences/v1/go2_static_960x640_v1.jsonl",
-        "optical_worker/data/render_sequences/v1/go2_static_1920x1080_v1.jsonl",
+        "optical_worker/data/render_sequences/v2/asymmetric_synthetic_7x3_v1.jsonl",
+        "optical_worker/data/render_sequences/v2/synthetic_dynamic_rigid_960x640_v1.jsonl",
+        "optical_worker/data/render_sequences/v2/go2_static_960x640_v1.jsonl",
+        "optical_worker/data/render_sequences/v2/go2_static_1920x1080_v1.jsonl",
         "tests/unit/optics/test_render_parameters.py"
       ],
       "symbols": {},
@@ -192,16 +192,23 @@
         "tests/unit/benchmarks/data/render_migration_v12.json",
         "tests/unit/benchmarks/data/render_migration_v13.json",
         "tests/unit/benchmarks/test_optical_render_migration.py",
-        "tests/unit/optics/test_native_contract_extraction.py"
+        "tests/unit/optics/test_native_contract_extraction.py",
+        "tests/unit/benchmarks/data/render_migration_v15.json",
+        "benchmarks/results/q54_p12_4/history/gate.v13.json",
+        "optical_worker/data/resolved_cameras/v1/asymmetric_synthetic_7x3_v1.jsonl",
+        "optical_worker/data/render_sequences/v1/asymmetric_synthetic_7x3_v1.jsonl",
+        "optical_worker/data/render_sequences/v1/synthetic_dynamic_rigid_960x640_v1.jsonl",
+        "optical_worker/data/render_sequences/v1/go2_static_960x640_v1.jsonl",
+        "optical_worker/data/render_sequences/v1/go2_static_1920x1080_v1.jsonl"
       ],
       "symbols": {},
       "cuda_selected": {
         "action": "collapse",
-        "acceptance": "delete both comparison-only migration snapshot files and their v12-v13 comparison machinery after equivalent selected-backend canonical-parameter, closed-gate and moved-body identity regressions are retained; remove snapshot reads from extraction tests, not their remaining invariant coverage; preserve collab historical review/evidence records; never provide a live v12 fallback"
+        "acceptance": "delete comparison-only migration snapshots and obsolete camera/sequence/gate artifacts after equivalent selected-backend canonical-parameter, closed-gate and moved-body identity regressions are retained; preserve collab historical review/evidence records; never provide a live old-precision fallback"
       },
       "warp_selected": {
         "action": "collapse",
-        "acceptance": "delete both comparison-only migration snapshot files and their v12-v13 comparison machinery after equivalent selected-backend canonical-parameter, closed-gate and moved-body identity regressions are retained; remove snapshot reads from extraction tests, not their remaining invariant coverage; preserve collab historical review/evidence records; never provide a live v12 fallback"
+        "acceptance": "delete comparison-only migration snapshots and obsolete camera/sequence/gate artifacts after equivalent selected-backend canonical-parameter, closed-gate and moved-body identity regressions are retained; preserve collab historical review/evidence records; never provide a live old-precision fallback"
       },
       "must_resolve_by": "P12.4e"
     },

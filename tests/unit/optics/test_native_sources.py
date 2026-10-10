@@ -34,7 +34,7 @@ def release(tmp_path_factory):
     catalog = json.loads((ROOT / CATALOG_PATH).read_text())
     digests = {entry["relative_path"]: entry["sha256"] for entry in catalog["source_digests"]}
     paths = sorted(set(native_source_paths("warp") + native_source_paths("cuda")))
-    data = [CATALOG_PATH, *(f"optical_worker/data/render_sequences/v1/{case}.jsonl" for case in (
+    data = [CATALOG_PATH, *(f"optical_worker/data/render_sequences/v2/{case}.jsonl" for case in (
         "asymmetric_synthetic_7x3_v1", "synthetic_dynamic_rigid_960x640_v1",
         "go2_static_960x640_v1", "go2_static_1920x1080_v1",
     ))]

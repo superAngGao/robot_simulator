@@ -16,9 +16,9 @@ from pathlib import Path, PurePosixPath
 from .manifest import AST_POLICY
 from .protocol import ClosedWorkerProtocolError, canonical_sha256
 
-NATIVE_AST_POLICY_VERSION = "q54.p12.4.closed-worker-ast-policy.v16"
+NATIVE_AST_POLICY_VERSION = "q54.p12.4.closed-worker-ast-policy.v17"
 _BOOTSTRAP_PATH = "optical_worker/native_bootstrap.py"
-_BOOTSTRAP_SOURCE_SHA256 = "f1906ad5f3ff4e18d416fb1d09f1cc7b84b4c98cf3cf0e778142683b1c39c955"
+_BOOTSTRAP_SOURCE_SHA256 = "d5feb6f288a956373dd9f7b9946edd0e90fde1ceab7b40341168a2bbe0f9f405"
 _BOOTSTRAP_CLASS_PINS = {
     "_RuntimeObservation": "cfb64f25a4bf1774a5e67128ac7e1b3b5a06ab9800ddd2f9b51d39e2b9537b3e",
     "_CapturedSourceLoader": "92da4e467035fe308c4ec6af32f2d05831adc7e5015f5f400545d1541ad5556b",
@@ -27,7 +27,7 @@ _BOOTSTRAP_CLASS_PINS = {
     "_ExternalAdmission": "157107d2ca7210f687ec3898d072231ccb993f061647cc740982262c8b004070",
     "_ExternalNamespaceLoader": "524801ff222139e86fa76fa918b42a20ee61d6bcfe9e783542c880da3cad46bf",
     "_RuntimeSetupBinding": "85bf4bb6a12a3ab17807393c27993ca319e5b614eda9c14d4f1d6c0b042f6112",
-    "_SourceSession": "bca782cf515a0bab3604dd68870fefeaa9935f9dfd64442ad86abb515a630da3",
+    "_SourceSession": "01c6534d26bd40706afef95b5a4700755f19f4d8226e6ded15c779ab6bb180bd",
 }
 _BOOTSTRAP_IMPORTS = frozenset(("importlib.abc", "importlib.machinery", "importlib.util"))
 _BOOTSTRAP_USES = frozenset((
@@ -42,15 +42,15 @@ _SNAPSHOT_FUNCTION = "_render_launch_snapshot"
 # Exact LF Git/source-release bytes reviewed in C2c4 (4b7bf4c). Deliberately
 # not universal-newline-normalized at verification time. A CRLF checkout is
 # not this POSIX worker release; packaging must supply the reviewed bytes.
-_SNAPSHOT_SOURCE_SHA256 = "e19dfc74327111fa70ce7d06aa9a4379a9ce50d8932664a0a2dedef53895886f"
-_SNAPSHOT_FUNCTION_SHA256 = "725c7f315fdba4ad6df78e31a149865fd97e26da3c95df24678dbadba0459199"
+_SNAPSHOT_SOURCE_SHA256 = "cc5f5b8e3e0fecfa166d1da8177217f9121057987155c10e98c834461a3bbf6e"
+_SNAPSHOT_FUNCTION_SHA256 = "9a2e94c9dbd653d0c8f3c9a8c45e258ebfff71413083856e976801b415168ac7"
 # Existing CPU regex construction is not Python code compilation. Keep this
 # exception release-pinned; do not generally admit arbitrary obj.compile().
 _REGEX_SOURCE_PINS = {
     "optical_worker/protocol.py": "38ff7919ee1b41656a50cf1d6c4fa3280a1f867aac07baaf4a4adbc4189a6470",
     "optical_worker/lifecycle.py": "2ca76eac3b72fc99f22d6c671e51a9a86724609575b0d61c5b101d3f7a6334dc"
 }
-_CTYPES_ATTRIBUTES = frozenset(("addressof", "c_float", "c_int64", "c_int32"))
+_CTYPES_ATTRIBUTES = frozenset(("addressof", "c_float", "c_double", "c_int64", "c_int32"))
 _FORBIDDEN_IMPORTS = frozenset(AST_POLICY["forbidden_import_roots"]) | {
     "benchmarks", "examples", "tests", "tools",
 }

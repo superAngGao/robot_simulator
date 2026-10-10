@@ -266,7 +266,8 @@ def test_fixed_storage_source_closure_remains_lane_specific(lane, phase):
     assert ('optics.cuda_direct_light' in admitted) is (ready and lane == 'cuda')
     graph = phase in {'preparing_fixed_render_graph', 'fixed_render_graph_ready'}
     assert ('optics.execution' in admitted) is (lane == 'cuda' and ready or lane == 'warp' and graph)
-    assert ('optics.scene' in admitted) is (lane == 'cuda' and ready or lane == 'warp' and graph)
+    # R0 materialization now uses the original mesh-wide transform functions.
+    assert 'optics.scene' in admitted and 'optics.query_numerics' in admitted
     assert not any(name.startswith(('benchmarks', 'tests', 'tools')) for name in admitted)
 
 

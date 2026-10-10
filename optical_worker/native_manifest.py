@@ -11,12 +11,13 @@ from types import MappingProxyType
 
 from .lane_contract import CANONICAL_NATIVE_REPLAY_INPUT, FIXED_NATIVE_SCENE_INPUT
 
-NATIVE_INPUT_SCHEMA_VERSION = "q54.p12.4.native-input.v2"
+NATIVE_INPUT_SCHEMA_VERSION = "q54.p12.4.native-input.v4"
 
-# The canonical builders currently emit these three scalar dtypes. Generic
+# The canonical builders emit these scalar dtypes. Generic
 # NativeInputManifest construction remains compatible with other host inputs.
 CANONICAL_DTYPE_METADATA = MappingProxyType({
     "<f4": (4, "torch.float32", "<class 'warp._src.types.float32'>"),
+    "<f8": (8, "torch.float64", "<class 'warp._src.types.float64'>"),
     "<i4": (4, "torch.int32", "<class 'warp._src.types.int32'>"),
     "<i8": (8, "torch.int64", "<class 'warp._src.types.int64'>"),
 })

@@ -148,8 +148,8 @@ def build_canonical_fixed_fixture(
     fixture = CanonicalFixedRenderFixtureHost.from_scene_contract(
         packed_scene,
         fixed_transform_id=transform_id,
-        x_world_R=np.empty((0, 3, 3), dtype=np.float32),
-        x_world_r=np.empty((0, 3), dtype=np.float32),
+        x_world_R=np.empty((0, 3, 3), dtype=np.float64),
+        x_world_r=np.empty((0, 3), dtype=np.float64),
     )
     if fixture.fixed_render_fixture_sha256 != frozen_workload_content(
         case_id

@@ -40,31 +40,31 @@ class FrozenWorkloadContent:
 FROZEN_WORKLOAD_CONTENT: Mapping[str, FrozenWorkloadContent] = MappingProxyType(
     {
         "asymmetric_synthetic_7x3_v1": FrozenWorkloadContent(
-            scene_contract_sha256=("ab3b06cd48e0315ce5d33c0f81a880e71fe5df7369c805a2ae85f5c0197b9e35"),
+            scene_contract_sha256=("22796e667d52a0dec276fba787502ad8e06e09e8fec7dbb3254af40e06641a53"),
             transform_replay_sha256=None,
-            fixed_render_fixture_sha256=("4fcece950264cb2ebb78cf1ec06ad52f5a151b3d2cf2970314f1cae5a2aa7907"),
+            fixed_render_fixture_sha256=("a0d37d3845fd24707a7e8d329e7dba923a384e9acc9ef7ced3e8581d52c125fb"),
         ),
         "go2_static_960x640_v1": FrozenWorkloadContent(
-            scene_contract_sha256=("745f01f3d526681c3a350086d55211f92d4a1e5f5b22bcbbc9c43f7dd18f072f"),
+            scene_contract_sha256=("ddc5049a137c97b1924248687702c91740a7adf27f821b7be5c4eb58631317c9"),
             transform_replay_sha256=None,
-            fixed_render_fixture_sha256=("fce32d13427918022c4eaee45485ed6fbfaf5e03b13d1390a0216e138e483182"),
+            fixed_render_fixture_sha256=("c8fcc11d586a544568eddca317707a7485950ef97d887d969894d13f81eab843"),
             asset_source_revision=GO2_FROZEN_SOURCE_REVISION,
             asset_aggregate_sha256=GO2_FROZEN_ASSET_AGGREGATE_SHA256,
         ),
         "go2_static_1920x1080_v1": FrozenWorkloadContent(
-            scene_contract_sha256=("57e86366429979a2460a0ceb01f00749c7e4be7449bbc3acc1577ed5ce94b923"),
+            scene_contract_sha256=("910a0795752d809e053ce2f9e87e77903c621378e5245cb440b5af768dcd1481"),
             transform_replay_sha256=("2b1ecfb401476a9737400b401a72377c880bc9e289370f2d3bd5600cc287a216"),
-            fixed_render_fixture_sha256=("8354993fb682d5a13a2dff62d1d7521afd7d3d46d20b876e15732b4c38415db0"),
+            fixed_render_fixture_sha256=("ab1127b93b5dd1e3d6a98e122078701a3699bca536fe059a95a9c35a0bfaab5e"),
             asset_source_revision=GO2_FROZEN_SOURCE_REVISION,
             asset_aggregate_sha256=GO2_FROZEN_ASSET_AGGREGATE_SHA256,
         ),
         "synthetic_dynamic_rigid_960x640_v1": FrozenWorkloadContent(
-            scene_contract_sha256=("a13f77e42e409cd8f929d01177845fe8c1ee9d90c79fe14eb59639ed845a5ce9"),
+            scene_contract_sha256=("61178ca1085929f47bad2d166dce594ad5547e6a0edbd229cec3072c1c60ae72"),
             transform_replay_sha256=("d62076e56e4e0e15b0481f8a38b596cffdba6b7b23033c1b0dae14d335c59557"),
             fixed_render_fixture_sha256=None,
         ),
         "physics_body_triangle_960x640_v1": FrozenWorkloadContent(
-            scene_contract_sha256=("04a10a8414cae5f8e620684a4068810cc0813e4c15bbf51ba1080862bc36b056"),
+            scene_contract_sha256=("9bab39d32f7131ef3e74bfa14fb522f95625e97975a4a73470733ec3d1d550ac"),
             transform_replay_sha256=None,
             fixed_render_fixture_sha256=None,
         ),

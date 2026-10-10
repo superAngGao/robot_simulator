@@ -133,7 +133,8 @@ def test_warp_graph_dependencies_resolve_through_captured_finder(phase, name):
     failures = []
     session.fail = failures.append
     finder = _CapturedSourceFinder(session)
-    allowed = phase in {'preparing_fixed_render_graph', 'fixed_render_graph_ready'} and name != 'optics.cuda_direct_light'
+    allowed = (name == 'optics.scene' or
+               phase in {'preparing_fixed_render_graph', 'fixed_render_graph_ready'} and name == 'optics.execution')
     if allowed:
         spec = finder._find_spec(name)
         assert spec.loader.source is source and spec.loader.relative == relative
@@ -199,7 +200,7 @@ def graph_session(fixed_storage_session, monkeypatch, diagnostic):
         monkeypatch.setitem(setup._CUDA_EXTENSION_SETS, session, (extension_set, (binding,)))
         session.cuda_extensions = lambda: extension_set
         def require_extension(owner, recipe):
-            assert owner is extension_set and recipe == 'robot_sim_cuda_direct_light_v8'
+            assert owner is extension_set and recipe == 'robot_sim_cuda_direct_light_v10'
             return module
         session.require_cuda_extension = require_extension
         factory = cuda.CudaDirectLightNativeRenderer(context=context, module=module,

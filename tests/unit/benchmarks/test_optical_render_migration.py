@@ -1,4 +1,4 @@
-"""Historical preimages are data, never a parallel executable v12 lane."""
+"""Historical preimages are data, never a parallel old-precision lane."""
 
 import copy
 import hashlib
@@ -35,13 +35,18 @@ def test_render_cleanup_ledger_covers_durable_and_comparison_only_paths():
         "optical_worker/render_sequence_contract.py",
         "tests/unit/optics/test_render_parameters.py",
         *(
-            f"optical_worker/data/render_sequences/v1/{case}.jsonl"
+            f"optical_worker/data/render_sequences/v2/{case}.jsonl"
             for case in RESOLVED_RENDER_SEQUENCE_SHA256
         ),
     }
     assert set(temporary["paths"]) == {
         "tests/unit/benchmarks/data/render_migration_v12.json",
         "tests/unit/benchmarks/data/render_migration_v13.json",
+        "tests/unit/benchmarks/data/render_migration_v15.json",
+        "benchmarks/results/q54_p12_4/history/gate.v13.json",
+        "optical_worker/data/resolved_cameras/v1/asymmetric_synthetic_7x3_v1.jsonl",
+        *(f"optical_worker/data/render_sequences/v1/{case}.jsonl"
+          for case in RESOLVED_RENDER_SEQUENCE_SHA256),
         "tests/unit/benchmarks/test_optical_render_migration.py",
         "tests/unit/optics/test_native_contract_extraction.py",
     }
@@ -61,18 +66,21 @@ def _sha(payload):
 
 
 def test_every_mandatory_row_retains_full_preimage_and_changes_semantic_identity():
-    old = json.loads((DATA / "render_migration_v12.json").read_text())
-    new = json.loads((DATA / "render_migration_v13.json").read_text())
+    root = Path(__file__).resolve().parents[3]
+    old = json.loads((DATA / "render_migration_v13.json").read_text())
+    old['gate'] = json.loads((root / "benchmarks/results/q54_p12_4/history/gate.v13.json").read_bytes())
+    new = json.loads((DATA / "render_migration_v15.json").read_text())
     gate = load_frozen_gate()
     assert old["gate"]["mandatory_rows"] == gate["mandatory_rows"]
     assert len(old["rows"]) == len(new["rows"]) == len(gate["mandatory_rows"]) == 20
-    changed_keys = {"schema_version", "case_contract", "native_execution_binding_contract"}
+    changed_keys = {"schema_version", "case_contract", "native_execution_binding_contract",
+                    "native_input_contract", "resolved_render_contract"}
     for row in gate["mandatory_rows"]:
         before = old["rows"][row["row_id"]]
         after = new["rows"][row["row_id"]]
         actual = canonical_row_semantics_payload(row, gate)
         assert actual == after["preimage"]
-        assert set(actual) == set(before["preimage"]) | {"resolved_render_contract"}
+        assert set(actual) == set(before["preimage"])
         assert _sha(before["preimage"]) == before["sha256"]
         assert _sha(actual) == after["sha256"] == canonical_row_semantics_sha256(row, gate)
         assert before["sha256"] != after["sha256"]
@@ -80,8 +88,9 @@ def test_every_mandatory_row_retains_full_preimage_and_changes_semantic_identity
             if key not in changed_keys:
                 assert actual[key] == value, key
         old_case = old["gate"]["cases"][row["case_id"]]
-        for key, value in old_case.items():
-            assert gate["cases"][row["case_id"]][key] == value
+        for key in ('sha256', 'transform_replay_sha256', 'asset_source_revision', 'asset_aggregate_sha256',
+                    'resolved_render_scope'):
+            assert gate["cases"][row["case_id"]][key] == old_case[key]
     with pytest.raises(ValueError):
         validate_frozen_gate(old["gate"])
     assert gate["measurement"]["same_process_native_pair"] is False
@@ -90,7 +99,7 @@ def test_every_mandatory_row_retains_full_preimage_and_changes_semantic_identity
         "schema_version",
         "result_schema_version",
         "cases",
-        "measurement",
+        "native_input_contract",
         "native_execution_binding_contract",
         "resolved_render_contract",
     }

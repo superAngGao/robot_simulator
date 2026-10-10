@@ -9,11 +9,11 @@ from types import MappingProxyType
 
 RESOLVED_RENDER_SEQUENCE_SHA256 = MappingProxyType(
     {
-        "asymmetric_synthetic_7x3_v1": "59e28d8b3e218d3079bf32ab535d97f4e8a3557a6819c2aadafb295ec53f3a24",
+        "asymmetric_synthetic_7x3_v1": "f38bcc3199e6778d3494d77307af746b8106c80e8689f2f13fdd17d183b7d062",
         "synthetic_dynamic_rigid_960x640_v1": (
-            "5d4c2c54e5cae75c65d1e273bf512cb74ea09fb780dd4db500a1a6cedebf8a70"
+            "2d9d52e156330e7ce13676fcc4f31571de01e3804a58499cf1c678543dd1c7fe"
         ),
-        "go2_static_960x640_v1": "bd8378f0a57bd3a95d501728c9e7c9409e4c4a7e02d7dccf94d5892045b1ccdc",
-        "go2_static_1920x1080_v1": "d8519b3977b6d0a144884166ffa943747a389ee61f574ac5cb84e1ae9920250e",
+        "go2_static_960x640_v1": "a3c03781aaebc634dbca24c5bc2c02941c4f802620e7e499917d5d1778a19306",
+        "go2_static_1920x1080_v1": "8f7f52c26e1810fadb01e4d1f3f66f30f202288bf61c24bbf8a4650b447f5a88",
     }
 )

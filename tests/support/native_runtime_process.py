@@ -1009,7 +1009,7 @@ def _prepare_observed_render_graph(session, controller, binding, observer, direc
         else:
             renderer, context = native_setup._require_cuda_render_factory(session, result.compiled_modules)
             assert renderer is result.factory and context.stream is binding.stream
-            issued_module = session.require_cuda_extension(result.compiled_modules, "robot_sim_cuda_direct_light_v8")
+            issued_module = session.require_cuda_extension(result.compiled_modules, "robot_sim_cuda_direct_light_v10")
         for parameters, bundle in result.frames:
             controller.require_adopted(bundle)
             if session.lane == "warp":

@@ -278,7 +278,7 @@ def load_frozen_render_sequence(case_id: str) -> ResolvedRenderSequence:
     """Read only frozen descriptive bytes; this does not validate current assets."""
     assert_outside_timed_boundary("frozen render sequence loading")
     _case(case_id)
-    path = Path(__file__).parent / "data" / "render_sequences" / "v1" / (case_id + ".jsonl")
+    path = Path(__file__).parent / "data" / "render_sequences" / "v2" / (case_id + ".jsonl")
     raw = path.read_bytes()
     if not raw.endswith(b"\n"):
         raise ValueError("sequence artifact requires exact one-line JSONL framing")

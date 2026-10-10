@@ -1,6 +1,6 @@
 {
-  "schema_version": "q54.p12.4.gate.v13",
-  "result_schema_version": "q54.p12.4.result.v13",
+  "schema_version": "q54.p12.4.gate.v15",
+  "result_schema_version": "q54.p12.4.result.v15",
   "case_schema_version": "q54.p12.4.case.v1",
   "status": "frozen",
   "frozen_at": "2026-08-13T10:41:19+08:00",
@@ -15,37 +15,37 @@
   "cases": {
     "asymmetric_synthetic_7x3_v1": {
       "sha256": "3f6ce0ac1d59d0c0d0e5ea57f497c308a9d5c4b2a5c19462c900627fd99d0181",
-      "scene_contract_sha256": "ab3b06cd48e0315ce5d33c0f81a880e71fe5df7369c805a2ae85f5c0197b9e35",
+      "scene_contract_sha256": "22796e667d52a0dec276fba787502ad8e06e09e8fec7dbb3254af40e06641a53",
       "transform_replay_sha256": null,
-      "fixed_render_fixture_sha256": "4fcece950264cb2ebb78cf1ec06ad52f5a151b3d2cf2970314f1cae5a2aa7907",
+      "fixed_render_fixture_sha256": "a0d37d3845fd24707a7e8d329e7dba923a384e9acc9ef7ced3e8581d52c125fb",
       "asset_source_revision": null,
       "asset_aggregate_sha256": null,
-      "resolved_render_sequence_sha256": "59e28d8b3e218d3079bf32ab535d97f4e8a3557a6819c2aadafb295ec53f3a24",
+      "resolved_render_sequence_sha256": "f38bcc3199e6778d3494d77307af746b8106c80e8689f2f13fdd17d183b7d062",
       "resolved_render_scope": "native_only"
     },
     "go2_static_1920x1080_v1": {
       "sha256": "a6df8bd3f2020be74cef32a285ec8a697879e4e1dbc7dd6e7c4c6fe09816392a",
-      "scene_contract_sha256": "57e86366429979a2460a0ceb01f00749c7e4be7449bbc3acc1577ed5ce94b923",
+      "scene_contract_sha256": "910a0795752d809e053ce2f9e87e77903c621378e5245cb440b5af768dcd1481",
       "transform_replay_sha256": "2b1ecfb401476a9737400b401a72377c880bc9e289370f2d3bd5600cc287a216",
-      "fixed_render_fixture_sha256": "8354993fb682d5a13a2dff62d1d7521afd7d3d46d20b876e15732b4c38415db0",
+      "fixed_render_fixture_sha256": "ab1127b93b5dd1e3d6a98e122078701a3699bca536fe059a95a9c35a0bfaab5e",
       "asset_source_revision": "da76818e269b82289eba39808e2fb91d679d6994",
       "asset_aggregate_sha256": "479dcbdb52c64ca86243d6b1d3b7167bb7d3820af1e60e355168b3c17ddf3ed0",
-      "resolved_render_sequence_sha256": "d8519b3977b6d0a144884166ffa943747a389ee61f574ac5cb84e1ae9920250e",
+      "resolved_render_sequence_sha256": "8f7f52c26e1810fadb01e4d1f3f66f30f202288bf61c24bbf8a4650b447f5a88",
       "resolved_render_scope": "native_only"
     },
     "go2_static_960x640_v1": {
       "sha256": "da4045e2d05e7cb731cd5da7690c74a07708359e038512d3da3e6aae5c3f5723",
-      "scene_contract_sha256": "745f01f3d526681c3a350086d55211f92d4a1e5f5b22bcbbc9c43f7dd18f072f",
+      "scene_contract_sha256": "ddc5049a137c97b1924248687702c91740a7adf27f821b7be5c4eb58631317c9",
       "transform_replay_sha256": null,
-      "fixed_render_fixture_sha256": "fce32d13427918022c4eaee45485ed6fbfaf5e03b13d1390a0216e138e483182",
+      "fixed_render_fixture_sha256": "c8fcc11d586a544568eddca317707a7485950ef97d887d969894d13f81eab843",
       "asset_source_revision": "da76818e269b82289eba39808e2fb91d679d6994",
       "asset_aggregate_sha256": "479dcbdb52c64ca86243d6b1d3b7167bb7d3820af1e60e355168b3c17ddf3ed0",
-      "resolved_render_sequence_sha256": "bd8378f0a57bd3a95d501728c9e7c9409e4c4a7e02d7dccf94d5892045b1ccdc",
+      "resolved_render_sequence_sha256": "a3c03781aaebc634dbca24c5bc2c02941c4f802620e7e499917d5d1778a19306",
       "resolved_render_scope": "native_only"
     },
     "physics_body_triangle_960x640_v1": {
       "sha256": "c6d0b6f8aa1313cddae6be84122420507bdccafc010e705eae53fa331e5734c6",
-      "scene_contract_sha256": "04a10a8414cae5f8e620684a4068810cc0813e4c15bbf51ba1080862bc36b056",
+      "scene_contract_sha256": "9bab39d32f7131ef3e74bfa14fb522f95625e97975a4a73470733ec3d1d550ac",
       "transform_replay_sha256": null,
       "fixed_render_fixture_sha256": null,
       "asset_source_revision": null,
@@ -55,12 +55,12 @@
     },
     "synthetic_dynamic_rigid_960x640_v1": {
       "sha256": "7ebdbb64c57f904c732cf10eadfaa96008fcb126497f6e8b66add74d29c077ab",
-      "scene_contract_sha256": "a13f77e42e409cd8f929d01177845fe8c1ee9d90c79fe14eb59639ed845a5ce9",
+      "scene_contract_sha256": "61178ca1085929f47bad2d166dce594ad5547e6a0edbd229cec3072c1c60ae72",
       "transform_replay_sha256": "d62076e56e4e0e15b0481f8a38b596cffdba6b7b23033c1b0dae14d335c59557",
       "fixed_render_fixture_sha256": null,
       "asset_source_revision": null,
       "asset_aggregate_sha256": null,
-      "resolved_render_sequence_sha256": "5d4c2c54e5cae75c65d1e273bf512cb74ea09fb780dd4db500a1a6cedebf8a70",
+      "resolved_render_sequence_sha256": "2d9d52e156330e7ce13676fcc4f31571de01e3804a58499cf1c678543dd1c7fe",
       "resolved_render_scope": "native_only"
     }
   },
@@ -665,13 +665,13 @@
     ]
   },
   "native_input_contract": {
-    "schema_version": "q54.p12.4.native-input.v2",
+    "schema_version": "q54.p12.4.native-input.v4",
     "timing_contract_version": "q54.p12.4.native-timing.v4",
     "scope": "R0_R1_R2_and_S_static_optical_inputs_only",
     "logical_source": "PackedOpticalSceneHost_single_materialization_source",
-    "scene_contract_schema_version": "q54.optical-scene-contract.v1",
+    "scene_contract_schema_version": "q54.optical-scene-contract.v3",
     "transform_replay_schema_version": "q54.p12.4.transform-replay.v1",
-    "fixed_render_fixture_schema_version": "q54.p12.4.fixed-render-fixture.v1",
+    "fixed_render_fixture_schema_version": "q54.p12.4.fixed-render-fixture.v3",
     "result_capable_constructor": "CanonicalNativeInput.from_scene_contract",
     "generic_from_arrays_result_capable": false,
     "workload_content_schema_version": "q54.p12.4.workload-content.v1",
@@ -680,6 +680,17 @@
     "warp_preparation": "direct_host_to_warp_cuda_allocation",
     "cuda_preparation": "direct_host_to_torch_cuda_allocation",
     "allocation_rule": "independent_runtime_owned_allocations",
+    "native_representation": {
+      "source_case_definition": "unchanged_logical_case_v1_native_dtypes_defined_here",
+      "local_geometry": "original_indexed_binary64_vertices_int64_indices_offsets_all_source_faces",
+      "world_geometry_and_planes": "binary64",
+      "camera_rays_and_query_distances": "binary64",
+      "frame_producer_transforms": "binary32_widened_before_composition",
+      "bvh_bounds": "binary32_minimal_outward_rounding",
+      "shading_and_float_output_channels": "binary32",
+      "query_policy": "original_cpu_area_det_1e-12_direction_1e-12_tie_1e-9",
+      "scene_and_renderer_contraction": false
+    },
     "R0_array_ownership": {
       "packed_scene": "local_geometry_metadata_material_light_role_source",
       "fixed_fixture": "derived_world_geometry_and_normalized_bvh_only",
@@ -725,7 +736,7 @@
     ]
   },
   "native_execution_binding_contract": {
-    "schema_version": "q54.p12.4.c3-one-shot-binding.v6",
+    "schema_version": "q54.p12.4.c3-one-shot-binding.v8",
     "stage_schema_version": "q54.p12.4.native-stage-evidence.v3",
     "construction_order": [
       "source_and_prepared_storage",
@@ -735,7 +746,7 @@
     ],
     "stage_payload_contains_own_sha256": false,
     "stage_payload_references_outer_binding": false,
-    "bound_render_parameters_schema": "q54.p12.4.bound-render-parameters.v1",
+    "bound_render_parameters_schema": "q54.p12.4.bound-render-parameters.v2",
     "bound_render_parameters_required": true,
     "render_stage_references_independent_bound_parameters": true,
     "binding_references_stage_sha256": true,
@@ -1556,12 +1567,12 @@
   },
   "resolved_render_contract": {
     "sequence_schema_version": "q54.p12.4.resolved-render-sequence.v1",
-    "bound_schema_version": "q54.p12.4.bound-render-parameters.v1",
+    "bound_schema_version": "q54.p12.4.bound-render-parameters.v2",
     "sequence_encoding": "canonical_json_record_with_single_lf_jsonl_framing",
     "sequence_hash_scope": "canonical_record_excluding_framing_lf",
     "binary64_encoding": "finite_canonical_float_hex",
-    "native_scalar_encoding": "binary64_to_binary32_nearest_even_little_endian_hex",
-    "native_scalar_order": [
+    "native_camera_scalar_encoding": "binary64_native_no_rounding_little_endian_hex",
+    "native_camera_scalar_order": [
       "fx",
       "fy",
       "cx",
@@ -1578,7 +1589,10 @@
       "rotation_20",
       "rotation_21",
       "rotation_22",
-      "max_distance",
+      "max_distance"
+    ],
+    "native_shading_scalar_encoding": "binary64_to_binary32_nearest_even_little_endian_hex",
+    "native_shading_scalar_order": [
       "ambient_r",
       "ambient_g",
       "ambient_b",

@@ -12,7 +12,8 @@ from typing import Any
 
 from optical_worker.render_parameters import (
     BOUND_SCHEMA,
-    NATIVE_SCALAR_ORDER,
+    NATIVE_CAMERA_SCALAR_ORDER,
+    NATIVE_SHADING_SCALAR_ORDER,
     SEQUENCE_SCHEMA,
     BoundRenderParameters,
 )
@@ -83,9 +84,9 @@ from .workload_contract import (
     frozen_workload_payloads,
 )
 
-GATE_SCHEMA_VERSION = "q54.p12.4.gate.v13"
-RESULT_SCHEMA_VERSION = "q54.p12.4.result.v13"
-ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v8"
+GATE_SCHEMA_VERSION = "q54.p12.4.gate.v15"
+RESULT_SCHEMA_VERSION = "q54.p12.4.result.v15"
+ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v10"
 INVENTORY_SCHEMA_VERSION = "q54.p12.4.architecture-inventory.v1"
 CLEANUP_SCHEMA_VERSION = "q54.p12.4.cleanup-ledger.v1"
 PUBLICATION_BINDING_CONTRACT_VERSION = "q54.p12.4.publication-cuda-binding.v1"
@@ -96,8 +97,10 @@ EXPECTED_RESOLVED_RENDER_CONTRACT = {
     "sequence_encoding": "canonical_json_record_with_single_lf_jsonl_framing",
     "sequence_hash_scope": "canonical_record_excluding_framing_lf",
     "binary64_encoding": "finite_canonical_float_hex",
-    "native_scalar_encoding": "binary64_to_binary32_nearest_even_little_endian_hex",
-    "native_scalar_order": list(NATIVE_SCALAR_ORDER),
+    "native_camera_scalar_encoding": "binary64_native_no_rounding_little_endian_hex",
+    "native_camera_scalar_order": list(NATIVE_CAMERA_SCALAR_ORDER),
+    "native_shading_scalar_encoding": "binary64_to_binary32_nearest_even_little_endian_hex",
+    "native_shading_scalar_order": list(NATIVE_SHADING_SCALAR_ORDER),
     "source_validation": "actual_materialization_equals_frozen_sequence_before_native_preparation",
     "physical_parameter_validation": "actual_warp_packed_descriptor_and_cuda_fixed_abi",
     "sample_metadata": "camera_i_mod_count_frame_i_plus_1_time_i_over_30_env_0_case_sensor",
@@ -382,6 +385,17 @@ EXPECTED_NATIVE_INPUT_CONTRACT = {
     "warp_preparation": "direct_host_to_warp_cuda_allocation",
     "cuda_preparation": "direct_host_to_torch_cuda_allocation",
     "allocation_rule": "independent_runtime_owned_allocations",
+    "native_representation": {
+        "source_case_definition": "unchanged_logical_case_v1_native_dtypes_defined_here",
+        "local_geometry": "original_indexed_binary64_vertices_int64_indices_offsets_all_source_faces",
+        "world_geometry_and_planes": "binary64",
+        "camera_rays_and_query_distances": "binary64",
+        "frame_producer_transforms": "binary32_widened_before_composition",
+        "bvh_bounds": "binary32_minimal_outward_rounding",
+        "shading_and_float_output_channels": "binary32",
+        "query_policy": "original_cpu_area_det_1e-12_direction_1e-12_tie_1e-9",
+        "scene_and_renderer_contraction": False,
+    },
     "R0_array_ownership": {
         "packed_scene": "local_geometry_metadata_material_light_role_source",
         "fixed_fixture": "derived_world_geometry_and_normalized_bvh_only",

@@ -87,10 +87,10 @@ def _snapshot():
     # Real canonical materializer's external content anchors remain required.
     packed = build_canonical_packed_scene(CASE)
     fixture = build_canonical_fixed_fixture(packed)
-    assert packed.scene_contract_sha256 == "ab3b06cd48e0315ce5d33c0f81a880e71fe5df7369c805a2ae85f5c0197b9e35"
+    assert packed.scene_contract_sha256 == "22796e667d52a0dec276fba787502ad8e06e09e8fec7dbb3254af40e06641a53"
     assert (
         fixture.fixed_render_fixture_sha256
-        == "4fcece950264cb2ebb78cf1ec06ad52f5a151b3d2cf2970314f1cae5a2aa7907"
+        == "a0d37d3845fd24707a7e8d329e7dba923a384e9acc9ef7ced3e8581d52c125fb"
     )
     registry = _asymmetric_registry()
     material_ordinals = {name: index for index, name in enumerate(registry.materials)}
@@ -292,7 +292,7 @@ assert not attempts, attempts
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
-def test_existing_cases_and_content_are_unchanged():
+def test_current_cases_and_content_match_frozen_gate():
     from optical_worker.cases import case_hashes
     from optical_worker.workload_contract import frozen_workload_payloads
 
