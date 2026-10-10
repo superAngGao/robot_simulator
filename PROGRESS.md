@@ -1898,15 +1898,23 @@ Next milestone:
       notev3. Next coherent
       implementation is observed R0 warmup through final readiness/origin,
       actual C3/arena graph/dormant plans, one seal and guarded final barrier;
-      readiness alone is not a completed integration. Active uncommitted work
+      readiness alone is not a completed integration. R0 work at8247cd4
       (implementation-notev4) composes new final factories/C3/arena plans over
       warmed storage in both lanes and adds the Warp adapter over the existing
       control plane. CPU composition tests pass. Source-session row admission, final sealing and
       guarded target barrier are implemented, including pre-barrier acquisition
       rejection. Both lanes pass real Go2 primary final preparation at e31b83a
       and injected final-sync failure at f05235f. Later submission/unknown-scope
-      restrictions have CPU evidence; diagnostic/native matrix and independent
-      review remain open. No final sample or speed result is claimed.
+      restrictions also have actual8247cd4 both-lane diagnostic preparation
+      evidence. Fresh code-reviewv3 requests changes: fault disposal repeats
+      synchronization after acknowledged final quiescence (F1). Repair47114b0
+      reuses the original completion proof and supervised CPU cleanup, preserves
+      conservative unknown/failed-state handling and historical v3 behavior;
+      CPU regressions and original reviewer counterexample confirm the change.
+      Implementation-notev5 records exact proof and its limits. Actual47114b0
+      both-lane Go2 native disposal now exits with zero extra synchronization;
+      six owned PIDs are absent. Fresh independent re-review remains pending; M1 shared
+      setup/failure routing remains open. No final sample or speed result is claimed.
       R1/full C4 follow-up and fresh whole review remain mandatory.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
