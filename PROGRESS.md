@@ -2003,6 +2003,18 @@ Next milestone:
       has independent test-only approval. Full reports are archived unchanged.
       Fresh independent preflightv3 is running, with no new native execution;
       implementation-notev3 records exact candidate, evidence and pending work.
+      Reader preflightv3 subsequently approved bounded native validation at
+      df1a46a. Actual framed Warp smoke completed two samples and normal close;
+      CUDA completed input/artifact/warmup preparation but the duplicate legacy
+      repository scanner misclassified Torch's inherited `_ops.py` namespace
+      label and cancelled before sample submission. Both owned process trees
+      exited; original raw evidence and input-only replay are preserved.
+      Candidate22b1db0 reuses the existing captured source audit throughout the
+      native worker loop, removing that duplicate scan without a name exception
+      or new admission policy. Author regression:308 local passes/13 skips,
+      15 primary-server CPU passes/no skips. Fresh independent preflight is
+      running; no native rerun or formal speed result is claimed. See native
+      worker source audit implementation-notev1 for exact scope and evidence.
       R1/full C4 follow-up and fresh whole review remain mandatory.
       C4c2 runtime, C4c3-c4,
       C4d/B3, product GPU preparation, a3b and result/baseline outlets remain
