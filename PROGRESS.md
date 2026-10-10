@@ -2045,8 +2045,11 @@ Next milestone:
       full17-case reader/input regression passed at the same revision (no skips),
       followed by both lanes' actual two-sample framed worker probe. All owned
       native processes exited; raw archives and closure are recorded in the
-      stream-adoption-order implementation note. Whole-reader independent
-      acceptance and complete final-worker correctness remain open.
+      stream-adoption-order implementation note. Fresh independent whole
+      preparation-reader acceptance now Approves frozen1286cbb, sourcecf7f5a6:
+      612 fresh CPU checks plus independently verified/replayed native archives.
+      Complete final-worker correctness/refactor/fault acceptance remains open;
+      this is not whole C2f/C4 or later-gate approval.
       Author full source
       regression passes317 with13 Windows skips, all13 supplemented successfully
       on primary Linux. Separately the approvedfc23b4e

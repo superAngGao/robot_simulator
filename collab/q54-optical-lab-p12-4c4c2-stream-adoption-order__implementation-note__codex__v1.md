@@ -199,3 +199,24 @@ inventory f0a94c77744d34e6f32f909e59d8e3d0b4aa542cf5267dcf70f390d576f73964.
 Local downloaded archive hash matches. No wall-clock duration here is a
 renderer timing or backend speed comparison. Independent full reader acceptance
 and all remaining C2f/C4 work are still open.
+
+## Independent complete preparation-reader acceptance
+
+The subsequently completed fresh session01a125a2-0c60-7aa3-8736-a5b6c3a977f7
+Approves frozen1286cbb94040b83e44cffbfcec98497f9af77138, whose production/test
+source matchescf7f5a6 exactly. Full report is archived verbatim as
+q54-optical-lab-p12-4c4c2-native-state-reader__acceptance-review__codex__v1.md.
+Reviewer independently ran612CPU checks/no skips, rehashed all four supplied
+archives and every raw inventory member, replayed24distinct preserved native
+cases (23current outcomes plus the original failure), and rechecked exact
+primary source/environment/assets and scoped process closure. This was archive
+acceptance with fresh CPU verification, not new native execution. All original
+preparation-reader findings are closed; no extra predecessor native campaign is
+required. Tool72080 exited0; reviewer40760 and launcher46608 are now absent.
+
+Approval is specifically the preparation-reader scope and affected successful
+worker integration, not final-worker physical/numeric proof, current unreviewed
+control refactor, F3, whole C2f/C4, product activation or performance. The ongoing
+coherent worker completion packet remains mandatory and is tracked in the
+worker-control-work note. Final-observation design v2 has its own distinct design
+approval; neither approval substitutes for implementation/native acceptance.
