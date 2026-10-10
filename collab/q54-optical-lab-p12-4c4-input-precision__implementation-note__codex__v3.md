@@ -121,6 +121,7 @@ It includes all four completed run directories, full channel readbacks,
 comparison JSON files, the final one-shot launch/comparison scripts and the
 exact owned-PID absence observation. No benchmark duration is inferred from
 the setup/custody wall time.
+The downloaded local archive has the same digest and185 unique members.
 
 ## Tests and remaining scope
 
@@ -137,6 +138,37 @@ without configured evidence paths are skipped, not claimed as validation.
 Ruff passes native-manifest and render-migration tests. The actual-record test
 file still has eight pre-existing import/line-length findings; a HEAD replay
 has those same eight plus the overlong old manifest-path line repaired here.
+
+Actual-record replay at97ac4b4604cf0861a52c201027e3c2d41418cf78 configured all
+four completed native directories: 248 passed,16 skipped,12 failed in554.94s.
+All12 failures were test-construction KeyError exceptions, before the production
+parser: the shared `_reindex` helper recognized `*_token` fields but omitted
+the existing plain `token` field of CUDA extension entry records. The real
+unchanged records had already passed their fixture's production parse and
+custody attachment checks. This was not a native binding failure.
+
+Test-only repair8d7defda83fa90469620874453d3deda551cf493 recognizes both global
+token spellings while retaining the local-token/manifest/signature exclusions.
+The new positive check verifies reindexing each original actual record changes
+no field. Fresh targeted replay covers all24 admission-progression mutations
+across both lanes/resolutions plus the four preservation checks:28 passed,
+252 deselected in35.84s. It includes all12 original failures. No full-suite
+rerun at8d7defd or combined new-revision280-pass claim is made. The16 earlier
+skips are absent component occurrences in the particular actual records.
+No production source, catalog, guard, lifecycle or admission rule changed.
+
+Exact one-shot launchers `replay_precision_runtime_custody_v1.py` and v2, and
+raw logs `c4-precision-runtime-custody-replay-v1.log` and v2, are retained locally
+in c4_assets and remotely in /data2/shared/ang.gao. Log SHA256 values:
+
+- v1: `036d9ec1ae2da1d7d6a47a0e8a8b07af958f25f2b7685621089e0883ed2b6e7e`.
+- v2: `e9d1c311dc384cf3766d6a9371e4192408260cc39ace6e9c1638545a6ff21998`.
+
+Both replay subprocesses returned and were reaped; the failed v1 parent/pytest
+PIDs3885522/3885527 and successful v2 parent3899258 are absent. Final scoped
+ps check also reconfirms all12 native parent/supervisor/worker PIDs absent.
+All author tool sessions are terminal. The only observed remaining GPU process
+is the pre-existing unrelated MPS server2238410, which was not touched.
 
 Required continuation is unchanged: complete original CPU R1 comparisons,
 remaining required profiles/shadows/frames/sentinels/diagnostics and affected
