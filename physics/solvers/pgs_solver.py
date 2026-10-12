@@ -205,10 +205,34 @@ class PGSContactSolver:
         inv_mass: list[float],
         inv_inertia: list[NDArray],
         dt: float,
+        *,
+        body_jacobians: NDArray | None = None,
+        mass_cholesky: NDArray | None = None,
     ) -> list[Vec6]:
-        """Solve contact constraints and return spatial impulses per body."""
+        """Solve contact constraints and return spatial impulses per body.
+
+        Articulated callers supply both body_jacobians (nb,6,nv) and the
+        lower Cholesky factor of generalized mass (nv,nv). Their Delassus
+        matrix then includes joint coupling and offset centers of mass.
+        Omitting both preserves the independent-body inverse-mass API.
+        """
         nc = len(contacts)
         num_bodies = len(body_v)
+        if (body_jacobians is None) != (mass_cholesky is None):
+            raise ValueError("body_jacobians and mass_cholesky must be supplied together")
+        if body_jacobians is not None:
+            body_jacobians = np.asarray(body_jacobians, dtype=float)
+            mass_cholesky = np.asarray(mass_cholesky, dtype=float)
+            if (
+                mass_cholesky.ndim != 2
+                or mass_cholesky.shape[0] != mass_cholesky.shape[1]
+                or body_jacobians.shape != (num_bodies, 6, mass_cholesky.shape[0])
+                or not np.all(np.isfinite(body_jacobians))
+                or not np.all(np.isfinite(mass_cholesky))
+                or np.any(np.diag(mass_cholesky) <= 0)
+                or np.any(np.triu(mass_cholesky, 1) != 0)
+            ):
+                raise ValueError("invalid body Jacobians or mass Cholesky factor")
         if nc == 0:
             self._warm_cache.clear()
             return [np.zeros(6) for _ in range(num_bodies)]
@@ -285,6 +309,28 @@ class PGSContactSolver:
                         )
 
         # ── Build full Delassus W = J M⁻¹ Jᵀ ──
+        if body_jacobians is not None:
+            J_gen = np.zeros((n_rows, mass_cholesky.shape[0]))
+            for ci, c in enumerate(contacts):
+                rows = slice(row_offsets[ci], row_offsets[ci] + c.condim)
+                if c.body_i >= 0:
+                    J_gen[rows] += J_body_i[rows] @ body_jacobians[c.body_i]
+                if c.body_j >= 0:
+                    J_gen[rows] += J_body_j[rows] @ body_jacobians[c.body_j]
+            weighted_J = np.linalg.solve(mass_cholesky, J_gen.T)
+            W = weighted_J.T @ weighted_J
+        else:
+            W = self._independent_body_delassus(
+                contacts, row_offsets, J_body_i, J_body_j, inv_mass, inv_inertia
+            )
+
+        return self._solve_rows(contacts, body_v, body_X_world, dt, row_offsets, W)
+
+    @staticmethod
+    def _independent_body_delassus(contacts, row_offsets, J_body_i, J_body_j, inv_mass, inv_inertia):
+        """Mobility for legacy callers with independent rigid bodies."""
+        nc = len(contacts)
+        n_rows = len(J_body_i)
         W = np.zeros((n_rows, n_rows))
 
         body_contact_rows: dict[int, list[int]] = {}
@@ -317,6 +363,13 @@ class PGSContactSolver:
                 Minv_j1 = np.concatenate([m_inv * j1_lin, I_inv @ j1_ang])
                 for ri2, r2 in enumerate(rows):
                     W[r1, r2] += J_rows[ri2] @ Minv_j1
+
+        return W
+
+    def _solve_rows(self, contacts, body_v, body_X_world, dt, row_offsets, W):
+        """Shared regularization, PGS iteration, warmstart and impulse mapping."""
+        n_rows = len(W)
+        num_bodies = len(body_v)
 
         # Per-row regularization: normal rows get uniform cfm,
         # friction rows get self-adaptive R = (1-d)/d * |W_ii| (Q25 fix).

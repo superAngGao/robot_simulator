@@ -4,9 +4,9 @@ Tier 1 Layer 1: Pure dynamics validation — CPU vs MuJoCo (no contact).
 Validates that our ABA + semi-implicit Euler produces the same trajectories
 as MuJoCo's forward dynamics for articulated bodies WITHOUT contact.
 
-This is the foundation test: if pure dynamics disagree, contact tests are
-meaningless. Any failure here indicates a bug in ABA, RNEA, joint models,
-spatial algebra, or integration.
+Failures require separating dynamics errors from finite-step integration
+differences. The CPU-only energy check measures convergence, not conservation
+to an arbitrary percentage or real-world accuracy.
 
 Test matrix:
   - Single pendulum  (1-DOF, fixed base)
@@ -28,18 +28,9 @@ from .models import (
     build_quadruped,
     build_single_pendulum,
 )
+from .physics_metrics import energy_errors, pendulum_energy_history
 
-try:
-    import mujoco
-
-    HAS_MUJOCO = True
-except ImportError:
-    HAS_MUJOCO = False
-
-pytestmark = [
-    pytest.mark.slow,
-    pytest.mark.skipif(not HAS_MUJOCO, reason="mujoco not installed"),
-]
+pytestmark = pytest.mark.slow
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +76,7 @@ def _run_mujoco(xml, q0_mj, qdot0_mj, n_steps, dt=DT):
 
     Returns: (qpos_traj, qvel_traj) each shape (n_steps, nq/nv).
     """
+    mujoco = pytest.importorskip("mujoco")
     model = mujoco.MjModel.from_xml_string(xml)
     data = mujoco.MjData(model)
 
@@ -222,32 +214,23 @@ class TestDoublePendulumDynamics:
         )
 
     def test_energy_conservation(self):
-        """Total energy (KE + PE) should be conserved (no damping)."""
-        model, _ = build_double_pendulum()
-        q0 = np.array([np.pi / 2, np.pi / 4])
-        qdot0 = np.array([0.0, 0.0])
-        tree = model.tree
+        """Full-path energy error converges at first order over the same 2 s.
 
-        q_traj, qdot_traj = _run_ours(model, q0, qdot0, 10000)
-
-        def _total_energy(q, qdot):
-            # KE = 0.5 * qdot^T H qdot
-            H = tree.crba(q)
-            KE = 0.5 * qdot @ H @ qdot
-            # PE = sum(m_i * g * z_com_i) for each body
-            X_world = tree.forward_kinematics(q)
-            PE = 0.0
-            for body in tree.bodies:
-                pos = X_world[body.index].R @ body.inertia.com + X_world[body.index].r
-                PE += body.inertia.mass * G * pos[2]
-            return KE + PE
-
-        E0 = _total_energy(q_traj[0], qdot_traj[0])
-        E_final = _total_energy(q_traj[-1], qdot_traj[-1])
-        # Euler integration on a chaotic double pendulum at large amplitude
-        # will drift. Check it stays bounded (no blowup), not exact conservation.
-        rel_drift = abs(E_final - E0) / (abs(E0) + 1e-10)
-        assert rel_drift < 0.50, f"Energy blew up ({rel_drift * 100:.1f}%): E0={E0:.4f} E_final={E_final:.4f}"
+        The [1.8,2.2] step-halving band allows 10% around first-order scaling;
+        baseline ratios are 1.919 and 1.961. It is a fixture regression, not
+        a universal accuracy claim. Independent dynamics checks remain needed.
+        """
+        errors = []
+        for dt in [4e-4, 2e-4, 1e-4]:
+            times, energies, reference = pendulum_energy_history(dt)
+            assert times[0] == 0 and times[-1] == 2.0
+            assert np.all(np.isfinite(energies))
+            metrics = energy_errors(energies, reference)
+            shifted = energy_errors(energies + 1000, reference + 1000)
+            np.testing.assert_allclose(metrics["max_relative"], shifted["max_relative"], atol=1e-12)
+            errors.append(metrics["max_j"])
+        ratios = np.array(errors[:-1]) / errors[1:]
+        assert np.all((ratios > 1.8) & (ratios < 2.2)), (errors, ratios)
 
 
 # ---------------------------------------------------------------------------

@@ -86,6 +86,9 @@ class PGSSplitImpulseSolver:
         inv_mass: list[float],
         inv_inertia: list[NDArray],
         dt: float,
+        *,
+        body_jacobians: NDArray | None = None,
+        mass_cholesky: NDArray | None = None,
     ) -> list[Vec6]:
         """Solve contact constraints with Baumgarte position correction.
 
@@ -93,14 +96,18 @@ class PGSSplitImpulseSolver:
         ``position_corrections`` is always zero — correction flows through velocity.
         """
         num_bodies = len(body_v)
-        self.position_corrections = [np.zeros(3) for _ in range(num_bodies)]
-
-        if not contacts:
-            self._vel_solver._warm_cache.clear()
-            return [np.zeros(6) for _ in range(num_bodies)]
-
         # Single-pass PGS with Baumgarte ERP bias in the normal constraint RHS.
         # Corrections propagate through J^T to all generalized coordinates.
-        impulses = self._vel_solver.solve(contacts, body_v, body_X_world, inv_mass, inv_inertia, dt)
+        impulses = self._vel_solver.solve(
+            contacts,
+            body_v,
+            body_X_world,
+            inv_mass,
+            inv_inertia,
+            dt,
+            body_jacobians=body_jacobians,
+            mass_cholesky=mass_cholesky,
+        )
+        self.position_corrections = [np.zeros(3) for _ in range(num_bodies)]
 
         return impulses

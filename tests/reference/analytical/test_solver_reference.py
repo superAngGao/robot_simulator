@@ -110,11 +110,10 @@ class TestNormalCollision:
 
     @pytest.mark.parametrize("name,solver", _all_solvers(), ids=lambda x: x if isinstance(x, str) else "")
     def test_normal_impulse_is_2(self, name, solver):
-        """λ_n = |v_free_n| / W_nn = 2.0 / 1.0 = 2.0."""
+        """Normal impulse follows the configured CFM, not a 5% envelope."""
         _, imp = _solve_and_get_velocity(solver, np.array([0, 0, -2.0, 0, 0, 0]))
-        # ADMM returns M*Δv (momentum change), not constraint-space λ.
-        # For this setup M_lin = 1.0, so impulse_z ≈ λ_n.
-        assert abs(imp[2] - 2.0) < 0.1, f"{name}: impulse_z={imp[2]:.4f}, expected ≈2.0"
+        expected = 2.0 / (INV_MASS + solver.cfm)
+        np.testing.assert_allclose(imp[2], expected, atol=1e-10, rtol=0)
 
 
 # ---------------------------------------------------------------------------
@@ -146,28 +145,24 @@ class TestFrictionSticking:
 
     @pytest.mark.parametrize("name,solver", _all_solvers(), ids=lambda x: x if isinstance(x, str) else "")
     def test_contact_velocity_zero(self, name, solver):
-        """Contact point velocity should go to zero (sticking)."""
+        """Per-row friction compliance leaves a predicted residual velocity."""
         v_after, _ = _solve_and_get_velocity(solver, np.array([2.0, 0, -2.0, 0, 0, 0]))
         # Contact velocity = J @ v_after
         # v_contact_x = vx + (-0.1)*omega_y
         v_contact_x = v_after[0] + (-0.1) * v_after[4]
         assert abs(v_after[2]) < 1e-3, f"{name}: v_z={v_after[2]}"
-        # Tolerance relaxed from 1e-2 to 0.03: Q25 fix adds per-row R
-        # regularization on friction rows (compliance), causing small residual
-        # tangential velocity — physically correct (matches MuJoCo soft contact).
-        assert abs(v_contact_x) < 0.03, f"{name}: v_contact_x={v_contact_x:.4f}, expected ~0.0"
+        # depth=width=.001 -> d=d_width=.99; W_tt+R_tt=W_tt/d.
+        # With inactive friction bounds, lambda_t=-d*v_t/W_tt and v_t'=v_t*(1-d).
+        # This verifies the configured soft model, not ideal no-slip or MuJoCo parity.
+        expected_contact_v = 2.0 * (1.0 - solver.solimp[1])
+        np.testing.assert_allclose(v_contact_x, expected_contact_v, atol=1e-10, rtol=0)
 
     def test_pgs_body_vx_analytical(self):
-        """PGS body center vx should be near 1.4286 (analytical W_t1t1=3.5).
-
-        Tolerance relaxed from 1e-3 to 0.01: Q25 fix adds per-row R
-        regularization on friction rows, making W_eff = W + R > W.
-        This slightly reduces the friction impulse, giving larger vx.
-        """
+        """Body velocity matches the soft analytical W_tt/d response."""
         solver = PGSContactSolver(max_iter=50, erp=0.0, cfm=1e-8)
         v_after, _ = _solve_and_get_velocity(solver, np.array([2.0, 0, -2.0, 0, 0, 0]))
-        expected_vx = 2.0 - 2.0 / 3.5  # = 1.4286 (hard LCP)
-        assert abs(v_after[0] - expected_vx) < 0.01, f"vx={v_after[0]:.4f}, expected ~{expected_vx:.4f}"
+        expected_vx = 2.0 - 2.0 * solver.solimp[1] / 3.5
+        np.testing.assert_allclose(v_after[0], expected_vx, atol=1e-10, rtol=0)
 
 
 # ---------------------------------------------------------------------------

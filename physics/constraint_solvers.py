@@ -17,7 +17,12 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .constraint_solver import ConstraintSolver
-from .dynamics_utils import gather_inv_mass, impulses_to_generalized, qdot_to_body_v
+from .dynamics_utils import (
+    body_velocity_jacobians,
+    gather_inv_mass,
+    impulses_to_generalized,
+    qdot_to_body_v,
+)
 
 if TYPE_CHECKING:
     pass
@@ -72,6 +77,17 @@ class VelocityLevelAdapter(ConstraintSolver):
         inv_mass, inv_inertia = gather_inv_mass(tree)
 
         # Solve on predicted velocities
+        # The solve must use the same articulated mobility as impulse application.
+        # Independent-body masses omit joint coupling (even for welded children).
+        from .solvers.pgs_solver import PGSContactSolver
+        from .solvers.pgs_split_impulse import PGSSplitImpulseSolver
+
+        context = {}
+        if isinstance(self._inner, (PGSContactSolver, PGSSplitImpulseSolver)):
+            context = {
+                "body_jacobians": body_velocity_jacobians(tree, cache.q),
+                "mass_cholesky": cache.L,
+            }
         impulses = self._inner.solve(
             contacts,
             body_v_pred,
@@ -79,6 +95,7 @@ class VelocityLevelAdapter(ConstraintSolver):
             inv_mass,
             inv_inertia,
             dt=cache.dt,
+            **context,
         )
 
         # Convert body-frame impulses to generalized

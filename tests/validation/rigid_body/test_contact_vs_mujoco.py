@@ -1,12 +1,12 @@
 """
 Tier 1 Layer 2: Contact dynamics validation — CPU vs MuJoCo.
 
-Validates that our CPU contact solvers (ADMM, PGS-SI) produce physically
-correct behavior for articulated robots making ground contact.
+Measures model-specific equilibria and bounded cross-engine agreement for
+articulated ground contact. Neither implies real-material calibration.
 
 Contact comparison is inherently looser than pure dynamics because:
   - Different collision detection (GJK/EPA vs MuJoCo analytical)
-  - Different solver implementations (our ADMM vs MuJoCo's CG-based ADMM)
+  - Different solver algorithms and regularization
   - Different compliance parameters (approximate match via solref/solimp)
 
 Pass criteria focus on qualitative correctness and bounded quantitative
@@ -18,37 +18,22 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from physics.cpu_engine import CpuEngine
 from physics.merged_model import merge_models
+from physics.solvers.admm_qp import ADMMQPSolver
+from physics.solvers.pgs_split_impulse import PGSSplitImpulseSolver
 
 from .models import (
     DT,
     QUAD_CALF_LENGTH,
     QUAD_FOOT_RADIUS,
     QUAD_HIP_LENGTH,
+    G,
     build_quadruped,
 )
+from .physics_metrics import quadruped_admm_equilibrium_depth
 
-try:
-    import mujoco
-
-    HAS_MUJOCO = True
-except ImportError:
-    HAS_MUJOCO = False
-
-try:
-    from physics.cpu_engine import CpuEngine
-    from physics.solvers.admm_qp import ADMMQPSolver
-    from physics.solvers.pgs_split_impulse import PGSSplitImpulseSolver
-
-    HAS_ENGINE = True
-except Exception:
-    HAS_ENGINE = False
-
-pytestmark = [
-    pytest.mark.slow,
-    pytest.mark.skipif(not HAS_MUJOCO, reason="mujoco not installed"),
-    pytest.mark.skipif(not HAS_ENGINE, reason="CpuEngine not available"),
-]
+pytestmark = pytest.mark.slow
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +71,7 @@ def _run_cpu(model, q0, qdot0, n_steps, solver=None, dt=DT):
 
 def _run_mujoco_quad(xml, q0_base_z, n_steps, dt=DT):
     """Run MuJoCo quadruped drop."""
+    mujoco = pytest.importorskip("mujoco")
     mj_model = mujoco.MjModel.from_xml_string(xml)
     mj_data = mujoco.MjData(mj_model)
     mj_model.opt.timestep = dt
@@ -251,26 +237,30 @@ class TestQuadrupedDropPgsSi:
         assert np.all(np.isfinite(qdot_traj)), "PGS-SI produced NaN in qdot"
 
     def test_pgs_si_vs_admm_settling_height(self):
-        """PGS-SI and ADMM should settle to similar heights.
+        """Each solver must reach its own equilibrium, not merely agree to 10 cm.
 
-        ADMM uses compliance (spring-damper), PGS-SI uses hard constraints
-        with ERP. PGS-SI typically settles slightly lower due to different
-        penetration handling. 10cm tolerance accounts for this.
+        PGS uses 5 mm slop; ADMM uses per-row compliant contact. A 1 um
+        equilibrium residual resolves the old 20 um PGS inertia defect.
+        Separate resolvable-CFM tests verify dt scaling and load balance.
         """
         model, _ = build_quadruped(contact=True)
         q, qdot = model.tree.default_state()
         q[6] = self.BASE_Z0
 
-        z_admm, _, _, _ = _run_cpu(model, q.copy(), qdot.copy(), 5000)
+        solver_admm = ADMMQPSolver()
+        z_admm, vz_admm, _, _ = _run_cpu(model, q.copy(), qdot.copy(), 5000, solver=solver_admm)
         solver_pgs = PGSSplitImpulseSolver(max_iter=60, erp=0.8, slop=0.005)
-        z_pgs, _, _, _ = _run_cpu(model, q.copy(), qdot.copy(), 5000, solver=solver_pgs)
+        z_pgs, vz_pgs, _, _ = _run_cpu(model, q.copy(), qdot.copy(), 5000, solver=solver_pgs)
 
-        z_admm_final = np.mean(z_admm[-500:])
-        z_pgs_final = np.mean(z_pgs[-500:])
-
-        assert abs(z_admm_final - z_pgs_final) < 0.10, (
-            f"ADMM z={z_admm_final:.4f} vs PGS-SI z={z_pgs_final:.4f}"
-        )
+        mass = sum(b.inertia.mass for b in model.tree.bodies)
+        expected_pgs = LEG_LENGTH - solver_pgs.slop - solver_pgs.cfm * (mass * G / 4) * DT**2 / solver_pgs.erp
+        expected_admm = LEG_LENGTH - quadruped_admm_equilibrium_depth(solver_admm, DT)
+        for z, vz, expected in [(z_pgs, vz_pgs, expected_pgs), (z_admm, vz_admm, expected_admm)]:
+            assert abs(np.mean(z[-500:]) - expected) < 1e-6
+            assert np.ptp(z[-500:]) < 1e-6
+            assert np.max(np.abs(vz[-500:])) < 1e-5
+        # Four equal normal forces must support the complete robot weight.
+        np.testing.assert_allclose(solver_admm.last_forces[::3], mass * G / 4, atol=1e-6, rtol=0)
 
 
 # ---------------------------------------------------------------------------

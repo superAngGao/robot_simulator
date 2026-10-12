@@ -19,6 +19,23 @@ if TYPE_CHECKING:
     from .solvers.pgs_solver import ContactConstraint
 
 
+def body_velocity_jacobians(tree: "RobotTreeNumpy", q: NDArray) -> NDArray:
+    """Map generalized velocity to each body's [linear, angular] velocity.
+
+    Shape is (num_bodies, 6, nv), in body frames. Fixed children inherit
+    their parent's motion; independent roots have disjoint velocity columns.
+    The transpose is the dual map from body impulses to generalized impulse.
+    """
+    jacobians = np.zeros((tree.num_bodies, 6, tree.nv))
+    for body in tree.bodies:
+        q_i = q[body.q_idx]
+        X_up = body.X_tree @ body.joint.transform(q_i)
+        if body.parent >= 0:
+            jacobians[body.index] = X_up.matrix() @ jacobians[body.parent]
+        jacobians[body.index, :, body.v_idx] += body.joint.motion_subspace(q_i)
+    return jacobians
+
+
 def qdot_to_body_v(
     tree: "RobotTreeNumpy",
     q: NDArray,

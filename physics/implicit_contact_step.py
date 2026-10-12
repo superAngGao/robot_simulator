@@ -37,6 +37,9 @@ from typing import List, Optional
 import numpy as np
 from numpy.typing import NDArray
 
+from .constraint_solvers import VelocityLevelAdapter
+from .dynamics_cache import DynamicsCache
+from .dynamics_utils import gather_inv_mass, impulses_to_generalized, qdot_to_body_v
 from .integrator import Integrator
 from .solvers.pgs_solver import ContactConstraint
 
@@ -117,37 +120,12 @@ class ImplicitContactStep(Integrator):
         AFTER gravity has been applied, so its impulse directly corrects
         the post-gravity velocity.
         """
-        # 2. Predicted velocity (includes gravity + all non-contact forces)
-        v_predicted = qdot + self.dt * a_u
-
-        # 3. Convert to body-frame predicted velocities for the solver
-        #    We need body_v and body_X at the CURRENT configuration
-        #    (contacts were detected at current q)
-        X_world = tree.forward_kinematics(q)
-        body_v_pred = self._qdot_to_body_v(tree, q, v_predicted, X_world)
-
-        # 4. Gather mass properties for the solver
-        inv_mass, inv_inertia = self._gather_mass(tree)
-
-        # 5. Solve on predicted velocities
-        impulses = self.solver.solve(contacts, body_v_pred, X_world, inv_mass, inv_inertia, dt=self.dt)
-
-        # 6. Convert body-frame impulses to joint-space velocity correction
-        #    Δqdot = H^{-1} @ generalized_impulse
-        #    where generalized_impulse = Σ J_body_i^T @ impulse_i
-        qdot_new = v_predicted.copy()
-        gen_impulse = self._impulses_to_generalized(tree, q, qdot, X_world, impulses, contacts)
-        if gen_impulse is not None:
-            # H^{-1} @ gen_impulse via ABA trick:
-            # ABA(q, 0, gen_impulse/dt, 0) * dt = H^{-1} @ gen_impulse
-            # But simpler: just use CRBA + solve
-            H = tree.crba(q)
-            try:
-                L = np.linalg.cholesky(H)
-                dqdot = np.linalg.solve(L.T, np.linalg.solve(L, gen_impulse))
-            except np.linalg.LinAlgError:
-                dqdot = np.linalg.lstsq(H, gen_impulse, rcond=None)[0]
-            qdot_new = v_predicted + dqdot
+        # Share the same articulated solve/apply mobility as CpuEngine.
+        # Reuse a_u so external forces and the legacy force contract are preserved.
+        cache = DynamicsCache.from_tree(tree, q, qdot, self.dt, compute_H=True)
+        cache.qacc_smooth = a_u
+        qacc = VelocityLevelAdapter(self.solver).solve(tree, cache, tau, contacts)
+        qdot_new = qdot + self.dt * qacc
 
         # Apply position corrections (PGS-SI only)
         q_new = self._integrate_q(tree, q, qdot_new, self.dt)
@@ -170,79 +148,18 @@ class ImplicitContactStep(Integrator):
 
     @staticmethod
     def _qdot_to_body_v(tree, q, qdot_gen, X_world):
-        """Convert generalized velocity to per-body spatial velocity (body frame).
-
-        Same forward recursion as tree.body_velocities() but with arbitrary qdot.
-        """
-        n = tree.num_bodies
-        v = [np.zeros(6) for _ in range(n)]
-        for body in tree.bodies:
-            q_i = q[body.q_idx]
-            qdot_i = qdot_gen[body.v_idx]
-            X_J = body.joint.transform(q_i)
-            S = body.joint.motion_subspace(q_i)
-            X_up = body.X_tree @ X_J
-            vJ = S @ qdot_i if S.shape[1] > 0 else np.zeros(6)
-            if body.parent < 0:
-                v[body.index] = vJ
-            else:
-                v[body.index] = X_up.apply_velocity(v[body.parent]) + vJ
-        return v
+        """Compatibility delegate to shared dynamics utilities."""
+        return qdot_to_body_v(tree, q, qdot_gen, X_world)
 
     @staticmethod
     def _gather_mass(tree):
-        """Extract per-body inverse mass and inertia."""
-        inv_mass = []
-        inv_inertia = []
-        for body in tree.bodies:
-            m = body.inertia.mass
-            I_com = body.inertia.inertia
-            c = body.inertia.com
-            I_origin = I_com + m * (np.dot(c, c) * np.eye(3) - np.outer(c, c))
-            inv_mass.append(1.0 / m if m > 1e-10 else 0.0)
-            try:
-                inv_inertia.append(np.linalg.inv(I_origin))
-            except np.linalg.LinAlgError:
-                inv_inertia.append(np.zeros((3, 3)))
-        return inv_mass, inv_inertia
+        """Compatibility delegate to shared dynamics utilities."""
+        return gather_inv_mass(tree)
 
     @staticmethod
     def _impulses_to_generalized(tree, q, qdot, X_world, impulses, contacts):
-        """Convert body-frame spatial impulses to joint-space generalized impulse.
-
-        Uses the contact Jacobian: gen_impulse = Σ J_contact^T @ impulse_contact_dir
-        For efficiency, we compute J^T @ impulse for each contact body using
-        the kinematic chain (same as RNEA backward pass).
-        """
-        nv = tree.nv
-        gen_impulse = np.zeros(nv)
-        has_impulse = False
-
-        # Accumulate body-frame impulses
-        body_imp = [np.zeros(6) for _ in range(tree.num_bodies)]
-        for i, imp in enumerate(impulses):
-            if np.any(imp != 0):
-                body_imp[i] = imp
-                has_impulse = True
-
-        if not has_impulse:
-            return None
-
-        # Backward pass: propagate impulses to joint torques (like RNEA pass 2)
-        f = [bi.copy() for bi in body_imp]
-        for body in reversed(tree.bodies):
-            q_i = q[body.q_idx]
-            S = body.joint.motion_subspace(q_i)
-            X_J = body.joint.transform(q_i)
-            X_up = body.X_tree @ X_J
-
-            if S.shape[1] > 0:
-                gen_impulse[body.v_idx] = S.T @ f[body.index]
-
-            if body.parent >= 0:
-                f[body.parent] += X_up.apply_force(f[body.index])
-
-        return gen_impulse
+        """Compatibility delegate to shared dynamics utilities."""
+        return impulses_to_generalized(tree, q, impulses, contacts)
 
     @staticmethod
     def _check_finite(q):
