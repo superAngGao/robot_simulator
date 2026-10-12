@@ -93,8 +93,26 @@ def _normalize_capture_io(node, module):
                 "for bound in (imported.bounds_min, imported.bounds_max))",
                 None,
             ),
-            ("return (packed, imported_bounds)", "return packed"),
+            ("return (packed, imported_bounds, registry)", "return packed"),
         ]
+    elif module == "optical_worker.workloads" and node.name == "build_canonical_fixed_fixture":
+        # Approved double-query migration 3c1a08f changed these two empty
+        # transform inputs. Normalize only those exact keyword expressions;
+        # keep every nonempty mathematical statement under the original hash.
+        expected = {
+            "x_world_R": "np.empty((0, 3, 3), dtype=np.float64)",
+            "x_world_r": "np.empty((0, 3), dtype=np.float64)",
+        }
+        found = set()
+        for child in ast.walk(node):
+            if isinstance(child, ast.keyword) and child.arg in expected:
+                assert child.arg not in found
+                current = ast.parse(expected[child.arg], mode="eval").body
+                assert structural_ast(child.value) == structural_ast(current)
+                previous = expected[child.arg].replace("np.float64", "np.float32")
+                child.value = ast.parse(previous, mode="eval").body
+                found.add(child.arg)
+        assert found == set(expected)
     for source, replacement in replacements:
         target = structural_ast(ast.parse(source).body[0])
         matched = 0

@@ -183,3 +183,61 @@ def test_original_scope_unwinds_once_without_losing_first_failure(copying_worker
     else:
         assert not x.readback_state.calls
     assert not any(row["edge"] == "after_exit" for row in probe.rows)
+
+
+@pytest.mark.parametrize("fault", [None, "rgb", "identity", "bytes", "persist"])
+def test_original_readback_checked_against_cpu_before_release(copying_worker, monkeypatch, fault):
+    from tests.support import native_runtime_process as driver
+    from tests.support.final_worker_numeric import FinalWorkerNumericRun
+    from tests.unit.optics.test_final_worker_numeric import physical_channels
+
+    x = copying_worker
+    numeric = FinalWorkerNumericRun(x.readback_directory, {
+        "root": str(x.session.root), "revision": x.session.revision,
+        "catalog_sha256": x.session.catalog_sha256, "lane": x.session.lane,
+        "case_id": x.final_graph.spec.case_id, "row_id": x.final_graph.spec.row_id,
+        "sample_count": len(x.worker._samples), "pass_mode": x.final_graph.spec.diagnostic_mode,
+        "go2_model_dir": None,
+    })
+    _, truth = numeric.reference.render(0)
+    actual = physical_channels(truth)
+    prepared = x.readback_holder["readback"]
+    pending = request(x.worker, "EXECUTE_PREPARED_SAMPLE",
+                      prepared_token=x.worker._samples[0].prepared_token)["payload"]
+    for name, _, source, _ in prepared.copies:
+        np.copyto(source.data, actual[name])
+    if fault == "rgb":
+        next(source for name, _, source, _ in prepared.copies if name == "rgb").data[0, 0] += 0.1
+    resolved = request(x.worker, "RESOLVE_PREPARED_SAMPLE", **pending)["payload"]
+    path = x.readback_directory / "final_sample_0000.json"
+    if fault == "identity":
+        payload = json.loads(path.read_bytes())
+        payload["worker_start_nonce"] = "0" * 32
+        path.write_text(json.dumps(payload), encoding="utf8")
+    elif fault == "bytes":
+        (x.readback_directory / "final_sample_0000_rgb.bin").write_bytes(b"corrupt")
+    elif fault == "persist":
+        original_write = driver._write
+
+        def persist(directory, name, payload):
+            if name.endswith("_numeric.json"):
+                raise OSError("numeric report persistence failed")
+            return original_write(directory, name, payload)
+
+        monkeypatch.setattr(driver, "_write", persist)
+
+    def check_then_release():
+        numeric.check(0, x.worker._next_sequence - 1, x.worker._manifest, x.worker._worker_evidence)
+        request(x.worker, "RELEASE_RESOLVED_SAMPLE", **resolved)
+
+    if fault is None:
+        check_then_release()
+        assert (x.readback_directory / "final_sample_0000_numeric.json").exists()
+        assert x.final_graph.arena.lifecycle_evidence().slot_reclaim_count == 1
+    else:
+        with pytest.raises((AssertionError, ValueError, OSError)):
+            check_then_release()
+        arena = x.final_graph.arena.lifecycle_evidence()
+        assert arena.completion_resolution_count == 1 and arena.slot_reclaim_count == 0
+        assert x.worker._samples[0].state == "RESOLVED_HELD"
+        assert not (x.readback_directory / "final_sample_0000_numeric.json").exists()

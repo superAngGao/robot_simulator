@@ -318,7 +318,9 @@ def test_actual_formula_drift_is_rejected_before_native_preparation(monkeypatch)
         source = real(*args, **kwargs)
         payload = source.sequence.to_payload()
         payload["frames"][0]["origin_f64"][0] = (99.0).hex()
-        return module.CanonicalRenderSource(source.packed_scene, ResolvedRenderSequence.from_payload(payload))
+        return module.CanonicalRenderSource(
+            source.packed_scene, ResolvedRenderSequence.from_payload(payload), source.registry
+        )
 
     monkeypatch.setattr(module, "materialize_render_source", changed)
     with pytest.raises(ValueError, match="actual source/bounds"):

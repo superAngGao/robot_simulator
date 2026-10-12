@@ -48,8 +48,12 @@ def _materialize_canonical_scene(
     *,
     go2_model_dir: Path | None = None,
     asset_evidence: AssetManifestEvidence | None = None,
-) -> tuple[PackedOpticalSceneHost, tuple[tuple[float, ...], ...] | None]:
-    """One pack and, for imported assets, bounds from that exact import."""
+) -> tuple[PackedOpticalSceneHost, tuple[tuple[float, ...], ...] | None, OpticalWorldRegistry]:
+    """One pack, its original registry, and bounds from the same import.
+
+    Keeping the registry lets CPU reference rendering consume the very scene
+    that was packed, without a second import or an inverse packed-scene adapter.
+    """
 
     case = get_case(case_id)
     imported_bounds = None
@@ -98,7 +102,7 @@ def _materialize_canonical_scene(
     expected = frozen_workload_content(case_id)
     if packed.scene_contract_sha256 != expected.scene_contract_sha256:
         raise ValueError("materialized scene does not match the frozen workload digest")
-    return packed, imported_bounds
+    return packed, imported_bounds, registry
 
 
 def build_canonical_transform_replay(case_id: str) -> CanonicalTransformReplayHost:

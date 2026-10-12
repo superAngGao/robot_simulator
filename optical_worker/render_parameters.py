@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from optics.camera_presets import build_lab_video_camera, build_model_bounds_camera
+from optics.registry import OpticalWorldRegistry
 from optics.scene_contract import PackedOpticalSceneHost
 
 from .assets import AssetManifestEvidence
@@ -272,6 +273,7 @@ class CanonicalRenderSource:
 
     packed_scene: PackedOpticalSceneHost
     sequence: ResolvedRenderSequence
+    registry: OpticalWorldRegistry
 
 
 def load_frozen_render_sequence(case_id: str) -> ResolvedRenderSequence:
@@ -307,7 +309,7 @@ def resolve_render_source(
     frozen = load_frozen_render_sequence(case_id)
     if reproduced.sequence.canonical_bytes != frozen.canonical_bytes:
         raise ValueError("actual source/bounds/camera formula differs from frozen render sequence")
-    return CanonicalRenderSource(reproduced.packed_scene, frozen)
+    return CanonicalRenderSource(reproduced.packed_scene, frozen, reproduced.registry)
 
 
 def materialize_render_source(
@@ -324,7 +326,7 @@ def materialize_render_source(
     """
     assert_outside_timed_boundary("canonical render source materialization")
     case = _case(case_id)
-    packed, bounds = _materialize_canonical_scene(
+    packed, bounds, registry = _materialize_canonical_scene(
         case_id, go2_model_dir=go2_model_dir, asset_evidence=asset_evidence
     )
     if bounds is None:
@@ -413,7 +415,7 @@ def materialize_render_source(
         "background_f64": _hex_values((0.0, 0.0, 0.0) if case_id == _ASYMMETRIC else (0.025, 0.03, 0.038)),
         "shadow_bias_f64": (1.0e-4).hex(),
     }
-    return CanonicalRenderSource(packed, ResolvedRenderSequence.from_payload(payload))
+    return CanonicalRenderSource(packed, ResolvedRenderSequence.from_payload(payload), registry)
 
 
 def _bound_payload(sequence, *, sample_index, profile, shadows, pass_mode, role_to_mask):

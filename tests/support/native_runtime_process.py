@@ -1060,6 +1060,14 @@ class _FinalReadbackScope:
         return result
 
 
+def final_readback_sample_indices(count):
+    """Bounded native coverage: initial reuses, last frame, and camera wrap."""
+    if type(count) is not int or count < 1:
+        raise ValueError("final readback requires a positive sample count")
+    return frozenset((*range(min(4, count)), count - 1,
+                      *(index for index in (119, 120) if index < count)))
+
+
 class _FinalWorkerReadback:
     """Fixed RESOLVE instrumentation; never installed by an ordinary worker.
 
@@ -1082,9 +1090,7 @@ class _FinalWorkerReadback:
         self.depth = {"device": 0, "stream": 0}
         self.occurrence = 0
         self.failure = None
-        count = len(graph.samples)
-        self.selected = frozenset((*range(min(4, count)), count - 1,
-                                   *(index for index in (119, 120) if index < count)))
+        self.selected = final_readback_sample_indices(len(graph.samples))
         retained.append(self)
         self.controller.adopt_host_owner(
             self, role="final_readback_observer", operation_id="final_readback_observer",
@@ -1324,6 +1330,7 @@ class _FinalWorkerReadback:
             "reader_token": id(self.reader), "controller_token": id(self.controller),
             "graph_token": id(self.graph),
             "sample_index": record.index, "resolve_request_sequence": sequence,
+            "native_node_count": self.graph.spec.node_capacity,
             "parameters": self.graph.frames[record.index][0].to_payload(),
             "rows": rows, "raw_start": raw_start,
             "raw": self.reader.raw[raw_start:], "channels": channels,

@@ -387,7 +387,7 @@ class _WorkerRequestObservation:
                 self.condition.wait(timeout=0.01)
 
 
-def _native_worker_requests(channel, directory, request, stop, deadline, outcome, observation):
+def _native_worker_requests(channel, directory, request, stop, deadline, outcome, observation, numeric=None):
     """Fixed validation client; the child uses the unmodified production codec/loop."""
     from optical_worker.guarded_evidence import PostReclaimIdleEvidence
     from optical_worker.protocol import (
@@ -463,7 +463,7 @@ def _native_worker_requests(channel, directory, request, stop, deadline, outcome
         hello = exchange("HELLO", {"manifest_sha256": manifest.sha256, "lane_id": manifest.lane_id,
                                    "device_ordinal": manifest.device_ordinal})
         # Parsing checks wire consistency; the child's controller retains authority.
-        ClosedNativeLaneWorkerEvidence.from_payload(hello["worker_evidence"])
+        worker_evidence = ClosedNativeLaneWorkerEvidence.from_payload(hello["worker_evidence"])
         exchange("OPEN_FROZEN_SESSION", {"gate_sha256": manifest.gate_sha256,
                                         "workload_set_sha256": manifest.workload_set_sha256})
         prepared = exchange("PREPARE_FROZEN_ROW", {key: request[key] for key in (
@@ -471,9 +471,12 @@ def _native_worker_requests(channel, directory, request, stop, deadline, outcome
         tokens = prepared["prepared_tokens"]
         if len(tokens) != request["sample_count"]:
             raise RuntimeError("native worker prepared a different sample count")
-        for token in tokens:
+        if numeric is None:
+            raise ValueError("fixed native driver requires its precomputed CPU reference")
+        for sample_index, token in enumerate(tokens):
             pending = exchange("EXECUTE_PREPARED_SAMPLE", {"prepared_token": token})
             resolved = exchange("RESOLVE_PREPARED_SAMPLE", pending)
+            numeric.check(sample_index, len(trace) - 1, manifest, worker_evidence)
             exchange("RELEASE_RESOLVED_SAMPLE", resolved)
         close = exchange("CLOSE_SESSION", {})
         proof = PostReclaimIdleEvidence.from_payload(close["post_reclaim_idle"])
@@ -567,6 +570,7 @@ def supervise(fault, liveness_fd, directory):
     source_mode = fault in SOURCE_FAULTS
     runtime_mode = fault in RUNTIME_FAULTS
     native_worker_mode = fault in RUNTIME_WORKER_CASES
+    numeric = None
     if runtime_mode:
         request = json.loads((directory / "request.json").read_text(encoding="utf-8"))
         config = GuardConfiguration.from_payload(request["guard_configuration"])
@@ -576,6 +580,10 @@ def supervise(fault, liveness_fd, directory):
         child_script = (
             Path(__file__).with_name("source_custody_process.py") if source_mode else Path(__file__)
         )
+    if native_worker_mode:
+        from tests.support.final_worker_numeric import FinalWorkerNumericRun
+
+        numeric = FinalWorkerNumericRun(directory, request)
     # Harness-wide failure bound is distinct from unchanged per-operation ACK/
     # watchdog semantics. Seven fixed stages plus terminal disposal, not a
     # renewable deadline within any native call. It cannot authorize success.
@@ -616,7 +624,7 @@ def supervise(fault, liveness_fd, directory):
         worker_command.close()
         observation = _WorkerRequestObservation(process.pid, config)
         client = threading.Thread(target=_native_worker_requests, args=(
-            command, directory, request, client_stop, started + outer_bound, client_outcome, observation,
+            command, directory, request, client_stop, started + outer_bound, client_outcome, observation, numeric,
         ))
         client.start()
     injected = False

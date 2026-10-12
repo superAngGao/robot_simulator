@@ -305,6 +305,104 @@ def test_native_hello_uses_the_captured_ledger(bound_worker, monkeypatch):
     assert evidence["repository_import_ledger_sha256"] == p.canonical_sha256(list(paths))
 
 
+@pytest.mark.parametrize("comparison_fails", [False, True])
+def test_fixed_client_compares_before_release_and_fences_comparison_failure(
+    bound_worker, tmp_path, monkeypatch, comparison_fails,
+):
+    import threading
+    import time
+
+    from optical_worker.wait_supervision import GuardSupervisorCore
+    from tests.support.guarded_custody_process import (
+        _native_worker_requests,
+        _observe_worker_client_exit,
+        _WorkerRequestObservation,
+    )
+
+    worker = bound_worker
+    monkeypatch.setattr(worker._native_source, "audit", lambda: ("optical_worker/worker.py",))
+    hello = request(
+        worker, "HELLO", manifest_sha256=worker._manifest.sha256,
+        lane_id=worker._manifest.lane_id, device_ordinal=worker._manifest.device_ordinal,
+    )["payload"]
+    # This in-process CPU fixture has already loaded NumPy to model tensors.
+    # Model only the fresh -I -S child's pre-PREPARE module inventory; retain
+    # the original evidence parser and all its activation checks.
+    hello["worker_evidence"]["cuda_capable_module_names"] = []
+    hello["worker_evidence_sha256"] = p.canonical_sha256(hello["worker_evidence"])
+    (tmp_path / "worker_ready.json").write_text("{}")
+    (tmp_path / "worker_manifest.json").write_text(json.dumps(worker._manifest.to_payload()))
+    operations = []
+
+    class Channel:
+        data = b""
+        fenced = False
+
+        def settimeout(self, value):
+            pass
+
+        def sendall(self, data):
+            message = p.decode_canonical_message(data[4:], max_bytes=p.MAX_REQUEST_BYTES)
+            operation = message["operation"]
+            operations.append(operation)
+            if operation == "RELEASE_RESOLVED_SAMPLE":
+                assert (tmp_path / "numeric_checked").exists()
+                # The modeled peer ends here; close/exit behavior is covered by
+                # the existing original worker and supervisor tests.
+                self.data = b""
+                return
+            payload = {
+                "HELLO": hello, "OPEN_FROZEN_SESSION": {},
+                "PREPARE_FROZEN_ROW": {"prepared_tokens": ["a" * 32]},
+                "EXECUTE_PREPARED_SAMPLE": {"pending_token": "b" * 32},
+                "RESOLVE_PREPARED_SAMPLE": {"resolved_token": "c" * 32},
+            }[operation]
+            self.data = p.encode_framed_message({
+                "protocol_version": p.INTEGRATED_WORKER_PROTOCOL_VERSION,
+                "sequence": message["sequence"], "status": "ok", "payload": payload,
+            }, max_bytes=p.MAX_RESPONSE_BYTES)
+
+        def recv(self, size):
+            result, self.data = self.data[:size], self.data[size:]
+            return result
+
+        def shutdown(self, how):
+            self.fenced = True
+
+    class Numeric:
+        def check(self, index, sequence, manifest, evidence):
+            assert index == 0 and sequence == 4 and manifest.sha256 == worker._manifest.sha256
+            assert evidence.process_start_nonce == hello["worker_evidence"]["process_start_nonce"]
+            assert operations[-1] == "RESOLVE_PREPARED_SAMPLE"
+            if comparison_fails:
+                raise ValueError("CPU final comparison failed")
+            (tmp_path / "numeric_checked").write_text("compared and persisted")
+
+    stop, outcome = threading.Event(), {}
+    config = worker._lifecycle._guard_client.configuration
+    observation = _WorkerRequestObservation(hello["worker_evidence"]["process_id"], config)
+    core, channel = GuardSupervisorCore(config), Channel()
+
+    deadline = time.monotonic() + 5
+    client = threading.Thread(target=_native_worker_requests, args=(channel, tmp_path, {
+        "row_id": "r0_asymmetric_full_shadow", "case_id": "asymmetric_synthetic_7x3_v1",
+        "sample_count": 1, "repeat_index": 0,
+    }, stop, deadline, outcome, observation, Numeric()))
+    client.start()
+    try:
+        while client.is_alive() and time.monotonic() < deadline:
+            observation.supervise(time.monotonic_ns(), core_failed=False)
+            client.join(timeout=0.001)
+    finally:
+        stop.set()
+        client.join(timeout=2)
+    assert not client.is_alive()
+    assert ("RELEASE_RESOLVED_SAMPLE" in operations) is (not comparison_fails), outcome
+    assert outcome["error_type"] == ("ValueError" if comparison_fails else "EOFError")
+    _observe_worker_client_exit(core, channel, stop, outcome, time.monotonic_ns(), observation)
+    assert channel.fenced and core.state == "TERMINATING" and observation.state == "TERMINAL"
+
+
 def test_two_samples_reclaim_before_close_and_release_only_after_written_ack(worker_graph):
     x = worker_graph
     for index in range(2):
