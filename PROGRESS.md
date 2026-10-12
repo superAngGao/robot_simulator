@@ -2107,6 +2107,11 @@ Next milestone:
       persistence/numerical comparison, EXECUTE diagnostics and complete G3-G5
       acceptance remain unfinished. This is not a native result or independent
       integrated approval; the full C4 objective and later closed gates remain.
+      Source/pin/catalog candidate35166bd passes the unchanged committed-source
+      and final-graph checks (282passed/4 Windows skips); all4 are supplemented
+      on primary Linux with no skips and verified process exit. Reader/copy,
+      live/offline reducer and original worker scale evidence is recorded in
+      the same author note. No native final correctness or speed is established.
       Author full source
       regression passes317 with13 Windows skips, all13 supplemented successfully
       on primary Linux. Separately the approvedfc23b4e

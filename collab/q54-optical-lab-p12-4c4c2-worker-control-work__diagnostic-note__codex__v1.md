@@ -778,3 +778,33 @@ Additional author regression before freezing the source:
   graph cases. `final_resolve_regression_v1.txt` SHA256
   e9eca8b665da3131aeacc73e9023602086bdb4ed48613f510f8180ca971afad9.
   Tool2655 exited1. These are partial results, not460 passing cases.
+
+### Committed-source and POSIX closure for35166bd
+
+The source/pin/catalog candidate is35166bd47de1b3e2224a6930c49f399637e19eab.
+Changed Python files pass Ruff and Git whitespace checking. The unchanged AST
+policy validates91 LF sources; catalog SHA256 is
+c74a57b270612754ccb5f5d534a53d46102be19d3353465615605f0ce663dfc6.
+Reader LF SHA256 is
+0befc8428631556844f52b045670f7642d0363adef0537326f559092768215e0.
+
+The source-policy/source-catalog/final-graph rerun on committed35166bd passes
+282 with4 Windows platform/asset skips in131.42s. It includes the unchanged
+reader rehash attacks that could not use mismatched HEAD/worktree bytes in the
+previous run. No validator or test was weakened. Tool86193 completed0, confirmed
+after the intentional turn interruption. Local log
+`final_resolve_committed_source_regression_v1.txt` SHA256
+5a5f6e6f9faf8760958a3f1bed18c3226ecefaaabe9f75af2c4c7603b062f04f.
+
+All4 skipped cases pass on primary Linux in17.51s at exact35166bd, in the
+isolated shared clone
+`/data2/shared/ang.gao/c4-final-resolve-cpu-35166bd-v1/repo`. Python3.12.13 uses
+the original Go2 asset directory; these are CPU materialization and actual
+POSIX source-byte checks, not GPU/native execution. Tool7636 completed0.
+Closure verified runner209294 and pytest209362 absent from `/proc`, exit0,
+exact revision and tracked-clean checkout. The968-byte raw log SHA256 is
+eccf4df6050833cb2841516f4b9118dfbe7e489a6aab58256452c7e7da94e8c1.
+Local copies are `final_resolve_cpu_posix_v1.txt` and
+`final_resolve_cpu_posix_closure_v1.json`. Neither stopped job was restarted.
+These results close this author's listed checks only; full D1/G1-G5 and C4
+remain incomplete and unapproved. No speed result or native deployment follows.
