@@ -21,6 +21,18 @@ Owner Summary: Return to the simulator's physics correctness. Audit weak tests a
 4. 归档前已用 Git tree 验证：服务器 main 与实验 HEAD `157a3948d5f4f97dffe831a1f2bcc39ca57ef207` 的 physics、robot、rendering、sensing、rl_env、domain_rand 和 simulator.py 一致。physics tree 为 `1bf3c590a9644a7375c97d61d6bd8479f63fe0c7`。渲染实验没有需要先合并才能开始物理工作的核心改动。
 5. 本地归档目录 `C:/Users/AG/新建文件夹/c4_worker_completion`。归档说明见 `collab/cuda-render-experiment-archive__implementation-note__codex__v1.md`。已有 290 项通过仅为旧光学 CPU 回归证据，不是物理测试或真实 GPU 验收。
 
+### 先读物理设计，再解释测试结果
+
+按下面顺序做有针对性的阅读；用章节标题定位，不依赖可能变化的行号：
+
+1. `PLAN.md`：项目目标、分层架构、刚体动力学和 GPU 后端路线；结合 `PROGRESS.md` 核对实际进展。它们用于恢复全局上下文，旧勾选状态不代表当前实现状态。
+2. `REFLECTIONS.md` 的“力系统重构：ForceState + DynamicsCache + StepPipeline”：理解普通力聚合 → 无约束加速度 → 接触约束求解 → 积分的因果关系，以及 DynamicsCache 和 ABA/CRBA 的分工；对照 `physics/step_pipeline.py`、`physics/cpu_engine.py`、`physics/gpu_engine.py` 的真实调用路径。
+3. 接触建模与求解决策：阅读 `REFLECTIONS.md` 中“设计决策：per-row R + 摩擦 warmstart 归零”“CPU 多接触冲量：GS vs Jacobi 的根本差异”，以及 `docs/mujoco_style_solver.md`。结合当前 `physics/solvers/` 和 GPU kernels，核对约束/力/冲量的语义、摩擦、柔顺性、穿透修正和积分处理，区分设计选择与实现错误。
+4. `OPEN_QUESTIONS.md`：重点读 Q18 接触能力差距、Q25 摩擦引发假角速度、Q30 **“CPU ADMM vs MuJoCo 稳态穿透深度差 0.86mm”**、Q46 大规模验证与 CPU/GPU 差异、Q48 碰撞检测缺口及各自后续更新。文档存在重复 Q 编号，按标题定位；上述 Q30 不是 GPU Multi-Shape Data Layout。历史上将误差解释为建模差异的结论也需要核实，不能自动豁免验证。
+5. 接口边界：读 Q31 的训练环境定位，理解哪些物理量将进入训练；涉及对外观测时再查 Q52 的物理状态发布合同。光学设计文档只在确需解释跨模块接口时查阅，本轮不需要重走渲染实验设计。
+
+先形成简短的“设计意图—当前实现—现有验证—未验证假设”对照。文档与代码冲突时，分别指出预期行为和实际行为，查后续决策与提交记录，并用最小实验裁定；不能认为代码存在就一定正确，也不能直接按旧文档重写。这里是定向恢复上下文，不要求先完成全仓文档重构才能开始数值验证。
+
 ### 项目边界
 
 - 物理拥有状态和步进；CPU 用于精度对照和调试，GpuEngine/Warp 用于批量仿真。
