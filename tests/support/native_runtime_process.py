@@ -1110,7 +1110,7 @@ class _FinalWorkerReadback:
             setattr(owner, name, original)
         self.restorations.clear()
 
-    def observe(self, operation, edge, owner, scope_kind=None, occurrence=None):
+    def observe(self, operation, edge, owner, scope_kind=None, occurrence=None, *, callable_token=None):
         row = None
         start = len(self.reader.raw)
         try:
@@ -1130,7 +1130,7 @@ class _FinalWorkerReadback:
                 "lifecycle_position": len(self.controller._guard_events),
                 "arena_position": len(self.graph.arena._control._transitions),
                 "operation": operation, "occurrence": occurrence, "edge": edge,
-                "owner_token": id(owner), "scope_kind": scope_kind,
+                "owner_token": id(owner), "scope_kind": scope_kind, "callable_token": callable_token,
                 "raw_start": start, "raw_end": start, "state": None, "failure": None,
             }
             self.rows.append(row)
@@ -1272,16 +1272,20 @@ class _FinalWorkerReadback:
             original = getattr(native_readback, name)
             operation = "diagnostic_wait" if "wait" in name else "diagnostic_copy"
 
-            def leaf(*args, _original=original, _operation=operation, **kwargs):
+            def leaf(*args, _original=original, _operation=operation, _name=name,
+                     _callable_token=id(original), **kwargs):
                 if not self.active:
                     return _original(*args, **kwargs)
                 try:
-                    occurrence = self.observe(_operation, "before", _original)
+                    owner = args[2] if _name == "_copy_readback_array" else args[
+                        1 if _name.startswith("_warp_") else 0]
+                    occurrence = self.observe(_operation, "before", owner, callable_token=_callable_token)
                     result = _original(*args, **kwargs)
                     if result is not None:
                         self.reader.hold_returned(result)
                         raise ValueError("final readback leaf unexpectedly returned a new owner")
-                    self.observe(_operation, "after", _original, occurrence=occurrence)
+                    self.observe(_operation, "after", owner, occurrence=occurrence,
+                                 callable_token=_callable_token)
                     return result
                 except BaseException as error:
                     self.fail(error)

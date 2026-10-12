@@ -55,6 +55,14 @@ def test_fixed_driver_persists_actual_generation_before_release(copying_worker):
         scope_edges = [row["edge"] for row in rows if row["scope_kind"] is not None]
         assert {"before_entry", "after_entry", "before_exit", "after_exit"} == set(scope_edges)
         assert any(row["operation"] == "diagnostic_wait" and row["edge"] == "after" for row in rows)
+        leaves = [row for row in rows if row["callable_token"] is not None]
+        copy_owners = {id(source) for _, _, source, _ in prepared.copies}
+        assert {row["owner_token"] for row in leaves if row["operation"] == "diagnostic_copy"} == (
+            copy_owners | {id(prepared.event)}
+        )
+        assert {row["owner_token"] for row in leaves if row["operation"] == "diagnostic_wait"} == {
+            id(prepared.event)
+        }
         for name, desc in evidence["channels"].items():
             raw = (x.readback_directory / desc["file"]).read_bytes()
             assert len(raw) == desc["bytes"] and hashlib.sha256(raw).hexdigest() == desc["sha256"]

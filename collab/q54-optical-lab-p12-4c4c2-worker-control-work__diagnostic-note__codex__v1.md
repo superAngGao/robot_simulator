@@ -898,3 +898,15 @@ pass/channel coverage, original OS blocked-call tests, complete G3-G5 capacity/
 fault/journal recovery and the coherent fresh independent code/native preflight.
 No new native job, deployment or reviewer checkpoint was launched. This partial
 driver implementation is not whole acceptance; all later gates remain closed.
+
+The driver implementation above is d813884. Follow-up source inspection found
+leaf rows initially used the fixed helper function as their owner token. They
+now distinguish the actual source output buffer or diagnostic event from a
+separate callable token captured before execution. Scope rows continue naming
+the actual original precreated scope. Both lanes/passes assert those joins over
+four generations; all28 fixed-driver cases pass34.49s, tool55865 terminal0.
+`final_readback_driver_owner_joins_v1.txt` SHA256
+9b577c478743b6ad8342a1a3f64160fe49ca7e82e5707e66b9eb92a985f48700.
+Changed tests pass Ruff; driver remains at its49 preexisting findings. This
+corrects descriptive evidence only and still grants no serialized authority,
+native execution permission or whole-packet approval. No process remains live.
