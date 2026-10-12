@@ -15,7 +15,7 @@ import os
 import socket
 import sys
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 
@@ -996,12 +996,354 @@ def _run_observed_render_warmups(session, controller, binding, observer, directo
     return evidence
 
 
+class _FinalReadbackScope:
+    """Fixed diagnostic facade over the actual scope prepared for shared D2H."""
+
+    def __init__(self, observer, original, kind):
+        self.observer, self.original, self.kind = observer, original, kind
+        self.occurrence = None
+
+    def __enter__(self):
+        probe = self.observer
+        if not probe.active:
+            return self.original.__enter__()
+        self.occurrence = probe.observe("diagnostic_copy", "before_entry", self.original, self.kind)
+        try:
+            result = self.original.__enter__()
+        except BaseException as error:
+            probe.fail(error)
+            raise
+        probe.depth[self.kind] += 1
+        try:
+            probe.observe("diagnostic_copy", "after_entry", self.original, self.kind, self.occurrence)
+        except BaseException:
+            # A failed __enter__ does not receive Python's automatic __exit__.
+            # The original scope did enter; unwind that exact entry once.
+            error_info = sys.exc_info()
+            try:
+                self.original.__exit__(*error_info)
+            except BaseException as unwind_error:
+                probe.reader.held.append(unwind_error)
+            finally:
+                probe.depth[self.kind] -= 1
+            raise
+        return result
+
+    def __exit__(self, exc_type, error, traceback):
+        probe = self.observer
+        if self.occurrence is None:
+            return self.original.__exit__(exc_type, error, traceback)
+        first = error
+        if first is None:
+            try:
+                probe.observe("diagnostic_copy", "before_exit", self.original, self.kind, self.occurrence)
+            except BaseException as observed_error:
+                exc_type, first, traceback = sys.exc_info()
+                assert first is observed_error
+        else:
+            probe.fail(first)
+        try:
+            result = self.original.__exit__(exc_type, first, traceback)
+        except BaseException as unwind_error:
+            probe.fail(first if first is not None else unwind_error)
+            if first is not None:
+                probe.reader.held.append(unwind_error)
+                raise first.with_traceback(traceback)
+            raise
+        finally:
+            probe.depth[self.kind] -= 1
+        if first is not None:
+            # A diagnostic fault cannot be suppressed by a native scope.
+            raise first.with_traceback(traceback)
+        probe.observe("diagnostic_copy", "after_exit", self.original, self.kind, self.occurrence)
+        self.occurrence = None
+        return result
+
+
+class _FinalWorkerReadback:
+    """Fixed RESOLVE instrumentation; never installed by an ordinary worker.
+
+    Reuses the original reader and shared native copy/wait bodies. EXECUTE
+    observation and numerical acceptance are separate unfinished D1/G2 work.
+    """
+
+    def __init__(self, session, graph, retained, directory):
+        from optical_worker.native_scope import require_reader
+
+        self.session, self.graph, self.retained, self.directory = session, graph, retained, directory
+        self.controller = session.bound_controller()
+        self.controller._require_setup()
+        self.reader = require_reader(session)
+        self.worker = self.controller._worker_session
+        if self.worker is None or self.worker._native_source is not session:
+            raise ValueError("final diagnostics require their original worker")
+        self.readback = None
+        self.rows, self.restorations = [], []
+        self.depth = {"device": 0, "stream": 0}
+        self.occurrence = 0
+        self.failure = None
+        count = len(graph.samples)
+        self.selected = frozenset((*range(min(4, count)), count - 1,
+                                   *(index for index in (119, 120) if index < count)))
+        retained.append(self)
+        self.controller.adopt_host_owner(
+            self, role="final_readback_observer", operation_id="final_readback_observer",
+        )
+
+    @property
+    def active(self):
+        return self.controller._resolution_ticket is not None
+
+    def fail(self, error):
+        if self.failure is None:
+            self.failure = error
+            self.reader._fail(error)
+
+    def replace(self, owner, name, value):
+        original = getattr(owner, name)
+        self.restorations.append((owner, name, original))
+        setattr(owner, name, value)
+        return original
+
+    def restore(self):
+        for owner, name, original in reversed(self.restorations):
+            setattr(owner, name, original)
+        self.restorations.clear()
+
+    def observe(self, operation, edge, owner, scope_kind=None, occurrence=None):
+        row = None
+        start = len(self.reader.raw)
+        try:
+            record = self.controller._require_resolution_reader(self.reader)
+            if occurrence is None:
+                occurrence = self.occurrence
+                self.occurrence += 1
+            plan = record.plan._control_plan if self.session.lane == "cuda" else record.plan._plan
+            parameters = self.graph.frames[record.index][0].to_payload()
+            row = {
+                "sample_index": record.index, "frame_id": parameters["frame_id"],
+                "camera_index": parameters["camera_index"],
+                "transform_frame_index": plan.evidence.transform_frame_index,
+                "generation": plan.evidence.expected_generation,
+                "request_sequence": self.worker._next_sequence - 1,
+                "resolve_sequence": self.controller._resolution_ticket.sequence,
+                "lifecycle_position": len(self.controller._guard_events),
+                "arena_position": len(self.graph.arena._control._transitions),
+                "operation": operation, "occurrence": occurrence, "edge": edge,
+                "owner_token": id(owner), "scope_kind": scope_kind,
+                "raw_start": start, "raw_end": start, "state": None, "failure": None,
+            }
+            self.rows.append(row)
+            state = self.reader._state(False)
+            row["state"] = state
+            self.validate_state(state)
+            return occurrence
+        except BaseException as error:
+            if row is not None:
+                row["failure"] = {"type": type(error).__name__, "message": str(error)}
+            self.fail(error)
+            raise
+        finally:
+            if row is not None:
+                row["raw_end"] = len(self.reader.raw)
+
+    def validate_state(self, state):
+        target = self.controller.target_device_ordinal
+        self.retain_foreign_prefix()
+        active = tuple(row["ordinal"] for row in state["primary_contexts"] if row["active"])
+        held = {"ordinal": target, "handle": self.graph.stream.cuda_stream}
+        if (self.reader.count != 8 or [row["ordinal"] for row in state["primary_contexts"]] != list(range(8))
+                or active != (target,) or state["held_stream"] != held):
+            raise ValueError("final native context/stream ownership changed")
+        if self.session.lane == "cuda":
+            device = target if self.depth["device"] else 0
+            stream = held["handle"] if self.depth["stream"] else self.reader.current_stream_baseline
+            valid = (state["initialized"] is True and state["raw_device"] == target
+                     and state["logical_device"] == device and state["target_current_stream"] == stream)
+        else:
+            inside = bool(self.depth["device"])
+            valid = (state["default_device"] == (target if inside else 0)
+                     and state["current_context_device"] == (target if inside else None)
+                     and state["current_context"] == (self.reader.target_context if inside else None)
+                     and state["target_context"] == self.reader.target_context
+                     and state["target_current_stream"] == held["handle"])
+        if not valid:
+            raise ValueError("final native scope did not enter or restore its retained state")
+
+    def retain_foreign_prefix(self):
+        """Retain returned foreign facts even if a later raw getter raises."""
+        target = self.controller.target_device_ordinal
+        foreign = set()
+        start = self.rows[-1]["raw_start"] if self.rows else len(self.reader.raw)
+        for row in self.reader.raw[start:]:
+            name, value = row.get("getter"), row.get("value")
+            ordinal = None
+            if name == "cudaGetDevice" and row.get("result") == 0:
+                ordinal = value
+            elif name == "cuCtxGetDevice" and row.get("result") == 0:
+                ordinal = self.reader.devices.index(value)
+            elif name == "_cuda_hasPrimaryContext" and value is True:
+                ordinal = row["arguments"][0]
+            elif name == "cuDevicePrimaryCtxGetState" and row.get("result") == 0 and value["active"] == 1:
+                ordinal = value["ordinal"]
+            elif name == "_cuda_getDevice" and value != (target if self.depth["device"] else 0):
+                ordinal = value
+            if type(ordinal) is int and 0 <= ordinal <= 1023 and ordinal != target:
+                foreign.add(ordinal)
+        if foreign and not self.controller.unknown_device_scope:
+            self.controller._retain_final_foreign_scope(self.reader, tuple(sorted(foreign)))
+
+    @contextmanager
+    def prepare_scopes(self):
+        runtime = self.graph.runtime
+        names = ((runtime.cuda, "device", "device"), (runtime.cuda, "stream", "stream")) \
+            if self.session.lane == "cuda" else ((runtime, "ScopedDevice", "device"),)
+        originals = []
+        try:
+            for owner, name, kind in names:
+                original = getattr(owner, name)
+                originals.append((owner, name, original))
+
+                def create(*args, _original=original, _kind=kind, **kwargs):
+                    scope = _original(*args, **kwargs)
+                    self.retained.append(scope)
+                    facade = _FinalReadbackScope(self, scope, _kind)
+                    self.retained.append(facade)
+                    return facade
+
+                setattr(owner, name, create)
+            yield
+        finally:
+            for owner, name, original in reversed(originals):
+                setattr(owner, name, original)
+
+    def install(self, readback):
+        from optical_worker import native_readback
+
+        self.readback = readback
+        wait = self.controller._wait_resolving_terminal
+        resolve = self.worker._resolve_native
+        reader_fail = self.reader._fail
+
+        def preserve_prefix(error):
+            try:
+                if self.active and not self.controller._replay.failed:
+                    self.retain_foreign_prefix()
+            except BaseException as retention_error:
+                self.reader.held.append(retention_error)
+            reader_fail(error)
+
+        def observed_wait(event, runtime):
+            try:
+                occurrence = self.observe("terminal_wait", "before", event)
+                wait(event, runtime)
+                self.observe("terminal_wait", "after", event, occurrence=occurrence)
+                if self.worker._active_sample.index in self.selected:
+                    native_readback._copy_prepared_native_readback(
+                        self.readback, self.controller, final_reader=self.reader,
+                    )
+                self.observe("terminal_wait", "resolved_outer", event, occurrence=occurrence)
+            except BaseException as error:
+                self.fail(error)
+                self.persist_failure()
+                raise
+
+        def resolved(sequence, token):
+            result = resolve(sequence, token)
+            record = self.worker._active_sample
+            try:
+                if record.state != "RESOLVED_HELD":
+                    raise ValueError("final diagnostic persistence lost the actual resolved hold")
+                self.persist(record, sequence)
+            except BaseException as error:
+                # Resolution already committed. Preserve that true arena state;
+                # fail before a success response or any release can escape.
+                self.fail(error)
+                self.persist_failure()
+                raise
+            return result
+
+        self.replace(self.controller, "_wait_resolving_terminal", observed_wait)
+        self.replace(self.worker, "_resolve_native", resolved)
+        self.replace(self.reader, "_fail", preserve_prefix)
+        names = ("_torch_record_event_exact", "_torch_wait_event_host_exact") \
+            if self.session.lane == "cuda" else ("_warp_record_event_exact", "_warp_wait_event_host_exact")
+        for name in ("_copy_readback_array", *names):
+            original = getattr(native_readback, name)
+            operation = "diagnostic_wait" if "wait" in name else "diagnostic_copy"
+
+            def leaf(*args, _original=original, _operation=operation, **kwargs):
+                if not self.active:
+                    return _original(*args, **kwargs)
+                try:
+                    occurrence = self.observe(_operation, "before", _original)
+                    result = _original(*args, **kwargs)
+                    if result is not None:
+                        self.reader.hold_returned(result)
+                        raise ValueError("final readback leaf unexpectedly returned a new owner")
+                    self.observe(_operation, "after", _original, occurrence=occurrence)
+                    return result
+                except BaseException as error:
+                    self.fail(error)
+                    raise
+
+            self.replace(native_readback, name, leaf)
+
+    def persist(self, record, sequence):
+        import hashlib
+
+        stem = f"final_sample_{record.index:04d}"
+        channels = {}
+        if record.index in self.selected:
+            for name, host in self.readback.observations:
+                raw = host.tobytes(order="C")
+                filename = stem + "_" + name + ".bin"
+                _write_bytes(self.directory, filename, raw)
+                channels[name] = {"file": filename, "dtype": host.dtype.name, "shape": list(host.shape),
+                                  "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+        _write(self.directory, stem + ".json", self.payload(record, sequence, channels))
+
+    def payload(self, record, sequence, channels):
+        evidence = self.worker._worker_evidence
+        rows = [row for row in self.rows if row["sample_index"] == record.index]
+        raw_start = rows[0]["raw_start"] if rows else len(self.reader.raw)
+        return {
+            "schema_version": "q54.closed-worker.final-native-observation.v1",
+            "coverage": "resolve_only", "complete": False,
+            "revision": self.session.revision, "catalog_sha256": self.session.catalog_sha256,
+            "source_manifest_sha256": self.worker._manifest.source_manifest_sha256,
+            "runtime_manifest_sha256": self.worker._manifest.sha256,
+            "row_id": self.graph.spec.row_id, "case_id": self.graph.spec.case_id,
+            "pass_mode": self.graph.spec.diagnostic_mode,
+            "lane": self.session.lane, "worker_pid": evidence.process_id,
+            "worker_start_nonce": evidence.process_start_nonce,
+            "reader_token": id(self.reader), "controller_token": id(self.controller),
+            "graph_token": id(self.graph),
+            "sample_index": record.index, "resolve_request_sequence": sequence,
+            "parameters": self.graph.frames[record.index][0].to_payload(),
+            "rows": rows, "raw_start": raw_start,
+            "raw": self.reader.raw[raw_start:], "channels": channels,
+            "failure": None if self.failure is None else {
+                "type": type(self.failure).__name__, "message": str(self.failure),
+            },
+            "sample_state": record.state,
+        }
+
+    def persist_failure(self):
+        try:
+            record = self.worker._active_sample
+            _write(self.directory, f"final_sample_{record.index:04d}_partial.json",
+                   self.payload(record, self.worker._next_sequence - 1, {}))
+        except BaseException as persistence_error:
+            self.reader.held.append(persistence_error)
+
+
 @contextmanager
-def _prepared_worker_readback(session):
+def _prepared_worker_readback(session, *, directory=None):
     """Prepare the fixed correctness driver's staging before the original seal.
 
-    Ordinary workers never install this wrapper. Final copy/observation is
-    intentionally not invoked until the D1 original-RESOLVE aperture is bound.
+    Ordinary workers never install this wrapper. The fixed driver may also
+    bind original-RESOLVE observation/copy/persistence before the graph seals.
     """
     from optical_worker import native_setup
 
@@ -1043,9 +1385,17 @@ def _prepared_worker_readback(session):
         else:
             arrays = tuple((name, tuple(value.shape), str(value.dtype).removeprefix("torch."), value)
                            for name, value in outputs.tensor_items())
-        held["readback"] = _prepare_native_readback(
-            arrays, controller, runtime, target, stream, session.lane == "cuda", retained, final_graph=graph,
-        )
+        observer = None
+        if directory is not None:
+            observer = _FinalWorkerReadback(session, graph, retained, directory)
+            held["observer"] = observer
+        with observer.prepare_scopes() if observer is not None else nullcontext():
+            held["readback"] = _prepare_native_readback(
+                arrays, controller, runtime, target, stream, session.lane == "cuda",
+                retained, final_graph=graph,
+            )
+        if observer is not None:
+            observer.install(held["readback"])
         return graph
 
     native_setup._prepare_fixed_final_graph = prepare
@@ -1053,6 +1403,8 @@ def _prepared_worker_readback(session):
         yield held
     finally:
         native_setup._prepare_fixed_final_graph = original
+        if "observer" in held:
+            held["observer"].restore()
 
 
 def _prepare_observed_final_graph(session, controller, binding, observer, directory, fault):
@@ -1325,7 +1677,7 @@ def child(fault, fd, directory, command_fd=None, liveness_fd=None):
             )
             _write(directory, "worker_manifest.json", manifest.to_payload())
             _write(directory, "worker_ready.json", {"manifest_sha256": manifest.sha256})
-            with _prepared_worker_readback(session):
+            with _prepared_worker_readback(session, directory=directory):
                 with (directory / "worker_journal.bin").open("xb", buffering=0) as journal:
                     code = run_worker_loop(
                         command_descriptor=command_fd, liveness_descriptor=liveness_fd,

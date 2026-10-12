@@ -1,6 +1,7 @@
 """Original worker RESOLVE and shared D2H bodies; only native leaves are modeled."""
 # ruff: noqa: F401, F811
 
+import os
 from copy import copy, deepcopy
 from types import SimpleNamespace as NS
 
@@ -28,9 +29,15 @@ pytestmark = [pytest.mark.parametrize("fail_at", [None]), pytest.mark.parametriz
 
 
 @pytest.fixture
-def staged_readback(resolving_reader, monkeypatch):
+def readback_directory(request, tmp_path):
+    return tmp_path if getattr(request, "param", False) else None
+
+
+@pytest.fixture
+def staged_readback(resolving_reader, monkeypatch, readback_directory):
     x = resolving_reader
-    state = NS(calls=[], pending=[], fault=None, failure=RuntimeError("injected final readback failure"))
+    state = NS(calls=[], pending=[], fault=None, readback_event=None,
+               failure=RuntimeError("injected final readback failure"))
     event_type = x.p.runtime.Event
     original_init = event_type.__init__
     original_record, original_wait = event_type.record, event_type.synchronize
@@ -60,10 +67,12 @@ def staged_readback(resolving_reader, monkeypatch):
 
     def create(event, *, enable_timing=False, device=None):
         x.controller._require_setup()
+        assert state.readback_event is None
         original_init(event, enable_timing=enable_timing, device=device)
+        state.readback_event = event
 
     def record(event, stream):
-        if event is x.graph.completion_event:
+        if event is not state.readback_event:
             return original_record(event, stream)
         assert stream is x.f.stream
         event.device = stream.device
@@ -77,7 +86,7 @@ def staged_readback(resolving_reader, monkeypatch):
             x.controller._require_setup()
 
     def wait(event):
-        if event is x.graph.completion_event:
+        if event is not state.readback_event:
             return original_wait(event)
         if x.controller.guardian.state == "SEALED":
             final_leaf("wait")
@@ -109,9 +118,23 @@ def staged_readback(resolving_reader, monkeypatch):
     monkeypatch.setattr(event_type, "__init__", create)
     monkeypatch.setattr(event_type, "record", record)
     monkeypatch.setattr(event_type, "synchronize", wait)
-    with _prepared_worker_readback(x.session) as held:
+    if readback_directory is not None:
+        # The shared fixture bypasses HELLO while exercising real native worker
+        # control. These two descriptive wire identities are modeled here.
+        x.controller._worker_session._worker_evidence = NS(
+            process_id=os.getpid(), process_start_nonce="d" * 32,
+        )
+    controller_wait = x.controller._wait_resolving_terminal
+    worker_resolve = x.controller._worker_session._resolve_native
+    reader_fail = x.reader._fail
+    with _prepared_worker_readback(x.session, directory=readback_directory) as held:
         x.readback_holder, x.readback_state = held, state
+        x.readback_directory = readback_directory
         yield x
+    if readback_directory is not None:
+        assert x.controller._wait_resolving_terminal == controller_wait
+        assert x.controller._worker_session._resolve_native == worker_resolve
+        assert x.reader._fail == reader_fail
 
 
 @pytest.fixture

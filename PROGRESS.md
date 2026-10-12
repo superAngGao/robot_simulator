@@ -2112,6 +2112,13 @@ Next milestone:
       on primary Linux with no skips and verified process exit. Reader/copy,
       live/offline reducer and original worker scale evidence is recorded in
       the same author note. No native final correctness or speed is established.
+      The fixed correctness driver now invokes original-RESOLVE observations,
+      shared selected-generation copies and binary persistence before a success
+      response/release. Both lanes and pass modes have CPU control/failure
+      evidence; all pinned-reader source-text skips are supplemented locally.
+      Artifacts explicitly remain resolve-only/incomplete. Full artifact replay,
+      EXECUTE observation, canonical CPU comparison and native sentinel/matrix
+      acceptance remain required before coherent review or later gates.
       Author full source
       regression passes317 with13 Windows skips, all13 supplemented successfully
       on primary Linux. Separately the approvedfc23b4e

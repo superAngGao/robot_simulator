@@ -808,3 +808,93 @@ Local copies are `final_resolve_cpu_posix_v1.txt` and
 `final_resolve_cpu_posix_closure_v1.json`. Neither stopped job was restarted.
 These results close this author's listed checks only; full D1/G1-G5 and C4
 remain incomplete and unapproved. No speed result or native deployment follows.
+
+## Fixed-driver original-RESOLVE observation and persistence (2026-10-12)
+
+Starting from clean d7444fff4b7beec041d18d083ec074dc571f2f03, the previous turn
+made evidence/closure progress. No old process was still running. This author
+delta connects the existing fixed correctness driver to the original resolution
+aperture and shared prepared D2H implementation; production source is unchanged.
+
+Before the existing seal, the driver's retained observer wraps the actual
+device/stream scopes created by readback preparation. It delegates original
+entry/exit once and records the same production reader's raw state before entry,
+inside after entry/before exit, and after exit. Existing copy/event helpers are
+wrapped at their fixed locations, without a new guard, reader, generic worker
+callback or native copy algorithm. The original terminal wait is observed on
+both sides, followed by selected generation copies and the last guarded outer
+observation. The original arena resolution still occurs only after DISARMED.
+Ordinary worker code does not install the driver; preparation-only callers
+continue using the same staging body without observation.
+
+The fixed selection is first four samples, last sample, and indices119/120
+where present. Thus a later qualifying native campaign can observe at least
+three reuses plus first/last/wrap without requiring all120 full-resolution
+CPU images. Current tests use four CPU-backed generations; this is not the
+required native sentinel campaign. Every RESOLVE is observed; only selected
+samples copy the output staging. The driver atomically writes existing binary
+channel arrays and per-sample metadata before its successful resolve response,
+so no RELEASE can precede those writes. Metadata joins source/manifest, row,
+pass, original worker PID/start nonce, original object tokens, sample/frame/
+camera/replay/generation, request/resolve sequence, lifecycle/arena positions,
+actual scope occurrences, raw getter spans, states and failures.
+
+Artifacts use the approved final-observation schema name, explicitly declare
+`coverage=resolve_only` and `complete=false`, and cannot claim complete D1 or
+numerical acceptance. Getter-prefix indices remain source-local; each sample
+persists only its corresponding raw span, not all earlier sample raw data.
+Failed attempts have separate `_partial.json` evidence and preserve the first
+exception if diagnostic writing also fails. The driver writes no input-custody
+snapshots and performs no after-close native query. It restores original hooks
+when its existing enclosing context exits.
+
+After an inside-entry query fails, the exact original entered scope is unwound
+once even though Python would not call its __exit__ automatically. Body failure
+poisons before unwind; a secondary exit error cannot replace that first failure.
+Already returned foreign-device facts in a partial raw prefix enter the existing
+dirty set before reader failure is latched, alongside unknown scope. No retry,
+later query or emergency target sync is admitted. Persistence failure after
+arena resolution preserves actual RESOLVED_HELD, poisons further requests, and
+the original request-loop terminal handler performs quarantine; the observer
+does not fabricate an unresolved state or replace that terminal handler.
+
+CPU author evidence, not GPU execution or numerical parity:
+- Eight initial positive/copy/wait/persistence cases passed11.16s; expanded
+  prefix and original-scope unwind cases passed14 in24.83s. Logs
+  `final_readback_driver_v2.txt` and `final_readback_driver_v3.txt` are retained.
+  The first attempt exposed a test assumption that direct handle() immediately
+  quarantines after CPU persistence failure. Tests now check actual failed/
+  SEALED state, rejected release, then the original terminal handler and the
+  true already-resolved arena state; no production termination rule changed.
+- Both lanes and both primary/diagnostic passes, plus original staging/readback
+  regression:64passed72.97s, no skips (`final_readback_driver_v4.txt`, SHA256
+  1bff340dc76ab77fece7f4ade9c06b603d623dc9b1ca9767e26fa48cf9985b51).
+  Tests check binary channel values/dtype/shape/hash before RELEASE across four
+  distinct CPU generations, exact scope edge coverage, copy completion before
+  resolution, failed raw prefix/known foreign0, and preservation of the first
+  body/query error through original scope exit. Tool26669 exited0.
+- Driver/graph/warmup/reader/failure regression:63passed21skipped50.42s
+  (`final_readback_driver_regression_v2.txt`, SHA256
+  208b9ab723bb08389a98628448804d86a808cb21cac04e3ac4db7d7d9673dbb2).
+  Added fixture restoration assertions initially shadowed the original event
+  wait variable, causing a test-only TypeError; distinct names repair the
+  fixture. Tool1893 exited0 after repair.
+- The21 source-text skips are supplemented locally using the existing pinned
+  Warp context source (SHA256
+  eb099d908c50effc3cacbf7ecc408be4187ca9a6a6f72e1e85c70676961524ee),
+  via ROBOT_SIM_WARP_CONTEXT_SOURCE. All37 original reader cases pass5.65s
+  without skips. These execute exact Device Python methods with modeled C++
+  endpoints, not a Warp import/GPU call. Log
+  `final_readback_driver_pinned_reader_v1.txt` SHA256
+  dac3c6fc9fd426e73d907f296a27920323d3ec80ae5d6cc507bf85a5abc82e98.
+
+Changed unit files pass Ruff. Existing driver diagnostics are unchanged at49
+after normalizing line numbers against d7444ff; both raw lint reports are under
+`../c4_assets/final_readback_driver_lint_{baseline,candidate}.txt`.
+Remaining required work includes the CPU-only final artifact parser/checker,
+EXECUTE enqueue/finish observation and its exact registration, actual canonical
+CPU comparison before release, native sentinels, R1/real Go2 and all frozen row/
+pass/channel coverage, original OS blocked-call tests, complete G3-G5 capacity/
+fault/journal recovery and the coherent fresh independent code/native preflight.
+No new native job, deployment or reviewer checkpoint was launched. This partial
+driver implementation is not whole acceptance; all later gates remain closed.
