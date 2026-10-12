@@ -19,8 +19,13 @@ from physics.solvers.admm_qp import ADMMQPSolver
 from physics.solvers.pgs_split_impulse import PGSSplitImpulseSolver
 from tests.unit.collision.test_convex_margin import _box_hull, _pose
 
-from .models import DT, G, build_quadruped
-from .physics_metrics import energy_errors, pendulum_energy_history, quadruped_admm_equilibrium_depth
+from .models import DT, build_quadruped
+from .physics_metrics import (
+    energy_errors,
+    first_freefall_penetration,
+    pendulum_energy_history,
+    quadruped_admm_equilibrium_depth,
+)
 from .test_contact_vs_mujoco import LEG_LENGTH, _run_cpu, _run_mujoco_quad
 
 
@@ -76,7 +81,6 @@ def main():
     model, xml = build_quadruped(contact=True)
     q, velocity = model.tree.default_state()
     q[6] = 0.45
-    mass = sum(b.inertia.mass for b in model.tree.bodies)
     configurations = [("admm", DT, 50), ("pgs", DT, 60)]
     if args.sweep:
         configurations += [("admm", DT, 100), ("pgs", DT, 120)]
@@ -91,10 +95,10 @@ def main():
         )
         z, vz, _, _ = _run_cpu(model, q, velocity, round(1 / dt), solver=solver, dt=dt)
         tail = round(0.1 / dt)
-        expected = LEG_LENGTH - (
-            quadruped_admm_equilibrium_depth(solver, dt)
+        expected = (
+            LEG_LENGTH - quadruped_admm_equilibrium_depth(solver, dt)
             if name == "admm"
-            else solver.slop + solver.cfm * (mass * G / 4) * dt**2 / solver.erp
+            else first_freefall_penetration(q[6], LEG_LENGTH, dt)[1]
         )
         emit(
             "settling",
@@ -102,7 +106,8 @@ def main():
             dt=dt,
             iterations=iterations,
             mean_z=float(z[-tail:].mean()),
-            equilibrium_z=expected,
+            reference_z=expected,
+            reference_kind="coupled_soft_equilibrium" if name == "admm" else "first_discrete_penetration",
             error_m=float(z[-tail:].mean() - expected),
             tail_range_m=float(np.ptp(z[-tail:])),
             max_abs_vz=float(abs(vz[-tail:]).max()),

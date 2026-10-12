@@ -3,7 +3,7 @@ Stage: design-audit
 Author: codex
 Version: v1
 Date: 2026-10-12
-Status: in_review
+Status: accepted
 Related Files: REFLECTIONS.md; OPEN_QUESTIONS.md; physics/step_pipeline.py; physics/constraint_solvers.py; physics/solvers/; physics/backends/warp/; tests/validation/rigid_body/audit_solver_contracts.py
 Owner Summary: 两阶段动力学的架构合理，但相互作用模型与数值求解算法尚未清楚分开；数处现有代码不符合所声明的方程。首轮修复 CPU PGS 惯性，其余问题保留可复现反例。
 
@@ -83,6 +83,10 @@ batched_build_W_joint_space -> solver dispatch -> batched_apply_contact_impulse
 | CPU/GPU 流形等价 | CPU 凸包地面枚举全部穿透顶点；GPU 最多 4 点 | **设计/契约缺口**；法向和最大深度相同不保证支撑力矩、柔顺或负载分配相同 |
 | condim/restitution 能力 | CPU PGS 低层有角向行/恢复；CpuEngine 建 contacts 固定 condim3 且 e 默认0；CPU ADMM 角向 J 行为0，GPU固定3 | **未完成的接线/能力**，不能仅因字段存在就宣称支持 |
 | 积分适用范围 | 半隐式 Euler，非严格能量守恒 | **模型与算法适用性**；双摆误差随 dt 一阶下降，不是由 50% 门槛认证的精度 |
+
+独立设计审阅 v3 已确认上述有界结论。GJK 的漏检是实测事实，最后 simplex 顶点与支持点列表
+处理是静态检查确认的实现弱点；尚未通过隔离修复证明它们是每次漏检的唯一根因，margin 构造
+本身也需后续验证。CPU/GPU 流形差异已确认，造成的力矩/负载偏差尚未定量测量。
 
 ### ADMM QP 反例：可行不等于最优
 

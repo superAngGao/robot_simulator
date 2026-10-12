@@ -3,6 +3,25 @@
 A running record of decisions, lessons learned, and issues encountered.
 Updated at the end of each development session.
 
+## 2026-10-12 — 相互作用模型与数值求解须分别验收
+
+几何 → 平滑动力学 → 接触模型 → 约束求解 → 积分的骨架合理，但目前切换 PGS/ADMM 同时改变
+了硬/软接触与 box/disk 摩擦；算法名字不能代替物理方程。求解与施加必须使用同一广义质量矩阵，
+本轮 CPU PGS 已据此修复独立体近似与关节系统不一致的问题，旧速度入口复用共同 adapter。
+
+能量误差应包含初末时刻与全程峰值，按可用能量归一化并检查等物理时长的 dt 收敛。双摆在
+dt=.4/.2/.1 ms 下最大误差为可用能量的 5.2805/2.7520/1.4037%，呈一阶下降；并非 50% 精度认证。
+
+PGS slop 是允许穿透区间，不是吸引物体达到的目标深度。原设计 v2 把 above-slop 静态平衡公式
+误作一秒落地终态，修复惯性后被实测推翻。v3 使用半隐式 Euler 首次穿透位置，未放宽 1 μm 容差。
+above-slop 的 CFM/ERP 平衡与载荷测试仍保留。独立审阅又纠正了参考数字的 4.8 nm 笔误；公式计算
+应成为测试中的参考，不能手抄终态数据。失败中间证据已保存。
+
+ADMM 当前 normal-first 截断不是所声明凸锥 QP 的欧氏投影，GPU PGS 的 R 仅改变迭代分母也不等于
+物理柔顺性。后续先明确模型，再修复方程和数据流；纯法向落地吻合不能证明摩擦求解正确。
+详见 [设计审计](collab/physics-correctness__design-audit__codex__v1.md) 与
+[实施记录](collab/physics-correctness__implementation-note__codex__v1.md)。
+
 ## 2026-04-16 (session 32) — CPU GS-PGS 稳定性验证
 
 ### CPU 多接触冲量：GS vs Jacobi 的根本差异

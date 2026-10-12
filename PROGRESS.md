@@ -1,5 +1,18 @@
 # Robot Simulator — Progress Tracker
 
+## 2026-10-12 — 当前主线：物理正确性与碰撞可信度
+
+旧阶段完成率只表示当时功能进度，不代表当前物理精度已验证。CUDA 渲染实验已归档，本轮不继续。
+已从服务器 main `f771e61` 建立独立 `physics/correctness-audit-20261012` 分支。
+
+- 已完成有界设计/代码对照和真实 CPU/H200 测量：[设计审计](collab/physics-correctness__design-audit__codex__v1.md)。
+- 首轮修复 CPU PGS 求解/施加使用不同惯性的问题；固定连接、转动关节、偏心、多根与旧入口共 50 项针对性回归通过。
+- 原双摆 50% 首尾判据改为零点不敏感的全程能量与步长收敛；原 10 cm 求解器高度差改为各自模型的解析参考。
+- 设计 v2/v3 已独立批准；最终代码审阅与精确版本证据见 [实施记录](collab/physics-correctness__implementation-note__codex__v1.md) 及相邻 review 文件。
+- ADMM 摩擦优化契约、GPU 正则化/地面参数、GJK 浅接触、流形与材料接线仍有明确缺口；没有真实足地标定证据。
+
+以下历史阶段表保留供追溯，不能覆盖上述现状。
+
 > Last updated: 2026-04-16 (session 32)
 > Reference plan: [PLAN.md](./PLAN.md)
 > Q54 optical-pipeline milestone addendum updated: 2026-08-10

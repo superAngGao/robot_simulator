@@ -1,0 +1,13 @@
+.......sssss............................................................ [ 19%]
+........................................................................ [ 39%]
+........................................................................ [ 59%]
+........................................................................ [ 79%]
+........................................................................ [ 99%]
+.                                                                        [100%]
+=========================== short test summary info ============================
+SKIPPED [1] tests/reference/pinocchio/test_aba_vs_pinocchio.py:139: pinocchio not installed
+SKIPPED [1] tests/reference/pinocchio/test_aba_vs_pinocchio.py:157: pinocchio not installed
+SKIPPED [1] tests/reference/pinocchio/test_aba_vs_pinocchio.py:173: pinocchio not installed
+SKIPPED [1] tests/reference/pinocchio/test_aba_vs_pinocchio.py:189: pinocchio not installed
+SKIPPED [1] tests/reference/pinocchio/test_aba_vs_pinocchio.py:213: pinocchio not installed
+356 passed, 5 skipped in 21.91s

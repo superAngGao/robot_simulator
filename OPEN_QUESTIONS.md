@@ -8,6 +8,22 @@
 
 ## Physics / Algorithms
 
+**2026-10-12 物理正确性审计 — 当前优先缺口（不复用重复的历史 Q 编号）**
+
+- ADMM normal-first 摩擦截断不满足其声明的凸锥 QP 最优性。先冻结所需摩擦/法向耦合模型，
+  再修正投影与最优性验证；不能仅凭锥内可行或纯法向落地一致关闭。
+- GPU Jacobi/colored PGS 的 CFM/R 只进入分母而未进入残差；GPU ADMM 又从含 PGS 正则化的
+  W_diag 构造 R。需分开物理 A、柔顺 R 与迭代预条件，并用滑动/耦合场景复核。
+- FlatTerrain 非零高度在 GPU static data 构造时丢失；.5 m 平面接触反例 CPU=1、GPU=0。
+- GJK box-hull .01/.1/1 mm 与 box-cylinder 1 mm 特定浅接触漏检已重现。算法静态弱点与完整
+  因果证明应分开；禁止以加深穿透的 workaround 关闭。CPU/GPU 地面流形点数策略亦未统一。
+- InterfaceMaterial 未实现，body-body 摩擦硬编码；低层 condim/restitution 字段不等于引擎端到端支持。
+- 当前无真实材料/足地标定。需要同步的力、位姿/位移、已知质量/几何与材料配对，用独立工况验证。
+
+CPU PGS 广义惯性首轮修复与数值证据见
+[实施记录](collab/physics-correctness__implementation-note__codex__v1.md)；完整设计判断见
+[审计](collab/physics-correctness__design-audit__codex__v1.md)。上述其余问题本轮未修复。
+
 **Q1 — Joint friction (URDF `<dynamics friction="..."/>`)**
 URDF joint friction is parsed and stored in `_URDFData` but not used.
 True static/dynamic friction at the joint level requires a different model

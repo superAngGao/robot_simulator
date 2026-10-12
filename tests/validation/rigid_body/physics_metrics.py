@@ -53,6 +53,29 @@ def energy_errors(energies, reference):
     }
 
 
+def first_freefall_penetration(z0, contact_z, dt):
+    """First detected state for this zero-velocity, semi-implicit drop.
+
+    CpuEngine detects before stepping, requiring depth > 1e-10 m. Return
+    (step, height), independently of any measured terminal trajectory.
+    """
+    if not np.all(np.isfinite([z0, contact_z, dt])) or dt <= 0 or z0 < contact_z:
+        raise ValueError("requires finite heights with z0 >= contact_z and dt > 0")
+    detection_depth = 1e-10
+
+    def height(n):
+        return z0 - G * dt**2 * n * (n + 1) / 2
+
+    crossing = (np.sqrt(1 + 8 * (z0 - contact_z + detection_depth) / (G * dt**2)) - 1) / 2
+    n = int(np.floor(crossing)) + 1
+    # Respect the detector's strict inequality even at a rounded integer root.
+    while contact_z - height(n) <= detection_depth:
+        n += 1
+    while n > 0 and contact_z - height(n - 1) > detection_depth:
+        n -= 1
+    return n, float(height(n))
+
+
 def quadruped_admm_equilibrium_depth(solver, dt):
     """Four coupled normal rows at the symmetric straight-leg equilibrium.
 

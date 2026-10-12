@@ -1,0 +1,10 @@
+{"kind": "acceleration", "max_error": 3.979039320256561e-13, "samples": 30}
+{"kind": "mujoco_settling", "mean_z": 0.4188928875631802, "mean_abs_v": 1.201761430672038e-13}
+{"kind": "incline", "mode": "sliding_zero", "dt": 0.001, "actual": -0.9809999999999978, "expected": -0.9809999999999999, "rel_error": 2.1502790487133514e-15}
+{"kind": "incline", "mode": "sliding_zero", "dt": 0.0005, "actual": -0.9809999999999965, "expected": -0.9809999999999999, "rel_error": 3.3951774453368706e-15}
+{"kind": "incline", "mode": "sliding", "dt": 0.001, "actual": -0.811085816627064, "expected": -0.811085815777493, "rel_error": 1.0474490659637734e-09}
+{"kind": "incline", "mode": "sliding", "dt": 0.0005, "actual": -0.8110858162022783, "expected": -0.811085815777493, "rel_error": 5.237242592197266e-10}
+{"kind": "incline", "mode": "rolling", "dt": 0.001, "actual": -1.1978177893344364, "expected": -1.198292002151718, "rel_error": 0.00039574061783783786}
+{"kind": "incline", "mode": "rolling", "dt": 0.0005, "actual": -1.1982664401708536, "expected": -1.198292002151718, "rel_error": 2.1332013247649168e-05}
+{"kind": "freefall", "dt": 0.001, "z_error": -0.0004904999999997273, "euler_prediction": -0.0004905, "v_error": 9.992007221626409e-16}
+{"kind": "freefall", "dt": 0.0005, "z_error": -0.0002452500000007518, "euler_prediction": -0.00024525, "v_error": -4.218847493575595e-15}

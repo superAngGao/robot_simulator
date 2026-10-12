@@ -1,0 +1,40 @@
+........................................................................ [ 16%]
+........................................................................ [ 32%]
+........................................................................ [ 49%]
+........................................................................ [ 65%]
+........................................................................ [ 81%]
+........................................................................ [ 98%]
+.....F..                                                                 [100%]
+=================================== FAILURES ===================================
+__________ TestQuadrupedDropPgsSi.test_pgs_si_vs_admm_settling_height __________
+
+self = <robot_sim_physics_correctness.tests.validation.rigid_body.test_contact_vs_mujoco.TestQuadrupedDropPgsSi object at 0x8f4fa90ec30>
+
+    def test_pgs_si_vs_admm_settling_height(self):
+        """Each solver must reach its own equilibrium, not merely agree to 10 cm.
+    
+        PGS uses 5 mm slop; ADMM uses per-row compliant contact. A 1 um
+        equilibrium residual resolves the old 20 um PGS inertia defect.
+        Separate resolvable-CFM tests verify dt scaling and load balance.
+        """
+        model, _ = build_quadruped(contact=True)
+        q, qdot = model.tree.default_state()
+        q[6] = self.BASE_Z0
+    
+        solver_admm = ADMMQPSolver()
+        z_admm, vz_admm, _, _ = _run_cpu(model, q.copy(), qdot.copy(), 5000, solver=solver_admm)
+        solver_pgs = PGSSplitImpulseSolver(max_iter=60, erp=0.8, slop=0.005)
+        z_pgs, vz_pgs, _, _ = _run_cpu(model, q.copy(), qdot.copy(), 5000, solver=solver_pgs)
+    
+        mass = sum(b.inertia.mass for b in model.tree.bodies)
+        expected_pgs = LEG_LENGTH - solver_pgs.slop - solver_pgs.cfm * (mass * G / 4) * DT**2 / solver_pgs.erp
+        expected_admm = LEG_LENGTH - quadruped_admm_equilibrium_depth(solver_admm, DT)
+        for z, vz, expected in [(z_pgs, vz_pgs, expected_pgs), (z_admm, vz_admm, expected_admm)]:
+>           assert abs(np.mean(z[-500:]) - expected) < 1e-6
+E           assert np.float64(0.004928030039803855) < 1e-06
+E            +  where np.float64(0.004928030039803855) = abs((np.float64(0.4199280300387738) - 0.41499999999896997))
+E            +    where np.float64(0.4199280300387738) = <function mean at 0x8f50ab20bf0>(array([0.41992803, 0.41992803, 0.41992803, 0.41992803, 0.41992803,\n       0.41992803, 0.41992803, 0.41992803, 0.419928...03, 0.41992803, 0.41992803, 0.41992803, 0.41992803,\n       0.41992803, 0.41992803, 0.41992803, 0.41992803, 0.41992803]))
+E            +      where <function mean at 0x8f50ab20bf0> = np.mean
+
+tests/validation/rigid_body/test_contact_vs_mujoco.py:260: AssertionError
+1 failed, 439 passed in 677.72s (0:11:17)

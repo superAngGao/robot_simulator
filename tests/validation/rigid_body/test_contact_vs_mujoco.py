@@ -31,7 +31,7 @@ from .models import (
     G,
     build_quadruped,
 )
-from .physics_metrics import quadruped_admm_equilibrium_depth
+from .physics_metrics import first_freefall_penetration, quadruped_admm_equilibrium_depth
 
 pytestmark = pytest.mark.slow
 
@@ -237,11 +237,12 @@ class TestQuadrupedDropPgsSi:
         assert np.all(np.isfinite(qdot_traj)), "PGS-SI produced NaN in qdot"
 
     def test_pgs_si_vs_admm_settling_height(self):
-        """Each solver must reach its own equilibrium, not merely agree to 10 cm.
+        """Check discrete PGS arrest and ADMM soft-contact equilibrium.
 
-        PGS uses 5 mm slop; ADMM uses per-row compliant contact. A 1 um
-        equilibrium residual resolves the old 20 um PGS inertia defect.
-        Separate resolvable-CFM tests verify dt scaling and load balance.
+        PGS can arrest anywhere inside slop: it is not a target depth.
+        A 1 um residual separates the corrected impact response from the
+        old 4.95 mm inertia-induced sinking. Prescribed-state tests verify
+        CFM/ERP scaling and load balance separately.
         """
         model, _ = build_quadruped(contact=True)
         q, qdot = model.tree.default_state()
@@ -253,7 +254,11 @@ class TestQuadrupedDropPgsSi:
         z_pgs, vz_pgs, _, _ = _run_cpu(model, q.copy(), qdot.copy(), 5000, solver=solver_pgs)
 
         mass = sum(b.inertia.mass for b in model.tree.bodies)
-        expected_pgs = LEG_LENGTH - solver_pgs.slop - solver_pgs.cfm * (mass * G / 4) * DT**2 / solver_pgs.erp
+        impact_step, expected_pgs = first_freefall_penetration(self.BASE_Z0, LEG_LENGTH, DT)
+        assert 1e-10 < LEG_LENGTH - expected_pgs < solver_pgs.slop
+        # Model-only CFM creep estimate; finite iteration effects are separate.
+        cfm_drift_bound = DT * solver_pgs.cfm * (mass / 4) * (G * impact_step * DT + G * 1.0)
+        assert cfm_drift_bound < 5e-9
         expected_admm = LEG_LENGTH - quadruped_admm_equilibrium_depth(solver_admm, DT)
         for z, vz, expected in [(z_pgs, vz_pgs, expected_pgs), (z_admm, vz_admm, expected_admm)]:
             assert abs(np.mean(z[-500:]) - expected) < 1e-6

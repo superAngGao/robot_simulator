@@ -1,0 +1,300 @@
+FFFFFFFFFFFFFFFFFFFF                                                     [100%]
+=================================== FAILURES ===================================
+_ test_fixed_child_mass_partition_does_not_change_impact[0.05-PGSContactSolver] _
+/tmp/test_physics_inertia_repro.py:51: in test_fixed_child_mass_partition_does_not_change_impact
+    np.testing.assert_allclose(out.qdot_new, np.zeros(6), atol=1e-10, rtol=0)
+E   AssertionError: 
+E   Not equal to tolerance rtol=0, atol=1e-10
+E   
+E   Mismatched elements: 1 / 6 (16.7%)
+E   Mismatch at index:
+E    [2]: -0.95 (ACTUAL), 0.0 (DESIRED)
+E   Max absolute difference among violations: 0.95
+E   Max relative difference among violations: inf
+E    ACTUAL: array([ 0.  ,  0.  , -0.95,  0.  ,  0.  ,  0.  ])
+E    DESIRED: array([0., 0., 0., 0., 0., 0.])
+_ test_fixed_child_mass_partition_does_not_change_impact[0.05-PGSSplitImpulseSolver] _
+/tmp/test_physics_inertia_repro.py:51: in test_fixed_child_mass_partition_does_not_change_impact
+    np.testing.assert_allclose(out.qdot_new, np.zeros(6), atol=1e-10, rtol=0)
+E   AssertionError: 
+E   Not equal to tolerance rtol=0, atol=1e-10
+E   
+E   Mismatched elements: 1 / 6 (16.7%)
+E   Mismatch at index:
+E    [2]: -0.95 (ACTUAL), 0.0 (DESIRED)
+E   Max absolute difference among violations: 0.95
+E   Max relative difference among violations: inf
+E    ACTUAL: array([ 0.  ,  0.  , -0.95,  0.  ,  0.  ,  0.  ])
+E    DESIRED: array([0., 0., 0., 0., 0., 0.])
+_ test_fixed_child_mass_partition_does_not_change_impact[0.5-PGSContactSolver] _
+/tmp/test_physics_inertia_repro.py:51: in test_fixed_child_mass_partition_does_not_change_impact
+    np.testing.assert_allclose(out.qdot_new, np.zeros(6), atol=1e-10, rtol=0)
+E   AssertionError: 
+E   Not equal to tolerance rtol=0, atol=1e-10
+E   
+E   Mismatched elements: 1 / 6 (16.7%)
+E   Mismatch at index:
+E    [2]: -0.5 (ACTUAL), 0.0 (DESIRED)
+E   Max absolute difference among violations: 0.5
+E   Max relative difference among violations: inf
+E    ACTUAL: array([ 0. ,  0. , -0.5,  0. ,  0. ,  0. ])
+E    DESIRED: array([0., 0., 0., 0., 0., 0.])
+_ test_fixed_child_mass_partition_does_not_change_impact[0.5-PGSSplitImpulseSolver] _
+/tmp/test_physics_inertia_repro.py:51: in test_fixed_child_mass_partition_does_not_change_impact
+    np.testing.assert_allclose(out.qdot_new, np.zeros(6), atol=1e-10, rtol=0)
+E   AssertionError: 
+E   Not equal to tolerance rtol=0, atol=1e-10
+E   
+E   Mismatched elements: 1 / 6 (16.7%)
+E   Mismatch at index:
+E    [2]: -0.5 (ACTUAL), 0.0 (DESIRED)
+E   Max absolute difference among violations: 0.5
+E   Max relative difference among violations: inf
+E    ACTUAL: array([ 0. ,  0. , -0.5,  0. ,  0. ,  0. ])
+E    DESIRED: array([0., 0., 0., 0., 0., 0.])
+_ test_fixed_child_mass_partition_does_not_change_impact[0.95-PGSContactSolver] _
+/tmp/test_physics_inertia_repro.py:51: in test_fixed_child_mass_partition_does_not_change_impact
+    np.testing.assert_allclose(out.qdot_new, np.zeros(6), atol=1e-10, rtol=0)
+E   AssertionError: 
+E   Not equal to tolerance rtol=0, atol=1e-10
+E   
+E   Mismatched elements: 1 / 6 (16.7%)
+E   Mismatch at index:
+E    [2]: -0.04999999999999993 (ACTUAL), 0.0 (DESIRED)
+E   Max absolute difference among violations: 0.05
+E   Max relative difference among violations: inf
+E    ACTUAL: array([ 0.  ,  0.  , -0.05,  0.  ,  0.  ,  0.  ])
+E    DESIRED: array([0., 0., 0., 0., 0., 0.])
+_ test_fixed_child_mass_partition_does_not_change_impact[0.95-PGSSplitImpulseSolver] _
+/tmp/test_physics_inertia_repro.py:51: in test_fixed_child_mass_partition_does_not_change_impact
+    np.testing.assert_allclose(out.qdot_new, np.zeros(6), atol=1e-10, rtol=0)
+E   AssertionError: 
+E   Not equal to tolerance rtol=0, atol=1e-10
+E   
+E   Mismatched elements: 1 / 6 (16.7%)
+E   Mismatch at index:
+E    [2]: -0.04999999999999993 (ACTUAL), 0.0 (DESIRED)
+E   Max absolute difference among violations: 0.05
+E   Max relative difference among violations: inf
+E    ACTUAL: array([ 0.  ,  0.  , -0.05,  0.  ,  0.  ,  0.  ])
+E    DESIRED: array([0., 0., 0., 0., 0., 0.])
+____ test_legacy_articulated_entrypoint_uses_same_inertia[PGSContactSolver] ____
+/tmp/test_physics_inertia_repro.py:62: in test_legacy_articulated_entrypoint_uses_same_inertia
+    np.testing.assert_allclose(new_v,0,atol=1e-10,rtol=0)
+E   AssertionError: 
+E   Not equal to tolerance rtol=0, atol=1e-10
+E   
+E   Mismatched elements: 1 / 6 (16.7%)
+E   Mismatch at index:
+E    [2]: -0.95 (ACTUAL), 0 (DESIRED)
+E   Max absolute difference among violations: 0.95
+E   Max relative difference among violations: inf
+E    ACTUAL: array([ 0.  ,  0.  , -0.95,  0.  ,  0.  ,  0.  ])
+E    DESIRED: array(0)
+_ test_legacy_articulated_entrypoint_uses_same_inertia[PGSSplitImpulseSolver] __
+/tmp/test_physics_inertia_repro.py:62: in test_legacy_articulated_entrypoint_uses_same_inertia
+    np.testing.assert_allclose(new_v,0,atol=1e-10,rtol=0)
+E   AssertionError: 
+E   Not equal to tolerance rtol=0, atol=1e-10
+E   
+E   Mismatched elements: 1 / 6 (16.7%)
+E   Mismatch at index:
+E    [2]: -0.95 (ACTUAL), 0 (DESIRED)
+E   Max absolute difference among violations: 0.95
+E   Max relative difference among violations: inf
+E    ACTUAL: array([ 0.  ,  0.  , -0.95,  0.  ,  0.  ,  0.  ])
+E    DESIRED: array(0)
+______ test_revolute_contact_removes_incoming_velocity[PGSContactSolver] _______
+/tmp/test_physics_inertia_repro.py:74: in test_revolute_contact_removes_incoming_velocity
+    assert abs(new_v[0])<1e-10
+E   assert np.float64(0.2592592592592593) < 1e-10
+E    +  where np.float64(0.2592592592592593) = abs(np.float64(0.2592592592592593))
+____ test_revolute_contact_removes_incoming_velocity[PGSSplitImpulseSolver] ____
+/tmp/test_physics_inertia_repro.py:74: in test_revolute_contact_removes_incoming_velocity
+    assert abs(new_v[0])<1e-10
+E   assert np.float64(0.2592592592592593) < 1e-10
+E    +  where np.float64(0.2592592592592593) = abs(np.float64(0.2592592592592593))
+__ test_offset_composite_impact_matches_rigid_body_formula[PGSContactSolver] ___
+/tmp/test_physics_inertia_repro.py:98: in test_offset_composite_impact_matches_rigid_body_formula
+    np.testing.assert_allclose(out.qdot_new,expected,atol=1e-9,rtol=0)
+E   AssertionError: 
+E   Not equal to tolerance rtol=0, atol=1e-09
+E   
+E   Mismatched elements: 3 / 6 (50%)
+E   Mismatch at indices:
+E    [2]: -0.8212222222222222 (ACTUAL), -0.2370791844476055 (DESIRED)
+E    [3]: -0.1 (ACTUAL), -0.42674253200568996 (DESIRED)
+E    [4]: -0.5555555555555557 (ACTUAL), -2.370791844476055 (DESIRED)
+E   Max absolute difference among violations: 1.81523629
+E   Max relative difference among violations: 2.46391533
+E    ACTUAL: array([ 0.      ,  0.      , -0.821222, -0.1     , -0.555556,  0.      ])
+E    DESIRED: array([ 0.      ,  0.      , -0.237079, -0.426743, -2.370792,  0.      ])
+_ test_offset_composite_impact_matches_rigid_body_formula[PGSSplitImpulseSolver] _
+/tmp/test_physics_inertia_repro.py:98: in test_offset_composite_impact_matches_rigid_body_formula
+    np.testing.assert_allclose(out.qdot_new,expected,atol=1e-9,rtol=0)
+E   AssertionError: 
+E   Not equal to tolerance rtol=0, atol=1e-09
+E   
+E   Mismatched elements: 3 / 6 (50%)
+E   Mismatch at indices:
+E    [2]: -0.8212222222222222 (ACTUAL), -0.2370791844476055 (DESIRED)
+E    [3]: -0.1 (ACTUAL), -0.42674253200568996 (DESIRED)
+E    [4]: -0.5555555555555557 (ACTUAL), -2.370791844476055 (DESIRED)
+E   Max absolute difference among violations: 1.81523629
+E   Max relative difference among violations: 2.46391533
+E    ACTUAL: array([ 0.      ,  0.      , -0.821222, -0.1     , -0.555556,  0.      ])
+E    DESIRED: array([ 0.      ,  0.      , -0.237079, -0.426743, -2.370792,  0.      ])
+____ test_two_roots_conserve_momentum_with_angular_rows[1-PGSContactSolver] ____
+/tmp/test_physics_inertia_repro.py:111: in test_two_roots_conserve_momentum_with_angular_rows
+    np.testing.assert_allclose(new,0.,atol=1e-10,rtol=0)
+E   AssertionError: 
+E   Not equal to tolerance rtol=0, atol=1e-10
+E   
+E   Mismatched elements: 2 / 12 (16.7%)
+E   Mismatch at indices:
+E    [2]: -0.9058823529411765 (ACTUAL), 0.0 (DESIRED)
+E    [8]: 0.9058823529411765 (ACTUAL), 0.0 (DESIRED)
+E   Max absolute difference among violations: 0.90588235
+E   Max relative difference among violations: inf
+E    ACTUAL: array([ 0.      ,  0.      , -0.905882,  0.      ,  0.      ,  0.      ,
+E           0.      ,  0.      ,  0.905882,  0.      ,  0.      ,  0.      ])
+E    DESIRED: array(0.)
+_ test_two_roots_conserve_momentum_with_angular_rows[1-PGSSplitImpulseSolver] __
+/tmp/test_physics_inertia_repro.py:111: in test_two_roots_conserve_momentum_with_angular_rows
+    np.testing.assert_allclose(new,0.,atol=1e-10,rtol=0)
+E   AssertionError: 
+E   Not equal to tolerance rtol=0, atol=1e-10
+E   
+E   Mismatched elements: 2 / 12 (16.7%)
+E   Mismatch at indices:
+E    [2]: -0.9058823529411765 (ACTUAL), 0.0 (DESIRED)
+E    [8]: 0.9058823529411765 (ACTUAL), 0.0 (DESIRED)
+E   Max absolute difference among violations: 0.90588235
+E   Max relative difference among violations: inf
+E    ACTUAL: array([ 0.      ,  0.      , -0.905882,  0.      ,  0.      ,  0.      ,
+E           0.      ,  0.      ,  0.905882,  0.      ,  0.      ,  0.      ])
+E    DESIRED: array(0.)
+____ test_two_roots_conserve_momentum_with_angular_rows[3-PGSContactSolver] ____
+/tmp/test_physics_inertia_repro.py:111: in test_two_roots_conserve_momentum_with_angular_rows
+    np.testing.assert_allclose(new,0.,atol=1e-10,rtol=0)
+E   AssertionError: 
+E   Not equal to tolerance rtol=0, atol=1e-10
+E   
+E   Mismatched elements: 2 / 12 (16.7%)
+E   Mismatch at indices:
+E    [2]: -0.9058823529411765 (ACTUAL), 0.0 (DESIRED)
+E    [8]: 0.9058823529411765 (ACTUAL), 0.0 (DESIRED)
+E   Max absolute difference among violations: 0.90588235
+E   Max relative difference among violations: inf
+E    ACTUAL: array([ 0.      ,  0.      , -0.905882,  0.      ,  0.      ,  0.      ,
+E           0.      ,  0.      ,  0.905882,  0.      ,  0.      ,  0.      ])
+E    DESIRED: array(0.)
+_ test_two_roots_conserve_momentum_with_angular_rows[3-PGSSplitImpulseSolver] __
+/tmp/test_physics_inertia_repro.py:111: in test_two_roots_conserve_momentum_with_angular_rows
+    np.testing.assert_allclose(new,0.,atol=1e-10,rtol=0)
+E   AssertionError: 
+E   Not equal to tolerance rtol=0, atol=1e-10
+E   
+E   Mismatched elements: 2 / 12 (16.7%)
+E   Mismatch at indices:
+E    [2]: -0.9058823529411765 (ACTUAL), 0.0 (DESIRED)
+E    [8]: 0.9058823529411765 (ACTUAL), 0.0 (DESIRED)
+E   Max absolute difference among violations: 0.90588235
+E   Max relative difference among violations: inf
+E    ACTUAL: array([ 0.      ,  0.      , -0.905882,  0.      ,  0.      ,  0.      ,
+E           0.      ,  0.      ,  0.905882,  0.      ,  0.      ,  0.      ])
+E    DESIRED: array(0.)
+____ test_two_roots_conserve_momentum_with_angular_rows[4-PGSContactSolver] ____
+/tmp/test_physics_inertia_repro.py:111: in test_two_roots_conserve_momentum_with_angular_rows
+    np.testing.assert_allclose(new,0.,atol=1e-10,rtol=0)
+E   AssertionError: 
+E   Not equal to tolerance rtol=0, atol=1e-10
+E   
+E   Mismatched elements: 4 / 12 (33.3%)
+E   Mismatch at indices:
+E    [2]: -0.9058823529411765 (ACTUAL), 0.0 (DESIRED)
+E    [5]: 1.0 (ACTUAL), 0.0 (DESIRED)
+E    [8]: 0.9058823529411765 (ACTUAL), 0.0 (DESIRED)
+E    [11]: -1.0 (ACTUAL), 0.0 (DESIRED)
+E   Max absolute difference among violations: 1.
+E   Max relative difference among violations: inf
+E    ACTUAL: array([ 0.      ,  0.      , -0.905882,  0.      ,  0.      ,  1.      ,
+E           0.      ,  0.      ,  0.905882,  0.      ,  0.      , -1.      ])
+E    DESIRED: array(0.)
+_ test_two_roots_conserve_momentum_with_angular_rows[4-PGSSplitImpulseSolver] __
+/tmp/test_physics_inertia_repro.py:111: in test_two_roots_conserve_momentum_with_angular_rows
+    np.testing.assert_allclose(new,0.,atol=1e-10,rtol=0)
+E   AssertionError: 
+E   Not equal to tolerance rtol=0, atol=1e-10
+E   
+E   Mismatched elements: 4 / 12 (33.3%)
+E   Mismatch at indices:
+E    [2]: -0.9058823529411765 (ACTUAL), 0.0 (DESIRED)
+E    [5]: 1.0 (ACTUAL), 0.0 (DESIRED)
+E    [8]: 0.9058823529411765 (ACTUAL), 0.0 (DESIRED)
+E    [11]: -1.0 (ACTUAL), 0.0 (DESIRED)
+E   Max absolute difference among violations: 1.
+E   Max relative difference among violations: inf
+E    ACTUAL: array([ 0.      ,  0.      , -0.905882,  0.      ,  0.      ,  1.      ,
+E           0.      ,  0.      ,  0.905882,  0.      ,  0.      , -1.      ])
+E    DESIRED: array(0.)
+____ test_two_roots_conserve_momentum_with_angular_rows[6-PGSContactSolver] ____
+/tmp/test_physics_inertia_repro.py:111: in test_two_roots_conserve_momentum_with_angular_rows
+    np.testing.assert_allclose(new,0.,atol=1e-10,rtol=0)
+E   AssertionError: 
+E   Not equal to tolerance rtol=0, atol=1e-10
+E   
+E   Mismatched elements: 6 / 12 (50%)
+E   First 5 mismatches are at indices:
+E    [2]: -0.9058823529411765 (ACTUAL), 0.0 (DESIRED)
+E    [3]: 0.1 (ACTUAL), 0.0 (DESIRED)
+E    [5]: 1.0 (ACTUAL), 0.0 (DESIRED)
+E    [8]: 0.9058823529411765 (ACTUAL), 0.0 (DESIRED)
+E    [9]: -0.1 (ACTUAL), 0.0 (DESIRED)
+E   Max absolute difference among violations: 1.
+E   Max relative difference among violations: inf
+E    ACTUAL: array([ 0.000000e+00,  0.000000e+00, -9.058824e-01,  1.000000e-01,
+E           2.220446e-20,  1.000000e+00,  0.000000e+00,  0.000000e+00,
+E           9.058824e-01, -1.000000e-01,  2.220446e-20, -1.000000e+00])
+E    DESIRED: array(0.)
+_ test_two_roots_conserve_momentum_with_angular_rows[6-PGSSplitImpulseSolver] __
+/tmp/test_physics_inertia_repro.py:111: in test_two_roots_conserve_momentum_with_angular_rows
+    np.testing.assert_allclose(new,0.,atol=1e-10,rtol=0)
+E   AssertionError: 
+E   Not equal to tolerance rtol=0, atol=1e-10
+E   
+E   Mismatched elements: 6 / 12 (50%)
+E   First 5 mismatches are at indices:
+E    [2]: -0.9058823529411765 (ACTUAL), 0.0 (DESIRED)
+E    [3]: 0.1 (ACTUAL), 0.0 (DESIRED)
+E    [5]: 1.0 (ACTUAL), 0.0 (DESIRED)
+E    [8]: 0.9058823529411765 (ACTUAL), 0.0 (DESIRED)
+E    [9]: -0.1 (ACTUAL), 0.0 (DESIRED)
+E   Max absolute difference among violations: 1.
+E   Max relative difference among violations: inf
+E    ACTUAL: array([ 0.000000e+00,  0.000000e+00, -9.058824e-01,  1.000000e-01,
+E           2.220446e-20,  1.000000e+00,  0.000000e+00,  0.000000e+00,
+E           9.058824e-01, -1.000000e-01,  2.220446e-20, -1.000000e+00])
+E    DESIRED: array(0.)
+=========================== short test summary info ============================
+FAILED ../../../../tmp/test_physics_inertia_repro.py::test_fixed_child_mass_partition_does_not_change_impact[0.05-PGSContactSolver]
+FAILED ../../../../tmp/test_physics_inertia_repro.py::test_fixed_child_mass_partition_does_not_change_impact[0.05-PGSSplitImpulseSolver]
+FAILED ../../../../tmp/test_physics_inertia_repro.py::test_fixed_child_mass_partition_does_not_change_impact[0.5-PGSContactSolver]
+FAILED ../../../../tmp/test_physics_inertia_repro.py::test_fixed_child_mass_partition_does_not_change_impact[0.5-PGSSplitImpulseSolver]
+FAILED ../../../../tmp/test_physics_inertia_repro.py::test_fixed_child_mass_partition_does_not_change_impact[0.95-PGSContactSolver]
+FAILED ../../../../tmp/test_physics_inertia_repro.py::test_fixed_child_mass_partition_does_not_change_impact[0.95-PGSSplitImpulseSolver]
+FAILED ../../../../tmp/test_physics_inertia_repro.py::test_legacy_articulated_entrypoint_uses_same_inertia[PGSContactSolver]
+FAILED ../../../../tmp/test_physics_inertia_repro.py::test_legacy_articulated_entrypoint_uses_same_inertia[PGSSplitImpulseSolver]
+FAILED ../../../../tmp/test_physics_inertia_repro.py::test_revolute_contact_removes_incoming_velocity[PGSContactSolver]
+FAILED ../../../../tmp/test_physics_inertia_repro.py::test_revolute_contact_removes_incoming_velocity[PGSSplitImpulseSolver]
+FAILED ../../../../tmp/test_physics_inertia_repro.py::test_offset_composite_impact_matches_rigid_body_formula[PGSContactSolver]
+FAILED ../../../../tmp/test_physics_inertia_repro.py::test_offset_composite_impact_matches_rigid_body_formula[PGSSplitImpulseSolver]
+FAILED ../../../../tmp/test_physics_inertia_repro.py::test_two_roots_conserve_momentum_with_angular_rows[1-PGSContactSolver]
+FAILED ../../../../tmp/test_physics_inertia_repro.py::test_two_roots_conserve_momentum_with_angular_rows[1-PGSSplitImpulseSolver]
+FAILED ../../../../tmp/test_physics_inertia_repro.py::test_two_roots_conserve_momentum_with_angular_rows[3-PGSContactSolver]
+FAILED ../../../../tmp/test_physics_inertia_repro.py::test_two_roots_conserve_momentum_with_angular_rows[3-PGSSplitImpulseSolver]
+FAILED ../../../../tmp/test_physics_inertia_repro.py::test_two_roots_conserve_momentum_with_angular_rows[4-PGSContactSolver]
+FAILED ../../../../tmp/test_physics_inertia_repro.py::test_two_roots_conserve_momentum_with_angular_rows[4-PGSSplitImpulseSolver]
+FAILED ../../../../tmp/test_physics_inertia_repro.py::test_two_roots_conserve_momentum_with_angular_rows[6-PGSContactSolver]
+FAILED ../../../../tmp/test_physics_inertia_repro.py::test_two_roots_conserve_momentum_with_angular_rows[6-PGSSplitImpulseSolver]
+20 failed in 1.24s
