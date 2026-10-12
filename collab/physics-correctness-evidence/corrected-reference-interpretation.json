@@ -1,0 +1,44 @@
+{
+  "provenance": "Post-processing only; measured values are from the preserved v2 run, not a fresh simulation.",
+  "source": "collab/physics-correctness-evidence/v2-oracle-metrics.json",
+  "source_sha256": "a6faa5979e5e7b545d05eb6ed00086c93b9cc2bdd73d8bc10ccc814655fd89a3",
+  "reference_code_commit": "70841b9c509a51c70ca0fe6b1f094597e29026ce",
+  "results": [
+    {
+      "dt": 0.0002,
+      "iterations": 60,
+      "recorded_mean_z": 0.4199280300387738,
+      "reference_kind": "first_discrete_penetration",
+      "reference_step": 391,
+      "reference_z": 0.41992803360000003,
+      "reinterpreted_error_m": -3.561226202819512e-09
+    },
+    {
+      "dt": 0.0002,
+      "iterations": 120,
+      "recorded_mean_z": 0.41992802907279836,
+      "reference_kind": "first_discrete_penetration",
+      "reference_step": 391,
+      "reference_z": 0.41992803360000003,
+      "reinterpreted_error_m": -4.527201669102254e-09
+    },
+    {
+      "dt": 0.0004,
+      "iterations": 60,
+      "recorded_mean_z": 0.41969729933116295,
+      "reference_kind": "first_discrete_penetration",
+      "reference_step": 196,
+      "reference_z": 0.4196973024,
+      "reinterpreted_error_m": -3.068837073350039e-09
+    },
+    {
+      "dt": 0.0001,
+      "iterations": 60,
+      "recorded_mean_z": 0.41996638109864964,
+      "reference_kind": "first_discrete_penetration",
+      "reference_step": 782,
+      "reference_z": 0.4199663907,
+      "reinterpreted_error_m": -9.601350381416296e-09
+    }
+  ]
+}
