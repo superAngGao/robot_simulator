@@ -1,0 +1,14 @@
+Warp 1.12.0 initialized:
+   CUDA Toolkit 12.9, Driver 13.2
+   Devices:
+     "cpu"      : "x86_64"
+     "cuda:0"   : "NVIDIA H200" (140 GiB, sm_90, mempool enabled)
+   Kernel cache:
+     /home/ang.gao/.cache/warp/1.12.0
+Module physics.backends.warp.kernels 4ff0094 load on device 'cuda:0' took 7.07 ms  (cached)
+Module physics.backends.warp.crba_kernels 88f0422 load on device 'cuda:0' took 5.00 ms  (cached)
+Module physics.backends.warp.solver_kernels 394b7f9 load on device 'cuda:0' took 2.69 ms  (cached)
+Module physics.backends.warp.collision_kernels f9b3ca2 load on device 'cuda:0' took 14.85 ms  (cached)
+Module physics.backends.warp.admm_kernels 50acee3 load on device 'cuda:0' took 1.09 ms  (cached)
+Module physics.gpu_engine c7d00cf load on device 'cuda:0' took 1.00 ms  (cached)
+{"output": "/tmp/admm_bounded_verification_20261014.json", "frozen_cases": 24, "trajectories": 18, "gpu_cases": 8}
