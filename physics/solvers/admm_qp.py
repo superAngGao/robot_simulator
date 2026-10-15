@@ -34,6 +34,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .pgs_solver import ContactConstraint, _build_contact_frame
+from .contact_regularization import (
+    MINVAL, impedance, normalize_parameters, reference_body_weights, validate_policy,
+)
 
 
 class ADMMQPSolver:
@@ -63,7 +66,15 @@ class ADMMQPSolver:
         adaptive_rho: bool = True,
         rho_adapt_mu: float = 10.0,
         rho_adapt_tau: float = 2.0,
+        *,
+        regularization: str = "per_row",
+        impratio: float = 1.0,
     ) -> None:
+        validate_policy(regularization, impratio)
+        if regularization == "mujoco":
+            normalize_parameters(solref, solimp, 1.0)
+        self._regularization = regularization
+        self._impratio = float(impratio)
         self.max_iter = max_iter
         self.tolerance = tolerance
         self.rho = rho
@@ -82,6 +93,20 @@ class ADMMQPSolver:
         # Populated after each solve
         self.last_jacobian: NDArray | None = None
         self.last_forces: NDArray | None = None
+        self._last_R_diag = np.zeros(0)
+
+    @property
+    def regularization(self):
+        return self._regularization
+
+    @property
+    def impratio(self):
+        return self._impratio
+
+    @property
+    def last_R_diag(self):
+        """Copy of the physical regularization from the last completed solve."""
+        return self._last_R_diag.copy()
 
     def solve(
         self,
@@ -107,7 +132,28 @@ class ADMMQPSolver:
         """
         nc = len(contacts)
         nv = tree.nv
+        solimp = self.solimp
+        weights = None
+        if self.regularization == "mujoco":
+            _, solimp = normalize_parameters(self.solref, solimp, dt)
+            if not all(np.all(np.isfinite(x)) for x in (q, qdot, a_u)):
+                raise ValueError("nonfinite contact state")
+            for c in contacts:
+                if c.condim not in (1, 3):
+                    raise ValueError("mujoco regularization supports condim 1/3")
+                if any(not isinstance(i, (int, np.integer)) or i < -1 or i >= tree.num_bodies
+                       for i in (c.body_i, c.body_j)):
+                    raise ValueError("invalid contact body index")
+                if not all(np.all(np.isfinite(x)) for x in (c.point, c.normal, c.depth, c.mu)):
+                    raise ValueError("nonfinite contact data")
+            if nc:
+                try:
+                    weights = reference_body_weights(tree)
+                finally:
+                    tree.forward_kinematics(q)
+        imp = (lambda depth: impedance(depth, solimp)) if weights is not None else self._impedance
         if nc == 0:
+            self._last_R_diag = np.zeros(0)
             self.last_jacobian = np.zeros((0, nv))
             self.last_forces = np.zeros(0)
             return np.zeros(0), np.zeros((0, nv))
@@ -167,10 +213,15 @@ class ADMMQPSolver:
         R_diag = np.zeros(n_rows)
         for ci, c in enumerate(contacts):
             base = row_offsets[ci]
-            d = self._impedance(c.depth)
+            d = imp(c.depth)
             ratio = (1.0 - d) / max(d, 1e-10)
-            for j in range(c.condim):
-                R_diag[base + j] = ratio * abs(A[base + j, base + j])
+            if weights is None:
+                for j in range(c.condim):
+                    R_diag[base + j] = ratio * abs(A[base + j, base + j])
+            else:
+                w = sum(weights[i] for i in (c.body_i, c.body_j) if i >= 0)
+                R_diag[base] = max(MINVAL, ratio * w)
+                R_diag[base + 1:base + c.condim] = R_diag[base] / max(MINVAL, self.impratio)
         R = np.diag(R_diag)
 
         # ── Reference acceleration a_ref (solref spring-damper) ──
@@ -178,7 +229,7 @@ class ADMMQPSolver:
         # Safety clamp: timeconst >= 2*dt (MuJoCo default)
         timeconst = max(timeconst, 2.0 * dt)
         # b, k use d_width (solimp[1]), not d(0) — per MuJoCo docs
-        d_w = self.solimp[1]  # impedance at full penetration
+        d_w = solimp[1]  # impedance at full penetration
         b = 2.0 / (d_w * timeconst)
         k = 1.0 / (d_w**2 * timeconst**2 * dampratio**2)
 
@@ -188,7 +239,7 @@ class ADMMQPSolver:
         a_ref = np.zeros(n_rows)
         for ci, c in enumerate(contacts):
             base = row_offsets[ci]
-            d = self._impedance(c.depth)
+            d = imp(c.depth)
             # Normal: a_ref = -b*v_n + k*d*depth
             # MuJoCo uses r (signed distance, negative=penetrating): a_ref = -b*v - k*d*r
             # Our depth is positive when penetrating, so r = -depth:
@@ -259,6 +310,7 @@ class ADMMQPSolver:
 
         self.last_jacobian = J
         self.last_forces = f
+        self._last_R_diag = R_diag.copy()
         return f, J
 
     @staticmethod

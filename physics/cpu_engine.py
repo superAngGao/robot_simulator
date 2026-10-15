@@ -54,7 +54,12 @@ class CpuEngine(PhysicsEngine):
         merged: "MergedModel",
         solver=None,
         dt: float = 2e-4,
+        *,
+        contact_condim: int = 3,
     ) -> None:
+        if contact_condim not in (1, 3):
+            raise ValueError("contact_condim must be 1 or 3")
+        self._contact_condim = contact_condim
         super().__init__(merged)
         solver = solver or PGSSplitImpulseSolver(max_iter=60, erp=0.8, slop=0.005)
         wrapped = wrap_solver(solver)
@@ -292,7 +297,7 @@ class CpuEngine(PhysicsEngine):
                                 tangent2=np.zeros(3),
                                 depth=manifold.depth_at(pi),
                                 mu=getattr(terrain, "mu", 0.8),
-                                condim=3,
+                                condim=self._contact_condim,
                             )
                         )
 
@@ -325,7 +330,7 @@ class CpuEngine(PhysicsEngine):
                                     tangent2=np.zeros(3),
                                     depth=manifold.depth_at(pi),
                                     mu=0.8,
-                                    condim=3,
+                                    condim=self._contact_condim,
                                 )
                             )
 

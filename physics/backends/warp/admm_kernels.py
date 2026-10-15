@@ -21,6 +21,21 @@ import warp as wp
 CONDIM = wp.constant(3)
 
 
+@wp.func
+def _mujoco_impedance(depth: float, d0: float, dw: float, width: float,
+                      midpoint: float, power: float) -> float:
+    if width <= 1.0e-15:
+        return 0.5 * (d0 + dw)
+    x = wp.min(1.0, wp.abs(depth) / width)
+    y = x
+    if power > 1.0:
+        if x <= midpoint:
+            y = midpoint * wp.pow(x / midpoint, power)
+        else:
+            y = 1.0 - (1.0 - midpoint) * wp.pow((1.0 - x) / (1.0 - midpoint), power)
+    return d0 + y * (dw - d0)
+
+
 # ---------------------------------------------------------------------------
 # Helper: MuJoCo piecewise power-law sigmoid impedance
 # Ref: admm_qp.py:274-295, MuJoCo engine_core_constraint.c
@@ -141,6 +156,7 @@ def _cone_project_all(
     contact_active: wp.array(dtype=wp.int32, ndim=2),
     mu: float,
     max_contacts: int,
+    contact_condim: int,
 ):
     for c in range(max_contacts):
         base = c * CONDIM
@@ -153,6 +169,10 @@ def _cone_project_all(
         z_n = z[env_id, base]
         s_n = wp.max(0.0, z_n)
         s[env_id, base] = s_n
+        if contact_condim == 1:
+            s[env_id, base + 1] = 0.0
+            s[env_id, base + 2] = 0.0
+            continue
         # Tangent: project onto friction disk  ||f_t|| <= mu * f_n
         limit = mu * s_n
         z_t1 = z[env_id, base + 1]
@@ -174,12 +194,17 @@ def _cone_project_all(
 def batched_admm_solve(
     # -- From step 7 (W build) + step 7b (v_current) --
     W: wp.array(dtype=wp.float32, ndim=3),  # (N, max_rows, max_rows)
-    W_diag: wp.array(dtype=wp.float32, ndim=2),  # (N, max_rows)
     v_free: wp.array(dtype=wp.float32, ndim=2),  # (N, max_rows) = J @ v_predicted
     v_current: wp.array(dtype=wp.float32, ndim=2),  # (N, max_rows) = J @ qdot
     # -- From step 6 (collision) --
     contact_active: wp.array(dtype=wp.int32, ndim=2),  # (N, max_contacts)
     contact_depth: wp.array(dtype=wp.float32, ndim=2),  # (N, max_contacts)
+    contact_bi: wp.array(dtype=wp.int32, ndim=2),
+    contact_bj: wp.array(dtype=wp.int32, ndim=2),
+    body_weights: wp.array(dtype=wp.float32),
+    regularization: int,
+    impratio: float,
+    contact_condim: int,
     # -- Scalar parameters --
     mu: float,
     rho: float,
@@ -238,6 +263,8 @@ def batched_admm_solve(
         * tc_clamped
         * wp.max(solref_dampratio * solref_dampratio, 1.0e-10)
     )
+    if regularization == 1:
+        k_coeff = 1.0 / (d_w * d_w * tc_clamped * tc_clamped * solref_dampratio * solref_dampratio)
 
     # Zero out scratch
     for r in range(max_rows):
@@ -251,11 +278,25 @@ def batched_admm_solve(
 
         depth_c = contact_depth[env, c]
         d_imp = _impedance(depth_c, solimp_d0, solimp_dwidth, solimp_width, solimp_midpoint, solimp_power)
+        if regularization == 1:
+            d_imp = _mujoco_impedance(depth_c, solimp_d0, solimp_dwidth, solimp_width, solimp_midpoint, solimp_power)
 
-        # Compliance R_diag: (1-d)/d * |W_diag|
+        # Physical R uses raw W, never the PGS-adjusted W_diag.
         ratio = (1.0 - d_imp) / wp.max(d_imp, 1.0e-10)
-        for k in range(CONDIM):
-            R_diag[env, base + k] = ratio * wp.abs(W_diag[env, base + k])
+        for k in range(contact_condim):
+            R_diag[env, base + k] = ratio * wp.abs(W[env, base + k, base + k])
+        if regularization == 1:
+            w = float(0.0)
+            bi = contact_bi[env, c]
+            bj = contact_bj[env, c]
+            if bi >= 0:
+                w += body_weights[bi]
+            if bj >= 0:
+                w += body_weights[bj]
+            rn = wp.max(1.0e-15, ratio * w)
+            R_diag[env, base] = rn
+            for k in range(1, contact_condim):
+                R_diag[env, base + k] = rn / wp.max(1.0e-15, impratio)
 
         # Exact velocity-space rhs_const using separated v_c and v_free:
         #
@@ -270,7 +311,7 @@ def batched_admm_solve(
         vc_n = v_current[env, base]
         vf_n = v_free[env, base]
         rhs_const[env, base] = dt * (-b_coeff * vc_n + k_coeff * d_imp * depth_c) - vf_n + vc_n
-        for k in range(1, CONDIM):
+        for k in range(1, contact_condim):
             vc_t = v_current[env, base + k]
             vf_t = v_free[env, base + k]
             rhs_const[env, base + k] = dt * (-b_coeff * vc_t) - vf_t + vc_t
@@ -280,7 +321,10 @@ def batched_admm_solve(
     for i in range(n_active_rows):
         for j in range(n_active_rows):
             AR_rho[env, i, j] = W[env, i, j]
-        AR_rho[env, i, i] = W[env, i, i] + R_diag[env, i] + rho
+            if (contact_active[env, i // CONDIM] == 0 or contact_active[env, j // CONDIM] == 0 or
+                (contact_condim == 1 and (i % CONDIM != 0 or j % CONDIM != 0))):
+                AR_rho[env, i, j] = 0.0
+        AR_rho[env, i, i] = AR_rho[env, i, i] + R_diag[env, i] + rho
     # Zero the rest (for clean Cholesky)
     for i in range(n_active_rows, max_rows):
         for j in range(max_rows):
@@ -304,6 +348,13 @@ def batched_admm_solve(
             s[env, r] = 0.0
             u[env, r] = 0.0
 
+    # Clear every inactive/unused slot, including cached entries after slot reuse.
+    for r in range(max_rows):
+        if contact_active[env, r // CONDIM] == 0 or (contact_condim == 1 and r % CONDIM != 0):
+            f[env, r] = 0.0
+            s[env, r] = 0.0
+            u[env, r] = 0.0
+
     # ── 6. ADMM iterations ──
     if n_active_rows > 0:
         for _iter in range(admm_iters):
@@ -316,7 +367,7 @@ def batched_admm_solve(
             # Write f + u into rhs_scratch (reuse), then project
             for r in range(max_rows):
                 rhs_scratch[env, r] = f[env, r] + u[env, r]
-            _cone_project_all(env, rhs_scratch, s, contact_active, mu, max_contacts)
+            _cone_project_all(env, rhs_scratch, s, contact_active, mu, max_contacts, contact_condim)
 
             # u-update: u += f - s
             for r in range(n_active_rows):

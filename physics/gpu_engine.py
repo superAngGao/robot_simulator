@@ -272,7 +272,24 @@ class GpuEngine(PhysicsEngine):
         device: str = "cuda:0",
         dt: float = 2e-4,
         solver: str = "jacobi_pgs_si",
+        *,
+        regularization: str = "per_row",
+        impratio: float = 1.0,
+        contact_condim: int = 3,
     ) -> None:
+        from .solvers.contact_regularization import validate_policy, reference_body_weights
+
+        validate_policy(regularization, impratio)
+        if contact_condim not in (1, 3):
+            raise ValueError("contact_condim must be 1 or 3")
+        if solver != "admm" and (regularization != "per_row" or impratio != 1 or contact_condim != 3):
+            raise ValueError("nondefault ADMM model options require solver='admm'")
+        self._regularization = regularization
+        self._impratio = float(impratio)
+        self._contact_condim = contact_condim
+        weights = reference_body_weights(merged.tree) if regularization == "mujoco" else np.zeros(merged.tree.num_bodies)
+        if not np.all(np.isfinite(weights.astype(np.float32))):
+            raise ValueError("body mobility is outside float32 range")
         super().__init__(merged)
         wp.init()
         self._cuda_consumer_bindings: dict[str, CudaDeviceConsumerBinding] = {}
@@ -301,6 +318,7 @@ class GpuEngine(PhysicsEngine):
         self._num_envs = num_envs
         self._dt = dt
         self._solver = solver
+        self._admm_body_weights = wp.array(weights, dtype=wp.float32, device=device)
 
         # Build static data from merged model
         s = StaticRobotData.from_merged(merged)
@@ -1347,6 +1365,14 @@ class GpuEngine(PhysicsEngine):
             if binding.state == "open":
                 binding.release_reuse_safe_records(live_frame_ids)
 
+    @property
+    def regularization(self):
+        return self._regularization
+
+    @property
+    def impratio(self):
+        return self._impratio
+
     def _step_physics(self, tau=None, dt=None):
         """Run one physics substep (no output extraction)."""
         N = self._num_envs
@@ -1354,6 +1380,15 @@ class GpuEngine(PhysicsEngine):
         sc = self._scratch
         sol = self._solver_scratch
         dt = dt or self._dt
+        if self._solver == "admm":
+            admm_solimp = self._admm_solimp
+            if self.regularization == "mujoco":
+                from .solvers.contact_regularization import normalize_parameters
+
+                _, admm_solimp = normalize_parameters(self._admm_solref, admm_solimp, dt)
+                native = np.asarray((*self._admm_solref, *admm_solimp, dt, self.impratio), dtype=np.float32)
+                if not np.all(np.isfinite(native)) or np.any(native[[0, 1, 7, 8]] <= 0):
+                    raise ValueError("ADMM model parameters are outside float32 range")
 
         # Tau (default zero)
         if tau is not None:
@@ -1571,21 +1606,26 @@ class GpuEngine(PhysicsEngine):
                 device=self._device,
                 inputs=[
                     sol.W,
-                    sol.W_diag,
                     sol.v_free,
                     sol.v_current,
                     self._contact_active,
                     self._contact_depth,
+                    self._contact_bi,
+                    self._contact_bj,
+                    self._admm_body_weights,
+                    1 if self.regularization == "mujoco" else 0,
+                    max(1e-15, self.impratio),
+                    self._contact_condim,
                     s.contact_mu,
                     self._admm_rho,
                     dt,
                     self._admm_solref[0],
                     self._admm_solref[1],
-                    self._admm_solimp[0],
-                    self._admm_solimp[1],
-                    self._admm_solimp[2],
-                    self._admm_solimp[3],
-                    self._admm_solimp[4],
+                    admm_solimp[0],
+                    admm_solimp[1],
+                    admm_solimp[2],
+                    admm_solimp[3],
+                    admm_solimp[4],
                     self._max_contacts,
                     self._max_rows,
                     self._admm_iters,
