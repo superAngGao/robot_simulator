@@ -54,7 +54,22 @@ Neither policy derives or overwrites mass/inertia from material properties.
 The `mujoco` policy normalizes finite solimp as MuJoCo: endpoints/midpoint in
 `[1e-4,.9999]`, width >=0, power >=1; width <=1e-15 uses the endpoint average.
 Standard positive solref is required; timeconst is at least twice dt.
-Unrepresentable native reference-acceleration coefficients are rejected. Very
+Unrepresentable or subnormal native reference-acceleration coefficients are
+rejected. Validation and CPU assembly use the same coefficient evaluation.
+In the GPU opt-in mode, public step/reset/partial-reset inputs must remain finite
+after float32 conversion; invalid state, forces, model parameters or explicit
+nonpositive/nonfinite dt are rejected before upload/contact/cache/publication
+changes. Only `dt=None` selects the default. Device buffers are engine-owned;
+this admission check does not add a host readback of private device state.
+
+R has a conservative native domain check before assembly. Over all depths and
+potential pairs, pair mobility is bounded below by the smallest body weight and
+above by twice the largest; normal and tangent R must remain finite and at least
+the native format's smallest normal value. Nonzero body weights must also remain
+normal after conversion. This avoids dependence on CUDA subnormal flushing and
+checks sums, impedance scaling and tangent division together. It can reject an
+extreme model whose particular current contacts would still be representable.
+This restriction is numerical, not a material admissibility criterion. Very
 small impratio is floored for R assembly; that does not guarantee force convergence
 for an extremely ill-conditioned QP. `per_row` retains its prior impedance curve.
 

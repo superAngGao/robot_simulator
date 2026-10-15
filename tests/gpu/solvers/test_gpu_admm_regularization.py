@@ -158,7 +158,7 @@ def snapshot(engine):
         sol.admm_R_diag,
     ]
     return (
-        [a.numpy().copy() for a in arrays],
+        [a.numpy().copy() for a in arrays] + [engine._default_q.copy()],
         (
             engine._physics_run_id,
             engine._publish_frame_id,
@@ -248,6 +248,15 @@ def test_native_R_overflow_boundary(condim, two_bodies):
             assert np.any(active)
             assert np.all(np.isfinite(R))
             assert np.all(R[3 * np.flatnonzero(active)] > 0)
+            rows = 3 * np.flatnonzero(active)
+            bi = engine._contact_bi.numpy()[0, active]
+            bj = engine._contact_bj.numpy()[0, active]
+            count = (bi >= 0).astype(int) + (bj >= 0).astype(int)
+            expected = (1 - 1e-4) / 1e-4 * count / mass
+            np.testing.assert_allclose(R[rows], expected, rtol=3e-5)
+            if condim == 3:
+                np.testing.assert_allclose(R[rows + 1], expected, rtol=3e-5)
+                np.testing.assert_allclose(R[rows + 2], expected, rtol=3e-5)
         else:
             with pytest.raises(ValueError, match="regularization"):
                 engine.step()
@@ -276,4 +285,7 @@ def test_native_tangent_near_boundary(mass, ratio):
     assert len(rows) > 0
     assert np.all(np.isfinite(R))
     assert np.all(R[rows + 1] >= np.finfo(np.float32).tiny)
+    rn = (1 - 0.95) / 0.95 / mass
+    np.testing.assert_allclose(R[rows], rn, rtol=3e-5)
+    np.testing.assert_allclose(R[rows + 1], rn / max(1e-15, ratio), rtol=3e-5)
     engine.close()
