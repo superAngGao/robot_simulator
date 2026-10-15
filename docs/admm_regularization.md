@@ -95,7 +95,7 @@ R assembly is validated with analytic and actual MuJoCo data; normal-only forces
 are checked against scalar and coupled active-set optima. Actual CPU sphere and
 articulated multi-contact trajectories are compared at two timesteps. Real H200
 tests exercise both policies, body-body contacts and inactive-slot handling.
-See the [implementation evidence](../collab/admm-regularization__implementation-note__codex__v1.md).
+See the [implementation evidence](../collab/admm-regularization__implementation-note__codex__v3.md).
 
 The condim3 clamp/disk projector remains a known incorrect Euclidean cone
 projection. Matching condim3 R does not establish frictional force accuracy.
