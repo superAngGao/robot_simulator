@@ -34,7 +34,24 @@ def normalize_parameters(solref, solimp, dt):
     imp[[0, 1, 3]] = np.clip(imp[[0, 1, 3]], 1e-4, .9999)
     imp[2] = max(0., imp[2])
     imp[4] = max(1., imp[4])
+    reference_coefficients(ref, imp, dt)
     return tuple(ref), tuple(imp)
+
+
+def reference_coefficients(solref, solimp, dt, dtype=np.float64):
+    """Reject unrepresentable native coefficients instead of silently flooring.
+
+    Extreme positive solref values are outside the numerical domain if native
+    evaluation overflows or underflows. This is distinct from material limits.
+    """
+    with np.errstate(over="ignore", under="ignore", divide="ignore", invalid="ignore"):
+        tc = dtype(max(solref[0], 2 * dt))
+        dr = dtype(solref[1]); dw = dtype(solimp[1])
+        b = dtype(2) / (dw * tc)
+        k = dtype(1) / (dw * dw * tc * tc * dr * dr)
+    if not np.isfinite(b) or not np.isfinite(k) or b <= 0 or k <= 0:
+        raise ValueError("reference acceleration coefficients are outside the native numerical range")
+    return b, k
 
 
 def impedance(depth, solimp):

@@ -1383,12 +1383,13 @@ class GpuEngine(PhysicsEngine):
         if self._solver == "admm":
             admm_solimp = self._admm_solimp
             if self.regularization == "mujoco":
-                from .solvers.contact_regularization import normalize_parameters
+                from .solvers.contact_regularization import normalize_parameters, reference_coefficients
 
                 _, admm_solimp = normalize_parameters(self._admm_solref, admm_solimp, dt)
                 native = np.asarray((*self._admm_solref, *admm_solimp, dt, self.impratio), dtype=np.float32)
                 if not np.all(np.isfinite(native)) or np.any(native[[0, 1, 7, 8]] <= 0):
                     raise ValueError("ADMM model parameters are outside float32 range")
+                reference_coefficients(self._admm_solref, admm_solimp, dt, dtype=np.float32)
 
         # Tau (default zero)
         if tau is not None:
