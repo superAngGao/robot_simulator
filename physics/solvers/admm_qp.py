@@ -38,7 +38,9 @@ from .contact_regularization import (
     impedance,
     normalize_parameters,
     reference_body_weights,
+    reference_coefficients,
     validate_policy,
+    validate_R_domain,
 )
 from .pgs_solver import ContactConstraint, _build_contact_frame
 
@@ -146,6 +148,7 @@ class ADMMQPSolver:
         weights = None
         if self.regularization == "mujoco":
             _, solimp = normalize_parameters(self.solref, solimp, dt)
+            coefficients = reference_coefficients(self.solref, solimp, dt)
             if not all(np.all(np.isfinite(x)) for x in (q, qdot, a_u)):
                 raise ValueError("nonfinite contact state")
             for c in contacts:
@@ -161,6 +164,7 @@ class ADMMQPSolver:
             if nc:
                 try:
                     weights = reference_body_weights(tree)
+                    validate_R_domain(weights, solimp, self.impratio, max(c.condim for c in contacts))
                 finally:
                     tree.forward_kinematics(q)
         imp = (lambda depth: impedance(depth, solimp)) if weights is not None else self._impedance
@@ -242,8 +246,11 @@ class ADMMQPSolver:
         timeconst = max(timeconst, 2.0 * dt)
         # b, k use d_width (solimp[1]), not d(0) — per MuJoCo docs
         d_w = solimp[1]  # impedance at full penetration
-        b = 2.0 / (d_w * timeconst)
-        k = 1.0 / (d_w**2 * timeconst**2 * dampratio**2)
+        if weights is not None:
+            b, k = coefficients
+        else:
+            b = 2.0 / (d_w * timeconst)
+            k = 1.0 / (d_w**2 * timeconst**2 * dampratio**2)
 
         v_c = J @ qdot  # constraint-space velocity
         a_u_c = J @ a_u  # unconstrained constraint-space acceleration

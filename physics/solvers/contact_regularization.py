@@ -40,8 +40,57 @@ def normalize_parameters(solref, solimp, dt):
     imp[[0, 1, 3]] = np.clip(imp[[0, 1, 3]], 1e-4, 0.9999)
     imp[2] = max(0.0, imp[2])
     imp[4] = max(1.0, imp[4])
-    reference_coefficients(ref, imp, dt)
     return tuple(ref), tuple(imp)
+
+
+def validate_float32_inputs(*values):
+    """Validate host admission before any state upload, including conversion."""
+    with np.errstate(over="ignore", invalid="ignore"):
+        for value in values:
+            if value is not None and not np.all(np.isfinite(np.asarray(value, dtype=np.float32))):
+                raise ValueError("mujoco input must be finite and representable in float32")
+
+
+def native_parameters(solref, solimp, dt, impratio):
+    """Normalized GPU parameters with the same native coefficient evaluation."""
+    ref, imp = normalize_parameters(solref, solimp, dt)
+    validate_float32_inputs((*ref, *imp, dt, max(MINVAL, impratio)))
+    native = np.asarray((*ref, dt, max(MINVAL, impratio)), dtype=np.float32)
+    if np.any(native <= 0):
+        raise ValueError("positive ADMM parameters underflow in float32")
+    reference_coefficients(ref, imp, dt, dtype=np.float32)
+    return imp
+
+
+def validate_R_domain(weights, solimp, impratio, condim, dtype=np.float64):
+    """Conservative native R bounds over all depths and possible body pairs.
+
+    The smallest pair mobility is bounded by the smallest body weight (world
+    weight is zero); the largest by twice the largest body weight. Require
+    normal, finite outputs, avoiding CUDA flush-to-zero dependence. This can
+    reject extreme models even when their particular current contacts are safe.
+    """
+    if len(weights) == 0:
+        return
+    tiny = np.finfo(dtype).tiny
+    with np.errstate(over="ignore", under="ignore", divide="ignore", invalid="ignore"):
+        w = np.asarray(weights, dtype=dtype)
+        dmin = dtype(min(solimp[0], solimp[1]))
+        dmax = dtype(max(solimp[0], solimp[1]))
+        rmin = max(dtype(MINVAL), (dtype(1) - dmax) / dmax * np.min(w))
+        rmax = max(dtype(MINVAL), (dtype(1) - dmin) / dmin * (dtype(2) * np.max(w)))
+        bounds = [rmin, rmax]
+        if condim == 3:
+            ratio = dtype(max(MINVAL, impratio))
+            bounds += [rmin / ratio, rmax / ratio]
+    if (
+        not np.all(np.isfinite(w))
+        or np.any(w < 0)
+        or np.any((np.asarray(weights) != 0) & (w < tiny))
+        or not np.all(np.isfinite(bounds))
+        or np.any(np.asarray(bounds) < tiny)
+    ):
+        raise ValueError("contact regularization is outside the native normal finite range")
 
 
 def reference_coefficients(solref, solimp, dt, dtype=np.float64):
@@ -56,7 +105,7 @@ def reference_coefficients(solref, solimp, dt, dtype=np.float64):
         dw = dtype(solimp[1])
         b = dtype(2) / (dw * tc)
         k = dtype(1) / (dw * dw * tc * tc * dr * dr)
-    if not np.isfinite(b) or not np.isfinite(k) or b <= 0 or k <= 0:
+    if not np.isfinite(b) or not np.isfinite(k) or b < np.finfo(dtype).tiny or k < np.finfo(dtype).tiny:
         raise ValueError("reference acceleration coefficients are outside the native numerical range")
     return b, k
 

@@ -6,6 +6,7 @@ import pytest
 from physics.joint import FreeJoint
 from physics.robot_tree import Body, RobotTreeNumpy
 from physics.solvers.admm_qp import ADMMQPSolver
+from physics.solvers.contact_regularization import reference_coefficients, validate_R_domain
 from physics.solvers.pgs_solver import ContactConstraint
 from physics.spatial import SpatialInertia, SpatialTransform
 
@@ -86,3 +87,38 @@ def test_reject_before_contact_and_cache_mutation(field, value):
         s.solve(contacts, tree, q, v, np.zeros(tree.nv), 0.002)
     np.testing.assert_array_equal(s._prev_f, before)
     np.testing.assert_array_equal(contacts[0].tangent1, 7)
+
+
+@pytest.mark.parametrize("array_parameters", [False, True])
+def test_coefficients_use_validated_expression(array_parameters):
+    tree, q, v, contacts = fixture()
+    ref = (0.02, 1e155)
+    if array_parameters:
+        ref = np.asarray(ref)
+    s = ADMMQPSolver(regularization="mujoco", solref=ref, warmstart=False, tolerance=1e-12)
+    b, k = reference_coefficients(ref, s.solimp, 0.002)
+    assert np.isfinite(k) and k > 0
+    contacts[0].depth = 0.001
+    f, _ = s.solve(contacts, tree, q, v, np.zeros(tree.nv), 0.002)
+    assert np.all(np.isfinite(f))
+    # Mutating the same public field must use the same path as construction.
+    s.solref = np.array([0.02, 1e160]) if array_parameters else (0.02, 1e160)
+    old = s.last_R_diag
+    cached = s._prev_f.copy()
+    contacts[0].tangent1[:] = 7
+    with pytest.raises(ValueError):
+        s.solve(contacts, tree, q, v, np.zeros(tree.nv), 0.002)
+    np.testing.assert_array_equal(contacts[0].tangent1, 7)
+    np.testing.assert_array_equal(s._prev_f, cached)
+    np.testing.assert_array_equal(s.last_R_diag, old)
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_native_R_bounds(dtype):
+    imp = (1e-4, 1e-4, 0.001, 0.5, 2)
+    maxval = np.finfo(dtype).max
+    validate_R_domain(np.array([maxval / 1e5, maxval / 1e5]), imp, 1, 1, dtype)
+    with pytest.raises(ValueError):
+        validate_R_domain(np.array([maxval / 1e3]), imp, 1, 1, dtype)
+    with pytest.raises(ValueError):
+        validate_R_domain(np.array([1.0]), (0.9, 0.95, 0.001, 0.5, 2), maxval, 3, dtype)

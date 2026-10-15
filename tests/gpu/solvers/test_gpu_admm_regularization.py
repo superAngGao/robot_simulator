@@ -141,3 +141,139 @@ def test_invalid_options_and_native_domain():
         with pytest.raises(ValueError):
             engine._step_physics()
     engine.close()
+
+
+def snapshot(engine):
+    sc = engine._scratch
+    sol = engine._solver_scratch
+    arrays = [
+        sc.q,
+        sc.qdot,
+        sc.tau_total,
+        engine._contact_active,
+        engine._contact_depth,
+        sol.admm_f_prev,
+        sol.admm_s_prev,
+        sol.admm_u_prev,
+        sol.admm_R_diag,
+    ]
+    return (
+        [a.numpy().copy() for a in arrays],
+        (
+            engine._physics_run_id,
+            engine._publish_frame_id,
+            engine._publish_step_index,
+            engine._publish_sim_time,
+        ),
+    )
+
+
+def assert_unchanged(engine, before):
+    after = snapshot(engine)
+    for a, b in zip(after[0], before[0], strict=True):
+        np.testing.assert_array_equal(a, b)
+    assert after[1] == before[1]
+
+
+def test_public_admission_is_atomic_and_recoverable():
+    merged = _ball_merged()
+    engine = GpuEngine(merged, num_envs=2, solver="admm", regularization="mujoco", contact_condim=1)
+    q, v = merged.tree.default_state()
+    q[6] = 0.09
+    engine.reset(q)
+    engine.step()
+    for field in ("q", "qdot", "tau"):
+        for bad in (np.nan, np.inf, 1e100):
+            value = np.tile(q if field == "q" else v, (2, 1))
+            value[1, -1] = bad
+            before = snapshot(engine)
+            with pytest.raises(ValueError):
+                engine.step(**{field: value})
+            assert_unchanged(engine, before)
+    for dt in (0.0, -1.0, np.nan, np.inf, 1e100, 1e-100):
+        for method in (engine.step, engine.step_n):
+            before = snapshot(engine)
+            with pytest.raises(ValueError):
+                method(dt=dt)
+            assert_unchanged(engine, before)
+    for bad in (np.nan, np.inf, 1e100):
+        badq = q.copy()
+        badq[6] = bad
+        for method in (lambda: engine.reset(badq), lambda: engine.reset_envs(np.array([1]), badq)):
+            before = snapshot(engine)
+            with pytest.raises(ValueError):
+                method()
+            assert_unchanged(engine, before)
+        tau = np.tile(v, (2, 1))
+        tau[1, 2] = bad
+        before = snapshot(engine)
+        with pytest.raises(ValueError):
+            engine.step_n(tau=tau, n_substeps=2)
+        assert_unchanged(engine, before)
+    # Configuration failure must precede an otherwise valid external-state upload.
+    engine._admm_solref = (-1.0, 1.0)
+    before = snapshot(engine)
+    with pytest.raises(ValueError):
+        engine.step(q=np.tile(q, (2, 1)))
+    assert_unchanged(engine, before)
+    engine._admm_solref = (0.02, 1.0)
+    out = engine.step(dt=None)
+    assert np.all(np.isfinite(out.q_new))
+    engine.reset_envs(np.array([1]), q)
+    assert np.all(np.isfinite(engine.step_n(n_substeps=2).q_new))
+    engine.close()
+
+
+@pytest.mark.parametrize("condim", [1, 3])
+@pytest.mark.parametrize("two_bodies", [False, True])
+def test_native_R_overflow_boundary(condim, two_bodies):
+    for mass, accepted in ((1e-34, True), (1e-35, False)):
+        robots = {"a": _ball_model(mass)}
+        if two_bodies:
+            robots["b"] = _ball_model(mass)
+        merged = merge_models(robots=robots)
+        engine = GpuEngine(merged, solver="admm", regularization="mujoco", contact_condim=condim, dt=0.002)
+        q, _ = merged.tree.default_state()
+        q[6] = 0.09
+        if two_bodies:
+            q[11] = 0.19
+            q[13] = 0.09
+        engine.reset(q)
+        engine._admm_solimp = (1e-4, 1e-4, 0.001, 0.5, 2)
+        before = snapshot(engine)
+        if accepted:
+            engine.step()
+            active = engine._contact_active.numpy()[0].astype(bool)
+            R = engine._solver_scratch.admm_R_diag.numpy()[0]
+            assert np.any(active)
+            assert np.all(np.isfinite(R))
+            assert np.all(R[3 * np.flatnonzero(active)] > 0)
+        else:
+            with pytest.raises(ValueError, match="regularization"):
+                engine.step()
+            assert_unchanged(engine, before)
+        engine.close()
+
+
+@pytest.mark.parametrize("mass,ratio", [(1.0, 1e38), (1e-25, 1e-16)])
+def test_reject_native_tangent_underflow_and_overflow(mass, ratio):
+    with pytest.raises(ValueError, match="regularization"):
+        GpuEngine(_ball_merged(mass=mass), solver="admm", regularization="mujoco", impratio=ratio)
+
+
+@pytest.mark.parametrize("mass,ratio", [(1.0, 1e35), (1e-23, 1e-16)])
+def test_native_tangent_near_boundary(mass, ratio):
+    merged = _ball_merged(mass=mass)
+    engine = GpuEngine(merged, solver="admm", regularization="mujoco", impratio=ratio, dt=0.002)
+    q, _ = merged.tree.default_state()
+    q[6] = 0.09
+    engine.reset(q)
+    engine._admm_iters = 1
+    engine.step()
+    R = engine._solver_scratch.admm_R_diag.numpy()[0]
+    active = engine._contact_active.numpy()[0].astype(bool)
+    rows = 3 * np.flatnonzero(active)
+    assert len(rows) > 0
+    assert np.all(np.isfinite(R))
+    assert np.all(R[rows + 1] >= np.finfo(np.float32).tiny)
+    engine.close()

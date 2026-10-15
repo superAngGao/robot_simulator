@@ -277,7 +277,12 @@ class GpuEngine(PhysicsEngine):
         impratio: float = 1.0,
         contact_condim: int = 3,
     ) -> None:
-        from .solvers.contact_regularization import reference_body_weights, validate_policy
+        from .solvers.contact_regularization import (
+            native_parameters,
+            reference_body_weights,
+            validate_policy,
+            validate_R_domain,
+        )
 
         validate_policy(regularization, impratio)
         if contact_condim not in (1, 3):
@@ -294,6 +299,10 @@ class GpuEngine(PhysicsEngine):
         )
         if not np.all(np.isfinite(weights.astype(np.float32))):
             raise ValueError("body mobility is outside float32 range")
+        self._admm_host_body_weights = weights.copy()
+        if regularization == "mujoco":
+            imp = native_parameters((0.02, 1.0), (0.9, 0.95, 0.001, 0.5, 2.0), dt, impratio)
+            validate_R_domain(weights, imp, impratio, contact_condim, dtype=np.float32)
         super().__init__(merged)
         wp.init()
         self._cuda_consumer_bindings: dict[str, CudaDeviceConsumerBinding] = {}
@@ -943,6 +952,10 @@ class GpuEngine(PhysicsEngine):
     def reset(self, q0: np.ndarray | None = None) -> None:
         """Reset all environments to default or given state."""
         self._require_engine_open()
+        if self.regularization == "mujoco":
+            from .solvers.contact_regularization import validate_float32_inputs
+
+            validate_float32_inputs(q0, self._default_q, self._default_qdot)
         # Fail before changing the run identity, engine arrays, or counters.
         # A live/poisoned CUDA publication binding makes the current run
         # deliberately non-resettable.
@@ -971,6 +984,10 @@ class GpuEngine(PhysicsEngine):
         """
         if len(env_ids) == 0:
             return
+        if self.regularization == "mujoco":
+            from .solvers.contact_regularization import validate_float32_inputs
+
+            validate_float32_inputs(q0, self._default_q, self._default_qdot)
         sc = self._scratch
         q_row = (q0 if q0 is not None else self._default_q).astype(np.float32)
         qdot_row = self._default_qdot.copy()
@@ -1026,6 +1043,8 @@ class GpuEngine(PhysicsEngine):
             n_substeps: Number of physics substeps to run.
         """
         self._require_engine_open()
+        dt = self._dt if dt is None else dt
+        self._validate_admm_step(dt, tau=tau)
         for _ in range(n_substeps):
             self._step_physics(tau=tau, dt=dt)
             self._publish_after_step(dt or self._dt)
@@ -1034,6 +1053,8 @@ class GpuEngine(PhysicsEngine):
     def step(self, q=None, qdot=None, tau=None, dt=None):
         """One physics step. If q/qdot/tau not given, uses internal state."""
         self._require_engine_open()
+        dt = self._dt if dt is None else dt
+        self._validate_admm_step(dt, q=q, qdot=qdot, tau=tau)
         sc = self._scratch
 
         # If external state provided, upload it
@@ -1377,25 +1398,42 @@ class GpuEngine(PhysicsEngine):
     def impratio(self):
         return self._impratio
 
+    def _validate_admm_step(self, dt, *, q=None, qdot=None, tau=None):
+        """Validate host admission before uploads/contact/cache/publication writes.
+
+        Internal device buffers are engine-owned; no host readback is introduced.
+        Public reset paths enforce the same state-admission boundary.
+        """
+        if self.regularization != "mujoco":
+            return
+        from .solvers.contact_regularization import (
+            native_parameters,
+            validate_float32_inputs,
+            validate_R_domain,
+        )
+
+        validate_float32_inputs(q, qdot, tau)
+        imp = native_parameters(self._admm_solref, self._admm_solimp, dt, self.impratio)
+        validate_R_domain(
+            self._admm_host_body_weights, imp, self.impratio, self._contact_condim, dtype=np.float32
+        )
+
     def _step_physics(self, tau=None, dt=None):
         """Run one physics substep (no output extraction)."""
         N = self._num_envs
         s = self._static
         sc = self._scratch
         sol = self._solver_scratch
-        dt = dt or self._dt
+        dt = self._dt if dt is None else dt
+        if self.regularization != "mujoco":
+            dt = dt or self._dt  # Preserve legacy default-selection semantics.
+        self._validate_admm_step(dt, tau=tau)
         if self._solver == "admm":
             admm_solimp = self._admm_solimp
             if self.regularization == "mujoco":
-                from .solvers.contact_regularization import normalize_parameters, reference_coefficients
+                from .solvers.contact_regularization import normalize_parameters
 
                 _, admm_solimp = normalize_parameters(self._admm_solref, admm_solimp, dt)
-                native = np.asarray(
-                    (*self._admm_solref, *admm_solimp, dt, max(1e-15, self.impratio)), dtype=np.float32
-                )
-                if not np.all(np.isfinite(native)) or np.any(native[[0, 1, 7, 8]] <= 0):
-                    raise ValueError("ADMM model parameters are outside float32 range")
-                reference_coefficients(self._admm_solref, admm_solimp, dt, dtype=np.float32)
 
         # Tau (default zero)
         if tau is not None:
