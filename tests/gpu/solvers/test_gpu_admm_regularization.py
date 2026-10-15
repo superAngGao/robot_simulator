@@ -289,3 +289,65 @@ def test_native_tangent_near_boundary(mass, ratio):
     np.testing.assert_allclose(R[rows], rn, rtol=3e-5)
     np.testing.assert_allclose(R[rows + 1], rn / max(1e-15, ratio), rtol=3e-5)
     engine.close()
+
+
+@pytest.mark.parametrize(
+    "imp",
+    [
+        (0.9999, 0.00012, 0.001, 0.5, 2),
+        (0.9999, 0.00012, 0.010001, 0.5, 2),
+        (0.9999, 0.00012, 0.1, 0.001, 100),
+        (0.2, 0.8, np.nextafter(1e-15, 0.0), 0.5, 2),
+        (0.2, 0.8, 1e-15, 0.5, 2),
+        (0.2, 0.8, np.nextafter(1e-15, np.inf), 0.5, 2),
+    ],
+)
+def test_decreasing_and_width_switch_against_actual_mujoco(imp):
+    mujoco = pytest.importorskip("mujoco")
+    from tests.reference.mujoco.test_admm_regularization import scalar_pair
+
+    merged = _ball_merged(mass=2.0)
+    engine = GpuEngine(merged, solver="admm", regularization="mujoco", dt=0.002)
+    engine._admm_solimp = imp
+    engine._admm_iters = 1
+    q, _ = merged.tree.default_state()
+    q[6] = 0.09
+    engine.reset(q)
+    engine.step()
+    active = engine._contact_active.numpy()[0].astype(bool)
+    slots = np.flatnonzero(active)
+    assert len(slots) == 1
+    depth = float(engine._contact_depth.numpy()[0, slots[0]])
+    _, m, d, _, _ = scalar_pair(free=True, condim=3, solimp=" ".join(map(str, imp)))
+    d.qpos[2] = 0.1 - depth  # Compare the actual GPU contact depth, not ideal geometry.
+    mujoco.mj_forward(m, d)
+    R = engine._solver_scratch.admm_R_diag.numpy()[0, 3 * slots[0] : 3 * slots[0] + 3]
+    np.testing.assert_allclose(R, d.efc_R, rtol=3e-5, atol=1e-6)
+    engine.close()
+
+
+@pytest.mark.parametrize("width", [0.001, 0.010001])
+@pytest.mark.parametrize("condim", [1, 3])
+def test_decreasing_native_upper_boundary(width, condim):
+    mass = 4.89730620518322e-35
+    merged = merge_models(robots={"a": _ball_model(mass), "b": _ball_model(mass)})
+    engine = GpuEngine(merged, solver="admm", regularization="mujoco", contact_condim=condim, dt=0.002)
+    engine._admm_solimp = (0.9999, 0.00012, width, 0.5, 2)
+    engine._admm_iters = 1
+    q, _ = merged.tree.default_state()
+    q[6] = q[13] = 0.09
+    q[11] = 0.19
+    engine.reset(q)
+    engine.step()
+    active = engine._contact_active.numpy()[0].astype(bool)
+    assert active.sum() == 3
+    R = engine._solver_scratch.admm_R_diag.numpy()[0]
+    assert np.all(np.isfinite(R))
+    depth = engine._contact_depth.numpy()[0]
+    bi = engine._contact_bi.numpy()[0]
+    bj = engine._contact_bj.numpy()[0]
+    for c in np.flatnonzero(active):
+        d = impedance(float(depth[c]), engine._admm_solimp)
+        expected = (1 - d) / d * (int(bi[c] >= 0) + int(bj[c] >= 0)) / mass
+        np.testing.assert_allclose(R[3 * c : 3 * c + condim], expected, rtol=3e-5)
+    engine.close()

@@ -160,7 +160,17 @@ def test_reference_weights_and_scalar_force(kw):
 @pytest.mark.parametrize("impratio", [1e-16, 1e-15, 2e-15, 1, 10])
 @pytest.mark.parametrize(
     "imp",
-    [(0.9, 0.95, 0.001, 0.5, 2), (0.2, 0.8, 0, 0.5, 2), (-1, 2, -1, 2, 0.5), (0.2, 0.9, 0.1, 0.001, 100)],
+    [
+        (0.9, 0.95, 0.001, 0.5, 2),
+        (0.2, 0.8, 0, 0.5, 2),
+        (-1, 2, -1, 2, 0.5),
+        (0.2, 0.9, 0.1, 0.001, 100),
+        (0.9999, 0.00012, 0.001, 0.5, 2),
+        (0.9999, 0.00012, 0.010001, 0.5, 2),
+        (0.2, 0.8, np.nextafter(1e-15, 0.0), 0.5, 2),
+        (0.2, 0.8, 1e-15, 0.5, 2),
+        (0.2, 0.8, np.nextafter(1e-15, np.inf), 0.5, 2),
+    ],
 )
 def test_actual_elliptic_R(impratio, imp):
     tree, m, d, q, v = scalar_pair(free=True, condim=3, impratio=impratio, solimp=" ".join(map(str, imp)))

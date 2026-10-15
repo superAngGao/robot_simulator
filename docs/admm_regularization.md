@@ -53,6 +53,10 @@ Neither policy derives or overwrites mass/inertia from material properties.
 
 The `mujoco` policy normalizes finite solimp as MuJoCo: endpoints/midpoint in
 `[1e-4,.9999]`, width >=0, power >=1; width <=1e-15 uses the endpoint average.
+The width-average branch is canonicalized on the host before float32 conversion;
+a just-above-threshold width retains the nonzero-width branch on GPU. Piecewise
+interpolation keeps the complementary weight directly, returns exact endpoints
+and stays within their range, including decreasing impedance curves.
 Standard positive solref is required; timeconst is at least twice dt.
 Unrepresentable or subnormal native reference-acceleration coefficients are
 rejected. Validation and CPU assembly use the same coefficient evaluation.
@@ -68,6 +72,8 @@ above by twice the largest; normal and tangent R must remain finite and at least
 the native format's smallest normal value. Nonzero body weights must also remain
 normal after conversion. This avoids dependence on CUDA subnormal flushing and
 checks sums, impedance scaling and tangent division together. It can reject an
+otherwise representable boundary value: R bounds reserve 16 native epsilons of
+relative headroom from overflow/subnormal limits for arithmetic rounding, and an
 extreme model whose particular current contacts would still be representable.
 This restriction is numerical, not a material admissibility criterion. Very
 small impratio is floored for R assembly; that does not guarantee force convergence

@@ -25,16 +25,24 @@ CONDIM = wp.constant(3)
 def _mujoco_impedance(
     depth: float, d0: float, dw: float, width: float, midpoint: float, power: float
 ) -> float:
-    if width <= 1.0e-15:
+    # Host normalization canonicalizes the <=1e-15 branch to exact zero.
+    if width == 0.0:
         return 0.5 * (d0 + dw)
     x = wp.min(1.0, wp.abs(depth) / width)
+    if x <= 0.0:
+        return d0
+    if x >= 1.0:
+        return dw
     y = x
+    result = (1.0 - y) * d0 + y * dw
     if power > 1.0:
         if x <= midpoint:
             y = midpoint * wp.pow(x / midpoint, power)
+            result = (1.0 - y) * d0 + y * dw
         else:
-            y = 1.0 - (1.0 - midpoint) * wp.pow((1.0 - x) / (1.0 - midpoint), power)
-    return d0 + y * (dw - d0)
+            tail = (1.0 - midpoint) * wp.pow((1.0 - x) / (1.0 - midpoint), power)
+            result = tail * d0 + (1.0 - tail) * dw
+    return wp.clamp(result, wp.min(d0, dw), wp.max(d0, dw))
 
 
 # ---------------------------------------------------------------------------

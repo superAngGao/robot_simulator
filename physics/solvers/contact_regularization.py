@@ -39,6 +39,10 @@ def normalize_parameters(solref, solimp, dt):
     imp = imp.copy()
     imp[[0, 1, 3]] = np.clip(imp[[0, 1, 3]], 1e-4, 0.9999)
     imp[2] = max(0.0, imp[2])
+    # Canonicalize this discontinuous model branch before float32 conversion.
+    # A width just above MINVAL must not round onto the endpoint-average branch.
+    if imp[2] <= MINVAL:
+        imp[2] = 0.0
     imp[4] = max(1.0, imp[4])
     return tuple(ref), tuple(imp)
 
@@ -73,6 +77,7 @@ def validate_R_domain(weights, solimp, impratio, condim, dtype=np.float64):
     if len(weights) == 0:
         return
     tiny = np.finfo(dtype).tiny
+    headroom = 1 + 16 * np.finfo(dtype).eps
     with np.errstate(over="ignore", under="ignore", divide="ignore", invalid="ignore"):
         w = np.asarray(weights, dtype=dtype)
         dmin = dtype(min(solimp[0], solimp[1]))
@@ -88,7 +93,8 @@ def validate_R_domain(weights, solimp, impratio, condim, dtype=np.float64):
         or np.any(w < 0)
         or np.any((np.asarray(weights) != 0) & (w < tiny))
         or not np.all(np.isfinite(bounds))
-        or np.any(np.asarray(bounds) < tiny)
+        or np.any(np.asarray(bounds) < tiny * headroom)
+        or np.any(np.asarray(bounds) > np.finfo(dtype).max / headroom)
     ):
         raise ValueError("contact regularization is outside the native normal finite range")
 
@@ -115,13 +121,22 @@ def impedance(depth, solimp):
     if width <= MINVAL:
         return 0.5 * (d0 + dw)
     x = min(1.0, abs(depth) / width)
+    if x <= 0:
+        return d0
+    if x >= 1:
+        return dw
     if power == 1:
         y = x
+        result = (1 - y) * d0 + y * dw
     elif x <= midpoint:
         y = midpoint * (x / midpoint) ** power
+        result = (1 - y) * d0 + y * dw
     else:
-        y = 1 - (1 - midpoint) * ((1 - x) / (1 - midpoint)) ** power
-    return d0 + y * (dw - d0)
+        # Keep the small complementary weight; forming y=1-tail then d0+y*(dw-d0)
+        # loses the decreasing curve near its small endpoint.
+        tail = (1 - midpoint) * ((1 - x) / (1 - midpoint)) ** power
+        result = tail * d0 + (1 - tail) * dw
+    return min(max(d0, dw), max(min(d0, dw), result))
 
 
 def reference_body_weights(tree):

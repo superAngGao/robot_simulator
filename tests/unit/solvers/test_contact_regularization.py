@@ -6,7 +6,7 @@ import pytest
 from physics.joint import FreeJoint
 from physics.robot_tree import Body, RobotTreeNumpy
 from physics.solvers.admm_qp import ADMMQPSolver
-from physics.solvers.contact_regularization import reference_coefficients, validate_R_domain
+from physics.solvers.contact_regularization import impedance, reference_coefficients, validate_R_domain
 from physics.solvers.pgs_solver import ContactConstraint
 from physics.spatial import SpatialInertia, SpatialTransform
 
@@ -122,3 +122,47 @@ def test_native_R_bounds(dtype):
         validate_R_domain(np.array([maxval / 1e3]), imp, 1, 1, dtype)
     with pytest.raises(ValueError):
         validate_R_domain(np.array([1.0]), (0.9, 0.95, 0.001, 0.5, 2), maxval, 3, dtype)
+
+
+def test_decreasing_impedance_is_bounded_and_endpoint_exact():
+    imp = (0.9999, 0.00013, 0.001, 0.5, 2)
+    assert impedance(0.001, imp) == imp[1]
+    assert impedance(0.0, imp) == imp[0]
+    for depth in np.linspace(0.0, 0.001, 1001):
+        d = impedance(depth, imp)
+        assert imp[1] <= d <= imp[0]
+    # The former CPU edge lies inside the new conservative roundoff exclusion.
+    with pytest.raises(ValueError):
+        validate_R_domain(np.array([1 / 8.556863841944613e-305] * 2), imp, 1, 1)
+    validate_R_domain(np.array([1 / 1e-304] * 2), imp, 1, 1)
+
+
+@pytest.mark.parametrize("mass,accepted", [(8.556863841944613e-305, False), (1e-304, True)])
+def test_cpu_decreasing_native_upper_boundary(mass, accepted):
+    tree = RobotTreeNumpy()
+    for i in range(2):
+        tree.add_body(
+            Body(
+                str(i),
+                i,
+                FreeJoint(str(i)),
+                SpatialInertia(mass, np.eye(3) * (mass * 0.004), np.zeros(3)),
+                SpatialTransform.identity(),
+                parent=-1,
+            )
+        )
+    tree.finalize()
+    q, v = tree.default_state()
+    c = ContactConstraint(
+        0, 1, np.zeros(3), np.array([0.0, 0.0, 1.0]), np.full(3, 7.0), np.zeros(3), 0.01, 0.5, condim=1
+    )
+    s = ADMMQPSolver(regularization="mujoco", solimp=(0.9999, 0.00013, 0.001, 0.5, 2), max_iter=1)
+    if accepted:
+        s.solve([c], tree, q, v, np.zeros(tree.nv), 0.002)
+        np.testing.assert_allclose(s.last_R_diag, [(1 - 0.00013) / 0.00013 * (2 / mass)], rtol=1e-10)
+        assert np.all(np.isfinite(s.last_forces))
+    else:
+        with pytest.raises(ValueError):
+            s.solve([c], tree, q, v, np.zeros(tree.nv), 0.002)
+        np.testing.assert_array_equal(c.tangent1, 7.0)
+        assert s._prev_f is None
