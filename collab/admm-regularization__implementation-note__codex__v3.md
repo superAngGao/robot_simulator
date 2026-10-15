@@ -63,6 +63,9 @@ admm-regularization__test-log__codex__v3.txt. Environment unchanged: real H200,
 CUDA_VISIBLE_DEVICES=3, Python3.12.13, NumPy2.5.1, MuJoCo3.15.0, Warp1.12;
 /data2/shared/ang.gao/robot_sim_physics_audit_env/bin/python with OPENBLAS_NUM_THREADS=1.
 Local analytic/domain tests:17 passed. Changed Python files pass ruff and diff check.
+Whole-diff whitespace check flags one trailing blank line in the verbatim archived
+code-review v2 report; it is preserved under the review-recording rule, not a
+production/test whitespace failure.
 
 The run contains 63 actual MuJoCo reference cases, four complete CPU trajectories,
 31 GPU cases and 17 independent CPU analytic/domain cases, plus 101 relevant
