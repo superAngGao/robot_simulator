@@ -1,0 +1,2237 @@
+diff --git a/benchmarks/optical/__init__.py b/benchmarks/optical/__init__.py
+index 3d3004e..3450bf9 100644
+--- a/benchmarks/optical/__init__.py
++++ b/benchmarks/optical/__init__.py
+@@ -50,6 +50,7 @@ from .native import (
+     PreparedOpticalLocalScene,
+     WarpPreparedNativeInput,
+     assert_independent_native_inputs,
++    build_prepared_cuda_lbvh_rebuild_factory,
+     build_prepared_cuda_local_scene,
+     build_prepared_cuda_scene_update_factory,
+     build_prepared_cuda_transform_inputs,
+@@ -218,6 +219,7 @@ __all__ = [
+     "entry_point_hook_id",
+     "certify_native_readiness",
+     "build_c3_one_shot_native_execution_binding",
++    "build_prepared_cuda_lbvh_rebuild_factory",
+     "build_prepared_warp_bvh_refit_factory",
+     "build_prepared_cuda_local_scene",
+     "build_prepared_cuda_scene_update_factory",
+diff --git a/benchmarks/optical/native.py b/benchmarks/optical/native.py
+index 6519137..eabb76d 100644
+--- a/benchmarks/optical/native.py
++++ b/benchmarks/optical/native.py
+@@ -907,6 +907,37 @@ def build_prepared_cuda_scene_update_factory(
+     )
+ 
+ 
++def build_prepared_cuda_lbvh_rebuild_factory(
++    prepared: CudaPreparedNativeInput,
++    *,
++    context: object,
++):
++    """Bind the CUDA LBVH factory to the exact prepared scene provenance."""
++
++    assert_outside_timed_boundary("prepared CUDA LBVH-rebuild factory construction")
++    manifest = prepared.manifest
++    if not manifest.result_capable or manifest.input_contract is None:
++        raise ValueError("prepared CUDA LBVH factory requires result-capable provenance")
++    if prepared.backend != "cuda" or prepared.source is None:
++        raise ValueError("prepared CUDA LBVH factory requires its canonical source owner")
++    packed = prepared.source.packed_scene_owner
++    if packed is None or manifest.scene_contract_sha256 is None:
++        raise ValueError("prepared CUDA LBVH factory lacks packed-scene provenance")
++    if packed.scene_contract_sha256 != manifest.scene_contract_sha256:
++        raise ValueError("prepared CUDA LBVH packed scene does not match its manifest")
++    if int(getattr(getattr(context, "device", None), "index", -1)) != prepared.device_ordinal:
++        raise ValueError("prepared CUDA LBVH factory context is on the wrong device")
++    from optics.cuda_lbvh import CudaLbvhRebuildStageFactory
++
++    return CudaLbvhRebuildStageFactory.prepare(
++        context=context,
++        primitive_count=packed.num_triangles,
++        native_input_manifest_sha256=manifest.sha256,
++        scene_contract_sha256=manifest.scene_contract_sha256,
++        input_contract=manifest.input_contract,
++    )
++
++
+ @dataclass(frozen=True)
+ class NativeInputValidationReport:
+     """Direct, untimed parity evidence for one prepared native input."""
+diff --git a/benchmarks/results/q54_p12_4/architecture_inventory.json b/benchmarks/results/q54_p12_4/architecture_inventory.json
+index 47197f9..939d3a1 100644
+--- a/benchmarks/results/q54_p12_4/architecture_inventory.json
++++ b/benchmarks/results/q54_p12_4/architecture_inventory.json
+@@ -87,14 +87,23 @@
+     },
+     {
+       "surface_id": "cuda_lbvh_acceleration",
+-      "role": "Torch-owned CUDA LBVH builder wrapped as Warp arrays for current consumers",
++      "role": "Caller-owned native CUDA LBVH stage plus benchmark-ineligible Warp compatibility facade",
+       "paths": [
+         "optics/cuda_lbvh.py",
++        "optics/_cuda_lbvh_source.py",
+         "examples/cuda_lbvh_extension_spike.py"
+       ],
+       "symbols": {
+-        "optics/cuda_lbvh.py": ["def build_cuda_lbvh_from_snapshot("],
+-        "examples/cuda_lbvh_extension_spike.py": ["CUDA_SOURCE"]
++        "optics/cuda_lbvh.py": [
++          "class CudaLbvhRebuildStageFactory:",
++          "class CudaLbvhRebuildStage:",
++          "def build_cuda_lbvh_from_snapshot("
++        ],
++        "optics/_cuda_lbvh_source.py": [
++          "CPP_SOURCE",
++          "CUDA_SOURCE"
++        ],
++        "examples/cuda_lbvh_extension_spike.py": ["def main("]
+       },
+       "ownership": "conditional_acceleration"
+     },
+diff --git a/benchmarks/results/q54_p12_4/cleanup_ledger.json b/benchmarks/results/q54_p12_4/cleanup_ledger.json
+index b39f2cc..8b8b5ef 100644
+--- a/benchmarks/results/q54_p12_4/cleanup_ledger.json
++++ b/benchmarks/results/q54_p12_4/cleanup_ledger.json
+@@ -136,16 +136,17 @@
+       "entry_id": "cuda_lbvh_builder",
+       "paths": [
+         "optics/cuda_lbvh.py",
++        "optics/_cuda_lbvh_source.py",
+         "examples/cuda_lbvh_extension_spike.py"
+       ],
+       "symbols": {},
+       "cuda_selected": {
+         "action": "replace_then_delete",
+-        "acceptance": "move extension source out of examples, return native CUDA ownership, remove Warp wrapping and experiment naming"
++        "acceptance": "retain the native caller-owned source and stage API; remove the Warp-snapshot compatibility facade, Warp wrapping, and experiment filename"
+       },
+       "warp_selected": {
+         "action": "conditional",
+-        "acceptance": "retain only after the independent 20 percent build/refit and 10 percent dynamic-transaction benefit gate; otherwise delete both files"
++        "acceptance": "retain and productionize the native source/API only after the independent 20 percent build/refit and 10 percent dynamic-transaction benefit gate; otherwise delete the module, source, and thin example"
+       },
+       "must_resolve_by": "P12.4e"
+     },
+diff --git a/examples/cuda_lbvh_extension_spike.py b/examples/cuda_lbvh_extension_spike.py
+index e0ab953..7d7cc51 100644
+--- a/examples/cuda_lbvh_extension_spike.py
++++ b/examples/cuda_lbvh_extension_spike.py
+@@ -1,789 +1,134 @@
+-"""Spike CUDA/CUB extension loading for the future optical LBVH builder.
++"""Thin smoke caller for the production caller-owned CUDA LBVH rebuild.
+ 
+-This is not the production LBVH implementation. It validates the riskiest
+-integration pieces first:
++Run from the repository root, for example::
+ 
+-1. `torch.utils.cpp_extension` can JIT compile CUDA code in this environment.
+-2. CUDA code can include and call CUB.
+-3. CUDA code can compute 30-bit Morton keys from AABBs and CUB-sort primitive ids.
+-4. Torch CUDA tensors returned by the extension can be viewed by Warp with
+-   `wp.from_torch` without device-to-host copies.
++    python examples/cuda_lbvh_extension_spike.py --primitive-count 8
+ 
+-Example:
+-
+-    conda run -n env_tilelang_20260119 python examples/cuda_lbvh_extension_spike.py
++The extension source and lifecycle contracts live under :mod:`optics`; this
++example deliberately owns no CUDA source or alternate implementation.
+ """
+ 
++# ruff: noqa: E402
++
+ from __future__ import annotations
+ 
+ import argparse
++import hashlib
++import json
++import sys
++from pathlib import Path
+ 
+-CPP_SOURCE = r"""
+-#include <torch/extension.h>
+-
+-#include <vector>
+-
+-std::vector<torch::Tensor> cub_sort_codes(torch::Tensor codes);
+-std::vector<torch::Tensor> morton_sort_aabbs(
+-    torch::Tensor aabb_min,
+-    torch::Tensor aabb_max,
+-    torch::Tensor scene_min,
+-    torch::Tensor scene_max);
+-std::vector<torch::Tensor> build_lbvh_topology(torch::Tensor sorted_keys);
+-std::vector<torch::Tensor> build_lbvh_topology_and_bounds(
+-    torch::Tensor sorted_keys,
+-    torch::Tensor sorted_prim_ids,
+-    torch::Tensor aabb_min,
+-    torch::Tensor aabb_max);
+-
+-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+-  m.def("cub_sort_codes", &cub_sort_codes, "Sort int64 Morton-like codes with CUB");
+-  m.def("morton_sort_aabbs", &morton_sort_aabbs, "Compute 30-bit Morton keys from AABBs and sort ids");
+-  m.def("build_lbvh_topology", &build_lbvh_topology, "Build minimal Karras LBVH topology");
+-  m.def(
+-      "build_lbvh_topology_and_bounds",
+-      &build_lbvh_topology_and_bounds,
+-      "Build minimal Karras LBVH topology and node bounds");
+-}
+-"""
+-
+-
+-CUDA_SOURCE = r"""
+-#include <torch/extension.h>
+-
+-#include <ATen/cuda/CUDAContext.h>
+-#include <c10/cuda/CUDAException.h>
+-#include <cub/cub.cuh>
+-
+-#include <cstdint>
+-#include <limits>
+-#include <vector>
+-
+-__global__ void fill_ids_kernel(int32_t* ids, int n) {
+-  int i = blockIdx.x * blockDim.x + threadIdx.x;
+-  if (i < n) {
+-    ids[i] = i;
+-  }
+-}
+-
+-__device__ __forceinline__ uint32_t expand_bits_10(uint32_t v) {
+-  v = (v * 0x00010001u) & 0xFF0000FFu;
+-  v = (v * 0x00000101u) & 0x0F00F00Fu;
+-  v = (v * 0x00000011u) & 0xC30C30C3u;
+-  v = (v * 0x00000005u) & 0x49249249u;
+-  return v;
+-}
+-
+-__device__ __forceinline__ uint32_t morton3d_30(float x, float y, float z) {
+-  x = fminf(fmaxf(x, 0.0f), 0.999999f);
+-  y = fminf(fmaxf(y, 0.0f), 0.999999f);
+-  z = fminf(fmaxf(z, 0.0f), 0.999999f);
+-  uint32_t xx = static_cast<uint32_t>(x * 1024.0f);
+-  uint32_t yy = static_cast<uint32_t>(y * 1024.0f);
+-  uint32_t zz = static_cast<uint32_t>(z * 1024.0f);
+-  return (expand_bits_10(xx) << 2) | (expand_bits_10(yy) << 1) | expand_bits_10(zz);
+-}
+-
+-__global__ void compute_morton_keys_kernel(
+-    const float* aabb_min,
+-    const float* aabb_max,
+-    const float* scene_min,
+-    const float* scene_max,
+-    int64_t* keys,
+-    int32_t* ids,
+-    int n) {
+-  int i = blockIdx.x * blockDim.x + threadIdx.x;
+-  if (i >= n) {
+-    return;
+-  }
+-
+-  float cx = 0.5f * (aabb_min[i * 3 + 0] + aabb_max[i * 3 + 0]);
+-  float cy = 0.5f * (aabb_min[i * 3 + 1] + aabb_max[i * 3 + 1]);
+-  float cz = 0.5f * (aabb_min[i * 3 + 2] + aabb_max[i * 3 + 2]);
+-
+-  float ex = fmaxf(scene_max[0] - scene_min[0], 1.0e-12f);
+-  float ey = fmaxf(scene_max[1] - scene_min[1], 1.0e-12f);
+-  float ez = fmaxf(scene_max[2] - scene_min[2], 1.0e-12f);
+-
+-  uint32_t morton = morton3d_30(
+-      (cx - scene_min[0]) / ex,
+-      (cy - scene_min[1]) / ey,
+-      (cz - scene_min[2]) / ez);
+-  uint64_t extended = (static_cast<uint64_t>(morton) << 32) | static_cast<uint32_t>(i);
+-  keys[i] = static_cast<int64_t>(extended);
+-  ids[i] = i;
+-}
+-
+-__device__ __forceinline__ int common_prefix_bits(const int64_t* keys, int n, int i, int j) {
+-  if (j < 0 || j >= n) {
+-    return -1;
+-  }
+-  uint64_t a = static_cast<uint64_t>(keys[i]);
+-  uint64_t b = static_cast<uint64_t>(keys[j]);
+-  return __clzll(a ^ b);
+-}
+-
+-__device__ int find_split(const int64_t* keys, int first, int last) {
+-  uint64_t first_key = static_cast<uint64_t>(keys[first]);
+-  uint64_t last_key = static_cast<uint64_t>(keys[last]);
+-  int common_prefix = __clzll(first_key ^ last_key);
+-  int split = first;
+-  int step = last - first;
+-
+-  do {
+-    step = (step + 1) >> 1;
+-    int candidate = split + step;
+-    if (candidate < last) {
+-      uint64_t candidate_key = static_cast<uint64_t>(keys[candidate]);
+-      int candidate_prefix = __clzll(first_key ^ candidate_key);
+-      if (candidate_prefix > common_prefix) {
+-        split = candidate;
+-      }
+-    }
+-  } while (step > 1);
+-
+-  return split;
+-}
+-
+-__global__ void build_lbvh_topology_kernel(
+-    const int64_t* sorted_keys,
+-    int32_t* left,
+-    int32_t* right,
+-    int32_t* parent,
+-    int32_t* start,
+-    int32_t* count,
+-    int32_t* range_start,
+-    int32_t* range_end,
+-    int32_t* split_out,
+-    int n) {
+-  int i = blockIdx.x * blockDim.x + threadIdx.x;
+-  int leaf_base = n - 1;
+-
+-  if (i < n) {
+-    int leaf = leaf_base + i;
+-    start[leaf] = i;
+-    count[leaf] = 1;
+-  }
+-
+-  if (i >= n - 1) {
+-    return;
+-  }
+-
+-  int prefix_next = common_prefix_bits(sorted_keys, n, i, i + 1);
+-  int prefix_prev = common_prefix_bits(sorted_keys, n, i, i - 1);
+-  int direction = (prefix_next - prefix_prev) >= 0 ? 1 : -1;
+-  int prefix_min = common_prefix_bits(sorted_keys, n, i, i - direction);
+-
+-  int l_max = 2;
+-  while (common_prefix_bits(sorted_keys, n, i, i + l_max * direction) > prefix_min) {
+-    l_max <<= 1;
+-  }
+-
+-  int length = 0;
+-  for (int step = l_max >> 1; step >= 1; step >>= 1) {
+-    int candidate = length + step;
+-    if (common_prefix_bits(sorted_keys, n, i, i + candidate * direction) > prefix_min) {
+-      length = candidate;
+-    }
+-  }
+-
+-  int j = i + length * direction;
+-  int first = min(i, j);
+-  int last = max(i, j);
+-  int split = find_split(sorted_keys, first, last);
+-
+-  int left_child = split == first ? leaf_base + split : split;
+-  int right_child = split + 1 == last ? leaf_base + split + 1 : split + 1;
+-
+-  left[i] = left_child;
+-  right[i] = right_child;
+-  parent[left_child] = i;
+-  parent[right_child] = i;
+-  range_start[i] = first;
+-  range_end[i] = last;
+-  split_out[i] = split;
+-}
+-
+-__device__ __forceinline__ float atomic_min_float(float* address, float value) {
+-  int* address_as_i = reinterpret_cast<int*>(address);
+-  int old = *address_as_i;
+-  int assumed;
+-  do {
+-    assumed = old;
+-    old = atomicCAS(address_as_i, assumed, __float_as_int(fminf(value, __int_as_float(assumed))));
+-  } while (assumed != old);
+-  return __int_as_float(old);
+-}
+-
+-__device__ __forceinline__ float atomic_max_float(float* address, float value) {
+-  int* address_as_i = reinterpret_cast<int*>(address);
+-  int old = *address_as_i;
+-  int assumed;
+-  do {
+-    assumed = old;
+-    old = atomicCAS(address_as_i, assumed, __float_as_int(fmaxf(value, __int_as_float(assumed))));
+-  } while (assumed != old);
+-  return __int_as_float(old);
+-}
+-
+-__global__ void initialize_lbvh_leaf_bounds_kernel(
+-    const int32_t* sorted_prim_ids,
+-    const float* primitive_aabb_min,
+-    const float* primitive_aabb_max,
+-    float* node_bounds_min,
+-    float* node_bounds_max,
+-    int n) {
+-  int leaf_rank = blockIdx.x * blockDim.x + threadIdx.x;
+-  if (leaf_rank >= n) {
+-    return;
+-  }
+-  int node = n - 1 + leaf_rank;
+-  int prim = sorted_prim_ids[leaf_rank];
+-  for (int axis = 0; axis < 3; ++axis) {
+-    node_bounds_min[node * 3 + axis] = primitive_aabb_min[prim * 3 + axis];
+-    node_bounds_max[node * 3 + axis] = primitive_aabb_max[prim * 3 + axis];
+-  }
+-}
+-
+-__global__ void reduce_lbvh_internal_bounds_kernel(
+-    const int32_t* parent,
+-    float* node_bounds_min,
+-    float* node_bounds_max,
+-    int32_t* child_counter,
+-    int n) {
+-  int leaf_rank = blockIdx.x * blockDim.x + threadIdx.x;
+-  if (leaf_rank >= n) {
+-    return;
+-  }
+-  int node = n - 1 + leaf_rank;
+-  int p = parent[node];
+-
+-  while (p >= 0) {
+-    for (int axis = 0; axis < 3; ++axis) {
+-      float min_v = node_bounds_min[node * 3 + axis];
+-      float max_v = node_bounds_max[node * 3 + axis];
+-      atomic_min_float(&node_bounds_min[p * 3 + axis], min_v);
+-      atomic_max_float(&node_bounds_max[p * 3 + axis], max_v);
+-    }
+-
+-    int previous = atomicAdd(&child_counter[p], 1);
+-    if (previous == 0) {
+-      return;
+-    }
+-
+-    node = p;
+-    p = parent[node];
+-  }
+-}
+-
+-std::vector<torch::Tensor> cub_sort_codes(torch::Tensor codes) {
+-  TORCH_CHECK(codes.is_cuda(), "codes must be a CUDA tensor");
+-  TORCH_CHECK(codes.dtype() == torch::kInt64, "codes must be int64");
+-  TORCH_CHECK(codes.is_contiguous(), "codes must be contiguous");
+-  TORCH_CHECK(codes.dim() == 1, "codes must be rank-1");
+-  TORCH_CHECK(codes.numel() <= static_cast<int64_t>(INT32_MAX), "too many codes for spike");
+-
+-  int n = static_cast<int>(codes.numel());
+-  auto id_options = torch::TensorOptions().dtype(torch::kInt32).device(codes.device());
+-  auto ids_in = torch::empty({n}, id_options);
+-  auto ids_out = torch::empty({n}, id_options);
+-  auto sorted_codes = torch::empty_like(codes);
+-
+-  if (n == 0) {
+-    return {sorted_codes, ids_out};
+-  }
+-
+-  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+-  int block = 256;
+-  int grid = (n + block - 1) / block;
+-  fill_ids_kernel<<<grid, block, 0, stream>>>(ids_in.data_ptr<int32_t>(), n);
+-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+-
+-  size_t temp_bytes = 0;
+-  cub::DeviceRadixSort::SortPairs(
+-      nullptr,
+-      temp_bytes,
+-      codes.data_ptr<int64_t>(),
+-      sorted_codes.data_ptr<int64_t>(),
+-      ids_in.data_ptr<int32_t>(),
+-      ids_out.data_ptr<int32_t>(),
+-      n,
+-      0,
+-      64,
+-      stream);
+-
+-  auto temp = torch::empty(
+-      {static_cast<int64_t>(temp_bytes)},
+-      torch::TensorOptions().dtype(torch::kUInt8).device(codes.device()));
+-
+-  cub::DeviceRadixSort::SortPairs(
+-      temp.data_ptr(),
+-      temp_bytes,
+-      codes.data_ptr<int64_t>(),
+-      sorted_codes.data_ptr<int64_t>(),
+-      ids_in.data_ptr<int32_t>(),
+-      ids_out.data_ptr<int32_t>(),
+-      n,
+-      0,
+-      64,
+-      stream);
+-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+-
+-  return {sorted_codes, ids_out};
+-}
+-
+-std::vector<torch::Tensor> morton_sort_aabbs(
+-    torch::Tensor aabb_min,
+-    torch::Tensor aabb_max,
+-    torch::Tensor scene_min,
+-    torch::Tensor scene_max) {
+-  TORCH_CHECK(aabb_min.is_cuda(), "aabb_min must be a CUDA tensor");
+-  TORCH_CHECK(aabb_max.is_cuda(), "aabb_max must be a CUDA tensor");
+-  TORCH_CHECK(scene_min.is_cuda(), "scene_min must be a CUDA tensor");
+-  TORCH_CHECK(scene_max.is_cuda(), "scene_max must be a CUDA tensor");
+-  TORCH_CHECK(aabb_min.dtype() == torch::kFloat32, "aabb_min must be float32");
+-  TORCH_CHECK(aabb_max.dtype() == torch::kFloat32, "aabb_max must be float32");
+-  TORCH_CHECK(scene_min.dtype() == torch::kFloat32, "scene_min must be float32");
+-  TORCH_CHECK(scene_max.dtype() == torch::kFloat32, "scene_max must be float32");
+-  TORCH_CHECK(aabb_min.is_contiguous(), "aabb_min must be contiguous");
+-  TORCH_CHECK(aabb_max.is_contiguous(), "aabb_max must be contiguous");
+-  TORCH_CHECK(scene_min.is_contiguous(), "scene_min must be contiguous");
+-  TORCH_CHECK(scene_max.is_contiguous(), "scene_max must be contiguous");
+-  TORCH_CHECK(aabb_min.dim() == 2 && aabb_min.size(1) == 3, "aabb_min must have shape [N, 3]");
+-  TORCH_CHECK(aabb_max.sizes() == aabb_min.sizes(), "aabb_max must match aabb_min shape");
+-  TORCH_CHECK(scene_min.numel() == 3, "scene_min must have 3 values");
+-  TORCH_CHECK(scene_max.numel() == 3, "scene_max must have 3 values");
+-  TORCH_CHECK(aabb_min.size(0) <= static_cast<int64_t>(INT32_MAX), "too many AABBs for spike");
+-
+-  int n = static_cast<int>(aabb_min.size(0));
+-  auto key_options = torch::TensorOptions().dtype(torch::kInt64).device(aabb_min.device());
+-  auto id_options = torch::TensorOptions().dtype(torch::kInt32).device(aabb_min.device());
+-  auto keys = torch::empty({n}, key_options);
+-  auto sorted_keys = torch::empty({n}, key_options);
+-  auto ids_in = torch::empty({n}, id_options);
+-  auto ids_out = torch::empty({n}, id_options);
+-
+-  if (n == 0) {
+-    return {sorted_keys, ids_out};
+-  }
+-
+-  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+-  int block = 256;
+-  int grid = (n + block - 1) / block;
+-  compute_morton_keys_kernel<<<grid, block, 0, stream>>>(
+-      aabb_min.data_ptr<float>(),
+-      aabb_max.data_ptr<float>(),
+-      scene_min.data_ptr<float>(),
+-      scene_max.data_ptr<float>(),
+-      keys.data_ptr<int64_t>(),
+-      ids_in.data_ptr<int32_t>(),
+-      n);
+-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+-
+-  size_t temp_bytes = 0;
+-  cub::DeviceRadixSort::SortPairs(
+-      nullptr,
+-      temp_bytes,
+-      keys.data_ptr<int64_t>(),
+-      sorted_keys.data_ptr<int64_t>(),
+-      ids_in.data_ptr<int32_t>(),
+-      ids_out.data_ptr<int32_t>(),
+-      n,
+-      0,
+-      64,
+-      stream);
+-
+-  auto temp = torch::empty(
+-      {static_cast<int64_t>(temp_bytes)},
+-      torch::TensorOptions().dtype(torch::kUInt8).device(aabb_min.device()));
++import torch
+ 
+-  cub::DeviceRadixSort::SortPairs(
+-      temp.data_ptr(),
+-      temp_bytes,
+-      keys.data_ptr<int64_t>(),
+-      sorted_keys.data_ptr<int64_t>(),
+-      ids_in.data_ptr<int32_t>(),
+-      ids_out.data_ptr<int32_t>(),
+-      n,
+-      0,
+-      64,
+-      stream);
+-  C10_CUDA_KERNEL_LAUNCH_CHECK();
++REPO_ROOT = Path(__file__).resolve().parents[1]
++if str(REPO_ROOT) not in sys.path:
++    sys.path.insert(0, str(REPO_ROOT))
+ 
+-  return {sorted_keys, ids_out};
+-}
+-
+-std::vector<torch::Tensor> build_lbvh_topology(torch::Tensor sorted_keys) {
+-  TORCH_CHECK(sorted_keys.is_cuda(), "sorted_keys must be a CUDA tensor");
+-  TORCH_CHECK(sorted_keys.dtype() == torch::kInt64, "sorted_keys must be int64");
+-  TORCH_CHECK(sorted_keys.is_contiguous(), "sorted_keys must be contiguous");
+-  TORCH_CHECK(sorted_keys.dim() == 1, "sorted_keys must be rank-1");
+-  TORCH_CHECK(sorted_keys.numel() >= 1, "sorted_keys must be non-empty");
+-  TORCH_CHECK(sorted_keys.numel() <= static_cast<int64_t>((INT32_MAX + 1LL) / 2), "too many keys");
+-
+-  int n = static_cast<int>(sorted_keys.numel());
+-  int num_nodes = 2 * n - 1;
+-  auto options = torch::TensorOptions().dtype(torch::kInt32).device(sorted_keys.device());
+-  auto left = torch::full({num_nodes}, -1, options);
+-  auto right = torch::full({num_nodes}, -1, options);
+-  auto parent = torch::full({num_nodes}, -1, options);
+-  auto start = torch::full({num_nodes}, -1, options);
+-  auto count = torch::zeros({num_nodes}, options);
+-  auto range_start = torch::full({std::max(n - 1, 0)}, -1, options);
+-  auto range_end = torch::full({std::max(n - 1, 0)}, -1, options);
+-  auto split = torch::full({std::max(n - 1, 0)}, -1, options);
+-
+-  if (n == 1) {
+-    start[0] = 0;
+-    count[0] = 1;
+-    return {left, right, parent, start, count, range_start, range_end, split};
+-  }
+-
+-  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+-  int block = 256;
+-  int grid = (n + block - 1) / block;
+-  build_lbvh_topology_kernel<<<grid, block, 0, stream>>>(
+-      sorted_keys.data_ptr<int64_t>(),
+-      left.data_ptr<int32_t>(),
+-      right.data_ptr<int32_t>(),
+-      parent.data_ptr<int32_t>(),
+-      start.data_ptr<int32_t>(),
+-      count.data_ptr<int32_t>(),
+-      range_start.data_ptr<int32_t>(),
+-      range_end.data_ptr<int32_t>(),
+-      split.data_ptr<int32_t>(),
+-      n);
+-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+-
+-  return {left, right, parent, start, count, range_start, range_end, split};
+-}
+-
+-std::vector<torch::Tensor> build_lbvh_topology_and_bounds(
+-    torch::Tensor sorted_keys,
+-    torch::Tensor sorted_prim_ids,
+-    torch::Tensor aabb_min,
+-    torch::Tensor aabb_max) {
+-  TORCH_CHECK(sorted_prim_ids.is_cuda(), "sorted_prim_ids must be a CUDA tensor");
+-  TORCH_CHECK(aabb_min.is_cuda(), "aabb_min must be a CUDA tensor");
+-  TORCH_CHECK(aabb_max.is_cuda(), "aabb_max must be a CUDA tensor");
+-  TORCH_CHECK(sorted_prim_ids.dtype() == torch::kInt32, "sorted_prim_ids must be int32");
+-  TORCH_CHECK(aabb_min.dtype() == torch::kFloat32, "aabb_min must be float32");
+-  TORCH_CHECK(aabb_max.dtype() == torch::kFloat32, "aabb_max must be float32");
+-  TORCH_CHECK(sorted_prim_ids.is_contiguous(), "sorted_prim_ids must be contiguous");
+-  TORCH_CHECK(aabb_min.is_contiguous(), "aabb_min must be contiguous");
+-  TORCH_CHECK(aabb_max.is_contiguous(), "aabb_max must be contiguous");
+-  TORCH_CHECK(aabb_min.dim() == 2 && aabb_min.size(1) == 3, "aabb_min must have shape [N, 3]");
+-  TORCH_CHECK(aabb_max.sizes() == aabb_min.sizes(), "aabb_max must match aabb_min shape");
+-  TORCH_CHECK(sorted_keys.numel() == sorted_prim_ids.numel(), "sorted key/id length mismatch");
+-  TORCH_CHECK(sorted_keys.numel() == aabb_min.size(0), "AABB count must match sorted keys");
+-
+-  auto topology = build_lbvh_topology(sorted_keys);
+-  auto left = topology[0];
+-  auto right = topology[1];
+-  auto parent = topology[2];
+-  auto start = topology[3];
+-  auto count = topology[4];
+-  auto range_start = topology[5];
+-  auto range_end = topology[6];
+-  auto split = topology[7];
+-
+-  int n = static_cast<int>(sorted_keys.numel());
+-  int num_nodes = 2 * n - 1;
+-  auto float_options = torch::TensorOptions().dtype(torch::kFloat32).device(sorted_keys.device());
+-  auto int_options = torch::TensorOptions().dtype(torch::kInt32).device(sorted_keys.device());
+-  auto bounds_min = torch::full({num_nodes, 3}, std::numeric_limits<float>::infinity(), float_options);
+-  auto bounds_max = torch::full({num_nodes, 3}, -std::numeric_limits<float>::infinity(), float_options);
+-  auto child_counter = torch::zeros({num_nodes}, int_options);
+-
+-  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+-  int block = 256;
+-  int grid = (n + block - 1) / block;
+-  initialize_lbvh_leaf_bounds_kernel<<<grid, block, 0, stream>>>(
+-      sorted_prim_ids.data_ptr<int32_t>(),
+-      aabb_min.data_ptr<float>(),
+-      aabb_max.data_ptr<float>(),
+-      bounds_min.data_ptr<float>(),
+-      bounds_max.data_ptr<float>(),
+-      n);
+-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+-
+-  reduce_lbvh_internal_bounds_kernel<<<grid, block, 0, stream>>>(
+-      parent.data_ptr<int32_t>(),
+-      bounds_min.data_ptr<float>(),
+-      bounds_max.data_ptr<float>(),
+-      child_counter.data_ptr<int32_t>(),
+-      n);
+-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+-
+-  return {
+-      left,
+-      right,
+-      parent,
+-      start,
+-      count,
+-      range_start,
+-      range_end,
+-      split,
+-      bounds_min,
+-      bounds_max};
+-}
+-"""
++from optics.cuda_lbvh import (
++    CudaLbvhRebuildStageFactory,
++    allocate_cuda_lbvh_buffers,
++    allocate_cuda_lbvh_workspace,
++)
++from optics.cuda_scene import CudaWorldSceneBuffers
++from optics.cuda_timeline import CudaOpticalExecutionContext
+ 
+ 
+ def main() -> None:
+     args = _parse_args()
+-    try:
+-        import torch
+-        from torch.utils.cpp_extension import load_inline
+-    except Exception as exc:  # pragma: no cover - local spike guard.
+-        raise SystemExit(f"torch extension tooling is unavailable: {exc}") from exc
+-
+-    try:
+-        import warp as wp
+-    except Exception as exc:  # pragma: no cover - local spike guard.
+-        raise SystemExit(f"warp is unavailable: {exc}") from exc
+-
+     if not torch.cuda.is_available():
+-        raise SystemExit("CUDA is not available to torch")
+-
+-    module = load_inline(
+-        name="robot_sim_cuda_lbvh_spike_v2",
+-        cpp_sources=[CPP_SOURCE],
+-        cuda_sources=[CUDA_SOURCE],
+-        with_cuda=True,
+-        extra_cflags=["-O2"],
+-        extra_cuda_cflags=["-O2"],
+-        verbose=args.verbose,
+-    )
+-
+-    device = torch.device(args.device)
+-    codes = torch.tensor([17, 3, 42, 3, 9, 31, 0, 9], device=device, dtype=torch.int64)
+-    sorted_codes, sorted_prim_ids = module.cub_sort_codes(codes)
+-    torch.cuda.synchronize(device)
+-
+-    expected_codes, _ = torch.sort(codes)
+-    if not torch.equal(sorted_codes, expected_codes):
+-        raise AssertionError(
+-            f"CUB sort mismatch: got {sorted_codes.cpu().tolist()}, expected {expected_codes.cpu().tolist()}"
++        raise SystemExit("Torch CUDA is unavailable")
++    target = torch.device(args.device)
++    if target.type != "cuda" or target.index is None:
++        raise SystemExit("--device must be an indexed CUDA device")
++    if args.primitive_count < 0:
++        raise SystemExit("--primitive-count must be non-negative")
++
++    with torch.cuda.device(target):
++        stream = torch.cuda.Stream(device=target)
++        generator = torch.Generator(device=target).manual_seed(args.seed)
++        centers = torch.rand(
++            (args.primitive_count, 3),
++            dtype=torch.float32,
++            device=target,
++            generator=generator,
+         )
+-
+-    warp_written = _verify_warp_from_torch(wp, sorted_prim_ids)
+-    morton_keys, morton_prim_ids = _run_morton_aabb_spike(torch, module, device)
+-    topology = _run_topology_spike(torch, module, morton_keys)
+-    bounded = _run_bounds_spike(torch, module, morton_keys, morton_prim_ids)
+-
+-    print("CUDA LBVH extension spike passed:")
+-    print(f"  torch_device: {device}")
+-    print(f"  sorted_codes: {sorted_codes.cpu().tolist()}")
+-    print(f"  sorted_primitive_ids: {sorted_prim_ids.cpu().tolist()}")
+-    print(f"  warp_from_torch_plus_one: {warp_written.cpu().tolist()}")
+-    print(f"  morton_sorted_keys: {morton_keys.cpu().tolist()}")
+-    print(f"  morton_sorted_primitive_ids: {morton_prim_ids.cpu().tolist()}")
+-    print(f"  topology_left: {topology['left']}")
+-    print(f"  topology_right: {topology['right']}")
+-    print(f"  topology_parent: {topology['parent']}")
+-    print(f"  root_bounds_min: {bounded['bounds_min'][0]}")
+-    print(f"  root_bounds_max: {bounded['bounds_max'][0]}")
+-
+-
+-def _run_morton_aabb_spike(torch, module, device):
+-    aabb_min = torch.tensor(
+-        [
+-            [0.00, 0.00, 0.00],
+-            [0.50, 0.00, 0.00],
+-            [0.00, 0.50, 0.00],
+-            [0.00, 0.00, 0.50],
+-            [0.25, 0.25, 0.25],
+-        ],
+-        device=device,
+-        dtype=torch.float32,
+-    )
+-    aabb_max = aabb_min + 0.05
+-    scene_min = torch.min(aabb_min, dim=0).values.contiguous()
+-    scene_max = torch.max(aabb_max, dim=0).values.contiguous()
+-
+-    sorted_keys, sorted_prim_ids = module.morton_sort_aabbs(
+-        aabb_min.contiguous(),
+-        aabb_max.contiguous(),
+-        scene_min,
+-        scene_max,
+-    )
+-    torch.cuda.synchronize(device)
+-    if not torch.all(sorted_keys[:-1] <= sorted_keys[1:]):
+-        raise AssertionError(f"Morton keys are not sorted: {sorted_keys.cpu().tolist()}")
+-    expected_ids = torch.arange(aabb_min.shape[0], device=device, dtype=torch.int32)
+-    if not torch.equal(torch.sort(sorted_prim_ids).values, expected_ids):
+-        raise AssertionError(
+-            "Morton primitive ids are not a permutation: "
+-            f"got {sorted_prim_ids.cpu().tolist()}, expected ids {expected_ids.cpu().tolist()}"
++        half_extent = 0.01 + 0.09 * torch.rand(
++            (args.primitive_count, 3),
++            dtype=torch.float32,
++            device=target,
++            generator=generator,
+         )
+-    low_bits = (sorted_keys & 0xFFFFFFFF).to(torch.int32)
+-    if not torch.equal(low_bits, sorted_prim_ids):
+-        raise AssertionError(
+-            f"extended key low bits do not match primitive ids: "
+-            f"keys={sorted_keys.cpu().tolist()}, ids={sorted_prim_ids.cpu().tolist()}"
++        world = _world_buffers(centers - half_extent, centers + half_extent, target)
++        context = CudaOpticalExecutionContext(device=target, stream=stream)
++        provenance = hashlib.sha256(
++            f"thin-cuda-lbvh-smoke:{args.primitive_count}:{args.seed}".encode()
++        ).hexdigest()
++        factory = CudaLbvhRebuildStageFactory.prepare(
++            context=context,
++            primitive_count=args.primitive_count,
++            native_input_manifest_sha256=provenance,
++            scene_contract_sha256=provenance,
++            input_contract="thin_example_only_v1",
++        )
++        outputs = allocate_cuda_lbvh_buffers(
++            primitive_count=args.primitive_count,
++            device=target,
++        )
++        workspace = allocate_cuda_lbvh_workspace(factory.requirements)
++        stage = factory.bind(world=world, outputs=outputs, workspace=workspace)
++        completion_event = torch.cuda.Event(enable_timing=False)
++        completion_event.record(stream)
++        completion_event.synchronize()
++        transaction = context.begin_transaction(
++            stages=(stage,),
++            completion_event=completion_event,
++        )
++        stage.enqueue(transaction)
++        completion = transaction.finish()
++        completion.event.synchronize()
++
++    print(
++        json.dumps(
++            {
++                "device": str(target),
++                "primitive_count": args.primitive_count,
++                "node_count": outputs.node_count,
++                "sorted_primitive_ids": outputs.sorted_primitive_ids.cpu().tolist(),
++                "workspace": factory.requirements.to_payload(),
++                "stage_evidence_sha256": stage.evidence.sha256,
++                "stage_names": list(completion.stage_names),
++            },
++            indent=2,
++            sort_keys=True,
+         )
+-    return sorted_keys, sorted_prim_ids
+-
+-
+-def _sample_aabbs(torch, device):
+-    aabb_min = torch.tensor(
+-        [
+-            [0.00, 0.00, 0.00],
+-            [0.50, 0.00, 0.00],
+-            [0.00, 0.50, 0.00],
+-            [0.00, 0.00, 0.50],
+-            [0.25, 0.25, 0.25],
+-        ],
+-        device=device,
+-        dtype=torch.float32,
+     )
+-    return aabb_min, aabb_min + 0.05
+ 
+ 
+-def _run_topology_spike(torch, module, sorted_keys):
+-    arrays = module.build_lbvh_topology(sorted_keys.contiguous())
+-    torch.cuda.synchronize(sorted_keys.device)
+-    names = ("left", "right", "parent", "start", "count", "range_start", "range_end", "split")
+-    host = {name: tensor.cpu().tolist() for name, tensor in zip(names, arrays, strict=True)}
+-    _validate_topology(host, n=sorted_keys.numel())
+-    return host
+-
+-
+-def _run_bounds_spike(torch, module, sorted_keys, sorted_prim_ids):
+-    aabb_min, aabb_max = _sample_aabbs(torch, sorted_keys.device)
+-    arrays = module.build_lbvh_topology_and_bounds(
+-        sorted_keys.contiguous(),
+-        sorted_prim_ids.contiguous(),
+-        aabb_min.contiguous(),
+-        aabb_max.contiguous(),
+-    )
+-    torch.cuda.synchronize(sorted_keys.device)
+-    names = (
+-        "left",
+-        "right",
+-        "parent",
+-        "start",
+-        "count",
+-        "range_start",
+-        "range_end",
+-        "split",
+-        "bounds_min",
+-        "bounds_max",
++def _world_buffers(minimum, maximum, device: torch.device) -> CudaWorldSceneBuffers:
++    primitive_count = int(minimum.shape[0])
++    triangle = torch.empty((primitive_count, 3), dtype=torch.float32, device=device)
++    plane = torch.empty((0, 3), dtype=torch.float32, device=device)
++    return CudaWorldSceneBuffers(
++        device_ordinal=int(device.index),
++        triangle_v0_world=triangle,
++        triangle_e1_world=torch.empty_like(triangle),
++        triangle_e2_world=torch.empty_like(triangle),
++        triangle_normal_world=torch.empty_like(triangle),
++        plane_normal_world=plane,
++        plane_point_world=torch.empty_like(plane),
++        triangle_aabb_min=minimum,
++        triangle_aabb_max=maximum,
++        resources=(),
+     )
+-    host = {name: tensor.cpu().tolist() for name, tensor in zip(names, arrays, strict=True)}
+-    _validate_topology(host, n=sorted_keys.numel())
+-    expected_min = torch.min(aabb_min, dim=0).values.cpu().tolist()
+-    expected_max = torch.max(aabb_max, dim=0).values.cpu().tolist()
+-    _assert_close_vec(host["bounds_min"][0], expected_min, label="root bounds min")
+-    _assert_close_vec(host["bounds_max"][0], expected_max, label="root bounds max")
+-
+-    leaf_base = sorted_keys.numel() - 1
+-    sorted_ids = sorted_prim_ids.cpu().tolist()
+-    aabb_min_host = aabb_min.cpu().tolist()
+-    aabb_max_host = aabb_max.cpu().tolist()
+-    for rank, prim in enumerate(sorted_ids):
+-        leaf = leaf_base + rank
+-        _assert_close_vec(host["bounds_min"][leaf], aabb_min_host[prim], label=f"leaf {leaf} min")
+-        _assert_close_vec(host["bounds_max"][leaf], aabb_max_host[prim], label=f"leaf {leaf} max")
+-    return host
+-
+-
+-def _validate_topology(topology: dict[str, list[int]], *, n: int) -> None:
+-    num_nodes = 2 * n - 1
+-    leaf_base = n - 1
+-    left = topology["left"]
+-    right = topology["right"]
+-    parent = topology["parent"]
+-    start = topology["start"]
+-    count = topology["count"]
+-
+-    if len(left) != num_nodes or len(right) != num_nodes or len(parent) != num_nodes:
+-        raise AssertionError("topology node arrays have the wrong length")
+-    if parent[0] != -1:
+-        raise AssertionError(f"root parent must be -1, got {parent[0]}")
+-
+-    for node in range(n - 1):
+-        if count[node] != 0 or start[node] != -1:
+-            raise AssertionError(f"internal node {node} has invalid start/count")
+-        for child in (left[node], right[node]):
+-            if child < 0 or child >= num_nodes:
+-                raise AssertionError(f"internal node {node} has invalid child {child}")
+-            if parent[child] != node:
+-                raise AssertionError(f"child {child} parent mismatch: got {parent[child]}, expected {node}")
+-
+-    for leaf_rank in range(n):
+-        leaf = leaf_base + leaf_rank
+-        if count[leaf] != 1 or start[leaf] != leaf_rank:
+-            raise AssertionError(f"leaf {leaf} has invalid start/count")
+-        if left[leaf] != -1 or right[leaf] != -1:
+-            raise AssertionError(f"leaf {leaf} should not have children")
+-
+-    reachable: set[int] = set()
+-    stack = [0]
+-    while stack:
+-        node = stack.pop()
+-        if node in reachable:
+-            raise AssertionError(f"node {node} reached twice")
+-        reachable.add(node)
+-        if node < leaf_base:
+-            stack.append(left[node])
+-            stack.append(right[node])
+-    if reachable != set(range(num_nodes)):
+-        missing = sorted(set(range(num_nodes)) - reachable)
+-        raise AssertionError(f"topology is not fully reachable, missing={missing}")
+-
+-
+-def _assert_close_vec(actual: list[float], expected: list[float], *, label: str) -> None:
+-    for axis, (a, e) in enumerate(zip(actual, expected, strict=True)):
+-        if abs(a - e) > 1.0e-6:
+-            raise AssertionError(f"{label}[{axis}] mismatch: got {actual}, expected {expected}")
+-
+-
+-def _verify_warp_from_torch(wp, sorted_prim_ids):
+-    import torch
+-
+-    wp.init()
+-    sorted_ids_wp = wp.from_torch(sorted_prim_ids, dtype=wp.int32)
+-    out = torch.empty_like(sorted_prim_ids)
+-    out_wp = wp.from_torch(out, dtype=wp.int32)
+-    wp.launch(
+-        _plus_one_kernel,
+-        dim=sorted_prim_ids.numel(),
+-        inputs=[sorted_ids_wp, out_wp],
+-        device=sorted_ids_wp.device,
+-    )
+-    wp.synchronize()
+-    expected = sorted_prim_ids + 1
+-    if not torch.equal(out, expected):
+-        raise AssertionError(
+-            f"Warp from_torch mismatch: got {out.cpu().tolist()}, expected {expected.cpu().tolist()}"
+-        )
+-    return out
+ 
+ 
+ def _parse_args() -> argparse.Namespace:
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("--device", default="cuda:0")
+-    parser.add_argument("--verbose", action="store_true", help="Print torch extension build logs.")
++    parser.add_argument("--primitive-count", type=int, default=8)
++    parser.add_argument("--seed", type=int, default=17)
+     return parser.parse_args()
+ 
+ 
+-try:
+-    import warp as _wp_for_kernel
+-except Exception:  # pragma: no cover - import guard for help text / CPU envs.
+-    _wp_for_kernel = None
+-
+-if _wp_for_kernel is not None:
+-
+-    @_wp_for_kernel.kernel
+-    def _plus_one_kernel(
+-        src: _wp_for_kernel.array(dtype=_wp_for_kernel.int32),
+-        dst: _wp_for_kernel.array(dtype=_wp_for_kernel.int32),
+-    ):
+-        i = _wp_for_kernel.tid()
+-        dst[i] = src[i] + 1
+-
+-
+ if __name__ == "__main__":
+     main()
+diff --git a/optics/__init__.py b/optics/__init__.py
+index 0e237bf..26699dc 100644
+--- a/optics/__init__.py
++++ b/optics/__init__.py
+@@ -19,7 +19,26 @@ from .cuda_direct_light import (
+     allocate_cuda_direct_light_buffers,
+     cuda_direct_light_available,
+ )
+-from .cuda_lbvh import build_cuda_lbvh_from_snapshot
++from .cuda_lbvh import (
++    CUDA_LBVH_ACCELERATION_ID,
++    CUDA_LBVH_EXTENSION_ABI_VERSION,
++    CUDA_LBVH_MAX_PRIMITIVES,
++    CUDA_LBVH_OPERATION_ID,
++    CUDA_LBVH_STAGE_SCHEMA_VERSION,
++    CUDA_LBVH_TOPOLOGY_LIFETIME,
++    CUDA_LBVH_TOPOLOGY_ORIGIN_ID,
++    CUDA_LBVH_WORKSPACE_SCHEMA_VERSION,
++    CudaLbvhBuffers,
++    CudaLbvhRebuildStage,
++    CudaLbvhRebuildStageEvidence,
++    CudaLbvhRebuildStageFactory,
++    CudaLbvhWorkspace,
++    CudaLbvhWorkspaceRequirements,
++    allocate_cuda_lbvh_buffers,
++    allocate_cuda_lbvh_workspace,
++    build_cuda_lbvh_from_snapshot,
++    cuda_lbvh_workspace_requirements,
++)
+ from .cuda_scene import (
+     CUDA_SCENE_UPDATE_OPERATION_ID,
+     CudaOpticalLocalScene,
+@@ -154,6 +173,20 @@ __all__ = [
+     "CudaOpticalTransaction",
+     "CudaOpticalTransactionPoisonedError",
+     "CUDA_SCENE_UPDATE_OPERATION_ID",
++    "CUDA_LBVH_ACCELERATION_ID",
++    "CUDA_LBVH_EXTENSION_ABI_VERSION",
++    "CUDA_LBVH_MAX_PRIMITIVES",
++    "CUDA_LBVH_OPERATION_ID",
++    "CUDA_LBVH_STAGE_SCHEMA_VERSION",
++    "CUDA_LBVH_TOPOLOGY_LIFETIME",
++    "CUDA_LBVH_TOPOLOGY_ORIGIN_ID",
++    "CUDA_LBVH_WORKSPACE_SCHEMA_VERSION",
++    "CudaLbvhBuffers",
++    "CudaLbvhRebuildStage",
++    "CudaLbvhRebuildStageEvidence",
++    "CudaLbvhRebuildStageFactory",
++    "CudaLbvhWorkspace",
++    "CudaLbvhWorkspaceRequirements",
+     "CudaSceneTransformInputs",
+     "CudaSceneUpdateStage",
+     "CudaSceneUpdateStageEvidence",
+@@ -218,8 +251,11 @@ __all__ = [
+     "build_host_optical_primitive_workload",
+     "allocate_warp_world_scene_buffers",
+     "allocate_cuda_direct_light_buffers",
++    "allocate_cuda_lbvh_buffers",
++    "allocate_cuda_lbvh_workspace",
+     "allocate_cuda_world_scene_buffers",
+     "cuda_direct_light_available",
++    "cuda_lbvh_workspace_requirements",
+     "cuda_replay_transform_inputs",
+     "channel_is_device",
+     "channel_to_numpy",
+diff --git a/optics/cuda_lbvh.py b/optics/cuda_lbvh.py
+index 01dc81d..cf83865 100644
+--- a/optics/cuda_lbvh.py
++++ b/optics/cuda_lbvh.py
+@@ -1,28 +1,907 @@
+-"""Optional CUDA LBVH builder for optical device BVHs."""
++"""Caller-owned native CUDA LBVH rebuild and legacy compatibility facade."""
+ 
+ from __future__ import annotations
+ 
++import hashlib
++import json
+ import time
+-from dataclasses import replace
++from dataclasses import dataclass, replace
+ from functools import lru_cache
+ 
++from ._cuda_lbvh_source import CPP_SOURCE, CUDA_SOURCE
++from .cuda_scene import CudaWorldSceneBuffers
+ from .device_bvh import DeviceBvhBuildStats, DeviceOpticalBvh
+ from .device_scene import DeviceOpticalSceneSnapshot
+ 
+ try:  # pragma: no cover - exercised in CUDA extension environments.
+     import torch
+-    import warp as wp
+     from torch.utils.cpp_extension import load_inline
+ 
+-    _HAS_CUDA_LBVH_DEPS = True
+-except Exception:  # pragma: no cover - keeps CPU-only imports working.
++    _HAS_TORCH_CUDA_LBVH_DEPS = True
++except Exception:  # pragma: no cover - keep CPU-only imports working.
+     torch = None
+-    wp = None
+     load_inline = None
+-    _HAS_CUDA_LBVH_DEPS = False
++    _HAS_TORCH_CUDA_LBVH_DEPS = False
++
++try:  # pragma: no cover - compatibility facade only.
++    import warp as wp
++
++    _HAS_WARP_COMPAT = True
++except Exception:  # pragma: no cover - core CUDA path does not require Warp.
++    wp = None
++    _HAS_WARP_COMPAT = False
++
++
++CUDA_LBVH_ACCELERATION_ID = "cuda_morton_karras_lbvh_rebuild_v1"
++CUDA_LBVH_OPERATION_ID = "cuda_lbvh_scene_bounds_morton_sort_topology_bounds_out_v1"
++CUDA_LBVH_TOPOLOGY_ORIGIN_ID = "cuda_morton30_karras_source_index_tiebreak_v1"
++CUDA_LBVH_TOPOLOGY_LIFETIME = "transaction_output_arena_lease_v1"
++CUDA_LBVH_EXTENSION_ABI_VERSION = "q54.p12.4.cuda-lbvh-extension.v3"
++CUDA_LBVH_WORKSPACE_SCHEMA_VERSION = "q54.p12.4.cuda-lbvh-workspace.v1"
++CUDA_LBVH_STAGE_SCHEMA_VERSION = "q54.p12.4.cuda-lbvh-stage.v1"
++CUDA_LBVH_MAX_PRIMITIVES = 357_913_941
++_PREPARED_EXTENSION_TOKEN = object()
++_CUDA_LBVH_EXTENSION_SOURCE_SHA256 = hashlib.sha256(
++    (CUDA_LBVH_EXTENSION_ABI_VERSION + CPP_SOURCE + CUDA_SOURCE).encode("utf-8")
++).hexdigest()
++
++
++@dataclass(frozen=True)
++class CudaLbvhWorkspaceRequirements:
++    """Frozen CUB workspace sizing result for one device/count/source tuple."""
++
++    schema_version: str
++    extension_abi_version: str
++    extension_source_sha256: str
++    device_ordinal: int
++    compute_capability: tuple[int, int]
++    primitive_count: int
++    node_capacity: int
++    reduction_temp_bytes: int
++    radix_sort_temp_bytes: int
++    required_bytes: int
++    alignment_bytes: int
++
++    def to_payload(self) -> dict[str, object]:
++        return {
++            "schema_version": self.schema_version,
++            "extension_abi_version": self.extension_abi_version,
++            "extension_source_sha256": self.extension_source_sha256,
++            "device_ordinal": self.device_ordinal,
++            "compute_capability": list(self.compute_capability),
++            "primitive_count": self.primitive_count,
++            "node_capacity": self.node_capacity,
++            "reduction_temp_bytes": self.reduction_temp_bytes,
++            "radix_sort_temp_bytes": self.radix_sort_temp_bytes,
++            "required_bytes": self.required_bytes,
++            "alignment_bytes": self.alignment_bytes,
++        }
++
++    @property
++    def sha256(self) -> str:
++        return _canonical_sha256(self.to_payload())
++
++
++@dataclass(frozen=True)
++class CudaLbvhWorkspace:
++    """Caller-owned aligned opaque workspace and its exact requirement."""
++
++    storage: object
++    requirements: CudaLbvhWorkspaceRequirements
++    resources: tuple[object, ...] = ()
++
++    @property
++    def coverage_sha256(self) -> str:
++        return _canonical_sha256(
++            {
++                "requirements_sha256": self.requirements.sha256,
++                "storage": _tensor_manifest("workspace", self.storage),
++            }
++        )
++
++
++@dataclass(frozen=True)
++class CudaLbvhBuffers:
++    """Caller-owned mutable outputs for one native CUDA LBVH rebuild."""
++
++    device_ordinal: int
++    primitive_count: int
++    node_count: int
++    scene_bounds_min: object
++    scene_bounds_max: object
++    morton_keys: object
++    primitive_ids: object
++    sorted_morton_keys: object
++    sorted_primitive_ids: object
++    left: object
++    right: object
++    parent: object
++    start: object
++    count: object
++    range_start: object
++    range_end: object
++    split: object
++    node_bounds_min: object
++    node_bounds_max: object
++    child_counter: object
++    resources: tuple[object, ...] = ()
++
++    def tensor_items(self) -> tuple[tuple[str, object], ...]:
++        return tuple(
++            (name, getattr(self, name))
++            for name in (
++                "scene_bounds_min",
++                "scene_bounds_max",
++                "morton_keys",
++                "primitive_ids",
++                "sorted_morton_keys",
++                "sorted_primitive_ids",
++                "left",
++                "right",
++                "parent",
++                "start",
++                "count",
++                "range_start",
++                "range_end",
++                "split",
++                "node_bounds_min",
++                "node_bounds_max",
++                "child_counter",
++            )
++        )
++
++
++@dataclass(frozen=True)
++class CudaLbvhRebuildStageEvidence:
++    """Independent acceleration facts derived from one sealed native stage."""
++
++    schema_version: str
++    operation_id: str
++    acceleration_id: str
++    topology_origin_id: str
++    topology_lifetime: str
++    extension_abi_version: str
++    extension_source_sha256: str
++    extension_entry: str | None
++    device_ordinal: int
++    stream_handle: int
++    native_input_manifest_sha256: str
++    scene_contract_sha256: str
++    input_contract: str
++    primitive_count: int
++    node_count: int
++    leaf_count: int
++    workspace_requirements_sha256: str
++    workspace_coverage_sha256: str
++    input_storage_sha256: str
++    output_storage_sha256: str
++    extension_dispatch_count: int
++    kernel_dispatch_count: int
++    cub_dispatch_count: int
++    async_reset_count: int
++    dispatch_plan_sha256: str
++
++    @property
++    def sha256(self) -> str:
++        return _canonical_sha256(self.__dict__)
++
++
++def cuda_lbvh_workspace_requirements(
++    primitive_count: int,
++    device_ordinal: int,
++) -> CudaLbvhWorkspaceRequirements:
++    """Query CUB scratch size outside native timing for one indexed device."""
++
++    _require_torch_cuda_lbvh()
++    _validate_primitive_count(primitive_count)
++    if not isinstance(device_ordinal, int) or isinstance(device_ordinal, bool):
++        raise TypeError("device_ordinal must be an integer")
++    if device_ordinal < 0 or device_ordinal >= torch.cuda.device_count():
++        raise ValueError("device_ordinal is out of range")
++    module = _load_cuda_lbvh_extension()
++    with torch.cuda.device(device_ordinal):
++        reduction_bytes, radix_bytes, alignment_bytes = module.cuda_lbvh_workspace_requirements(
++            primitive_count, device_ordinal
++        )
++        properties = torch.cuda.get_device_properties(device_ordinal)
++    reduction_bytes = int(reduction_bytes)
++    radix_bytes = int(radix_bytes)
++    alignment_bytes = int(alignment_bytes)
++    if min(reduction_bytes, radix_bytes) < 0 or alignment_bytes <= 0:
++        raise RuntimeError("CUDA LBVH extension returned invalid workspace requirements")
++    return CudaLbvhWorkspaceRequirements(
++        schema_version=CUDA_LBVH_WORKSPACE_SCHEMA_VERSION,
++        extension_abi_version=CUDA_LBVH_EXTENSION_ABI_VERSION,
++        extension_source_sha256=_CUDA_LBVH_EXTENSION_SOURCE_SHA256,
++        device_ordinal=device_ordinal,
++        compute_capability=(int(properties.major), int(properties.minor)),
++        primitive_count=primitive_count,
++        node_capacity=_node_count(primitive_count),
++        reduction_temp_bytes=reduction_bytes,
++        radix_sort_temp_bytes=radix_bytes,
++        required_bytes=max(reduction_bytes, radix_bytes),
++        alignment_bytes=alignment_bytes,
++    )
++
++
++def allocate_cuda_lbvh_workspace(
++    requirements: CudaLbvhWorkspaceRequirements,
++) -> CudaLbvhWorkspace:
++    """Allocate aligned scratch outside timing; C4 supplies final arena storage."""
++
++    _require_torch_cuda_lbvh()
++    _validate_requirements(requirements)
++    device = torch.device("cuda", requirements.device_ordinal)
++    required = requirements.required_bytes
++    alignment = requirements.alignment_bytes
++    with torch.cuda.device(device):
++        if required == 0:
++            owner = torch.empty((0,), dtype=torch.uint8, device=device)
++            storage = owner
++        else:
++            owner = torch.empty((required + alignment - 1,), dtype=torch.uint8, device=device)
++            offset = (-int(owner.data_ptr())) % alignment
++            storage = owner[offset : offset + required]
++    workspace = CudaLbvhWorkspace(
++        storage=storage,
++        requirements=requirements,
++        resources=(owner,),
++    )
++    _validate_workspace(workspace, requirements)
++    return workspace
++
++
++def allocate_cuda_lbvh_buffers(
++    *,
++    primitive_count: int,
++    device: object,
++) -> CudaLbvhBuffers:
++    """Allocate one setup/test output graph outside native timed submission."""
++
++    _require_torch_cuda_lbvh()
++    _validate_primitive_count(primitive_count)
++    target = _indexed_cuda_device(device)
++    node_count = _node_count(primitive_count)
++    internal_count = max(primitive_count - 1, 0)
++    scene_shape = (3,) if primitive_count > 0 else (0,)
++    with torch.cuda.device(target):
++        values = {
++            "scene_bounds_min": torch.empty(scene_shape, dtype=torch.float32, device=target),
++            "scene_bounds_max": torch.empty(scene_shape, dtype=torch.float32, device=target),
++            "morton_keys": torch.empty((primitive_count,), dtype=torch.int64, device=target),
++            "primitive_ids": torch.empty((primitive_count,), dtype=torch.int32, device=target),
++            "sorted_morton_keys": torch.empty((primitive_count,), dtype=torch.int64, device=target),
++            "sorted_primitive_ids": torch.empty((primitive_count,), dtype=torch.int32, device=target),
++            "left": torch.empty((node_count,), dtype=torch.int32, device=target),
++            "right": torch.empty((node_count,), dtype=torch.int32, device=target),
++            "parent": torch.empty((node_count,), dtype=torch.int32, device=target),
++            "start": torch.empty((node_count,), dtype=torch.int32, device=target),
++            "count": torch.empty((node_count,), dtype=torch.int32, device=target),
++            "range_start": torch.empty((internal_count,), dtype=torch.int32, device=target),
++            "range_end": torch.empty((internal_count,), dtype=torch.int32, device=target),
++            "split": torch.empty((internal_count,), dtype=torch.int32, device=target),
++            "node_bounds_min": torch.empty((node_count, 3), dtype=torch.float32, device=target),
++            "node_bounds_max": torch.empty((node_count, 3), dtype=torch.float32, device=target),
++            "child_counter": torch.empty((internal_count,), dtype=torch.int32, device=target),
++        }
++    buffers = CudaLbvhBuffers(
++        device_ordinal=int(target.index),
++        primitive_count=primitive_count,
++        node_count=node_count,
++        resources=(),
++        **values,
++    )
++    _validate_buffers(buffers, target)
++    return buffers
++
++
++class CudaLbvhRebuildStageFactory:
++    """Prepare one immutable native LBVH operation identity outside timing."""
++
++    __slots__ = (
++        "_entry",
++        "_frozen_signature",
++        "_sealed",
++        "context",
++        "input_contract",
++        "module",
++        "native_input_manifest_sha256",
++        "primitive_count",
++        "requirements",
++        "scene_contract_sha256",
++    )
++
++    def __init__(
++        self,
++        *,
++        context: object,
++        primitive_count: int,
++        requirements: CudaLbvhWorkspaceRequirements,
++        module: object,
++        native_input_manifest_sha256: str,
++        scene_contract_sha256: str,
++        input_contract: str,
++        _prepared_extension_token: object | None = None,
++    ) -> None:
++        from .cuda_timeline import CudaOpticalExecutionContext
++
++        self._sealed = False
++        if _prepared_extension_token is not _PREPARED_EXTENSION_TOKEN:
++            raise ValueError("CUDA LBVH factory module must come from prepare()")
++        if not isinstance(context, CudaOpticalExecutionContext):
++            raise TypeError("CUDA LBVH factory requires CudaOpticalExecutionContext")
++        _validate_primitive_count(primitive_count)
++        _validate_requirements(requirements)
++        if requirements.primitive_count != primitive_count:
++            raise ValueError("CUDA LBVH requirements primitive count mismatch")
++        if requirements.device_ordinal != context.device.index:
++            raise ValueError("CUDA LBVH requirements are on the wrong device")
++        if (
++            not _sha256_text(native_input_manifest_sha256)
++            or not _sha256_text(scene_contract_sha256)
++            or not input_contract
++        ):
++            raise ValueError("CUDA LBVH provenance must be non-empty")
++        entry = getattr(module, "cuda_lbvh_rebuild_out", None)
++        if not callable(entry):
++            raise ValueError("CUDA LBVH extension is missing its fixed rebuild entry")
++        context._validate_identity()
++        self.context = context
++        self.primitive_count = primitive_count
++        self.requirements = requirements
++        self.module = module
++        self.native_input_manifest_sha256 = native_input_manifest_sha256
++        self.scene_contract_sha256 = scene_contract_sha256
++        self.input_contract = input_contract
++        self._entry = entry
++        self._frozen_signature = self._factory_signature()
++        object.__setattr__(self, "_sealed", True)
++
++    def __setattr__(self, name: str, value: object) -> None:
++        if getattr(self, "_sealed", False) or hasattr(self, "_frozen_signature"):
++            raise AttributeError("CUDA LBVH rebuild factory is immutable")
++        object.__setattr__(self, name, value)
++
++    def __delattr__(self, name: str) -> None:
++        raise AttributeError("CUDA LBVH rebuild factory is immutable")
++
++    @classmethod
++    def prepare(
++        cls,
++        *,
++        context: object,
++        primitive_count: int,
++        native_input_manifest_sha256: str,
++        scene_contract_sha256: str,
++        input_contract: str,
++    ) -> "CudaLbvhRebuildStageFactory":
++        """Load the extension and freeze workspace requirements outside timing."""
++
++        requirements = cuda_lbvh_workspace_requirements(
++            primitive_count,
++            int(getattr(context.device, "index", -1)),
++        )
++        return cls(
++            context=context,
++            primitive_count=primitive_count,
++            requirements=requirements,
++            module=_load_cuda_lbvh_extension(),
++            native_input_manifest_sha256=native_input_manifest_sha256,
++            scene_contract_sha256=scene_contract_sha256,
++            input_contract=input_contract,
++            _prepared_extension_token=_PREPARED_EXTENSION_TOKEN,
++        )
++
++    def bind(
++        self,
++        *,
++        world: CudaWorldSceneBuffers,
++        outputs: CudaLbvhBuffers,
++        workspace: CudaLbvhWorkspace,
++    ) -> "CudaLbvhRebuildStage":
++        """Seal exact caller-owned AABB, workspace, and output allocations."""
++
++        self._assert_stable()
++        _validate_world_aabbs(world, self.primitive_count, self.context.device)
++        _validate_buffers(outputs, self.context.device)
++        if outputs.primitive_count != self.primitive_count:
++            raise ValueError("CUDA LBVH output primitive count mismatch")
++        _validate_workspace(workspace, self.requirements)
++        _validate_lbvh_storage_disjointness(world, outputs, workspace)
++        entry = self._entry if self.primitive_count > 0 else None
++        arguments = _lbvh_abi_arguments(world, outputs, workspace) if entry else ()
++        evidence = _build_stage_evidence(
++            factory=self,
++            world=world,
++            outputs=outputs,
++            workspace=workspace,
++            extension_entry=entry,
++        )
++        stage = CudaLbvhRebuildStage(
++            factory=self,
++            world=world,
++            outputs=outputs,
++            workspace=workspace,
++            extension_entry=entry,
++            extension_args=arguments,
++            evidence=evidence,
++        )
++        stage._validate_cuda_transaction_stage(self.context)
++        stage._freeze()
++        return stage
++
++    def _factory_signature(self) -> tuple[object, ...]:
++        return (
++            id(self.context),
++            self.context.device,
++            self.context.stream_handle,
++            id(self.context.stream),
++            self.primitive_count,
++            self.requirements,
++            self.requirements.sha256,
++            id(self.module),
++            id(self._entry),
++            CUDA_LBVH_EXTENSION_ABI_VERSION,
++            _CUDA_LBVH_EXTENSION_SOURCE_SHA256,
++            self.native_input_manifest_sha256,
++            self.scene_contract_sha256,
++            self.input_contract,
++        )
++
++    def _assert_stable(self) -> None:
++        self.context._validate_identity()
++        if self._factory_signature() != self._frozen_signature:
++            raise ValueError("CUDA LBVH rebuild factory changed after construction")
++
++
++class CudaLbvhRebuildStage:
++    """One immutable allocation-free native CUDA LBVH transaction stage."""
++
++    cuda_transaction_stage_name = "cuda_lbvh_rebuild"
++
++    __slots__ = (
++        "_binding_signature",
++        "_extension_args",
++        "_extension_entry",
++        "_sealed",
++        "evidence",
++        "factory",
++        "outputs",
++        "workspace",
++        "world",
++    )
++
++    def __init__(
++        self,
++        *,
++        factory: CudaLbvhRebuildStageFactory,
++        world: CudaWorldSceneBuffers,
++        outputs: CudaLbvhBuffers,
++        workspace: CudaLbvhWorkspace,
++        extension_entry: object | None,
++        extension_args: tuple[object, ...],
++        evidence: CudaLbvhRebuildStageEvidence,
++    ) -> None:
++        self._sealed = False
++        self.factory = factory
++        self.world = world
++        self.outputs = outputs
++        self.workspace = workspace
++        self._extension_entry = extension_entry
++        self._extension_args = extension_args
++        self.evidence = evidence
++        self._binding_signature: tuple[object, ...] | None = None
++
++    def __setattr__(self, name: str, value: object) -> None:
++        if getattr(self, "_sealed", False) or getattr(self, "_binding_signature", None) is not None:
++            raise AttributeError("CUDA LBVH rebuild stage is immutable")
++        object.__setattr__(self, name, value)
++
++    def __delattr__(self, name: str) -> None:
++        raise AttributeError("CUDA LBVH rebuild stage is immutable")
++
++    def enqueue(self, transaction: object) -> None:
++        """Invoke only the frozen native entry on the transaction stream."""
++
++        with transaction.enqueue_stage(self):
++            if self._extension_entry is not None:
++                transaction.record_diagnostic_start("acceleration_kernel")
++                self._extension_entry(*self._extension_args)
++                transaction.record_diagnostic_end("acceleration_kernel")
++
++    def _validate_cuda_transaction_stage(self, context: object) -> None:
++        if context is not self.factory.context:
++            raise ValueError("CUDA LBVH stage execution context identity mismatch")
++        self.factory._assert_stable()
++        _validate_world_aabbs(self.world, self.factory.primitive_count, context.device)
++        _validate_buffers(self.outputs, context.device)
++        _validate_workspace(self.workspace, self.factory.requirements)
++        _validate_lbvh_storage_disjointness(self.world, self.outputs, self.workspace)
++        expected_entry = self.factory._entry if self.factory.primitive_count > 0 else None
++        if self._extension_entry is not expected_entry:
++            raise ValueError("CUDA LBVH extension entry identity changed")
++        expected_arguments = (
++            _lbvh_abi_arguments(self.world, self.outputs, self.workspace)
++            if expected_entry is not None
++            else ()
++        )
++        if not _identity_arguments_match(self._extension_args, expected_arguments):
++            raise ValueError("CUDA LBVH fixed ABI binding changed")
++        expected_evidence = _build_stage_evidence(
++            factory=self.factory,
++            world=self.world,
++            outputs=self.outputs,
++            workspace=self.workspace,
++            extension_entry=expected_entry,
++        )
++        if self.evidence != expected_evidence:
++            raise ValueError("CUDA LBVH stage evidence changed from its bound ABI")
+ 
++    def _freeze(self) -> None:
++        if self._sealed or self._binding_signature is not None:
++            raise RuntimeError("CUDA LBVH rebuild stage seal is one-way")
++        object.__setattr__(self, "_binding_signature", self._stage_signature())
++        object.__setattr__(self, "_sealed", True)
+ 
+-from examples.cuda_lbvh_extension_spike import CPP_SOURCE, CUDA_SOURCE
++    def _assert_cuda_transaction_stage_stable(self, context: object) -> None:
++        if context is not self.factory.context:
++            raise ValueError("CUDA LBVH rebuild stage execution context changed")
++        if self._binding_signature is None or self._stage_signature() != self._binding_signature:
++            raise ValueError("CUDA LBVH rebuild stage binding changed after validation")
++
++    def _cuda_transaction_stage_evidence(self) -> CudaLbvhRebuildStageEvidence:
++        return self.evidence
++
++    def _stage_signature(self) -> tuple[object, ...]:
++        return (
++            self.factory._factory_signature(),
++            id(self.world),
++            id(self.outputs),
++            id(self.workspace),
++            id(self._extension_entry),
++            id(self._extension_args),
++            self.evidence,
++            _storage_manifest_sha256(_world_aabb_items(self.world)),
++            _storage_manifest_sha256(self.outputs.tensor_items()),
++            self.workspace.coverage_sha256,
++            tuple(id(resource) for resource in self.world.resources),
++            tuple(id(resource) for resource in self.outputs.resources),
++            tuple(id(resource) for resource in self.workspace.resources),
++        )
++
++
++def _build_stage_evidence(
++    *,
++    factory: CudaLbvhRebuildStageFactory,
++    world: CudaWorldSceneBuffers,
++    outputs: CudaLbvhBuffers,
++    workspace: CudaLbvhWorkspace,
++    extension_entry: object | None,
++) -> CudaLbvhRebuildStageEvidence:
++    plan = _dispatch_plan(factory.primitive_count)
++    return CudaLbvhRebuildStageEvidence(
++        schema_version=CUDA_LBVH_STAGE_SCHEMA_VERSION,
++        operation_id=CUDA_LBVH_OPERATION_ID,
++        acceleration_id=CUDA_LBVH_ACCELERATION_ID,
++        topology_origin_id=CUDA_LBVH_TOPOLOGY_ORIGIN_ID,
++        topology_lifetime=CUDA_LBVH_TOPOLOGY_LIFETIME,
++        extension_abi_version=CUDA_LBVH_EXTENSION_ABI_VERSION,
++        extension_source_sha256=_CUDA_LBVH_EXTENSION_SOURCE_SHA256,
++        extension_entry=("cuda_lbvh_rebuild_out" if extension_entry is not None else None),
++        device_ordinal=int(factory.context.device.index),
++        stream_handle=factory.context.stream_handle,
++        native_input_manifest_sha256=factory.native_input_manifest_sha256,
++        scene_contract_sha256=factory.scene_contract_sha256,
++        input_contract=factory.input_contract,
++        primitive_count=factory.primitive_count,
++        node_count=_node_count(factory.primitive_count),
++        leaf_count=factory.primitive_count,
++        workspace_requirements_sha256=factory.requirements.sha256,
++        workspace_coverage_sha256=workspace.coverage_sha256,
++        input_storage_sha256=_storage_manifest_sha256(_world_aabb_items(world)),
++        output_storage_sha256=_storage_manifest_sha256(outputs.tensor_items()),
++        extension_dispatch_count=1 if factory.primitive_count > 0 else 0,
++        kernel_dispatch_count=_kernel_dispatch_count(factory.primitive_count),
++        cub_dispatch_count=7 if factory.primitive_count > 0 else 0,
++        async_reset_count=(9 if factory.primitive_count > 1 else 5) if factory.primitive_count > 0 else 0,
++        dispatch_plan_sha256=_canonical_sha256(plan),
++    )
++
++
++def _dispatch_plan(primitive_count: int) -> tuple[dict[str, object], ...]:
++    if primitive_count == 0:
++        return ()
++    operations: list[dict[str, object]] = [
++        {"operation": "scene_bounds_cub_reduce", "count": 6},
++        {"operation": "topology_integer_async_reset", "count": 5},
++        {"operation": "morton30_source_index", "count": 1},
++        {"operation": "cub_radix_sort_pairs", "count": 1},
++        {"operation": "leaf_metadata", "count": 1},
++    ]
++    if primitive_count > 1:
++        operations.extend(
++            (
++                {"operation": "internal_integer_async_reset", "count": 4},
++                {"operation": "karras_internal_topology", "count": 1},
++            )
++        )
++    operations.extend(
++        (
++            {"operation": "node_bounds_initialize", "count": 1},
++            {"operation": "leaf_bounds", "count": 1},
++        )
++    )
++    if primitive_count > 1:
++        operations.append({"operation": "internal_bounds", "count": 1})
++    return tuple(operations)
++
++
++def _kernel_dispatch_count(primitive_count: int) -> int:
++    if primitive_count == 0:
++        return 0
++    return 6 if primitive_count > 1 else 4
++
++
++def _lbvh_abi_arguments(
++    world: CudaWorldSceneBuffers,
++    outputs: CudaLbvhBuffers,
++    workspace: CudaLbvhWorkspace,
++) -> tuple[object, ...]:
++    return (
++        world.triangle_aabb_min,
++        world.triangle_aabb_max,
++        workspace.storage,
++        outputs.scene_bounds_min,
++        outputs.scene_bounds_max,
++        outputs.morton_keys,
++        outputs.primitive_ids,
++        outputs.sorted_morton_keys,
++        outputs.sorted_primitive_ids,
++        outputs.left,
++        outputs.right,
++        outputs.parent,
++        outputs.start,
++        outputs.count,
++        outputs.range_start,
++        outputs.range_end,
++        outputs.split,
++        outputs.node_bounds_min,
++        outputs.node_bounds_max,
++        outputs.child_counter,
++    )
++
++
++def _identity_arguments_match(
++    actual: tuple[object, ...],
++    expected: tuple[object, ...],
++) -> bool:
++    return len(actual) == len(expected) and all(
++        actual_value is expected_value for actual_value, expected_value in zip(actual, expected, strict=True)
++    )
++
++
++def _validate_primitive_count(primitive_count: int) -> None:
++    if not isinstance(primitive_count, int) or isinstance(primitive_count, bool):
++        raise TypeError("primitive_count must be an integer")
++    if primitive_count < 0 or primitive_count > CUDA_LBVH_MAX_PRIMITIVES:
++        raise ValueError("primitive_count exceeds the int32 flattened-node range")
++
++
++def _node_count(primitive_count: int) -> int:
++    return 0 if primitive_count == 0 else primitive_count * 2 - 1
++
++
++def _indexed_cuda_device(device: object):
++    target = torch.device(device)
++    if target.type != "cuda" or target.index is None:
++        raise ValueError("CUDA LBVH requires an indexed CUDA device")
++    if target.index < 0 or target.index >= torch.cuda.device_count():
++        raise ValueError("CUDA LBVH device index is out of range")
++    return target
++
++
++def _validate_requirements(requirements: CudaLbvhWorkspaceRequirements) -> None:
++    if not isinstance(requirements, CudaLbvhWorkspaceRequirements):
++        raise TypeError("requirements must be CudaLbvhWorkspaceRequirements")
++    _validate_primitive_count(requirements.primitive_count)
++    if (
++        requirements.schema_version != CUDA_LBVH_WORKSPACE_SCHEMA_VERSION
++        or requirements.extension_abi_version != CUDA_LBVH_EXTENSION_ABI_VERSION
++        or requirements.extension_source_sha256 != _CUDA_LBVH_EXTENSION_SOURCE_SHA256
++        or requirements.node_capacity != _node_count(requirements.primitive_count)
++        or len(requirements.compute_capability) != 2
++        or requirements.reduction_temp_bytes < 0
++        or requirements.radix_sort_temp_bytes < 0
++        or requirements.required_bytes
++        != max(requirements.reduction_temp_bytes, requirements.radix_sort_temp_bytes)
++        or requirements.alignment_bytes <= 0
++    ):
++        raise ValueError("CUDA LBVH workspace requirements are stale or invalid")
++
++
++def _validate_workspace(
++    workspace: CudaLbvhWorkspace,
++    requirements: CudaLbvhWorkspaceRequirements,
++) -> None:
++    if not isinstance(workspace, CudaLbvhWorkspace):
++        raise TypeError("workspace must be CudaLbvhWorkspace")
++    _validate_requirements(requirements)
++    if workspace.requirements != requirements:
++        raise ValueError("CUDA LBVH workspace requirement identity mismatch")
++    _validate_tensor(
++        workspace.storage,
++        name="workspace",
++        device=torch.device("cuda", requirements.device_ordinal),
++        dtype=torch.uint8,
++        exact=(requirements.required_bytes,),
++    )
++    if requirements.required_bytes > 0 and (
++        int(workspace.storage.data_ptr()) % requirements.alignment_bytes != 0
++    ):
++        raise ValueError("CUDA LBVH workspace pointer is not sufficiently aligned")
++
++
++def _validate_world_aabbs(
++    world: CudaWorldSceneBuffers,
++    primitive_count: int,
++    device: object,
++) -> None:
++    if not isinstance(world, CudaWorldSceneBuffers):
++        raise TypeError("world must be CudaWorldSceneBuffers")
++    target = torch.device(device)
++    if world.device_ordinal != target.index:
++        raise ValueError("CUDA LBVH world buffers are on the wrong device")
++    _validate_tensor(
++        world.triangle_aabb_min,
++        name="triangle_aabb_min",
++        device=target,
++        dtype=torch.float32,
++        exact=(primitive_count, 3),
++    )
++    _validate_tensor(
++        world.triangle_aabb_max,
++        name="triangle_aabb_max",
++        device=target,
++        dtype=torch.float32,
++        exact=(primitive_count, 3),
++    )
++
++
++def _validate_buffers(buffers: CudaLbvhBuffers, device: object) -> None:
++    if not isinstance(buffers, CudaLbvhBuffers):
++        raise TypeError("outputs must be CudaLbvhBuffers")
++    _validate_primitive_count(buffers.primitive_count)
++    target = torch.device(device)
++    if buffers.device_ordinal != target.index:
++        raise ValueError("CUDA LBVH outputs are on the wrong device")
++    expected_node_count = _node_count(buffers.primitive_count)
++    if buffers.node_count != expected_node_count:
++        raise ValueError("CUDA LBVH output node count is invalid")
++    internal_count = max(buffers.primitive_count - 1, 0)
++    scene_shape = (3,) if buffers.primitive_count > 0 else (0,)
++    expected = {
++        "scene_bounds_min": (torch.float32, scene_shape),
++        "scene_bounds_max": (torch.float32, scene_shape),
++        "morton_keys": (torch.int64, (buffers.primitive_count,)),
++        "primitive_ids": (torch.int32, (buffers.primitive_count,)),
++        "sorted_morton_keys": (torch.int64, (buffers.primitive_count,)),
++        "sorted_primitive_ids": (torch.int32, (buffers.primitive_count,)),
++        "left": (torch.int32, (expected_node_count,)),
++        "right": (torch.int32, (expected_node_count,)),
++        "parent": (torch.int32, (expected_node_count,)),
++        "start": (torch.int32, (expected_node_count,)),
++        "count": (torch.int32, (expected_node_count,)),
++        "range_start": (torch.int32, (internal_count,)),
++        "range_end": (torch.int32, (internal_count,)),
++        "split": (torch.int32, (internal_count,)),
++        "node_bounds_min": (torch.float32, (expected_node_count, 3)),
++        "node_bounds_max": (torch.float32, (expected_node_count, 3)),
++        "child_counter": (torch.int32, (internal_count,)),
++    }
++    for name, (dtype, shape) in expected.items():
++        _validate_tensor(
++            getattr(buffers, name),
++            name=name,
++            device=target,
++            dtype=dtype,
++            exact=shape,
++        )
++
++
++def _validate_tensor(
++    value: object,
++    *,
++    name: str,
++    device: object,
++    dtype: object,
++    exact: tuple[int, ...],
++) -> None:
++    if not isinstance(value, torch.Tensor) or not value.is_cuda:
++        raise ValueError(f"{name} must be a CUDA tensor")
++    if value.device != torch.device(device):
++        raise ValueError(f"{name} must be on {torch.device(device)}")
++    if value.dtype != dtype:
++        raise ValueError(f"{name} has the wrong dtype")
++    if not value.is_contiguous():
++        raise ValueError(f"{name} must be contiguous")
++    if tuple(value.shape) != exact:
++        raise ValueError(f"{name} has the wrong shape")
++
++
++def _validate_lbvh_storage_disjointness(
++    world: CudaWorldSceneBuffers,
++    outputs: CudaLbvhBuffers,
++    workspace: CudaLbvhWorkspace,
++) -> None:
++    inputs = _world_aabb_items(world) + (("workspace", workspace.storage),)
++    nonempty_inputs = tuple(
++        (name, *_tensor_storage_span(value)) for name, value in inputs if int(value.numel()) > 0
++    )
++    for index, (name, start, end) in enumerate(nonempty_inputs):
++        for other_name, other_start, other_end in nonempty_inputs[:index]:
++            if start < other_end and other_start < end:
++                raise ValueError(f"CUDA LBVH inputs {name!r} and {other_name!r} overlap")
++    seen_outputs: list[tuple[str, int, int]] = []
++    for name, value in outputs.tensor_items():
++        if int(value.numel()) == 0:
++            continue
++        start, end = _tensor_storage_span(value)
++        for input_name, input_start, input_end in nonempty_inputs:
++            if start < input_end and input_start < end:
++                raise ValueError(f"CUDA LBVH output {name!r} overlaps input {input_name!r}")
++        for other_name, other_start, other_end in seen_outputs:
++            if start < other_end and other_start < end:
++                raise ValueError(f"CUDA LBVH outputs {name!r} and {other_name!r} overlap")
++        seen_outputs.append((name, start, end))
++
++
++def _world_aabb_items(
++    world: CudaWorldSceneBuffers,
++) -> tuple[tuple[str, object], ...]:
++    return (
++        ("triangle_aabb_min", world.triangle_aabb_min),
++        ("triangle_aabb_max", world.triangle_aabb_max),
++    )
++
++
++def _tensor_storage_span(value: object) -> tuple[int, int]:
++    start = int(value.data_ptr())
++    return start, start + int(value.numel()) * int(value.element_size())
++
++
++def _tensor_manifest(name: str, value: object) -> dict[str, object]:
++    return {
++        "name": name,
++        "device_ordinal": int(value.device.index),
++        "ptr": int(value.data_ptr()),
++        "dtype": str(value.dtype),
++        "shape": list(value.shape),
++        "stride": list(value.stride()),
++        "nbytes": int(value.numel()) * int(value.element_size()),
++    }
++
++
++def _storage_manifest_sha256(values: tuple[tuple[str, object], ...]) -> str:
++    return _canonical_sha256([_tensor_manifest(name, value) for name, value in values])
++
++
++def _canonical_sha256(value: object) -> str:
++    encoded = json.dumps(
++        value,
++        allow_nan=False,
++        ensure_ascii=True,
++        separators=(",", ":"),
++        sort_keys=True,
++    ).encode("utf-8")
++    return hashlib.sha256(encoded).hexdigest()
++
++
++def _sha256_text(value: object) -> bool:
++    return (
++        isinstance(value, str)
++        and len(value) == 64
++        and all(character in "0123456789abcdef" for character in value)
++    )
+ 
+ 
+ def build_cuda_lbvh_from_snapshot(
+@@ -31,14 +910,11 @@ def build_cuda_lbvh_from_snapshot(
+     device=None,
+     stream=None,
+ ) -> DeviceOpticalBvh:
+-    """Build a leaf-size-1 CUDA LBVH and expose it as a `DeviceOpticalBvh`.
++    """Allocating Warp/Torch compatibility facade; never native-benchmark eligible."""
+ 
+-    This first integrated CUDA path supports traversal parity only. It does not
+-    yet fill true `node_depth` / `level_ranges`, so GPU refit is explicitly
+-    disabled on the returned BVH.
+-    """
+     total_start = time.perf_counter()
+-    _require_cuda_lbvh_deps()
++    _require_torch_cuda_lbvh()
++    _require_warp_compat()
+     if snapshot.triangle_aabb_min is None or snapshot.triangle_aabb_max is None:
+         raise ValueError("build_cuda_lbvh_from_snapshot requires AABB snapshot buffers")
+     wp.init()
+@@ -52,79 +928,90 @@ def build_cuda_lbvh_from_snapshot(
+         wp.synchronize_event(snapshot.ready_event)
+         detail_ms.append(("wait_snapshot_ready", (time.perf_counter() - wait_start) * 1000.0))
+ 
+-    load_start = time.perf_counter()
+-    module = _load_cuda_lbvh_extension()
+-    detail_ms.append(("load_extension", (time.perf_counter() - load_start) * 1000.0))
+-
+     convert_start = time.perf_counter()
+     aabb_min_t = wp.to_torch(snapshot.triangle_aabb_min).contiguous()
+     aabb_max_t = wp.to_torch(snapshot.triangle_aabb_max).contiguous()
+     detail_ms.append(("warp_to_torch_aabb", (time.perf_counter() - convert_start) * 1000.0))
++    ordinal = int(resolved_device.ordinal)
++    target = torch.device("cuda", ordinal)
++    empty_triangle = torch.empty((aabb_min_t.shape[0], 3), dtype=torch.float32, device=target)
++    empty_plane = torch.empty((0, 3), dtype=torch.float32, device=target)
++    world = CudaWorldSceneBuffers(
++        device_ordinal=ordinal,
++        triangle_v0_world=empty_triangle,
++        triangle_e1_world=torch.empty_like(empty_triangle),
++        triangle_e2_world=torch.empty_like(empty_triangle),
++        triangle_normal_world=torch.empty_like(empty_triangle),
++        plane_normal_world=empty_plane,
++        plane_point_world=torch.empty_like(empty_plane),
++        triangle_aabb_min=aabb_min_t,
++        triangle_aabb_max=aabb_max_t,
++        resources=(snapshot,),
++    )
++    primitive_count = int(aabb_min_t.shape[0])
++    scene_contract_sha256 = snapshot.scene.scene_contract_sha256 or _canonical_sha256(
++        {
++            "compatibility_scene": id(snapshot.scene),
++            "primitive_count": primitive_count,
++        }
++    )
++    native_manifest_sha256 = _canonical_sha256(
++        {
++            "compatibility_only": True,
++            "frame_id": snapshot.frame_id,
++            "scene_contract_sha256": scene_contract_sha256,
++            "aabb_storage": [
++                _tensor_manifest("triangle_aabb_min", aabb_min_t),
++                _tensor_manifest("triangle_aabb_max", aabb_max_t),
++            ],
++        }
++    )
++    from .cuda_timeline import CudaOpticalExecutionContext
+ 
+-    scene_bounds_start = _record_torch_event()
+-    scene_min_t = torch.min(aabb_min_t, dim=0).values.contiguous()
+-    scene_max_t = torch.max(aabb_max_t, dim=0).values.contiguous()
+-    scene_bounds_end = _record_torch_event()
+-
+-    build_start = time.perf_counter()
+-    morton_start = _record_torch_event()
+-    sorted_keys_t, sorted_prim_ids_t = module.morton_sort_aabbs(
+-        aabb_min_t,
+-        aabb_max_t,
+-        scene_min_t,
+-        scene_max_t,
+-    )
+-    morton_end = _record_torch_event()
+-    topology_start = _record_torch_event()
+-    (
+-        left_t,
+-        right_t,
+-        _parent_t,
+-        start_t,
+-        count_t,
+-        _range_start_t,
+-        _range_end_t,
+-        _split_t,
+-        bounds_min_t,
+-        bounds_max_t,
+-    ) = module.build_lbvh_topology_and_bounds(
+-        sorted_keys_t,
+-        sorted_prim_ids_t,
+-        aabb_min_t,
+-        aabb_max_t,
++    with torch.cuda.device(target):
++        torch_stream = torch.cuda.Stream(device=target)
++        completion_event = torch.cuda.Event(enable_timing=False)
++        completion_event.record(torch_stream)
++    context = CudaOpticalExecutionContext(device=target, stream=torch_stream)
++    factory = CudaLbvhRebuildStageFactory.prepare(
++        context=context,
++        primitive_count=primitive_count,
++        native_input_manifest_sha256=native_manifest_sha256,
++        scene_contract_sha256=scene_contract_sha256,
++        input_contract="legacy_warp_snapshot_bridge_v1",
+     )
+-    topology_end = _record_torch_event()
+-    sync_start = time.perf_counter()
+-    torch.cuda.synchronize()
+-    sync_ms = (time.perf_counter() - sync_start) * 1000.0
++    outputs = allocate_cuda_lbvh_buffers(primitive_count=primitive_count, device=target)
++    workspace = allocate_cuda_lbvh_workspace(factory.requirements)
++    stage = factory.bind(world=world, outputs=outputs, workspace=workspace)
++    build_start = time.perf_counter()
++    transaction = context.begin_transaction(stages=(stage,), completion_event=completion_event)
++    stage.enqueue(transaction)
++    completion = transaction.finish()
++    completion.event.synchronize()
+     build_ms = (time.perf_counter() - build_start) * 1000.0
+     detail_ms.extend(
+         (
+-            ("scene_bounds_device", _elapsed_torch_ms(scene_bounds_start, scene_bounds_end)),
+-            ("morton_sort_device", _elapsed_torch_ms(morton_start, morton_end)),
+-            ("topology_bounds_device", _elapsed_torch_ms(topology_start, topology_end)),
+-            ("cuda_build_wait", build_ms),
+-            ("torch_synchronize_wait", sync_ms),
++            ("native_cuda_lbvh_transaction_and_wait", build_ms),
++            ("compatibility_allocations_and_bridge", (build_start - total_start) * 1000.0),
+         )
+     )
+ 
+     metadata_start = time.perf_counter()
+-    num_primitives = int(sorted_prim_ids_t.shape[0])
+-    num_nodes = int(left_t.shape[0])
+-    node_depth_t = torch.zeros((num_nodes,), dtype=torch.int32, device=sorted_prim_ids_t.device)
+-    level_ranges_t = torch.empty((0, 2), dtype=torch.int32, device=sorted_prim_ids_t.device)
++    num_nodes = outputs.node_count
++    node_depth_t = torch.zeros((num_nodes,), dtype=torch.int32, device=target)
++    level_ranges_t = torch.empty((0, 2), dtype=torch.int32, device=target)
+     detail_ms.append(("metadata_tensor_alloc", (time.perf_counter() - metadata_start) * 1000.0))
+ 
+     wrap_start = time.perf_counter()
+-    bounds_min = wp.from_torch(bounds_min_t, dtype=wp.float32)
+-    bounds_max = wp.from_torch(bounds_max_t, dtype=wp.float32)
+-    left = wp.from_torch(left_t, dtype=wp.int32)
+-    right = wp.from_torch(right_t, dtype=wp.int32)
+-    start = wp.from_torch(start_t, dtype=wp.int32)
+-    count = wp.from_torch(count_t, dtype=wp.int32)
++    bounds_min = wp.from_torch(outputs.node_bounds_min, dtype=wp.float32)
++    bounds_max = wp.from_torch(outputs.node_bounds_max, dtype=wp.float32)
++    left = wp.from_torch(outputs.left, dtype=wp.int32)
++    right = wp.from_torch(outputs.right, dtype=wp.int32)
++    start = wp.from_torch(outputs.start, dtype=wp.int32)
++    count = wp.from_torch(outputs.count, dtype=wp.int32)
+     node_depth = wp.from_torch(node_depth_t, dtype=wp.int32)
+     level_ranges = wp.from_torch(level_ranges_t, dtype=wp.int32)
+-    prim_ids = wp.from_torch(sorted_prim_ids_t, dtype=wp.int32)
++    prim_ids = wp.from_torch(outputs.sorted_primitive_ids, dtype=wp.int32)
+     detail_ms.append(("torch_to_warp_views", (time.perf_counter() - wrap_start) * 1000.0))
+ 
+     event_start = time.perf_counter()
+@@ -133,7 +1020,7 @@ def build_cuda_lbvh_from_snapshot(
+ 
+     stats = DeviceBvhBuildStats(
+         num_nodes=num_nodes,
+-        num_leaves=num_primitives,
++        num_leaves=primitive_count,
+         max_depth=0,
+         leaf_size=1,
+         sah_quality_cost=0.0,
+@@ -146,16 +1033,12 @@ def build_cuda_lbvh_from_snapshot(
+         detail_ms=tuple(detail_ms),
+     )
+     resources = (
+-        bounds_min_t,
+-        bounds_max_t,
+-        left_t,
+-        right_t,
+-        start_t,
+-        count_t,
++        outputs,
++        workspace,
++        stage,
++        completion,
+         node_depth_t,
+         level_ranges_t,
+-        sorted_prim_ids_t,
+-        sorted_keys_t,
+         aabb_min_t,
+         aabb_max_t,
+     )
+@@ -181,6 +1064,7 @@ def build_cuda_lbvh_from_snapshot(
+         primitive_geometry_primitive_index=scene.triangle_geometry_primitive_index,
+         primitive_source_order_key=scene.triangle_source_order_key,
+         stats=stats,
++        topology_origin_id=CUDA_LBVH_TOPOLOGY_ORIGIN_ID,
+         scene_contract_sha256=scene.scene_contract_sha256,
+         ready_event=ready_event,
+         resources=resources,
+@@ -189,9 +1073,9 @@ def build_cuda_lbvh_from_snapshot(
+ 
+ @lru_cache(maxsize=1)
+ def _load_cuda_lbvh_extension():
+-    _require_cuda_lbvh_deps()
++    _require_torch_cuda_lbvh()
+     return load_inline(
+-        name="robot_sim_cuda_lbvh_spike_v2",
++        name="robot_sim_cuda_lbvh_native_v3",
+         cpp_sources=[CPP_SOURCE],
+         cuda_sources=[CUDA_SOURCE],
+         with_cuda=True,
+@@ -201,18 +1085,13 @@ def _load_cuda_lbvh_extension():
+     )
+ 
+ 
+-def _require_cuda_lbvh_deps() -> None:
+-    if not _HAS_CUDA_LBVH_DEPS:
+-        raise ImportError("CUDA LBVH builder requires torch, warp, and torch CUDA extension tooling")
++def _require_torch_cuda_lbvh() -> None:
++    if not _HAS_TORCH_CUDA_LBVH_DEPS:
++        raise ImportError("CUDA LBVH rebuild requires Torch CUDA extension tooling")
+     if not torch.cuda.is_available():
+-        raise ImportError("CUDA LBVH builder requires torch CUDA availability")
+-
+-
+-def _record_torch_event():
+-    event = torch.cuda.Event(enable_timing=True)
+-    event.record()
+-    return event
++        raise ImportError("CUDA LBVH rebuild requires Torch CUDA availability")
+ 
+ 
+-def _elapsed_torch_ms(start, end) -> float:
+-    return float(start.elapsed_time(end))
++def _require_warp_compat() -> None:
++    if not _HAS_WARP_COMPAT:
++        raise ImportError("legacy CUDA LBVH compatibility requires Warp")

@@ -1,0 +1,1262 @@
+diff --git a/benchmarks/optical/__init__.py b/benchmarks/optical/__init__.py
+index 3450bf9..b5b1baf 100644
+--- a/benchmarks/optical/__init__.py
++++ b/benchmarks/optical/__init__.py
+@@ -1,5 +1,6 @@
+ """Durable optical benchmark contracts for the selected production backend."""
+ 
++from .arena import native_optical_arena_spec_from_frozen_row
+ from .assets import (
+     ASSET_MANIFEST_SCHEMA_VERSION,
+     AssetManifestEvidence,
+@@ -25,6 +26,7 @@ from .eligibility import (
+     LaneEligibilityEvidence,
+     LaneIneligibleError,
+     evaluate_lane_eligibility,
++    required_lifecycle_operations,
+     required_runtime_operations,
+     source_manifest_entry_point_audit,
+     validate_trace_entry_points,
+@@ -230,6 +232,7 @@ __all__ = [
+     "FORBIDDEN_TIMED_OPERATIONS",
+     "LaneSampleRequest",
+     "load_frozen_gate",
++    "native_optical_arena_spec_from_frozen_row",
+     "native_timed_submission",
+     "instrument_runtime_entry_points",
+     "OPERATION_TRACE_SCHEMA_VERSION",
+@@ -239,6 +242,7 @@ __all__ = [
+     "dynamic_scene_update_input_storage",
+     "ResolvedLaneSample",
+     "record_runtime_operation",
++    "required_lifecycle_operations",
+     "required_runtime_operations",
+     "runtime_hook_registry_sha256",
+     "source_manifest_entry_point_audit",
+diff --git a/benchmarks/optical/eligibility.py b/benchmarks/optical/eligibility.py
+index f6e448b..d32c51d 100644
+--- a/benchmarks/optical/eligibility.py
++++ b/benchmarks/optical/eligibility.py
+@@ -19,7 +19,7 @@ from .timing import (
+     RuntimeOperationTraceEvidence,
+ )
+ 
+-ELIGIBILITY_SCHEMA_VERSION = "q54.p12.4.lane-eligibility.v2"
++ELIGIBILITY_SCHEMA_VERSION = "q54.p12.4.lane-eligibility.v3"
+ ENTRY_POINT_AUDIT_SCHEMA_VERSION = "q54.p12.4.entry-point-audit.v2"
+ INPUT_CONTRACT_SCHEMA_VERSION = "q54.p12.4.input-contract.v2"
+ 
+@@ -220,6 +220,7 @@ class LaneEligibilityEvidence:
+     renderer_id: str
+     acceleration_id: str
+     required_operations: tuple[str, ...]
++    required_lifecycle_operations: tuple[str, ...]
+     entry_point_audits: tuple[EntryPointAudit, ...]
+     asset_manifest_sha256: str | None
+     eligible: bool
+@@ -237,6 +238,7 @@ class LaneEligibilityEvidence:
+             "renderer_id",
+             "acceleration_id",
+             "required_operations",
++            "required_lifecycle_operations",
+             "entry_point_audits",
+             "asset_manifest_sha256",
+             "eligible",
+@@ -258,6 +260,7 @@ class LaneEligibilityEvidence:
+             if not isinstance(payload.get(name), str) or not payload[name]:
+                 raise ValueError(f"lane eligibility {name} must be non-empty")
+         required = payload.get("required_operations")
++        lifecycle_required = payload.get("required_lifecycle_operations")
+         audits = payload.get("entry_point_audits")
+         reasons = payload.get("reason_codes")
+         if not isinstance(required, Sequence) or isinstance(required, (str, bytes)):
+@@ -267,6 +270,15 @@ class LaneEligibilityEvidence:
+             operation not in RUNTIME_OPERATION_KINDS for operation in required_tuple
+         ):
+             raise ValueError("lane eligibility required_operations are invalid")
++        if not isinstance(lifecycle_required, Sequence) or isinstance(lifecycle_required, (str, bytes)):
++            raise ValueError("lane eligibility required_lifecycle_operations must be an array")
++        lifecycle_required_tuple = tuple(lifecycle_required)
++        if len(set(lifecycle_required_tuple)) != len(lifecycle_required_tuple) or any(
++            operation not in RUNTIME_OPERATION_KINDS for operation in lifecycle_required_tuple
++        ):
++            raise ValueError("lane eligibility required_lifecycle_operations are invalid")
++        if set(required_tuple).intersection(lifecycle_required_tuple):
++            raise ValueError("submission and lifecycle operation sets must be disjoint")
+         if not isinstance(audits, Sequence) or isinstance(audits, (str, bytes)):
+             raise ValueError("lane eligibility entry_point_audits must be an array")
+         audit_tuple = tuple(EntryPointAudit.from_payload(item) for item in audits)
+@@ -293,6 +305,7 @@ class LaneEligibilityEvidence:
+             renderer_id=payload["renderer_id"],
+             acceleration_id=payload["acceleration_id"],
+             required_operations=required_tuple,
++            required_lifecycle_operations=lifecycle_required_tuple,
+             entry_point_audits=audit_tuple,
+             asset_manifest_sha256=asset_hash,
+             eligible=eligible,
+@@ -310,6 +323,7 @@ class LaneEligibilityEvidence:
+             "renderer_id": self.renderer_id,
+             "acceleration_id": self.acceleration_id,
+             "required_operations": list(self.required_operations),
++            "required_lifecycle_operations": list(self.required_lifecycle_operations),
+             "entry_point_audits": [audit.to_payload() for audit in self.entry_point_audits],
+             "asset_manifest_sha256": self.asset_manifest_sha256,
+             "eligible": self.eligible,
+@@ -370,25 +384,32 @@ def verified_runtime_entry_point_audit(
+ 
+ 
+ def required_runtime_operations(row: Mapping[str, Any]) -> tuple[str, ...]:
+-    """Return the minimum high-level instrumented operations for one row."""
++    """Return only operations executed in the guarded submission interval."""
+ 
+     boundary = row.get("boundary")
+     operations: list[str]
+     if boundary == "R0":
+-        operations = ["render"]
++        operations = ["render", "terminal_completion"]
+     elif boundary == "R1":
+-        operations = ["scene_update", "acceleration", "render", "reclaim"]
++        operations = [
++            "arena_acquire",
++            "scene_update",
++            "acceleration",
++            "render",
++            "terminal_completion",
++        ]
+     elif boundary == "R2":
+-        operations = ["scene_update", "acceleration", "render"]
++        operations = ["arena_acquire", "scene_update", "acceleration", "render"]
+         if row.get("payload") == "rgb8":
+             operations.append("pack")
+-        operations.extend(("delivery", "reclaim"))
++        operations.extend(("delivery", "terminal_completion"))
+     elif boundary == "S":
+         operations = [
+             "physics_step",
+             "publication",
+             "stream_wait",
+             "view_binding",
++            "arena_acquire",
+             "scene_update",
+             "consumer_completion",
+             "acceleration",
+@@ -396,12 +417,25 @@ def required_runtime_operations(row: Mapping[str, Any]) -> tuple[str, ...]:
+         ]
+         if row.get("payload") == "rgb8":
+             operations.append("pack")
+-        operations.extend(("delivery", "reclaim"))
++        operations.extend(("delivery", "terminal_completion"))
+     else:
+         raise ValueError(f"unsupported benchmark boundary {boundary!r}")
+     return tuple(operations)
+ 
+ 
++def required_lifecycle_operations(row: Mapping[str, Any]) -> tuple[str, ...]:
++    """Return source-audited lifecycle calls that occur outside submission.
++
++    Reclaim remains mandatory and source-bound, but it is deliberately absent
++    from :func:`required_runtime_operations`: actual reclaim evidence must come
++    from the C4 arena state machine during resolve/drain.
++    """
++
++    if row.get("boundary") not in {"R0", "R1", "R2", "S"}:
++        raise ValueError(f"unsupported benchmark boundary {row.get('boundary')!r}")
++    return ("reclaim",)
++
++
+ def evaluate_lane_eligibility(
+     *,
+     row: Mapping[str, Any],
+@@ -424,8 +458,10 @@ def evaluate_lane_eligibility(
+         raise ValueError(f"unsupported acceleration class {acceleration_class!r}")
+     audits = tuple(entry_point_audits)
+     required = required_runtime_operations(row)
++    lifecycle_required = required_lifecycle_operations(row)
++    audited_required = required + lifecycle_required
+     reasons: list[str] = []
+-    for operation in required:
++    for operation in audited_required:
+         matching = tuple(audit for audit in audits if audit.operation == operation)
+         if not matching:
+             reasons.append(f"missing_entry_point:{operation}")
+@@ -464,6 +500,7 @@ def evaluate_lane_eligibility(
+         renderer_id=str(binding["renderer_id"]),
+         acceleration_id=str(acceleration_id),
+         required_operations=required,
++        required_lifecycle_operations=lifecycle_required,
+         entry_point_audits=audits,
+         asset_manifest_sha256=asset_manifest_sha256,
+         eligible=not reasons,
+@@ -504,6 +541,16 @@ def validate_trace_entry_points(
+     ]
+     if unaudited:
+         raise ValueError(f"operation trace contains unaudited entry points: {unaudited}")
++    lifecycle_leaks = [
++        (record.sequence, record.operation)
++        for record in evidence.records
++        if record.operation in eligibility.required_lifecycle_operations
++    ]
++    if lifecycle_leaks:
++        raise ValueError(
++            "submission operation trace contains lifecycle-only operations: "
++            f"{lifecycle_leaks}"
++        )
+ 
+ 
+ def _sha256_text(value: object) -> bool:
+diff --git a/benchmarks/optical/lanes/audit.py b/benchmarks/optical/lanes/audit.py
+index 5b5b863..a4350f2 100644
+--- a/benchmarks/optical/lanes/audit.py
++++ b/benchmarks/optical/lanes/audit.py
+@@ -26,6 +26,11 @@ class _SourceCoverage:
+ 
+ 
+ _SHARED_SOURCE_COVERAGE = (
++    _SourceCoverage(
++        operation="arena_acquire",
++        entry_point="optics.native_arena.NativeOpticalArena.acquire",
++        source_symbols=("optics.native_arena.NativeOpticalArena.acquire",),
++    ),
+     _SourceCoverage(
+         operation="delivery",
+         entry_point="tools.optical_pipeline_lab.delivery.VideoDeliveryFacade.submit",
+@@ -38,10 +43,18 @@ _SHARED_SOURCE_COVERAGE = (
+     ),
+     _SourceCoverage(
+         operation="reclaim",
+-        entry_point="tools.optical_pipeline_lab.delivery.VideoDeliveryFacade.flush",
++        entry_point="optics.native_arena.C4ActiveOutputLease.reclaim",
++        source_symbols=(
++            "optics.native_arena.C4ActiveOutputLease.reclaim",
++            "optics.native_arena.NativeOpticalArena._reclaim",
++        ),
++    ),
++    _SourceCoverage(
++        operation="terminal_completion",
++        entry_point="optics.native_arena.C4ActiveOutputLease.record_completion",
+         source_symbols=(
+-            "tools.optical_pipeline_lab.delivery.VideoDeliveryFacade.flush",
+-            "tools.optical_pipeline_lab.delivery.VideoDeliveryFacade._complete_job",
++            "optics.native_arena.C4ActiveOutputLease.record_completion",
++            "optics.native_arena.NativeOpticalArena._record_completion",
+         ),
+     ),
+     _SourceCoverage(
+diff --git a/benchmarks/optical/runner.py b/benchmarks/optical/runner.py
+index 6248ea2..20dc296 100644
+--- a/benchmarks/optical/runner.py
++++ b/benchmarks/optical/runner.py
+@@ -12,6 +12,7 @@ from .eligibility import (
+     LaneIneligibleError,
+     assert_eligible_for_submission,
+     evaluate_lane_eligibility,
++    required_lifecycle_operations,
+     required_runtime_operations,
+     validate_trace_entry_points,
+ )
+@@ -502,6 +503,7 @@ class SingleLaneSampleRunner:
+             "renderer_id": binding["renderer_id"],
+             "acceleration_id": binding["acceleration_by_class"][row["acceleration_class"]],
+             "required_operations": required_runtime_operations(row),
++            "required_lifecycle_operations": required_lifecycle_operations(row),
+         }
+         for name, value in expected.items():
+             if getattr(eligibility, name) != value:
+diff --git a/benchmarks/optical/schema.py b/benchmarks/optical/schema.py
+index 5470bcc..99cb2db 100644
+--- a/benchmarks/optical/schema.py
++++ b/benchmarks/optical/schema.py
+@@ -10,6 +10,17 @@ from dataclasses import dataclass
+ from pathlib import Path
+ from typing import Any
+ 
++from optics.native_arena import (
++    C4_ACTIVE_LEASE_BINDING_SCHEMA_VERSION,
++    C4_ARENA_LIFECYCLE_SCHEMA_VERSION,
++    C4_LIFECYCLE_OPERATION_KINDS,
++    C4_PREPARED_SAMPLE_PLAN_SCHEMA_VERSION,
++    C4_SHUTDOWN_DISPOSITIONS,
++    NATIVE_OPTICAL_ARENA_LAYOUT_SCHEMA_VERSION,
++    NATIVE_OPTICAL_ARENA_SPEC_SCHEMA_VERSION,
++    NATIVE_OPTICAL_RESOURCE_MANIFEST_SCHEMA_VERSION,
++    NATIVE_OPTICAL_SLOT_RESOURCE_SCHEMA_VERSION,
++)
+ from optics.output_contract import (
+     HOST_PAYLOAD_CONTRACTS,
+     host_diagnostic_overlay_contract_schema,
+@@ -30,6 +41,7 @@ from .eligibility import (
+     INPUT_CONTRACT_SCHEMA_VERSION,
+     LaneEligibilityEvidence,
+     evaluate_lane_eligibility,
++    required_lifecycle_operations,
+     required_runtime_operations,
+     validate_trace_entry_points,
+ )
+@@ -64,9 +76,9 @@ from .workload_contract import (
+     frozen_workload_payloads,
+ )
+ 
+-GATE_SCHEMA_VERSION = "q54.p12.4.gate.v10"
+-RESULT_SCHEMA_VERSION = "q54.p12.4.result.v10"
+-ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v5"
++GATE_SCHEMA_VERSION = "q54.p12.4.gate.v12"
++RESULT_SCHEMA_VERSION = "q54.p12.4.result.v12"
++ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v7"
+ INVENTORY_SCHEMA_VERSION = "q54.p12.4.architecture-inventory.v1"
+ CLEANUP_SCHEMA_VERSION = "q54.p12.4.cleanup-ledger.v1"
+ PUBLICATION_BINDING_CONTRACT_VERSION = "q54.p12.4.publication-cuda-binding.v1"
+@@ -175,11 +187,31 @@ EXPECTED_ELIGIBILITY_CONTRACT = {
+     "source_manifest_grants_instrumented": False,
+     "ineligible_result_emission": "forbidden",
+     "required_runtime_operations": {
+-        "R0": ["render"],
+-        "R1": ["scene_update", "acceleration", "render", "reclaim"],
++        "R0": ["render", "terminal_completion"],
++        "R1": [
++            "arena_acquire",
++            "scene_update",
++            "acceleration",
++            "render",
++            "terminal_completion",
++        ],
+         "R2": "derived_from_payload_and_delivery_policy",
+         "S": "derived_from_publication_payload_and_delivery_policy",
+     },
++    "required_lifecycle_operations": {
++        "R0": ["reclaim"],
++        "R1": ["reclaim"],
++        "R2": ["reclaim"],
++        "S": ["reclaim"],
++    },
++    "submission_trace_excludes": [
++        "completion_resolution",
++        "payload_release",
++        "slot_reclaim",
++        "final_drain",
++        "final_reclaim",
++    ],
++    "lifecycle_evidence_owner": "native_optical_arena",
+     "a3a_baseline_emission": "forbidden",
+     "first_native_baseline_authorization": "P12.4a4",
+ }
+@@ -304,9 +336,7 @@ EXPECTED_NATIVE_INPUT_CONTRACT = {
+     "result_capable_constructor": "CanonicalNativeInput.from_scene_contract",
+     "generic_from_arrays_result_capable": False,
+     "workload_content_schema_version": WORKLOAD_CONTENT_SCHEMA_VERSION,
+-    "result_capable_content_rule": (
+-        "scene_replay_and_fixed_fixture_digests_must_match_frozen_case_content"
+-    ),
++    "result_capable_content_rule": ("scene_replay_and_fixed_fixture_digests_must_match_frozen_case_content"),
+     "S_measured_physics_transforms_excluded": True,
+     "warp_preparation": "direct_host_to_warp_cuda_allocation",
+     "cuda_preparation": "direct_host_to_torch_cuda_allocation",
+@@ -360,7 +390,12 @@ EXPECTED_NATIVE_EXECUTION_BINDING_CONTRACT = {
+     "C3_constructor": "build_c3_one_shot_native_execution_binding",
+     "C3_binding_type": "C3OneShotNativeExecutionBindingEvidence",
+     "C3_one_shot_result_emission": "forbidden",
+-    "C4_binding_schema": "not_implemented_until_C4_review",
++    "C4_prepared_plan_schema": C4_PREPARED_SAMPLE_PLAN_SCHEMA_VERSION,
++    "C4_binding_schema": C4_ACTIVE_LEASE_BINDING_SCHEMA_VERSION,
++    "C4_binding_type": "C4ActiveLeaseBindingEvidence",
++    "C4_live_authority_owner": "NativeOpticalArena",
++    "C4_serialized_evidence_alone_authorizes_submission": False,
++    "C4_result_emission": "forbidden_until_B3_and_joint_activation_review",
+     "C4_required_evidence": ["arena", "slot", "generation", "lease", "ring"],
+     "dynamic_dataflow_contract_schema_version": DYNAMIC_DATAFLOW_CONTRACT_SCHEMA_VERSION,
+     "acceleration_resolution": "lane_plus_row_acceleration_class",
+@@ -377,6 +412,40 @@ EXPECTED_NATIVE_EXECUTION_BINDING_CONTRACT = {
+     "a3b_result_capable_before_C4_B3_review": False,
+ }
+ 
++EXPECTED_NATIVE_OUTPUT_ARENA_CONTRACT = {
++    "schema_version": "q54.p12.4.native-output-arena-contract.v2",
++    "arena_layout_schema_version": NATIVE_OPTICAL_ARENA_LAYOUT_SCHEMA_VERSION,
++    "arena_spec_schema_version": NATIVE_OPTICAL_ARENA_SPEC_SCHEMA_VERSION,
++    "slot_resource_schema_version": NATIVE_OPTICAL_SLOT_RESOURCE_SCHEMA_VERSION,
++    "resource_manifest_schema_version": NATIVE_OPTICAL_RESOURCE_MANIFEST_SCHEMA_VERSION,
++    "prepared_plan_schema_version": C4_PREPARED_SAMPLE_PLAN_SCHEMA_VERSION,
++    "active_lease_binding_schema_version": C4_ACTIVE_LEASE_BINDING_SCHEMA_VERSION,
++    "lifecycle_schema_version": C4_ARENA_LIFECYCLE_SCHEMA_VERSION,
++    "allowed_ring_depths": [1, 2],
++    "slot_selection": "strict_round_robin_fifo_no_overwrite",
++    "prepared_plan_policy": "non_reserving_speculative_multiple_candidates_allowed",
++    "batch_preparation": "planned_acquisition_offset_binds_future_slot_and_generation",
++    "discarded_plan_retention": "weak_none",
++    "generation_rule": "strictly_increasing_and_burned_on_pre_enqueue_cancel",
++    "measured_acquire": "O1_identity_and_state_bookkeeping_only",
++    "prepared_plan_result_capable": False,
++    "active_lease_result_capable": False,
++    "serialized_evidence_is_live_authority": False,
++    "host_payload_arena_seal": "blocked_until_B3_and_joint_activation_review",
++    "reclaim_evidence_owner": "arena_lifecycle_transition_authority",
++    "lifecycle_validation": "canonical_full_state_machine_replay",
++    "lifecycle_operation_kinds": list(C4_LIFECYCLE_OPERATION_KINDS),
++    "shutdown_dispositions": list(C4_SHUTDOWN_DISPOSITIONS),
++    "submission_trace_contains_reclaim": False,
++    "poison_release_barrier": {
++        "device_quiescence_required": True,
++        "zero_external_holds_required": True,
++        "synced_with_external_holds_state": "SYNCED_WAITING_EXTERNAL_HOLDS",
++        "poisoned_slot_returns_to_free": False,
++        "sync_failure_disposition": "quarantined_until_process_exit",
++    },
++}
++
+ EXPECTED_NATIVE_RESULT_ACTIVATION = {
+     "schema_version": "q54.p12.4.native-result-activation.v1",
+     "blocked_result_phases": ["P12.4a3b", "P12.4b4/d"],
+@@ -864,6 +933,7 @@ def canonical_row_semantics_sha256(row: Mapping[str, Any], gate: Mapping[str, An
+         "diagnostic_overlay_contracts": gate.get("diagnostic_overlay_contracts"),
+         "native_input_contract": gate.get("native_input_contract"),
+         "native_execution_binding_contract": gate.get("native_execution_binding_contract"),
++        "native_output_arena_contract": gate.get("native_output_arena_contract"),
+         "native_result_activation": gate.get("native_result_activation"),
+         "input_contracts": gate.get("input_contracts"),
+         "eligibility_contract": gate.get("eligibility_contract"),
+@@ -992,10 +1062,7 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
+                 or receipt.fixed_render_fixture_sha256 is None
+             ):
+                 errors.append("R0 receipt must bind only fixed-render-fixture provenance")
+-            elif (
+-                receipt.fixed_render_fixture_sha256
+-                != expected_case_content["fixed_render_fixture_sha256"]
+-            ):
++            elif receipt.fixed_render_fixture_sha256 != expected_case_content["fixed_render_fixture_sha256"]:
+                 errors.append("receipt fixed fixture does not match the frozen workload")
+         elif row["boundary"] in {"R1", "R2"}:
+             if (
+@@ -1004,10 +1071,7 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
+                 or receipt.fixed_render_fixture_sha256 is not None
+             ):
+                 errors.append("R1/R2 receipt must bind only replay provenance")
+-            elif (
+-                receipt.transform_replay_sha256
+-                != expected_case_content["transform_replay_sha256"]
+-            ):
++            elif receipt.transform_replay_sha256 != expected_case_content["transform_replay_sha256"]:
+                 errors.append("receipt replay does not match the frozen workload")
+         elif row["boundary"] == "S" and (
+             receipt.transform_replay_sha256 is not None
+@@ -1018,8 +1082,7 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
+ 
+         native_binding = receipt.native_execution_binding
+         errors.append(
+-            "result receipt cannot contain C3 one-shot binding; reviewed C4 binding schema "
+-            "is not implemented"
++            "result receipt cannot contain C3 one-shot binding; reviewed C4 binding schema is not implemented"
+         )
+         expected_binding_identity = {
+             "row_id": receipt.row_id,
+@@ -1059,6 +1122,9 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
+         expected_operations = required_runtime_operations(row)
+         if eligibility.required_operations != expected_operations:
+             errors.append("receipt eligibility required operations do not match its gate row")
++        expected_lifecycle_operations = required_lifecycle_operations(row)
++        if eligibility.required_lifecycle_operations != expected_lifecycle_operations:
++            errors.append("receipt eligibility required lifecycle operations do not match its gate row")
+         if not eligibility.eligible or eligibility.reason_codes:
+             errors.append("receipt eligibility does not authorize timed submission")
+         recalculated_eligibility = evaluate_lane_eligibility(
+@@ -1151,14 +1217,11 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
+             ):
+                 errors.append("fixed R0 acceleration must not claim update/acceleration kernels")
+         else:
+-            acceleration_stages = {
+-                stage.stage_name: stage for stage in native_binding.ordered_stage_evidence
+-            }
++            acceleration_stages = {stage.stage_name: stage for stage in native_binding.ordered_stage_evidence}
+             acceleration_stage = acceleration_stages.get("acceleration")
+             if (
+                 acceleration_stage is None
+-                or acceleration.acceleration_stage_evidence_sha256
+-                != acceleration_stage.evidence_sha256
++                or acceleration.acceleration_stage_evidence_sha256 != acceleration_stage.evidence_sha256
+             ):
+                 errors.append("dynamic acceleration does not bind its stage evidence")
+             if (
+@@ -1309,9 +1372,7 @@ def validate_frozen_gate(payload: Mapping[str, Any]) -> None:
+     if not isinstance(configured_cases, Mapping):
+         errors.append("cases must be an object")
+     elif configured_cases != expected_cases:
+-        errors.append(
+-            "case definitions and frozen scene/replay/fixture identities do not match"
+-        )
++        errors.append("case definitions and frozen scene/replay/fixture identities do not match")
+ 
+     if payload.get("boundaries") != BOUNDARY_VERSIONS:
+         errors.append("boundary versions do not match schema.py")
+@@ -1397,10 +1458,10 @@ def validate_frozen_gate(payload: Mapping[str, Any]) -> None:
+         errors.append("receipt_provenance does not freeze lane-generated evidence ownership")
+     if payload.get("native_input_contract") != EXPECTED_NATIVE_INPUT_CONTRACT:
+         errors.append("native_input_contract does not match the durable a2 contract")
+-    if payload.get("native_execution_binding_contract") != (
+-        EXPECTED_NATIVE_EXECUTION_BINDING_CONTRACT
+-    ):
++    if payload.get("native_execution_binding_contract") != (EXPECTED_NATIVE_EXECUTION_BINDING_CONTRACT):
+         errors.append("native_execution_binding_contract does not match C3a provenance")
++    if payload.get("native_output_arena_contract") != EXPECTED_NATIVE_OUTPUT_ARENA_CONTRACT:
++        errors.append("native_output_arena_contract does not match the approved C4a contract")
+     if payload.get("native_result_activation") != EXPECTED_NATIVE_RESULT_ACTIVATION:
+         errors.append("native_result_activation does not preserve the C4/B3 review gate")
+     if payload.get("input_contracts") != EXPECTED_INPUT_CONTRACTS:
+@@ -1417,9 +1478,7 @@ def validate_frozen_gate(payload: Mapping[str, Any]) -> None:
+         errors.append("shipping publication receipt contract is not frozen")
+     if payload.get("approved_dependency_order_commit") != ("57073b8cabe39d7e4104d8cef77fce70fc17956c"):
+         errors.append("approved_dependency_order_commit is not the reviewed v3 commit")
+-    if payload.get("approved_c3_design_commit") != (
+-        "435ffb275674c04f6452cb41775533db0f47f1d3"
+-    ):
++    if payload.get("approved_c3_design_commit") != ("435ffb275674c04f6452cb41775533db0f47f1d3"):
+         errors.append("approved_c3_design_commit is not the reviewed C3 v4 commit")
+ 
+     continuation = payload.get("continuation")
+diff --git a/benchmarks/optical/timing.py b/benchmarks/optical/timing.py
+index f903dff..b47b071 100644
+--- a/benchmarks/optical/timing.py
++++ b/benchmarks/optical/timing.py
+@@ -9,12 +9,13 @@ from contextlib import contextmanager
+ from contextvars import ContextVar
+ from dataclasses import dataclass, field
+ 
+-NATIVE_TIMING_CONTRACT_VERSION = "q54.p12.4.native-timing.v3"
+-OPERATION_TRACE_SCHEMA_VERSION = "q54.p12.4.operation-trace.v2"
++NATIVE_TIMING_CONTRACT_VERSION = "q54.p12.4.native-timing.v4"
++OPERATION_TRACE_SCHEMA_VERSION = "q54.p12.4.operation-trace.v3"
+ 
+ RUNTIME_OPERATION_KINDS = frozenset(
+     {
+         "acceleration",
++        "arena_acquire",
+         "allocation",
+         "consumer_completion",
+         "delivery",
+@@ -28,6 +29,7 @@ RUNTIME_OPERATION_KINDS = frozenset(
+         "scene_update",
+         "stream_wait",
+         "synchronization",
++        "terminal_completion",
+         "upload",
+         "view_binding",
+     }
+diff --git a/benchmarks/results/q54_p12_4/cleanup_ledger.json b/benchmarks/results/q54_p12_4/cleanup_ledger.json
+index 984f5db..021fc0a 100644
+--- a/benchmarks/results/q54_p12_4/cleanup_ledger.json
++++ b/benchmarks/results/q54_p12_4/cleanup_ledger.json
+@@ -314,6 +314,35 @@
+       },
+       "must_resolve_by": "P12.4e"
+     },
++    {
++      "entry_id": "native_optical_output_arena",
++      "paths": [
++        "optics/native_arena.py",
++        "benchmarks/optical/arena.py",
++        "tests/unit/benchmarks/test_optical_benchmark_c4a.py",
++        "tests/unit/optics/test_native_optical_arena.py"
++      ],
++      "symbols": {
++        "optics/native_arena.py": [
++          "class NativeOpticalArenaSpec:",
++          "class NativeOpticalArena:",
++          "class C4PreparedSamplePlan:",
++          "class C4ActiveOutputLease:"
++        ],
++        "benchmarks/optical/arena.py": [
++          "def native_optical_arena_spec_from_frozen_row("
++        ]
++      },
++      "cuda_selected": {
++        "action": "collapse",
++        "acceptance": "retain one selected-backend arena, lifecycle evidence, and physics-to-image regression path; remove candidate-neutral comparison adapters"
++      },
++      "warp_selected": {
++        "action": "collapse",
++        "acceptance": "retain one selected-backend arena, lifecycle evidence, and physics-to-image regression path; remove candidate-neutral comparison adapters"
++      },
++      "must_resolve_by": "P12.4e"
++    },
+     {
+       "entry_id": "exports_examples_tests_and_docs",
+       "paths": [
+diff --git a/benchmarks/results/q54_p12_4/gate.json b/benchmarks/results/q54_p12_4/gate.json
+index 26d8f05..471c8e9 100644
+--- a/benchmarks/results/q54_p12_4/gate.json
++++ b/benchmarks/results/q54_p12_4/gate.json
+@@ -1,6 +1,6 @@
+ {
+-  "schema_version": "q54.p12.4.gate.v10",
+-  "result_schema_version": "q54.p12.4.result.v10",
++  "schema_version": "q54.p12.4.gate.v12",
++  "result_schema_version": "q54.p12.4.result.v12",
+   "case_schema_version": "q54.p12.4.case.v1",
+   "status": "frozen",
+   "frozen_at": "2026-08-13T10:41:19+08:00",
+@@ -212,8 +212,8 @@
+     }
+   },
+   "eligibility_contract": {
+-    "schema_version": "q54.p12.4.lane-eligibility.v2",
+-    "operation_trace_schema_version": "q54.p12.4.operation-trace.v2",
++    "schema_version": "q54.p12.4.lane-eligibility.v3",
++    "operation_trace_schema_version": "q54.p12.4.operation-trace.v3",
+     "runtime_hook_registry_version": "q54.p12.4.runtime-hook-registry.v2",
+     "runtime_hook_registry_sha256": "fd03c565975848414d47f40331e8131b1fd3950740f3f5ea04ddfed02b3467e9",
+     "preflight_position": "before_timed_submission",
+@@ -223,11 +223,31 @@
+     "source_manifest_grants_instrumented": false,
+     "ineligible_result_emission": "forbidden",
+     "required_runtime_operations": {
+-      "R0": ["render"],
+-      "R1": ["scene_update", "acceleration", "render", "reclaim"],
++      "R0": ["render", "terminal_completion"],
++      "R1": [
++        "arena_acquire",
++        "scene_update",
++        "acceleration",
++        "render",
++        "terminal_completion"
++      ],
+       "R2": "derived_from_payload_and_delivery_policy",
+       "S": "derived_from_publication_payload_and_delivery_policy"
+     },
++    "required_lifecycle_operations": {
++      "R0": ["reclaim"],
++      "R1": ["reclaim"],
++      "R2": ["reclaim"],
++      "S": ["reclaim"]
++    },
++    "submission_trace_excludes": [
++      "completion_resolution",
++      "payload_release",
++      "slot_reclaim",
++      "final_drain",
++      "final_reclaim"
++    ],
++    "lifecycle_evidence_owner": "native_optical_arena",
+     "a3a_baseline_emission": "forbidden",
+     "first_native_baseline_authorization": "P12.4a4"
+   },
+@@ -473,7 +493,7 @@
+   },
+   "native_input_contract": {
+     "schema_version": "q54.p12.4.native-input.v2",
+-    "timing_contract_version": "q54.p12.4.native-timing.v3",
++    "timing_contract_version": "q54.p12.4.native-timing.v4",
+     "scope": "R0_R1_R2_and_S_static_optical_inputs_only",
+     "logical_source": "PackedOpticalSceneHost_single_materialization_source",
+     "scene_contract_schema_version": "q54.optical-scene-contract.v1",
+@@ -547,7 +567,12 @@
+     "C3_constructor": "build_c3_one_shot_native_execution_binding",
+     "C3_binding_type": "C3OneShotNativeExecutionBindingEvidence",
+     "C3_one_shot_result_emission": "forbidden",
+-    "C4_binding_schema": "not_implemented_until_C4_review",
++    "C4_prepared_plan_schema": "q54.p12.4.c4-prepared-sample-plan.v2",
++    "C4_binding_schema": "q54.p12.4.c4-active-lease-binding.v2",
++    "C4_binding_type": "C4ActiveLeaseBindingEvidence",
++    "C4_live_authority_owner": "NativeOpticalArena",
++    "C4_serialized_evidence_alone_authorizes_submission": false,
++    "C4_result_emission": "forbidden_until_B3_and_joint_activation_review",
+     "C4_required_evidence": ["arena", "slot", "generation", "lease", "ring"],
+     "dynamic_dataflow_contract_schema_version": "q54.p12.4.dynamic-dataflow.v2",
+     "acceleration_resolution": "lane_plus_row_acceleration_class",
+@@ -563,6 +588,58 @@
+     ],
+     "a3b_result_capable_before_C4_B3_review": false
+   },
++  "native_output_arena_contract": {
++    "schema_version": "q54.p12.4.native-output-arena-contract.v2",
++    "arena_layout_schema_version": "optics.native-optical-arena-layout.v1",
++    "arena_spec_schema_version": "optics.native-optical-arena-spec.v1",
++    "slot_resource_schema_version": "optics.native-optical-slot-resource.v1",
++    "resource_manifest_schema_version": "optics.native-optical-arena-resource-manifest.v1",
++    "prepared_plan_schema_version": "q54.p12.4.c4-prepared-sample-plan.v2",
++    "active_lease_binding_schema_version": "q54.p12.4.c4-active-lease-binding.v2",
++    "lifecycle_schema_version": "q54.p12.4.c4-arena-lifecycle.v2",
++    "allowed_ring_depths": [1, 2],
++    "slot_selection": "strict_round_robin_fifo_no_overwrite",
++    "prepared_plan_policy": "non_reserving_speculative_multiple_candidates_allowed",
++    "batch_preparation": "planned_acquisition_offset_binds_future_slot_and_generation",
++    "discarded_plan_retention": "weak_none",
++    "generation_rule": "strictly_increasing_and_burned_on_pre_enqueue_cancel",
++    "measured_acquire": "O1_identity_and_state_bookkeeping_only",
++    "prepared_plan_result_capable": false,
++    "active_lease_result_capable": false,
++    "serialized_evidence_is_live_authority": false,
++    "host_payload_arena_seal": "blocked_until_B3_and_joint_activation_review",
++    "reclaim_evidence_owner": "arena_lifecycle_transition_authority",
++    "lifecycle_validation": "canonical_full_state_machine_replay",
++    "lifecycle_operation_kinds": [
++      "arena_opened",
++      "acquire_backpressure",
++      "acquired",
++      "cancelled_generation_burned",
++      "enqueue_started",
++      "completion_recorded",
++      "completion_resolved",
++      "device_result_hold_released",
++      "slot_reclaimable",
++      "slot_reclaimed",
++      "drain_started",
++      "final_drain_complete",
++      "arena_closed",
++      "arena_poisoned"
++    ],
++    "shutdown_dispositions": [
++      "synced_waiting_external_holds",
++      "aborted_synced_release_authorized",
++      "quarantined_until_process_exit"
++    ],
++    "submission_trace_contains_reclaim": false,
++    "poison_release_barrier": {
++      "device_quiescence_required": true,
++      "zero_external_holds_required": true,
++      "synced_with_external_holds_state": "SYNCED_WAITING_EXTERNAL_HOLDS",
++      "poisoned_slot_returns_to_free": false,
++      "sync_failure_disposition": "quarantined_until_process_exit"
++    }
++  },
+   "native_result_activation": {
+     "schema_version": "q54.p12.4.native-result-activation.v1",
+     "blocked_result_phases": ["P12.4a3b", "P12.4b4/d"],
+diff --git a/optics/__init__.py b/optics/__init__.py
+index 35fe741..9dac1c5 100644
+--- a/optics/__init__.py
++++ b/optics/__init__.py
+@@ -110,6 +110,35 @@ from .execution import (
+     OpticalOutputProfile,
+ )
+ from .gpu_runtime import execute_optical_on_gpu_published_frame
++from .native_arena import (
++    C4_ACTIVE_LEASE_BINDING_SCHEMA_VERSION,
++    C4_ARENA_LIFECYCLE_SCHEMA_VERSION,
++    C4_LIFECYCLE_OPERATION_KINDS,
++    C4_PREPARED_SAMPLE_PLAN_SCHEMA_VERSION,
++    C4_SHUTDOWN_DISPOSITIONS,
++    NATIVE_OPTICAL_ARENA_LAYOUT_SCHEMA_VERSION,
++    NATIVE_OPTICAL_ARENA_SPEC_SCHEMA_VERSION,
++    NATIVE_OPTICAL_RESOURCE_MANIFEST_SCHEMA_VERSION,
++    NATIVE_OPTICAL_SLOT_RESOURCE_SCHEMA_VERSION,
++    C4ActiveLeaseBindingEvidence,
++    C4ActiveOutputLease,
++    C4ArenaLifecycleEvidence,
++    C4ArenaLifecycleTransition,
++    C4ArenaSlotLifecycleSnapshot,
++    C4PreparedSamplePlan,
++    C4PreparedSamplePlanEvidence,
++    NativeOpticalArena,
++    NativeOpticalArenaBackpressure,
++    NativeOpticalArenaError,
++    NativeOpticalArenaNotActivatedError,
++    NativeOpticalArenaPoisonedError,
++    NativeOpticalArenaProtocolError,
++    NativeOpticalArenaResourceManifest,
++    NativeOpticalArenaSpec,
++    NativeOpticalPlannedAcquisition,
++    NativeOpticalSlotResourceManifest,
++    plan_native_optical_acquisition,
++)
+ from .output_contract import (
+     DIRECT_LIGHT_FULL_HOST_PER_RAY_CHANNEL_SPECS,
+     DIRECT_LIGHT_FULL_PRIMARY_HOST_CHANNEL_SPECS,
+@@ -154,6 +183,18 @@ from .warp_execution import (
+ )
+ 
+ __all__ = [
++    "C4_ACTIVE_LEASE_BINDING_SCHEMA_VERSION",
++    "C4_ARENA_LIFECYCLE_SCHEMA_VERSION",
++    "C4_LIFECYCLE_OPERATION_KINDS",
++    "C4_PREPARED_SAMPLE_PLAN_SCHEMA_VERSION",
++    "C4_SHUTDOWN_DISPOSITIONS",
++    "C4ActiveLeaseBindingEvidence",
++    "C4ActiveOutputLease",
++    "C4ArenaLifecycleEvidence",
++    "C4ArenaSlotLifecycleSnapshot",
++    "C4ArenaLifecycleTransition",
++    "C4PreparedSamplePlan",
++    "C4PreparedSamplePlanEvidence",
+     "CpuBvhNode",
+     "CpuBvhOpticalExecutor",
+     "CpuDirectLightOpticalExecutor",
+@@ -241,6 +282,20 @@ __all__ = [
+     "OpticalSourceKey",
+     "OpticalTriangleMeshGeometry",
+     "OpticalWorldRegistry",
++    "NATIVE_OPTICAL_ARENA_LAYOUT_SCHEMA_VERSION",
++    "NATIVE_OPTICAL_ARENA_SPEC_SCHEMA_VERSION",
++    "NATIVE_OPTICAL_RESOURCE_MANIFEST_SCHEMA_VERSION",
++    "NATIVE_OPTICAL_SLOT_RESOURCE_SCHEMA_VERSION",
++    "NativeOpticalArena",
++    "NativeOpticalArenaBackpressure",
++    "NativeOpticalArenaError",
++    "NativeOpticalArenaNotActivatedError",
++    "NativeOpticalArenaPoisonedError",
++    "NativeOpticalArenaProtocolError",
++    "NativeOpticalArenaResourceManifest",
++    "NativeOpticalArenaSpec",
++    "NativeOpticalPlannedAcquisition",
++    "NativeOpticalSlotResourceManifest",
+     "PackedOpticalSceneHost",
+     "OUTPUT_PROFILE_REQUIRED_CHANNELS",
+     "PRIMARY_HOST_SCALAR_CHANNEL_SPECS",
+@@ -275,6 +330,7 @@ __all__ = [
+     "build_optical_registry_from_robot_model",
+     "execute_optical_on_gpu_published_frame",
+     "pack_source_order_key",
++    "plan_native_optical_acquisition",
+     "refit_device_bvh_from_snapshot",
+     "stage_optical_channels",
+     "stage_channels_to_host",
+diff --git a/tests/unit/benchmarks/test_optical_benchmark_a3a.py b/tests/unit/benchmarks/test_optical_benchmark_a3a.py
+index 996954d..0b6eaeb 100644
+--- a/tests/unit/benchmarks/test_optical_benchmark_a3a.py
++++ b/tests/unit/benchmarks/test_optical_benchmark_a3a.py
+@@ -132,23 +132,15 @@ def test_current_product_source_manifest_is_explicitly_not_runtime_evidence(lane
+ 
+ 
+ def test_c3_source_manifests_name_real_prepared_scene_and_acceleration_entries():
+-    warp_entries = {
+-        audit.entry_point for audit in verify_current_product_source_manifest("warp")
+-    }
+-    cuda_entries = {
+-        audit.entry_point for audit in verify_current_product_source_manifest("cuda")
+-    }
++    warp_entries = {audit.entry_point for audit in verify_current_product_source_manifest("warp")}
++    cuda_entries = {audit.entry_point for audit in verify_current_product_source_manifest("cuda")}
+ 
++    assert "optics.device_scene.WarpSceneUpdateCommandBundle.enqueue" in warp_entries
+     assert (
+-        "optics.device_scene.WarpSceneUpdateCommandBundle.enqueue" in warp_entries
+-    )
+-    assert (
+-        "benchmarks.optical.lanes.warp."
+-        "WarpCudaLbvhComparisonCommandBundle.enqueue_scene_update"
++        "benchmarks.optical.lanes.warp.WarpCudaLbvhComparisonCommandBundle.enqueue_scene_update"
+     ) in warp_entries
+     assert (
+-        "benchmarks.optical.lanes.warp."
+-        "WarpCudaLbvhComparisonCommandBundle.enqueue_acceleration"
++        "benchmarks.optical.lanes.warp.WarpCudaLbvhComparisonCommandBundle.enqueue_acceleration"
+     ) in warp_entries
+     assert "optics.cuda_scene.CudaSceneUpdateStage.enqueue" in cuda_entries
+     assert "optics.cuda_lbvh.CudaLbvhRebuildStage.enqueue" in cuda_entries
+@@ -372,7 +364,7 @@ def test_operation_trace_rejects_entry_point_not_in_instrumented_preflight():
+         asset_manifest_sha256=None,
+     )
+     trace = RuntimeOperationTraceEvidence(
+-        schema_version="q54.p12.4.operation-trace.v2",
++        schema_version="q54.p12.4.operation-trace.v3",
+         row_id=row["row_id"],
+         lane="warp",
+         boundary="R0",
+@@ -390,6 +382,48 @@ def test_operation_trace_rejects_entry_point_not_in_instrumented_preflight():
+         validate_trace_entry_points(trace, eligibility)
+ 
+ 
++def test_submission_trace_rejects_arena_lifecycle_reclaim():
++    gate = load_frozen_gate()
++    row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
++    entry_points = {
++        "render": "unit.render",
++        "terminal_completion": "unit.finish",
++        "reclaim": "unit.reclaim",
++    }
++    eligibility = evaluate_lane_eligibility(
++        row=row,
++        lane="warp",
++        entry_point_audits=tuple(
++            EntryPointAudit(
++                operation=operation,
++                entry_point=entry_point,
++                instrumented=True,
++            )
++            for operation, entry_point in entry_points.items()
++        ),
++        asset_manifest_sha256=None,
++    )
++    trace = RuntimeOperationTraceEvidence(
++        schema_version="q54.p12.4.operation-trace.v3",
++        row_id=row["row_id"],
++        lane="warp",
++        boundary="R0",
++        records=tuple(
++            RuntimeOperationRecord(
++                sequence=index,
++                operation=operation,
++                entry_point=entry_points[operation],
++                capture_source="runtime_hook",
++                runtime_hook_id=f"entry_point:{entry_points[operation]}",
++            )
++            for index, operation in enumerate(("render", "terminal_completion", "reclaim"))
++        ),
++    )
++
++    with pytest.raises(ValueError, match="lifecycle-only"):
++        validate_trace_entry_points(trace, eligibility)
++
++
+ def test_manual_instrumented_boolean_cannot_grant_lane_eligibility():
+     gate = load_frozen_gate()
+     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
+@@ -407,7 +441,11 @@ def test_manual_instrumented_boolean_cannot_grant_lane_eligibility():
+     )
+ 
+     assert evidence.eligible is False
+-    assert evidence.reason_codes == ("unverified_runtime_hook_plan:render",)
++    assert evidence.reason_codes == (
++        "missing_entry_point:reclaim",
++        "missing_entry_point:terminal_completion",
++        "unverified_runtime_hook_plan:render",
++    )
+ 
+ 
+ def test_lane_cannot_forge_runtime_hook_trace_provenance():
+@@ -589,9 +627,7 @@ class _OutOfOrderLane:
+         )
+ 
+     def bind_sample(self, *, row, prepared, readiness):
+-        scene_storage = prepared_storage_signatures(
+-            prepared, prepared.manifest.scene_array_names
+-        )
++        scene_storage = prepared_storage_signatures(prepared, prepared.manifest.scene_array_names)
+         transform_storage = prepared_transform_frame_signatures(prepared, 0)
+         scene_outputs = tuple(
+             _unit_storage(name=name, token=0x8000 + index * 0x10)
+@@ -631,10 +667,7 @@ class _OutOfOrderLane:
+             (
+                 "scene_update",
+                 "warp_local_scene_transform_and_aabb_out_v1",
+-                tuple(
+-                    runtime_by_name[name]
+-                    for name in DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES
+-                )
++                tuple(runtime_by_name[name] for name in DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES)
+                 + transform_storage,
+                 scene_outputs,
+             ),
+@@ -648,8 +681,7 @@ class _OutOfOrderLane:
+                 "render",
+                 "warp_bvh_direct_light",
+                 tuple(
+-                    (runtime_by_name | scene_by_name | acceleration_by_name)[name]
+-                    for name in render_names
++                    (runtime_by_name | scene_by_name | acceleration_by_name)[name] for name in render_names
+                 ),
+                 (output,),
+             ),
+@@ -730,9 +762,11 @@ def _unit_storage(*, name: str, token: int) -> NativeStorageSignature:
+ 
+ 
+ _UNIT_ENTRY_POINTS = {
++    "arena_acquire": "operator.mul",
+     "scene_update": "json.dumps",
+     "acceleration": "hashlib.sha256",
+     "render": "math.isfinite",
++    "terminal_completion": "math.trunc",
+     "reclaim": "time.perf_counter",
+ }
+ 
+@@ -767,9 +801,7 @@ def _prepared_input(*, case_id="asymmetric_synthetic_7x3_v1"):
+         manifest=source.manifest,
+         device_ordinal=0,
+         arrays={
+-            manifest.name: _FakeWarpArray(
+-                0 if manifest.nbytes == 0 else 0x1000 + index * 0x100
+-            )
++            manifest.name: _FakeWarpArray(0 if manifest.nbytes == 0 else 0x1000 + index * 0x100)
+             for index, manifest in enumerate(source.manifest.arrays)
+         },
+         ready_event=object(),
+diff --git a/tests/unit/benchmarks/test_optical_benchmark_contracts.py b/tests/unit/benchmarks/test_optical_benchmark_contracts.py
+index 64af9d1..4179097 100644
+--- a/tests/unit/benchmarks/test_optical_benchmark_contracts.py
++++ b/tests/unit/benchmarks/test_optical_benchmark_contracts.py
+@@ -79,20 +79,20 @@ _TEST_ENTRY_POINTS = {
+     "publication": "json.loads",
+     "stream_wait": "math.ceil",
+     "view_binding": "operator.add",
++    "arena_acquire": "operator.mul",
+     "scene_update": "json.dumps",
+     "consumer_completion": "math.floor",
+     "acceleration": "hashlib.sha256",
+     "render": "math.isfinite",
+     "pack": "operator.sub",
+     "delivery": "time.monotonic",
++    "terminal_completion": "math.trunc",
+     "reclaim": "time.perf_counter",
+ }
+ 
+ 
+ def test_c3_public_api_has_no_forgeable_c4_capability():
+-    parameters = inspect.signature(
+-        optical_benchmarks.build_c3_one_shot_native_execution_binding
+-    ).parameters
++    parameters = inspect.signature(optical_benchmarks.build_c3_one_shot_native_execution_binding).parameters
+ 
+     assert "submission_capability" not in parameters
+     assert not hasattr(optical_benchmarks, "C4_RESULT_BINDING_CAPABILITY")
+@@ -103,14 +103,10 @@ def test_c3_public_api_has_no_forgeable_c4_capability():
+ @pytest.mark.parametrize("lane", ["warp", "cuda"])
+ def test_every_native_mandatory_row_constructs_its_exact_lane_acceleration(lane):
+     gate = load_frozen_gate()
+-    rows = [
+-        row for row in gate["mandatory_rows"] if row["boundary"] in {"R0", "R1", "R2"}
+-    ]
++    rows = [row for row in gate["mandatory_rows"] if row["boundary"] in {"R0", "R1", "R2"}]
+ 
+     for row in rows:
+-        receipt = ExecutionReceipt.from_payload(
+-            _valid_result_record(gate, row, lane=lane)["receipt"]
+-        )
++        receipt = ExecutionReceipt.from_payload(_valid_result_record(gate, row, lane=lane)["receipt"])
+         native_binding = receipt.native_execution_binding
+         expected_acceleration_id = gate["lane_bindings"][lane]["acceleration_by_class"][
+             row["acceleration_class"]
+@@ -126,12 +122,8 @@ def test_every_native_mandatory_row_constructs_its_exact_lane_acceleration(lane)
+                 stage.stage_name: stage.evidence.operation_id
+                 for stage in native_binding.ordered_stage_evidence
+             }
+-            assert stage_operations["scene_update"] == acceleration_contract[
+-                "timed_scene_update_operation"
+-            ]
+-            assert stage_operations["acceleration"] == acceleration_contract[
+-                "timed_acceleration_operation"
+-            ]
++            assert stage_operations["scene_update"] == acceleration_contract["timed_scene_update_operation"]
++            assert stage_operations["acceleration"] == acceleration_contract["timed_acceleration_operation"]
+ 
+     warp_static_rows = [
+         row for row in rows if lane == "warp" and row["acceleration_class"] == "production_static"
+@@ -218,9 +210,7 @@ def test_dynamic_binding_rejects_extra_and_reordered_render_storage():
+     ).native_execution_binding
+     stages = [stage.evidence for stage in binding.ordered_stage_evidence]
+     render = stages[2]
+-    extra = next(
+-        value for value in binding.runtime_scene_storage if value.name == "triangle_vertices_local"
+-    )
++    extra = next(value for value in binding.runtime_scene_storage if value.name == "triangle_vertices_local")
+ 
+     stages[2] = replace(render, input_storage=render.input_storage + (extra,))
+     with pytest.raises(ValueError, match="complete ordered storage contract"):
+@@ -302,9 +292,7 @@ def test_gate_rejects_case_drift():
+ def test_gate_rejects_frozen_workload_content_drift():
+     gate = load_frozen_gate()
+     changed = copy.deepcopy(gate)
+-    changed["cases"]["synthetic_dynamic_rigid_960x640_v1"][
+-        "transform_replay_sha256"
+-    ] = "0" * 64
++    changed["cases"]["synthetic_dynamic_rigid_960x640_v1"]["transform_replay_sha256"] = "0" * 64
+ 
+     with pytest.raises(ValueError, match="case definitions and frozen scene/replay/fixture"):
+         validate_frozen_gate(changed)
+@@ -708,19 +696,11 @@ def _valid_result_record(gate, row, *, lane="cuda"):
+     }[classification]
+     case_contract = gate["cases"][row["case_id"]]
+     scene_contract_sha256 = case_contract["scene_contract_sha256"]
+-    fixed_fixture_sha256 = (
+-        case_contract["fixed_render_fixture_sha256"] if row["boundary"] == "R0" else None
+-    )
+-    replay_sha256 = (
+-        case_contract["transform_replay_sha256"]
+-        if row["boundary"] in {"R1", "R2"}
+-        else None
+-    )
++    fixed_fixture_sha256 = case_contract["fixed_render_fixture_sha256"] if row["boundary"] == "R0" else None
++    replay_sha256 = case_contract["transform_replay_sha256"] if row["boundary"] in {"R1", "R2"} else None
+     replay_index = 0 if replay_sha256 is not None else None
+     if row["boundary"] == "R0":
+-        runtime_storage = (
+-            _storage(name="scene", lane=lane, token="cuda:0x1000", owner="prepared-scene"),
+-        )
++        runtime_storage = (_storage(name="scene", lane=lane, token="cuda:0x1000", owner="prepared-scene"),)
+     else:
+         runtime_names = tuple(
+             dict.fromkeys(
+@@ -818,9 +798,7 @@ def _valid_result_record(gate, row, *, lane="cuda"):
+         lane=lane,
+         renderer_id=gate["lane_bindings"][lane]["renderer_id"],
+         acceleration_class=row["acceleration_class"],
+-        acceleration_id=gate["lane_bindings"][lane]["acceleration_by_class"][
+-            row["acceleration_class"]
+-        ],
++        acceleration_id=gate["lane_bindings"][lane]["acceleration_by_class"][row["acceleration_class"]],
+         output_profile=row["output_profile"],
+         shadows=row["shadows"],
+         input_contract=row["input_contract"],
+@@ -916,19 +894,27 @@ def _valid_result_record(gate, row, *, lane="cuda"):
+ def _required_operations_for_test(row):
+     boundary = row["boundary"]
+     if boundary == "R0":
+-        return ("render",)
++        return ("render", "terminal_completion", "reclaim")
+     if boundary == "R1":
+-        return ("scene_update", "acceleration", "render", "reclaim")
++        return (
++            "arena_acquire",
++            "scene_update",
++            "acceleration",
++            "render",
++            "terminal_completion",
++            "reclaim",
++        )
+     if boundary == "R2":
+-        operations = ["scene_update", "acceleration", "render"]
++        operations = ["arena_acquire", "scene_update", "acceleration", "render"]
+         if row["payload"] == "rgb8":
+             operations.append("pack")
+-        return (*operations, "delivery", "reclaim")
++        return (*operations, "delivery", "terminal_completion", "reclaim")
+     operations = [
+         "physics_step",
+         "publication",
+         "stream_wait",
+         "view_binding",
++        "arena_acquire",
+         "scene_update",
+         "consumer_completion",
+         "acceleration",
+@@ -936,7 +922,7 @@ def _required_operations_for_test(row):
+     ]
+     if row["payload"] == "rgb8":
+         operations.append("pack")
+-    return (*operations, "delivery", "reclaim")
++    return (*operations, "delivery", "terminal_completion", "reclaim")
+ 
+ 
+ def _storage(*, name: str, lane: str, token: str, owner: str) -> NativeStorageSignature:
+@@ -1016,12 +1002,11 @@ def _native_stages(
+         runtime_by_name = {value.name: value for value in runtime_storage}
+         scene_by_name = {value.name: value for value in scene_outputs}
+         acceleration_by_name = {value.name: value for value in acceleration_outputs}
+-        scene_input = tuple(
+-            runtime_by_name[name] for name in DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES
+-        ) + transform_storage
+-        acceleration_input = tuple(
+-            scene_by_name[name] for name in DYNAMIC_ACCELERATION_INPUT_NAMES
++        scene_input = (
++            tuple(runtime_by_name[name] for name in DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES)
++            + transform_storage
+         )
++        acceleration_input = tuple(scene_by_name[name] for name in DYNAMIC_ACCELERATION_INPUT_NAMES)
+         render_names = (
+             DYNAMIC_RENDER_WORLD_INPUT_NAMES
+             + DYNAMIC_RENDER_METADATA_INPUT_NAMES
+@@ -1080,11 +1065,7 @@ def _rebuild_c3_binding(
+         boundary=binding.boundary,
+         lane=binding.lane,
+         renderer_id=binding.renderer_id,
+-        acceleration_class=(
+-            binding.acceleration_class
+-            if acceleration_class is None
+-            else acceleration_class
+-        ),
++        acceleration_class=(binding.acceleration_class if acceleration_class is None else acceleration_class),
+         acceleration_id=binding.acceleration_id,
+         output_profile=binding.output_profile if output_profile is None else output_profile,
+         shadows=binding.shadows,
+diff --git a/tests/unit/benchmarks/test_optical_benchmark_core.py b/tests/unit/benchmarks/test_optical_benchmark_core.py
+index c6febe9..9981fce 100644
+--- a/tests/unit/benchmarks/test_optical_benchmark_core.py
++++ b/tests/unit/benchmarks/test_optical_benchmark_core.py
+@@ -3,6 +3,7 @@ from __future__ import annotations
+ import hashlib
+ import json
+ import math
++import operator
+ import time
+ from dataclasses import dataclass, field, replace
+ 
+@@ -486,17 +487,13 @@ class _FakeLane:
+ 
+     def bind_sample(self, *, row, prepared, readiness):
+         self.bind_called = True
+-        scene_storage = prepared_storage_signatures(
+-            prepared, prepared.manifest.scene_array_names
+-        )
++        scene_storage = prepared_storage_signatures(prepared, prepared.manifest.scene_array_names)
+         if self.substitute_scene_storage:
+             scene_storage = (
+                 replace(scene_storage[0], storage_token="warp:0xdeadbeef"),
+                 *scene_storage[1:],
+             )
+-        fixture_storage = prepared_storage_signatures(
+-            prepared, prepared.manifest.fixed_render_fixture_arrays
+-        )
++        fixture_storage = prepared_storage_signatures(prepared, prepared.manifest.fixed_render_fixture_arrays)
+         render_output = NativeStorageSignature(
+             name="render_output",
+             backend="warp",
+@@ -554,7 +551,7 @@ class _FakeLane:
+     def submit_sample(self, *, row, prepared, binding, request):
+         del request
+         self.trace.append(("submit", active_timed_boundary() is not None))
+-        for operation in _required_operations(row):
++        for operation in _submission_operations(row):
+             _invoke_test_entry_point(operation)
+         operation_trace = RuntimeOperationTraceEvidence(
+             schema_version=OPERATION_TRACE_SCHEMA_VERSION,
+@@ -569,7 +566,7 @@ class _FakeLane:
+                     capture_source="runtime_hook",
+                     runtime_hook_id=entry_point_hook_id(_TEST_ENTRY_POINTS[operation]),
+                 )
+-                for index, operation in enumerate(_required_operations(row))
++                for index, operation in enumerate(_submission_operations(row))
+             ),
+         )
+         native_execution_binding = binding
+@@ -690,35 +687,51 @@ class _FakeLane:
+                     operation=operation,
+                     entry_point=_TEST_ENTRY_POINTS[operation],
+                 )
+-                for operation in _required_operations(row)
++                for operation in _audited_operations(row)
+             ),
+             asset_manifest_sha256=("a" * 64 if row["required_asset_manifest"] else None),
+         )
+ 
+ 
+-def _required_operations(row):
++def _submission_operations(row):
+     if row["boundary"] == "R0":
+-        return ("render",)
++        return ("render", "terminal_completion")
+     if row["boundary"] == "R1":
+-        return ("scene_update", "acceleration", "render", "reclaim")
++        return (
++            "arena_acquire",
++            "scene_update",
++            "acceleration",
++            "render",
++            "terminal_completion",
++        )
+     raise AssertionError("unit fake only supports native R0/R1")
+ 
+ 
++def _audited_operations(row):
++    return (*_submission_operations(row), "reclaim")
++
++
+ _TEST_ENTRY_POINTS = {
++    "arena_acquire": "operator.mul",
+     "scene_update": "json.dumps",
+     "acceleration": "hashlib.sha256",
+     "render": "math.isfinite",
++    "terminal_completion": "math.trunc",
+     "reclaim": "time.perf_counter",
+ }
+ 
+ 
+ def _invoke_test_entry_point(operation):
+-    if operation == "scene_update":
++    if operation == "arena_acquire":
++        operator.mul(1, 1)
++    elif operation == "scene_update":
+         json.dumps({})
+     elif operation == "acceleration":
+         hashlib.sha256(b"")
+     elif operation == "render":
+         math.isfinite(1.0)
++    elif operation == "terminal_completion":
++        math.trunc(1.0)
+     elif operation == "reclaim":
+         time.perf_counter()
+     else:  # pragma: no cover - guarded by the fake-lane boundary restriction.

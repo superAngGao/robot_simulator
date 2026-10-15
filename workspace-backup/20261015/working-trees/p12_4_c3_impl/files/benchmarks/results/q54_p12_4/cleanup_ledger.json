@@ -1,0 +1,340 @@
+{
+  "schema_version": "q54.p12.4.cleanup-ledger.v1",
+  "status": "open_until_terminal_backend_selection",
+  "must_complete": true,
+  "entries": [
+    {
+      "entry_id": "logical_optical_scene_contract",
+      "paths": [
+        "optics/scene_contract.py",
+        "tests/unit/optics/test_scene_contract.py"
+      ],
+      "symbols": {
+        "optics/scene_contract.py": [
+          "class PackedOpticalSceneHost:"
+        ]
+      },
+      "cuda_selected": {
+        "action": "retain",
+        "acceptance": "remain the implementation-neutral single materialization source for the selected CUDA optical data plane"
+      },
+      "warp_selected": {
+        "action": "retain",
+        "acceptance": "remain the implementation-neutral single materialization source for the selected Warp optical data plane"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
+      "entry_id": "warp_optical_executors",
+      "paths": ["optics/warp_execution.py"],
+      "symbols": {
+        "optics/warp_execution.py": [
+          "class GpuDeviceBvhOpticalExecutor:",
+          "class GpuDeviceBvhDirectLightOpticalExecutor:"
+        ]
+      },
+      "cuda_selected": {
+        "action": "delete",
+        "acceptance": "no product, package export, example, or durable benchmark imports Warp optical executors"
+      },
+      "warp_selected": {
+        "action": "retain",
+        "acceptance": "rename/document as the sole optical implementation and keep active regression coverage"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
+      "entry_id": "cuda_optical_executor",
+      "paths": [
+        "optics/cuda_direct_light.py",
+        "optics/cuda_timeline.py",
+        "tests/gpu/test_cuda_optical_timeline.py",
+        "tests/unit/optics/test_cuda_timeline.py"
+      ],
+      "symbols": {
+        "optics/cuda_direct_light.py": [
+          "class CudaDeviceBvhOpticalExecutor:",
+          "class CudaDeviceBvhDirectLightOpticalExecutor:",
+          "class CudaDirectLightNativeRenderer:",
+          "class CudaDirectLightRenderStage:"
+        ],
+        "optics/cuda_timeline.py": [
+          "class CudaOpticalExecutionContext:",
+          "class CudaOpticalTransaction:"
+        ]
+      },
+      "cuda_selected": {
+        "action": "retain",
+        "acceptance": "becomes the sole product executor after native ownership and all F/C/R/A gates pass"
+      },
+      "warp_selected": {
+        "action": "delete",
+        "acceptance": "remove the CUDA timeline, native renderer, extension loader, exports, selectors, fallback, tests, and CUDA-only product flags"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
+      "entry_id": "warp_scene_and_bvh_data_plane",
+      "paths": [
+        "optics/device_scene.py",
+        "optics/device_bvh.py",
+        "optics/device.py",
+        "benchmarks/optical/native.py",
+        "tests/gpu/test_optical_benchmark_native.py"
+      ],
+      "symbols": {
+        "optics/device_scene.py": [
+          "def build_device_optical_scene_from_packed(",
+          "def device_optical_scene_from_arrays("
+        ],
+        "optics/device_bvh.py": [
+          "def build_host_median_bvh("
+        ],
+        "benchmarks/optical/native.py": [
+          "def build_prepared_warp_local_scene("
+        ]
+      },
+      "cuda_selected": {
+        "action": "replace_then_delete",
+        "acceptance": "CUDA product scene, acceleration, result, and staging ownership are Torch/CUDA native; remove obsolete Warp optical buffers/views/events"
+      },
+      "warp_selected": {
+        "action": "retain",
+        "acceptance": "keep only production-called Warp scene/BVH/result helpers with active GPU tests"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
+      "entry_id": "cuda_native_scene_data_plane",
+      "paths": [
+        "optics/cuda_scene.py",
+        "benchmarks/optical/native.py",
+        "tests/unit/benchmarks/test_optical_benchmark_c3a.py",
+        "tests/gpu/test_optical_benchmark_native.py"
+      ],
+      "symbols": {
+        "optics/cuda_scene.py": [
+          "class CudaOpticalLocalScene:",
+          "def build_cuda_optical_scene(",
+          "def cuda_optical_scene_from_arrays("
+        ],
+        "benchmarks/optical/native.py": [
+          "def build_prepared_cuda_local_scene("
+        ]
+      },
+      "cuda_selected": {
+        "action": "retain",
+        "acceptance": "becomes the sole native scene owner after C3-C4/B3 and all replacement gates pass"
+      },
+      "warp_selected": {
+        "action": "delete",
+        "acceptance": "remove Torch CUDA scene ownership, exports, candidate-only tests, and all CUDA scene call sites"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
+      "entry_id": "cuda_lbvh_builder",
+      "paths": [
+        "optics/cuda_lbvh.py",
+        "examples/cuda_lbvh_extension_spike.py"
+      ],
+      "symbols": {},
+      "cuda_selected": {
+        "action": "replace_then_delete",
+        "acceptance": "move extension source out of examples, return native CUDA ownership, remove Warp wrapping and experiment naming"
+      },
+      "warp_selected": {
+        "action": "conditional",
+        "acceptance": "retain only after the independent 20 percent build/refit and 10 percent dynamic-transaction benefit gate; otherwise delete both files"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
+      "entry_id": "lab_backend_selection",
+      "paths": [
+        "tools/optical_pipeline_lab/scenarios.py",
+        "tools/optical_pipeline_lab/render_session.py",
+        "tools/optical_pipeline_lab/runner.py",
+        "tools/optical_pipeline_lab/presets.py"
+      ],
+      "symbols": {},
+      "cuda_selected": {
+        "action": "collapse",
+        "acceptance": "remove Warp optical selector/fallback and expose only the selected production path"
+      },
+      "warp_selected": {
+        "action": "collapse",
+        "acceptance": "remove CUDA optical selector/fallback and expose only the selected production path"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
+      "entry_id": "delivery_and_rgb8",
+      "paths": [
+        "tools/optical_pipeline_lab/delivery.py",
+        "tools/optical_pipeline_lab/async_readback.py",
+        "tools/optical_pipeline_lab/rgb_pack.py"
+      ],
+      "symbols": {},
+      "cuda_selected": {
+        "action": "collapse",
+        "acceptance": "retain implementation-neutral delivery control but replace Warp RGB8/event code with the reviewed CUDA completion and buffer-lease path"
+      },
+      "warp_selected": {
+        "action": "retain",
+        "acceptance": "keep the current Warp-owned pack/readiness implementation after removing unused CUDA branches"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
+      "entry_id": "durable_single_lane_benchmark_core",
+      "paths": [
+        "benchmarks/optical/cases.py",
+        "benchmarks/optical/schema.py",
+        "benchmarks/optical/native.py",
+        "benchmarks/optical/timing.py",
+        "benchmarks/optical/instrumentation.py",
+        "benchmarks/optical/eligibility.py",
+        "benchmarks/optical/assets.py",
+        "benchmarks/optical/workload_contract.py",
+        "benchmarks/optical/workloads.py",
+        "benchmarks/optical/receipts.py",
+        "benchmarks/optical/runner.py",
+        "benchmarks/optical/artifacts.py"
+      ],
+      "symbols": {
+        "benchmarks/optical/native.py": [
+          "class CanonicalTransformReplayHost:",
+          "class CanonicalFixedRenderFixtureHost:"
+        ],
+        "benchmarks/optical/receipts.py": [
+          "class NativeExecutionBindingEvidence:"
+        ],
+        "benchmarks/optical/workload_contract.py": [
+          "class FrozenWorkloadContent:"
+        ]
+      },
+      "cuda_selected": {
+        "action": "retain",
+        "acceptance": "keep canonical cases, contracts, independent native preparation, single-lane runner, artifacts, and the selected CUDA regression lane; no paired selector remains in this surface"
+      },
+      "warp_selected": {
+        "action": "retain",
+        "acceptance": "keep canonical cases, contracts, independent native preparation, single-lane runner, artifacts, and the selected Warp regression lane; no paired selector remains in this surface"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
+      "entry_id": "temporary_warp_comparison_lane",
+      "paths": ["benchmarks/optical/lanes/warp.py"],
+      "symbols": {
+        "benchmarks/optical/lanes/warp.py": ["class CurrentWarpLanePreflight:"]
+      },
+      "cuda_selected": {
+        "action": "delete",
+        "acceptance": "remove the losing Warp comparison lane and every comparison-only import"
+      },
+      "warp_selected": {
+        "action": "collapse",
+        "acceptance": "replace the preflight-only adapter with one thin selected-backend durable regression lane"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
+      "entry_id": "temporary_cuda_comparison_lane",
+      "paths": ["benchmarks/optical/lanes/cuda.py"],
+      "symbols": {
+        "benchmarks/optical/lanes/cuda.py": ["class CurrentCudaLanePreflight:"]
+      },
+      "cuda_selected": {
+        "action": "collapse",
+        "acceptance": "replace the preflight-only adapter with one thin selected-backend durable regression lane"
+      },
+      "warp_selected": {
+        "action": "delete",
+        "acceptance": "remove the losing CUDA comparison lane and every comparison-only import"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
+      "entry_id": "temporary_paired_lane_audit_and_exports",
+      "paths": [
+        "benchmarks/optical/lanes/__init__.py",
+        "benchmarks/optical/lanes/audit.py",
+        "tests/unit/benchmarks/test_optical_benchmark_a3a.py"
+      ],
+      "symbols": {
+        "benchmarks/optical/lanes/audit.py": [
+          "def current_product_source_entry_point_audits(",
+          "def verify_current_product_source_manifest("
+        ]
+      },
+      "cuda_selected": {
+        "action": "collapse",
+        "acceptance": "export only the selected CUDA regression lane; remove pre-a3b source probes, Warp references, and comparison-only tests"
+      },
+      "warp_selected": {
+        "action": "collapse",
+        "acceptance": "export only the selected Warp regression lane; remove pre-a3b source probes, CUDA references, and comparison-only tests"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
+      "entry_id": "exports_examples_tests_and_docs",
+      "paths": [
+        "optics/__init__.py",
+        "benchmarks/optical/__init__.py",
+        "examples/mujoco_menagerie_gpu_preview.py",
+        "examples/optical_readback_microbench.py",
+        "tests/gpu/test_optical_gpu_runtime.py",
+        "tests/gpu/test_optical_warp_executor.py",
+        "tests/gpu/test_optical_benchmark_native.py",
+        "tests/unit/benchmarks/test_optical_benchmark_c3a.py",
+        "tests/unit/optics/test_scene_contract.py"
+      ],
+      "symbols": {},
+      "cuda_selected": {
+        "action": "collapse",
+        "acceptance": "remove losing exports, examples, flags, tests, stale docs, and migration-only fallback while retaining selected regressions"
+      },
+      "warp_selected": {
+        "action": "collapse",
+        "acceptance": "remove losing exports, examples, flags, tests, stale docs, and migration-only fallback while retaining selected regressions"
+      },
+      "must_resolve_by": "P12.4e"
+    },
+    {
+      "entry_id": "physics_cuda_publication_binding",
+      "paths": [
+        "physics/cuda_publication.py",
+        "physics/gpu_engine.py",
+        "physics/publish.py",
+        "tests/gpu/test_cuda_publication_binding.py",
+        "tests/unit/physics/test_cuda_publication.py"
+      ],
+      "symbols": {
+        "physics/cuda_publication.py": [
+          "class CudaConsumerResourceGuardian:",
+          "class CudaDeviceConsumerBinding:",
+          "class CudaPublicationLease:",
+          "class CudaPublicationQuarantineRegistry:"
+        ],
+        "physics/gpu_engine.py": [
+          "def bind_cuda_device_consumer("
+        ],
+        "physics/publish.py": [
+          "def bind_cuda_device_consumer("
+        ]
+      },
+      "cuda_selected": {
+        "action": "retain",
+        "acceptance": "retain the public consumer-stream binding only as the audited Warp-physics to CUDA-optical handoff with lifecycle GPU tests and a complete C2-C4/B3 guardian storage-provenance review"
+      },
+      "warp_selected": {
+        "action": "collapse",
+        "acceptance": "delete the binding API, guardian/quarantine module, exports, and dedicated lifecycle tests introduced solely for the unselected CUDA optical consumer"
+      },
+      "must_resolve_by": "P12.4e"
+    }
+  ]
+}

@@ -1,0 +1,1876 @@
+diff --git a/OPEN_QUESTIONS.md b/OPEN_QUESTIONS.md
+index e2ba6cd..044d812 100644
+--- a/OPEN_QUESTIONS.md
++++ b/OPEN_QUESTIONS.md
+@@ -3025,3 +3025,22 @@ Suggested trigger:
+ - Move the registration helper out of `physics_source.py` when a real lab
+   runner or sensor runtime owns a physics engine step loop and needs to decide
+   when consumers are registered/unregistered relative to publish policy setup.
++
++**Q54-OPEN — When may the C4 optical arena become result-capable?** (2026-09-08)
++
++C4b now supplies the CUDA R0/R1 and R2 `none/device_only` allocation and
++transaction graph. It remains deliberately non-result-capable. The following
++are still blocking activation conditions rather than optional cleanup:
++
++- C4c must provide the matched Warp caller-owned render/arena path;
++- C4d must close normal drain, poison, emergency synchronization, quarantine,
++  and C0 guardian ownership for the complete graph;
++- B3 must define and implement host pack/staging/D2H storage and external host
++  payload holds;
++- the joint C4/B3 review must replace the runner's C3-only rejection with live
++  arena-issued authority and version the activation gate;
++- only then may a3b produce R0-R2 result records, and a4 must still approve the
++  comparator before any replacement baseline is inspected.
++
++Until every condition is reviewed, `result_capable=False`, host-payload arena
++sealing, a3b submission, S shipping rows, and baseline artifacts remain closed.
+diff --git a/PROGRESS.md b/PROGRESS.md
+index 1283740..c56605e 100644
+--- a/PROGRESS.md
++++ b/PROGRESS.md
+@@ -1018,6 +1018,22 @@ Next milestone:
+ - [ ] P12.4a3 — implement real Warp/CUDA R0-R2 lanes and acceleration attribution
+       on top of the a2 contracts; do not inspect replacement baselines until the
+       a4 comparator-validity review approves the paired coordinator.
++- [x] P12.4 C0/C2/C3/C4a foundations — native CUDA publication lifecycle,
++      allocation-free C2 render transactions, exact C3 scene/LBVH stage graphs,
++      and the CPU-safe C4 arena state/evidence contract are implemented and
++      independently approved.
++- [ ] P12.4 C4b — corrective implementation is ready for re-review. The CUDA
++      candidate has sealed R0/R1 and R2 `none/device_only` arenas, controlled
++      dormant-transaction construction plus single-use prepared-acquire
++      capabilities, and exact timeline-minted per-acquire execution authorities
++      with one-to-one lease/transaction/owner registration and frozen
++      slot/frame/event/C3 binding, exact live a2 allocation/readiness plus
++      adapter-issued C3 receipt authority, and an O(1) measured acquire path. It
++      remains non-result-capable until approval.
++- [ ] P12.4 C4c/C4d/B3 — build the Warp native arena, finish joint
++      drain/poison/guardian ownership, and add reviewed host delivery storage.
++      The a3b/result/baseline gates stay closed until the joint activation
++      review.
+ - [ ] Do not delete the Warp optical oracle until CUDA passes the retained
+       capability, correctness, stability, absolute product-budget, and
+       no-slower-than-Warp gates on matched workloads.
+diff --git a/REFLECTIONS.md b/REFLECTIONS.md
+index a010dbc..9626307 100644
+--- a/REFLECTIONS.md
++++ b/REFLECTIONS.md
+@@ -3131,3 +3131,109 @@ The cleanup ledger classifies cases, schema, native preparation, timing,
+ single-lane execution, and artifacts as durable whichever backend wins. The
+ future paired coordinator and losing renderer lane remain separate temporary
+ surfaces that P12.4e must remove.
++
++## Session 2026-09-08 — Q54 P12.4 C4b CUDA Arena Ownership
++
++C4b turns the separately reviewed C2 render and C3 scene/LBVH stages into one
++reusable CUDA allocation graph without making the transaction itself
++resettable. The arena owns a validated template per slot/frame, but every
++prepared sample receives a fresh dormant single-use transaction. Only an
++arena-issued C4 lease can activate that sample for enqueue, and the same slot
++event cannot be submitted again until exact reclaim advances the generation.
++
++The resource manifest distinguishes physical allocations from logical tensor
++views. This matters for transform replay: multiple frame views intentionally
++share one underlying Torch allocation, so recording only the first view's
++shape would give a false ownership proof. Each physical record now carries all
++logical names, dtypes, shapes, strides, active byte offsets, and active byte
++ranges, while total bytes count the allocation once.
++
++C3 provenance is not accepted as three caller-supplied hashes. A benchmark-side
++adapter constructs the canonical C3 one-shot binding from the arena's actual
++stage objects and tensors. The arena canonicalizes it and checks row identity,
++operation and dispatch evidence, pointer, dtype, shape, active byte range, and
++owner identity before issuing a bounded provenance capability. Production
++`optics` code does not import the benchmark package; the dependency remains in
++the allowed benchmark-to-product direction.
++
++R0 retains the entire prepared packed-scene allocation set plus the entire
++derived fixed-fixture set, even though the render kernel consumes only a
++subset. That preserves the approved a2 provenance and upload ownership chain
++instead of silently redefining the fixed workload at the C4 boundary. R1 uses
++the dynamic CUDA rebuild class, while R2 keeps its separately frozen static
++class even though both currently select the same CUDA LBVH implementation.
++
++Device results are exposed through a generation-scoped view. Access requires
++terminal resolution and fails after release/reclaim. C4b intentionally does
++not add host staging, async readback, ordinary close/poison cleanup, C0 guardian
++handoff, result activation, or baseline production; those remain C4d/B3/joint
++review work.
++
++The first C4b review exposed three distinctions that an internally consistent
++arena graph did not yet prove. First, hiding an executable under an underscore
++is not authority: an arena-owned template, its stages, and its terminal event
++must all reject activation or execution unless a live C4 lease supplies the
++registered capability. Standalone C2 and arena-controlled C2 therefore need
++different activation policy even though they share the same transaction state
++machine.
++
++Second, matching hashes and storage signatures do not prove an allocation came
++from a2. The durable proof now combines exact live prepared/readiness identity,
++exact tensor or approved-view identity, an untimed content revalidation, and an
++adapter-issued receipt identity. Serialization can reproduce facts but cannot
++reproduce the authority showing who observed those facts.
++
++Third, "allocation-free" is weaker than "constant-time." A measured acquire
++that walks every sealed slot, frame, owner, and resource record can remain free
++of Torch allocations while still scaling with the workload. Full graph
++validation belongs in seal/prepare; acquire should consume only fixed identity
++records and the C4 slot/generation state transition.
++
++A follow-up review showed that an opaque token is not automatically a live
++capability. The first correction still let the private executable present its
++static template token as execution authority, so the token proved graph
++membership but not lease ownership. Construction and execution must use
++different authorities: the former may create dormant state, while the latter
++must be minted only after acquire and bind the transaction to the exact live
++lease, slot, generation, and lifecycle state.
++
++The stronger formulation couples authorization with lifecycle transitions.
++The live authority begins C4 enqueue before exposing stage execution and
++records C4 completion immediately after the terminal event. This preserves the
++invariant even if internal objects are reached directly: there is no successful
++terminal submission whose lifecycle receipt still describes a free or
++completion-free slot.
++
++That coupling is still insufficient if the timeline authenticates its
++controller with module/name strings and callable discovery. Python objects can
++impersonate all three without owning any lifecycle state. The final boundary
++therefore uses a timeline-defined sealed exact type plus bidirectional identity
++registries tying authority, transaction, and the real `C4ActiveOutputLease`.
++The bind API accepts a lease, not a caller-constructed authority; the timeline
++mints the only registered authority itself.
++
++Pre-submit rejection also needs an explicit disposition. If authority identity
++fails before `begin_enqueue`, no GPU command is in flight, so cancelling the
++lease and burning the generation is safe. Treating that case like a submitted
++failure would neither poison the control arena nor release the still-`LEASED`
++slot, creating a fail-closed-looking resource leak.
++
++Exact authority type and registry membership are necessary but not sufficient
++when the mint operation itself remains reusable. A real lease can still be
++misapplied if static construction authority may mint repeatedly or if the
++caller chooses an empty binding. The final C4b correction therefore makes
++execution authority a two-step linear capability: untimed preparation freezes
++one exact transaction/owner/binding, and successful measured acquire consumes
++that capability while registering the real lease exactly once.
++
++The transaction's slot, frame, and terminal-event identity must be sealed on
++the template before any dormant activation. C3 digests then extend that fixed
++identity during preparation; they do not replace it. This prevents two
++transactions that share shapes, stages, or even one slot event from exchanging
++leases. It also gives the mint API no generic binding collection to omit or
++rewrite.
++
++Finally, "owner looks active" is not an ownership proof. The timeline rejects
++duck-typed owners and retains the exact active object in both prepared and live
++registries. Authorization rechecks the same owner, transaction, authority, and
++lease identities on every enqueue and finish boundary.
+diff --git a/benchmarks/optical/__init__.py b/benchmarks/optical/__init__.py
+index b5b1baf..e1df848 100644
+--- a/benchmarks/optical/__init__.py
++++ b/benchmarks/optical/__init__.py
+@@ -15,6 +15,7 @@ from .cases import (
+     cases_by_id,
+     get_case,
+ )
++from .cuda_arena import build_cuda_c3_binding_from_arena_target
+ from .eligibility import (
+     CANONICAL_NATIVE_REPLAY_INPUT,
+     ELIGIBILITY_SCHEMA_VERSION,
+@@ -221,6 +222,7 @@ __all__ = [
+     "entry_point_hook_id",
+     "certify_native_readiness",
+     "build_c3_one_shot_native_execution_binding",
++    "build_cuda_c3_binding_from_arena_target",
+     "build_prepared_cuda_lbvh_rebuild_factory",
+     "build_prepared_warp_bvh_refit_factory",
+     "build_prepared_cuda_local_scene",
+diff --git a/benchmarks/optical/native.py b/benchmarks/optical/native.py
+index eabb76d..936c254 100644
+--- a/benchmarks/optical/native.py
++++ b/benchmarks/optical/native.py
+@@ -4,6 +4,7 @@ from __future__ import annotations
+ 
+ import hashlib
+ import json
++import weakref
+ from collections.abc import Mapping, Sequence
+ from dataclasses import dataclass
+ from types import MappingProxyType
+@@ -29,6 +30,39 @@ TRANSFORM_REPLAY_SCHEMA_VERSION = "q54.p12.4.transform-replay.v1"
+ FIXED_RENDER_FIXTURE_SCHEMA_VERSION = "q54.p12.4.fixed-render-fixture.v1"
+ NativeBackend = Literal["warp", "cuda"]
+ 
++_PREPARED_INPUT_AUTHORITIES: dict[
++    int, tuple[weakref.ReferenceType[object], weakref.ReferenceType[object]]
++] = {}
++_READINESS_AUTHORITIES: dict[int, tuple[weakref.ReferenceType[object], weakref.ReferenceType[object]]] = {}
++
++
++def _register_identity_authority(
++    registry: dict[int, tuple[weakref.ReferenceType[object], weakref.ReferenceType[object]]],
++    subject: object,
++    owner: object,
++) -> None:
++    key = id(subject)
++
++    def discard(reference: weakref.ReferenceType[object]) -> None:
++        current = registry.get(key)
++        if current is not None and current[0] is reference:
++            registry.pop(key, None)
++
++    registry[key] = (weakref.ref(subject, discard), weakref.ref(owner))
++
++
++def _require_identity_authority(
++    registry: dict[int, tuple[weakref.ReferenceType[object], weakref.ReferenceType[object]]],
++    subject: object,
++    owner: object,
++    *,
++    label: str,
++) -> None:
++    registered = registry.get(id(subject))
++    if registered is None or registered[0]() is not subject or registered[1]() is not owner:
++        raise ValueError(f"{label} was not issued by the canonical a2 preparation path")
++
++
+ _REPLAY_SEMANTICS = MappingProxyType(
+     {
+         "replay_x_world_R": "transform_replay.x_world_R",
+@@ -211,12 +245,8 @@ class CanonicalTransformReplayHost:
+             raise ValueError("replay frame count does not match the canonical case")
+         rotation.setflags(write=False)
+         translation.setflags(write=False)
+-        arrays = MappingProxyType(
+-            {"replay_x_world_R": rotation, "replay_x_world_r": translation}
+-        )
+-        transform_sequence = json.loads(
+-            _canonical_json_bytes(case.transform_sequence).decode("utf-8")
+-        )
++        arrays = MappingProxyType({"replay_x_world_R": rotation, "replay_x_world_r": translation})
++        transform_sequence = json.loads(_canonical_json_bytes(case.transform_sequence).decode("utf-8"))
+         payload = {
+             "schema_version": TRANSFORM_REPLAY_SCHEMA_VERSION,
+             "case_id": case.case_id,
+@@ -289,9 +319,7 @@ class CanonicalFixedRenderFixtureHost:
+         transform_payload = {
+             "fixed_transform_id": fixed_transform_id,
+             "x_world_R": _array_manifest(rotation, name="x_world_R", semantic="fixed_transform.R"),
+-            "x_world_r": _array_manifest(
+-                translation, name="x_world_r", semantic="fixed_transform.r"
+-            ),
++            "x_world_r": _array_manifest(translation, name="x_world_r", semantic="fixed_transform.r"),
+         }
+         fixed_transform_sha256 = _sha256_payload(transform_payload)
+         fixture_payload = {
+@@ -353,9 +381,7 @@ class CanonicalNativeInput:
+         case = _validate_packed_scene_case(packed_scene)
+         frozen_content = frozen_workload_content(case.case_id)
+         if packed_scene.scene_contract_sha256 != frozen_content.scene_contract_sha256:
+-            raise ValueError(
+-                "packed scene content does not match the frozen canonical workload"
+-            )
++            raise ValueError("packed scene content does not match the frozen canonical workload")
+         if input_contract not in {
+             FIXED_NATIVE_SCENE_INPUT,
+             CANONICAL_NATIVE_REPLAY_INPUT,
+@@ -382,12 +408,9 @@ class CanonicalNativeInput:
+                 raise ValueError("fixed fixture case identity does not match the packed scene")
+             if (
+                 frozen_content.fixed_render_fixture_sha256 is None
+-                or fixed_fixture.fixed_render_fixture_sha256
+-                != frozen_content.fixed_render_fixture_sha256
++                or fixed_fixture.fixed_render_fixture_sha256 != frozen_content.fixed_render_fixture_sha256
+             ):
+-                raise ValueError(
+-                    "fixed render fixture does not match the frozen canonical workload"
+-                )
++                raise ValueError("fixed render fixture does not match the frozen canonical workload")
+             _insert_disjoint_arrays(
+                 arrays,
+                 array_semantics,
+@@ -407,12 +430,9 @@ class CanonicalNativeInput:
+                 raise ValueError("transform replay case identity does not match the packed scene")
+             if (
+                 frozen_content.transform_replay_sha256 is None
+-                or replay.transform_replay_sha256
+-                != frozen_content.transform_replay_sha256
++                or replay.transform_replay_sha256 != frozen_content.transform_replay_sha256
+             ):
+-                raise ValueError(
+-                    "transform replay does not match the frozen canonical workload"
+-                )
++                raise ValueError("transform replay does not match the frozen canonical workload")
+             _insert_disjoint_arrays(
+                 arrays,
+                 array_semantics,
+@@ -586,6 +606,9 @@ class CudaPreparedNativeInput:
+     def backend(self) -> NativeBackend:
+         return "cuda"
+ 
++    def _assert_cuda_arena_a2_authority(self, readiness: object) -> None:
++        assert_cuda_arena_a2_authority(self, readiness)
++
+ 
+ PreparedNativeInput = WarpPreparedNativeInput | CudaPreparedNativeInput
+ 
+@@ -648,9 +671,7 @@ def wrap_prepared_fixed_render_inputs(
+         backend=prepared.backend,
+         prepared_owner=prepared,
+         scene_arrays=MappingProxyType({name: prepared.arrays[name] for name in scene_names}),
+-        derived_fixture_arrays=MappingProxyType(
+-            {name: prepared.arrays[name] for name in fixture_names}
+-        ),
++        derived_fixture_arrays=MappingProxyType({name: prepared.arrays[name] for name in fixture_names}),
+         scene_contract_sha256=manifest.scene_contract_sha256,
+         fixed_render_fixture_sha256=manifest.fixed_render_fixture_sha256,
+     )
+@@ -1089,6 +1110,54 @@ class NativeReadinessEvidence:
+         return _sha256_payload(self.to_payload())
+ 
+ 
++def assert_cuda_arena_a2_authority(
++    prepared: PreparedNativeInput,
++    readiness: NativeReadinessEvidence,
++) -> None:
++    """Require the exact live a2 CUDA allocation/readiness authority pair."""
++
++    assert_outside_timed_boundary("CUDA arena a2 authority validation")
++    if type(prepared) is not CudaPreparedNativeInput:
++        raise TypeError("CUDA arena a2 authority requires CudaPreparedNativeInput")
++    _require_identity_authority(
++        _PREPARED_INPUT_AUTHORITIES,
++        prepared,
++        prepared.source,
++        label="CUDA prepared native input",
++    )
++    if prepared.source is None or prepared.manifest is not prepared.source.manifest:
++        raise ValueError("CUDA prepared native input lost its canonical source identity")
++    if type(readiness) is not NativeReadinessEvidence:
++        raise TypeError("CUDA arena a2 authority requires NativeReadinessEvidence")
++    _require_identity_authority(
++        _READINESS_AUTHORITIES,
++        readiness,
++        prepared,
++        label="CUDA native readiness",
++    )
++    canonical = NativeReadinessEvidence.from_payload(readiness.to_payload())
++    if canonical != readiness:
++        raise ValueError("CUDA native readiness evidence is not canonical")
++    manifest = prepared.manifest
++    expected = {
++        "backend": "cuda",
++        "device_ordinal": prepared.device_ordinal,
++        "manifest_sha256": manifest.sha256,
++        "content_sha256": manifest.content_sha256,
++        "topology_sha256": manifest.topology_sha256,
++        "input_contract": manifest.input_contract,
++        "scene_contract_schema_version": manifest.scene_contract_schema_version,
++        "scene_contract_sha256": manifest.scene_contract_sha256,
++        "scene_id": manifest.scene_id,
++        "transform_replay_sha256": manifest.transform_replay_sha256,
++        "transform_frame_count": manifest.transform_frame_count,
++        "fixed_render_fixture_sha256": manifest.fixed_render_fixture_sha256,
++    }
++    for name, value in expected.items():
++        if getattr(readiness, name) != value:
++            raise ValueError(f"CUDA native readiness {name} does not match its prepared input")
++
++
+ def certify_native_readiness(
+     prepared: PreparedNativeInput,
+     validation: NativeInputValidationReport,
+@@ -1127,7 +1196,7 @@ def certify_native_readiness(
+         or warmup_frames_completed < 0
+     ):
+         raise ValueError("warmup_frames_completed must be a non-negative integer")
+-    return NativeReadinessEvidence(
++    readiness = NativeReadinessEvidence(
+         schema_version=NATIVE_INPUT_SCHEMA_VERSION,
+         backend=prepared.backend,
+         device_ordinal=prepared.device_ordinal,
+@@ -1147,6 +1216,8 @@ def certify_native_readiness(
+         compile_complete=True,
+         warmup_frames_completed=warmup_frames_completed,
+     )
++    _register_identity_authority(_READINESS_AUTHORITIES, readiness, prepared)
++    return readiness
+ 
+ 
+ def prepare_warp_native_input(
+@@ -1175,13 +1246,15 @@ def prepare_warp_native_input(
+             )
+         ready_event = stream.record_event()
+         wp.synchronize_event(ready_event)
+-    return WarpPreparedNativeInput(
++    result = WarpPreparedNativeInput(
+         manifest=source.manifest,
+         device_ordinal=int(target.ordinal),
+         arrays=MappingProxyType(prepared),
+         ready_event=ready_event,
+         source=source,
+     )
++    _register_identity_authority(_PREPARED_INPUT_AUTHORITIES, result, source)
++    return result
+ 
+ 
+ def prepare_cuda_native_input(
+@@ -1212,13 +1285,15 @@ def prepare_cuda_native_input(
+         ready_event = torch.cuda.Event(enable_timing=False)
+         ready_event.record(stream)
+         ready_event.synchronize()
+-    return CudaPreparedNativeInput(
++    result = CudaPreparedNativeInput(
+         manifest=source.manifest,
+         device_ordinal=int(ordinal),
+         arrays=MappingProxyType(prepared),
+         ready_event=ready_event,
+         source=source,
+     )
++    _register_identity_authority(_PREPARED_INPUT_AUTHORITIES, result, source)
++    return result
+ 
+ 
+ def validate_prepared_native_input(
+@@ -1348,9 +1423,7 @@ def _derive_fixed_fixture_arrays(
+     x_world_r: np.ndarray,
+ ) -> dict[str, np.ndarray]:
+     packed = packed_scene.arrays
+-    triangle_vertices = np.asarray(packed["triangle_vertices_local"], dtype=np.float32).reshape(
+-        -1, 3, 3
+-    )
++    triangle_vertices = np.asarray(packed["triangle_vertices_local"], dtype=np.float32).reshape(-1, 3, 3)
+     triangle_instance = packed["triangle_instance_index"]
+     triangle_v0 = np.empty((packed_scene.num_triangles, 3), dtype=np.float32)
+     triangle_e1 = np.empty_like(triangle_v0)
+@@ -1394,9 +1467,7 @@ def _derive_fixed_fixture_arrays(
+         if norm <= 1.0e-8:
+             raise ValueError("fixed fixture unexpectedly produced a degenerate plane normal")
+         plane_normal[plane] = normal / norm
+-        plane_point[plane] = (
+-            R_world_geometry @ packed["plane_point_local"][plane] + r_world_geometry
+-        )
++        plane_point[plane] = R_world_geometry @ packed["plane_point_local"][plane] + r_world_geometry
+ 
+     host_bvh = build_host_median_bvh(
+         triangle_aabb_min,
+@@ -1465,10 +1536,7 @@ def _array_manifest_payload(
+     arrays: Mapping[str, np.ndarray],
+     semantics: Mapping[str, str],
+ ) -> list[dict[str, object]]:
+-    return [
+-        _array_manifest(arrays[name], name=name, semantic=semantics[name])
+-        for name in sorted(arrays)
+-    ]
++    return [_array_manifest(arrays[name], name=name, semantic=semantics[name]) for name in sorted(arrays)]
+ 
+ 
+ def _array_manifest(array: np.ndarray, *, name: str, semantic: str) -> dict[str, object]:
+diff --git a/benchmarks/optical/receipts.py b/benchmarks/optical/receipts.py
+index fa8b8dd..942ecb0 100644
+--- a/benchmarks/optical/receipts.py
++++ b/benchmarks/optical/receipts.py
+@@ -4,6 +4,7 @@ from __future__ import annotations
+ 
+ import hashlib
+ import json
++import weakref
+ from collections.abc import Mapping, Sequence
+ from dataclasses import dataclass
+ 
+@@ -19,6 +20,64 @@ NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION = "q54.p12.4.native-stage-evidence.v2"
+ NATIVE_EXECUTION_BINDING_SCHEMA_VERSION = "q54.p12.4.c3-one-shot-binding.v5"
+ DYNAMIC_DATAFLOW_CONTRACT_SCHEMA_VERSION = "q54.p12.4.dynamic-dataflow.v2"
+ 
++
++_CUDA_ARENA_C3_BINDING_AUTHORITIES: dict[
++    int,
++    tuple[weakref.ReferenceType[object], object, object, object],
++] = {}
++
++
++def _register_cuda_arena_c3_binding_authority(
++    binding: object,
++    *,
++    target: object,
++    prepared_input: object,
++    native_readiness: object,
++) -> None:
++    """Register one adapter-issued, identity-bound C3 arena receipt.
++
++    Canonical serialization proves the receipt's contents; this registry
++    separately proves that the CUDA arena adapter derived those contents from
++    the exact live a2 authorities and target allocations.
++    """
++
++    binding_id = id(binding)
++
++    def discard(reference: weakref.ReferenceType[object]) -> None:
++        current = _CUDA_ARENA_C3_BINDING_AUTHORITIES.get(binding_id)
++        if current is not None and current[0] is reference:
++            _CUDA_ARENA_C3_BINDING_AUTHORITIES.pop(binding_id, None)
++
++    reference = weakref.ref(binding, discard)
++    _CUDA_ARENA_C3_BINDING_AUTHORITIES[binding_id] = (
++        reference,
++        target,
++        prepared_input,
++        native_readiness,
++    )
++
++
++def _assert_cuda_arena_c3_binding_authority(
++    binding: object,
++    *,
++    target: object,
++    prepared_input: object,
++    native_readiness: object,
++) -> None:
++    authority = _CUDA_ARENA_C3_BINDING_AUTHORITIES.get(id(binding))
++    if (
++        authority is None
++        or authority[0]() is not binding
++        or authority[1] is not target
++        or authority[2] is not prepared_input
++        or authority[3] is not native_readiness
++    ):
++        raise ValueError(
++            "CUDA arena C3 binding was not issued by the canonical arena adapter "
++            "for these exact a2 authorities"
++        )
++
++
+ # These names are the logical allocation ABI between C3 stages.  They mirror
+ # DeviceOpticalSceneSnapshot, DeviceOpticalBvh, CudaFirstHitInputs, and
+ # CudaShadeInputs.  The tuple order is part of the contract.
+@@ -79,9 +138,7 @@ DYNAMIC_RENDER_SHADE_INPUT_NAMES = (
+     "light_color_rgb",
+ )
+ 
+-_SUPPORTED_OUTPUT_PROFILES = frozenset(
+-    {"direct_light_full", "rgb_preview", "render_only"}
+-)
++_SUPPORTED_OUTPUT_PROFILES = frozenset({"direct_light_full", "rgb_preview", "render_only"})
+ 
+ 
+ def _canonical_sha256(payload: object) -> str:
+@@ -381,9 +438,7 @@ class C3OneShotNativeExecutionBindingEvidence:
+             raise ValueError("native execution binding transform frame index is invalid")
+         if (payload.get("transform_replay_sha256") is None) != (frame_index is None):
+             raise ValueError("native execution binding replay hash/index must appear together")
+-        runtime_scene_storage = _storage_sequence(
+-            payload.get("runtime_scene_storage"), label="runtime scene"
+-        )
++        runtime_scene_storage = _storage_sequence(payload.get("runtime_scene_storage"), label="runtime scene")
+         if not runtime_scene_storage:
+             raise ValueError("native execution binding runtime scene storage is empty")
+         if payload.get("runtime_scene_storage_sha256") != canonical_storage_manifest_sha256(
+@@ -399,9 +454,7 @@ class C3OneShotNativeExecutionBindingEvidence:
+                 raise ValueError("native execution binding derived fixture storage digest is invalid")
+         elif derived_storage_hash is not None:
+             raise ValueError("empty derived fixture storage must not carry a digest")
+-        if (payload.get("fixed_render_fixture_sha256") is None) != (
+-            not derived_fixture_storage
+-        ):
++        if (payload.get("fixed_render_fixture_sha256") is None) != (not derived_fixture_storage):
+             raise ValueError("native execution binding fixed fixture storage is inconsistent")
+         stages_payload = payload.get("ordered_stage_evidence")
+         if not isinstance(stages_payload, Sequence) or isinstance(stages_payload, (str, bytes)):
+@@ -429,8 +482,7 @@ class C3OneShotNativeExecutionBindingEvidence:
+                 or evidence.input_contract != payload["input_contract"]
+                 or evidence.transform_replay_sha256 != payload["transform_replay_sha256"]
+                 or evidence.transform_frame_index != frame_index
+-                or evidence.fixed_render_fixture_sha256
+-                != payload["fixed_render_fixture_sha256"]
++                or evidence.fixed_render_fixture_sha256 != payload["fixed_render_fixture_sha256"]
+             ):
+                 raise ValueError("native stage evidence provenance does not match its binding")
+             all_storage += evidence.input_storage + evidence.output_storage
+@@ -448,8 +500,7 @@ class C3OneShotNativeExecutionBindingEvidence:
+             ordered_stage_evidence=tuple(stages),
+         )
+         if any(
+-            storage.backend != payload["lane"]
+-            or storage.device_ordinal != all_storage[0].device_ordinal
++            storage.backend != payload["lane"] or storage.device_ordinal != all_storage[0].device_ordinal
+             for storage in all_storage
+         ):
+             raise ValueError("native execution binding storage lane/device is inconsistent")
+@@ -511,14 +562,26 @@ class C3OneShotNativeExecutionBindingEvidence:
+             "fixed_render_fixture_sha256": self.fixed_render_fixture_sha256,
+             "runtime_scene_storage": [value.to_payload() for value in self.runtime_scene_storage],
+             "runtime_scene_storage_sha256": self.runtime_scene_storage_sha256,
+-            "derived_fixture_storage": [
+-                value.to_payload() for value in self.derived_fixture_storage
+-            ],
++            "derived_fixture_storage": [value.to_payload() for value in self.derived_fixture_storage],
+             "derived_fixture_storage_sha256": self.derived_fixture_storage_sha256,
+             "ordered_stage_evidence": [value.to_payload() for value in self.ordered_stage_evidence],
+             "dataflow_binding_sha256": self.dataflow_binding_sha256,
+         }
+ 
++    def _assert_cuda_arena_adapter_authority(
++        self,
++        *,
++        target: object,
++        prepared_input: object,
++        native_readiness: object,
++    ) -> None:
++        _assert_cuda_arena_c3_binding_authority(
++            self,
++            target=target,
++            prepared_input=prepared_input,
++            native_readiness=native_readiness,
++        )
++
+     @property
+     def sha256(self) -> str:
+         return _canonical_sha256(self.to_payload())
+@@ -767,9 +830,7 @@ def _validate_stage_dataflow(
+             raise ValueError("R0 render operation does not match its lane renderer")
+         if acceleration_class != "fixed_bvh_fixture":
+             raise ValueError("R0 acceleration class must be fixed_bvh_fixture")
+-        expected_acceleration_id = EXACT_LANE_BINDINGS[lane]["acceleration_by_class"][
+-            acceleration_class
+-        ]
++        expected_acceleration_id = EXACT_LANE_BINDINGS[lane]["acceleration_by_class"][acceleration_class]
+         if acceleration_id != expected_acceleration_id:
+             raise ValueError("R0 acceleration identity does not match its class")
+         if render.output_profile != output_profile or render.shadows != shadows:
+@@ -795,9 +856,7 @@ def _validate_stage_dataflow(
+ 
+     scene, acceleration, render = evidence[:3]
+     expected_lane_binding = EXACT_LANE_BINDINGS[lane]
+-    expected_acceleration_id = expected_lane_binding["acceleration_by_class"].get(
+-        acceleration_class
+-    )
++    expected_acceleration_id = expected_lane_binding["acceleration_by_class"].get(acceleration_class)
+     if expected_acceleration_id is None:
+         raise ValueError("dynamic acceleration class is not defined for its lane")
+     acceleration_contract = EXACT_ACCELERATION_CONTRACTS[lane][expected_acceleration_id]
+@@ -833,11 +892,14 @@ def _validate_stage_dataflow(
+         label="dynamic scene transform input",
+         allow_other_names=True,
+     )
+-    expected_scene_input = _select_storage(
+-        runtime_by_name,
+-        DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES,
+-        label="dynamic scene runtime input",
+-    ) + expected_transform
++    expected_scene_input = (
++        _select_storage(
++            runtime_by_name,
++            DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES,
++            label="dynamic scene runtime input",
++        )
++        + expected_transform
++    )
+     _require_exact_storage(
+         scene.input_storage,
+         expected_scene_input,
+@@ -864,9 +926,7 @@ def _validate_stage_dataflow(
+         DYNAMIC_ACCELERATION_OUTPUT_NAMES,
+         label="dynamic acceleration output",
+     )
+-    acceleration_by_name = _storage_by_name(
+-        acceleration.output_storage, label="dynamic acceleration output"
+-    )
++    acceleration_by_name = _storage_by_name(acceleration.output_storage, label="dynamic acceleration output")
+     render_names = (
+         DYNAMIC_RENDER_WORLD_INPUT_NAMES
+         + DYNAMIC_RENDER_METADATA_INPUT_NAMES
+@@ -1009,9 +1069,7 @@ def canonical_dataflow_binding_sha256(
+     return _canonical_sha256(
+         {
+             "runtime_scene_storage": [value.to_payload() for value in runtime_scene_storage],
+-            "derived_fixture_storage": [
+-                value.to_payload() for value in derived_fixture_storage
+-            ],
++            "derived_fixture_storage": [value.to_payload() for value in derived_fixture_storage],
+             "ordered_stage_evidence": [value.to_payload() for value in ordered_stage_evidence],
+         }
+     )
+diff --git a/optics/__init__.py b/optics/__init__.py
+index 9dac1c5..7ebd0c8 100644
+--- a/optics/__init__.py
++++ b/optics/__init__.py
+@@ -6,6 +6,25 @@ from .builder import (
+     OpticalSourceKey,
+     build_optical_registry_from_robot_model,
+ )
++from .cuda_arena import (
++    CUDA_DEVICE_ONLY_DELIVERY_SCHEMA_VERSION,
++    CUDA_NATIVE_ARENA_PLAN_SCHEMA_VERSION,
++    CUDA_NATIVE_ARENA_RESOURCE_SCHEMA_VERSION,
++    CudaActiveArenaSample,
++    CudaArenaC3Provenance,
++    CudaArenaLogicalResourceView,
++    CudaArenaPlanEvidence,
++    CudaArenaPlanTarget,
++    CudaArenaResourceRecord,
++    CudaDeviceOnlyDeliveryEvidence,
++    CudaDeviceOnlyDeliveryStage,
++    CudaDeviceResultView,
++    CudaNativeOpticalArena,
++    CudaPreparedArenaSample,
++    build_cuda_dynamic_optical_arena,
++    build_cuda_fixed_optical_arena,
++    cuda_execution_stream_token,
++)
+ from .cuda_direct_light import (
+     CudaCameraParameters,
+     CudaDeviceBvhDirectLightOpticalExecutor,
+@@ -60,6 +79,7 @@ from .cuda_timeline import (
+     CudaOpticalTimelineError,
+     CudaOpticalTransaction,
+     CudaOpticalTransactionPoisonedError,
++    CudaOpticalTransactionTemplate,
+ )
+ from .device import (
+     DEVICE_FLOAT32_RECOMMENDED_SCENE_SCALE_M,
+@@ -195,6 +215,9 @@ __all__ = [
+     "C4ArenaLifecycleTransition",
+     "C4PreparedSamplePlan",
+     "C4PreparedSamplePlanEvidence",
++    "CUDA_DEVICE_ONLY_DELIVERY_SCHEMA_VERSION",
++    "CUDA_NATIVE_ARENA_PLAN_SCHEMA_VERSION",
++    "CUDA_NATIVE_ARENA_RESOURCE_SCHEMA_VERSION",
+     "CpuBvhNode",
+     "CpuBvhOpticalExecutor",
+     "CpuDirectLightOpticalExecutor",
+@@ -202,18 +225,30 @@ __all__ = [
+     "CudaDeviceBvhDirectLightOpticalExecutor",
+     "CudaDeviceBvhOpticalExecutor",
+     "CudaCameraParameters",
++    "CudaActiveArenaSample",
++    "CudaArenaC3Provenance",
++    "CudaArenaLogicalResourceView",
++    "CudaArenaPlanEvidence",
++    "CudaArenaPlanTarget",
++    "CudaArenaResourceRecord",
+     "CudaDeferredProfile",
+     "CudaDirectLightBuffers",
+     "CudaDirectLightNativeRenderer",
+     "CudaDirectLightRenderStage",
+     "CudaDirectLightStageEvidence",
++    "CudaDeviceOnlyDeliveryEvidence",
++    "CudaDeviceOnlyDeliveryStage",
++    "CudaDeviceResultView",
+     "CudaFirstHitInputs",
+     "CudaOpticalCompletion",
++    "CudaNativeOpticalArena",
+     "CudaOpticalLocalScene",
+     "CudaOpticalExecutionContext",
+     "CudaOpticalTimelineError",
+     "CudaOpticalTransaction",
+     "CudaOpticalTransactionPoisonedError",
++    "CudaOpticalTransactionTemplate",
++    "CudaPreparedArenaSample",
+     "CUDA_SCENE_UPDATE_OPERATION_ID",
+     "CUDA_LBVH_ACCELERATION_ID",
+     "CUDA_LBVH_EXTENSION_ABI_VERSION",
+@@ -306,12 +341,15 @@ __all__ = [
+     "SCENE_MATERIALIZER_ID",
+     "CanonicalHostChannelSpec",
+     "build_host_optical_primitive_workload",
++    "build_cuda_dynamic_optical_arena",
++    "build_cuda_fixed_optical_arena",
+     "allocate_warp_world_scene_buffers",
+     "allocate_cuda_direct_light_buffers",
+     "allocate_cuda_lbvh_buffers",
+     "allocate_cuda_lbvh_workspace",
+     "allocate_cuda_world_scene_buffers",
+     "cuda_direct_light_available",
++    "cuda_execution_stream_token",
+     "cuda_lbvh_workspace_requirements",
+     "cuda_replay_transform_inputs",
+     "channel_is_device",
+diff --git a/optics/cuda_direct_light.py b/optics/cuda_direct_light.py
+index 1a7175a..1aec32e 100644
+--- a/optics/cuda_direct_light.py
++++ b/optics/cuda_direct_light.py
+@@ -183,6 +183,39 @@ class CudaDirectLightBuffers:
+     shadow_max_stack_depth: object | None = None
+     shadow_traversal_counters: tuple[object, ...] = ()
+ 
++    def tensor_items(self) -> tuple[tuple[str, object], ...]:
++        """Return every allocated output tensor in the frozen ABI order."""
++
++        values = (
++            ("origins", self.origins),
++            ("directions", self.directions),
++            ("hit_mask", self.hit_mask),
++            ("range_m", self.range_m),
++            ("position_world", self.position_world),
++            ("normal_world", self.normal_world),
++            ("numeric_instance_id", self.numeric_instance_id),
++            ("material_index", self.material_index),
++            ("bvh_stack_overflow_count", self.bvh_stack_overflow_count),
++            ("bvh_max_stack_depth", self.bvh_max_stack_depth),
++            ("rgb", self.rgb),
++            ("intensity", self.intensity),
++            ("shadow_stack_overflow_count", self.shadow_stack_overflow_count),
++            ("shadow_max_stack_depth", self.shadow_max_stack_depth),
++        )
++        counters = (
++            tuple(
++                (name, tensor)
++                for name, tensor in zip(
++                    _SHADOW_TRAVERSAL_COUNTER_CHANNELS,
++                    self.shadow_traversal_counters,
++                    strict=True,
++                )
++            )
++            if self.shadow_traversal_counters
++            else ()
++        )
++        return tuple((name, value) for name, value in values if value is not None) + counters
++
+     def geometry_channels(self) -> dict[str, object]:
+         return {
+             "hit_mask": self.hit_mask,
+@@ -234,24 +267,7 @@ class CudaDirectLightBuffers:
+         return channels
+ 
+     def resource_tuple(self) -> tuple[object, ...]:
+-        values = (
+-            self.origins,
+-            self.directions,
+-            self.hit_mask,
+-            self.range_m,
+-            self.position_world,
+-            self.normal_world,
+-            self.numeric_instance_id,
+-            self.material_index,
+-            self.bvh_stack_overflow_count,
+-            self.bvh_max_stack_depth,
+-            self.rgb,
+-            self.intensity,
+-            self.shadow_stack_overflow_count,
+-            self.shadow_max_stack_depth,
+-            *self.shadow_traversal_counters,
+-        )
+-        return tuple(value for value in values if value is not None)
++        return tuple(value for _, value in self.tensor_items())
+ 
+ 
+ class CudaDirectLightNativeRenderer:
+diff --git a/optics/cuda_timeline.py b/optics/cuda_timeline.py
+index 6be010b..72528a5 100644
+--- a/optics/cuda_timeline.py
++++ b/optics/cuda_timeline.py
+@@ -2,11 +2,14 @@
+ 
+ from __future__ import annotations
+ 
++import weakref
+ from collections.abc import Iterator, Mapping, Sequence
+ from contextlib import contextmanager
+ from dataclasses import dataclass
+ from typing import Any
+ 
++from .native_arena import C4ActiveOutputLease, NativeOpticalArenaProtocolError
++
+ try:  # pragma: no cover - exercised on CUDA hosts.
+     import torch
+ except Exception:  # pragma: no cover - keeps CPU-only imports available.
+@@ -21,6 +24,334 @@ class CudaOpticalTransactionPoisonedError(CudaOpticalTimelineError):
+     """Raised after an enqueued transaction loses safe reuse evidence."""
+ 
+ 
++_CONTROLLED_TEMPLATE_CAPABILITIES: weakref.WeakKeyDictionary[object, object] = weakref.WeakKeyDictionary()
++_CONTROLLED_TRANSACTION_CAPABILITIES: weakref.WeakKeyDictionary[object, object] = weakref.WeakKeyDictionary()
++_CONTROLLED_TRANSACTION_EXECUTION_AUTHORITIES: weakref.WeakKeyDictionary[
++    object, weakref.ReferenceType[object]
++] = weakref.WeakKeyDictionary()
++_AUTHORIZED_CONTROLLED_TRANSACTIONS: weakref.WeakKeyDictionary[
++    object, tuple[weakref.ReferenceType[object], str]
++] = weakref.WeakKeyDictionary()
++_CONTROLLED_RESOURCE_CAPABILITIES: dict[int, weakref.ReferenceType[object]] = {}
++_CONTROLLED_TEMPLATE_ARENA_IDENTITIES: weakref.WeakKeyDictionary[object, object] = weakref.WeakKeyDictionary()
++_CONTROLLED_TRANSACTION_ARENA_IDENTITIES: weakref.WeakKeyDictionary[object, object] = (
++    weakref.WeakKeyDictionary()
++)
++_PREPARED_CUDA_ARENA_EXECUTION_CAPABILITIES: weakref.WeakKeyDictionary[
++    object, tuple[object, object, object]
++] = weakref.WeakKeyDictionary()
++_CONTROLLED_TRANSACTION_PREPARED_CAPABILITIES: weakref.WeakKeyDictionary[
++    object, weakref.ReferenceType[object]
++] = weakref.WeakKeyDictionary()
++_MINTED_CUDA_ARENA_EXECUTION_AUTHORITIES: weakref.WeakKeyDictionary[
++    object, tuple[object, object, object, object]
++] = weakref.WeakKeyDictionary()
++_BOUND_C4_LEASE_EXECUTION_AUTHORITIES: dict[int, tuple[object, object, object, object]] = {}
++_CUDA_ARENA_EXECUTION_AUTHORITY_KEY = object()
++_CUDA_ARENA_PREPARED_EXECUTION_CAPABILITY_KEY = object()
++
++
++class _CudaOpticalTransactionCapability:
++    __slots__ = ("__weakref__",)
++
++
++@dataclass(frozen=True, slots=True)
++class _CudaArenaTransactionIdentity:
++    """One immutable template/transaction identity sealed by the C4 arena."""
++
++    slot_id: int
++    terminal_event_token: str
++    transform_frame_index: int | None
++    plan_binding_sha256: str
++    ordered_runtime_stage_evidence_sha256: str
++    completion_event_identity: int
++
++    def __post_init__(self) -> None:
++        if not isinstance(self.slot_id, int) or isinstance(self.slot_id, bool) or self.slot_id < 0:
++            raise ValueError("CUDA arena transaction slot ID is invalid")
++        if not isinstance(self.terminal_event_token, str) or not self.terminal_event_token:
++            raise ValueError("CUDA arena transaction terminal event token is invalid")
++        if self.transform_frame_index is not None and (
++            not isinstance(self.transform_frame_index, int)
++            or isinstance(self.transform_frame_index, bool)
++            or self.transform_frame_index < 0
++        ):
++            raise ValueError("CUDA arena transaction transform frame index is invalid")
++        _require_sha256(self.plan_binding_sha256, "CUDA arena plan binding digest")
++        _require_sha256(
++            self.ordered_runtime_stage_evidence_sha256,
++            "CUDA arena runtime stage evidence digest",
++        )
++        if not isinstance(self.completion_event_identity, int) or self.completion_event_identity <= 0:
++            raise ValueError("CUDA arena transaction completion event identity is invalid")
++
++
++@dataclass(frozen=True, slots=True)
++class _CudaArenaExecutionBinding:
++    """Fixed lease fields derived from the sealed transaction and verified C3 provenance."""
++
++    slot_id: int
++    terminal_event_token: str
++    transform_frame_index: int | None
++    c3_one_shot_binding_sha256: str
++    ordered_stage_evidence_sha256: str
++    dataflow_binding_sha256: str
++
++    def __post_init__(self) -> None:
++        if not isinstance(self.slot_id, int) or isinstance(self.slot_id, bool) or self.slot_id < 0:
++            raise ValueError("CUDA arena execution slot ID is invalid")
++        if not isinstance(self.terminal_event_token, str) or not self.terminal_event_token:
++            raise ValueError("CUDA arena execution terminal event token is invalid")
++        if self.transform_frame_index is not None and (
++            not isinstance(self.transform_frame_index, int)
++            or isinstance(self.transform_frame_index, bool)
++            or self.transform_frame_index < 0
++        ):
++            raise ValueError("CUDA arena execution transform frame index is invalid")
++        for name in (
++            "c3_one_shot_binding_sha256",
++            "ordered_stage_evidence_sha256",
++            "dataflow_binding_sha256",
++        ):
++            _require_sha256(getattr(self, name), f"CUDA arena execution {name}")
++
++    def items(self) -> tuple[tuple[str, object], ...]:
++        return tuple((name, getattr(self, name)) for name in self.__dataclass_fields__)
++
++
++class _CudaArenaPreparedExecutionCapability:
++    """Single-use authority to bind one successful acquire to one dormant transaction."""
++
++    __slots__ = ("__weakref__",)
++
++    def __init__(self, *, _key: object) -> None:
++        if _key is not _CUDA_ARENA_PREPARED_EXECUTION_CAPABILITY_KEY:
++            raise TypeError("CUDA arena prepared execution capabilities are timeline-minted")
++
++
++class _CudaArenaLiveExecutionAuthority:
++    """Exact timeline-owned authority for one acquired C4 lease."""
++
++    __slots__ = (
++        "_active_owner",
++        "_evidence_sha256",
++        "_expected_binding",
++        "_frozen_signature",
++        "_generation",
++        "_lease",
++        "_phase",
++        "_sealed",
++        "_transaction",
++        "__weakref__",
++    )
++
++    def __init__(
++        self,
++        *,
++        transaction: "CudaOpticalTransaction",
++        lease: C4ActiveOutputLease,
++        active_owner: object,
++        expected_binding: _CudaArenaExecutionBinding,
++        _key: object,
++    ) -> None:
++        if _key is not _CUDA_ARENA_EXECUTION_AUTHORITY_KEY:
++            raise TypeError("CUDA arena execution authorities are timeline-minted")
++        if type(lease) is not C4ActiveOutputLease or lease.state != "LEASED":
++            raise NativeOpticalArenaProtocolError(
++                "CUDA execution authority requires an active leased C4 generation"
++            )
++        if (
++            not _is_exact_cuda_active_arena_sample(active_owner)
++            or getattr(active_owner, "_transaction", None) is not transaction
++            or getattr(active_owner, "_control_lease", object()) is not None
++            or getattr(active_owner, "_state", None) != "DORMANT"
++        ):
++            raise NativeOpticalArenaProtocolError("CUDA execution authority owner is invalid")
++        evidence = lease.evidence
++        if any(getattr(evidence, name, object()) != value for name, value in expected_binding.items()):
++            raise NativeOpticalArenaProtocolError(
++                "CUDA execution authority lease does not match its sealed plan"
++            )
++        object.__setattr__(self, "_sealed", False)
++        object.__setattr__(self, "_transaction", transaction)
++        object.__setattr__(self, "_lease", lease)
++        object.__setattr__(self, "_active_owner", active_owner)
++        object.__setattr__(self, "_expected_binding", expected_binding)
++        object.__setattr__(self, "_generation", evidence.generation)
++        object.__setattr__(self, "_evidence_sha256", evidence.sha256)
++        object.__setattr__(self, "_phase", "ACQUIRED")
++        object.__setattr__(self, "_frozen_signature", self._static_signature())
++        object.__setattr__(self, "_sealed", True)
++
++    def __setattr__(self, name: str, value: object) -> None:
++        if getattr(self, "_sealed", False):
++            raise AttributeError("CUDA arena execution authority is immutable")
++        object.__setattr__(self, name, value)
++
++    def __delattr__(self, name: str) -> None:
++        raise AttributeError("CUDA arena execution authority is immutable")
++
++    def _begin(self, transaction: "CudaOpticalTransaction", *, operation: str) -> None:
++        self._assert_registered(transaction)
++        lease = self._require_live_lease()
++        if operation == "enqueue":
++            if (
++                self._phase != "ACQUIRED"
++                or getattr(self._active_owner, "_state", None) != "ACQUIRED"
++                or lease.state != "LEASED"
++                or transaction.state != "validated_open"
++            ):
++                raise NativeOpticalArenaProtocolError("CUDA enqueue authority requires its acquired C4 lease")
++            lease.begin_enqueue()
++            if lease.state != "ENQUEUING":
++                raise NativeOpticalArenaProtocolError("CUDA C4 lease did not enter enqueue state")
++            object.__setattr__(self, "_phase", "ENQUEUE_AUTHORIZED")
++            return
++        if operation == "finish":
++            if (
++                self._phase != "ENQUEUED"
++                or getattr(self._active_owner, "_state", None) != "ENQUEUED"
++                or lease.state != "ENQUEUING"
++                or transaction.state != "enqueuing"
++            ):
++                raise NativeOpticalArenaProtocolError("CUDA finish authority requires its enqueued C4 lease")
++            object.__setattr__(self, "_phase", "FINISH_AUTHORIZED")
++            return
++        raise NativeOpticalArenaProtocolError("CUDA execution authority operation is invalid")
++
++    def _assert_execution(
++        self,
++        transaction: "CudaOpticalTransaction",
++        *,
++        operation: str,
++    ) -> None:
++        self._assert_registered(transaction)
++        lease = self._require_live_lease()
++        expected_phase = "ENQUEUE_AUTHORIZED" if operation == "enqueue" else "FINISH_AUTHORIZED"
++        expected_owner_state = "ACQUIRED" if operation == "enqueue" else "ENQUEUED"
++        if (
++            self._phase != expected_phase
++            or getattr(self._active_owner, "_state", None) != expected_owner_state
++            or lease.state != "ENQUEUING"
++        ):
++            raise NativeOpticalArenaProtocolError(
++                "CUDA transaction execution lost its live C4 lease authority"
++            )
++
++    def _end(
++        self,
++        transaction: "CudaOpticalTransaction",
++        *,
++        operation: str,
++        failure: BaseException | None,
++    ) -> None:
++        if failure is not None:
++            self._poison(f"CUDA {operation} execution failed: {failure}")
++            return
++        try:
++            self._assert_registered(transaction)
++            lease = self._require_live_lease()
++            if operation == "enqueue":
++                if (
++                    self._phase != "ENQUEUE_AUTHORIZED"
++                    or transaction.state != "enqueuing"
++                    or transaction._next_stage != len(transaction._stages)
++                    or lease.state != "ENQUEUING"
++                ):
++                    raise NativeOpticalArenaProtocolError(
++                        "CUDA enqueue did not complete the exact registered stage graph"
++                    )
++                object.__setattr__(self, "_phase", "ENQUEUED")
++                object.__setattr__(self._active_owner, "_state", "ENQUEUED")
++                return
++            if operation == "finish":
++                if self._phase != "FINISH_AUTHORIZED" or transaction.state != "finished":
++                    raise NativeOpticalArenaProtocolError(
++                        "CUDA finish did not record its exact terminal event"
++                    )
++                completion = transaction.completion
++                lease.record_completion()
++                object.__setattr__(self, "_phase", "COMPLETION_RECORDED")
++                object.__setattr__(self._active_owner, "_completion", completion)
++                object.__setattr__(self._active_owner, "_state", "COMPLETION_RECORDED")
++                return
++            raise NativeOpticalArenaProtocolError("CUDA execution authority operation is invalid")
++        except BaseException as exc:
++            self._poison(f"CUDA {operation} lifecycle commit failed: {exc}")
++            raise
++
++    def retire(self, *, expected_phase: str, terminal_phase: str) -> None:
++        self._assert_registered(self._transaction)
++        if self._phase != expected_phase:
++            raise NativeOpticalArenaProtocolError("CUDA execution authority retirement is out of order")
++        object.__setattr__(self, "_phase", terminal_phase)
++        registration = _BOUND_C4_LEASE_EXECUTION_AUTHORITIES.get(id(self._lease))
++        if registration is not None and registration[0] is self._lease and registration[1] is self:
++            del _BOUND_C4_LEASE_EXECUTION_AUTHORITIES[id(self._lease)]
++
++    def _assert_registered(self, transaction: "CudaOpticalTransaction") -> None:
++        registration = _MINTED_CUDA_ARENA_EXECUTION_AUTHORITIES.get(self)
++        if (
++            type(self) is not _CudaArenaLiveExecutionAuthority
++            or registration is None
++            or registration[0] is not transaction
++            or registration[1] is not self._lease
++            or registration[2] is not self._active_owner
++            or registration[3] != self._expected_binding
++            or transaction is not self._transaction
++            or getattr(self._active_owner, "_transaction", None) is not transaction
++            or _BOUND_C4_LEASE_EXECUTION_AUTHORITIES.get(id(self._lease))
++            != (self._lease, self, transaction, self._active_owner)
++            or self._static_signature() != self._frozen_signature
++        ):
++            raise NativeOpticalArenaProtocolError(
++                "CUDA execution authority is not the exact timeline-minted identity"
++            )
++
++    def _require_live_lease(self) -> C4ActiveOutputLease:
++        lease = self._lease
++        if (
++            type(lease) is not C4ActiveOutputLease
++            or lease is not getattr(self._active_owner, "_control_lease", None)
++            or lease.evidence.generation != self._generation
++            or lease.evidence.sha256 != self._evidence_sha256
++            or any(
++                getattr(lease.evidence, name, object()) != value
++                for name, value in self._expected_binding.items()
++            )
++        ):
++            raise NativeOpticalArenaProtocolError("CUDA live execution C4 lease binding changed")
++        return lease
++
++    def _poison(self, reason: str) -> None:
++        try:
++            self._lease.mark_submitted_failure(reason)
++        except Exception:
++            pass
++        object.__setattr__(self, "_phase", "POISONED")
++        object.__setattr__(self._active_owner, "_state", "POISONED")
++
++    def _static_signature(self) -> tuple[object, ...]:
++        return (
++            id(self._transaction),
++            id(self._lease),
++            id(self._active_owner),
++            self._expected_binding,
++            self._generation,
++            self._evidence_sha256,
++        )
++
++
++def _controlled_resource_capability(resource: object) -> object | None:
++    reference = _CONTROLLED_RESOURCE_CAPABILITIES.get(id(resource))
++    if reference is None:
++        return None
++    capability = reference()
++    if capability is None:
++        _CONTROLLED_RESOURCE_CAPABILITIES.pop(id(resource), None)
++    return capability
++
++
+ @dataclass(frozen=True)
+ class CudaDeferredProfile:
+     """Timing events whose elapsed values are resolved after terminal wait."""
+@@ -72,14 +403,34 @@ class CudaOpticalExecutionContext:
+     ) -> "CudaOpticalTransaction":
+         """Validate and freeze a complete ordered transaction before enqueue."""
+ 
++        return self.prepare_transaction_template(
++            stages=stages,
++            completion_event=completion_event,
++            diagnostic_events=diagnostic_events,
++        ).activate()
++
++    def prepare_transaction_template(
++        self,
++        *,
++        stages: Sequence[object],
++        completion_event: object,
++        diagnostic_events: Mapping[str, tuple[object, object]] | None = None,
++        _activation_capability: object | None = None,
++    ) -> "CudaOpticalTransactionTemplate":
++        """Fully validate an immutable stage/event graph for later activations."""
++
+         self._validate_identity()
+-        return CudaOpticalTransaction(
++        return CudaOpticalTransactionTemplate(
+             context=self,
+             stages=stages,
+             completion_event=completion_event,
+             diagnostic_events=diagnostic_events,
++            _activation_capability=_activation_capability,
+         )
+ 
++    def _new_controlled_transaction_capability(self) -> object:
++        return _CudaOpticalTransactionCapability()
++
+     @contextmanager
+     def activate(self) -> Iterator[None]:
+         """Select the exact indexed stream and restore ambient CUDA state."""
+@@ -95,8 +446,25 @@ class CudaOpticalExecutionContext:
+             raise CudaOpticalTimelineError("CUDA optical stream handle identity changed")
+ 
+ 
+-class CudaOpticalTransaction:
+-    """Single-use ordered enqueue state plus one owner-controlled finish."""
++class CudaOpticalTransactionTemplate:
++    """Reusable immutable validation result for single-use transactions.
++
++    The template owns no generation or slot policy.  C4 is responsible for
++    exposing activations only after an exact arena lease is acquired and for
++    preventing event reuse until that generation is reclaimed.
++    """
++
++    __slots__ = (
++        "_completion_event",
++        "_context",
++        "_diagnostic_events",
++        "_frozen_signature",
++        "_sealed",
++        "_stage_evidence",
++        "_stage_names",
++        "_stages",
++        "__weakref__",
++    )
+ 
+     def __init__(
+         self,
+@@ -105,7 +473,9 @@ class CudaOpticalTransaction:
+         stages: Sequence[object],
+         completion_event: object,
+         diagnostic_events: Mapping[str, tuple[object, object]] | None,
++        _activation_capability: object | None = None,
+     ) -> None:
++        object.__setattr__(self, "_sealed", False)
+         frozen_stages = tuple(stages)
+         if not frozen_stages:
+             raise ValueError("CUDA optical transaction requires at least one stage")
+@@ -146,18 +516,183 @@ class CudaOpticalTransaction:
+         if len(set(stage_names)) != len(stage_names):
+             raise ValueError("CUDA optical transaction stage names must be unique")
+ 
+-        self._context = context
+-        self._stages = frozen_stages
+-        self._stage_names = tuple(stage_names)
+-        self._stage_evidence = tuple(stage_evidence)
+-        self._completion_event = completion_event
+-        self._diagnostic_events = tuple(frozen_diagnostics)
+-        self._diagnostic_state = {name: 0 for name, _, _ in frozen_diagnostics}
++        controlled_resources = (
++            *frozen_stages,
++            completion_event,
++            *(event for _, start, end in frozen_diagnostics for event in (start, end)),
++        )
++        if _activation_capability is not None and not isinstance(
++            _activation_capability, _CudaOpticalTransactionCapability
++        ):
++            raise TypeError("controlled CUDA transaction capability is invalid")
++        for resource in controlled_resources:
++            registered = _controlled_resource_capability(resource)
++            if registered is not None and registered is not _activation_capability:
++                raise CudaOpticalTimelineError(
++                    "CUDA arena-controlled stage/event cannot be rebound to another template"
++                )
++
++        object.__setattr__(self, "_context", context)
++        object.__setattr__(self, "_stages", frozen_stages)
++        object.__setattr__(self, "_stage_names", tuple(stage_names))
++        object.__setattr__(self, "_stage_evidence", tuple(stage_evidence))
++        object.__setattr__(self, "_completion_event", completion_event)
++        object.__setattr__(self, "_diagnostic_events", tuple(frozen_diagnostics))
++        object.__setattr__(self, "_frozen_signature", self._current_signature())
++        object.__setattr__(self, "_sealed", True)
++        if _activation_capability is not None:
++            _CONTROLLED_TEMPLATE_CAPABILITIES[self] = _activation_capability
++            capability_ref = weakref.ref(_activation_capability)
++            for resource in controlled_resources:
++                _CONTROLLED_RESOURCE_CAPABILITIES[id(resource)] = capability_ref
++
++    def __setattr__(self, name: str, value: object) -> None:
++        if getattr(self, "_sealed", False):
++            raise AttributeError("CUDA optical transaction template is immutable")
++        object.__setattr__(self, name, value)
++
++    def __delattr__(self, name: str) -> None:
++        if getattr(self, "_sealed", False):
++            raise AttributeError("CUDA optical transaction template is immutable")
++        object.__delattr__(self, name)
++
++    @property
++    def context(self) -> CudaOpticalExecutionContext:
++        return self._context
++
++    @property
++    def stages(self) -> tuple[object, ...]:
++        return self._stages
++
++    @property
++    def stage_names(self) -> tuple[str, ...]:
++        return self._stage_names
++
++    @property
++    def stage_evidence(self) -> tuple[object, ...]:
++        return self._stage_evidence
++
++    @property
++    def completion_event(self) -> object:
++        return self._completion_event
++
++    @property
++    def diagnostic_events(self) -> tuple[tuple[str, object, object], ...]:
++        return self._diagnostic_events
++
++    def validate_bound(self) -> None:
++        """Recheck only identity/stability facts, without rebuilding evidence."""
++
++        self._context._validate_identity()
++        if self._current_signature() != self._frozen_signature:
++            raise CudaOpticalTimelineError("CUDA optical transaction template binding changed")
++        for index, stage in enumerate(self._stages):
++            stability_check = getattr(stage, "_assert_cuda_transaction_stage_stable", None)
++            if callable(stability_check):
++                stability_check(self._context)
++            if _stage_evidence(stage) != self._stage_evidence[index]:
++                raise CudaOpticalTimelineError("CUDA optical transaction stage evidence changed")
++
++    def activate(self) -> "CudaOpticalTransaction":
++        """Create fresh single-generation host state from this validated graph."""
++
++        if self in _CONTROLLED_TEMPLATE_CAPABILITIES:
++            raise CudaOpticalTimelineError(
++                "controlled CUDA transaction template requires its arena-issued capability"
++            )
++        self.validate_bound()
++        return CudaOpticalTransaction(_template=self)
++
++    def _activate_with_capability(self, capability: object) -> "CudaOpticalTransaction":
++        required = _CONTROLLED_TEMPLATE_CAPABILITIES.get(self)
++        if required is None or capability is not required:
++            raise CudaOpticalTimelineError("controlled CUDA transaction activation capability is invalid")
++        if self not in _CONTROLLED_TEMPLATE_ARENA_IDENTITIES:
++            raise CudaOpticalTimelineError("controlled CUDA transaction has no sealed arena plan identity")
++        self.validate_bound()
++        return CudaOpticalTransaction(
++            _template=self,
++            _construction_capability=required,
++        )
++
++    def _bind_arena_plan_identity(
++        self,
++        capability: object,
++        *,
++        slot_id: int,
++        terminal_event_token: str,
++        transform_frame_index: int | None,
++        plan_binding_sha256: str,
++        ordered_runtime_stage_evidence_sha256: str,
++    ) -> None:
++        """Seal the exact C4 slot/frame/event identity before any activation."""
++
++        required = _CONTROLLED_TEMPLATE_CAPABILITIES.get(self)
++        if required is None or capability is not required:
++            raise CudaOpticalTimelineError("controlled CUDA arena plan capability is invalid")
++        if self in _CONTROLLED_TEMPLATE_ARENA_IDENTITIES:
++            raise CudaOpticalTimelineError("controlled CUDA arena plan identity is already sealed")
++        self.validate_bound()
++        identity = _CudaArenaTransactionIdentity(
++            slot_id=slot_id,
++            terminal_event_token=terminal_event_token,
++            transform_frame_index=transform_frame_index,
++            plan_binding_sha256=plan_binding_sha256,
++            ordered_runtime_stage_evidence_sha256=ordered_runtime_stage_evidence_sha256,
++            completion_event_identity=id(self._completion_event),
++        )
++        _CONTROLLED_TEMPLATE_ARENA_IDENTITIES[self] = identity
++
++    def _current_signature(self) -> tuple[object, ...]:
++        return (
++            id(self._context),
++            self._context.device,
++            self._context.stream_handle,
++            id(self._context.stream),
++            tuple(id(stage) for stage in self._stages),
++            self._stage_names,
++            self._stage_evidence,
++            id(self._completion_event),
++            tuple((name, id(start), id(end)) for name, start, end in self._diagnostic_events),
++        )
++
++
++class CudaOpticalTransaction:
++    """Single-use ordered enqueue state plus one owner-controlled finish."""
++
++    def __init__(
++        self,
++        *,
++        _template: CudaOpticalTransactionTemplate,
++        _construction_capability: object | None = None,
++    ) -> None:
++        required = _CONTROLLED_TEMPLATE_CAPABILITIES.get(_template)
++        if required is not None and _construction_capability is not required:
++            raise CudaOpticalTimelineError(
++                "controlled CUDA transaction construction requires its arena-issued capability"
++            )
++        self._context = _template.context
++        self._stages = _template.stages
++        self._stage_names = _template.stage_names
++        self._stage_evidence = _template.stage_evidence
++        self._completion_event = _template.completion_event
++        self._diagnostic_events = _template.diagnostic_events
++        self._diagnostic_state = {name: 0 for name, _, _ in self._diagnostic_events}
+         self._next_stage = 0
+         self._active_stage: object | None = None
+         self._state = "validated_open"
+         self._poison_reason: str | None = None
+         self._completion: CudaOpticalCompletion | None = None
++        if required is not None:
++            arena_identity = _CONTROLLED_TEMPLATE_ARENA_IDENTITIES.get(_template)
++            if type(arena_identity) is not _CudaArenaTransactionIdentity:
++                raise CudaOpticalTimelineError(
++                    "controlled CUDA transaction requires its sealed arena plan identity"
++                )
++            if arena_identity.completion_event_identity != id(self._completion_event):
++                raise CudaOpticalTimelineError("controlled CUDA arena terminal event identity changed")
++            _CONTROLLED_TRANSACTION_CAPABILITIES[self] = required
++            _CONTROLLED_TRANSACTION_ARENA_IDENTITIES[self] = arena_identity
+ 
+     @property
+     def state(self) -> str:
+@@ -188,6 +723,7 @@ class CudaOpticalTransaction:
+     def enqueue_stage(self, stage: object) -> Iterator[None]:
+         """Enter the exact next registered stage on the selected CUDA stream."""
+ 
++        self._require_execution_authority(operation="enqueue")
+         self._require_enqueueable(stage)
+         stability_check = getattr(stage, "_assert_cuda_transaction_stage_stable", None)
+         try:
+@@ -236,6 +772,7 @@ class CudaOpticalTransaction:
+     def finish(self) -> CudaOpticalCompletion:
+         """Record the one optical terminal event after every registered stage."""
+ 
++        self._require_execution_authority(operation="finish")
+         if self._state == "finished":
+             raise CudaOpticalTimelineError("CUDA optical transaction is already finished")
+         if self._state == "poisoned":
+@@ -273,6 +810,191 @@ class CudaOpticalTransaction:
+         self._state = "finished"
+         return completion
+ 
++    def _prepare_arena_execution_capability(
++        self,
++        *,
++        active_owner: object,
++        plan_binding_sha256: str,
++        ordered_runtime_stage_evidence_sha256: str,
++        c3_one_shot_binding_sha256: str,
++        ordered_stage_evidence_sha256: str,
++        dataflow_binding_sha256: str,
++    ) -> _CudaArenaPreparedExecutionCapability:
++        """Freeze one pre-acquire transaction/owner/binding capability."""
++
++        identity = _CONTROLLED_TRANSACTION_ARENA_IDENTITIES.get(self)
++        if type(identity) is not _CudaArenaTransactionIdentity:
++            raise CudaOpticalTimelineError("CUDA arena transaction has no sealed plan identity")
++        if self in _CONTROLLED_TRANSACTION_EXECUTION_AUTHORITIES:
++            raise CudaOpticalTimelineError("CUDA arena execution authority is already bound")
++        existing = _CONTROLLED_TRANSACTION_PREPARED_CAPABILITIES.get(self)
++        if existing is not None and existing() is not None:
++            raise CudaOpticalTimelineError("CUDA arena transaction already has a prepared acquire capability")
++        if (
++            not _is_exact_cuda_active_arena_sample(active_owner)
++            or getattr(active_owner, "_transaction", None) is not self
++            or getattr(active_owner, "_control_lease", object()) is not None
++            or getattr(active_owner, "_state", None) != "DORMANT"
++        ):
++            raise NativeOpticalArenaProtocolError("CUDA prepared execution owner is invalid")
++        if (
++            plan_binding_sha256 != identity.plan_binding_sha256
++            or ordered_runtime_stage_evidence_sha256 != identity.ordered_runtime_stage_evidence_sha256
++            or id(self._completion_event) != identity.completion_event_identity
++        ):
++            raise NativeOpticalArenaProtocolError(
++                "CUDA prepared execution provenance does not match its sealed transaction"
++            )
++        binding = _CudaArenaExecutionBinding(
++            slot_id=identity.slot_id,
++            terminal_event_token=identity.terminal_event_token,
++            transform_frame_index=identity.transform_frame_index,
++            c3_one_shot_binding_sha256=c3_one_shot_binding_sha256,
++            ordered_stage_evidence_sha256=ordered_stage_evidence_sha256,
++            dataflow_binding_sha256=dataflow_binding_sha256,
++        )
++        prepared_capability = _CudaArenaPreparedExecutionCapability(
++            _key=_CUDA_ARENA_PREPARED_EXECUTION_CAPABILITY_KEY
++        )
++        _PREPARED_CUDA_ARENA_EXECUTION_CAPABILITIES[prepared_capability] = (
++            self,
++            active_owner,
++            binding,
++        )
++        _CONTROLLED_TRANSACTION_PREPARED_CAPABILITIES[self] = weakref.ref(prepared_capability)
++        return prepared_capability
++
++    def _mint_arena_execution_authority(
++        self,
++        prepared_capability: object,
++        lease: C4ActiveOutputLease,
++        *,
++        active_owner: object,
++    ) -> _CudaArenaLiveExecutionAuthority:
++        """Consume one prepared capability after C4 acquire and bind its exact lease once."""
++
++        if type(prepared_capability) is not _CudaArenaPreparedExecutionCapability:
++            raise CudaOpticalTimelineError(
++                "CUDA live execution requires an exact prepared acquire capability"
++            )
++        registration = _PREPARED_CUDA_ARENA_EXECUTION_CAPABILITIES.get(prepared_capability)
++        if (
++            registration is None
++            or registration[0] is not self
++            or registration[1] is not active_owner
++            or type(registration[2]) is not _CudaArenaExecutionBinding
++        ):
++            raise CudaOpticalTimelineError(
++                "CUDA prepared acquire capability is not registered for this transaction/owner"
++            )
++        if self in _CONTROLLED_TRANSACTION_EXECUTION_AUTHORITIES:
++            raise CudaOpticalTimelineError("CUDA arena execution authority is already bound")
++        lease_registration = _BOUND_C4_LEASE_EXECUTION_AUTHORITIES.get(id(lease))
++        if lease_registration is not None:
++            if lease_registration[0] is lease:
++                raise NativeOpticalArenaProtocolError(
++                    "CUDA C4 lease is already bound to an execution authority"
++                )
++            raise NativeOpticalArenaProtocolError("CUDA C4 lease identity registry collision")
++        expected_binding = registration[2]
++        execution_authority = _CudaArenaLiveExecutionAuthority(
++            transaction=self,
++            lease=lease,
++            active_owner=active_owner,
++            expected_binding=expected_binding,
++            _key=_CUDA_ARENA_EXECUTION_AUTHORITY_KEY,
++        )
++        _MINTED_CUDA_ARENA_EXECUTION_AUTHORITIES[execution_authority] = (
++            self,
++            lease,
++            active_owner,
++            expected_binding,
++        )
++        _BOUND_C4_LEASE_EXECUTION_AUTHORITIES[id(lease)] = (
++            lease,
++            execution_authority,
++            self,
++            active_owner,
++        )
++        reference = weakref.ref(execution_authority)
++        _CONTROLLED_TRANSACTION_EXECUTION_AUTHORITIES[self] = reference
++        del _PREPARED_CUDA_ARENA_EXECUTION_CAPABILITIES[prepared_capability]
++        return execution_authority
++
++    def _retire_cancelled_arena_execution_lease(self, lease: C4ActiveOutputLease) -> None:
++        """Retire the registered authority after a verified pre-enqueue cancel."""
++
++        reference = _CONTROLLED_TRANSACTION_EXECUTION_AUTHORITIES.get(self)
++        execution_authority = None if reference is None else reference()
++        if type(execution_authority) is not _CudaArenaLiveExecutionAuthority:
++            raise CudaOpticalTimelineError("cancelled CUDA lease lost its minted execution authority")
++        registration = _BOUND_C4_LEASE_EXECUTION_AUTHORITIES.get(id(lease))
++        if (
++            registration is None
++            or registration[0] is not lease
++            or registration[1] is not execution_authority
++            or registration[2] is not self
++        ):
++            raise CudaOpticalTimelineError("cancelled CUDA lease authority registration changed")
++        execution_authority.retire(expected_phase="ACQUIRED", terminal_phase="CANCELLED")
++
++    @contextmanager
++    def _authorize_arena_execution(
++        self,
++        execution_authority: object,
++        *,
++        operation: str,
++    ) -> Iterator[None]:
++        if operation not in {"enqueue", "finish"}:
++            raise CudaOpticalTimelineError("CUDA arena execution operation is invalid")
++        if type(execution_authority) is not _CudaArenaLiveExecutionAuthority:
++            raise CudaOpticalTimelineError("CUDA arena execution requires an exact timeline-minted authority")
++        reference = _CONTROLLED_TRANSACTION_EXECUTION_AUTHORITIES.get(self)
++        if reference is None or reference() is not execution_authority:
++            raise CudaOpticalTimelineError("controlled CUDA transaction requires its live C4 lease authority")
++        registration = _MINTED_CUDA_ARENA_EXECUTION_AUTHORITIES.get(execution_authority)
++        if registration is None or registration[0] is not self:
++            raise CudaOpticalTimelineError(
++                "CUDA arena execution authority is not registered for this transaction"
++            )
++        if self in _AUTHORIZED_CONTROLLED_TRANSACTIONS:
++            raise CudaOpticalTimelineError("CUDA arena execution authority is already active")
++        execution_authority._begin(self, operation=operation)
++        active_reference = weakref.ref(execution_authority)
++        _AUTHORIZED_CONTROLLED_TRANSACTIONS[self] = (active_reference, operation)
++        try:
++            yield
++        except BaseException as exc:
++            try:
++                execution_authority._end(self, operation=operation, failure=exc)
++            finally:
++                _AUTHORIZED_CONTROLLED_TRANSACTIONS.pop(self, None)
++            raise
++        else:
++            try:
++                execution_authority._end(self, operation=operation, failure=None)
++            finally:
++                _AUTHORIZED_CONTROLLED_TRANSACTIONS.pop(self, None)
++
++    def _require_execution_authority(self, *, operation: str) -> None:
++        if self not in _CONTROLLED_TRANSACTION_CAPABILITIES:
++            return
++        authorized = _AUTHORIZED_CONTROLLED_TRANSACTIONS.get(self)
++        if authorized is None or authorized[1] != operation:
++            raise CudaOpticalTimelineError(
++                "controlled CUDA transaction execution requires its active arena lease"
++            )
++        execution_authority = authorized[0]()
++        bound = _CONTROLLED_TRANSACTION_EXECUTION_AUTHORITIES.get(self)
++        if execution_authority is None or bound is None or bound() is not execution_authority:
++            raise CudaOpticalTimelineError("CUDA arena live execution authority expired")
++        if type(execution_authority) is not _CudaArenaLiveExecutionAuthority:
++            raise CudaOpticalTimelineError("CUDA arena live execution authority type changed")
++        registration = _MINTED_CUDA_ARENA_EXECUTION_AUTHORITIES.get(execution_authority)
++        if registration is None or registration[0] is not self:
++            raise CudaOpticalTimelineError("CUDA arena live execution authority lost registration")
++        execution_authority._assert_execution(self, operation=operation)
++
+     def _require_enqueueable(self, stage: object) -> None:
+         if self._state == "finished":
+             raise CudaOpticalTimelineError("cannot enqueue after CUDA optical transaction finish")
+@@ -317,6 +1039,23 @@ def _stage_evidence(stage: object) -> object:
+     return getattr(stage, "cuda_transaction_stage_name")
+ 
+ 
++def _require_sha256(value: object, name: str) -> None:
++    if (
++        not isinstance(value, str)
++        or len(value) != 64
++        or any(character not in "0123456789abcdef" for character in value)
++    ):
++        raise ValueError(f"{name} must be a lowercase SHA-256 digest")
++
++
++def _is_exact_cuda_active_arena_sample(value: object) -> bool:
++    # Runtime import avoids the cuda_arena -> cuda_timeline module cycle while
++    # rejecting duck-typed owners at the authority boundary.
++    from .cuda_arena import CudaActiveArenaSample
++
++    return type(value) is CudaActiveArenaSample
++
++
+ def _require_torch_cuda() -> None:
+     if torch is None:
+         raise ImportError("CUDA optical execution requires PyTorch")
+diff --git a/optics/native_arena.py b/optics/native_arena.py
+index 0c07c49..74c823f 100644
+--- a/optics/native_arena.py
++++ b/optics/native_arena.py
+@@ -677,6 +677,11 @@ class C4ActiveOutputLease:
+     def record_completion(self) -> None:
+         self._arena._record_completion(self)
+ 
++    def mark_submitted_failure(self, reason: str) -> None:
++        """Retain every active resource after an unsafe submitted failure."""
++
++        self._arena._mark_submitted_failure(self, reason)
++
+     def resolve_terminal_completion(self) -> None:
+         self._arena._resolve_terminal_completion(self)
+ 
+@@ -1092,6 +1097,30 @@ class NativeOpticalArena:
+             slot.state = "COMPLETION_RECORDED"
+             self._record_transition("completion_recorded", slot=slot)
+ 
++    def _mark_submitted_failure(self, lease: C4ActiveOutputLease, reason: str) -> None:
++        with self._lock:
++            slot = self._slot_for_live_lease(lease)
++            if not isinstance(reason, str) or not reason:
++                raise NativeOpticalArenaProtocolError("submitted failure reason must be non-empty")
++            if not slot.first_enqueue_started or slot.state not in {
++                "ENQUEUING",
++                "COMPLETION_RECORDED",
++                "PAYLOAD_READY",
++                "RECLAIMABLE",
++            }:
++                raise NativeOpticalArenaProtocolError("only a submitted generation can poison the arena")
++            if self._state not in {"OPEN", "DRAINING"}:
++                raise NativeOpticalArenaPoisonedError(self._poison_reason or "arena is already poisoned")
++            self._poison_reason = reason
++            self._external_hold_count_at_poison = sum(
++                active_slot.external_hold_count for active_slot in self._slots
++            )
++            self._state = "POISONED"
++            for active_slot in self._slots:
++                if active_slot.state != "FREE":
++                    active_slot.state = "RETAINED_POISONED"
++            self._record_transition("arena_poisoned", slot=slot)
++
+     def _resolve_terminal_completion(self, lease: C4ActiveOutputLease) -> None:
+         with self._lock:
+             slot = self._slot_for_live_lease(lease)
+diff --git a/tests/gpu/test_cuda_optical_timeline.py b/tests/gpu/test_cuda_optical_timeline.py
+index cd7bef7..450d8d7 100644
+--- a/tests/gpu/test_cuda_optical_timeline.py
++++ b/tests/gpu/test_cuda_optical_timeline.py
+@@ -154,6 +154,30 @@ def test_transaction_orders_stages_and_finishes_once_on_explicit_stream():
+         first.enqueue(transaction)
+ 
+ 
++def test_transaction_template_reuses_validation_but_not_generation_state():
++    context = _context()
++    output = torch.zeros((1,), dtype=torch.float32, device=context.device)
++    stage = _TensorStage(name="render", context=context, output=output, delta=1.0)
++    terminal = _initialized_event(context.stream)
++    template = context.prepare_transaction_template(
++        stages=(stage,),
++        completion_event=terminal,
++    )
++
++    first = template.activate()
++    second = template.activate()
++
++    assert first is not second
++    assert first._completion_event is terminal
++    assert second._completion_event is terminal
++    assert first.state == second.state == "validated_open"
++    with pytest.raises(AttributeError, match="immutable"):
++        template._completion_event = _initialized_event(context.stream)
++    object.__setattr__(template, "_stages", ())
++    with pytest.raises(CudaOpticalTimelineError, match="binding changed"):
++        template.activate()
++
++
+ def test_transaction_protocol_errors_and_stage_failure_poison_slots():
+     context = _context()
+     output = torch.zeros((1,), dtype=torch.float32, device=context.device)
+diff --git a/tests/unit/optics/test_cuda_timeline.py b/tests/unit/optics/test_cuda_timeline.py
+index e1e569f..769a409 100644
+--- a/tests/unit/optics/test_cuda_timeline.py
++++ b/tests/unit/optics/test_cuda_timeline.py
+@@ -10,12 +10,14 @@ from optics.cuda_timeline import (
+     CudaOpticalExecutionContext,
+     CudaOpticalTimelineError,
+     CudaOpticalTransactionPoisonedError,
++    CudaOpticalTransactionTemplate,
+ )
+ 
+ 
+ def test_cuda_timeline_contract_imports_without_runtime_initialization():
+     assert issubclass(CudaOpticalTransactionPoisonedError, CudaOpticalTimelineError)
+     assert CudaOpticalCompletion.__dataclass_fields__["recorded"].default is True
++    assert CudaOpticalTransactionTemplate.__doc__
+ 
+ 
+ def test_cuda_timeline_requires_torch_only_when_context_is_constructed(monkeypatch):
+diff --git a/tests/unit/optics/test_native_optical_arena.py b/tests/unit/optics/test_native_optical_arena.py
+index 87a79e9..d66f49f 100644
+--- a/tests/unit/optics/test_native_optical_arena.py
++++ b/tests/unit/optics/test_native_optical_arena.py
+@@ -399,6 +399,61 @@ def test_illegal_post_enqueue_transition_poisons_all_active_storage():
+         arena.acquire(first_plan)
+ 
+ 
++def test_explicit_submitted_failure_retains_every_active_generation():
++    arena = _arena()
++    lease = arena.acquire(_plan(arena))
++    assert not isinstance(lease, NativeOpticalArenaBackpressure)
++    lease.begin_enqueue()
++
++    lease.mark_submitted_failure("injected terminal event failure")
++
++    assert arena.state == "POISONED"
++    assert lease.state == "RETAINED_POISONED"
++    assert arena.poison_reason == "injected terminal event failure"
++    lifecycle = arena.lifecycle_evidence()
++    assert lifecycle.transitions[-1].operation == "arena_poisoned"
++    assert lifecycle.poisoned_slot_count == 1
++
++
++def test_explicit_submitted_failure_rejects_pre_enqueue_or_empty_reason():
++    arena = _arena()
++    lease = arena.acquire(_plan(arena))
++    assert not isinstance(lease, NativeOpticalArenaBackpressure)
++    with pytest.raises(NativeOpticalArenaProtocolError, match="submitted generation"):
++        lease.mark_submitted_failure("too early")
++    lease.begin_enqueue()
++    with pytest.raises(NativeOpticalArenaProtocolError, match="non-empty"):
++        lease.mark_submitted_failure("")
++    assert arena.state == "OPEN"
++
++
++@pytest.mark.parametrize(
++    "source_state",
++    ["COMPLETION_RECORDED", "PAYLOAD_READY", "RECLAIMABLE"],
++)
++def test_explicit_submitted_failure_remains_fail_closed_after_event_record(
++    source_state,
++):
++    arena = _arena()
++    lease = arena.acquire(_plan(arena))
++    assert not isinstance(lease, NativeOpticalArenaBackpressure)
++    lease.begin_enqueue()
++    lease.record_completion()
++    if source_state in {"PAYLOAD_READY", "RECLAIMABLE"}:
++        lease.resolve_terminal_completion()
++    if source_state == "RECLAIMABLE":
++        lease.release_device_result()
++    assert lease.state == source_state
++
++    lease.mark_submitted_failure(f"injected {source_state} binding drift")
++
++    assert arena.state == "POISONED"
++    assert (
++        C4ArenaLifecycleEvidence.from_payload(arena.lifecycle_evidence().to_payload())
++        == arena.lifecycle_evidence()
++    )
++
++
+ def test_normal_drain_requires_explicit_reclaim_and_close_is_idempotent():
+     arena = _arena()
+     lease = arena.acquire(_plan(arena))

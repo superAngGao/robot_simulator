@@ -1,0 +1,2648 @@
+[
+  {
+    "source": "c4_incremental_baseline_925d606/tests/unit/optics/test_guarded_reducer_atomicity.py",
+    "backup": "workspace-backup/20261015/working-trees/c4_incremental_baseline_925d606/files/tests/unit/optics/test_guarded_reducer_atomicity.py",
+    "bytes": 3766,
+    "sha256": "95a89778f3d1444feee4ba6a93919dc794c2f8dabce033c9a337e3b9726a3c52"
+  },
+  {
+    "source": "c4_incremental_baseline_925d606/tests/unit/optics/test_integrated_worker_lifecycle.py",
+    "backup": "workspace-backup/20261015/working-trees/c4_incremental_baseline_925d606/files/tests/unit/optics/test_integrated_worker_lifecycle.py",
+    "bytes": 31266,
+    "sha256": "ac762e10b976246aac503e2ea23dc03325ad793683196f612a02713918cce394"
+  },
+  {
+    "source": "c4_incremental_baseline_925d606/tests/unit/optics/test_native_final_graph.py",
+    "backup": "workspace-backup/20261015/working-trees/c4_incremental_baseline_925d606/files/tests/unit/optics/test_native_final_graph.py",
+    "bytes": 21572,
+    "sha256": "34303cba3a3c79afd1ab6153e6bbab839f1c8fbd62e72694687aca4e658e7bca"
+  },
+  {
+    "source": "c4_incremental_baseline_925d606/tests/unit/optics/test_prepared_fixed_render_inputs.py",
+    "backup": "workspace-backup/20261015/working-trees/c4_incremental_baseline_925d606/files/tests/unit/optics/test_prepared_fixed_render_inputs.py",
+    "bytes": 18087,
+    "sha256": "5d16994f934ee2a91fe43d888af7a8fcaf2f554f8eaf76c2e6ad34a1d46fbb4f"
+  },
+  {
+    "source": "p12_4_c3_impl/benchmarks/optical/__init__.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/benchmarks/optical/__init__.py",
+    "bytes": 7636,
+    "sha256": "dd7701d02b657b6860aff82eb2476b72ac6b4f1d6e9043353855c1438ca21fb4"
+  },
+  {
+    "source": "p12_4_c3_impl/benchmarks/optical/assets.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/benchmarks/optical/assets.py",
+    "bytes": 12131,
+    "sha256": "7d40249df4e91b324377a7f1b5a631665a1e4b35db1e31af4f2073af3fa3e33f"
+  },
+  {
+    "source": "p12_4_c3_impl/benchmarks/optical/eligibility.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/benchmarks/optical/eligibility.py",
+    "bytes": 21453,
+    "sha256": "93efd5ab895196db7e78bde527f47b592a86d76d0714d87b216c48b3e5c90cb6"
+  },
+  {
+    "source": "p12_4_c3_impl/benchmarks/optical/native.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/benchmarks/optical/native.py",
+    "bytes": 57184,
+    "sha256": "13167bb5e9cb877f49facac933c2c512632d878a8d3a50c995a8124bc5b791ba"
+  },
+  {
+    "source": "p12_4_c3_impl/benchmarks/optical/receipts.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/benchmarks/optical/receipts.py",
+    "bytes": 34818,
+    "sha256": "d65236f863072d6f5bacc094383f9021b9ba6d4c139a41ff15630bf2b6841764"
+  },
+  {
+    "source": "p12_4_c3_impl/benchmarks/optical/runner.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/benchmarks/optical/runner.py",
+    "bytes": 23645,
+    "sha256": "7d3258f731d4873e83d54c1df1556ec91d72bb2422fdf37dd112970978d6de0e"
+  },
+  {
+    "source": "p12_4_c3_impl/benchmarks/optical/schema.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/benchmarks/optical/schema.py",
+    "bytes": 79320,
+    "sha256": "0b33982937efbf8ac185e4c007acb7ad2a6a27639dc37d28aeea22d2377c92e7"
+  },
+  {
+    "source": "p12_4_c3_impl/benchmarks/optical/workload_contract.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/benchmarks/optical/workload_contract.py",
+    "bytes": 4235,
+    "sha256": "d0be909e973d3c9304bbd649038e36edef21fc636cdda0b7df8f4f54de79e4e4"
+  },
+  {
+    "source": "p12_4_c3_impl/benchmarks/optical/workloads.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/benchmarks/optical/workloads.py",
+    "bytes": 8010,
+    "sha256": "6b8d8d7e0ea74df973462f491a9ec94281133a2d619e5ff0569b12038dde7936"
+  },
+  {
+    "source": "p12_4_c3_impl/benchmarks/results/q54_p12_4/cleanup_ledger.json",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/benchmarks/results/q54_p12_4/cleanup_ledger.json",
+    "bytes": 12889,
+    "sha256": "6ba90148b585e4be1c583c38b1e8acb9cce7d8f0fce7c07158d2db820d6d5fe3"
+  },
+  {
+    "source": "p12_4_c3_impl/benchmarks/results/q54_p12_4/gate.json",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/benchmarks/results/q54_p12_4/gate.json",
+    "bytes": 50361,
+    "sha256": "717569cabb8339d062bdfc01926fd4899e18ae6b7e4ffb0c89baf07ce394abe7"
+  },
+  {
+    "source": "p12_4_c3_impl/collab/q54-optical-lab-p12-4c3a-scene-provenance__implementation-note__codex__v1.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/collab/q54-optical-lab-p12-4c3a-scene-provenance__implementation-note__codex__v1.md",
+    "bytes": 8662,
+    "sha256": "bbf0f42b2cb9cefab3f79532717074d8b621c611129c772a31b3e1dd213fe03d"
+  },
+  {
+    "source": "p12_4_c3_impl/collab/q54-optical-lab-p12-4c3a-scene-provenance__implementation-note__codex__v2.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/collab/q54-optical-lab-p12-4c3a-scene-provenance__implementation-note__codex__v2.md",
+    "bytes": 6588,
+    "sha256": "b03cdce84351b78d4b1f7f36ffeffb47aa1311f3b41fa48b0f2811514235e70f"
+  },
+  {
+    "source": "p12_4_c3_impl/optics/__init__.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/optics/__init__.py",
+    "bytes": 6513,
+    "sha256": "d311ecf98bb667640caac8b8dd86ae01729c133e7fe7b1e5c419df177b7df0af"
+  },
+  {
+    "source": "p12_4_c3_impl/optics/cuda_scene.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/optics/cuda_scene.py",
+    "bytes": 4537,
+    "sha256": "acf2f81e640fff752d37dc47796131a49c380d22be6a4f2eee84369aac6bdbb0"
+  },
+  {
+    "source": "p12_4_c3_impl/optics/device_bvh.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/optics/device_bvh.py",
+    "bytes": 21116,
+    "sha256": "0d149dc4bad0642941287b4205cb0c816e4e1c08cc9ec389332a5a9e53dbcfec"
+  },
+  {
+    "source": "p12_4_c3_impl/optics/device_scene.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/optics/device_scene.py",
+    "bytes": 38838,
+    "sha256": "c8fce9869a53d1c3819ad28c103f1ad682bf84798c868d67ba2b3a72e9a121e3"
+  },
+  {
+    "source": "p12_4_c3_impl/optics/scene_contract.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/optics/scene_contract.py",
+    "bytes": 16532,
+    "sha256": "d9e995502fafe03f9f0bf0813e5258d9e6df1c386ec586452fda6cdee32aa851"
+  },
+  {
+    "source": "p12_4_c3_impl/tests/gpu/test_optical_benchmark_native.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/tests/gpu/test_optical_benchmark_native.py",
+    "bytes": 6702,
+    "sha256": "5a46c3aa82cc53e8c68df89dfa34083121ad904467f16c1c1bd076b6ab35f5d2"
+  },
+  {
+    "source": "p12_4_c3_impl/tests/unit/benchmarks/test_optical_benchmark_a3a.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/tests/unit/benchmarks/test_optical_benchmark_a3a.py",
+    "bytes": 27840,
+    "sha256": "464f6877c9874ca5208288284cc63ccf348b59acd1e4ddc0f5f5807d3b02918a"
+  },
+  {
+    "source": "p12_4_c3_impl/tests/unit/benchmarks/test_optical_benchmark_c3a.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/tests/unit/benchmarks/test_optical_benchmark_c3a.py",
+    "bytes": 11358,
+    "sha256": "de96c463d287db23fa5602e09392ddb938eefc332c19289b00a123176279d440"
+  },
+  {
+    "source": "p12_4_c3_impl/tests/unit/benchmarks/test_optical_benchmark_contracts.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/tests/unit/benchmarks/test_optical_benchmark_contracts.py",
+    "bytes": 38469,
+    "sha256": "3640aa8e85076d0b9f59951dde7c4a68007f7e2d1745162812a79ca3f53beca1"
+  },
+  {
+    "source": "p12_4_c3_impl/tests/unit/benchmarks/test_optical_benchmark_core.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/tests/unit/benchmarks/test_optical_benchmark_core.py",
+    "bytes": 29691,
+    "sha256": "2e5e76f9107d8498dc13af93153ddb5469c681db7a644ac39d76b444a5ada1e2"
+  },
+  {
+    "source": "p12_4_c3_impl/tests/unit/optics/test_scene_contract.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_impl/files/tests/unit/optics/test_scene_contract.py",
+    "bytes": 4238,
+    "sha256": "208aa094977bad0cd5b518a7b9b9d4e570035ff6fe85b2e0d8b52f4c4d251dce"
+  },
+  {
+    "source": "p12_4_c3_p1/benchmarks/optical/__init__.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_p1/files/benchmarks/optical/__init__.py",
+    "bytes": 8423,
+    "sha256": "56dbaf42de5d3e94913c7d432089cfe7884e42892cfe6891c184933190f3adaa"
+  },
+  {
+    "source": "p12_4_c3_p1/benchmarks/optical/receipts.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_p1/files/benchmarks/optical/receipts.py",
+    "bytes": 45906,
+    "sha256": "42ff15b221f38bf332cd2e4d4e295f8669442f497346d9864f32b8f0a19eb957"
+  },
+  {
+    "source": "p12_4_c3_p1/benchmarks/optical/runner.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_p1/files/benchmarks/optical/runner.py",
+    "bytes": 24352,
+    "sha256": "f1e02c1dbd559bda8db96539436676bc97a031046e732ac7cb960d08a1d058b2"
+  },
+  {
+    "source": "p12_4_c3_p1/benchmarks/optical/schema.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_p1/files/benchmarks/optical/schema.py",
+    "bytes": 79981,
+    "sha256": "a84557be8289d3393c38d4f75cb9f396cbf824036c5bd8514bd80c27bf8a9379"
+  },
+  {
+    "source": "p12_4_c3_p1/benchmarks/results/q54_p12_4/cleanup_ledger.json",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_p1/files/benchmarks/results/q54_p12_4/cleanup_ledger.json",
+    "bytes": 12999,
+    "sha256": "4b092e7b152f22dca34f02254fdd93cc428f3bdbadd8f1714accd37704d16e96"
+  },
+  {
+    "source": "p12_4_c3_p1/benchmarks/results/q54_p12_4/gate.json",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_p1/files/benchmarks/results/q54_p12_4/gate.json",
+    "bytes": 50805,
+    "sha256": "d0e4aa4f69764f2cf89f5a8ff36df78a5ea3963a0d4105a26734e677bd15bab5"
+  },
+  {
+    "source": "p12_4_c3_p1/collab/q54-optical-lab-p12-4c3a-scene-provenance__implementation-note__codex__v3.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_p1/files/collab/q54-optical-lab-p12-4c3a-scene-provenance__implementation-note__codex__v3.md",
+    "bytes": 2804,
+    "sha256": "1c6c8e31de9fbc83d3d6ebf267c8796ad85ce14c00d3bf6f7d651eb9c9a1750c"
+  },
+  {
+    "source": "p12_4_c3_p1/tests/unit/benchmarks/test_optical_benchmark_a3a.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_p1/files/tests/unit/benchmarks/test_optical_benchmark_a3a.py",
+    "bytes": 30261,
+    "sha256": "40c191f9e5eb3b9ad5ed8ac64da2ff7eff5a8dab8e2e58a453c6d957c07ff353"
+  },
+  {
+    "source": "p12_4_c3_p1/tests/unit/benchmarks/test_optical_benchmark_contracts.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_p1/files/tests/unit/benchmarks/test_optical_benchmark_contracts.py",
+    "bytes": 44934,
+    "sha256": "3997dece11cae0dcfafa3ab180b3605784e20a995697146b9834dfaeb6b657d8"
+  },
+  {
+    "source": "p12_4_c3_p1/tests/unit/benchmarks/test_optical_benchmark_core.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_p1/files/tests/unit/benchmarks/test_optical_benchmark_core.py",
+    "bytes": 29754,
+    "sha256": "f0381d564119c1f29bcce936888b0f73c4e86dd885a5ed31759819d64cbfa579"
+  },
+  {
+    "source": "p12_4_c3_p2/benchmarks/optical/receipts.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_p2/files/benchmarks/optical/receipts.py",
+    "bytes": 47255,
+    "sha256": "8ec7cbe50b0e4c5a3fbbc4c710ef69f187b559662a0efa30a1dcd0152d7a5d66"
+  },
+  {
+    "source": "p12_4_c3_p2/benchmarks/optical/runner.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_p2/files/benchmarks/optical/runner.py",
+    "bytes": 24453,
+    "sha256": "1eb5ac863d110f43c12c5e54625fb96a50529ef4e55263668eb756d12cbe16be"
+  },
+  {
+    "source": "p12_4_c3_p2/benchmarks/optical/schema.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_p2/files/benchmarks/optical/schema.py",
+    "bytes": 80388,
+    "sha256": "1a65aec489a53571ab66ea641e5b880eafca8ee69c2bc31b8dd74238a5dfa962"
+  },
+  {
+    "source": "p12_4_c3_p2/benchmarks/results/q54_p12_4/gate.json",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_p2/files/benchmarks/results/q54_p12_4/gate.json",
+    "bytes": 50950,
+    "sha256": "56364148ce8603b18e048b5985e44e9b1f9640478ed2f40216b6e0bda9f2c55c"
+  },
+  {
+    "source": "p12_4_c3_p2/collab/q54-optical-lab-p12-4c3a-scene-provenance__implementation-note__codex__v4.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_p2/files/collab/q54-optical-lab-p12-4c3a-scene-provenance__implementation-note__codex__v4.md",
+    "bytes": 2086,
+    "sha256": "43ad6597d84b7b242a712c48bea2e075c0cabae408f8881726a8f339baba7e33"
+  },
+  {
+    "source": "p12_4_c3_p2/tests/unit/benchmarks/test_optical_benchmark_a3a.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_p2/files/tests/unit/benchmarks/test_optical_benchmark_a3a.py",
+    "bytes": 31552,
+    "sha256": "0a1114038c6a537cbd8390c739bd0353e9e05f36cb671c3c96b66f9595936d19"
+  },
+  {
+    "source": "p12_4_c3_p2/tests/unit/benchmarks/test_optical_benchmark_contracts.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_p2/files/tests/unit/benchmarks/test_optical_benchmark_contracts.py",
+    "bytes": 47617,
+    "sha256": "66397b8899b7272fb84757eeb1a3b0b95f33b0d8217668557b51fc20583048fb"
+  },
+  {
+    "source": "p12_4_c3_p2/tests/unit/benchmarks/test_optical_benchmark_core.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3_p2/files/tests/unit/benchmarks/test_optical_benchmark_core.py",
+    "bytes": 29859,
+    "sha256": "83164cff07bc0e3ba4a8db74c814708590614dd258c5de7cfdfa26a0b6694c39"
+  },
+  {
+    "source": "p12_4_c3b/benchmarks/optical/__init__.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3b/files/benchmarks/optical/__init__.py",
+    "bytes": 8718,
+    "sha256": "912a95e4ada5af84f7891be12801828d2bd3867b66ba5abae50167694fbe89a0"
+  },
+  {
+    "source": "p12_4_c3b/benchmarks/optical/native.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3b/files/benchmarks/optical/native.py",
+    "bytes": 61423,
+    "sha256": "afedcc28d0976c66f61c17ed37074f2bbd16a4e7f4c84f5dcf854756bb506879"
+  },
+  {
+    "source": "p12_4_c3b/collab/q54-optical-lab-p12-4c3b-prebound-warp-scene-refit__implementation-note__codex__v1.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3b/files/collab/q54-optical-lab-p12-4c3b-prebound-warp-scene-refit__implementation-note__codex__v1.md",
+    "bytes": 6428,
+    "sha256": "ac2ab83cfbbbfa541a5289b7f5d06d36780542590c22608fe3da73091cd58fa5"
+  },
+  {
+    "source": "p12_4_c3b/collab/q54-optical-lab-p12-4c3b-prebound-warp-scene-refit__implementation-note__codex__v2.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3b/files/collab/q54-optical-lab-p12-4c3b-prebound-warp-scene-refit__implementation-note__codex__v2.md",
+    "bytes": 3628,
+    "sha256": "3e1b94a52e0c7958ebc12bf997c7be7f024dad1c1c63ec961722ff7c4ac80033"
+  },
+  {
+    "source": "p12_4_c3b/optics/__init__.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3b/files/optics/__init__.py",
+    "bytes": 7347,
+    "sha256": "328ca3d8fd44681d76b37eb788044b84b6bd0817d5c59e052430fca3e0f9f122"
+  },
+  {
+    "source": "p12_4_c3b/optics/cuda_lbvh.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3b/files/optics/cuda_lbvh.py",
+    "bytes": 7881,
+    "sha256": "09a69a8b55996a96ddbce9d639f637ec39d199523a9f16ebb72e803269cc68c2"
+  },
+  {
+    "source": "p12_4_c3b/optics/device_bvh.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3b/files/optics/device_bvh.py",
+    "bytes": 41163,
+    "sha256": "1b9ac1af17e6f00904fc30e50a55fdac13a0e981dcb6183e0933cc2f9479f4a8"
+  },
+  {
+    "source": "p12_4_c3b/optics/device_scene.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3b/files/optics/device_scene.py",
+    "bytes": 63710,
+    "sha256": "4d58949468cd0aaa9170ca0200b1c237a7d89634c7d5b2b090d4d46581f1d977"
+  },
+  {
+    "source": "p12_4_c3b/tests/gpu/test_optical_warp_native_commands.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3b/files/tests/gpu/test_optical_warp_native_commands.py",
+    "bytes": 23690,
+    "sha256": "5938668137ef33eece10e7da62bad04e4fc3892335aa1cf6e527ef0dccee8144"
+  },
+  {
+    "source": "p12_4_c3b/tests/unit/optics/test_warp_native_command_contract.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3b/files/tests/unit/optics/test_warp_native_command_contract.py",
+    "bytes": 5653,
+    "sha256": "ad2ecb89bc54552aa037c336a6087a3cf0b6ff5c8e07e789bb132a0b732efc7c"
+  },
+  {
+    "source": "p12_4_c3c/benchmarks/optical/__init__.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3c/files/benchmarks/optical/__init__.py",
+    "bytes": 8908,
+    "sha256": "75c25f62d3f41df7c92bfb3dd622b25aac3f51d6743e80cdc4e247c2665f1d27"
+  },
+  {
+    "source": "p12_4_c3c/benchmarks/optical/native.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3c/files/benchmarks/optical/native.py",
+    "bytes": 63630,
+    "sha256": "ced518d7f4eea16ab592ef14b856c4ce51763c2be8d5e55f290d33724256afe2"
+  },
+  {
+    "source": "p12_4_c3c/collab/q54-optical-lab-p12-4c3c-cuda-scene-update__implementation-note__codex__v1.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3c/files/collab/q54-optical-lab-p12-4c3c-cuda-scene-update__implementation-note__codex__v1.md",
+    "bytes": 6787,
+    "sha256": "8587e4160858893b9c921ae4ad1cfbe7520310bc0a3a9412599074228fe5fb9a"
+  },
+  {
+    "source": "p12_4_c3c/optics/__init__.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3c/files/optics/__init__.py",
+    "bytes": 7944,
+    "sha256": "5fd8622dc3a9eb687234059e24f53184f1d8b56d445cdf1c4c8dd81c55033fc6"
+  },
+  {
+    "source": "p12_4_c3c/optics/cuda_scene.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3c/files/optics/cuda_scene.py",
+    "bytes": 57843,
+    "sha256": "6428fafd7453a6f1931c9905d7aa99a4976c2fb4f03fe09ef4e4d1df10a1994f"
+  },
+  {
+    "source": "p12_4_c3c/tests/gpu/test_optical_cuda_scene.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3c/files/tests/gpu/test_optical_cuda_scene.py",
+    "bytes": 21732,
+    "sha256": "5234fb7205240ca9065736908c5c00f3669dfd2ca14eee3bed06ee0f54a507a0"
+  },
+  {
+    "source": "p12_4_c3c/tests/unit/optics/test_cuda_scene_native.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3c/files/tests/unit/optics/test_cuda_scene_native.py",
+    "bytes": 2184,
+    "sha256": "21835fb267cfbc55e525ccf0ec76a880b8d27103d219b0454162917148c312d8"
+  },
+  {
+    "source": "p12_4_c3d/benchmarks/optical/__init__.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3d/files/benchmarks/optical/__init__.py",
+    "bytes": 8738,
+    "sha256": "49c3871740842eae5d2bbd1c6a951c3f3c3dd58be056952dd9f75595c0fa19b8"
+  },
+  {
+    "source": "p12_4_c3d/benchmarks/optical/native.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3d/files/benchmarks/optical/native.py",
+    "bytes": 63712,
+    "sha256": "3ddbc2ff07dc21d048c0d7b54c776ad6dbd8a92e967d1824fc6dd7cc84922584"
+  },
+  {
+    "source": "p12_4_c3d/benchmarks/results/q54_p12_4/architecture_inventory.json",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3d/files/benchmarks/results/q54_p12_4/architecture_inventory.json",
+    "bytes": 6251,
+    "sha256": "e754c13c56e90189b63fad181a2e4319c6bcb77ac730ff471d8703ecbefb8a2f"
+  },
+  {
+    "source": "p12_4_c3d/benchmarks/results/q54_p12_4/cleanup_ledger.json",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3d/files/benchmarks/results/q54_p12_4/cleanup_ledger.json",
+    "bytes": 13118,
+    "sha256": "1209b59df0bc20076c36d1159c9b6f2c3f75b960933551a0d6cd9aad01e197bd"
+  },
+  {
+    "source": "p12_4_c3d/collab/q54-optical-lab-p12-4c3d-native-cuda-lbvh__implementation-note__codex__v1.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3d/files/collab/q54-optical-lab-p12-4c3d-native-cuda-lbvh__implementation-note__codex__v1.md",
+    "bytes": 9234,
+    "sha256": "fd06eec44d4bb84e26d5b72b7795ff088c8c54990ee9a33e616d09e1e9c43f66"
+  },
+  {
+    "source": "p12_4_c3d/collab/q54-optical-lab-p12-4c3d-native-cuda-lbvh__implementation-note__codex__v2.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3d/files/collab/q54-optical-lab-p12-4c3d-native-cuda-lbvh__implementation-note__codex__v2.md",
+    "bytes": 2991,
+    "sha256": "dcc74a1b1f3325a4bfe0517b340344cd298920dc778cee28e53de000f36a4e93"
+  },
+  {
+    "source": "p12_4_c3d/collab/q54-optical-lab-p12-4c3d-native-cuda-lbvh__implementation-note__codex__v3.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3d/files/collab/q54-optical-lab-p12-4c3d-native-cuda-lbvh__implementation-note__codex__v3.md",
+    "bytes": 2339,
+    "sha256": "dc48030f7baeab69df29d56506879dbc82dda5d153f78e900e18db017b1d1690"
+  },
+  {
+    "source": "p12_4_c3d/examples/cuda_lbvh_extension_spike.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3d/files/examples/cuda_lbvh_extension_spike.py",
+    "bytes": 4693,
+    "sha256": "f5b453ef867f366af824e674c10a702660a53026283148064a5c527240686c53"
+  },
+  {
+    "source": "p12_4_c3d/optics/__init__.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3d/files/optics/__init__.py",
+    "bytes": 8857,
+    "sha256": "f707d06919c5dc83945a17a8b897e6d8a27be2a9f57295fcd528d9c8da3f8ff9"
+  },
+  {
+    "source": "p12_4_c3d/optics/_cuda_lbvh_source.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3d/files/optics/_cuda_lbvh_source.py",
+    "bytes": 24608,
+    "sha256": "8f967c15bf0a174042ce8165a3d002b9e19e2612ec17865c5838e11d532adeac"
+  },
+  {
+    "source": "p12_4_c3d/optics/cuda_lbvh.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3d/files/optics/cuda_lbvh.py",
+    "bytes": 42495,
+    "sha256": "6c5bfb72341339e524669cec62bf29b9ab4ba2e2c89dd0c94bad90e26d555733"
+  },
+  {
+    "source": "p12_4_c3d/tests/gpu/test_optical_cuda_lbvh_native.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3d/files/tests/gpu/test_optical_cuda_lbvh_native.py",
+    "bytes": 22946,
+    "sha256": "ff319a83a156d1d400a1a27a474dfaa1d7820fec8ed158ae86e7f3472b9c6129"
+  },
+  {
+    "source": "p12_4_c3d/tests/unit/optics/test_cuda_lbvh_native.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3d/files/tests/unit/optics/test_cuda_lbvh_native.py",
+    "bytes": 4529,
+    "sha256": "b88f02aa9c58686daf117cd07429e607638858d035a2491edba72e18b4b4ae01"
+  },
+  {
+    "source": "p12_4_c3e/benchmarks/optical/instrumentation.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3e/files/benchmarks/optical/instrumentation.py",
+    "bytes": 17778,
+    "sha256": "95ab98aab3c11df8f7b71f2b4cece2c053688a57c683c2c0a8ebb6d0c5a446bd"
+  },
+  {
+    "source": "p12_4_c3e/benchmarks/optical/lanes/__init__.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3e/files/benchmarks/optical/lanes/__init__.py",
+    "bytes": 780,
+    "sha256": "52eceea9d1ecf978028037b413b230232c522161b120d2ae93d6cebfbbda9bc0"
+  },
+  {
+    "source": "p12_4_c3e/benchmarks/optical/lanes/audit.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3e/files/benchmarks/optical/lanes/audit.py",
+    "bytes": 7640,
+    "sha256": "bf5d48dcc3abc3953130357b8402d1f197fba53bd4653f85487e86eb99cd0576"
+  },
+  {
+    "source": "p12_4_c3e/benchmarks/optical/lanes/warp.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3e/files/benchmarks/optical/lanes/warp.py",
+    "bytes": 34573,
+    "sha256": "ab61e006acaaca41601bc0697065e552457e2bc1593067582cec5ff077d7734f"
+  },
+  {
+    "source": "p12_4_c3e/benchmarks/results/q54_p12_4/cleanup_ledger.json",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3e/files/benchmarks/results/q54_p12_4/cleanup_ledger.json",
+    "bytes": 14582,
+    "sha256": "c7b6c641596612634b16bcf69777df5acc31f41742095bd1ee717abb1b7dfc3e"
+  },
+  {
+    "source": "p12_4_c3e/benchmarks/results/q54_p12_4/gate.json",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3e/files/benchmarks/results/q54_p12_4/gate.json",
+    "bytes": 50957,
+    "sha256": "5ad6d40f3077e61a5a7d7e98c0f0faa1d48789fc76697b5739dbd6d2e005e887"
+  },
+  {
+    "source": "p12_4_c3e/collab/q54-optical-lab-p12-4c3e-static-warp-cuda-lbvh__implementation-note__codex__v1.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3e/files/collab/q54-optical-lab-p12-4c3e-static-warp-cuda-lbvh__implementation-note__codex__v1.md",
+    "bytes": 6047,
+    "sha256": "5b216e40305deb4c9505929a4357b9c561744172be4327fcaf02d22791d058e2"
+  },
+  {
+    "source": "p12_4_c3e/collab/q54-optical-lab-p12-4c3e-static-warp-cuda-lbvh__implementation-note__codex__v2.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3e/files/collab/q54-optical-lab-p12-4c3e-static-warp-cuda-lbvh__implementation-note__codex__v2.md",
+    "bytes": 3694,
+    "sha256": "56c4ebfd086a1ba50bc0b5644c7eb0a6e2c4362b9d64e5055634b4ce8105da7f"
+  },
+  {
+    "source": "p12_4_c3e/collab/q54-optical-lab-p12-4c4-native-output-arena-leases__design-request__codex__v1.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3e/files/collab/q54-optical-lab-p12-4c4-native-output-arena-leases__design-request__codex__v1.md",
+    "bytes": 36094,
+    "sha256": "003ddb9c4f8280a85a1637ff8c295e3ed62057f37407161e8de396922e0286e1"
+  },
+  {
+    "source": "p12_4_c3e/collab/q54-optical-lab-p12-4c4-native-output-arena-leases__design-request__codex__v2.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3e/files/collab/q54-optical-lab-p12-4c4-native-output-arena-leases__design-request__codex__v2.md",
+    "bytes": 13431,
+    "sha256": "0aa6ba5682f5d5eda6e5c947f0a575fa508e34d732e321024bc09fb88b2118b0"
+  },
+  {
+    "source": "p12_4_c3e/optics/__init__.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3e/files/optics/__init__.py",
+    "bytes": 9190,
+    "sha256": "93018a2f32c02f4eda9e57c35dbfc659642d2a912a4eff67c9884ebddc5440da"
+  },
+  {
+    "source": "p12_4_c3e/optics/cuda_lbvh.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3e/files/optics/cuda_lbvh.py",
+    "bytes": 45089,
+    "sha256": "00af7b70e0281b53b7578209ff99aaaafc54fc072f3f26005bdf5e52e3020cd5"
+  },
+  {
+    "source": "p12_4_c3e/optics/device_scene.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3e/files/optics/device_scene.py",
+    "bytes": 68697,
+    "sha256": "7261c7af31cc53d89de2777d08652b953d7f0f8808926cb1c5060734b6adf3f7"
+  },
+  {
+    "source": "p12_4_c3e/tests/gpu/test_optical_warp_cuda_lbvh_comparison.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3e/files/tests/gpu/test_optical_warp_cuda_lbvh_comparison.py",
+    "bytes": 11307,
+    "sha256": "84db38b96d594af557f3453ccf1a45246b4673c814ad5099e3acfb0a17ca0c13"
+  },
+  {
+    "source": "p12_4_c3e/tests/gpu/test_optical_warp_native_commands.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3e/files/tests/gpu/test_optical_warp_native_commands.py",
+    "bytes": 25508,
+    "sha256": "98b5b9d33cc33857c653c6d7f57ff35814855f0e955bd276c64657958e908934"
+  },
+  {
+    "source": "p12_4_c3e/tests/unit/benchmarks/test_optical_benchmark_a3a.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3e/files/tests/unit/benchmarks/test_optical_benchmark_a3a.py",
+    "bytes": 32804,
+    "sha256": "135fd199823fd0a1b76d77e9024bacfded6f80fecbe5a7849b51c80d59cabff8"
+  },
+  {
+    "source": "p12_4_c3e/tests/unit/optics/test_cuda_lbvh_native.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3e/files/tests/unit/optics/test_cuda_lbvh_native.py",
+    "bytes": 4782,
+    "sha256": "1ff9503130e822c25e029875a6eb34815d839506543e3f490657424bb7705519"
+  },
+  {
+    "source": "p12_4_c3e/tests/unit/optics/test_warp_native_command_contract.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c3e/files/tests/unit/optics/test_warp_native_command_contract.py",
+    "bytes": 5880,
+    "sha256": "e07da7c130b85e1942714b67b2271737346e9573802f462c664d1e4609726017"
+  },
+  {
+    "source": "p12_4_c4a/benchmarks/optical/__init__.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4a/files/benchmarks/optical/__init__.py",
+    "bytes": 9197,
+    "sha256": "f99531f3d3b6ff0323f90977bdd4d11f13d47d31920205a68abd53232bbdcfa5"
+  },
+  {
+    "source": "p12_4_c4a/benchmarks/optical/arena.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4a/files/benchmarks/optical/arena.py",
+    "bytes": 6374,
+    "sha256": "09a206208ec32539d52aa564313d30920c7ae78d3096d40b6e72f1f57ec8cc3d"
+  },
+  {
+    "source": "p12_4_c4a/benchmarks/optical/eligibility.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4a/files/benchmarks/optical/eligibility.py",
+    "bytes": 23792,
+    "sha256": "b0fdeeda0f8659d56a73c1ebaac11c227cffb5104008f540762c3689cc5d4445"
+  },
+  {
+    "source": "p12_4_c4a/benchmarks/optical/lanes/audit.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4a/files/benchmarks/optical/lanes/audit.py",
+    "bytes": 8342,
+    "sha256": "4a7c1d4838d596a2cf3911b967a157df6caf76bbdc333fe382e84aa91817e6bd"
+  },
+  {
+    "source": "p12_4_c4a/benchmarks/optical/runner.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4a/files/benchmarks/optical/runner.py",
+    "bytes": 24570,
+    "sha256": "4f3b850b3e4c3b1eafcddec27a84a7f87fe709076e3268d2454f4b3c3d7b6852"
+  },
+  {
+    "source": "p12_4_c4a/benchmarks/optical/schema.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4a/files/benchmarks/optical/schema.py",
+    "bytes": 84044,
+    "sha256": "2c26e67ea3286cc17b40c15c2b8f9091d52c6d5af3a10060b4db7e205c0ecaf3"
+  },
+  {
+    "source": "p12_4_c4a/benchmarks/optical/timing.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4a/files/benchmarks/optical/timing.py",
+    "bytes": 16732,
+    "sha256": "9d50a2834deaa848fbaf6691047dfd6bd9ad50315f527f56b12fc8caa86f7418"
+  },
+  {
+    "source": "p12_4_c4a/benchmarks/results/q54_p12_4/cleanup_ledger.json",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4a/files/benchmarks/results/q54_p12_4/cleanup_ledger.json",
+    "bytes": 15758,
+    "sha256": "f2763ae6f04682b9705106a23918477b5f6208ff6f333c8d06b36d64d852e1b4"
+  },
+  {
+    "source": "p12_4_c4a/benchmarks/results/q54_p12_4/gate.json",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4a/files/benchmarks/results/q54_p12_4/gate.json",
+    "bytes": 54135,
+    "sha256": "6dc0a5c613464231df2af49a86bf00c5abd4f5848a41b3c23a5e8a2697f0e184"
+  },
+  {
+    "source": "p12_4_c4a/collab/q54-optical-lab-p12-4c4a-arena-control-contract__implementation-note__codex__v1.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4a/files/collab/q54-optical-lab-p12-4c4a-arena-control-contract__implementation-note__codex__v1.md",
+    "bytes": 6694,
+    "sha256": "952309c9a87449eb445018102ec25a0b9238af461ebf93e366cdcd9533ba8487"
+  },
+  {
+    "source": "p12_4_c4a/collab/q54-optical-lab-p12-4c4a-arena-control-contract__implementation-note__codex__v2.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4a/files/collab/q54-optical-lab-p12-4c4a-arena-control-contract__implementation-note__codex__v2.md",
+    "bytes": 4042,
+    "sha256": "e30de155fc8a3bf62d1436909b483d7bdf67304360e7a0a2a2a88e764bc33f0b"
+  },
+  {
+    "source": "p12_4_c4a/collab/q54-optical-lab-p12-4c4a-arena-control-contract__implementation-note__codex__v3.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4a/files/collab/q54-optical-lab-p12-4c4a-arena-control-contract__implementation-note__codex__v3.md",
+    "bytes": 2968,
+    "sha256": "39ea8db63c75871c3470c6dfe77c1ab7d10d59532d2e1941fc55686075b5d66e"
+  },
+  {
+    "source": "p12_4_c4a/optics/__init__.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4a/files/optics/__init__.py",
+    "bytes": 11309,
+    "sha256": "ab34571f338043a976b9643572cec5f33a86c1264917f34136283671a934007d"
+  },
+  {
+    "source": "p12_4_c4a/optics/native_arena.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4a/files/optics/native_arena.py",
+    "bytes": 91261,
+    "sha256": "fe66f77fd96f23dda01e8c6b8013cac601cb5b0633dbe9df5685cd0ef4b26599"
+  },
+  {
+    "source": "p12_4_c4a/tests/unit/benchmarks/test_optical_benchmark_a3a.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4a/files/tests/unit/benchmarks/test_optical_benchmark_a3a.py",
+    "bytes": 34297,
+    "sha256": "c13a4e8a33ab6dc311a7260296a05871937db0848b8a566c17c9142e42c9f704"
+  },
+  {
+    "source": "p12_4_c4a/tests/unit/benchmarks/test_optical_benchmark_c4a.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4a/files/tests/unit/benchmarks/test_optical_benchmark_c4a.py",
+    "bytes": 5483,
+    "sha256": "8eaffda213fca0b52daae31c325ae60133156d1e0346149d1d39452ed45ba33f"
+  },
+  {
+    "source": "p12_4_c4a/tests/unit/benchmarks/test_optical_benchmark_contracts.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4a/files/tests/unit/benchmarks/test_optical_benchmark_contracts.py",
+    "bytes": 47734,
+    "sha256": "484ca2507d09216f536e5d748159c83cd1c88d798a8bd052b19132a5a87545d2"
+  },
+  {
+    "source": "p12_4_c4a/tests/unit/benchmarks/test_optical_benchmark_core.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4a/files/tests/unit/benchmarks/test_optical_benchmark_core.py",
+    "bytes": 30273,
+    "sha256": "079eb135d86511734983f47120ffa8e1c954754f00485ab0b8eb8cc26a17b753"
+  },
+  {
+    "source": "p12_4_c4a/tests/unit/optics/test_native_optical_arena.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4a/files/tests/unit/optics/test_native_optical_arena.py",
+    "bytes": 20454,
+    "sha256": "07ba6b561c319d18b90d6e54fb63c8971b700cc312c7d80bf393fab30fd55873"
+  },
+  {
+    "source": "p12_4_c4b_impl/OPEN_QUESTIONS.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/OPEN_QUESTIONS.md",
+    "bytes": 181101,
+    "sha256": "66fe998c71b27ac29f6ef81e8f2a56e5f6a3995adbc9792b3beeea8c895b9014"
+  },
+  {
+    "source": "p12_4_c4b_impl/PROGRESS.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/PROGRESS.md",
+    "bytes": 61060,
+    "sha256": "620a1f5a4ea16783a61ecba02e194160726e5ca234dd36a0d848db7422815719"
+  },
+  {
+    "source": "p12_4_c4b_impl/REFLECTIONS.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/REFLECTIONS.md",
+    "bytes": 162822,
+    "sha256": "68c1760df259b2f1fe3f79593756b8defab53985465d5cfc232093ce4133714d"
+  },
+  {
+    "source": "p12_4_c4b_impl/benchmarks/optical/__init__.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/benchmarks/optical/__init__.py",
+    "bytes": 9304,
+    "sha256": "4d1e1f90ddbd54803e8eaf71143bc1074557d39cc24ac82e9d96ef4e716baebd"
+  },
+  {
+    "source": "p12_4_c4b_impl/benchmarks/optical/cuda_arena.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/benchmarks/optical/cuda_arena.py",
+    "bytes": 12850,
+    "sha256": "3002f7ccba65c0dce42b4c599d860a88f9ee220373f2824c6018076671638fa5"
+  },
+  {
+    "source": "p12_4_c4b_impl/benchmarks/optical/native.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/benchmarks/optical/native.py",
+    "bytes": 67130,
+    "sha256": "1a480bed91ab896e1bd5a67defdb628c251f3b3a798a73df3474d22ea0e5961b"
+  },
+  {
+    "source": "p12_4_c4b_impl/benchmarks/optical/receipts.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/benchmarks/optical/receipts.py",
+    "bytes": 49300,
+    "sha256": "58070709d88b3debab053e1cedddc2c9d2ef707f765bbbf307745fdb661714e7"
+  },
+  {
+    "source": "p12_4_c4b_impl/collab/q54-optical-lab-p12-4c4b-cuda-arena-transaction-templates__implementation-note__codex__v1.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/collab/q54-optical-lab-p12-4c4b-cuda-arena-transaction-templates__implementation-note__codex__v1.md",
+    "bytes": 6700,
+    "sha256": "069b640a15a78043aebdcff5c501644f6c7cf8b56b2e3fd4172dcb39ffa16580"
+  },
+  {
+    "source": "p12_4_c4b_impl/collab/q54-optical-lab-p12-4c4b-cuda-arena-transaction-templates__implementation-note__codex__v2.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/collab/q54-optical-lab-p12-4c4b-cuda-arena-transaction-templates__implementation-note__codex__v2.md",
+    "bytes": 6125,
+    "sha256": "d33c59515a03a75902c11713a96f9c40f00d2184051085a2a83b9768d46f3afc"
+  },
+  {
+    "source": "p12_4_c4b_impl/collab/q54-optical-lab-p12-4c4b-exact-minted-execution-authority__implementation-note__codex__v4.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/collab/q54-optical-lab-p12-4c4b-exact-minted-execution-authority__implementation-note__codex__v4.md",
+    "bytes": 4361,
+    "sha256": "edb0e08ad1ca30d9cc91287bd14526e19c4c4e586cb97da7c5baf2559682977a"
+  },
+  {
+    "source": "p12_4_c4b_impl/collab/q54-optical-lab-p12-4c4b-live-lease-execution-authority__implementation-note__codex__v3.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/collab/q54-optical-lab-p12-4c4b-live-lease-execution-authority__implementation-note__codex__v3.md",
+    "bytes": 4304,
+    "sha256": "5cc548c1f0f43020063d50c53d84433b97c5d5cdd42045773aa76cef23bd78c4"
+  },
+  {
+    "source": "p12_4_c4b_impl/collab/q54-optical-lab-p12-4c4b-single-use-acquire-execution-authority__implementation-note__codex__v5.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/collab/q54-optical-lab-p12-4c4b-single-use-acquire-execution-authority__implementation-note__codex__v5.md",
+    "bytes": 5039,
+    "sha256": "f371cfaf081b97ec6b4e2c7efb125a01beaf7d936de823d1aa2d50cc6c7bdb42"
+  },
+  {
+    "source": "p12_4_c4b_impl/optics/__init__.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/optics/__init__.py",
+    "bytes": 12550,
+    "sha256": "e1bcc93b5c8b817e24ea78b69e6fa84de18fe5f3627ff38436b38cbd1a768f77"
+  },
+  {
+    "source": "p12_4_c4b_impl/optics/cuda_arena.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/optics/cuda_arena.py",
+    "bytes": 99155,
+    "sha256": "49ba8b7f4fe08c674d37b43b93f40757b1e08cd3f6d96ebfbabcb0d5dee77408"
+  },
+  {
+    "source": "p12_4_c4b_impl/optics/cuda_direct_light.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/optics/cuda_direct_light.py",
+    "bytes": 137572,
+    "sha256": "bc3a67227f58accfc9ec01693fdc168a2a4f905056e301e718b87b79c0e4d060"
+  },
+  {
+    "source": "p12_4_c4b_impl/optics/cuda_timeline.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/optics/cuda_timeline.py",
+    "bytes": 47429,
+    "sha256": "806df7954fb0729d039e7bc4d30b5b7711b3818b81810bfe37993b04a4692096"
+  },
+  {
+    "source": "p12_4_c4b_impl/optics/native_arena.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/optics/native_arena.py",
+    "bytes": 92709,
+    "sha256": "c0d7714f408dd28c85b61c6c661a4790b2d1b57535ed5a3458dfb81bea41777c"
+  },
+  {
+    "source": "p12_4_c4b_impl/tests/gpu/test_cuda_native_arena.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/tests/gpu/test_cuda_native_arena.py",
+    "bytes": 34969,
+    "sha256": "fc7b963bbaeb53b956a2915083a7911d549fe495a3d7096aa8b86a3c974ff316"
+  },
+  {
+    "source": "p12_4_c4b_impl/tests/gpu/test_cuda_optical_timeline.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/tests/gpu/test_cuda_optical_timeline.py",
+    "bytes": 19558,
+    "sha256": "55855b947908c2659d0778fd5c52ecbdee8732ab125bb1f2b6f00ca61ff8b446"
+  },
+  {
+    "source": "p12_4_c4b_impl/tests/unit/optics/test_cuda_arena_contract.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/tests/unit/optics/test_cuda_arena_contract.py",
+    "bytes": 2868,
+    "sha256": "59443213b1c8db4499bfaddb0213a7a6135458b5261c26cd8a414e1b978ab28d"
+  },
+  {
+    "source": "p12_4_c4b_impl/tests/unit/optics/test_cuda_timeline.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/tests/unit/optics/test_cuda_timeline.py",
+    "bytes": 2572,
+    "sha256": "8ecdddd77b4b1d526bab6c3c374da9a5e50832ffbf0213014d0c5cb80a33d021"
+  },
+  {
+    "source": "p12_4_c4b_impl/tests/unit/optics/test_native_optical_arena.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4b_impl/files/tests/unit/optics/test_native_optical_arena.py",
+    "bytes": 22436,
+    "sha256": "c06e7b6b694fa8da0494b780ecc7044c06ca3ed3d5b5e99b28dd70ece9a15856"
+  },
+  {
+    "source": "p12_4_c4c0_impl/.gitignore",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/.gitignore",
+    "bytes": 611,
+    "sha256": "4d5f97bc50a69ef2e508a12ec8fa9876721dc4c6769be0d8e6c72ed60acfa4c8"
+  },
+  {
+    "source": "p12_4_c4c0_impl/PROGRESS.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/PROGRESS.md",
+    "bytes": 64592,
+    "sha256": "c02fb7e77a97e4009d7ac02373f2c6e5a4eb19d54d439ba8112ea182202e61a6"
+  },
+  {
+    "source": "p12_4_c4c0_impl/REFLECTIONS.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/REFLECTIONS.md",
+    "bytes": 176229,
+    "sha256": "832358400a2777bb6a864043e6f8faba4054c3bb067433fb351aece90447f5af"
+  },
+  {
+    "source": "p12_4_c4c0_impl/benchmarks/optical/__init__.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/benchmarks/optical/__init__.py",
+    "bytes": 9290,
+    "sha256": "8efcd43558ca68f1b3fbf54aa0e59106b0b70f276b41b4f590282f4d66554395"
+  },
+  {
+    "source": "p12_4_c4c0_impl/benchmarks/optical/closed_worker.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/benchmarks/optical/closed_worker.py",
+    "bytes": 13299,
+    "sha256": "6c92a89fb45b101d8172461f7066b662d5ceab73987cd4272301d0b4c6910394"
+  },
+  {
+    "source": "p12_4_c4c0_impl/benchmarks/optical/native.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/benchmarks/optical/native.py",
+    "bytes": 64537,
+    "sha256": "add2cfc5331221a68727e5326fb01fd14aeb0e8b45642c625a24c7df093cd1c1"
+  },
+  {
+    "source": "p12_4_c4c0_impl/benchmarks/results/q54_p12_4/closed_worker_runtime_contract.json",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/benchmarks/results/q54_p12_4/closed_worker_runtime_contract.json",
+    "bytes": 1084,
+    "sha256": "2ffc82bd838690205609f4443de465a96af49baee28aefb1fa47e65926e8a6bb"
+  },
+  {
+    "source": "p12_4_c4c0_impl/collab/q54-optical-lab-p12-4c4c0-closed-worker-ipc__implementation-note__codex__v1.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/collab/q54-optical-lab-p12-4c4c0-closed-worker-ipc__implementation-note__codex__v1.md",
+    "bytes": 9738,
+    "sha256": "97ada8d14bb077c94579437f7f07722c44b1af7c2d9ea5717c0785f62983c845"
+  },
+  {
+    "source": "p12_4_c4c0_impl/collab/q54-optical-lab-p12-4c4c1-warp-native-render-abi__design-request__codex__v1.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/collab/q54-optical-lab-p12-4c4c1-warp-native-render-abi__design-request__codex__v1.md",
+    "bytes": 32758,
+    "sha256": "9db58233813baf52dfa0d6e963da277ddf5d30decbf0495938c7140f10a81edf"
+  },
+  {
+    "source": "p12_4_c4c0_impl/collab/q54-optical-lab-p12-4c4c1-warp-native-render-abi__design-request__codex__v2.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/collab/q54-optical-lab-p12-4c4c1-warp-native-render-abi__design-request__codex__v2.md",
+    "bytes": 19095,
+    "sha256": "353b0241826d4682197c3246e4acc8a3c35884124c38e76221c520ce5e317c9e"
+  },
+  {
+    "source": "p12_4_c4c0_impl/collab/q54-optical-lab-p12-4c4c1-warp-native-render-abi__design-request__codex__v3.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/collab/q54-optical-lab-p12-4c4c1-warp-native-render-abi__design-request__codex__v3.md",
+    "bytes": 17604,
+    "sha256": "a5d1540a663be956480e168036f7460283b923f454ce139cf6283bdf7aa99c3d"
+  },
+  {
+    "source": "p12_4_c4c0_impl/optical_worker/__init__.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/optical_worker/__init__.py",
+    "bytes": 1427,
+    "sha256": "018a239cf2be0f7684343c2238cfc483ebf0b8e4654f1cd75b9c470eb7db21d7"
+  },
+  {
+    "source": "p12_4_c4c0_impl/optical_worker/lifecycle.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/optical_worker/lifecycle.py",
+    "bytes": 63255,
+    "sha256": "820a6ff967d1b73876e3ef3abd77b90804d4c1fd46f9780d793a4de7589c7203"
+  },
+  {
+    "source": "p12_4_c4c0_impl/optical_worker/manifest.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/optical_worker/manifest.py",
+    "bytes": 9847,
+    "sha256": "0eb17ec389c636a7fd563088117eb23aaa238798bf7851bd21a121298b77a09b"
+  },
+  {
+    "source": "p12_4_c4c0_impl/optical_worker/native_contract.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/optical_worker/native_contract.py",
+    "bytes": 5843,
+    "sha256": "7ef1d2e2b93fee1a987ff6f4da307c3817071f55834df80a7af73e8760b016dd"
+  },
+  {
+    "source": "p12_4_c4c0_impl/optical_worker/native_setup.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/optical_worker/native_setup.py",
+    "bytes": 19045,
+    "sha256": "70eb402633c93e5734491a90b0009db8cc3a3723edb4aa78bca906e8956d788e"
+  },
+  {
+    "source": "p12_4_c4c0_impl/optical_worker/protocol.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/optical_worker/protocol.py",
+    "bytes": 27315,
+    "sha256": "62df7ad18c58002b681bc7d531d724c11b59dc1634d90d97a60b1a9ae303b2a9"
+  },
+  {
+    "source": "p12_4_c4c0_impl/optical_worker/worker.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/optical_worker/worker.py",
+    "bytes": 17695,
+    "sha256": "3cd33b5d376060bc923d6111cc091c277caf3112e39dc535231299d331ec0715"
+  },
+  {
+    "source": "p12_4_c4c0_impl/optics/cuda_arena.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/optics/cuda_arena.py",
+    "bytes": 101487,
+    "sha256": "7f5a86df7b6e43ef34d6b0fe3a68f44d6b55e32d1daeaf121cb648dfb20b43b9"
+  },
+  {
+    "source": "p12_4_c4c0_impl/tests/gpu/test_optical_closed_worker_setup.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/tests/gpu/test_optical_closed_worker_setup.py",
+    "bytes": 13232,
+    "sha256": "773efd339ed32473fd64b0452e7a7369443be9644ad39585761c8aa608194653"
+  },
+  {
+    "source": "p12_4_c4c0_impl/tests/unit/benchmarks/test_closed_worker_protocol.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/tests/unit/benchmarks/test_closed_worker_protocol.py",
+    "bytes": 15876,
+    "sha256": "bc7e3fb7c9d4446cb80e668281d95f09e7fc180e6bc1fab4143b81b9983016ee"
+  },
+  {
+    "source": "p12_4_c4c0_impl/tests/unit/benchmarks/test_optical_closed_worker.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/tests/unit/benchmarks/test_optical_closed_worker.py",
+    "bytes": 15848,
+    "sha256": "7332ea9c401fe6b03472fa02faa274ad5867c790891189cc20930dfed466b2e3"
+  },
+  {
+    "source": "p12_4_c4c0_impl/tools/optical_closed_worker.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/tools/optical_closed_worker.py",
+    "bytes": 5461,
+    "sha256": "efbd167c54a596efeb3f3cc45c18514b05a7df5637fe6281217019d8df73be66"
+  },
+  {
+    "source": "p12_4_c4c0_impl/tools/optical_closed_worker_supervisor.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c0_impl/files/tools/optical_closed_worker_supervisor.py",
+    "bytes": 7970,
+    "sha256": "e3522d636ddaff7a51737b28efd1618cdc9a749cb534ebb6b41eafaea2c7914a"
+  },
+  {
+    "source": "p12_4_c4c1_impl/PROGRESS.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1_impl/files/PROGRESS.md",
+    "bytes": 65783,
+    "sha256": "ed25b0416ce764904a743fb35e805b0a9f48ddec0023c5f5427c8f19d24331fe"
+  },
+  {
+    "source": "p12_4_c4c1_impl/REFLECTIONS.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1_impl/files/REFLECTIONS.md",
+    "bytes": 180826,
+    "sha256": "ecaa799b358833382625fb23d7e99223f8ba4d5357346d567c089d7da3b0a9bf"
+  },
+  {
+    "source": "p12_4_c4c1_impl/benchmarks/optical/native.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1_impl/files/benchmarks/optical/native.py",
+    "bytes": 58209,
+    "sha256": "58a82d1a1893d56a1d73195eae595cff41e668352b4ef78630b3e56b688604ba"
+  },
+  {
+    "source": "p12_4_c4c1_impl/collab/q54-optical-lab-p12-4c4c1a-readiness-authority__implementation-note__codex__v1.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1_impl/files/collab/q54-optical-lab-p12-4c4c1a-readiness-authority__implementation-note__codex__v1.md",
+    "bytes": 3737,
+    "sha256": "13c2f02261012572caa73887f2db76a22f1e41711587d51514c110b5f2f6256c"
+  },
+  {
+    "source": "p12_4_c4c1_impl/optical_worker/native_contract.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1_impl/files/optical_worker/native_contract.py",
+    "bytes": 14850,
+    "sha256": "c1b5c64a139c5c943a445aa156d13bedb4fccbed01ccbc7e730572df48339892"
+  },
+  {
+    "source": "p12_4_c4c1_impl/optics/cuda_arena.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1_impl/files/optics/cuda_arena.py",
+    "bytes": 101272,
+    "sha256": "d37bd709faacad6372f6dbf480898b3450b5ad29aa004a7aeced9d89515089e7"
+  },
+  {
+    "source": "p12_4_c4c1_impl/tests/unit/benchmarks/test_native_readiness_authority.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1_impl/files/tests/unit/benchmarks/test_native_readiness_authority.py",
+    "bytes": 5682,
+    "sha256": "4c889d0ca6915d82d5e843d573756d9a8395913fd911a2b48d165e88ede93e4a"
+  },
+  {
+    "source": "p12_4_c4c1a_fix/PROGRESS.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1a_fix/files/PROGRESS.md",
+    "bytes": 65868,
+    "sha256": "40d4e2304dd5d35263893be8d764f00312abfcc95a6de9abf98a5a3a6598eab3"
+  },
+  {
+    "source": "p12_4_c4c1a_fix/REFLECTIONS.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1a_fix/files/REFLECTIONS.md",
+    "bytes": 181528,
+    "sha256": "2b4cbe71e59baab5344377fc9a06fd97c1637ebd2c645b36428b1c7d283ce7dc"
+  },
+  {
+    "source": "p12_4_c4c1a_fix/collab/q54-optical-lab-p12-4c4c1a-storage-binding__review-followup__codex__v1.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1a_fix/files/collab/q54-optical-lab-p12-4c4c1a-storage-binding__review-followup__codex__v1.md",
+    "bytes": 3182,
+    "sha256": "75bcf24e8ef794b6fe0eaeb6280e7ecce8b2283eb5acdbd6c8a138a672288fb7"
+  },
+  {
+    "source": "p12_4_c4c1a_fix/optical_worker/native_contract.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1a_fix/files/optical_worker/native_contract.py",
+    "bytes": 19190,
+    "sha256": "ffc9ace202bef058d34591c7218617f4d5d944a13a20b499be61c18edbc2a8e5"
+  },
+  {
+    "source": "p12_4_c4c1a_fix/tests/gpu/test_cuda_native_arena.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1a_fix/files/tests/gpu/test_cuda_native_arena.py",
+    "bytes": 36732,
+    "sha256": "ec95954c9466d1267bcc80feed4afd2a7437aa9f2a3578f913354d53d74de042"
+  },
+  {
+    "source": "p12_4_c4c1a_fix/tests/gpu/test_optical_benchmark_native.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1a_fix/files/tests/gpu/test_optical_benchmark_native.py",
+    "bytes": 8710,
+    "sha256": "52501379aa5d3f2ead9dbfadd49e980574318b6719819be570f894e10ad69bec"
+  },
+  {
+    "source": "p12_4_c4c1a_fix/tests/unit/benchmarks/test_native_readiness_authority.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1a_fix/files/tests/unit/benchmarks/test_native_readiness_authority.py",
+    "bytes": 7300,
+    "sha256": "38fb9de70fed14bebb3cb468d268b9b95eae7633ceae8987ba4a678a170bd485"
+  },
+  {
+    "source": "p12_4_c4c1b_impl/PROGRESS.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1b_impl/files/PROGRESS.md",
+    "bytes": 66008,
+    "sha256": "7547279bda84fc4ee2d42fb516cd588d34f04e4620fbf640c651ef41b0e2b0b5"
+  },
+  {
+    "source": "p12_4_c4c1b_impl/REFLECTIONS.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1b_impl/files/REFLECTIONS.md",
+    "bytes": 182161,
+    "sha256": "77750c6b0c1589cd73a9bf8dfe6fa0942eef5233749c3871166f6cb8abd9c7cf"
+  },
+  {
+    "source": "p12_4_c4c1b_impl/collab/q54-optical-lab-p12-4c4c1b1-warp-kernel-single-source__implementation-note__codex__v1.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1b_impl/files/collab/q54-optical-lab-p12-4c4c1b1-warp-kernel-single-source__implementation-note__codex__v1.md",
+    "bytes": 2791,
+    "sha256": "044d3863499ba6ef2ef1608fc44bce0e60831a6b25bee2947b3e8facc1ad0580"
+  },
+  {
+    "source": "p12_4_c4c1b_impl/collab/q54-optical-lab-p12-4c4c1b1-warp-kernel-single-source__test-evidence__codex__v1.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1b_impl/files/collab/q54-optical-lab-p12-4c4c1b1-warp-kernel-single-source__test-evidence__codex__v1.md",
+    "bytes": 1851,
+    "sha256": "eabbcabcc8866ac79cd2fe318024fb8d737a7a8fd2c735347eae41674d247f1b"
+  },
+  {
+    "source": "p12_4_c4c1b_impl/collab/robot-simulator-development-host-routing__decision__owner__v1.md",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1b_impl/files/collab/robot-simulator-development-host-routing__decision__owner__v1.md",
+    "bytes": 1765,
+    "sha256": "e1db693788d8abfbf6d8340adc7bb018a611433bb37059a5f4ddd3eec7763e9c"
+  },
+  {
+    "source": "p12_4_c4c1b_impl/optics/warp_execution.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1b_impl/files/optics/warp_execution.py",
+    "bytes": 42429,
+    "sha256": "6fb1d6e07d2b5064241e481cafbd135a6318851c5537e20e008d865ab669cbe9"
+  },
+  {
+    "source": "p12_4_c4c1b_impl/optics/warp_native_render.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1b_impl/files/optics/warp_native_render.py",
+    "bytes": 54904,
+    "sha256": "b16b850b45e04a2caf2041aa408dd340325835e221e1831b17e1c858a2fd1ee4"
+  },
+  {
+    "source": "p12_4_c4c1b_impl/tests/unit/optics/test_warp_native_kernel_source.py",
+    "backup": "workspace-backup/20261015/working-trees/p12_4_c4c1b_impl/files/tests/unit/optics/test_warp_native_kernel_source.py",
+    "bytes": 1164,
+    "sha256": "b75a7542f8a51c540d4615311ee68f9b45bfb8c3dbfbd3354b554300315cda69"
+  },
+  {
+    "source": "robot_simulator/PROGRESS.md",
+    "backup": "workspace-backup/20261015/working-trees/robot_simulator/files/PROGRESS.md",
+    "bytes": 58881,
+    "sha256": "e41c1883e4963e97387c7e954bc101ff21a3b02e1f97b7a655d3ff94a3d6e886"
+  },
+  {
+    "source": "robot_simulator/REFLECTIONS.md",
+    "backup": "workspace-backup/20261015/working-trees/robot_simulator/files/REFLECTIONS.md",
+    "bytes": 147943,
+    "sha256": "514f6df0e52ee7c4c874cb1161e424166b990e9761d3150a04feba4ec95abdc2"
+  },
+  {
+    "source": "robot_simulator/collab/q54-optical-lab-p12-3e-cuda-camera-raygen__decision__owner__v1.md",
+    "backup": "workspace-backup/20261015/working-trees/robot_simulator/files/collab/q54-optical-lab-p12-3e-cuda-camera-raygen__decision__owner__v1.md",
+    "bytes": 4186,
+    "sha256": "fb1505741303aff10c06a5ef6f0dcef9b5885a86e3b38908fe3e359021bafa50"
+  },
+  {
+    "source": "robot_simulator/collab/q54-optical-lab-p12-3e-cuda-camera-raygen__implementation-note__codex__v1.md",
+    "backup": "workspace-backup/20261015/working-trees/robot_simulator/files/collab/q54-optical-lab-p12-3e-cuda-camera-raygen__implementation-note__codex__v1.md",
+    "bytes": 9770,
+    "sha256": "2b679d276dd3cbb375df803a5d74f03da64e9bcad161e469554387d8c0cba536"
+  },
+  {
+    "source": "robot_simulator/collab/q54-optical-lab-p12-3e-cuda-camera-raygen__proposal__codex__v1.md",
+    "backup": "workspace-backup/20261015/working-trees/robot_simulator/files/collab/q54-optical-lab-p12-3e-cuda-camera-raygen__proposal__codex__v1.md",
+    "bytes": 13609,
+    "sha256": "6cd2a6623959d9c052ff3dc779444f481c62f6d77422f18a302bc5e9ce05eef4"
+  },
+  {
+    "source": "robot_simulator/collab/q54-optical-lab-p12-3e-cuda-camera-raygen__proposal__codex__v2.md",
+    "backup": "workspace-backup/20261015/working-trees/robot_simulator/files/collab/q54-optical-lab-p12-3e-cuda-camera-raygen__proposal__codex__v2.md",
+    "bytes": 24597,
+    "sha256": "2b5a78b80172d20c24fb304085bcc81019aa74359a05791a275516805234b12e"
+  },
+  {
+    "source": "robot_simulator/collab/q54-optical-lab-p12-3e-cuda-camera-raygen__proposal__codex__v3.md",
+    "backup": "workspace-backup/20261015/working-trees/robot_simulator/files/collab/q54-optical-lab-p12-3e-cuda-camera-raygen__proposal__codex__v3.md",
+    "bytes": 4970,
+    "sha256": "b8d65460ced053566b5669558d58246f9f2c0fb160a22522606cd898a268d17a"
+  },
+  {
+    "source": "robot_simulator/collab/q54-optical-lab-p12-4-backend-parity-performance-gate__decision__owner__v1.md",
+    "backup": "workspace-backup/20261015/working-trees/robot_simulator/files/collab/q54-optical-lab-p12-4-backend-parity-performance-gate__decision__owner__v1.md",
+    "bytes": 6028,
+    "sha256": "6336d2688dea9cd56583903badde9bcf51ceee0cb33e3d00fbd7c5704742c362"
+  },
+  {
+    "source": "robot_simulator/collab/q54-optical-lab-p12-4-backend-parity-performance-gate__proposal__codex__v1.md",
+    "backup": "workspace-backup/20261015/working-trees/robot_simulator/files/collab/q54-optical-lab-p12-4-backend-parity-performance-gate__proposal__codex__v1.md",
+    "bytes": 16235,
+    "sha256": "562bc9f1d9f1ccbb0ed9547baea47f95dc9a7818571a012613bc290c0a68d63a"
+  },
+  {
+    "source": "robot_simulator/collab/q54-optical-lab-p12-4-backend-parity-performance-gate__proposal__codex__v2.md",
+    "backup": "workspace-backup/20261015/working-trees/robot_simulator/files/collab/q54-optical-lab-p12-4-backend-parity-performance-gate__proposal__codex__v2.md",
+    "bytes": 16193,
+    "sha256": "2b40e4f5936aa6110eb3db049f55dba702168de6aff209412d169e40a4918ef5"
+  },
+  {
+    "source": "robot_simulator/deploy/robot_sim_cuda128/README.md",
+    "backup": "workspace-backup/20261015/working-trees/robot_simulator/files/deploy/robot_sim_cuda128/README.md",
+    "bytes": 3214,
+    "sha256": "eda713dc21ca9f29faf5f85a8b24d2cfd79005d3ebd98073affa4916e8096f6f"
+  },
+  {
+    "source": "robot_simulator/deploy/robot_sim_cuda128/conda-explicit.txt",
+    "backup": "workspace-backup/20261015/working-trees/robot_simulator/files/deploy/robot_sim_cuda128/conda-explicit.txt",
+    "bytes": 10386,
+    "sha256": "45460f701e6022ff8e060d193ff312de45f628aba69e71702850962d20e64a80"
+  },
+  {
+    "source": "robot_simulator/deploy/robot_sim_cuda128/python-packages.txt",
+    "backup": "workspace-backup/20261015/working-trees/robot_simulator/files/deploy/robot_sim_cuda128/python-packages.txt",
+    "bytes": 1216,
+    "sha256": "2cb26bc100862f289c4e4c0eb4971b3fcdcc5df2c44995528db0c675cdc77889"
+  },
+  {
+    "source": "robot_simulator/deploy/robot_sim_cuda128/wheelhouse.sha256",
+    "backup": "workspace-backup/20261015/working-trees/robot_simulator/files/deploy/robot_sim_cuda128/wheelhouse.sha256",
+    "bytes": 7463,
+    "sha256": "1f5620999b8b8f9c1be933c68498e7940008dccbd1f56b728a79bf152d7f25d0"
+  },
+  {
+    "source": "robot_simulator/optics/cuda_direct_light.py",
+    "backup": "workspace-backup/20261015/working-trees/robot_simulator/files/optics/cuda_direct_light.py",
+    "bytes": 81492,
+    "sha256": "b4e067fb7ba176d8c933acdbd5aa4d5f71780a0f299ab9fea1fc12dffd8633ff"
+  },
+  {
+    "source": "robot_simulator/tests/gpu/test_optical_gpu_runtime.py",
+    "backup": "workspace-backup/20261015/working-trees/robot_simulator/files/tests/gpu/test_optical_gpu_runtime.py",
+    "bytes": 127904,
+    "sha256": "b5f23e76214e28af7219ad05bb85dd3499643e54e07e5f2359b4689f702c3b35"
+  },
+  {
+    "source": "robot_simulator/tests/unit/optics/test_device_optical.py",
+    "backup": "workspace-backup/20261015/working-trees/robot_simulator/files/tests/unit/optics/test_device_optical.py",
+    "bytes": 10354,
+    "sha256": "5bf91e252127065791e279b35f00dd3ce169f687a58d746419b46d3859765c68"
+  },
+  {
+    "source": "robot_simulator/tests/unit/optics/test_optical_pipeline_lab.py",
+    "backup": "workspace-backup/20261015/working-trees/robot_simulator/files/tests/unit/optics/test_optical_pipeline_lab.py",
+    "bytes": 248426,
+    "sha256": "01419883108fd92dea0f0acb8996d3f00f78ea2bb625933c8bbc01d0521d3e50"
+  },
+  {
+    "source": "robot_simulator/tools/optical_pipeline_lab/render_session.py",
+    "backup": "workspace-backup/20261015/working-trees/robot_simulator/files/tools/optical_pipeline_lab/render_session.py",
+    "bytes": 27105,
+    "sha256": "a5489bf97e13aed87ed0f6931e76e1a9b8aa78162e4aae8e4f32fb4a53faada6"
+  },
+  {
+    "source": "robot_simulator/tools/optical_pipeline_lab/runner.py",
+    "backup": "workspace-backup/20261015/working-trees/robot_simulator/files/tools/optical_pipeline_lab/runner.py",
+    "bytes": 37107,
+    "sha256": "d4160829ad874e8aed355faf0a966c2d02b080cf67a967487e0b29bead19e0b7"
+  },
+  {
+    "source": "admm_bounded_independent_review_v1.json",
+    "backup": "workspace-backup/20261015/loose-files/admm_bounded_independent_review_v1.json",
+    "bytes": 73284,
+    "sha256": "dfa930ebab58570ab5b774bb091db4c3b053dc50a91f77c057e455749b68baba"
+  },
+  {
+    "source": "admm_bounded_independent_review_v1.md",
+    "backup": "workspace-backup/20261015/loose-files/admm_bounded_independent_review_v1.md",
+    "bytes": 12027,
+    "sha256": "384783b7b71368f444da852213b253bd84aeb197ad3459c74fac5002b25f69d9"
+  },
+  {
+    "source": "admm_bounded_review_probe_v1.py",
+    "backup": "workspace-backup/20261015/loose-files/admm_bounded_review_probe_v1.py",
+    "bytes": 3293,
+    "sha256": "14c5e252ec7ab1d4822872c04c0e264e81a2e0bcb31637de51af6007ae6c216c"
+  },
+  {
+    "source": "admm_method_analysis_review_v1.md",
+    "backup": "workspace-backup/20261015/loose-files/admm_method_analysis_review_v1.md",
+    "bytes": 11961,
+    "sha256": "4328cf174429ff871603f894ce29f9e41f0354b4aac91c22ea12373d88635538"
+  },
+  {
+    "source": "admm_method_analysis_review_v2.md",
+    "backup": "workspace-backup/20261015/loose-files/admm_method_analysis_review_v2.md",
+    "bytes": 7987,
+    "sha256": "64e549614e2a8680e292cfa1d70fef373b65b1c23b833bfb53ac59ac1d2e2c85"
+  },
+  {
+    "source": "admm_method_analysis_review_v2_cpu.json",
+    "backup": "workspace-backup/20261015/loose-files/admm_method_analysis_review_v2_cpu.json",
+    "bytes": 4388,
+    "sha256": "b6dae8d2aa447360037731a3f8fcb99332b633e20dbd865e5f0c16862f319823"
+  },
+  {
+    "source": "admm_method_analysis_review_v2_math.json",
+    "backup": "workspace-backup/20261015/loose-files/admm_method_analysis_review_v2_math.json",
+    "bytes": 1549,
+    "sha256": "4094b3517e5bdb2be2fe01b6446776a312174dab3a01fdfae39ac8297a9940a7"
+  },
+  {
+    "source": "admm_method_analysis_review_v2_math.py",
+    "backup": "workspace-backup/20261015/loose-files/admm_method_analysis_review_v2_math.py",
+    "bytes": 1568,
+    "sha256": "1edf9ede34d7f85febb116ae88debfa6aea3b1820ec88e9d0c99b39428a02d1a"
+  },
+  {
+    "source": "admm_method_independent_math.py",
+    "backup": "workspace-backup/20261015/loose-files/admm_method_independent_math.py",
+    "bytes": 872,
+    "sha256": "70437d5921f9196e2d3a6d5ba1e1be40b77039fef0c1c07bfecfe49e5b058a81"
+  },
+  {
+    "source": "admm_method_independent_review_cpu.json",
+    "backup": "workspace-backup/20261015/loose-files/admm_method_independent_review_cpu.json",
+    "bytes": 4388,
+    "sha256": "b6dae8d2aa447360037731a3f8fcb99332b633e20dbd865e5f0c16862f319823"
+  },
+  {
+    "source": "admm_method_independent_review_gpu.log",
+    "backup": "workspace-backup/20261015/loose-files/admm_method_independent_review_gpu.log",
+    "bytes": 2625,
+    "sha256": "fafa7b502b5879052ddd695a3fa2e11ece7af4242ca6dad944068c47156e16b6"
+  },
+  {
+    "source": "admm_method_independent_review_math.json",
+    "backup": "workspace-backup/20261015/loose-files/admm_method_independent_review_math.json",
+    "bytes": 260,
+    "sha256": "c6e01b9bf9d7f328e711137c9bc1e9a5dd6e12003835454ca7023c38f9d9ace3"
+  },
+  {
+    "source": "admm_method_independent_review_regularization.json",
+    "backup": "workspace-backup/20261015/loose-files/admm_method_independent_review_regularization.json",
+    "bytes": 21054,
+    "sha256": "b75f8116b97a405ff9ef7aca9fb439291c4823448a9c6dcc18dfd445acf3073a"
+  },
+  {
+    "source": "admm_R_quad_probe.py",
+    "backup": "workspace-backup/20261015/loose-files/admm_R_quad_probe.py",
+    "bytes": 1290,
+    "sha256": "2b6aa65e9c56d05381ee2031f282f659138a066157d8b94cc9562a5426a3c9e4"
+  },
+  {
+    "source": "admm_R_reference_probe.py",
+    "backup": "workspace-backup/20261015/loose-files/admm_R_reference_probe.py",
+    "bytes": 897,
+    "sha256": "72e8a4c36bfab3c1852bae0340d1f187120ad1d92c7ffcd14733fb947a147390"
+  },
+  {
+    "source": "admm_regularization_code_review_v1.md",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_code_review_v1.md",
+    "bytes": 17796,
+    "sha256": "61a2d9a5a3a52179b822604b637f8c3d7de1273715ebec006bdff837d30a3261"
+  },
+  {
+    "source": "admm_regularization_code_review_v1_probe.log",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_code_review_v1_probe.log",
+    "bytes": 3830,
+    "sha256": "9601423c83a72d134cbb7e207915e1167f43d0a65f02676ccd983dee4f570f95"
+  },
+  {
+    "source": "admm_regularization_code_review_v1_probe.py",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_code_review_v1_probe.py",
+    "bytes": 5902,
+    "sha256": "8dc93c827a99f5742e65e5c9e3716bb9b02bba374608c7c46ff5bac44a9ce3a1"
+  },
+  {
+    "source": "admm_regularization_code_review_v2.md",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_code_review_v2.md",
+    "bytes": 22233,
+    "sha256": "e8616708c9d5e74893fb707169cddd374da73584424f1757412ab90619f7d87e"
+  },
+  {
+    "source": "admm_regularization_code_review_v2_boundary_repro.log",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_code_review_v2_boundary_repro.log",
+    "bytes": 4534,
+    "sha256": "1f372ff2087f8804f3e309d3c3db92fe437ff55c80ad4d60948081cea9e07b7b"
+  },
+  {
+    "source": "admm_regularization_code_review_v2_boundary_repro.py",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_code_review_v2_boundary_repro.py",
+    "bytes": 2474,
+    "sha256": "708c0cf86e89dce5c4c7216ea09bce0fc84a534f531f0c1b5fc6cbcc9aae5583"
+  },
+  {
+    "source": "admm_regularization_code_review_v2_cpu_edge_probe.log",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_code_review_v2_cpu_edge_probe.log",
+    "bytes": 1910,
+    "sha256": "e8ce4f9e35925cf361047713f9b4a1442eaf09527b09f124ce84c3a4192e641e"
+  },
+  {
+    "source": "admm_regularization_code_review_v2_cpu_edge_probe.py",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_code_review_v2_cpu_edge_probe.py",
+    "bytes": 1198,
+    "sha256": "ba93d33b76e6a5c51893669b8f8e443812718b27870ac571c14bc1ff7a31b6e1"
+  },
+  {
+    "source": "admm_regularization_code_review_v2_decreasing_probe.log",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_code_review_v2_decreasing_probe.log",
+    "bytes": 4692,
+    "sha256": "58ba2990a28ffac404a8c0b2e9eda10342d1b52b0b5577779f2251e754f2a1de"
+  },
+  {
+    "source": "admm_regularization_code_review_v2_decreasing_probe.py",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_code_review_v2_decreasing_probe.py",
+    "bytes": 2582,
+    "sha256": "40e5476719a51a61817a470560ec1ecc70159cdd1b938beeb50c0581f5e28025"
+  },
+  {
+    "source": "admm_regularization_code_review_v2_edge_probe.log",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_code_review_v2_edge_probe.log",
+    "bytes": 2396,
+    "sha256": "57252bd1b036706bd1d885f831cd5faeaee66c1f2133e35c83eaa6d81e9ea3b5"
+  },
+  {
+    "source": "admm_regularization_code_review_v2_edge_probe.py",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_code_review_v2_edge_probe.py",
+    "bytes": 1192,
+    "sha256": "f4b27ec10bba4655c8bce4d20d5fd5eed65b085f6c9e25ea65ecf545a25c63c0"
+  },
+  {
+    "source": "admm_regularization_code_review_v2_original_probe.log",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_code_review_v2_original_probe.log",
+    "bytes": 4200,
+    "sha256": "a8ff877859e7f5c54e28f0a9f8484f3575a17149b943bbb736423085f5e3fa0f"
+  },
+  {
+    "source": "admm_regularization_code_review_v2_tests.log",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_code_review_v2_tests.log",
+    "bytes": 10482,
+    "sha256": "beb37d5e4cb162d522a80095099cd1c99b40c3da7a5021bb90f2501adeebc486"
+  },
+  {
+    "source": "admm_regularization_code_review_v2_width_probe.log",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_code_review_v2_width_probe.log",
+    "bytes": 2786,
+    "sha256": "f6d2728e50850b488cc7fa7622ad835a9a2dc48e0e728ef5f1571b5bfcaeb252"
+  },
+  {
+    "source": "admm_regularization_code_review_v2_width_probe.py",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_code_review_v2_width_probe.py",
+    "bytes": 1295,
+    "sha256": "b8a0d45e27f4480ea074136133d317e987270957f5c6181bf1db87cb6c7cc973"
+  },
+  {
+    "source": "admm_regularization_code_review_v3.md",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_code_review_v3.md",
+    "bytes": 18399,
+    "sha256": "60d26ae73721a381e49ad65da551445124407d6b297f8ba4a0d313090d806a45"
+  },
+  {
+    "source": "admm_regularization_code_review_v3_original_probe.log",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_code_review_v3_original_probe.log",
+    "bytes": 4200,
+    "sha256": "f5dd5a2746dfebbbc7690468940bb671610fd272579ec5e6a7d0c1ac71cb5ff5"
+  },
+  {
+    "source": "admm_regularization_code_review_v3_probe.log",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_code_review_v3_probe.log",
+    "bytes": 18698,
+    "sha256": "17c0a7a1b3f4a58344ff12e6a4d9e12e7ee9bff7c8fc7de6b543288e277284a3"
+  },
+  {
+    "source": "admm_regularization_code_review_v3_probe.py",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_code_review_v3_probe.py",
+    "bytes": 7109,
+    "sha256": "57e70a054d75ca9c0d45eea5c4ea83fae54630ab326e9d724c7ddaca5a9613f0"
+  },
+  {
+    "source": "admm_regularization_code_review_v3_tests.log",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_code_review_v3_tests.log",
+    "bytes": 10410,
+    "sha256": "517d7ac3418e28e001d6082fb7d65509640a290b17c44be5f019f697b2546ef8"
+  },
+  {
+    "source": "admm_regularization_design_review_v1.md",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_design_review_v1.md",
+    "bytes": 11369,
+    "sha256": "954e915e336ab550640fcbb2261e76657636e612f1a3c644b13080b0a4fb5eda"
+  },
+  {
+    "source": "admm_regularization_design_review_v1_probe.py",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_design_review_v1_probe.py",
+    "bytes": 2397,
+    "sha256": "25a03277d205c08ed45f17ce20ba45d6edd795c8cb8135a0413b45ab8da3d00a"
+  },
+  {
+    "source": "admm_regularization_design_review_v2.md",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_design_review_v2.md",
+    "bytes": 13082,
+    "sha256": "68eb1b33333e7f5e6193294cdcd3210257ecd8fe8dffbaae23cc69842fad191e"
+  },
+  {
+    "source": "admm_regularization_design_review_v2_probe.py",
+    "backup": "workspace-backup/20261015/loose-files/admm_regularization_design_review_v2_probe.py",
+    "bytes": 7067,
+    "sha256": "4afca752ba712db4a781740e0444e5733c0a1b56709290ff9507dc2ee550a334"
+  },
+  {
+    "source": "c4-acceptance-design-review-v1.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-acceptance-design-review-v1.md",
+    "bytes": 14624,
+    "sha256": "c3b0c1dac0fcf68be2daeb9d4e7957610fb71b68d5fd26d0e482b2310032c91f"
+  },
+  {
+    "source": "c4-c2a-contract-code-review-v1.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-c2a-contract-code-review-v1.md",
+    "bytes": 16650,
+    "sha256": "0bf44395d8e3f791a481f4e0b9039b2e841be65dd42a18c19cfbb69778d0aabd"
+  },
+  {
+    "source": "c4-c2a-contract-design-review-v1.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-c2a-contract-design-review-v1.md",
+    "bytes": 16415,
+    "sha256": "51eda06612c87633297614904c4f4cd7aac07aec0490a864af70fcb102876341"
+  },
+  {
+    "source": "c4-c2a-review-static.py",
+    "backup": "workspace-backup/20261015/loose-files/c4-c2a-review-static.py",
+    "bytes": 5145,
+    "sha256": "035c92f1dd7e1c5dfd9e35d3e71e77aa68617699de84bc7201a6847b68e7754f"
+  },
+  {
+    "source": "c4-c2b-client-reentry-repro-v3.py",
+    "backup": "workspace-backup/20261015/loose-files/c4-c2b-client-reentry-repro-v3.py",
+    "bytes": 2944,
+    "sha256": "61ec4cc53224567eac38b01a47ba4a43a64a2e5b1c3e4b9bdb40b6385856354d"
+  },
+  {
+    "source": "c4-c2b-fence-interruption-repro-v4.py",
+    "backup": "workspace-backup/20261015/loose-files/c4-c2b-fence-interruption-repro-v4.py",
+    "bytes": 3684,
+    "sha256": "59f700363c907b45bd3f39b9264861ece3db627783e0c939f9b0cb0705d4cded"
+  },
+  {
+    "source": "c4-c2b-independent-probes-v5.py",
+    "backup": "workspace-backup/20261015/loose-files/c4-c2b-independent-probes-v5.py",
+    "bytes": 6855,
+    "sha256": "544d107efaf3357ff522f7d625583a494ad008de13f813c0a2af1e93d9b3dae6"
+  },
+  {
+    "source": "c4-c2b-transport-reentry-repro-v3.py",
+    "backup": "workspace-backup/20261015/loose-files/c4-c2b-transport-reentry-repro-v3.py",
+    "bytes": 2168,
+    "sha256": "9335c131a0d6b65d39f11d70846ced0553e25b51ec7ac434c7433cb45662ec28"
+  },
+  {
+    "source": "c4-c2b-wait-code-review-v1.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-c2b-wait-code-review-v1.md",
+    "bytes": 16692,
+    "sha256": "43cc543a96d9d9c1e86d1025af87366bdd7c706bfc6ce93bcbdce54fe7e58aae"
+  },
+  {
+    "source": "c4-c2b-wait-code-review-v3.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-c2b-wait-code-review-v3.md",
+    "bytes": 22084,
+    "sha256": "763b54539771aa26acf61272e315b5eaff8b36d94d971bb605d25f9cb6de1fc1"
+  },
+  {
+    "source": "c4-c2b-wait-code-review-v5.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-c2b-wait-code-review-v5.md",
+    "bytes": 18185,
+    "sha256": "4a693d34751ba0e85023b29999a5f679c4f34bf795c0bf3894fdbfe7cc4f186a"
+  },
+  {
+    "source": "c4-c2b-wait-design-review-v1.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-c2b-wait-design-review-v1.md",
+    "bytes": 14094,
+    "sha256": "0eda1b681856e0b9525275f636f7cc45a6f795fcb4e8ddff626435a91090e497"
+  },
+  {
+    "source": "c4-c2b-wait-design-review-v2.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-c2b-wait-design-review-v2.md",
+    "bytes": 12988,
+    "sha256": "0c93823ea1037b05047f80a3575a3da7c93c55400f2a443922f7a3b562f10947"
+  },
+  {
+    "source": "c4-c2b-wait-design-review-v3.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-c2b-wait-design-review-v3.md",
+    "bytes": 15588,
+    "sha256": "3a376ba4906c9cb1c9522bd6e41ef1346057d2a2b14533e45309d6b41fbc3a49"
+  },
+  {
+    "source": "c4-camera-code-independent-probe-v1.py",
+    "backup": "workspace-backup/20261015/loose-files/c4-camera-code-independent-probe-v1.py",
+    "bytes": 4576,
+    "sha256": "093c9f975ad3cbe8fffaa403cb4cab8ca839242fd948c81cc1406fe7580c2396"
+  },
+  {
+    "source": "c4-camera-independent-review-probe-v1.py",
+    "backup": "workspace-backup/20261015/loose-files/c4-camera-independent-review-probe-v1.py",
+    "bytes": 7531,
+    "sha256": "96d31339699800a8d077ec8574d7017ad6c73e477c1368a87e53178f0d0586ce"
+  },
+  {
+    "source": "c4-camera-resolution-code-review-v1.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-camera-resolution-code-review-v1.md",
+    "bytes": 12092,
+    "sha256": "f021339bd7a11b4ff27a700148e528180cacf603bab0c0d70f7c03e0e40a3a41"
+  },
+  {
+    "source": "c4-camera-resolution-design-review-v1.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-camera-resolution-design-review-v1.md",
+    "bytes": 13137,
+    "sha256": "ed0015fad94a2309b004254b495ef3c107bdd4c1b0803da989f7699951d25e29"
+  },
+  {
+    "source": "c4-fixed-shade-review-cpu-import.py",
+    "backup": "workspace-backup/20261015/loose-files/c4-fixed-shade-review-cpu-import.py",
+    "bytes": 1028,
+    "sha256": "34dd70d5d286c5ac23fe0cc2f989261f09805fff5d18970fa7fb1a9905aae563"
+  },
+  {
+    "source": "c4-fixed-shade-review-probes.py",
+    "backup": "workspace-backup/20261015/loose-files/c4-fixed-shade-review-probes.py",
+    "bytes": 7918,
+    "sha256": "7040e8e6161827752c04bc42d2dbc396306eb56a15aa56b7818986a5350f7547"
+  },
+  {
+    "source": "c4-fixed-shade-review-v1.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-fixed-shade-review-v1.md",
+    "bytes": 15418,
+    "sha256": "c4fccd0738174ee33528672e2ea8f6500146beb91d7cd4a858c70251a81f885c"
+  },
+  {
+    "source": "c4-recording-review-repro-v1.py",
+    "backup": "workspace-backup/20261015/loose-files/c4-recording-review-repro-v1.py",
+    "bytes": 1769,
+    "sha256": "3b69e4ec88f2bb4e12cb0a96f7c4bad901afae30693d872b9f7731ee7732ec5a"
+  },
+  {
+    "source": "c4-recording-review-repro-v2.py",
+    "backup": "workspace-backup/20261015/loose-files/c4-recording-review-repro-v2.py",
+    "bytes": 4082,
+    "sha256": "da1fc07ccd44fcc9fc91fcc90de1f10ceab8af36beaa52a720ea24fdaaf3c733"
+  },
+  {
+    "source": "c4-recording-review-v1.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-recording-review-v1.md",
+    "bytes": 14130,
+    "sha256": "6839450f3c1ffaae48dc7e95ac87b11ec783a03040336bc7f1aab503b7417c37"
+  },
+  {
+    "source": "c4-recording-review-v2.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-recording-review-v2.md",
+    "bytes": 14253,
+    "sha256": "9f4b5f38af52f2614337fb9208363db2be76aa23355a36a25aff463f74569f43"
+  },
+  {
+    "source": "c4-sacrificial-gpu-review-v2.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-sacrificial-gpu-review-v2.md",
+    "bytes": 19047,
+    "sha256": "f9fe8b28b0f207a3a74d8a9ff55f9ceec54d151b9d62c54cad4ab11a469a76a6"
+  },
+  {
+    "source": "c4-sacrificial-gpu-review-v3.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-sacrificial-gpu-review-v3.md",
+    "bytes": 19263,
+    "sha256": "ebcfb3cdf10b5e026fc56ca02b8dabbd7da7e74287238f12bf978ee3306ce3c5"
+  },
+  {
+    "source": "c4-sacrificial-gpu-review-v4.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-sacrificial-gpu-review-v4.md",
+    "bytes": 19057,
+    "sha256": "9274bed0d5a232d3b582a5a20afb3982d2b367fd28ab7503befadfb1b872ea24"
+  },
+  {
+    "source": "c4-sacrificial-gpu-review-v5-cpu-probe.py",
+    "backup": "workspace-backup/20261015/loose-files/c4-sacrificial-gpu-review-v5-cpu-probe.py",
+    "bytes": 4242,
+    "sha256": "34a7de70726e527fceecf2d6b9ce57de84e62012c4db6fdf960cb452bbca260a"
+  },
+  {
+    "source": "c4-sacrificial-gpu-review-v5-event-probe.py",
+    "backup": "workspace-backup/20261015/loose-files/c4-sacrificial-gpu-review-v5-event-probe.py",
+    "bytes": 2230,
+    "sha256": "efc704d6fb8e3e11aba5c9a82c479b489d2f71315fa185bd7356f09deb0deb98"
+  },
+  {
+    "source": "c4-sacrificial-gpu-review-v5.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-sacrificial-gpu-review-v5.md",
+    "bytes": 19422,
+    "sha256": "9dda6d5a9b193e7bc7745d6f738ad4b0c6e4abcc0547ec466d48d5f6de7f410c"
+  },
+  {
+    "source": "c4-sacrificial-gpu-review-v6-event-probe.py",
+    "backup": "workspace-backup/20261015/loose-files/c4-sacrificial-gpu-review-v6-event-probe.py",
+    "bytes": 6892,
+    "sha256": "f9cd070c1bae24a22a1f430903e505775a6c642dfbd76f94572c047f18c3449d"
+  },
+  {
+    "source": "c4-sacrificial-gpu-review-v6.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-sacrificial-gpu-review-v6.md",
+    "bytes": 20134,
+    "sha256": "b3b6bd25d8ed7aa7177fbbd9fd31deb41c2cc58a9c9a0fceaf38c6d66e54ca13"
+  },
+  {
+    "source": "c4-sacrificial-gpu-review-v7-event-probe.py",
+    "backup": "workspace-backup/20261015/loose-files/c4-sacrificial-gpu-review-v7-event-probe.py",
+    "bytes": 6859,
+    "sha256": "face20d85faf5635d43c354161b20ce323589f11b45b3ab48020ac2c41c8c0e1"
+  },
+  {
+    "source": "c4-sacrificial-gpu-review-v7.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-sacrificial-gpu-review-v7.md",
+    "bytes": 21916,
+    "sha256": "15ea2b8a299f3439224e020fbfadf2af62f463234d146589d3dfc76d4b17b0ed"
+  },
+  {
+    "source": "c4-sacrificial-gpu-review-v8-native.gdb",
+    "backup": "workspace-backup/20261015/loose-files/c4-sacrificial-gpu-review-v8-native.gdb",
+    "bytes": 865,
+    "sha256": "6e275b6390c704935e2aa786f4cdcb375fa7135d1e7199668fb1622730ec334e"
+  },
+  {
+    "source": "c4-sacrificial-gpu-review-v8-probe.py",
+    "backup": "workspace-backup/20261015/loose-files/c4-sacrificial-gpu-review-v8-probe.py",
+    "bytes": 7271,
+    "sha256": "5f3c34c921300314ec31c4b9444f57b6adb8c40ff4b4aefa9e03c0bdd3bde7a8"
+  },
+  {
+    "source": "c4-sacrificial-gpu-review-v8.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-sacrificial-gpu-review-v8.md",
+    "bytes": 22753,
+    "sha256": "c37f74782833e460a361dc7af801e6e2912a26eea42909c7cce58dcc0b40cf0b"
+  },
+  {
+    "source": "c4-supervision-review-v1-parent-loss.py",
+    "backup": "workspace-backup/20261015/loose-files/c4-supervision-review-v1-parent-loss.py",
+    "bytes": 1415,
+    "sha256": "e2dd622e05c93d251e0eed085ef2640c26f6a86949ef345fe977666829089b2a"
+  },
+  {
+    "source": "c4-supervision-review-v1-repro.py",
+    "backup": "workspace-backup/20261015/loose-files/c4-supervision-review-v1-repro.py",
+    "bytes": 1505,
+    "sha256": "8d8ccc9abbaccb9f857e924df736f676e6f33700eadce766588ea828b8ad7ed1"
+  },
+  {
+    "source": "c4-supervision-review-v1.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-supervision-review-v1.md",
+    "bytes": 12045,
+    "sha256": "d40441bfc5dfc7e65c5edc41b37171dbf76408481eb85106cb78d6b0210b291f"
+  },
+  {
+    "source": "c4-supervision-review-v2-invariants.py",
+    "backup": "workspace-backup/20261015/loose-files/c4-supervision-review-v2-invariants.py",
+    "bytes": 3425,
+    "sha256": "ec3221326d4d96af597faceace6bd3ee08c80444f5a94af23d71319226a8e8bb"
+  },
+  {
+    "source": "c4-supervision-review-v2.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-supervision-review-v2.md",
+    "bytes": 13382,
+    "sha256": "eafc9ddfa6f52796961bd685269b58ccebedbd3ff13147d01545328491f6b33b"
+  },
+  {
+    "source": "c4-supervision-review-v3.md",
+    "backup": "workspace-backup/20261015/loose-files/c4-supervision-review-v3.md",
+    "bytes": 11268,
+    "sha256": "67c2076686f58c2a6e55c58918811b92f22b260966e54ec1a4f1cb128a7c3863"
+  },
+  {
+    "source": "c4c1b2_storage_review_v1_report.md",
+    "backup": "workspace-backup/20261015/loose-files/c4c1b2_storage_review_v1_report.md",
+    "bytes": 9679,
+    "sha256": "8d936b3bf141f129a9150460ee0620b27bc61d92a2ca7cf4d51cbddf27aef07b"
+  },
+  {
+    "source": "c4c1b2_storage_review_v2_report.md",
+    "backup": "workspace-backup/20261015/loose-files/c4c1b2_storage_review_v2_report.md",
+    "bytes": 11407,
+    "sha256": "e2e3b40afe77fbbb97f33f08661c4bad7355675c2451a5ec3b4af666262a37de"
+  },
+  {
+    "source": "p12_4_a01_stage/.gitignore",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/.gitignore",
+    "bytes": 545,
+    "sha256": "64b6ee2eb4cf542db9a61c63787d588244c636330b0088cf14f41ac9f2dedf94"
+  },
+  {
+    "source": "p12_4_a01_stage/MANIFEST.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/MANIFEST.md",
+    "bytes": 22506,
+    "sha256": "e7c92071480c39ea97929809ffe6f10576181edf6defd0d49a0b9781936fd63a"
+  },
+  {
+    "source": "p12_4_a01_stage/PROGRESS.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/PROGRESS.md",
+    "bytes": 59539,
+    "sha256": "da6487fdf0de37a5086950055030cf1ae18a6062e9548669d01213720ceac878"
+  },
+  {
+    "source": "p12_4_a01_stage/REFLECTIONS.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/REFLECTIONS.md",
+    "bytes": 153729,
+    "sha256": "f84fc44d1e29bd0fc0304c9db841fc4151b35abac4e7609689113e25b51362ba"
+  },
+  {
+    "source": "p12_4_a01_stage/benchmarks/optical/cases.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/benchmarks/optical/cases.py",
+    "bytes": 8123,
+    "sha256": "9237c72fc3b94b7f8cac6c87f47857831c6e5176e0e020dfc9b50a0f17455a50"
+  },
+  {
+    "source": "p12_4_a01_stage/benchmarks/optical/schema.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/benchmarks/optical/schema.py",
+    "bytes": 40352,
+    "sha256": "d7b1c5670cd5e53a236f2a454c975f6e5677695c5cd793c9f3b44fc00d1102da"
+  },
+  {
+    "source": "p12_4_a01_stage/benchmarks/optical/__init__.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/benchmarks/optical/__init__.py",
+    "bytes": 1440,
+    "sha256": "d5d6654d17a7896e3202cd2e266ed77fb482dd95223ae875d9fff970f2db61a4"
+  },
+  {
+    "source": "p12_4_a01_stage/benchmarks/results/q54_p12_4/architecture_inventory.json",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/benchmarks/results/q54_p12_4/architecture_inventory.json",
+    "bytes": 5855,
+    "sha256": "969261990195c209982ca219f0a1d7a49344930b9da0e0c08ba62de40f33a80c"
+  },
+  {
+    "source": "p12_4_a01_stage/benchmarks/results/q54_p12_4/cleanup_ledger.json",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/benchmarks/results/q54_p12_4/cleanup_ledger.json",
+    "bytes": 6180,
+    "sha256": "cfb385f5cbf6e4dc94302f4b4ec6581c6d9ee1755e8c605660b25c5dabb71a6f"
+  },
+  {
+    "source": "p12_4_a01_stage/benchmarks/results/q54_p12_4/gate.json",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/benchmarks/results/q54_p12_4/gate.json",
+    "bytes": 34409,
+    "sha256": "f73b1bd544af780715ba4e317d17c3215c84a2fd46b561fe855db684605e75dc"
+  },
+  {
+    "source": "p12_4_a01_stage/collab/q54-optical-lab-p12-4-backend-parity-performance-gate__decision__owner__v2.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/collab/q54-optical-lab-p12-4-backend-parity-performance-gate__decision__owner__v2.md",
+    "bytes": 2440,
+    "sha256": "37ab9c294072ea771bf7c32fa7a83fe67fd50200662c2d76dc6d9e1e53561b28"
+  },
+  {
+    "source": "p12_4_a01_stage/collab/q54-optical-lab-p12-4a0-a1-benchmark-contract__implementation-note__codex__v1.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/collab/q54-optical-lab-p12-4a0-a1-benchmark-contract__implementation-note__codex__v1.md",
+    "bytes": 13519,
+    "sha256": "b3adb9209ad861e715b79c6f28178dca5443c5ee2d2f86de5cdc67430403ba17"
+  },
+  {
+    "source": "p12_4_a01_stage/optics/cuda_direct_light.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/optics/cuda_direct_light.py",
+    "bytes": 81234,
+    "sha256": "88e0f2bf6743335bcec0781f3e568a6785f84a5bad67c80bcb8b5c95020aafb9"
+  },
+  {
+    "source": "p12_4_a01_stage/optics/device.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/optics/device.py",
+    "bytes": 8427,
+    "sha256": "ae1e7681e65db9736f508dd222108f61cf63b667d71f14727a24ba4f148f099b"
+  },
+  {
+    "source": "p12_4_a01_stage/optics/execution.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/optics/execution.py",
+    "bytes": 33360,
+    "sha256": "bbffb92bbec1244b6177d7ccc978afaca892c5b4c0ba8b327793b9dae3350172"
+  },
+  {
+    "source": "p12_4_a01_stage/optics/output_contract.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/optics/output_contract.py",
+    "bytes": 6805,
+    "sha256": "37dcbbd179c9905893cc88da33e1f90037bc3d20caa5c4c52923dc23e1f78b65"
+  },
+  {
+    "source": "p12_4_a01_stage/optics/scene.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/optics/scene.py",
+    "bytes": 14041,
+    "sha256": "51e3da56bacacd72f48cb4dcc5841fe088623c4c054cc430c1ee4a64e421793d"
+  },
+  {
+    "source": "p12_4_a01_stage/optics/warp_execution.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/optics/warp_execution.py",
+    "bytes": 96279,
+    "sha256": "9e93e31be579f0fbcc2e8103339bbc0ab0c6b6b402980176fb6ae6cbdee2b3dd"
+  },
+  {
+    "source": "p12_4_a01_stage/optics/__init__.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/optics/__init__.py",
+    "bytes": 4741,
+    "sha256": "9c989c5c3e0f77e409797f1b9b5440d356235703f9b8852160c6e055d91af8f7"
+  },
+  {
+    "source": "p12_4_a01_stage/tests/unit/benchmarks/test_optical_benchmark_contracts.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/tests/unit/benchmarks/test_optical_benchmark_contracts.py",
+    "bytes": 16683,
+    "sha256": "b4d5c7af491361a7648afba6d69e52b6868b9ad09cb38dfb73f0a247f695a076"
+  },
+  {
+    "source": "p12_4_a01_stage/tests/unit/benchmarks/__init__.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/tests/unit/benchmarks/__init__.py",
+    "bytes": 55,
+    "sha256": "a5a6418f962d754a846439b0ab7e0d47898c7d19f09ddaa8faa09ebcf1043f75"
+  },
+  {
+    "source": "p12_4_a01_stage/tests/unit/optics/test_device_optical.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/tests/unit/optics/test_device_optical.py",
+    "bytes": 10490,
+    "sha256": "96ed0e5b007140e76fdfa44335da8f03e5cd7c3f79706ce654fa7ac99f4b610e"
+  },
+  {
+    "source": "p12_4_a01_stage/tests/unit/optics/test_direct_light_executor.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/tests/unit/optics/test_direct_light_executor.py",
+    "bytes": 14399,
+    "sha256": "0f167f5b89ac8b0bd152ff0800275b74b4bbef87b81589952d6ca80fd7f0a26e"
+  },
+  {
+    "source": "p12_4_a01_stage/tests/unit/optics/test_optical_pipeline_lab.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/tests/unit/optics/test_optical_pipeline_lab.py",
+    "bytes": 251369,
+    "sha256": "17829dfffa91e6a0eb38dc80d2768dfd6d469dd4f4e3093c5f7100e3868ba561"
+  },
+  {
+    "source": "p12_4_a01_stage/tools/optical_pipeline_lab/delivery.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/tools/optical_pipeline_lab/delivery.py",
+    "bytes": 28476,
+    "sha256": "5ac76dede0a22717d54bdbbac1826f22f76d2de640d10d6c860c976fbaaecc3b"
+  },
+  {
+    "source": "p12_4_a01_stage/tools/optical_pipeline_lab/timing.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a01_stage/tools/optical_pipeline_lab/timing.py",
+    "bytes": 7227,
+    "sha256": "438e9b58af6b943e09a93d61b046922100fcf50a9b3dbe448fa4b5af3bf7827d"
+  },
+  {
+    "source": "p12_4_a2_stage/MANIFEST.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a2_stage/MANIFEST.md",
+    "bytes": 23047,
+    "sha256": "5ecef9c60ac9aa6f904cafdb657c2b198e384016b52b0147e38ca86b4e9c46f7"
+  },
+  {
+    "source": "p12_4_a2_stage/PROGRESS.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a2_stage/PROGRESS.md",
+    "bytes": 59977,
+    "sha256": "bca8fb7969d44ec5e1c88896e61d83020c804ef7ccd1ab587ae2e05043441104"
+  },
+  {
+    "source": "p12_4_a2_stage/REFLECTIONS.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a2_stage/REFLECTIONS.md",
+    "bytes": 156392,
+    "sha256": "ae5047a4a66497909dd5083cda03c7ec5b51f65414587a4f398424f13cd57cc7"
+  },
+  {
+    "source": "p12_4_a2_stage/benchmarks/optical/artifacts.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a2_stage/benchmarks/optical/artifacts.py",
+    "bytes": 4713,
+    "sha256": "506d56be4b02cef13eaa939ecc42f456479403b7f4d99175c590b240eafcef37"
+  },
+  {
+    "source": "p12_4_a2_stage/benchmarks/optical/cases.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a2_stage/benchmarks/optical/cases.py",
+    "bytes": 8123,
+    "sha256": "9237c72fc3b94b7f8cac6c87f47857831c6e5176e0e020dfc9b50a0f17455a50"
+  },
+  {
+    "source": "p12_4_a2_stage/benchmarks/optical/native.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a2_stage/benchmarks/optical/native.py",
+    "bytes": 19833,
+    "sha256": "8591d18cdc3a7b0b7209997095e7200ad3a057eee32f376034c4d9edaad5e7ce"
+  },
+  {
+    "source": "p12_4_a2_stage/benchmarks/optical/runner.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a2_stage/benchmarks/optical/runner.py",
+    "bytes": 10061,
+    "sha256": "c7512e2f726883ec277b8f40e3fe95124ed2006b94fb496a088f24fbfee01528"
+  },
+  {
+    "source": "p12_4_a2_stage/benchmarks/optical/schema.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a2_stage/benchmarks/optical/schema.py",
+    "bytes": 44632,
+    "sha256": "62cc1bd1cd9817f196d99ae54282911093b809f7dacae15ff2d93005456717fd"
+  },
+  {
+    "source": "p12_4_a2_stage/benchmarks/optical/timing.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a2_stage/benchmarks/optical/timing.py",
+    "bytes": 3335,
+    "sha256": "a7ea3450a627155535b6aa5dd3722de605012c34e3bd0761b9525cfcc85e6a81"
+  },
+  {
+    "source": "p12_4_a2_stage/benchmarks/optical/__init__.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a2_stage/benchmarks/optical/__init__.py",
+    "bytes": 2802,
+    "sha256": "3fc29016ae02bb73af4de8dca762ae88ccbfc7254c8543b12ac4f74f3f9211d0"
+  },
+  {
+    "source": "p12_4_a2_stage/benchmarks/results/q54_p12_4/architecture_inventory.json",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a2_stage/benchmarks/results/q54_p12_4/architecture_inventory.json",
+    "bytes": 5855,
+    "sha256": "969261990195c209982ca219f0a1d7a49344930b9da0e0c08ba62de40f33a80c"
+  },
+  {
+    "source": "p12_4_a2_stage/benchmarks/results/q54_p12_4/cleanup_ledger.json",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a2_stage/benchmarks/results/q54_p12_4/cleanup_ledger.json",
+    "bytes": 6462,
+    "sha256": "a30fa79d6a0db31fe07d15310b3431dc1c23b38fd3841f4ce8b5ca0a7704f0d0"
+  },
+  {
+    "source": "p12_4_a2_stage/benchmarks/results/q54_p12_4/gate.json",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a2_stage/benchmarks/results/q54_p12_4/gate.json",
+    "bytes": 35464,
+    "sha256": "8bba2595909e2cd356af48e46c798d40a1cae3c357ad2e3a7ff69f2c0759493f"
+  },
+  {
+    "source": "p12_4_a2_stage/collab/q54-optical-lab-p12-4a2-durable-benchmark-core__implementation-note__codex__v1.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a2_stage/collab/q54-optical-lab-p12-4a2-durable-benchmark-core__implementation-note__codex__v1.md",
+    "bytes": 5450,
+    "sha256": "8c6bbefbd260f5d49a941dfc0939424c42f07c6b02c93dc047c95255874d8233"
+  },
+  {
+    "source": "p12_4_a2_stage/tests/gpu/test_optical_benchmark_native.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a2_stage/tests/gpu/test_optical_benchmark_native.py",
+    "bytes": 4367,
+    "sha256": "0648536b2fd65fec4790e91e993a7462def0b23d61a6d2ef02abaa0856b3c7b3"
+  },
+  {
+    "source": "p12_4_a2_stage/tests/unit/benchmarks/test_optical_benchmark_contracts.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a2_stage/tests/unit/benchmarks/test_optical_benchmark_contracts.py",
+    "bytes": 18213,
+    "sha256": "2b0d008c0a3cb44f295a574f7d35b3cdb1d01ab32b6486fbfe36bc9fd121c974"
+  },
+  {
+    "source": "p12_4_a2_stage/tests/unit/benchmarks/test_optical_benchmark_core.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a2_stage/tests/unit/benchmarks/test_optical_benchmark_core.py",
+    "bytes": 14470,
+    "sha256": "afba51115580313688c7522161d6202a85d6d32da6485d6a18465bcb38379b82"
+  },
+  {
+    "source": "p12_4_a3_impl/collab/q54-optical-lab-p12-4a3a-eligibility-instrumentation__implementation-note__codex__v1.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/collab/q54-optical-lab-p12-4a3a-eligibility-instrumentation__implementation-note__codex__v1.md",
+    "bytes": 8840,
+    "sha256": "cd0a0e644369c396bf0e1dcfecd920a0d3cc6918b734b1859690496dbe752440"
+  },
+  {
+    "source": "p12_4_a3_impl/optical/artifacts.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/optical/artifacts.py",
+    "bytes": 4713,
+    "sha256": "506d56be4b02cef13eaa939ecc42f456479403b7f4d99175c590b240eafcef37"
+  },
+  {
+    "source": "p12_4_a3_impl/optical/assets.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/optical/assets.py",
+    "bytes": 11438,
+    "sha256": "cc40777cb353901b457a90ceff0ffedc799122d8c51028707d99382c9d51ca22"
+  },
+  {
+    "source": "p12_4_a3_impl/optical/cases.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/optical/cases.py",
+    "bytes": 8123,
+    "sha256": "9237c72fc3b94b7f8cac6c87f47857831c6e5176e0e020dfc9b50a0f17455a50"
+  },
+  {
+    "source": "p12_4_a3_impl/optical/eligibility.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/optical/eligibility.py",
+    "bytes": 16147,
+    "sha256": "fe174129413e568788f11ee514daf2bd9fee722d8cf9eef20972121aaf39cee4"
+  },
+  {
+    "source": "p12_4_a3_impl/optical/native.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/optical/native.py",
+    "bytes": 19833,
+    "sha256": "8591d18cdc3a7b0b7209997095e7200ad3a057eee32f376034c4d9edaad5e7ce"
+  },
+  {
+    "source": "p12_4_a3_impl/optical/receipts.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/optical/receipts.py",
+    "bytes": 8766,
+    "sha256": "7712deb37c34194647c60f618a614f1bbd67d84b23758287651204ccc3030a1a"
+  },
+  {
+    "source": "p12_4_a3_impl/optical/runner.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/optical/runner.py",
+    "bytes": 14641,
+    "sha256": "5d13fdeeeeed9a172d8edcebdfe46d99b961353c4d1e344834e55c7625765d4b"
+  },
+  {
+    "source": "p12_4_a3_impl/optical/schema.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/optical/schema.py",
+    "bytes": 65163,
+    "sha256": "979c7c548e3dc296eb9812208f34a7ee00a26bc1e99f9ee41fa0df93c7d9c97d"
+  },
+  {
+    "source": "p12_4_a3_impl/optical/timing.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/optical/timing.py",
+    "bytes": 12782,
+    "sha256": "c95c8b14186faeab564e54995edb62c6cf2cdee3491db6404bfcd49e5cb113c9"
+  },
+  {
+    "source": "p12_4_a3_impl/optical/__init__.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/optical/__init__.py",
+    "bytes": 4657,
+    "sha256": "28805a46016dbb6090ac9a25befa8c62c7f6e5e8401ada1d2b8cd306201e4cad"
+  },
+  {
+    "source": "p12_4_a3_impl/optical/lanes/audit.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/optical/lanes/audit.py",
+    "bytes": 5852,
+    "sha256": "68db3813b6cf57c9d2b641cd67b4bd65396977e76c80daf4d420e7cff9e1dccb"
+  },
+  {
+    "source": "p12_4_a3_impl/optical/lanes/cuda.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/optical/lanes/cuda.py",
+    "bytes": 1492,
+    "sha256": "601b3dfcd054f1e0cba2cb788bbcacc5ece094c75f34584eaf9b83e83f3270d4"
+  },
+  {
+    "source": "p12_4_a3_impl/optical/lanes/warp.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/optical/lanes/warp.py",
+    "bytes": 1491,
+    "sha256": "8cad9426e70ba275aab405711370934cefbf85bcc7d8d4d9c7ef013fcc62f4ea"
+  },
+  {
+    "source": "p12_4_a3_impl/optical/lanes/__init__.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/optical/lanes/__init__.py",
+    "bytes": 212,
+    "sha256": "0ed9d9498906339dd87c8bc85f9c21548f13e8ea57d3bc72bff253a2deba9d3c"
+  },
+  {
+    "source": "p12_4_a3_impl/results/architecture_inventory.json",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/results/architecture_inventory.json",
+    "bytes": 5855,
+    "sha256": "969261990195c209982ca219f0a1d7a49344930b9da0e0c08ba62de40f33a80c"
+  },
+  {
+    "source": "p12_4_a3_impl/results/cleanup_ledger.json",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/results/cleanup_ledger.json",
+    "bytes": 8683,
+    "sha256": "80e90184a688b5f52f466ba8d785e596bff5dee8a8e6261cc61668d571f4d304"
+  },
+  {
+    "source": "p12_4_a3_impl/results/gate.json",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/results/gate.json",
+    "bytes": 44261,
+    "sha256": "9113cdc471ced85b214046a54e6b0d27dec40d056877f53b6fc402f285a796de"
+  },
+  {
+    "source": "p12_4_a3_impl/tests/gpu/test_optical_benchmark_native.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/tests/gpu/test_optical_benchmark_native.py",
+    "bytes": 4367,
+    "sha256": "0648536b2fd65fec4790e91e993a7462def0b23d61a6d2ef02abaa0856b3c7b3"
+  },
+  {
+    "source": "p12_4_a3_impl/tests/unit/benchmarks/test_optical_benchmark_a3a.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/tests/unit/benchmarks/test_optical_benchmark_a3a.py",
+    "bytes": 17079,
+    "sha256": "541c6f844a9449a27f9995f0d33c3cb603832d55ecfcf55ee03d0b53001227ac"
+  },
+  {
+    "source": "p12_4_a3_impl/tests/unit/benchmarks/test_optical_benchmark_contracts.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/tests/unit/benchmarks/test_optical_benchmark_contracts.py",
+    "bytes": 27164,
+    "sha256": "b7c9c49293783b0666d37deff243a3b2d4123dda13c231eb5cf4a21bc1620b40"
+  },
+  {
+    "source": "p12_4_a3_impl/tests/unit/benchmarks/test_optical_benchmark_core.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_impl/tests/unit/benchmarks/test_optical_benchmark_core.py",
+    "bytes": 19189,
+    "sha256": "e23be5626963a273057e63ced95cc6a62c21cf55ec19ef53fc171ecc4ced5f0e"
+  },
+  {
+    "source": "p12_4_a3_p1/check_attrs.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_p1/check_attrs.py",
+    "bytes": 960,
+    "sha256": "62e79b5e23193b0b3ca8a3147660c80c4c50f5b7bae26fad34d86628c7a900d0"
+  },
+  {
+    "source": "p12_4_a3_p1/benchmarks/optical/eligibility.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_p1/benchmarks/optical/eligibility.py",
+    "bytes": 20940,
+    "sha256": "9f33185342bc9ec3455c391c59b06e7d9f5c9e7d15fded21bc80e0ad5d7223b7"
+  },
+  {
+    "source": "p12_4_a3_p1/benchmarks/optical/instrumentation.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_p1/benchmarks/optical/instrumentation.py",
+    "bytes": 17269,
+    "sha256": "d4fcd3c1dfceef9818c57168eb9e5f40f25c7a65b053a23f03d7259fe3f78e1a"
+  },
+  {
+    "source": "p12_4_a3_p1/benchmarks/optical/runner.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_p1/benchmarks/optical/runner.py",
+    "bytes": 14808,
+    "sha256": "7670f12e8f6f92a69f7dc42a3522c0e35ec3f66ba0d36fb336e45f98cd285014"
+  },
+  {
+    "source": "p12_4_a3_p1/benchmarks/optical/schema.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_p1/benchmarks/optical/schema.py",
+    "bytes": 65644,
+    "sha256": "7bf79f6eb89563438fc56027b12a4b9b85924899a298a1eca1012a1db3e7041a"
+  },
+  {
+    "source": "p12_4_a3_p1/benchmarks/optical/timing.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_p1/benchmarks/optical/timing.py",
+    "bytes": 16222,
+    "sha256": "0c30febe976357cdc7903eddafd1d035f667fd3e1d07987548fab3926cbb9c52"
+  },
+  {
+    "source": "p12_4_a3_p1/benchmarks/optical/__init__.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_p1/benchmarks/optical/__init__.py",
+    "bytes": 5122,
+    "sha256": "fa2643cfd22340e34d8d1fa9698a1d8dac09bc71774bd0837e9e58a308525010"
+  },
+  {
+    "source": "p12_4_a3_p1/benchmarks/optical/lanes/audit.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_p1/benchmarks/optical/lanes/audit.py",
+    "bytes": 6675,
+    "sha256": "a87a6f15dceda0a3e409dacc3d48587efe9ef6a31d73f442745e3c97d6f18992"
+  },
+  {
+    "source": "p12_4_a3_p1/benchmarks/optical/lanes/cuda.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_p1/benchmarks/optical/lanes/cuda.py",
+    "bytes": 1469,
+    "sha256": "4402f3077024c8a191376fc120d2ee42bb5d123f5b4b901aaaec437d5eb7a16c"
+  },
+  {
+    "source": "p12_4_a3_p1/benchmarks/optical/lanes/warp.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_p1/benchmarks/optical/lanes/warp.py",
+    "bytes": 1468,
+    "sha256": "345479ffbfcf0cb224b0f572aeb48fb8b28ca08660f9f6576348d3e1fbf8db4e"
+  },
+  {
+    "source": "p12_4_a3_p1/benchmarks/results/q54_p12_4/cleanup_ledger.json",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_p1/benchmarks/results/q54_p12_4/cleanup_ledger.json",
+    "bytes": 8736,
+    "sha256": "36a3541729440ecd30c31b82fd578f2c13eec45e3f90fd35bb18751d938868de"
+  },
+  {
+    "source": "p12_4_a3_p1/benchmarks/results/q54_p12_4/gate.json",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_p1/benchmarks/results/q54_p12_4/gate.json",
+    "bytes": 44696,
+    "sha256": "a7d478579c23ec26960ada8b33277071be2e5631fa4eef74ffc64974502aa76a"
+  },
+  {
+    "source": "p12_4_a3_p1/collab/q54-optical-lab-p12-4a3a-eligibility-instrumentation__implementation-note__codex__v1.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_p1/collab/q54-optical-lab-p12-4a3a-eligibility-instrumentation__implementation-note__codex__v1.md",
+    "bytes": 10952,
+    "sha256": "fbdbc362550566ebc70c90792fcf45e29263f02b9e2e73057b5ca2fb24a336ba"
+  },
+  {
+    "source": "p12_4_a3_p1/tests/gpu/test_optical_gpu_runtime.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_p1/tests/gpu/test_optical_gpu_runtime.py",
+    "bytes": 133290,
+    "sha256": "df866a2b36db0832de716be9341f883d5f1df104f21bda47e6ed3aa134082eec"
+  },
+  {
+    "source": "p12_4_a3_p1/tests/unit/benchmarks/test_optical_benchmark_a3a.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_p1/tests/unit/benchmarks/test_optical_benchmark_a3a.py",
+    "bytes": 21794,
+    "sha256": "eb5e0d2567bc3865a23e6df6ce8382125493f752554c7829c5dce916747cf66c"
+  },
+  {
+    "source": "p12_4_a3_p1/tests/unit/benchmarks/test_optical_benchmark_contracts.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_p1/tests/unit/benchmarks/test_optical_benchmark_contracts.py",
+    "bytes": 27789,
+    "sha256": "ab34c06541519ef764baef595586bc6b66769d68ff64409a56948e4fe6c00948"
+  },
+  {
+    "source": "p12_4_a3_p1/tests/unit/benchmarks/test_optical_benchmark_core.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_p1/tests/unit/benchmarks/test_optical_benchmark_core.py",
+    "bytes": 19978,
+    "sha256": "27171382d80d48db60fee871fc4ded6ff5764855ff4054545efd867328cab836"
+  },
+  {
+    "source": "p12_4_a3_plan/collab/q54-optical-lab-p12-4a3-native-lane-dependency-order__proposal__codex__v1.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_plan/collab/q54-optical-lab-p12-4a3-native-lane-dependency-order__proposal__codex__v1.md",
+    "bytes": 11533,
+    "sha256": "05eae3b1e01fbfbd6f5ced5413c786c559d39a7acc043cf628c86c9491f8c0c8"
+  },
+  {
+    "source": "p12_4_a3_plan/collab/q54-optical-lab-p12-4a3-native-lane-dependency-order__proposal__codex__v3.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_a3_plan/collab/q54-optical-lab-p12-4a3-native-lane-dependency-order__proposal__codex__v3.md",
+    "bytes": 25283,
+    "sha256": "8586f9e0a7fa1ea683bde94cf079a7614eaf062c73e269ef88a51956807804ba"
+  },
+  {
+    "source": "p12_4_c0_impl/benchmarks/optical/lanes/audit.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c0_impl/benchmarks/optical/lanes/audit.py",
+    "bytes": 6912,
+    "sha256": "49482074dcc100c9eebb665dfe4c6ddc728a334ab2ceae889830dc198a92cca1"
+  },
+  {
+    "source": "p12_4_c0_impl/benchmarks/results/q54_p12_4/cleanup_ledger.json",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c0_impl/benchmarks/results/q54_p12_4/cleanup_ledger.json",
+    "bytes": 9857,
+    "sha256": "9e6d7b5ae2bf1ec490e0997386fc225fad4a25509477827f6a1ca1d724c3339a"
+  },
+  {
+    "source": "p12_4_c0_impl/collab/q54-optical-lab-p12-4c0b-cuda-publication-binding__implementation-note__codex__v1.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c0_impl/collab/q54-optical-lab-p12-4c0b-cuda-publication-binding__implementation-note__codex__v1.md",
+    "bytes": 9345,
+    "sha256": "7114811f1b1080ddbb46486985db493a35a5eb78bf6eb189c4c1d3551780d6e2"
+  },
+  {
+    "source": "p12_4_c0_impl/collab/q54-optical-lab-p12-4c2-native-execution-timeline__design-request__codex__v2.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c0_impl/collab/q54-optical-lab-p12-4c2-native-execution-timeline__design-request__codex__v2.md",
+    "bytes": 30411,
+    "sha256": "a25a3781f34076c0ae7808ca81ff936a001c1fffbfcd7255e45bf7f650c8b0f9"
+  },
+  {
+    "source": "p12_4_c0_impl/collab/q54-optical-lab-p12-4c2-native-execution-timeline__implementation-note__codex__v1.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c0_impl/collab/q54-optical-lab-p12-4c2-native-execution-timeline__implementation-note__codex__v1.md",
+    "bytes": 10056,
+    "sha256": "cf1abdc458a4797b733fb2049463f27974a9ad28427b3a78b4d82b820063d383"
+  },
+  {
+    "source": "p12_4_c0_impl/optics/cuda_direct_light.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c0_impl/optics/cuda_direct_light.py",
+    "bytes": 133159,
+    "sha256": "46e6031ac42f908f6927e9aad33453dd668210ad5356a234255b9e48e38576fc"
+  },
+  {
+    "source": "p12_4_c0_impl/optics/cuda_timeline.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c0_impl/optics/cuda_timeline.py",
+    "bytes": 13742,
+    "sha256": "9e0f7ee57cebf00e9fc1c153d67158e3c9ac275889ea0d51a8686d11fc83dad6"
+  },
+  {
+    "source": "p12_4_c0_impl/optics/__init__.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c0_impl/optics/__init__.py",
+    "bytes": 5648,
+    "sha256": "18746e507aa74fd14fa339e0b9184c75588aa5e23b1dc9a7db0caaa2c0c74dc4"
+  },
+  {
+    "source": "p12_4_c0_impl/physics/cuda_publication.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c0_impl/physics/cuda_publication.py",
+    "bytes": 47180,
+    "sha256": "6779fe403999c25afadcb49256a02c23b2e091cf2844bee2872e8b896ac5a5ee"
+  },
+  {
+    "source": "p12_4_c0_impl/physics/gpu_engine.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c0_impl/physics/gpu_engine.py",
+    "bytes": 74819,
+    "sha256": "aa89f326fe2aceb208cdf1ad8f23a5471a582d91e3fba447d59fe172e03174a0"
+  },
+  {
+    "source": "p12_4_c0_impl/physics/publish.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c0_impl/physics/publish.py",
+    "bytes": 39360,
+    "sha256": "6690237bec2050b1585e3dcadc6c16886e523a0f60645d05e71d02101af62455"
+  },
+  {
+    "source": "p12_4_c0_impl/physics/__init__.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c0_impl/physics/__init__.py",
+    "bytes": 5014,
+    "sha256": "754543b7106e724a161e9331682b88f3944058aca092b7fcbb061f0f648afb37"
+  },
+  {
+    "source": "p12_4_c0_impl/tests/gpu/test_cuda_optical_timeline.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c0_impl/tests/gpu/test_cuda_optical_timeline.py",
+    "bytes": 18116,
+    "sha256": "6dd4d252351baddb59b9ab73e504b82f22e58dfa81223ed8df4baab46aa62135"
+  },
+  {
+    "source": "p12_4_c0_impl/tests/gpu/test_cuda_publication_binding.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c0_impl/tests/gpu/test_cuda_publication_binding.py",
+    "bytes": 23297,
+    "sha256": "44191356d9f4035c1bd6314e3a8974944ccc561656b28a31a82b77880c619c14"
+  },
+  {
+    "source": "p12_4_c0_impl/tests/gpu/test_gpu_engine_api.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c0_impl/tests/gpu/test_gpu_engine_api.py",
+    "bytes": 22944,
+    "sha256": "172fb02f4d3e16bd84ce4990fca2eef84826994bb742339ece6a592135d551f4"
+  },
+  {
+    "source": "p12_4_c0_impl/tests/gpu/test_optical_gpu_runtime.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c0_impl/tests/gpu/test_optical_gpu_runtime.py",
+    "bytes": 136409,
+    "sha256": "0a959724a4e64a26c340aadeb7ed21cab4623dc9abc7252c4be232854b8cd4df"
+  },
+  {
+    "source": "p12_4_c0_impl/tests/unit/test_optical_benchmark_a3a.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c0_impl/tests/unit/test_optical_benchmark_a3a.py",
+    "bytes": 21794,
+    "sha256": "eb5e0d2567bc3865a23e6df6ce8382125493f752554c7829c5dce916747cf66c"
+  },
+  {
+    "source": "p12_4_c0_impl/tests/unit/optics/test_cuda_timeline.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c0_impl/tests/unit/optics/test_cuda_timeline.py",
+    "bytes": 2425,
+    "sha256": "05f966ec996a1900e87498d2d7f1d1b08a1decbdaa3c418522bde5b0df058d63"
+  },
+  {
+    "source": "p12_4_c0_impl/tests/unit/physics/test_cuda_publication.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c0_impl/tests/unit/physics/test_cuda_publication.py",
+    "bytes": 20949,
+    "sha256": "60b8feb83a286207574a8a8582fd61667516200e5ff9dfb2e16f569618c3aace"
+  },
+  {
+    "source": "p12_4_c0_impl/tests/unit/physics/test_publish.py",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c0_impl/tests/unit/physics/test_publish.py",
+    "bytes": 25600,
+    "sha256": "4b6c7dec8fedd49e4330b4ce6796b6a64dc66867698c2bc00205ba1935afefaa"
+  },
+  {
+    "source": "p12_4_c0_stage/collab/q54-optical-lab-p12-4c0a-cuda-publication-binding__design-request__codex__v1.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c0_stage/collab/q54-optical-lab-p12-4c0a-cuda-publication-binding__design-request__codex__v1.md",
+    "bytes": 31301,
+    "sha256": "eb61b9241d8f00e96927a4b80a14ecfe738ff03a9b02a24e2e7b665e481e5b4f"
+  },
+  {
+    "source": "p12_4_c3_stage/collab/q54-optical-lab-p12-4c3-native-scene-acceleration__design-request__codex__v4.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c3_stage/collab/q54-optical-lab-p12-4c3-native-scene-acceleration__design-request__codex__v4.md",
+    "bytes": 62655,
+    "sha256": "22efcd7897634ace50f9699b7a2b05791046b60dca80e88a478d572f7d21508f"
+  },
+  {
+    "source": "p12_4_c4c_design/PROGRESS.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c4c_design/PROGRESS.md",
+    "bytes": 61268,
+    "sha256": "8b8af8e84cbd7b1cee25c1d184c534d69beccc243f8651ff6736fb13b916b557"
+  },
+  {
+    "source": "p12_4_c4c_design/REFLECTIONS.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c4c_design/REFLECTIONS.md",
+    "bytes": 165497,
+    "sha256": "481e5c5a17b409c715e7754dfa615168f23d6e791614b993d3307058f914233a"
+  },
+  {
+    "source": "p12_4_c4c_design/collab/q54-optical-lab-p12-4c4c-warp-native-render-arena__design-request__codex__v1.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c4c_design/collab/q54-optical-lab-p12-4c4c-warp-native-render-arena__design-request__codex__v1.md",
+    "bytes": 32097,
+    "sha256": "490e6694a3e821ea9083dcdaa9201e8ca98ac2ee4f740d39f8a0e440ccb574d2"
+  },
+  {
+    "source": "p12_4_c4c_v2/PROGRESS.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c4c_v2/PROGRESS.md",
+    "bytes": 62377,
+    "sha256": "6ff7da0f69e965f56359523876b6930d082b44246bb3ff78aed532432d075585"
+  },
+  {
+    "source": "p12_4_c4c_v2/REFLECTIONS.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c4c_v2/REFLECTIONS.md",
+    "bytes": 172555,
+    "sha256": "35e3f3c3b9f07f5decb86c6502765fbf28ba7b61d4c9474956e57e5551d9c7ac"
+  },
+  {
+    "source": "p12_4_c4c_v2/collab/q54-optical-lab-p12-4c4c-warp-native-render-arena__design-request__codex__v7.md",
+    "backup": "workspace-backup/20261015/loose-directories/p12_4_c4c_v2/collab/q54-optical-lab-p12-4c4c-warp-native-render-arena__design-request__codex__v7.md",
+    "bytes": 94482,
+    "sha256": "1ea8ccaa138c3b02e616a8a8a9f4ac7f5d6c0f17066a313ebbbc4a9c8f572fb9"
+  },
+  {
+    "source": "physics_baseline_probe_preserved.py",
+    "backup": "workspace-backup/20261015/loose-files/physics_baseline_probe_preserved.py",
+    "bytes": 2633,
+    "sha256": "7206dc6464126dac564fe17d99fa015a3b3e950f639b42d1d12b5daf44807480"
+  },
+  {
+    "source": "physics_code_review_v1.md",
+    "backup": "workspace-backup/20261015/loose-files/physics_code_review_v1.md",
+    "bytes": 18112,
+    "sha256": "2d56286d9144882e672fa944a5cde0606fd6292a2014faea8084511ce58b0789"
+  },
+  {
+    "source": "physics_correctness_evidence/admm_convergence_mass_scale.png",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/admm_convergence_mass_scale.png",
+    "bytes": 108641,
+    "sha256": "2ecd52ffb8f783cbdd172c1d394351380d5a7488511f03fa1820032612a96a54"
+  },
+  {
+    "source": "physics_correctness_evidence/admm_gpu_iteration_probe.log",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/admm_gpu_iteration_probe.log",
+    "bytes": 2625,
+    "sha256": "3a104f9ea82aedc61f9e8f26f39436c7e68b97c872136141b4dd93ae3d80f423"
+  },
+  {
+    "source": "physics_correctness_evidence/admm_gpu_iteration_probe.py",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/admm_gpu_iteration_probe.py",
+    "bytes": 1438,
+    "sha256": "d661646dc8a1e6bb0349346403fd4a470be8acb7d2897034cf92426eb23c041f"
+  },
+  {
+    "source": "physics_correctness_evidence/admm_method_probe.json",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/admm_method_probe.json",
+    "bytes": 4388,
+    "sha256": "b6dae8d2aa447360037731a3f8fcb99332b633e20dbd865e5f0c16862f319823"
+  },
+  {
+    "source": "physics_correctness_evidence/admm_method_probe.py",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/admm_method_probe.py",
+    "bytes": 5010,
+    "sha256": "bdb1f7537a87a823b5cdecf51d5c7bdff8de56f4339246be29bb92791a638698"
+  },
+  {
+    "source": "physics_correctness_evidence/admm_regularization_gpu_recheck.log",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/admm_regularization_gpu_recheck.log",
+    "bytes": 1934,
+    "sha256": "1527127c17c3cdaa111dba1ae233e5a26c0b1f0178c108c140401325775fb58c"
+  },
+  {
+    "source": "physics_correctness_evidence/admm_regularization_recheck.json",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/admm_regularization_recheck.json",
+    "bytes": 21054,
+    "sha256": "b75f8116b97a405ff9ef7aca9fb439291c4823448a9c6dcc18dfd445acf3073a"
+  },
+  {
+    "source": "physics_correctness_evidence/admm_regularization_recheck.py",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/admm_regularization_recheck.py",
+    "bytes": 3243,
+    "sha256": "e4328a8ad9685adaba7cb615bdeb8ec163a46a25921371fe5059763dec156b18"
+  },
+  {
+    "source": "physics_correctness_evidence/physics_baseline_tests.log",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/physics_baseline_tests.log",
+    "bytes": 1053,
+    "sha256": "dae3da1ea68344e7bcf143d7e3421e177579ec4a6a2b3341ae6c033bdc292ec2"
+  },
+  {
+    "source": "physics_correctness_evidence/physics_corrected_reference_interpretation.json",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/physics_corrected_reference_interpretation.json",
+    "bytes": 1480,
+    "sha256": "b111a8a32019ee3da428592b66547a52cb47f13849e7b0b7e80b774a80003672"
+  },
+  {
+    "source": "physics_correctness_evidence/physics_extra_baseline.jsonl",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/physics_extra_baseline.jsonl",
+    "bytes": 1369,
+    "sha256": "ba7954e6e354ea136f4401c5f7331c0551c67457a744ff67c0ea94ece422d066"
+  },
+  {
+    "source": "physics_correctness_evidence/physics_final_candidate_tests.log",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/physics_final_candidate_tests.log",
+    "bytes": 512,
+    "sha256": "0d766e0ee3464382d1ba4e428aa9785cb0490b9df6dde673c65bb147f2f51a46"
+  },
+  {
+    "source": "physics_correctness_evidence/physics_gpu_baseline.log",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/physics_gpu_baseline.log",
+    "bytes": 111,
+    "sha256": "629dab5f71c1786aad43de93020750ab87b64a2cf8bdbf9f0f47661d5a2ec7c6"
+  },
+  {
+    "source": "physics_correctness_evidence/physics_gpu_settling_baseline.log",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/physics_gpu_settling_baseline.log",
+    "bytes": 114,
+    "sha256": "c6bed4abe5a29805b8d0d400071f8cc1555feddb2d4e2b55646a8b38ab4cc907"
+  },
+  {
+    "source": "physics_correctness_evidence/physics_inertia_before.log",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/physics_inertia_before.log",
+    "bytes": 16978,
+    "sha256": "2b372b645218a6fc555dcc1d0f6083846eb90fa915f116106d019a5926253769"
+  },
+  {
+    "source": "physics_correctness_evidence/physics_probe_baseline.jsonl",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/physics_probe_baseline.jsonl",
+    "bytes": 2041,
+    "sha256": "7bf205350df90f1265aeb0255c1e8034c559cc6cb44671a2bef120e0563500ce"
+  },
+  {
+    "source": "physics_correctness_evidence/physics_reference_baseline.log",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/physics_reference_baseline.log",
+    "bytes": 111,
+    "sha256": "7ca0648a38d686291845009c954a4c29759b8b9386841c1d0f3216ab2396917f"
+  },
+  {
+    "source": "physics_correctness_evidence/physics_solver_contracts.log",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/physics_solver_contracts.log",
+    "bytes": 1934,
+    "sha256": "109e46b8d2f7a223d22a3a794bf838433b4d789ad4b8d4b5b06b8be55a9b2e14"
+  },
+  {
+    "source": "physics_correctness_evidence/plot_admm_convergence.py",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/plot_admm_convergence.py",
+    "bytes": 1449,
+    "sha256": "e8326a5b0f630e0057a7e05017911b7268033baa25a79e12a17bf229510abd59"
+  },
+  {
+    "source": "physics_correctness_evidence/reinterpret_v2_references.py",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/reinterpret_v2_references.py",
+    "bytes": 1293,
+    "sha256": "47f5845d6cd67c22e5c9f7361441391f49ed69d17a196c684236a96f6542278e"
+  },
+  {
+    "source": "physics_correctness_evidence/physics_correctness_audit_final/energy-0.0001.csv",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/physics_correctness_audit_final/energy-0.0001.csv",
+    "bytes": 1000066,
+    "sha256": "2e45f6c87b9ae2d3c3542a1cb092d70235a9ebca2a9ddb0d525026d94287daa7"
+  },
+  {
+    "source": "physics_correctness_evidence/physics_correctness_audit_final/energy-0.0002.csv",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/physics_correctness_audit_final/energy-0.0002.csv",
+    "bytes": 500066,
+    "sha256": "5dd856602b60cb210858e6fdd4b3ebd8f75cde1e09d2b4ec79acd40b2b3c9641"
+  },
+  {
+    "source": "physics_correctness_evidence/physics_correctness_audit_final/energy-0.0004.csv",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/physics_correctness_audit_final/energy-0.0004.csv",
+    "bytes": 250066,
+    "sha256": "320fce35dc52cc4cc909643a2f579945f4d7b8771ee602cfcfbae15cb0141474"
+  },
+  {
+    "source": "physics_correctness_evidence/physics_correctness_audit_final/energy-convergence.png",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/physics_correctness_audit_final/energy-convergence.png",
+    "bytes": 91331,
+    "sha256": "f8e18c3a3638c5557735f6499110ec26b5ceb6995141969c32e688d962f6c7c7"
+  },
+  {
+    "source": "physics_correctness_evidence/physics_correctness_audit_final/metrics.json",
+    "backup": "workspace-backup/20261015/loose-directories/physics_correctness_evidence/physics_correctness_audit_final/metrics.json",
+    "bytes": 4503,
+    "sha256": "a6faa5979e5e7b545d05eb6ed00086c93b9cc2bdd73d8bc10ccc814655fd89a3"
+  },
+  {
+    "source": "physics_design_review_v1.md",
+    "backup": "workspace-backup/20261015/loose-files/physics_design_review_v1.md",
+    "bytes": 13303,
+    "sha256": "fb60a16c7f8f1a6d3b1465e2b7faa186101898264ca4a35ac6202d2028258cd6"
+  },
+  {
+    "source": "physics_design_review_v2.md",
+    "backup": "workspace-backup/20261015/loose-files/physics_design_review_v2.md",
+    "bytes": 12512,
+    "sha256": "38f8f8e63d5e6ca816d55084bfe4a1099c4de762152aebfe4df04f72fb4f4933"
+  },
+  {
+    "source": "physics_design_review_v3.md",
+    "backup": "workspace-backup/20261015/loose-files/physics_design_review_v3.md",
+    "bytes": 17907,
+    "sha256": "7668fd6a7c9326f8620a9af806d1e776a75e21cea1577ed7bd863c598c400083"
+  },
+  {
+    "source": "physics_extra_probe.py",
+    "backup": "workspace-backup/20261015/loose-files/physics_extra_probe.py",
+    "bytes": 1941,
+    "sha256": "30279e1ce8afa98ad9ec7b647d11b3968e1e7e3f44304414531873bbf28758f3"
+  },
+  {
+    "source": "physics_final_evidence_record.md",
+    "backup": "workspace-backup/20261015/loose-files/physics_final_evidence_record.md",
+    "bytes": 4484,
+    "sha256": "2280288286c39d507e4478a2dda1e25e4619c0bd800e82785808fbb7e50371c2"
+  },
+  {
+    "source": "physics_implementation_note_draft.md",
+    "backup": "workspace-backup/20261015/loose-files/physics_implementation_note_draft.md",
+    "bytes": 8309,
+    "sha256": "63c974621fe46356214f7e2ab8e90aea3b2156793bdd8ae72f4cde1ae9c3b20c"
+  },
+  {
+    "source": "physics_inertia_repro.py",
+    "backup": "workspace-backup/20261015/loose-files/physics_inertia_repro.py",
+    "bytes": 1456,
+    "sha256": "ce55834919ba5a53e5623ac8917b6048cd752eecf2b5eb401a99bc01e5c1fdba"
+  },
+  {
+    "source": "physics_review_fd.py",
+    "backup": "workspace-backup/20261015/loose-files/physics_review_fd.py",
+    "bytes": 3190,
+    "sha256": "1c7a4c371d9f2a10c462600a2d3f85bad9445aa7b1471bb5574d8e71a05048a7"
+  },
+  {
+    "source": "physics_v3_review_scratch/pgs_solver.py",
+    "backup": "workspace-backup/20261015/loose-directories/physics_v3_review_scratch/pgs_solver.py",
+    "bytes": 23666,
+    "sha256": "fb855e2d33f97dfc0684468b87726ab74115afb05511b935446b4013b0024578"
+  },
+  {
+    "source": "physics_v3_review_scratch/pgs_split_impulse.py",
+    "backup": "workspace-backup/20261015/loose-directories/physics_v3_review_scratch/pgs_split_impulse.py",
+    "bytes": 4249,
+    "sha256": "88415297fbee1634be5b156eb36d218c64e831831c3abbe94227b97c15814982"
+  },
+  {
+    "source": "physics_v3_review_scratch/physics_metrics.py",
+    "backup": "workspace-backup/20261015/loose-directories/physics_v3_review_scratch/physics_metrics.py",
+    "bytes": 3344,
+    "sha256": "43bcf8a1ee8dc302d624e297494e8679dc1de2e04d7fa00df1f50824140b1605"
+  },
+  {
+    "source": "physics_v3_review_scratch/test_contact_vs_mujoco.py",
+    "backup": "workspace-backup/20261015/loose-directories/physics_v3_review_scratch/test_contact_vs_mujoco.py",
+    "bytes": 12376,
+    "sha256": "08fb5c944133be675aaa1397c1cdd4c6194853e260e642e67536f26b56f06fac"
+  },
+  {
+    "source": "physics_v3_review_scratch/test_dynamics_vs_mujoco.py",
+    "backup": "workspace-backup/20261015/loose-directories/physics_v3_review_scratch/test_dynamics_vs_mujoco.py",
+    "bytes": 15857,
+    "sha256": "7311888ee1f164c0c8bb56da2588f2eedbb904d438c1d015af5d5d4be18b96d0"
+  },
+  {
+    "source": "robot_workspace_inventory_20261015.json",
+    "backup": "workspace-backup/20261015/loose-files/robot_workspace_inventory_20261015.json",
+    "bytes": 22396,
+    "sha256": "9c84838c3c661ae81d5cf3274f25cac0b792365f16280410eb3c8fd8ccd1d8fe"
+  },
+  {
+    "source": "test_physics_inertia_repro.py",
+    "backup": "workspace-backup/20261015/loose-files/test_physics_inertia_repro.py",
+    "bytes": 5541,
+    "sha256": "fba36bbfab12fc0633034ad189a671279d7404342e214d72c65959e0b52ba163"
+  }
+]

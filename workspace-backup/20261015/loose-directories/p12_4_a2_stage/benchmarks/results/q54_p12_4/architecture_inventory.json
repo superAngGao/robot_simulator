@@ -1,0 +1,149 @@
+{
+  "schema_version": "q54.p12.4.architecture-inventory.v1",
+  "observed_commit": "46a5d33",
+  "observed_worktree": "clean",
+  "observed_at": "2026-08-10T17:21:44+08:00",
+  "scope": "pre-P12.4a0/a1 repository state",
+  "verified_architecture": {
+    "physics_backend": "GpuEngine launches Warp kernels on CUDA-resident Warp arrays",
+    "physics_publication": "PublishedRing owns logical consumer/reclaim state; GpuEngine owns Warp stream/event operations",
+    "warp_optical": "Warp device-scene/BVH/direct-light executor is the current complete optical product lane",
+    "cuda_optical": "Torch CUDA extension owns camera raygen/first-hit/direct-light but consumes Warp-prepared scene/BVH and remains blocking",
+    "delivery": "Lab delivery owns sync and ordered Torch async host payloads; RGB8 packing is currently Warp-owned",
+    "control_plane": "optics.render_api and Optical Pipeline Lab configs describe requests independently from executor implementation"
+  },
+  "surfaces": [
+    {
+      "surface_id": "physics_publication",
+      "role": "Warp-on-CUDA producer and published-ring lifecycle owner",
+      "paths": [
+        "physics/gpu_engine.py",
+        "physics/publish.py"
+      ],
+      "symbols": {
+        "physics/gpu_engine.py": [
+          "def borrow_device_frame(",
+          "def complete_device_consumer(",
+          "def _wait_for_device_consumers_before_reuse("
+        ],
+        "physics/publish.py": [
+          "class PublishedRing:",
+          "def mark_device_consumer_complete("
+        ]
+      },
+      "ownership": "physics"
+    },
+    {
+      "surface_id": "implementation_neutral_render_contract",
+      "role": "request, result, delivery, and pipeline vocabulary",
+      "paths": [
+        "optics/render_api.py",
+        "optics/output_contract.py"
+      ],
+      "symbols": {
+        "optics/render_api.py": [
+          "class RenderRequest:",
+          "class DeliveryRequest:",
+          "class OpticalRenderPipeline(Protocol):"
+        ],
+        "optics/output_contract.py": [
+          "OUTPUT_PROFILE_REQUIRED_CHANNELS",
+          "class HostPayloadContract:",
+          "HOST_PAYLOAD_CONTRACTS",
+          "HOST_DIAGNOSTIC_OVERLAY_CONTRACTS"
+        ]
+      },
+      "ownership": "optics_control_plane"
+    },
+    {
+      "surface_id": "warp_optical_lane",
+      "role": "current full GPU optical oracle/product implementation",
+      "paths": [
+        "optics/warp_execution.py",
+        "optics/device_scene.py",
+        "optics/device_bvh.py"
+      ],
+      "symbols": {
+        "optics/warp_execution.py": [
+          "class GpuDeviceBvhOpticalExecutor:",
+          "class GpuDeviceBvhDirectLightOpticalExecutor:"
+        ],
+        "optics/device_scene.py": ["class DeviceOpticalSceneCache:"],
+        "optics/device_bvh.py": ["class DeviceOpticalBvh:"]
+      },
+      "ownership": "warp_optical"
+    },
+    {
+      "surface_id": "cuda_optical_lane",
+      "role": "Torch CUDA extension raygen, traversal, and direct light",
+      "paths": ["optics/cuda_direct_light.py"],
+      "symbols": {
+        "optics/cuda_direct_light.py": [
+          "class CudaDeviceBvhOpticalExecutor:",
+          "class CudaDeviceBvhDirectLightOpticalExecutor:"
+        ]
+      },
+      "ownership": "cuda_optical"
+    },
+    {
+      "surface_id": "cuda_lbvh_acceleration",
+      "role": "Torch-owned CUDA LBVH builder wrapped as Warp arrays for current consumers",
+      "paths": [
+        "optics/cuda_lbvh.py",
+        "examples/cuda_lbvh_extension_spike.py"
+      ],
+      "symbols": {
+        "optics/cuda_lbvh.py": ["def build_cuda_lbvh_from_snapshot("],
+        "examples/cuda_lbvh_extension_spike.py": ["CUDA_SOURCE"]
+      },
+      "ownership": "conditional_acceleration"
+    },
+    {
+      "surface_id": "lab_backend_orchestration",
+      "role": "temporary multi-backend scenario selection and product workflow",
+      "paths": [
+        "tools/optical_pipeline_lab/scenarios.py",
+        "tools/optical_pipeline_lab/render_session.py",
+        "tools/optical_pipeline_lab/runner.py"
+      ],
+      "symbols": {
+        "tools/optical_pipeline_lab/scenarios.py": [
+          "class RenderBackend(Enum):",
+          "class AccelBackend(Enum):"
+        ],
+        "tools/optical_pipeline_lab/render_session.py": ["class OpticalLabRenderSession:"],
+        "tools/optical_pipeline_lab/runner.py": ["def run_scenario("]
+      },
+      "ownership": "lab"
+    },
+    {
+      "surface_id": "delivery_and_buffer_lifetime",
+      "role": "sync/ordered async delivery, readback ring, and Warp RGB8 packing",
+      "paths": [
+        "tools/optical_pipeline_lab/delivery.py",
+        "tools/optical_pipeline_lab/async_readback.py",
+        "tools/optical_pipeline_lab/rgb_pack.py"
+      ],
+      "symbols": {
+        "tools/optical_pipeline_lab/delivery.py": ["class VideoDeliveryFacade:"],
+        "tools/optical_pipeline_lab/async_readback.py": ["class TorchAsyncReadbackRing:"],
+        "tools/optical_pipeline_lab/rgb_pack.py": ["def pack_linear_rgb_to_preview_uint8("]
+      },
+      "ownership": "lab_delivery"
+    }
+  ],
+  "known_pre_gate_constraints": [
+    "CUDA Lab supports only CUDA_LBVH acceleration and synchronous non-RGB8 delivery",
+    "CUDA optical waits for Warp-owned scene/BVH readiness on the host",
+    "CUDA direct light performs one target-device synchronization after geometry and one after shade",
+    "CUDA optical returns ready_event=None",
+    "Warp RGB8 packing and ordered async delivery are not CUDA-native",
+    "dynamic and physics-published product validation is currently restricted to the Warp lane",
+    "CUDA shadow traversal does not yet include plane occluders",
+    "existing physics device borrow/complete APIs accept Warp streams and record Warp events"
+  ],
+  "dependency_rule": {
+    "benchmarks_to_production": "allowed",
+    "production_to_benchmarks": "forbidden"
+  }
+}

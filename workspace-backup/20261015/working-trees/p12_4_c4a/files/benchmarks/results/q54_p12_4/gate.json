@@ -1,0 +1,1305 @@
+{
+  "schema_version": "q54.p12.4.gate.v12",
+  "result_schema_version": "q54.p12.4.result.v12",
+  "case_schema_version": "q54.p12.4.case.v1",
+  "status": "frozen",
+  "frozen_at": "2026-08-13T10:41:19+08:00",
+  "frozen_before_result_inspection": true,
+  "approved_proposal_commit": "46a5d33",
+  "approved_dependency_order_commit": "57073b8cabe39d7e4104d8cef77fce70fc17956c",
+  "approved_c3_design_commit": "435ffb275674c04f6452cb41775533db0f47f1d3",
+  "owner_decisions": [
+    "collab/q54-optical-lab-p12-4-backend-parity-performance-gate__decision__owner__v1.md",
+    "collab/q54-optical-lab-p12-4-backend-parity-performance-gate__decision__owner__v2.md"
+  ],
+  "cases": {
+    "asymmetric_synthetic_7x3_v1": {
+      "sha256": "3f6ce0ac1d59d0c0d0e5ea57f497c308a9d5c4b2a5c19462c900627fd99d0181",
+      "scene_contract_sha256": "ab3b06cd48e0315ce5d33c0f81a880e71fe5df7369c805a2ae85f5c0197b9e35",
+      "transform_replay_sha256": null,
+      "fixed_render_fixture_sha256": "4fcece950264cb2ebb78cf1ec06ad52f5a151b3d2cf2970314f1cae5a2aa7907",
+      "asset_source_revision": null,
+      "asset_aggregate_sha256": null
+    },
+    "go2_static_1920x1080_v1": {
+      "sha256": "a6df8bd3f2020be74cef32a285ec8a697879e4e1dbc7dd6e7c4c6fe09816392a",
+      "scene_contract_sha256": "57e86366429979a2460a0ceb01f00749c7e4be7449bbc3acc1577ed5ce94b923",
+      "transform_replay_sha256": "2b1ecfb401476a9737400b401a72377c880bc9e289370f2d3bd5600cc287a216",
+      "fixed_render_fixture_sha256": "8354993fb682d5a13a2dff62d1d7521afd7d3d46d20b876e15732b4c38415db0",
+      "asset_source_revision": "da76818e269b82289eba39808e2fb91d679d6994",
+      "asset_aggregate_sha256": "479dcbdb52c64ca86243d6b1d3b7167bb7d3820af1e60e355168b3c17ddf3ed0"
+    },
+    "go2_static_960x640_v1": {
+      "sha256": "da4045e2d05e7cb731cd5da7690c74a07708359e038512d3da3e6aae5c3f5723",
+      "scene_contract_sha256": "745f01f3d526681c3a350086d55211f92d4a1e5f5b22bcbbc9c43f7dd18f072f",
+      "transform_replay_sha256": null,
+      "fixed_render_fixture_sha256": "fce32d13427918022c4eaee45485ed6fbfaf5e03b13d1390a0216e138e483182",
+      "asset_source_revision": "da76818e269b82289eba39808e2fb91d679d6994",
+      "asset_aggregate_sha256": "479dcbdb52c64ca86243d6b1d3b7167bb7d3820af1e60e355168b3c17ddf3ed0"
+    },
+    "physics_body_triangle_960x640_v1": {
+      "sha256": "c6d0b6f8aa1313cddae6be84122420507bdccafc010e705eae53fa331e5734c6",
+      "scene_contract_sha256": "04a10a8414cae5f8e620684a4068810cc0813e4c15bbf51ba1080862bc36b056",
+      "transform_replay_sha256": null,
+      "fixed_render_fixture_sha256": null,
+      "asset_source_revision": null,
+      "asset_aggregate_sha256": null
+    },
+    "synthetic_dynamic_rigid_960x640_v1": {
+      "sha256": "7ebdbb64c57f904c732cf10eadfaa96008fcb126497f6e8b66add74d29c077ab",
+      "scene_contract_sha256": "a13f77e42e409cd8f929d01177845fe8c1ee9d90c79fe14eb59639ed845a5ce9",
+      "transform_replay_sha256": "d62076e56e4e0e15b0481f8a38b596cffdba6b7b23033c1b0dae14d335c59557",
+      "fixed_render_fixture_sha256": null,
+      "asset_source_revision": null,
+      "asset_aggregate_sha256": null
+    }
+  },
+  "boundaries": {
+    "R0": "q54.p12.4.r0-native-renderer.v1",
+    "R1": "q54.p12.4.r1-native-transaction.v1",
+    "R2": "q54.p12.4.r2-payload-transaction.v1",
+    "D": "q54.p12.4.delivery-diagnostic.v1",
+    "I": "q54.p12.4.physics-handoff-diagnostic.v1",
+    "S": "q54.p12.4.physics-to-image-shipping.v1"
+  },
+  "boundary_contract": {
+    "R0": "native world-space scene plus fixed BVH topology/order through native render completion",
+    "R1": "native body transforms plus native local scene through update, acceleration, render, lease bookkeeping, and native completion",
+    "R2": "fresh complete R1 transaction followed by payload-specific delivery and its terminal reclaim/drain endpoint",
+    "D": "completed native render output through payload delivery only; diagnostic and never a replacement gate",
+    "I": "published frame available through zero-copy native input binding and device-side dependency enqueue",
+    "S": "immediately before GpuEngine.step through payload readiness, consumer completion, slot reclaim, and final batch reclaim"
+  },
+  "retained_capabilities": [
+    "go2_static",
+    "dynamic_rigid_replay",
+    "physics_published_frame",
+    "gpu_camera_raygen",
+    "triangle_shadows",
+    "plane_shadows",
+    "directional_lights",
+    "point_lights",
+    "multiple_lights",
+    "roles",
+    "bias_and_tie_semantics",
+    "direct_light_full",
+    "rgb_preview",
+    "render_only",
+    "device_only",
+    "rgb_sync",
+    "rgb_async_ordered",
+    "full_sync",
+    "rgb8_sync",
+    "rgb8_async_ordered",
+    "target_device_restoration",
+    "result_readiness_and_lifetime",
+    "ring_backpressure",
+    "traversal_counters",
+    "overflow_contract",
+    "csv_and_artifact_contract"
+  ],
+  "measurement": {
+    "warmup_frames": 10,
+    "measured_frames": 120,
+    "paired_repeats": 3,
+    "paired_order": [
+      "warp_cuda",
+      "cuda_warp",
+      "warp_cuda"
+    ],
+    "inconclusive_rerun_frames": 600,
+    "inconclusive_rerun_repeats": 5,
+    "profiled_primary_passes": false,
+    "separate_profiled_diagnostic_pass": true,
+    "same_process_native_pair": true,
+    "independent_reset_shipping_pair": true,
+    "final_drain_and_reclaim_in_timed_batch": true,
+    "calibration_rows": [
+      "empty_runner_overhead",
+      "native_completion_event_overhead",
+      "payload_copy_only"
+    ]
+  },
+  "relative_gate": {
+    "statistic": "median_repeat_p90",
+    "max_cuda_over_warp_ratio": 1.0,
+    "noise_band_ratio": 0.03,
+    "inside_noise_band": "inconclusive",
+    "inconclusive_action": "rerun_with_600_frames_and_5_repeats",
+    "unresolved_after_max_reruns": "warp_selected"
+  },
+  "absolute_product_gate": {
+    "latency_row_id": "s_physics_rgb8_sync_shadow",
+    "throughput_row_id": "s_physics_rgb8_async_shadow",
+    "max_sync_host_ready_p90_ms": 33.333,
+    "max_sync_slot_reclaimable_p90_ms": 33.333,
+    "min_async_sustained_fps": 30.0,
+    "source": "30 FPS product latency and throughput floor frozen before baseline results"
+  },
+  "memory_measurement": {
+    "acceptance": "report_only_no_numeric_threshold",
+    "process_model": "clean_single_lane_shipping_process",
+    "included_components": [
+      "physics_engine",
+      "one_candidate_optical_backend",
+      "candidate_selected_acceleration",
+      "delivery_and_readback_rings",
+      "allocator_reserved_device_memory"
+    ],
+    "losing_lane_loaded": false,
+    "primary_metric": "peak_nvml_process_device_memory_mib",
+    "sampling_start": "before_physics_initialization",
+    "sampling_end": "after_final_reclaim",
+    "diagnostics": [
+      "torch_allocated_mib",
+      "torch_reserved_mib",
+      "warp_allocator_or_pool_mib_when_available"
+    ],
+    "forbidden": [
+      "baseline_subtraction",
+      "empty_cache_before_peak_read",
+      "same_process_dual_lane_residency"
+    ],
+    "mandatory_workload_oom": "hard_failure"
+  },
+  "lane_bindings": {
+    "warp": {
+      "renderer_id": "warp_bvh_direct_light",
+      "acceleration_by_class": {
+        "fixed_bvh_fixture": "fixed_bvh_fixture",
+        "production_static": "cuda_morton_karras_lbvh_rebuild_v1",
+        "production_dynamic": "cpu_median_leaf4_topology_warp_refit_v1",
+        "production_physics": "cpu_median_leaf4_topology_warp_refit_v1"
+      }
+    },
+    "cuda": {
+      "renderer_id": "cuda_direct_light",
+      "acceleration_by_class": {
+        "fixed_bvh_fixture": "fixed_bvh_fixture",
+        "production_static": "cuda_morton_karras_lbvh_rebuild_v1",
+        "production_dynamic": "cuda_morton_karras_lbvh_rebuild_v1",
+        "production_physics": "cuda_morton_karras_lbvh_rebuild_v1"
+      }
+    }
+  },
+  "input_contracts": {
+    "schema_version": "q54.p12.4.input-contract.v2",
+    "by_boundary": {
+      "R0": "fixed_native_scene_v1",
+      "R1": "canonical_native_replay_v1",
+      "R2": "canonical_native_replay_v1",
+      "S": "gpu_engine_published_frame_v1"
+    },
+    "contracts": {
+      "fixed_native_scene_v1": {
+        "timed_start": "before_native_renderer_submission",
+        "measured_transform_owner": "prepared_candidate_native_world_scene",
+        "replay_source_allowed": false,
+        "physics_publication_required": false
+      },
+      "canonical_native_replay_v1": {
+        "timed_start": "before_candidate_native_scene_update",
+        "measured_transform_owner": "candidate_native_replay_arena",
+        "replay_source_allowed": true,
+        "physics_publication_required": false
+      },
+      "gpu_engine_published_frame_v1": {
+        "timed_start": "immediately_before_real_gpu_engine_step",
+        "measured_transform_owner": "physics_publish_ring_slot",
+        "replay_source_allowed": false,
+        "physics_publication_required": true
+      }
+    }
+  },
+  "eligibility_contract": {
+    "schema_version": "q54.p12.4.lane-eligibility.v3",
+    "operation_trace_schema_version": "q54.p12.4.operation-trace.v3",
+    "runtime_hook_registry_version": "q54.p12.4.runtime-hook-registry.v2",
+    "runtime_hook_registry_sha256": "fd03c565975848414d47f40331e8131b1fd3950740f3f5ea04ddfed02b3467e9",
+    "preflight_position": "before_timed_submission",
+    "runtime_hook_installation_owner": "single_lane_runner",
+    "high_level_trace_capture": "installed_entry_point_wrapper_only",
+    "low_level_forbidden_capture": "mandatory_registry_wrapper_fail_fast",
+    "source_manifest_grants_instrumented": false,
+    "ineligible_result_emission": "forbidden",
+    "required_runtime_operations": {
+      "R0": ["render", "terminal_completion"],
+      "R1": [
+        "arena_acquire",
+        "scene_update",
+        "acceleration",
+        "render",
+        "terminal_completion"
+      ],
+      "R2": "derived_from_payload_and_delivery_policy",
+      "S": "derived_from_publication_payload_and_delivery_policy"
+    },
+    "required_lifecycle_operations": {
+      "R0": ["reclaim"],
+      "R1": ["reclaim"],
+      "R2": ["reclaim"],
+      "S": ["reclaim"]
+    },
+    "submission_trace_excludes": [
+      "completion_resolution",
+      "payload_release",
+      "slot_reclaim",
+      "final_drain",
+      "final_reclaim"
+    ],
+    "lifecycle_evidence_owner": "native_optical_arena",
+    "a3a_baseline_emission": "forbidden",
+    "first_native_baseline_authorization": "P12.4a4"
+  },
+  "phase_authorization": {
+    "P12.4a3a": {
+      "executable_boundaries": [],
+      "result_emission": "forbidden",
+      "result_inspection": "forbidden"
+    },
+    "P12.4a3b": {
+      "executable_boundaries": ["R0", "R1", "R2"],
+      "result_emission": "sealed_native_artifacts_only",
+      "result_inspection": "forbidden_until_P12.4a4"
+    },
+    "P12.4a4": {
+      "executable_boundaries": [],
+      "result_emission": "forbidden",
+      "result_inspection": "native_common_subset_only"
+    },
+    "P12.4b4/d": {
+      "executable_boundaries": ["S"],
+      "result_emission": "shipping_artifacts",
+      "result_inspection": "shipping_gate_review"
+    }
+  },
+  "acceleration_contracts": {
+    "schema_version": "q54.p12.4.acceleration-receipt.v2",
+    "by_lane_and_identity": {
+      "warp": {
+        "fixed_bvh_fixture": {
+          "topology_origin": "cpu_median_longest_axis_leaf4_source_order_v1",
+          "topology_lifetime": "prepared_input_immutable_v1",
+          "timed_scene_update_operation": "none",
+          "timed_acceleration_operation": "none",
+          "operation_classification": "none"
+        },
+        "cpu_median_leaf4_topology_warp_refit_v1": {
+          "topology_origin": "cpu_median_longest_axis_leaf4_source_order_v1",
+          "topology_lifetime": "prepared_lane_session_immutable_v1",
+          "timed_scene_update_operation": "warp_local_scene_transform_and_aabb_out_v1",
+          "timed_acceleration_operation": "warp_bvh_leaf_internal_refit_out_v1",
+          "operation_classification": "refit"
+        },
+        "cuda_morton_karras_lbvh_rebuild_v1": {
+          "topology_origin": "cuda_morton30_karras_source_index_tiebreak_v1",
+          "topology_lifetime": "transaction_output_arena_lease_v1",
+          "timed_scene_update_operation": "warp_local_scene_transform_and_aabb_out_v1",
+          "timed_acceleration_operation": "cuda_lbvh_scene_bounds_morton_sort_topology_bounds_out_v1",
+          "operation_classification": "rebuild"
+        }
+      },
+      "cuda": {
+        "fixed_bvh_fixture": {
+          "topology_origin": "cpu_median_longest_axis_leaf4_source_order_v1",
+          "topology_lifetime": "prepared_input_immutable_v1",
+          "timed_scene_update_operation": "none",
+          "timed_acceleration_operation": "none",
+          "operation_classification": "none"
+        },
+        "cuda_morton_karras_lbvh_rebuild_v1": {
+          "topology_origin": "cuda_morton30_karras_source_index_tiebreak_v1",
+          "topology_lifetime": "transaction_output_arena_lease_v1",
+          "timed_scene_update_operation": "torch_cuda_local_scene_transform_and_aabb_out_v1",
+          "timed_acceleration_operation": "cuda_lbvh_scene_bounds_morton_sort_topology_bounds_out_v1",
+          "operation_classification": "rebuild"
+        }
+      }
+    },
+    "forbidden_primary_counts": {
+      "device_allocation_count": 0,
+      "host_materialization_count": 0,
+      "host_upload_bytes": 0,
+      "device_to_host_bytes": 0,
+      "global_synchronize_count": 0,
+      "bridge_creation_count": 0
+    }
+  },
+  "asset_manifest_contract": {
+    "schema_version": "q54.p12.4.external-asset-manifest.v1",
+    "go2_requirement_id": "mujoco_menagerie/unitree_go2@run_manifest",
+    "default_model_dir": "out/external/mujoco_menagerie/unitree_go2",
+    "default_manifest_name": "q54_asset_manifest.json",
+    "absent_or_mismatched": "hard_failure_before_timing",
+    "surrogate_allowed": false,
+    "coverage": "every_and_only_regular_model_files_excluding_manifest",
+    "source_checkout": "canonical_mujoco_menagerie_git_origin",
+    "source_revision": "da76818e269b82289eba39808e2fb91d679d6994",
+    "asset_aggregate_sha256": "479dcbdb52c64ca86243d6b1d3b7167bb7d3820af1e60e355168b3c17ddf3ed0",
+    "tracked_file_rule": "manifest_files_equal_clean_commit_tracked_unitree_go2_files"
+  },
+  "shipping_publication_receipt_contract": {
+    "schema_version": "q54.p12.4.shipping-publication-receipt.v1",
+    "required_input_contract": "gpu_engine_published_frame_v1",
+    "replay_source_count": 0,
+    "host_poll_count": 0,
+    "host_synchronize_count": 0,
+    "logical_reclaim_distinct_from_physical_safety": true,
+    "physical_safety_evidence": [
+      "producer_wait_enqueued_before_reuse",
+      "done_event_retained_no_reuse"
+    ]
+  },
+  "payload_channel_contracts": {
+    "none_device_v1": {
+      "per_ray": {},
+      "scalar": {}
+    },
+    "rgb_native_host_v1": {
+      "per_ray": {
+        "rgb": {"dtype": "float32", "trailing_shape": [3]}
+      },
+      "scalar": {
+        "bvh_stack_overflow_count": {"dtype": "int32", "shape": [1]},
+        "shadow_stack_overflow_count": {"dtype": "int32", "shape": [1]},
+        "bvh_max_stack_depth": {"dtype": "int32", "shape": [1]},
+        "shadow_max_stack_depth": {"dtype": "int32", "shape": [1]}
+      }
+    },
+    "rgb8_native_host_v1": {
+      "per_ray": {
+        "rgb8": {"dtype": "uint8", "trailing_shape": [3]}
+      },
+      "scalar": {
+        "bvh_stack_overflow_count": {"dtype": "int32", "shape": [1]},
+        "shadow_stack_overflow_count": {"dtype": "int32", "shape": [1]},
+        "bvh_max_stack_depth": {"dtype": "int32", "shape": [1]},
+        "shadow_max_stack_depth": {"dtype": "int32", "shape": [1]}
+      }
+    },
+    "full_canonical_host_v2": {
+      "per_ray": {
+        "hit_mask": {"dtype": "bool", "trailing_shape": []},
+        "range_m": {"dtype": "float64", "trailing_shape": []},
+        "position_world": {"dtype": "float64", "trailing_shape": [3]},
+        "normal_world": {"dtype": "float64", "trailing_shape": [3]},
+        "numeric_instance_id": {"dtype": "int64", "trailing_shape": []},
+        "material_index": {"dtype": "int32", "trailing_shape": []},
+        "rgb": {"dtype": "float64", "trailing_shape": [3]},
+        "intensity": {"dtype": "float64", "trailing_shape": []}
+      },
+      "scalar": {
+        "bvh_stack_overflow_count": {"dtype": "int32", "shape": [1]},
+        "shadow_stack_overflow_count": {"dtype": "int32", "shape": [1]},
+        "bvh_max_stack_depth": {"dtype": "int32", "shape": [1]},
+        "shadow_max_stack_depth": {"dtype": "int32", "shape": [1]}
+      }
+    }
+  },
+  "diagnostic_overlay_contracts": {
+    "shadow_traversal_counters_v1": {
+      "per_ray": {},
+      "scalar": {
+        "shadow_traversal_ray_count": {"dtype": "int32", "shape": [1]},
+        "shadow_traversal_directional_ray_count": {"dtype": "int32", "shape": [1]},
+        "shadow_traversal_point_ray_count": {"dtype": "int32", "shape": [1]},
+        "shadow_traversal_occluded_count": {"dtype": "int32", "shape": [1]},
+        "shadow_traversal_unoccluded_count": {"dtype": "int32", "shape": [1]},
+        "shadow_traversal_node_visit_count": {"dtype": "int32", "shape": [1]},
+        "shadow_traversal_leaf_visit_count": {"dtype": "int32", "shape": [1]},
+        "shadow_traversal_triangle_test_count": {"dtype": "int32", "shape": [1]},
+        "shadow_traversal_plane_test_count": {"dtype": "int32", "shape": [1]}
+      }
+    }
+  },
+  "environment": {
+    "same_clean_commit": true,
+    "same_process_for_native_pairs": true,
+    "same_physical_gpu": true,
+    "same_visible_device_map": true,
+    "no_package_install_during_measurement": true,
+    "required_environment_manifest": "deploy/robot_sim_cuda128",
+    "record_gpu_uuid": true,
+    "record_driver_and_runtime": true,
+    "record_clock_and_power_state_when_available": true,
+    "two_gpu_contract_tests_when_available": true
+  },
+  "payload_byte_contract": {
+    "scope": "every per-ray and scalar array delivered by the primary unprofiled row",
+    "opt_in_diagnostic_overlay": "shadow_traversal_counters_v1 adds nine int32 scalar arrays only when traversal diagnostics are requested; it is excluded from primary payload byte gates",
+    "rgb": "width * height * 3 * sizeof(float32) plus four int32 scalar diagnostics",
+    "rgb8": "width * height * 3 * sizeof(uint8) plus four int32 scalar diagnostics",
+    "full": "width * height * 101 canonical per-ray host bytes plus four int32 scalar diagnostics",
+    "none": "zero D2H payload bytes"
+  },
+  "fixed_r0_topology_contract": {
+    "fixture_id": "cpu_median_longest_axis_leaf4_source_order_v1",
+    "primitive_order": "canonical_source_order",
+    "lane_rule": "both lanes receive independently allocated copies of the same normalized topology arrays",
+    "run_manifest_requirement": "record and compare topology_sha256 before timing"
+  },
+  "c0_blocking_acceptance": {
+    "contract_version": "q54.p12.4.publication-cuda-binding.v1",
+    "duplicate_complete": "reject",
+    "complete_without_active_borrow": "reject",
+    "out_of_order_frame_completion": "reject",
+    "close_with_active_lease": "reject",
+    "destroyed_or_reused_stream_handle": "fail_closed_without_logical_completion",
+    "ordinary_exception": "record_done_after_successfully_enqueued_readers_then_advance_logical_completion",
+    "event_record_failure": "poison_consumer_and_slot_then_abort",
+    "cuda_fatal_failure": "poison_consumer_and_slot_then_abort",
+    "logical_reclaim_semantics": "never_report_gpu_event_as_physically_complete_without_observation",
+    "forbidden": [
+      "host_polling",
+      "host_synchronize",
+      "private_ring_state_mutation",
+      "torch_event_in_ring",
+      "warp_optical_adapter"
+    ]
+  },
+  "receipt_provenance": {
+    "receipt_producer": "backend_lane",
+    "producer_by_lane": {
+      "warp": "warp_lane",
+      "cuda": "cuda_lane"
+    },
+    "coordinator_may_populate": [
+      "run_id",
+      "repeat_index",
+      "sample_index",
+      "timing"
+    ],
+    "coordinator_must_not_populate": [
+      "execution",
+      "eligibility",
+      "native_input",
+      "native_execution_binding",
+      "stage_evidence",
+      "acceleration",
+      "publication",
+      "operation_trace",
+      "observed_payload",
+      "lifecycle",
+      "counters",
+      "memory"
+    ],
+    "receipt_hash": "canonical_sha256_of_execution_receipt_content",
+    "a2_a3_lane_test_requirements": [
+      "wrong_actual_request_is_visible_in_receipt",
+      "wrong_actual_ring_depth_is_visible_in_receipt",
+      "missing_actual_endpoint_is_visible_in_receipt",
+      "gate_expectations_are_not_copied_as_observations"
+    ]
+  },
+  "native_input_contract": {
+    "schema_version": "q54.p12.4.native-input.v2",
+    "timing_contract_version": "q54.p12.4.native-timing.v4",
+    "scope": "R0_R1_R2_and_S_static_optical_inputs_only",
+    "logical_source": "PackedOpticalSceneHost_single_materialization_source",
+    "scene_contract_schema_version": "q54.optical-scene-contract.v1",
+    "transform_replay_schema_version": "q54.p12.4.transform-replay.v1",
+    "fixed_render_fixture_schema_version": "q54.p12.4.fixed-render-fixture.v1",
+    "result_capable_constructor": "CanonicalNativeInput.from_scene_contract",
+    "generic_from_arrays_result_capable": false,
+    "workload_content_schema_version": "q54.p12.4.workload-content.v1",
+    "result_capable_content_rule": "scene_replay_and_fixed_fixture_digests_must_match_frozen_case_content",
+    "S_measured_physics_transforms_excluded": true,
+    "warp_preparation": "direct_host_to_warp_cuda_allocation",
+    "cuda_preparation": "direct_host_to_torch_cuda_allocation",
+    "allocation_rule": "independent_runtime_owned_allocations",
+    "R0_array_ownership": {
+      "packed_scene": "local_geometry_metadata_material_light_role_source",
+      "fixed_fixture": "derived_world_geometry_and_normalized_bvh_only",
+      "name_and_semantic_sets": "strictly_disjoint",
+      "upload_count_per_logical_array_per_candidate": 1,
+      "packed_owner_rule": "exact_object_identity_not_content_equality"
+    },
+    "native_ready_requirements": [
+      "device_resident",
+      "dtype_shape_layout_semantics_validated",
+      "producer_ready_event_complete",
+      "compile_warmup_and_allocation_complete"
+    ],
+    "timed_forbidden_operations": [
+      "allocation",
+      "bridge_creation",
+      "compile",
+      "cross_lane_wait",
+      "extension_load",
+      "global_device_synchronize",
+      "host_materialization",
+      "host_synchronize",
+      "host_upload",
+      "torch_to_warp_bridge",
+      "warp_to_torch_bridge"
+    ],
+    "receipt_fields": [
+      "native_input_manifest_sha256",
+      "native_input_content_sha256",
+      "topology_sha256",
+      "native_readiness",
+      "native_readiness_sha256",
+      "input_contract",
+      "input_provenance_sha256",
+      "scene_contract_sha256",
+      "transform_replay_sha256",
+      "transform_frame_index",
+      "fixed_render_fixture_sha256",
+      "native_execution_binding",
+      "native_execution_binding_sha256",
+      "eligibility",
+      "eligibility_sha256"
+    ]
+  },
+  "native_execution_binding_contract": {
+    "schema_version": "q54.p12.4.c3-one-shot-binding.v5",
+    "stage_schema_version": "q54.p12.4.native-stage-evidence.v2",
+    "construction_order": [
+      "source_and_prepared_storage",
+      "independent_stage_evidence",
+      "native_execution_binding",
+      "execution_receipt"
+    ],
+    "stage_payload_contains_own_sha256": false,
+    "stage_payload_references_outer_binding": false,
+    "binding_references_stage_sha256": true,
+    "acceleration_receipt_references_acceleration_stage_sha256": true,
+    "C3_constructor": "build_c3_one_shot_native_execution_binding",
+    "C3_binding_type": "C3OneShotNativeExecutionBindingEvidence",
+    "C3_one_shot_result_emission": "forbidden",
+    "C4_prepared_plan_schema": "q54.p12.4.c4-prepared-sample-plan.v2",
+    "C4_binding_schema": "q54.p12.4.c4-active-lease-binding.v2",
+    "C4_binding_type": "C4ActiveLeaseBindingEvidence",
+    "C4_live_authority_owner": "NativeOpticalArena",
+    "C4_serialized_evidence_alone_authorizes_submission": false,
+    "C4_result_emission": "forbidden_until_B3_and_joint_activation_review",
+    "C4_required_evidence": ["arena", "slot", "generation", "lease", "ring"],
+    "dynamic_dataflow_contract_schema_version": "q54.p12.4.dynamic-dataflow.v2",
+    "acceleration_resolution": "lane_plus_row_acceleration_class",
+    "dynamic_storage_rule": "complete_ordered_profile_specific_no_missing_or_extra_storage",
+    "pre_enqueue_validation": [
+      "row_case_boundary_lane_and_input_contract",
+      "row_acceleration_class_and_lane_resolved_acceleration_identity",
+      "native_manifest_and_readiness",
+      "scene_replay_or_fixed_fixture_provenance",
+      "exact_prepared_scene_storage",
+      "exact_prepared_derived_fixture_storage",
+      "ordered_stage_evidence_and_dataflow_sha256"
+    ],
+    "a3b_result_capable_before_C4_B3_review": false
+  },
+  "native_output_arena_contract": {
+    "schema_version": "q54.p12.4.native-output-arena-contract.v2",
+    "arena_layout_schema_version": "optics.native-optical-arena-layout.v1",
+    "arena_spec_schema_version": "optics.native-optical-arena-spec.v1",
+    "slot_resource_schema_version": "optics.native-optical-slot-resource.v1",
+    "resource_manifest_schema_version": "optics.native-optical-arena-resource-manifest.v1",
+    "prepared_plan_schema_version": "q54.p12.4.c4-prepared-sample-plan.v2",
+    "active_lease_binding_schema_version": "q54.p12.4.c4-active-lease-binding.v2",
+    "lifecycle_schema_version": "q54.p12.4.c4-arena-lifecycle.v2",
+    "allowed_ring_depths": [1, 2],
+    "slot_selection": "strict_round_robin_fifo_no_overwrite",
+    "prepared_plan_policy": "non_reserving_speculative_multiple_candidates_allowed",
+    "batch_preparation": "planned_acquisition_offset_binds_future_slot_and_generation",
+    "discarded_plan_retention": "weak_none",
+    "generation_rule": "strictly_increasing_and_burned_on_pre_enqueue_cancel",
+    "measured_acquire": "O1_identity_and_state_bookkeeping_only",
+    "prepared_plan_result_capable": false,
+    "active_lease_result_capable": false,
+    "serialized_evidence_is_live_authority": false,
+    "host_payload_arena_seal": "blocked_until_B3_and_joint_activation_review",
+    "reclaim_evidence_owner": "arena_lifecycle_transition_authority",
+    "lifecycle_validation": "canonical_full_state_machine_replay",
+    "lifecycle_operation_kinds": [
+      "arena_opened",
+      "acquire_backpressure",
+      "acquired",
+      "cancelled_generation_burned",
+      "enqueue_started",
+      "completion_recorded",
+      "completion_resolved",
+      "device_result_hold_released",
+      "slot_reclaimable",
+      "slot_reclaimed",
+      "drain_started",
+      "final_drain_complete",
+      "arena_closed",
+      "arena_poisoned"
+    ],
+    "shutdown_dispositions": [
+      "synced_waiting_external_holds",
+      "aborted_synced_release_authorized",
+      "quarantined_until_process_exit"
+    ],
+    "submission_trace_contains_reclaim": false,
+    "poison_release_barrier": {
+      "device_quiescence_required": true,
+      "zero_external_holds_required": true,
+      "synced_with_external_holds_state": "SYNCED_WAITING_EXTERNAL_HOLDS",
+      "poisoned_slot_returns_to_free": false,
+      "sync_failure_disposition": "quarantined_until_process_exit"
+    }
+  },
+  "native_result_activation": {
+    "schema_version": "q54.p12.4.native-result-activation.v1",
+    "blocked_result_phases": ["P12.4a3b", "P12.4b4/d"],
+    "result_capable": false,
+    "required_reviews": ["C4", "B3"],
+    "activation_commit": null,
+    "activation_rule": "versioned_owner_decision_before_preflight_or_submit"
+  },
+  "mandatory_rows": [
+    {
+      "row_id": "r0_asymmetric_full_shadow",
+      "mandatory": true,
+      "boundary": "R0",
+      "case_id": "asymmetric_synthetic_7x3_v1",
+      "input_contract": "fixed_native_scene_v1",
+      "required_asset_manifest": null,
+      "output_profile": "direct_light_full",
+      "shadows": true,
+      "acceleration_class": "fixed_bvh_fixture",
+      "completion_endpoint": "native_renderer_completion",
+      "required_lifecycle": ["native_completion_reached"],
+      "primary_metrics": ["native_renderer_completion_ms"]
+    },
+    {
+      "row_id": "r0_go2_960_render_only_no_shadow",
+      "mandatory": true,
+      "boundary": "R0",
+      "case_id": "go2_static_960x640_v1",
+      "input_contract": "fixed_native_scene_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
+      "output_profile": "render_only",
+      "shadows": false,
+      "acceleration_class": "fixed_bvh_fixture",
+      "completion_endpoint": "native_renderer_completion",
+      "required_lifecycle": ["native_completion_reached"],
+      "primary_metrics": ["native_renderer_completion_ms"]
+    },
+    {
+      "row_id": "r0_go2_960_render_only_shadow",
+      "mandatory": true,
+      "boundary": "R0",
+      "case_id": "go2_static_960x640_v1",
+      "input_contract": "fixed_native_scene_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
+      "output_profile": "render_only",
+      "shadows": true,
+      "acceleration_class": "fixed_bvh_fixture",
+      "completion_endpoint": "native_renderer_completion",
+      "required_lifecycle": ["native_completion_reached"],
+      "primary_metrics": ["native_renderer_completion_ms"]
+    },
+    {
+      "row_id": "r0_go2_1080_render_only_no_shadow",
+      "mandatory": true,
+      "boundary": "R0",
+      "case_id": "go2_static_1920x1080_v1",
+      "input_contract": "fixed_native_scene_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
+      "output_profile": "render_only",
+      "shadows": false,
+      "acceleration_class": "fixed_bvh_fixture",
+      "completion_endpoint": "native_renderer_completion",
+      "required_lifecycle": ["native_completion_reached"],
+      "primary_metrics": ["native_renderer_completion_ms"]
+    },
+    {
+      "row_id": "r0_go2_1080_render_only_shadow",
+      "mandatory": true,
+      "boundary": "R0",
+      "case_id": "go2_static_1920x1080_v1",
+      "input_contract": "fixed_native_scene_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
+      "output_profile": "render_only",
+      "shadows": true,
+      "acceleration_class": "fixed_bvh_fixture",
+      "completion_endpoint": "native_renderer_completion",
+      "required_lifecycle": ["native_completion_reached"],
+      "primary_metrics": ["native_renderer_completion_ms"]
+    },
+    {
+      "row_id": "r0_go2_1080_rgb_preview_shadow",
+      "mandatory": true,
+      "boundary": "R0",
+      "case_id": "go2_static_1920x1080_v1",
+      "input_contract": "fixed_native_scene_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
+      "output_profile": "rgb_preview",
+      "shadows": true,
+      "acceleration_class": "fixed_bvh_fixture",
+      "completion_endpoint": "native_renderer_completion",
+      "required_lifecycle": ["native_completion_reached"],
+      "primary_metrics": ["native_renderer_completion_ms"]
+    },
+    {
+      "row_id": "r1_dynamic_render_only_no_shadow",
+      "mandatory": true,
+      "boundary": "R1",
+      "case_id": "synthetic_dynamic_rigid_960x640_v1",
+      "input_contract": "canonical_native_replay_v1",
+      "required_asset_manifest": null,
+      "output_profile": "render_only",
+      "shadows": false,
+      "acceleration_class": "production_dynamic",
+      "completion_endpoint": "native_transaction_completion",
+      "required_lifecycle": [
+        "native_completion_reached",
+        "native_output_reclaim_recorded"
+      ],
+      "primary_metrics": ["native_transaction_completion_ms"]
+    },
+    {
+      "row_id": "r1_dynamic_full_shadow",
+      "mandatory": true,
+      "boundary": "R1",
+      "case_id": "synthetic_dynamic_rigid_960x640_v1",
+      "input_contract": "canonical_native_replay_v1",
+      "required_asset_manifest": null,
+      "output_profile": "direct_light_full",
+      "shadows": true,
+      "acceleration_class": "production_dynamic",
+      "completion_endpoint": "native_transaction_completion",
+      "required_lifecycle": [
+        "native_completion_reached",
+        "native_output_reclaim_recorded"
+      ],
+      "primary_metrics": ["native_transaction_completion_ms"]
+    },
+    {
+      "row_id": "r2_go2_device_only_shadow",
+      "mandatory": true,
+      "boundary": "R2",
+      "case_id": "go2_static_1920x1080_v1",
+      "input_contract": "canonical_native_replay_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
+      "output_profile": "render_only",
+      "shadows": true,
+      "payload": "none",
+      "delivery_policy": "device_only",
+      "payload_ready_endpoint": "native_output_complete",
+      "transaction_terminal_endpoint": "native_output_lease_completion_recorded",
+      "acceleration_class": "production_static",
+      "completion_endpoint": "native_output_lease_completion_recorded",
+      "payload_contract_id": "none_device_v1",
+      "expected_per_ray_channels": [],
+      "expected_scalar_channels": [],
+      "expected_per_ray_payload_bytes": 0,
+      "expected_scalar_payload_bytes": 0,
+      "expected_payload_bytes": 0,
+      "ring_depth": 1,
+      "sync_or_async": "device_only",
+      "native_output_reclaim_endpoint": "native_output_lease_completion_recorded",
+      "final_drain_required": false,
+      "required_lifecycle": [
+        "native_completion_reached",
+        "payload_ready_reached",
+        "native_output_reclaim_recorded"
+      ],
+      "primary_metrics": ["native_payload_transaction_terminal_ms"]
+    },
+    {
+      "row_id": "r2_go2_rgb_sync_shadow",
+      "mandatory": true,
+      "boundary": "R2",
+      "case_id": "go2_static_1920x1080_v1",
+      "input_contract": "canonical_native_replay_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
+      "output_profile": "rgb_preview",
+      "shadows": true,
+      "payload": "rgb",
+      "delivery_policy": "sync_host",
+      "payload_ready_endpoint": "contiguous_host_float32_rgb_ready",
+      "transaction_terminal_endpoint": "native_and_staging_leases_reclaimable",
+      "acceleration_class": "production_static",
+      "completion_endpoint": "native_and_staging_leases_reclaimable",
+      "payload_contract_id": "rgb_native_host_v1",
+      "expected_per_ray_channels": ["rgb"],
+      "expected_scalar_channels": [
+        "bvh_stack_overflow_count",
+        "shadow_stack_overflow_count",
+        "bvh_max_stack_depth",
+        "shadow_max_stack_depth"
+      ],
+      "expected_per_ray_payload_bytes": 24883200,
+      "expected_scalar_payload_bytes": 16,
+      "expected_payload_bytes": 24883216,
+      "ring_depth": 1,
+      "sync_or_async": "sync",
+      "native_output_reclaim_endpoint": "native_and_staging_leases_reclaimable",
+      "final_drain_required": false,
+      "required_lifecycle": [
+        "native_completion_reached",
+        "payload_ready_reached",
+        "native_output_reclaim_recorded",
+        "staging_reclaimable"
+      ],
+      "primary_metrics": ["native_payload_transaction_terminal_ms"]
+    },
+    {
+      "row_id": "r2_go2_rgb_async_shadow",
+      "mandatory": true,
+      "boundary": "R2",
+      "case_id": "go2_static_1920x1080_v1",
+      "input_contract": "canonical_native_replay_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
+      "output_profile": "rgb_preview",
+      "shadows": true,
+      "payload": "rgb",
+      "delivery_policy": "torch_async_ordered",
+      "payload_ready_endpoint": "ordered_host_float32_rgb_delivered",
+      "transaction_terminal_endpoint": "final_output_reclaim_and_drain",
+      "acceleration_class": "production_static",
+      "completion_endpoint": "final_output_reclaim_and_drain",
+      "payload_contract_id": "rgb_native_host_v1",
+      "expected_per_ray_channels": ["rgb"],
+      "expected_scalar_channels": [
+        "bvh_stack_overflow_count",
+        "shadow_stack_overflow_count",
+        "bvh_max_stack_depth",
+        "shadow_max_stack_depth"
+      ],
+      "expected_per_ray_payload_bytes": 24883200,
+      "expected_scalar_payload_bytes": 16,
+      "expected_payload_bytes": 24883216,
+      "ring_depth": 2,
+      "sync_or_async": "async",
+      "native_output_reclaim_endpoint": "final_output_reclaim",
+      "final_drain_required": true,
+      "required_lifecycle": [
+        "native_completion_reached",
+        "payload_ready_reached",
+        "native_output_reclaim_recorded",
+        "final_drain_complete",
+        "final_reclaim_complete"
+      ],
+      "primary_metrics": ["batch_first_submit_to_final_reclaim_ms"]
+    },
+    {
+      "row_id": "r2_go2_full_sync_shadow",
+      "mandatory": true,
+      "boundary": "R2",
+      "case_id": "go2_static_1920x1080_v1",
+      "input_contract": "canonical_native_replay_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
+      "output_profile": "direct_light_full",
+      "shadows": true,
+      "payload": "full",
+      "delivery_policy": "sync_host",
+      "payload_ready_endpoint": "canonical_full_host_channel_set_ready",
+      "transaction_terminal_endpoint": "native_and_staging_leases_reclaimable",
+      "acceleration_class": "production_static",
+      "completion_endpoint": "native_and_staging_leases_reclaimable",
+      "payload_contract_id": "full_canonical_host_v2",
+      "expected_per_ray_channels": [
+        "hit_mask",
+        "range_m",
+        "position_world",
+        "normal_world",
+        "numeric_instance_id",
+        "material_index",
+        "rgb",
+        "intensity"
+      ],
+      "expected_scalar_channels": [
+        "bvh_stack_overflow_count",
+        "shadow_stack_overflow_count",
+        "bvh_max_stack_depth",
+        "shadow_max_stack_depth"
+      ],
+      "expected_per_ray_payload_bytes": 209433600,
+      "expected_scalar_payload_bytes": 16,
+      "expected_payload_bytes": 209433616,
+      "ring_depth": 1,
+      "sync_or_async": "sync",
+      "native_output_reclaim_endpoint": "native_and_staging_leases_reclaimable",
+      "final_drain_required": false,
+      "required_lifecycle": [
+        "native_completion_reached",
+        "payload_ready_reached",
+        "native_output_reclaim_recorded",
+        "staging_reclaimable"
+      ],
+      "primary_metrics": ["native_payload_transaction_terminal_ms"]
+    },
+    {
+      "row_id": "r2_go2_rgb8_sync_shadow",
+      "mandatory": true,
+      "boundary": "R2",
+      "case_id": "go2_static_1920x1080_v1",
+      "input_contract": "canonical_native_replay_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
+      "output_profile": "rgb_preview",
+      "shadows": true,
+      "payload": "rgb8",
+      "delivery_policy": "sync_host",
+      "payload_ready_endpoint": "contiguous_host_uint8_rgb_ready",
+      "transaction_terminal_endpoint": "native_and_staging_leases_reclaimable",
+      "acceleration_class": "production_static",
+      "completion_endpoint": "native_and_staging_leases_reclaimable",
+      "payload_contract_id": "rgb8_native_host_v1",
+      "expected_per_ray_channels": ["rgb8"],
+      "expected_scalar_channels": [
+        "bvh_stack_overflow_count",
+        "shadow_stack_overflow_count",
+        "bvh_max_stack_depth",
+        "shadow_max_stack_depth"
+      ],
+      "expected_per_ray_payload_bytes": 6220800,
+      "expected_scalar_payload_bytes": 16,
+      "expected_payload_bytes": 6220816,
+      "ring_depth": 1,
+      "sync_or_async": "sync",
+      "native_output_reclaim_endpoint": "native_and_staging_leases_reclaimable",
+      "final_drain_required": false,
+      "required_lifecycle": [
+        "native_completion_reached",
+        "payload_ready_reached",
+        "native_output_reclaim_recorded",
+        "staging_reclaimable"
+      ],
+      "primary_metrics": ["native_payload_transaction_terminal_ms"]
+    },
+    {
+      "row_id": "r2_go2_rgb8_async_shadow",
+      "mandatory": true,
+      "boundary": "R2",
+      "case_id": "go2_static_1920x1080_v1",
+      "input_contract": "canonical_native_replay_v1",
+      "required_asset_manifest": "mujoco_menagerie/unitree_go2@run_manifest",
+      "output_profile": "rgb_preview",
+      "shadows": true,
+      "payload": "rgb8",
+      "delivery_policy": "torch_async_ordered",
+      "payload_ready_endpoint": "ordered_host_uint8_rgb_delivered",
+      "transaction_terminal_endpoint": "final_output_reclaim_and_drain",
+      "acceleration_class": "production_static",
+      "completion_endpoint": "final_output_reclaim_and_drain",
+      "payload_contract_id": "rgb8_native_host_v1",
+      "expected_per_ray_channels": ["rgb8"],
+      "expected_scalar_channels": [
+        "bvh_stack_overflow_count",
+        "shadow_stack_overflow_count",
+        "bvh_max_stack_depth",
+        "shadow_max_stack_depth"
+      ],
+      "expected_per_ray_payload_bytes": 6220800,
+      "expected_scalar_payload_bytes": 16,
+      "expected_payload_bytes": 6220816,
+      "ring_depth": 2,
+      "sync_or_async": "async",
+      "native_output_reclaim_endpoint": "final_output_reclaim",
+      "final_drain_required": true,
+      "required_lifecycle": [
+        "native_completion_reached",
+        "payload_ready_reached",
+        "native_output_reclaim_recorded",
+        "final_drain_complete",
+        "final_reclaim_complete"
+      ],
+      "primary_metrics": ["batch_first_submit_to_final_reclaim_ms"]
+    },
+    {
+      "row_id": "s_physics_device_only_no_shadow",
+      "mandatory": true,
+      "boundary": "S",
+      "case_id": "physics_body_triangle_960x640_v1",
+      "input_contract": "gpu_engine_published_frame_v1",
+      "required_asset_manifest": null,
+      "output_profile": "render_only",
+      "shadows": false,
+      "payload": "none",
+      "delivery_policy": "device_only",
+      "acceleration_class": "production_physics",
+      "completion_endpoint": "physics_slot_logically_reclaimable",
+      "ring_depth": 1,
+      "payload_contract_id": "none_device_v1",
+      "expected_per_ray_channels": [],
+      "expected_scalar_channels": [],
+      "expected_per_ray_payload_bytes": 0,
+      "expected_scalar_payload_bytes": 0,
+      "expected_payload_bytes": 0,
+      "publication_binding_contract_version": "q54.p12.4.publication-cuda-binding.v1",
+      "endpoints": {
+        "device_ready_metric": "sim_step_to_device_image_ms",
+        "host_ready_metric": null,
+        "consumer_completion_recorded_metric": "sim_step_to_consumer_completion_recorded_ms",
+        "slot_reclaimable_metric": "sim_step_to_slot_reclaimable_ms",
+        "final_payload_drain_metric": null,
+        "final_reclaim_metric": null
+      },
+      "required_lifecycle": [
+        "device_ready_reached",
+        "consumer_completion_recorded",
+        "slot_reclaimable"
+      ],
+      "primary_metrics": [
+        "sim_step_to_device_image_ms",
+        "sim_step_to_slot_reclaimable_ms"
+      ]
+    },
+    {
+      "row_id": "s_physics_rgb_sync_no_shadow",
+      "mandatory": true,
+      "boundary": "S",
+      "case_id": "physics_body_triangle_960x640_v1",
+      "input_contract": "gpu_engine_published_frame_v1",
+      "required_asset_manifest": null,
+      "output_profile": "rgb_preview",
+      "shadows": false,
+      "payload": "rgb",
+      "delivery_policy": "sync_host",
+      "acceleration_class": "production_physics",
+      "completion_endpoint": "host_payload_ready_and_physics_slot_logically_reclaimable",
+      "ring_depth": 1,
+      "payload_contract_id": "rgb_native_host_v1",
+      "expected_per_ray_channels": ["rgb"],
+      "expected_scalar_channels": [
+        "bvh_stack_overflow_count",
+        "shadow_stack_overflow_count",
+        "bvh_max_stack_depth",
+        "shadow_max_stack_depth"
+      ],
+      "expected_per_ray_payload_bytes": 7372800,
+      "expected_scalar_payload_bytes": 16,
+      "expected_payload_bytes": 7372816,
+      "publication_binding_contract_version": "q54.p12.4.publication-cuda-binding.v1",
+      "endpoints": {
+        "device_ready_metric": "sim_step_to_device_image_ms",
+        "host_ready_metric": "sim_step_to_host_image_ms",
+        "consumer_completion_recorded_metric": "sim_step_to_consumer_completion_recorded_ms",
+        "slot_reclaimable_metric": "sim_step_to_slot_reclaimable_ms",
+        "final_payload_drain_metric": null,
+        "final_reclaim_metric": null
+      },
+      "required_lifecycle": [
+        "device_ready_reached",
+        "payload_ready_reached",
+        "consumer_completion_recorded",
+        "slot_reclaimable"
+      ],
+      "primary_metrics": [
+        "sim_step_to_host_image_ms",
+        "sim_step_to_slot_reclaimable_ms"
+      ]
+    },
+    {
+      "row_id": "s_physics_full_sync_shadow",
+      "mandatory": true,
+      "boundary": "S",
+      "case_id": "physics_body_triangle_960x640_v1",
+      "input_contract": "gpu_engine_published_frame_v1",
+      "required_asset_manifest": null,
+      "output_profile": "direct_light_full",
+      "shadows": true,
+      "payload": "full",
+      "delivery_policy": "sync_host",
+      "acceleration_class": "production_physics",
+      "completion_endpoint": "host_payload_ready_and_physics_slot_logically_reclaimable",
+      "ring_depth": 1,
+      "payload_contract_id": "full_canonical_host_v2",
+      "expected_per_ray_channels": [
+        "hit_mask",
+        "range_m",
+        "position_world",
+        "normal_world",
+        "numeric_instance_id",
+        "material_index",
+        "rgb",
+        "intensity"
+      ],
+      "expected_scalar_channels": [
+        "bvh_stack_overflow_count",
+        "shadow_stack_overflow_count",
+        "bvh_max_stack_depth",
+        "shadow_max_stack_depth"
+      ],
+      "expected_per_ray_payload_bytes": 62054400,
+      "expected_scalar_payload_bytes": 16,
+      "expected_payload_bytes": 62054416,
+      "publication_binding_contract_version": "q54.p12.4.publication-cuda-binding.v1",
+      "endpoints": {
+        "device_ready_metric": "sim_step_to_device_image_ms",
+        "host_ready_metric": "sim_step_to_full_host_payload_ms",
+        "consumer_completion_recorded_metric": "sim_step_to_consumer_completion_recorded_ms",
+        "slot_reclaimable_metric": "sim_step_to_slot_reclaimable_ms",
+        "final_payload_drain_metric": null,
+        "final_reclaim_metric": null
+      },
+      "required_lifecycle": [
+        "device_ready_reached",
+        "payload_ready_reached",
+        "consumer_completion_recorded",
+        "slot_reclaimable"
+      ],
+      "primary_metrics": [
+        "sim_step_to_full_host_payload_ms",
+        "sim_step_to_slot_reclaimable_ms"
+      ]
+    },
+    {
+      "row_id": "s_physics_rgb8_sync_shadow",
+      "mandatory": true,
+      "boundary": "S",
+      "case_id": "physics_body_triangle_960x640_v1",
+      "input_contract": "gpu_engine_published_frame_v1",
+      "required_asset_manifest": null,
+      "output_profile": "rgb_preview",
+      "shadows": true,
+      "payload": "rgb8",
+      "delivery_policy": "sync_host",
+      "acceleration_class": "production_physics",
+      "completion_endpoint": "host_payload_ready_and_physics_slot_logically_reclaimable",
+      "ring_depth": 1,
+      "payload_contract_id": "rgb8_native_host_v1",
+      "expected_per_ray_channels": ["rgb8"],
+      "expected_scalar_channels": [
+        "bvh_stack_overflow_count",
+        "shadow_stack_overflow_count",
+        "bvh_max_stack_depth",
+        "shadow_max_stack_depth"
+      ],
+      "expected_per_ray_payload_bytes": 1843200,
+      "expected_scalar_payload_bytes": 16,
+      "expected_payload_bytes": 1843216,
+      "publication_binding_contract_version": "q54.p12.4.publication-cuda-binding.v1",
+      "endpoints": {
+        "device_ready_metric": "sim_step_to_device_image_ms",
+        "host_ready_metric": "sim_step_to_host_image_ms",
+        "consumer_completion_recorded_metric": "sim_step_to_consumer_completion_recorded_ms",
+        "slot_reclaimable_metric": "sim_step_to_slot_reclaimable_ms",
+        "final_payload_drain_metric": null,
+        "final_reclaim_metric": null
+      },
+      "required_lifecycle": [
+        "device_ready_reached",
+        "payload_ready_reached",
+        "consumer_completion_recorded",
+        "slot_reclaimable"
+      ],
+      "primary_metrics": [
+        "sim_step_to_host_image_ms",
+        "sim_step_to_slot_reclaimable_ms"
+      ]
+    },
+    {
+      "row_id": "s_physics_rgb_async_shadow",
+      "mandatory": true,
+      "boundary": "S",
+      "case_id": "physics_body_triangle_960x640_v1",
+      "input_contract": "gpu_engine_published_frame_v1",
+      "required_asset_manifest": null,
+      "output_profile": "rgb_preview",
+      "shadows": true,
+      "payload": "rgb",
+      "delivery_policy": "torch_async_ordered",
+      "acceleration_class": "production_physics",
+      "completion_endpoint": "final_output_and_physics_reclaim",
+      "ring_depth": 2,
+      "payload_contract_id": "rgb_native_host_v1",
+      "expected_per_ray_channels": ["rgb"],
+      "expected_scalar_channels": [
+        "bvh_stack_overflow_count",
+        "shadow_stack_overflow_count",
+        "bvh_max_stack_depth",
+        "shadow_max_stack_depth"
+      ],
+      "expected_per_ray_payload_bytes": 7372800,
+      "expected_scalar_payload_bytes": 16,
+      "expected_payload_bytes": 7372816,
+      "publication_binding_contract_version": "q54.p12.4.publication-cuda-binding.v1",
+      "endpoints": {
+        "device_ready_metric": "sim_step_to_device_image_ms",
+        "host_ready_metric": "sim_step_to_host_image_ms",
+        "consumer_completion_recorded_metric": "sim_step_to_consumer_completion_recorded_ms",
+        "slot_reclaimable_metric": "sim_step_to_slot_reclaimable_ms",
+        "final_payload_drain_metric": "batch_first_step_to_final_payload_drain_ms",
+        "final_reclaim_metric": "batch_first_step_to_final_reclaim_ms"
+      },
+      "required_lifecycle": [
+        "device_ready_reached",
+        "payload_ready_reached",
+        "consumer_completion_recorded",
+        "slot_reclaimable",
+        "final_drain_complete",
+        "final_reclaim_complete"
+      ],
+      "primary_metrics": ["batch_first_step_to_final_reclaim_ms"]
+    },
+    {
+      "row_id": "s_physics_rgb8_async_shadow",
+      "mandatory": true,
+      "boundary": "S",
+      "case_id": "physics_body_triangle_960x640_v1",
+      "input_contract": "gpu_engine_published_frame_v1",
+      "required_asset_manifest": null,
+      "output_profile": "rgb_preview",
+      "shadows": true,
+      "payload": "rgb8",
+      "delivery_policy": "torch_async_ordered",
+      "acceleration_class": "production_physics",
+      "completion_endpoint": "final_output_and_physics_reclaim",
+      "ring_depth": 2,
+      "payload_contract_id": "rgb8_native_host_v1",
+      "expected_per_ray_channels": ["rgb8"],
+      "expected_scalar_channels": [
+        "bvh_stack_overflow_count",
+        "shadow_stack_overflow_count",
+        "bvh_max_stack_depth",
+        "shadow_max_stack_depth"
+      ],
+      "expected_per_ray_payload_bytes": 1843200,
+      "expected_scalar_payload_bytes": 16,
+      "expected_payload_bytes": 1843216,
+      "publication_binding_contract_version": "q54.p12.4.publication-cuda-binding.v1",
+      "endpoints": {
+        "device_ready_metric": "sim_step_to_device_image_ms",
+        "host_ready_metric": "sim_step_to_host_image_ms",
+        "consumer_completion_recorded_metric": "sim_step_to_consumer_completion_recorded_ms",
+        "slot_reclaimable_metric": "sim_step_to_slot_reclaimable_ms",
+        "final_payload_drain_metric": "batch_first_step_to_final_payload_drain_ms",
+        "final_reclaim_metric": "batch_first_step_to_final_reclaim_ms"
+      },
+      "required_lifecycle": [
+        "device_ready_reached",
+        "payload_ready_reached",
+        "consumer_completion_recorded",
+        "slot_reclaimable",
+        "final_drain_complete",
+        "final_reclaim_complete"
+      ],
+      "primary_metrics": ["batch_first_step_to_final_reclaim_ms"]
+    }
+  ],
+  "continuation": {
+    "max_rerun_campaigns_per_row": 2,
+    "max_cuda_optimization_slices": 5,
+    "max_correctness_repair_slices_per_failure": 1,
+    "continuation_deadline": "2026-10-15T23:59:59+08:00",
+    "inconclusive_resolution": "warp_selected",
+    "default_terminal_branch": "warp_selected"
+  },
+  "hard_failure_conditions": [
+    "retained_capability_requires_prohibited_optical_bridge",
+    "dynamic_cuda_requires_private_publish_ring_access_or_torch_event_insertion",
+    "physics_cuda_handoff_requires_unapproved_host_sync_or_copy",
+    "mandatory_workload_ooms_in_clean_single_lane_process",
+    "corruption_wrong_frame_overwrite_or_use_after_reclaim_survives_one_repair_slice",
+    "mandatory_row_inconclusive_after_two_rerun_campaigns",
+    "five_cuda_optimization_slices_exhausted_with_any_gate_failing"
+  ],
+  "result_artifacts": {
+    "profiled_and_unprofiled_are_separate": true,
+    "required": [
+      "environment_manifest",
+      "case_manifest",
+      "raw_sample_manifest",
+      "summary",
+      "correctness_report",
+      "cleanup_decision"
+    ],
+    "raw_samples_may_be_external": true,
+    "external_raw_samples_require_sha256": true
+  }
+}

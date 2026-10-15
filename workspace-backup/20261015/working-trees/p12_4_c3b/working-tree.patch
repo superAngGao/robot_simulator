@@ -1,0 +1,1503 @@
+diff --git a/benchmarks/optical/__init__.py b/benchmarks/optical/__init__.py
+index ed5b346..e1be9e5 100644
+--- a/benchmarks/optical/__init__.py
++++ b/benchmarks/optical/__init__.py
+@@ -51,7 +51,10 @@ from .native import (
+     WarpPreparedNativeInput,
+     assert_independent_native_inputs,
+     build_prepared_cuda_local_scene,
++    build_prepared_warp_bvh_refit_factory,
+     build_prepared_warp_local_scene,
++    build_prepared_warp_scene_update_factory,
++    build_prepared_warp_transform_inputs,
+     certify_native_readiness,
+     prepare_cuda_native_input,
+     prepare_warp_native_input,
+@@ -213,8 +216,11 @@ __all__ = [
+     "entry_point_hook_id",
+     "certify_native_readiness",
+     "build_c3_one_shot_native_execution_binding",
++    "build_prepared_warp_bvh_refit_factory",
+     "build_prepared_cuda_local_scene",
+     "build_prepared_warp_local_scene",
++    "build_prepared_warp_scene_update_factory",
++    "build_prepared_warp_transform_inputs",
+     "FORBIDDEN_TIMED_OPERATIONS",
+     "LaneSampleRequest",
+     "load_frozen_gate",
+diff --git a/benchmarks/optical/native.py b/benchmarks/optical/native.py
+index c09217b..e70d802 100644
+--- a/benchmarks/optical/native.py
++++ b/benchmarks/optical/native.py
+@@ -761,6 +761,83 @@ def build_prepared_warp_local_scene(prepared: WarpPreparedNativeInput):
+     )
+ 
+ 
++def build_prepared_warp_transform_inputs(
++    prepared: WarpPreparedNativeInput,
++    frame_index: int,
++):
++    """Bind one exact a2 replay allocation range to the Warp scene factory."""
++
++    assert_outside_timed_boundary("prepared Warp transform-frame construction")
++    manifest = prepared.manifest
++    if prepared.backend != "warp" or manifest.input_contract != CANONICAL_NATIVE_REPLAY_INPUT:
++        raise ValueError("prepared Warp transform inputs require canonical_native_replay_v1")
++    if manifest.transform_replay_sha256 is None:
++        raise ValueError("prepared Warp transform replay provenance is incomplete")
++    if frame_index < 0 or frame_index >= manifest.transform_frame_count:
++        raise ValueError("prepared Warp transform frame index is out of range")
++    from optics.device_scene import warp_replay_transform_inputs
++
++    return warp_replay_transform_inputs(
++        prepared.arrays["replay_x_world_R"],
++        prepared.arrays["replay_x_world_r"],
++        frame_index=frame_index,
++        input_contract=manifest.input_contract,
++        transform_replay_sha256=manifest.transform_replay_sha256,
++        resources=(prepared,),
++    )
++
++
++def build_prepared_warp_scene_update_factory(
++    prepared: WarpPreparedNativeInput,
++    *,
++    stream: object,
++):
++    """Bind the Warp scene factory to the exact prepared manifest and scene."""
++
++    assert_outside_timed_boundary("prepared Warp scene-command factory construction")
++    if not prepared.manifest.result_capable or prepared.manifest.input_contract is None:
++        raise ValueError("prepared Warp scene factory requires result-capable provenance")
++    from optics.device_scene import WarpSceneUpdateCommandFactory
++
++    return WarpSceneUpdateCommandFactory(
++        build_prepared_warp_local_scene(prepared),
++        stream=stream,
++        native_input_manifest_sha256=prepared.manifest.sha256,
++        input_contract=prepared.manifest.input_contract,
++    )
++
++
++def build_prepared_warp_bvh_refit_factory(
++    prepared: WarpPreparedNativeInput,
++    bvh: object,
++    *,
++    stream: object,
++):
++    """Bind one actual Warp topology to the exact prepared scene provenance."""
++
++    assert_outside_timed_boundary("prepared Warp BVH-refit factory construction")
++    manifest = prepared.manifest
++    if not manifest.result_capable or manifest.input_contract is None:
++        raise ValueError("prepared Warp refit factory requires result-capable provenance")
++    packed = prepared.source.packed_scene_owner if prepared.source is not None else None
++    if packed is None:
++        raise ValueError("prepared Warp refit factory lacks its packed scene owner")
++    if int(getattr(bvh, "num_primitives", -1)) != packed.num_triangles:
++        raise ValueError("prepared Warp refit topology primitive count does not match its scene")
++    if int(getattr(getattr(bvh, "device", None), "ordinal", -1)) != prepared.device_ordinal:
++        raise ValueError("prepared Warp refit topology is on the wrong device")
++    from optics.device_bvh import WarpBvhRefitCommandFactory
++
++    return WarpBvhRefitCommandFactory(
++        bvh,
++        stream=stream,
++        native_input_manifest_sha256=manifest.sha256,
++        native_input_topology_sha256=manifest.topology_sha256,
++        scene_contract_sha256=manifest.scene_contract_sha256,
++        input_contract=manifest.input_contract,
++    )
++
++
+ def build_prepared_cuda_local_scene(prepared: CudaPreparedNativeInput):
+     """Create a production CUDA scene wrapper over exact a2 allocations."""
+ 
+diff --git a/optics/__init__.py b/optics/__init__.py
+index 90aa412..cac455b 100644
+--- a/optics/__init__.py
++++ b/optics/__init__.py
+@@ -39,8 +39,13 @@ from .device import (
+     stage_optical_compute_result_to_host,
+ )
+ from .device_bvh import (
++    WARP_BVH_REFIT_ACCELERATION_ID,
++    WARP_BVH_TOPOLOGY_ORIGIN_ID,
+     DeviceBvhBuildStats,
+     DeviceOpticalBvh,
++    WarpBvhRefitCommandBundle,
++    WarpBvhRefitCommandEvidence,
++    WarpBvhRefitCommandFactory,
+     build_device_bvh_from_snapshot,
+     build_host_median_bvh,
+     refit_device_bvh_from_snapshot,
+@@ -51,10 +56,17 @@ from .device_scene import (
+     DeviceOpticalScene,
+     DeviceOpticalSceneCache,
+     DeviceOpticalSceneSnapshot,
++    WarpSceneTransformInputs,
++    WarpSceneUpdateCommandBundle,
++    WarpSceneUpdateCommandEvidence,
++    WarpSceneUpdateCommandFactory,
++    WarpWorldSceneBuffers,
++    allocate_warp_world_scene_buffers,
+     build_device_optical_scene,
+     build_device_optical_scene_from_packed,
+     device_optical_scene_from_arrays,
+     update_device_optical_scene_from_gpu_frame,
++    warp_replay_transform_inputs,
+ )
+ from .execution import (
+     CpuBvhOpticalExecutor,
+@@ -88,12 +100,6 @@ from .registry import (
+     OpticalTriangleMeshGeometry,
+     OpticalWorldRegistry,
+ )
+-from .scene_contract import (
+-    SCENE_ARRAY_SEMANTICS,
+-    SCENE_CONTRACT_SCHEMA_VERSION,
+-    SCENE_MATERIALIZER_ID,
+-    PackedOpticalSceneHost,
+-)
+ from .scene import (
+     CpuBvhNode,
+     OpticalFrameInputs,
+@@ -102,6 +108,12 @@ from .scene import (
+     OpticalSceneCache,
+     OpticalSceneSnapshot,
+ )
++from .scene_contract import (
++    SCENE_ARRAY_SEMANTICS,
++    SCENE_CONTRACT_SCHEMA_VERSION,
++    SCENE_MATERIALIZER_ID,
++    PackedOpticalSceneHost,
++)
+ from .warp_execution import (
+     GpuBruteForceOpticalExecutor,
+     GpuDeviceBvhDirectLightOpticalExecutor,
+@@ -139,6 +151,16 @@ __all__ = [
+     "DeviceOpticalScene",
+     "DeviceOpticalSceneCache",
+     "DeviceOpticalSceneSnapshot",
++    "WARP_BVH_REFIT_ACCELERATION_ID",
++    "WARP_BVH_TOPOLOGY_ORIGIN_ID",
++    "WarpBvhRefitCommandBundle",
++    "WarpBvhRefitCommandEvidence",
++    "WarpBvhRefitCommandFactory",
++    "WarpSceneTransformInputs",
++    "WarpSceneUpdateCommandBundle",
++    "WarpSceneUpdateCommandEvidence",
++    "WarpSceneUpdateCommandFactory",
++    "WarpWorldSceneBuffers",
+     "GpuBruteForceOpticalExecutor",
+     "GpuDeviceBvhDirectLightOpticalExecutor",
+     "GpuDeviceBvhOpticalExecutor",
+@@ -176,6 +198,7 @@ __all__ = [
+     "SCENE_MATERIALIZER_ID",
+     "CanonicalHostChannelSpec",
+     "build_host_optical_primitive_workload",
++    "allocate_warp_world_scene_buffers",
+     "allocate_cuda_direct_light_buffers",
+     "cuda_direct_light_available",
+     "channel_is_device",
+@@ -199,4 +222,5 @@ __all__ = [
+     "stage_channels_to_host",
+     "stage_optical_compute_result_to_host",
+     "update_device_optical_scene_from_gpu_frame",
++    "warp_replay_transform_inputs",
+ ]
+diff --git a/optics/cuda_lbvh.py b/optics/cuda_lbvh.py
+index 994ee45..01dc81d 100644
+--- a/optics/cuda_lbvh.py
++++ b/optics/cuda_lbvh.py
+@@ -181,6 +181,7 @@ def build_cuda_lbvh_from_snapshot(
+         primitive_geometry_primitive_index=scene.triangle_geometry_primitive_index,
+         primitive_source_order_key=scene.triangle_source_order_key,
+         stats=stats,
++        scene_contract_sha256=scene.scene_contract_sha256,
+         ready_event=ready_event,
+         resources=resources,
+     )
+diff --git a/optics/device_bvh.py b/optics/device_bvh.py
+index f4b0d6e..207ac94 100644
+--- a/optics/device_bvh.py
++++ b/optics/device_bvh.py
+@@ -2,13 +2,24 @@
+ 
+ from __future__ import annotations
+ 
++import hashlib
+ import time
+ from contextlib import nullcontext
+ from dataclasses import dataclass, replace
+ 
+ import numpy as np
+ 
+-from .device_scene import DeviceOpticalSceneSnapshot
++from .device_scene import (
++    DeviceOpticalSceneSnapshot,
++    WarpWorldSceneBuffers,
++    _canonical_sha256,
++    _sha256_text,
++    _validate_disjoint_warp_storage,
++    _validate_warp_array,
++    _validate_warp_stream,
++    _warp_storage_manifest_sha256,
++    _warp_world_scene_arrays,
++)
+ 
+ try:  # pragma: no cover - exercised in GPU environments.
+     import warp as wp
+@@ -19,6 +30,11 @@ except Exception:  # pragma: no cover - keeps CPU-only imports working.
+     _HAS_WARP = False
+ 
+ _CENTROID_EPS = 1.0e-12
++WARP_BVH_REFIT_OPERATION_ID = "warp_bvh_leaf_internal_refit_out_v1"
++WARP_BVH_REFIT_ACCELERATION_ID = "cpu_median_leaf4_topology_warp_refit_v1"
++WARP_BVH_REFIT_COMMAND_SCHEMA_VERSION = "q54.p12.4.warp-bvh-refit-command.v2"
++WARP_BVH_TOPOLOGY_SCHEMA_VERSION = "q54.p12.4.warp-bvh-topology.v2"
++WARP_BVH_TOPOLOGY_ORIGIN_ID = "cpu_median_longest_axis_leaf4_source_order_v1"
+ 
+ 
+ @dataclass(frozen=True)
+@@ -67,6 +83,9 @@ class DeviceOpticalBvh:
+     primitive_geometry_primitive_index: object
+     primitive_source_order_key: object
+     stats: DeviceBvhBuildStats
++    topology_origin_id: str | None = None
++    scene_contract_sha256: str | None = None
++    topology_sha256: str | None = None
+     ready_event: object | None = None
+     resources: tuple[object, ...] = ()
+ 
+@@ -79,6 +98,466 @@ class DeviceOpticalBvh:
+         return int(self.prim_ids.shape[0])
+ 
+ 
++@dataclass(frozen=True)
++class WarpBvhRefitCommandEvidence:
++    """Independent facts captured while a Warp refit bundle is sealed."""
++
++    schema_version: str
++    operation_id: str
++    acceleration_id: str
++    device_ordinal: int
++    stream_handle: int
++    native_input_manifest_sha256: str
++    scene_contract_sha256: str
++    input_contract: str
++    native_input_topology_sha256: str
++    topology_origin_id: str
++    topology_sha256: str
++    primitive_count: int
++    node_count: int
++    leaf_count: int
++    input_storage_sha256: str
++    output_storage_sha256: str
++    dispatch_count: int
++    dispatch_plan_sha256: str
++
++    @property
++    def sha256(self) -> str:
++        return _canonical_sha256(self.__dict__)
++
++
++class WarpBvhRefitCommandBundle:
++    """Immutable pre-recorded Warp refit commands for one storage graph."""
++
++    __slots__ = (
++        "_commands",
++        "_poisoned",
++        "_sealed",
++        "bvh",
++        "evidence",
++        "stream",
++        "world",
++    )
++
++    def __init__(
++        self,
++        *,
++        commands: tuple[object, ...],
++        evidence: WarpBvhRefitCommandEvidence,
++        world: WarpWorldSceneBuffers,
++        bvh: DeviceOpticalBvh,
++        stream: object,
++    ) -> None:
++        self._commands = commands
++        self._poisoned = False
++        self.evidence = evidence
++        self.world = world
++        self.bvh = bvh
++        self.stream = stream
++        self._sealed = True
++
++    def __setattr__(self, name: str, value: object) -> None:
++        if getattr(self, "_sealed", False):
++            raise AttributeError("Warp BVH-refit command bundle is immutable")
++        object.__setattr__(self, name, value)
++
++    @property
++    def dispatch_count(self) -> int:
++        return len(self._commands)
++
++    @property
++    def poisoned(self) -> bool:
++        return self._poisoned
++
++    def enqueue(self) -> None:
++        """Launch only the frozen leaf/internal commands on the frozen stream."""
++
++        if self._poisoned:
++            raise RuntimeError("Warp BVH-refit command bundle is poisoned")
++        try:
++            for command in self._commands:
++                command.launch(stream=self.stream)
++        except Exception:
++            object.__setattr__(self, "_poisoned", True)
++            raise
++
++
++class WarpBvhRefitCommandFactory:
++    """Seal immutable topology and caller-owned slot bounds into Warp commands."""
++
++    __slots__ = (
++        "_frozen_device_ordinal",
++        "_frozen_immutable_storage_sha256",
++        "_frozen_input_contract",
++        "_frozen_native_input_manifest_sha256",
++        "_frozen_native_input_topology_sha256",
++        "_frozen_scene_contract_sha256",
++        "_frozen_stream_handle",
++        "_frozen_topology_facts",
++        "_frozen_topology_origin_id",
++        "_frozen_topology_sha256",
++        "_sealed",
++        "input_contract",
++        "native_input_manifest_sha256",
++        "native_input_topology_sha256",
++        "scene_contract_sha256",
++        "stream",
++        "topology",
++    )
++
++    def __init__(
++        self,
++        topology: DeviceOpticalBvh,
++        *,
++        stream: object,
++        native_input_manifest_sha256: str,
++        native_input_topology_sha256: str,
++        scene_contract_sha256: str,
++        input_contract: str,
++    ) -> None:
++        _require_warp()
++        if (
++            not _sha256_text(native_input_manifest_sha256)
++            or not _sha256_text(native_input_topology_sha256)
++            or not _sha256_text(scene_contract_sha256)
++            or not input_contract
++        ):
++            raise ValueError("Warp BVH-refit provenance must be non-empty")
++        _validate_warp_stream(stream, device=topology.device)
++        _validate_warp_bvh_storage(topology)
++        if topology.scene_contract_sha256 != scene_contract_sha256:
++            raise ValueError("Warp BVH topology belongs to a different scene contract")
++        if not _sha256_text(topology.topology_sha256):
++            raise ValueError("Warp BVH lacks canonical topology evidence")
++        if topology.topology_origin_id != WARP_BVH_TOPOLOGY_ORIGIN_ID:
++            raise ValueError("Warp refit requires the frozen leaf-4 topology origin")
++        if topology.stats.leaf_size != 4 or topology.stats.split_strategy != "sort":
++            raise ValueError("Warp refit requires leaf_size=4 and split_strategy='sort'")
++        if topology.ready_event is not None:
++            stream.wait_event(topology.ready_event)
++        self.topology = topology
++        self.stream = stream
++        self.native_input_manifest_sha256 = native_input_manifest_sha256
++        self.native_input_topology_sha256 = native_input_topology_sha256
++        self.scene_contract_sha256 = scene_contract_sha256
++        self.input_contract = input_contract
++        self._frozen_device_ordinal = int(topology.device.ordinal)
++        self._frozen_stream_handle = int(stream.cuda_stream)
++        self._frozen_scene_contract_sha256 = topology.scene_contract_sha256
++        self._frozen_topology_origin_id = topology.topology_origin_id
++        self._frozen_topology_sha256 = topology.topology_sha256
++        self._frozen_immutable_storage_sha256 = _warp_storage_manifest_sha256(
++            _warp_bvh_immutable_arrays(topology)
++        )
++        self._frozen_topology_facts = _warp_bvh_topology_facts(topology)
++        self._frozen_native_input_manifest_sha256 = native_input_manifest_sha256
++        self._frozen_native_input_topology_sha256 = native_input_topology_sha256
++        self._frozen_input_contract = input_contract
++        self._sealed = True
++
++    def __setattr__(self, name: str, value: object) -> None:
++        if getattr(self, "_sealed", False):
++            raise AttributeError("Warp BVH-refit command factory is immutable")
++        object.__setattr__(self, name, value)
++
++    def seal(
++        self,
++        *,
++        world: WarpWorldSceneBuffers,
++        bvh: DeviceOpticalBvh | None = None,
++    ) -> WarpBvhRefitCommandBundle:
++        """Validate and record one immutable refit plan outside timing."""
++
++        self._validate_frozen_state()
++        bvh = self.topology if bvh is None else bvh
++        if not isinstance(world, WarpWorldSceneBuffers):
++            raise TypeError("world must be WarpWorldSceneBuffers")
++        _validate_matching_warp_bvh_topology(self.topology, bvh)
++        if bvh.ready_event is not None and bvh is not self.topology:
++            self.stream.wait_event(bvh.ready_event)
++        if wp.get_device(world.device) != wp.get_device(bvh.device):
++            raise ValueError("Warp BVH and world-scene output devices must match")
++        for name in ("triangle_aabb_min", "triangle_aabb_max"):
++            _validate_warp_array(
++                getattr(world, name),
++                name=name,
++                dtype=wp.float32,
++                ndim=2,
++                shape=(bvh.num_primitives, 3),
++                device=bvh.device,
++            )
++        input_arrays = _warp_refit_input_arrays(world, bvh)
++        output_arrays = _warp_refit_output_arrays(bvh)
++        _validate_disjoint_warp_storage(
++            _warp_world_scene_arrays(world) + input_arrays,
++            output_arrays,
++        )
++
++        commands: list[object] = []
++        dispatches: list[dict[str, object]] = []
++        if bvh.num_nodes > 0:
++            commands.append(
++                wp.launch(
++                    _refit_bvh_leaf_bounds_kernel,
++                    dim=bvh.num_nodes,
++                    inputs=(
++                        world.triangle_aabb_min,
++                        world.triangle_aabb_max,
++                        bvh.start,
++                        bvh.count,
++                        bvh.prim_ids,
++                        bvh.bounds_min,
++                        bvh.bounds_max,
++                    ),
++                    device=bvh.device,
++                    stream=self.stream,
++                    record_tape=False,
++                    record_cmd=True,
++                )
++            )
++            dispatches.append({"kernel": "refit_bvh_leaf_bounds", "dim": bvh.num_nodes})
++            for depth in range(bvh.stats.max_depth - 1, -1, -1):
++                level_start, level_end = bvh.stats.level_ranges[depth]
++                level_count = int(level_end - level_start)
++                if level_count <= 0:
++                    continue
++                commands.append(
++                    wp.launch(
++                        _refit_bvh_internal_bounds_kernel,
++                        dim=level_count,
++                        inputs=(
++                            int(level_start),
++                            bvh.left,
++                            bvh.right,
++                            bvh.count,
++                            bvh.bounds_min,
++                            bvh.bounds_max,
++                        ),
++                        device=bvh.device,
++                        stream=self.stream,
++                        record_tape=False,
++                        record_cmd=True,
++                    )
++                )
++                dispatches.append(
++                    {
++                        "kernel": "refit_bvh_internal_bounds",
++                        "depth": depth,
++                        "level_start": int(level_start),
++                        "dim": level_count,
++                    }
++                )
++
++        evidence = WarpBvhRefitCommandEvidence(
++            schema_version=WARP_BVH_REFIT_COMMAND_SCHEMA_VERSION,
++            operation_id=WARP_BVH_REFIT_OPERATION_ID,
++            acceleration_id=WARP_BVH_REFIT_ACCELERATION_ID,
++            device_ordinal=int(bvh.device.ordinal),
++            stream_handle=int(self.stream.cuda_stream),
++            native_input_manifest_sha256=self.native_input_manifest_sha256,
++            scene_contract_sha256=self.scene_contract_sha256,
++            input_contract=self.input_contract,
++            native_input_topology_sha256=self.native_input_topology_sha256,
++            topology_origin_id=bvh.topology_origin_id,
++            topology_sha256=bvh.topology_sha256,
++            primitive_count=bvh.num_primitives,
++            node_count=bvh.num_nodes,
++            leaf_count=bvh.stats.num_leaves,
++            input_storage_sha256=_warp_storage_manifest_sha256(input_arrays),
++            output_storage_sha256=_warp_storage_manifest_sha256(output_arrays),
++            dispatch_count=len(commands),
++            dispatch_plan_sha256=_canonical_sha256(dispatches),
++        )
++        return WarpBvhRefitCommandBundle(
++            commands=tuple(commands),
++            evidence=evidence,
++            world=world,
++            bvh=bvh,
++            stream=self.stream,
++        )
++
++    def _validate_frozen_state(self) -> None:
++        topology = self.topology
++        _validate_warp_stream(self.stream, device=topology.device)
++        if int(topology.device.ordinal) != self._frozen_device_ordinal:
++            raise ValueError("Warp refit factory device drifted after construction")
++        if int(self.stream.cuda_stream) != self._frozen_stream_handle:
++            raise ValueError("Warp refit factory stream drifted after construction")
++        if topology.scene_contract_sha256 != self._frozen_scene_contract_sha256:
++            raise ValueError("Warp refit factory scene contract drifted after construction")
++        if topology.topology_origin_id != self._frozen_topology_origin_id:
++            raise ValueError("Warp refit factory topology origin drifted after construction")
++        if topology.topology_sha256 != self._frozen_topology_sha256:
++            raise ValueError("Warp refit factory topology hash drifted after construction")
++        if (
++            _warp_storage_manifest_sha256(_warp_bvh_immutable_arrays(topology))
++            != self._frozen_immutable_storage_sha256
++        ):
++            raise ValueError("Warp refit factory topology storage drifted after construction")
++        if _warp_bvh_topology_facts(topology) != self._frozen_topology_facts:
++            raise ValueError("Warp refit factory topology facts drifted after construction")
++        if (
++            self.native_input_manifest_sha256
++            != self._frozen_native_input_manifest_sha256
++            or self.native_input_topology_sha256
++            != self._frozen_native_input_topology_sha256
++            or self.scene_contract_sha256 != self._frozen_scene_contract_sha256
++            or self.input_contract != self._frozen_input_contract
++        ):
++            raise ValueError("Warp refit factory provenance drifted after construction")
++
++
++def _validate_warp_bvh_storage(bvh: DeviceOpticalBvh) -> None:
++    if not isinstance(bvh, DeviceOpticalBvh):
++        raise TypeError("bvh must be DeviceOpticalBvh")
++    if not bvh.stats.supports_refit:
++        raise ValueError("Warp BVH topology does not support refit")
++    device = bvh.device
++    nodes = bvh.num_nodes
++    primitives = bvh.num_primitives
++    for name in ("bounds_min", "bounds_max"):
++        _validate_warp_array(
++            getattr(bvh, name),
++            name=f"bvh_{name}",
++            dtype=wp.float32,
++            ndim=2,
++            shape=(nodes, 3),
++            device=device,
++        )
++    for name in ("left", "right", "start", "count", "node_depth"):
++        _validate_warp_array(
++            getattr(bvh, name),
++            name=f"bvh_{name}",
++            dtype=wp.int32,
++            ndim=1,
++            shape=(nodes,),
++            device=device,
++        )
++    _validate_warp_array(
++        bvh.level_ranges,
++        name="bvh_level_ranges",
++        dtype=wp.int32,
++        ndim=2,
++        device=device,
++    )
++    _validate_warp_array(
++        bvh.prim_ids,
++        name="bvh_prim_ids",
++        dtype=wp.int32,
++        ndim=1,
++        shape=(primitives,),
++        device=device,
++    )
++    for name in (
++        "primitive_global_id",
++        "primitive_instance_index",
++        "primitive_index_within_instance",
++        "primitive_geometry_index",
++        "primitive_geometry_primitive_index",
++    ):
++        _validate_warp_array(
++            getattr(bvh, name),
++            name=name,
++            dtype=wp.int32,
++            ndim=1,
++            shape=(primitives,),
++            device=device,
++        )
++    _validate_warp_array(
++        bvh.primitive_source_order_key,
++        name="primitive_source_order_key",
++        dtype=wp.int64,
++        ndim=1,
++        shape=(primitives,),
++        device=device,
++    )
++    expected_levels = 0 if nodes == 0 else bvh.stats.max_depth + 1
++    if tuple(bvh.level_ranges.shape) != (expected_levels, 2):
++        raise ValueError("Warp BVH level-range storage does not match topology stats")
++    if len(bvh.stats.level_ranges) != expected_levels:
++        raise ValueError("Warp BVH host level ranges do not match topology stats")
++    if nodes == 0:
++        if primitives != 0 or bvh.stats.num_leaves != 0:
++            raise ValueError("empty Warp BVH topology counts are inconsistent")
++    elif bvh.stats.num_leaves <= 0:
++        raise ValueError("non-empty Warp BVH must contain a leaf")
++
++
++def _validate_matching_warp_bvh_topology(
++    source: DeviceOpticalBvh,
++    target: DeviceOpticalBvh,
++) -> None:
++    _validate_warp_bvh_storage(target)
++    if wp.get_device(target.device) != wp.get_device(source.device):
++        raise ValueError("Warp BVH slot and topology devices do not match")
++    if target.scene_contract_sha256 != source.scene_contract_sha256:
++        raise ValueError("Warp BVH slot belongs to a different scene contract")
++    if target.topology_sha256 != source.topology_sha256:
++        raise ValueError("Warp BVH slot topology hash does not match the factory")
++    if target.topology_origin_id != source.topology_origin_id:
++        raise ValueError("Warp BVH slot topology origin does not match the factory")
++    if _warp_storage_manifest_sha256(
++        _warp_bvh_immutable_arrays(target)
++    ) != _warp_storage_manifest_sha256(_warp_bvh_immutable_arrays(source)):
++        raise ValueError("Warp BVH slot replaced immutable topology storage")
++    if _warp_bvh_topology_facts(target) != _warp_bvh_topology_facts(source):
++        raise ValueError("Warp BVH slot topology facts do not match the factory")
++
++
++def _warp_bvh_topology_facts(bvh: DeviceOpticalBvh) -> tuple[object, ...]:
++    return (
++        bvh.stats.num_nodes,
++        bvh.stats.num_leaves,
++        bvh.stats.max_depth,
++        bvh.stats.leaf_size,
++        bvh.stats.split_strategy,
++        bvh.stats.supports_refit,
++        bvh.stats.level_ranges,
++    )
++
++
++def _warp_bvh_immutable_arrays(
++    bvh: DeviceOpticalBvh,
++) -> tuple[tuple[str, object], ...]:
++    return (
++        ("bvh_left", bvh.left),
++        ("bvh_right", bvh.right),
++        ("bvh_start", bvh.start),
++        ("bvh_count", bvh.count),
++        ("bvh_node_depth", bvh.node_depth),
++        ("bvh_level_ranges", bvh.level_ranges),
++        ("bvh_prim_ids", bvh.prim_ids),
++        ("primitive_global_id", bvh.primitive_global_id),
++        ("primitive_instance_index", bvh.primitive_instance_index),
++        ("primitive_index_within_instance", bvh.primitive_index_within_instance),
++        ("primitive_geometry_index", bvh.primitive_geometry_index),
++        (
++            "primitive_geometry_primitive_index",
++            bvh.primitive_geometry_primitive_index,
++        ),
++        ("primitive_source_order_key", bvh.primitive_source_order_key),
++    )
++
++
++def _warp_refit_input_arrays(
++    world: WarpWorldSceneBuffers,
++    bvh: DeviceOpticalBvh,
++) -> tuple[tuple[str, object], ...]:
++    return (
++        ("triangle_aabb_min", world.triangle_aabb_min),
++        ("triangle_aabb_max", world.triangle_aabb_max),
++    ) + _warp_bvh_immutable_arrays(bvh)
++
++
++def _warp_refit_output_arrays(
++    bvh: DeviceOpticalBvh,
++) -> tuple[tuple[str, object], ...]:
++    return (
++        ("bvh_bounds_min", bvh.bounds_min),
++        ("bvh_bounds_max", bvh.bounds_max),
++    )
++
++
+ def build_device_bvh_from_snapshot(
+     snapshot: DeviceOpticalSceneSnapshot,
+     *,
+@@ -128,6 +607,7 @@ def build_device_bvh_from_snapshot(
+         leaf_size=int(leaf_size),
+         split_strategy=split_strategy,
+     )
++    topology_sha256 = host_bvh_topology_sha256(host_bvh)
+     host_build_ms = (time.perf_counter() - host_build_start) * 1000.0
+ 
+     upload_start = time.perf_counter()
+@@ -207,6 +687,13 @@ def build_device_bvh_from_snapshot(
+         primitive_geometry_primitive_index=primitive_geometry_primitive_index_wp,
+         primitive_source_order_key=primitive_source_order_key_wp,
+         stats=stats,
++        topology_origin_id=(
++            WARP_BVH_TOPOLOGY_ORIGIN_ID
++            if int(leaf_size) == 4 and split_strategy == "sort"
++            else None
++        ),
++        scene_contract_sha256=scene.scene_contract_sha256,
++        topology_sha256=topology_sha256,
+         ready_event=ready_event,
+         resources=resources,
+     )
+@@ -294,6 +781,8 @@ def build_host_median_bvh(
+     split_strategy: str = "sort",
+ ) -> dict[str, object]:
+     """Build the canonical CPU median/longest-axis normalized BVH arrays."""
++    if leaf_size <= 0:
++        raise ValueError("leaf_size must be > 0")
+     if split_strategy not in {"sort", "partition"}:
+         raise ValueError("split_strategy must be 'sort' or 'partition'")
+     num_primitives = int(aabb_min.shape[0])
+@@ -306,6 +795,7 @@ def build_host_median_bvh(
+             max_depth=0,
+             leaf_size=leaf_size,
+             sah_quality_cost=0.0,
++            split_strategy=split_strategy,
+             level_ranges=(),
+         )
+         return {
+@@ -438,6 +928,41 @@ def build_host_median_bvh(
+     }
+ 
+ 
++def host_bvh_topology_sha256(host_bvh: dict[str, object]) -> str:
++    """Hash the complete normalized CPU topology before its one-time upload."""
++
++    stats = host_bvh.get("stats")
++    if not isinstance(stats, DeviceBvhBuildStats):
++        raise ValueError("host BVH topology requires canonical build stats")
++    digest = hashlib.sha256(WARP_BVH_TOPOLOGY_SCHEMA_VERSION.encode("ascii"))
++    digest.update(
++        _canonical_sha256(
++            {
++                "builder": "cpu_median_longest_axis_source_order_v1",
++                "leaf_size": stats.leaf_size,
++                "split_strategy": stats.split_strategy,
++            }
++        ).encode("ascii")
++    )
++    for name in (
++        "left",
++        "right",
++        "start",
++        "count",
++        "node_depth",
++        "level_ranges",
++        "prim_ids",
++    ):
++        value = np.asarray(host_bvh[name])
++        if not value.flags.c_contiguous:
++            raise ValueError(f"host BVH topology array {name!r} must be contiguous")
++        digest.update(name.encode("ascii"))
++        digest.update(value.dtype.str.encode("ascii"))
++        digest.update(str(tuple(int(dimension) for dimension in value.shape)).encode("ascii"))
++        digest.update(value.tobytes(order="C"))
++    return digest.hexdigest()
++
++
+ def _surface_area(bounds_min: np.ndarray, bounds_max: np.ndarray) -> float:
+     extent = np.maximum(
+         np.asarray(bounds_max, dtype=np.float64) - np.asarray(bounds_min, dtype=np.float64), 0.0
+diff --git a/optics/device_scene.py b/optics/device_scene.py
+index 21e2fd3..9d43a72 100644
+--- a/optics/device_scene.py
++++ b/optics/device_scene.py
+@@ -2,6 +2,8 @@
+ 
+ from __future__ import annotations
+ 
++import hashlib
++import json
+ from contextlib import nullcontext
+ from dataclasses import dataclass
+ from types import MappingProxyType
+@@ -23,6 +25,35 @@ except Exception:  # pragma: no cover - keeps CPU-only imports working.
+ 
+ _BUILD_EPS_F32 = 1.0e-8
+ _MAX_INT64_ROLE_BITS = 63
++WARP_SCENE_UPDATE_OPERATION_ID = "warp_local_scene_transform_and_aabb_out_v1"
++WARP_SCENE_COMMAND_SCHEMA_VERSION = "q54.p12.4.warp-scene-command.v1"
++_DEVICE_SCENE_ARRAY_NAMES = (
++    "material_albedo_rgb",
++    "light_kind",
++    "light_position_or_direction_world",
++    "light_intensity",
++    "light_color_rgb",
++    "triangle_vertices_local",
++    "triangle_instance_index",
++    "triangle_primitive_global_id",
++    "triangle_primitive_index_within_instance",
++    "triangle_geometry_index",
++    "triangle_geometry_primitive_index",
++    "triangle_source_order_key",
++    "triangle_role_mask",
++    "triangle_numeric_instance_id",
++    "triangle_material_index",
++    "plane_normal_local",
++    "plane_point_local",
++    "plane_instance_index",
++    "plane_source_order_key",
++    "plane_role_mask",
++    "plane_numeric_instance_id",
++    "plane_material_index",
++    "instance_body_index",
++    "instance_X_body_geometry_R",
++    "instance_X_body_geometry_r",
++)
+ 
+ 
+ @dataclass(frozen=True)
+@@ -139,6 +170,633 @@ class DeviceOpticalSceneSnapshot:
+     resources: tuple[object, ...] = ()
+ 
+ 
++@dataclass(frozen=True)
++class WarpSceneTransformInputs:
++    """One already-created Warp transform view bound outside native timing."""
++
++    x_world_R: object
++    x_world_r: object
++    env_idx: int
++    input_contract: str
++    transform_replay_sha256: str | None
++    transform_frame_index: int | None
++    resources: tuple[object, ...] = ()
++
++
++@dataclass(frozen=True)
++class WarpWorldSceneBuffers:
++    """Caller-owned mutable world geometry and AABB outputs.
++
++    The allocation helper below exists for compatibility callers and C3
++    one-shot tests. C4 must supply the final arena-owned instances.
++    """
++
++    device: object
++    triangle_v0_world: object
++    triangle_e1_world: object
++    triangle_e2_world: object
++    triangle_normal_world: object
++    plane_normal_world: object
++    plane_point_world: object
++    triangle_aabb_min: object
++    triangle_aabb_max: object
++    resources: tuple[object, ...] = ()
++
++    def as_snapshot(
++        self,
++        scene: DeviceOpticalScene,
++        *,
++        frame_id: int,
++        sim_time: float,
++        env_idx: int,
++    ) -> DeviceOpticalSceneSnapshot:
++        """Create an untimed compatibility view without recording an event."""
++
++        if scene.device != self.device:
++            raise ValueError("Warp world-scene buffers and local scene devices must match")
++        return DeviceOpticalSceneSnapshot(
++            frame_id=int(frame_id),
++            sim_time=float(sim_time),
++            env_idx=int(env_idx),
++            scene=scene,
++            triangle_v0_world=self.triangle_v0_world,
++            triangle_e1_world=self.triangle_e1_world,
++            triangle_e2_world=self.triangle_e2_world,
++            triangle_normal_world=self.triangle_normal_world,
++            triangle_aabb_min=self.triangle_aabb_min,
++            triangle_aabb_max=self.triangle_aabb_max,
++            plane_normal_world=self.plane_normal_world,
++            plane_point_world=self.plane_point_world,
++            ready_event=None,
++            resources=(self,) + tuple(self.resources),
++        )
++
++
++@dataclass(frozen=True)
++class WarpSceneUpdateCommandEvidence:
++    """Independent facts captured while a Warp scene bundle is sealed."""
++
++    schema_version: str
++    operation_id: str
++    device_ordinal: int
++    stream_handle: int
++    native_input_manifest_sha256: str
++    scene_contract_sha256: str
++    input_contract: str
++    transform_replay_sha256: str | None
++    transform_frame_index: int | None
++    input_storage_sha256: str
++    output_storage_sha256: str
++    dispatch_count: int
++    dispatch_plan_sha256: str
++
++    @property
++    def sha256(self) -> str:
++        return _canonical_sha256(self.__dict__)
++
++
++class WarpSceneUpdateCommandBundle:
++    """Immutable pre-recorded Warp scene commands for one storage graph."""
++
++    __slots__ = (
++        "_commands",
++        "_poisoned",
++        "_sealed",
++        "evidence",
++        "local_scene",
++        "outputs",
++        "stream",
++        "transforms",
++    )
++
++    def __init__(
++        self,
++        *,
++        commands: tuple[object, ...],
++        evidence: WarpSceneUpdateCommandEvidence,
++        local_scene: DeviceOpticalScene,
++        transforms: WarpSceneTransformInputs,
++        outputs: WarpWorldSceneBuffers,
++        stream: object,
++    ) -> None:
++        self._commands = commands
++        self._poisoned = False
++        self.evidence = evidence
++        self.local_scene = local_scene
++        self.transforms = transforms
++        self.outputs = outputs
++        self.stream = stream
++        self._sealed = True
++
++    def __setattr__(self, name: str, value: object) -> None:
++        if getattr(self, "_sealed", False):
++            raise AttributeError("Warp scene-update command bundle is immutable")
++        object.__setattr__(self, name, value)
++
++    @property
++    def dispatch_count(self) -> int:
++        return len(self._commands)
++
++    @property
++    def poisoned(self) -> bool:
++        return self._poisoned
++
++    def enqueue(self) -> None:
++        """Launch only the frozen commands on the frozen stream."""
++
++        if self._poisoned:
++            raise RuntimeError("Warp scene-update command bundle is poisoned")
++        try:
++            for command in self._commands:
++                command.launch(stream=self.stream)
++        except Exception:
++            object.__setattr__(self, "_poisoned", True)
++            raise
++
++
++class WarpSceneUpdateCommandFactory:
++    """Seal caller-owned world outputs into allocation-free Warp commands."""
++
++    __slots__ = (
++        "_frozen_device_ordinal",
++        "_frozen_input_contract",
++        "_frozen_local_scene_storage_sha256",
++        "_frozen_native_input_manifest_sha256",
++        "_frozen_scene_contract_sha256",
++        "_frozen_stream_handle",
++        "_sealed",
++        "input_contract",
++        "local_scene",
++        "native_input_manifest_sha256",
++        "stream",
++    )
++
++    def __init__(
++        self,
++        local_scene: DeviceOpticalScene,
++        *,
++        stream: object,
++        native_input_manifest_sha256: str,
++        input_contract: str,
++    ) -> None:
++        _require_warp()
++        if not local_scene.scene_contract_sha256:
++            raise ValueError("Warp scene command requires scene-contract provenance")
++        if not _sha256_text(native_input_manifest_sha256) or not input_contract:
++            raise ValueError("Warp scene command provenance must be non-empty")
++        _validate_warp_stream(stream, device=local_scene.device)
++        self.local_scene = local_scene
++        self.stream = stream
++        self.native_input_manifest_sha256 = native_input_manifest_sha256
++        self.input_contract = input_contract
++        self._frozen_device_ordinal = int(local_scene.device.ordinal)
++        self._frozen_stream_handle = int(stream.cuda_stream)
++        self._frozen_scene_contract_sha256 = local_scene.scene_contract_sha256
++        self._frozen_local_scene_storage_sha256 = _warp_storage_manifest_sha256(
++            _warp_local_scene_arrays(local_scene)
++        )
++        self._frozen_native_input_manifest_sha256 = native_input_manifest_sha256
++        self._frozen_input_contract = input_contract
++        self._sealed = True
++
++    def __setattr__(self, name: str, value: object) -> None:
++        if getattr(self, "_sealed", False):
++            raise AttributeError("Warp scene-update command factory is immutable")
++        object.__setattr__(self, name, value)
++
++    def seal(
++        self,
++        *,
++        transforms: WarpSceneTransformInputs,
++        outputs: WarpWorldSceneBuffers,
++    ) -> WarpSceneUpdateCommandBundle:
++        """Validate and record an immutable command bundle outside timing."""
++
++        self._validate_frozen_state()
++        scene = self.local_scene
++        if transforms.input_contract != self.input_contract:
++            raise ValueError("Warp transform input contract does not match the factory")
++        _validate_warp_transform_inputs(scene, transforms)
++        _validate_warp_world_scene_buffers(scene, outputs)
++        input_arrays = _warp_scene_command_inputs(scene, transforms)
++        output_arrays = _warp_world_scene_arrays(outputs)
++        protected_arrays = _warp_local_scene_arrays(scene) + (
++            ("x_world_R", transforms.x_world_R),
++            ("x_world_r", transforms.x_world_r),
++        )
++        _validate_disjoint_warp_storage(protected_arrays, output_arrays)
++
++        commands: list[object] = []
++        dispatches: list[dict[str, object]] = []
++        if scene.num_triangles > 0:
++            commands.append(
++                wp.launch(
++                    _update_triangles_derived_aabb_world_kernel,
++                    dim=scene.num_triangles,
++                    inputs=(
++                        scene.triangle_vertices_local,
++                        scene.triangle_instance_index,
++                        scene.instance_body_index,
++                        scene.instance_X_body_geometry_R,
++                        scene.instance_X_body_geometry_r,
++                        transforms.x_world_R,
++                        transforms.x_world_r,
++                        int(transforms.env_idx),
++                        outputs.triangle_v0_world,
++                        outputs.triangle_e1_world,
++                        outputs.triangle_e2_world,
++                        outputs.triangle_normal_world,
++                        outputs.triangle_aabb_min,
++                        outputs.triangle_aabb_max,
++                    ),
++                    device=scene.device,
++                    stream=self.stream,
++                    record_tape=False,
++                    record_cmd=True,
++                )
++            )
++            dispatches.append(
++                {"kernel": "update_triangles_derived_aabb_world", "dim": scene.num_triangles}
++            )
++        if scene.num_planes > 0:
++            commands.append(
++                wp.launch(
++                    _update_planes_world_kernel,
++                    dim=scene.num_planes,
++                    inputs=(
++                        scene.plane_normal_local,
++                        scene.plane_point_local,
++                        scene.plane_instance_index,
++                        scene.instance_body_index,
++                        scene.instance_X_body_geometry_R,
++                        scene.instance_X_body_geometry_r,
++                        transforms.x_world_R,
++                        transforms.x_world_r,
++                        int(transforms.env_idx),
++                        outputs.plane_normal_world,
++                        outputs.plane_point_world,
++                    ),
++                    device=scene.device,
++                    stream=self.stream,
++                    record_tape=False,
++                    record_cmd=True,
++                )
++            )
++            dispatches.append({"kernel": "update_planes_world", "dim": scene.num_planes})
++
++        evidence = WarpSceneUpdateCommandEvidence(
++            schema_version=WARP_SCENE_COMMAND_SCHEMA_VERSION,
++            operation_id=WARP_SCENE_UPDATE_OPERATION_ID,
++            device_ordinal=int(scene.device.ordinal),
++            stream_handle=int(self.stream.cuda_stream),
++            native_input_manifest_sha256=self.native_input_manifest_sha256,
++            scene_contract_sha256=scene.scene_contract_sha256,
++            input_contract=self.input_contract,
++            transform_replay_sha256=transforms.transform_replay_sha256,
++            transform_frame_index=transforms.transform_frame_index,
++            input_storage_sha256=_warp_storage_manifest_sha256(input_arrays),
++            output_storage_sha256=_warp_storage_manifest_sha256(output_arrays),
++            dispatch_count=len(commands),
++            dispatch_plan_sha256=_canonical_sha256(dispatches),
++        )
++        return WarpSceneUpdateCommandBundle(
++            commands=tuple(commands),
++            evidence=evidence,
++            local_scene=scene,
++            transforms=transforms,
++            outputs=outputs,
++            stream=self.stream,
++        )
++
++    def _validate_frozen_state(self) -> None:
++        scene = self.local_scene
++        _validate_warp_stream(self.stream, device=scene.device)
++        if int(scene.device.ordinal) != self._frozen_device_ordinal:
++            raise ValueError("Warp scene factory device drifted after construction")
++        if int(self.stream.cuda_stream) != self._frozen_stream_handle:
++            raise ValueError("Warp scene factory stream drifted after construction")
++        if scene.scene_contract_sha256 != self._frozen_scene_contract_sha256:
++            raise ValueError("Warp scene factory contract drifted after construction")
++        if (
++            _warp_storage_manifest_sha256(_warp_local_scene_arrays(scene))
++            != self._frozen_local_scene_storage_sha256
++        ):
++            raise ValueError("Warp scene factory storage drifted after construction")
++        if (
++            self.native_input_manifest_sha256
++            != self._frozen_native_input_manifest_sha256
++            or self.input_contract != self._frozen_input_contract
++        ):
++            raise ValueError("Warp scene factory provenance drifted after construction")
++
++
++def allocate_warp_world_scene_buffers(
++    scene: DeviceOpticalScene,
++    *,
++    stream: object | None = None,
++) -> WarpWorldSceneBuffers:
++    """Allocate one caller-owned C3 test/compatibility output bundle.
++
++    This helper is intentionally not an arena and must run before native
++    timing. The sealed command factory itself never allocates outputs.
++    """
++
++    _require_warp()
++    if stream is not None:
++        _validate_warp_stream(stream, device=scene.device)
++    with _scoped_stream(stream):
++        arrays = {
++            "triangle_v0_world": wp.empty(
++                (scene.num_triangles, 3), dtype=wp.float32, device=scene.device
++            ),
++            "triangle_e1_world": wp.empty(
++                (scene.num_triangles, 3), dtype=wp.float32, device=scene.device
++            ),
++            "triangle_e2_world": wp.empty(
++                (scene.num_triangles, 3), dtype=wp.float32, device=scene.device
++            ),
++            "triangle_normal_world": wp.empty(
++                (scene.num_triangles, 3), dtype=wp.float32, device=scene.device
++            ),
++            "plane_normal_world": wp.empty(
++                (scene.num_planes, 3), dtype=wp.float32, device=scene.device
++            ),
++            "plane_point_world": wp.empty(
++                (scene.num_planes, 3), dtype=wp.float32, device=scene.device
++            ),
++            "triangle_aabb_min": wp.empty(
++                (scene.num_triangles, 3), dtype=wp.float32, device=scene.device
++            ),
++            "triangle_aabb_max": wp.empty(
++                (scene.num_triangles, 3), dtype=wp.float32, device=scene.device
++            ),
++        }
++    return WarpWorldSceneBuffers(
++        device=scene.device,
++        resources=(scene,),
++        **arrays,
++    )
++
++
++def warp_replay_transform_inputs(
++    x_world_R: object,
++    x_world_r: object,
++    *,
++    frame_index: int,
++    input_contract: str,
++    transform_replay_sha256: str,
++    resources: tuple[object, ...] = (),
++) -> WarpSceneTransformInputs:
++    """Create leading-env Warp views for one already-uploaded replay frame."""
++
++    _require_warp()
++    if not isinstance(frame_index, int) or isinstance(frame_index, bool) or frame_index < 0:
++        raise ValueError("transform replay frame index must be a non-negative integer")
++    if not input_contract or not _sha256_text(transform_replay_sha256):
++        raise ValueError("transform replay provenance must be non-empty")
++    _validate_warp_array(x_world_R, name="replay_x_world_R", dtype=wp.float32, ndim=4)
++    _validate_warp_array(x_world_r, name="replay_x_world_r", dtype=wp.float32, ndim=3)
++    if tuple(x_world_R.shape[:2]) != tuple(x_world_r.shape[:2]):
++        raise ValueError("Warp replay transform shapes do not agree")
++    if tuple(x_world_R.shape[2:]) != (3, 3) or tuple(x_world_r.shape[2:]) != (3,):
++        raise ValueError("Warp replay transform trailing shapes are invalid")
++    if frame_index >= int(x_world_R.shape[0]):
++        raise IndexError("transform replay frame index is out of range")
++    if int(x_world_R.shape[1]) == 0:
++        # Warp 1.12 rejects slicing an array that has a later zero-length
++        # dimension. Static zero-body replays never dereference transforms, so
++        # retain the exact base allocation and select the frame as the env.
++        rotation_view = x_world_R
++        translation_view = x_world_r
++        env_idx = frame_index
++    else:
++        rotation_view = x_world_R[frame_index : frame_index + 1]
++        translation_view = x_world_r[frame_index : frame_index + 1]
++        env_idx = 0
++    return WarpSceneTransformInputs(
++        x_world_R=rotation_view,
++        x_world_r=translation_view,
++        env_idx=env_idx,
++        input_contract=input_contract,
++        transform_replay_sha256=transform_replay_sha256,
++        transform_frame_index=frame_index,
++        resources=tuple(resources) + (x_world_R, x_world_r),
++    )
++
++
++def _validate_warp_transform_inputs(
++    scene: DeviceOpticalScene,
++    transforms: WarpSceneTransformInputs,
++) -> None:
++    if not isinstance(transforms, WarpSceneTransformInputs):
++        raise TypeError("transforms must be WarpSceneTransformInputs")
++    _validate_warp_array(
++        transforms.x_world_R,
++        name="x_world_R",
++        dtype=wp.float32,
++        ndim=4,
++        device=scene.device,
++    )
++    _validate_warp_array(
++        transforms.x_world_r,
++        name="x_world_r",
++        dtype=wp.float32,
++        ndim=3,
++        device=scene.device,
++    )
++    rotation_shape = tuple(transforms.x_world_R.shape)
++    translation_shape = tuple(transforms.x_world_r.shape)
++    if rotation_shape[2:] != (3, 3) or translation_shape[2:] != (3,):
++        raise ValueError("Warp transform trailing shapes are invalid")
++    if rotation_shape[:2] != translation_shape[:2]:
++        raise ValueError("Warp transform env/body dimensions do not agree")
++    if (
++        not isinstance(transforms.env_idx, int)
++        or isinstance(transforms.env_idx, bool)
++        or transforms.env_idx < 0
++        or transforms.env_idx >= rotation_shape[0]
++    ):
++        raise ValueError("Warp transform env index is out of range")
++    if scene.max_body_index >= rotation_shape[1]:
++        raise ValueError("Warp transforms do not cover the scene body indices")
++    has_replay_hash = transforms.transform_replay_sha256 is not None
++    has_replay_index = transforms.transform_frame_index is not None
++    if has_replay_hash != has_replay_index:
++        raise ValueError("Warp replay hash and frame index must appear together")
++    if has_replay_hash:
++        if not _sha256_text(transforms.transform_replay_sha256):
++            raise ValueError("Warp transform replay hash is invalid")
++        if (
++            not isinstance(transforms.transform_frame_index, int)
++            or isinstance(transforms.transform_frame_index, bool)
++            or transforms.transform_frame_index < 0
++        ):
++            raise ValueError("Warp transform replay frame index is invalid")
++
++
++def _validate_warp_world_scene_buffers(
++    scene: DeviceOpticalScene,
++    outputs: WarpWorldSceneBuffers,
++) -> None:
++    if not isinstance(outputs, WarpWorldSceneBuffers):
++        raise TypeError("outputs must be WarpWorldSceneBuffers")
++    if wp.get_device(outputs.device) != scene.device:
++        raise ValueError("Warp world-scene output device does not match the local scene")
++    expected = {
++        "triangle_v0_world": scene.num_triangles,
++        "triangle_e1_world": scene.num_triangles,
++        "triangle_e2_world": scene.num_triangles,
++        "triangle_normal_world": scene.num_triangles,
++        "triangle_aabb_min": scene.num_triangles,
++        "triangle_aabb_max": scene.num_triangles,
++        "plane_normal_world": scene.num_planes,
++        "plane_point_world": scene.num_planes,
++    }
++    for name, count in expected.items():
++        _validate_warp_array(
++            getattr(outputs, name),
++            name=name,
++            dtype=wp.float32,
++            ndim=2,
++            shape=(count, 3),
++            device=scene.device,
++        )
++
++
++def _validate_warp_stream(stream: object, *, device: object) -> None:
++    if getattr(stream, "device", None) != wp.get_device(device):
++        raise ValueError("Warp prepared stream device does not match")
++    handle = getattr(stream, "cuda_stream", None)
++    if not isinstance(handle, int) or isinstance(handle, bool) or handle <= 0:
++        raise ValueError("Warp prepared stream must expose a nonzero CUDA handle")
++
++
++def _validate_warp_array(
++    value: object,
++    *,
++    name: str,
++    dtype: object,
++    ndim: int,
++    shape: tuple[int, ...] | None = None,
++    device: object | None = None,
++) -> None:
++    if not isinstance(value, wp.array):
++        raise TypeError(f"Warp array {name!r} has the wrong type")
++    if value.dtype != dtype or int(value.ndim) != ndim:
++        raise ValueError(f"Warp array {name!r} dtype/rank does not match")
++    if shape is not None and tuple(value.shape) != shape:
++        raise ValueError(f"Warp array {name!r} shape does not match")
++    if not value.is_contiguous:
++        raise ValueError(f"Warp array {name!r} must be contiguous")
++    if device is not None and wp.get_device(value.device) != wp.get_device(device):
++        raise ValueError(f"Warp array {name!r} is on the wrong device")
++    if int(value.capacity) > 0 and int(value.ptr or 0) <= 0:
++        raise ValueError(f"Warp array {name!r} has a null pointer")
++
++
++def _warp_scene_command_inputs(
++    scene: DeviceOpticalScene,
++    transforms: WarpSceneTransformInputs,
++) -> tuple[tuple[str, object], ...]:
++    return (
++        ("triangle_vertices_local", scene.triangle_vertices_local),
++        ("triangle_instance_index", scene.triangle_instance_index),
++        ("plane_normal_local", scene.plane_normal_local),
++        ("plane_point_local", scene.plane_point_local),
++        ("plane_instance_index", scene.plane_instance_index),
++        ("instance_body_index", scene.instance_body_index),
++        ("instance_X_body_geometry_R", scene.instance_X_body_geometry_R),
++        ("instance_X_body_geometry_r", scene.instance_X_body_geometry_r),
++        ("x_world_R", transforms.x_world_R),
++        ("x_world_r", transforms.x_world_r),
++    )
++
++
++def _warp_local_scene_arrays(
++    scene: DeviceOpticalScene,
++) -> tuple[tuple[str, object], ...]:
++    return tuple((name, getattr(scene, name)) for name in _DEVICE_SCENE_ARRAY_NAMES)
++
++
++def _warp_world_scene_arrays(
++    outputs: WarpWorldSceneBuffers,
++) -> tuple[tuple[str, object], ...]:
++    return tuple(
++        (name, getattr(outputs, name))
++        for name in (
++            "triangle_v0_world",
++            "triangle_e1_world",
++            "triangle_e2_world",
++            "triangle_normal_world",
++            "plane_normal_world",
++            "plane_point_world",
++            "triangle_aabb_min",
++            "triangle_aabb_max",
++        )
++    )
++
++
++def _validate_disjoint_warp_storage(
++    inputs: tuple[tuple[str, object], ...],
++    outputs: tuple[tuple[str, object], ...],
++) -> None:
++    seen_outputs: list[tuple[str, int, int]] = []
++    input_ranges = tuple(
++        (name, int(value.ptr or 0), int(value.capacity))
++        for name, value in inputs
++        if int(value.capacity) > 0
++    )
++    for name, value in outputs:
++        start = int(value.ptr or 0)
++        size = int(value.capacity)
++        if size <= 0:
++            continue
++        end = start + size
++        for other_name, other_start, other_size in input_ranges:
++            if start < other_start + other_size and other_start < end:
++                raise ValueError(f"Warp output {name!r} overlaps input {other_name!r}")
++        for other_name, other_start, other_end in seen_outputs:
++            if start < other_end and other_start < end:
++                raise ValueError(f"Warp outputs {name!r} and {other_name!r} overlap")
++        seen_outputs.append((name, start, end))
++
++
++def _warp_storage_manifest_sha256(values: tuple[tuple[str, object], ...]) -> str:
++    return _canonical_sha256(
++        [
++            {
++                "name": name,
++                "device_ordinal": int(value.device.ordinal),
++                "ptr": int(value.ptr or 0),
++                "capacity": int(value.capacity),
++                "dtype": str(value.dtype),
++                "shape": list(value.shape),
++                "strides": list(value.strides),
++            }
++            for name, value in values
++        ]
++    )
++
++
++def _canonical_sha256(value: object) -> str:
++    encoded = json.dumps(
++        value,
++        allow_nan=False,
++        ensure_ascii=True,
++        separators=(",", ":"),
++        sort_keys=True,
++    ).encode("utf-8")
++    return hashlib.sha256(encoded).hexdigest()
++
++
++def _sha256_text(value: object) -> bool:
++    return (
++        isinstance(value, str)
++        and len(value) == 64
++        and all(character in "0123456789abcdef" for character in value)
++    )
++
++
+ class DeviceOpticalSceneCache:
+     """Device scene cache that realizes registry primitives for a GPU frame."""
+ 

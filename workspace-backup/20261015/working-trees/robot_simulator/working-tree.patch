@@ -1,0 +1,1662 @@
+diff --git a/PROGRESS.md b/PROGRESS.md
+index b07fe1b..6f0c500 100644
+--- a/PROGRESS.md
++++ b/PROGRESS.md
+@@ -2,6 +2,7 @@
+ 
+ > Last updated: 2026-04-16 (session 32)
+ > Reference plan: [PLAN.md](./PLAN.md)
++> Q54 optical-pipeline milestone addendum updated: 2026-08-10
+ 
+ ---
+ 
+@@ -977,6 +978,35 @@ max|qdot|: initial=0.98, peak=5.20, final=4.65
+ - [ ] `rendering/lidar_sim.py` — LiDAR 点云仿真
+ - [ ] IMU 噪声模型
+ 
++### Q54 Optical Pipeline Lab — P12.3e CUDA Camera Raygen ✅ (2026-08-10)
++
++- [x] Commit `39a8a13` approved after independent review and targeted reruns.
++- [x] CUDA camera rays are generated in row-major order on an explicit target
++      device and feed the shared CUDA LBVH first-hit/direct-light path.
++- [x] Raygen, first-hit, and shadow/no-shadow shade use target-device guards and
++      the target device's current Torch stream while restoring the caller's
++      ambient CUDA device.
++- [x] Direct ray parity, all three output profiles, Lab GPU-raygen, shadows, and
++      two-device restoration are covered.
++- [x] The relayed CUDA 12.8 environment evidence and 62-wheel SHA-256 manifest
++      are tracked under `deploy/robot_sim_cuda128/`.
++
++Accepted boundary:
++
++- The optical direction is CUDA-first. No Warp/Torch stream bridge is planned.
++- The current CUDA path remains blocking at two stages: geometry, then shade.
++- CUDA is not yet the default; Warp optical rendering remains a temporary
++  correctness/performance oracle.
++
++Next milestone:
++
++- [ ] P12.4 — freeze the owner-defined product budget, add explicit
++      CPU/Warp/CUDA capability/parity/benchmark rows, measure warmed end-to-end
++      workloads, and make the default/retirement decision from that evidence.
++- [ ] Do not delete the Warp optical oracle until CUDA passes the retained
++      capability, correctness, stability, absolute product-budget, and
++      no-slower-than-Warp gates on matched workloads.
++
+ ---
+ 
+ ## Phase 4 — Domain Randomization ⬜
+diff --git a/REFLECTIONS.md b/REFLECTIONS.md
+index 2d614fe..44a007e 100644
+--- a/REFLECTIONS.md
++++ b/REFLECTIONS.md
+@@ -2946,3 +2946,49 @@ Rationale:
+   create arbitrary physics runtime state.
+ - Future CLI/RL integration can wrap the same helper once engine ownership is
+   defined.
++
++---
++
++## Session 2026-08-10 — Q54 P12.3e CUDA-First Optical Decision
++
++P12.3e commit `39a8a13` is approved. The reviewed implementation establishes a
++real CUDA camera path rather than a CUDA/Warp interoperability layer:
++
++```text
++wait for Warp-owned inputs
++-> CUDA raygen -> CUDA first-hit -> target-device synchronization
++-> resolve raygen CUDA event
++-> CUDA shade -> target-device synchronization
++-> blocking result with ready_event=None
++```
++
++Settled decisions:
++
++- The intended optical render architecture is CUDA-first. We will not invest in
++  a Warp/Torch stream bridge unless the owner explicitly reverses that choice.
++- CUDA operations own an explicit target device, use that device's current
++  Torch stream, and restore the caller's ambient CUDA device.
++- The two synchronization barriers and Warp-owned scene/LBVH input boundary are
++  measured baseline costs, not hidden asynchronous behavior.
++- Warp remains only as a temporary optical oracle/fallback while P12.4 proves
++  retained capability parity, numerical correctness, stability, and the
++  owner-defined absolute frame-time or throughput budget.
++- CUDA must also be no slower than Warp on matched retained workloads. The
++  absolute product budget is an additional gate, not a replacement for this
++  relative non-regression requirement.
++- CUDA must not become the default, and the Warp optical executor must not be
++  removed, until both performance gates pass.
++
++P12.4 therefore owns the evidence contract and the default/retirement decision.
++Compilation and warmup costs must be reported separately from steady-state
++frames; end-to-end rows must include scene/acceleration preparation, raygen,
++first-hit, shade, synchronization, delivery/readback, and memory. If CUDA misses
++the gate, optimize CUDA-native ownership and synchronization directly rather
++than adding bridging work.
++
++The first P12.4 proposal treated relative Warp performance as informational.
++That was too weak and was corrected before implementation. Historical Warp
++1080p Go2 render-only measurements are roughly 5.5-6.3 ms with shadows and
++2.5-3.1 ms without shadows, depending on run/hardware. They are anchors only;
++the actual gate reruns Warp and CUDA on the same commit, device, workload, and
++measurement protocol.
+diff --git a/optics/cuda_direct_light.py b/optics/cuda_direct_light.py
+index 0110506..5477e54 100644
+--- a/optics/cuda_direct_light.py
++++ b/optics/cuda_direct_light.py
+@@ -29,6 +29,17 @@ except Exception:  # pragma: no cover - keeps CPU-only imports working.
+ _DIR_EPS = 1.0e-8
+ _T_EPS = 1.0e-5
+ _MAX_BVH_STACK = 32
++_SHADOW_TRAVERSAL_COUNTER_CHANNELS = (
++    "shadow_traversal_ray_count",
++    "shadow_traversal_directional_ray_count",
++    "shadow_traversal_point_ray_count",
++    "shadow_traversal_occluded_count",
++    "shadow_traversal_unoccluded_count",
++    "shadow_traversal_node_visit_count",
++    "shadow_traversal_leaf_visit_count",
++    "shadow_traversal_triangle_test_count",
++    "shadow_traversal_plane_test_count",
++)
+ 
+ 
+ class CudaDeviceBvhOpticalExecutor:
+@@ -46,11 +57,10 @@ class CudaDeviceBvhOpticalExecutor:
+     )
+     supported_profiles = frozenset({OpticalOutputProfile.GEOMETRY_FULL})
+ 
+-    def __init__(self, *, device=None, stream=None) -> None:
++    def __init__(self, *, device=None) -> None:
+         _require_cuda_direct_light_deps()
+         wp.init()
+         self.device = wp.get_device("cuda:0" if device is None else device)
+-        self.stream = stream
+ 
+     def execute(
+         self,
+@@ -66,27 +76,107 @@ class CudaDeviceBvhOpticalExecutor:
+         output_profile = normalize_output_profile(output_profile)
+         if output_profile is not OpticalOutputProfile.GEOMETRY_FULL:
+             raise ValueError("CudaDeviceBvhOpticalExecutor supports only output_profile='geometry_full'")
+-        self._validate(snapshot, bvh, spec)
+-        _synchronize_ready_event(snapshot.ready_event)
+-        _synchronize_ready_event(bvh.ready_event)
++        self._validate_request(
++            snapshot,
++            bvh,
++            frame_id=spec.frame_id,
++            env_idx=spec.env_idx,
++            max_distance=spec.max_distance,
++        )
++        self._wait_for_inputs(snapshot, bvh)
++
++        tensor_device = _torch_device_for_warp_device(self.device)
++        upload_start = time.perf_counter()
++        with torch.cuda.device(tensor_device):
++            origins = torch.as_tensor(
++                np.asarray(spec.origins_world, dtype=np.float32),
++                dtype=torch.float32,
++                device=tensor_device,
++            ).contiguous()
++            directions = torch.as_tensor(
++                np.asarray(spec.directions_world, dtype=np.float32),
++                dtype=torch.float32,
++                device=tensor_device,
++            ).contiguous()
++        _add_profile_ms(render_profile, "cuda_first_hit_ray_upload_ms", upload_start)
++
++        return self._execute_device_rays(
++            snapshot,
++            bvh,
++            origins,
++            directions,
++            frame_id=spec.frame_id,
++            sim_time=spec.sim_time,
++            env_idx=spec.env_idx,
++            sensor_id=spec.sensor_id,
++            max_distance=spec.max_distance,
++            sensor_role=spec.sensor_role,
++            render_profile=render_profile,
++        )
++
++    def execute_camera(
++        self,
++        snapshot: DeviceOpticalSceneSnapshot,
++        bvh: DeviceOpticalBvh,
++        camera: OpticalPinholeCameraSpec,
++        *,
++        output_profile: OpticalOutputProfile | str = OpticalOutputProfile.GEOMETRY_FULL,
++        render_profile: list[tuple[str, float]] | None = None,
++    ) -> OpticalComputeResult:
++        """Generate pinhole rays on CUDA and execute CUDA LBVH first-hit traversal."""
++
++        output_profile = normalize_output_profile(output_profile)
++        if output_profile is not OpticalOutputProfile.GEOMETRY_FULL:
++            raise ValueError("CudaDeviceBvhOpticalExecutor supports only output_profile='geometry_full'")
++        self._validate_request(
++            snapshot,
++            bvh,
++            frame_id=camera.frame_id,
++            env_idx=camera.env_idx,
++            max_distance=camera.max_distance,
++        )
++        self._wait_for_inputs(snapshot, bvh)
++        tensor_device = _torch_device_for_warp_device(self.device)
++        origins, directions, raygen_timing = _generate_pinhole_camera_ray_tensors(
++            camera,
++            device=tensor_device,
++            render_profile=render_profile,
++        )
++        return self._execute_device_rays(
++            snapshot,
++            bvh,
++            origins,
++            directions,
++            frame_id=camera.frame_id,
++            sim_time=camera.sim_time,
++            env_idx=camera.env_idx,
++            sensor_id=camera.sensor_id,
++            max_distance=camera.max_distance,
++            sensor_role=camera.sensor_role,
++            render_profile=render_profile,
++            raygen_timing=raygen_timing,
++        )
+ 
++    def _execute_device_rays(
++        self,
++        snapshot: DeviceOpticalSceneSnapshot,
++        bvh: DeviceOpticalBvh,
++        origins,
++        directions,
++        *,
++        frame_id: int,
++        sim_time: float,
++        env_idx: int,
++        sensor_id: str,
++        max_distance: float,
++        sensor_role: str,
++        render_profile: list[tuple[str, float]] | None,
++        raygen_timing: "_CudaEventTiming | None" = None,
++    ) -> OpticalComputeResult:
+         start = time.perf_counter()
+         module = _load_cuda_direct_light_extension()
+         _add_profile_ms(render_profile, "cuda_first_hit_load_extension_ms", start)
+-
+         tensor_device = _torch_device_for_warp_device(self.device)
+-        upload_start = time.perf_counter()
+-        origins = torch.as_tensor(
+-            np.asarray(spec.origins_world, dtype=np.float32),
+-            dtype=torch.float32,
+-            device=tensor_device,
+-        ).contiguous()
+-        directions = torch.as_tensor(
+-            np.asarray(spec.directions_world, dtype=np.float32),
+-            dtype=torch.float32,
+-            device=tensor_device,
+-        ).contiguous()
+-        _add_profile_ms(render_profile, "cuda_first_hit_ray_upload_ms", upload_start)
+ 
+         convert_start = time.perf_counter()
+         scene = snapshot.scene
+@@ -128,7 +218,7 @@ class CudaDeviceBvhOpticalExecutor:
+         ) = module.first_hit_rays(
+             origins,
+             directions,
+-            float(spec.max_distance),
++            float(max_distance),
+             tensors.plane_normal_world,
+             tensors.plane_point_world,
+             tensors.plane_numeric_instance_id,
+@@ -152,16 +242,17 @@ class CudaDeviceBvhOpticalExecutor:
+             tensors.bvh_count,
+             tensors.bvh_prim_ids,
+             int(bvh.num_nodes),
+-            int(scene.role_table.mask_for(spec.sensor_role)),
++            int(scene.role_table.mask_for(sensor_role)),
+         )
+         torch.cuda.synchronize(tensor_device)
+         _add_profile_ms(render_profile, "cuda_first_hit_kernel_sync_ms", execute_start)
++        _resolve_cuda_event_timing(render_profile, "raygen_kernel", raygen_timing)
+ 
+         return OpticalComputeResult(
+-            frame_id=spec.frame_id,
+-            sim_time=spec.sim_time,
+-            env_idx=spec.env_idx,
+-            sensor_id=spec.sensor_id,
++            frame_id=frame_id,
++            sim_time=sim_time,
++            env_idx=env_idx,
++            sensor_id=sensor_id,
+             location="device",
+             channels={
+                 "hit_mask": hit_mask,
+@@ -189,29 +280,19 @@ class CudaDeviceBvhOpticalExecutor:
+             ),
+         )
+ 
+-    def execute_camera(
++    def _validate_request(
+         self,
+         snapshot: DeviceOpticalSceneSnapshot,
+         bvh: DeviceOpticalBvh,
+-        camera: OpticalPinholeCameraSpec,
+         *,
+-        output_profile: OpticalOutputProfile | str = OpticalOutputProfile.GEOMETRY_FULL,
+-        render_profile: list[tuple[str, float]] | None = None,
+-    ) -> OpticalComputeResult:
+-        """Execute CUDA camera raygen once P12.3e lands."""
+-
+-        raise NotImplementedError("cuda_direct_light camera raygen is pending P12.3e")
+-
+-    def _validate(
+-        self,
+-        snapshot: DeviceOpticalSceneSnapshot,
+-        bvh: DeviceOpticalBvh,
+-        spec: OpticalRaySensorSpec,
++        frame_id: int,
++        env_idx: int,
++        max_distance: float,
+     ) -> None:
+-        if snapshot.frame_id != spec.frame_id:
+-            raise ValueError("snapshot.frame_id must match spec.frame_id")
+-        if snapshot.env_idx != spec.env_idx:
+-            raise ValueError("snapshot.env_idx must match spec.env_idx")
++        if snapshot.frame_id != frame_id:
++            raise ValueError("snapshot.frame_id must match request frame_id")
++        if snapshot.env_idx != env_idx:
++            raise ValueError("snapshot.env_idx must match request env_idx")
+         if snapshot.scene.device != bvh.device:
+             raise ValueError("DeviceOpticalSceneSnapshot and DeviceOpticalBvh devices must match")
+         if snapshot.scene.device != self.device:
+@@ -222,9 +303,14 @@ class CudaDeviceBvhOpticalExecutor:
+             raise ValueError("DeviceOpticalBvh frame_id must match DeviceOpticalSceneSnapshot frame_id")
+         if bvh.env_idx != snapshot.env_idx:
+             raise ValueError("DeviceOpticalBvh env_idx must match DeviceOpticalSceneSnapshot env_idx")
+-        if not np.isfinite(spec.max_distance):
++        if not np.isfinite(max_distance):
+             raise ValueError("CudaDeviceBvhOpticalExecutor requires finite max_distance")
+ 
++    @staticmethod
++    def _wait_for_inputs(snapshot: DeviceOpticalSceneSnapshot, bvh: DeviceOpticalBvh) -> None:
++        _synchronize_ready_event(snapshot.ready_event)
++        _synchronize_ready_event(bvh.ready_event)
++
+ 
+ class CudaDeviceBvhDirectLightOpticalExecutor:
+     """CUDA direct-light executor over a device scene plus CUDA LBVH."""
+@@ -242,7 +328,6 @@ class CudaDeviceBvhDirectLightOpticalExecutor:
+         self,
+         *,
+         device=None,
+-        stream=None,
+         shadows: bool = True,
+         ambient_rgb: tuple[float, float, float] = (0.0, 0.0, 0.0),
+         background_rgb: tuple[float, float, float] = (0.0, 0.0, 0.0),
+@@ -251,7 +336,6 @@ class CudaDeviceBvhDirectLightOpticalExecutor:
+         _require_cuda_direct_light_deps()
+         wp.init()
+         self.device = wp.get_device("cuda:0" if device is None else device)
+-        self.stream = stream
+         self.shadows = bool(shadows)
+         self.ambient_rgb = tuple(float(component) for component in ambient_rgb)
+         self.background_rgb = tuple(float(component) for component in background_rgb)
+@@ -262,7 +346,7 @@ class CudaDeviceBvhDirectLightOpticalExecutor:
+             raise ValueError("background_rgb must contain 3 components")
+         if self.shadow_bias < 0.0:
+             raise ValueError("shadow_bias must be >= 0")
+-        self._first_hit = CudaDeviceBvhOpticalExecutor(device=self.device, stream=stream)
++        self._first_hit = CudaDeviceBvhOpticalExecutor(device=self.device)
+ 
+     def execute(
+         self,
+@@ -308,10 +392,31 @@ class CudaDeviceBvhDirectLightOpticalExecutor:
+         output_profile: OpticalOutputProfile | str = OpticalOutputProfile.DIRECT_LIGHT_FULL,
+         render_profile: list[tuple[str, float]] | None = None,
+     ):
+-        """Execute camera-ray CUDA direct-light rendering once P12.3e lands."""
++        """Generate camera rays on CUDA and reuse the direct-light shade path."""
+ 
+-        self._validate_output_profile(output_profile)
+-        raise NotImplementedError("cuda_direct_light camera raygen is pending P12.3e")
++        output_profile = self._validate_output_profile(output_profile)
++        geometry = self._first_hit.execute_camera(
++            snapshot,
++            bvh,
++            camera,
++            output_profile=OpticalOutputProfile.GEOMETRY_FULL,
++            render_profile=render_profile,
++        )
++        if self.shadows:
++            return self._shade_geometry_with_shadows(
++                snapshot,
++                bvh,
++                geometry,
++                sensor_role=camera.sensor_role,
++                output_profile=output_profile,
++                render_profile=render_profile,
++            )
++        return self._shade_geometry_no_shadow(
++            snapshot,
++            geometry,
++            output_profile=output_profile,
++            render_profile=render_profile,
++        )
+ 
+     def _validate_output_profile(self, output_profile: OpticalOutputProfile | str) -> OpticalOutputProfile:
+         output_profile = normalize_output_profile(output_profile)
+@@ -350,6 +455,7 @@ class CudaDeviceBvhDirectLightOpticalExecutor:
+             intensity,
+             shadow_stack_overflow_count,
+             shadow_max_stack_depth,
++            *shadow_traversal_values,
+         ) = module.shade_direct_light_no_shadow(
+             hit_mask,
+             position_world,
+@@ -371,6 +477,9 @@ class CudaDeviceBvhDirectLightOpticalExecutor:
+         tensor_device = _torch_device_for_warp_device(self.device)
+         torch.cuda.synchronize(tensor_device)
+         _add_profile_ms(render_profile, "cuda_shade_kernel_sync_ms", execute_start)
++        shadow_traversal_counters = dict(
++            zip(_SHADOW_TRAVERSAL_COUNTER_CHANNELS, shadow_traversal_values, strict=True)
++        )
+ 
+         channels = dict(geometry.channels)
+         channels["rgb"] = rgb
+@@ -378,6 +487,8 @@ class CudaDeviceBvhDirectLightOpticalExecutor:
+         channels["shadow_stack_overflow_count"] = shadow_stack_overflow_count
+         channels["shadow_max_stack_depth"] = shadow_max_stack_depth
+         channels = _filter_channels_for_profile(channels, output_profile)
++        if render_profile is not None:
++            channels.update(shadow_traversal_counters)
+         return OpticalComputeResult(
+             frame_id=geometry.frame_id,
+             sim_time=geometry.sim_time,
+@@ -398,6 +509,7 @@ class CudaDeviceBvhDirectLightOpticalExecutor:
+                 intensity,
+                 shadow_stack_overflow_count,
+                 shadow_max_stack_depth,
++                *(tuple(shadow_traversal_counters.values()) if render_profile is not None else ()),
+             ),
+         )
+ 
+@@ -446,6 +558,7 @@ class CudaDeviceBvhDirectLightOpticalExecutor:
+             intensity,
+             shadow_stack_overflow_count,
+             shadow_max_stack_depth,
++            *shadow_traversal_values,
+         ) = module.shade_direct_light_with_shadows(
+             hit_mask,
+             position_world,
+@@ -478,10 +591,14 @@ class CudaDeviceBvhDirectLightOpticalExecutor:
+             float(self.background_rgb[0]),
+             float(self.background_rgb[1]),
+             float(self.background_rgb[2]),
++            render_profile is not None,
+         )
+         tensor_device = _torch_device_for_warp_device(self.device)
+         torch.cuda.synchronize(tensor_device)
+         _add_profile_ms(render_profile, "cuda_shade_kernel_sync_ms", execute_start)
++        shadow_traversal_counters = dict(
++            zip(_SHADOW_TRAVERSAL_COUNTER_CHANNELS, shadow_traversal_values, strict=True)
++        )
+ 
+         channels = dict(geometry.channels)
+         channels["rgb"] = rgb
+@@ -489,6 +606,8 @@ class CudaDeviceBvhDirectLightOpticalExecutor:
+         channels["shadow_stack_overflow_count"] = shadow_stack_overflow_count
+         channels["shadow_max_stack_depth"] = shadow_max_stack_depth
+         channels = _filter_channels_for_profile(channels, output_profile)
++        if render_profile is not None:
++            channels.update(shadow_traversal_counters)
+         return OpticalComputeResult(
+             frame_id=geometry.frame_id,
+             sim_time=geometry.sim_time,
+@@ -521,6 +640,7 @@ class CudaDeviceBvhDirectLightOpticalExecutor:
+                 intensity,
+                 shadow_stack_overflow_count,
+                 shadow_max_stack_depth,
++                *(tuple(shadow_traversal_counters.values()) if render_profile is not None else ()),
+             ),
+         )
+ 
+@@ -530,6 +650,78 @@ class _FirstHitTensors:
+         self.__dict__.update(values)
+ 
+ 
++class _CudaEventTiming:
++    __slots__ = ("start", "end")
++
++    def __init__(self, start, end) -> None:
++        self.start = start
++        self.end = end
++
++
++def _generate_pinhole_camera_ray_tensors(
++    camera: OpticalPinholeCameraSpec,
++    *,
++    device: "torch.device",
++    render_profile: list[tuple[str, float]] | None = None,
++):
++    """Generate flat row-major pinhole rays on an explicit CUDA device."""
++
++    _require_cuda_direct_light_deps()
++    device = torch.device(device)
++    if device.type != "cuda":
++        raise ValueError("CUDA camera raygen requires a CUDA torch.device")
++
++    params_start = time.perf_counter()
++    origin = np.asarray(camera.X_world_camera.r, dtype=np.float32)
++    rotation = np.asarray(camera.X_world_camera.R, dtype=np.float32)
++    _add_profile_ms(render_profile, "raygen_camera_params_ms", params_start)
++
++    load_start = time.perf_counter()
++    module = _load_cuda_direct_light_extension()
++    _add_profile_ms(render_profile, "cuda_raygen_load_extension_ms", load_start)
++
++    alloc_start = time.perf_counter()
++    num_rays = int(camera.width) * int(camera.height)
++    with torch.cuda.device(device):
++        origins = torch.empty((num_rays, 3), dtype=torch.float32, device=device)
++        directions = torch.empty((num_rays, 3), dtype=torch.float32, device=device)
++    _add_profile_ms(render_profile, "raygen_buffer_alloc_ms", alloc_start)
++
++    timing = None
++    stream = torch.cuda.current_stream(device)
++    if render_profile is not None:
++        start_event = torch.cuda.Event(enable_timing=True)
++        end_event = torch.cuda.Event(enable_timing=True)
++        start_event.record(stream)
++
++    module.pinhole_camera_rays_out(
++        origins,
++        directions,
++        int(camera.width),
++        int(camera.height),
++        float(camera.fx),
++        float(camera.fy),
++        float(camera.cx),
++        float(camera.cy),
++        float(origin[0]),
++        float(origin[1]),
++        float(origin[2]),
++        float(rotation[0, 0]),
++        float(rotation[0, 1]),
++        float(rotation[0, 2]),
++        float(rotation[1, 0]),
++        float(rotation[1, 1]),
++        float(rotation[1, 2]),
++        float(rotation[2, 0]),
++        float(rotation[2, 1]),
++        float(rotation[2, 2]),
++    )
++    if render_profile is not None:
++        end_event.record(stream)
++        timing = _CudaEventTiming(start_event, end_event)
++    return origins, directions, timing
++
++
+ def cuda_direct_light_available() -> bool:
+     """Return whether CUDA direct-light dependencies are importable and CUDA is available."""
+ 
+@@ -557,6 +749,15 @@ def _add_profile_ms(render_profile: list[tuple[str, float]] | None, name: str, s
+         render_profile.append((name, (time.perf_counter() - start) * 1000.0))
+ 
+ 
++def _resolve_cuda_event_timing(
++    render_profile: list[tuple[str, float]] | None,
++    name: str,
++    timing: _CudaEventTiming | None,
++) -> None:
++    if render_profile is not None and timing is not None:
++        render_profile.append((name, float(timing.start.elapsed_time(timing.end))))
++
++
+ def _filter_channels_for_profile(
+     channels: dict[str, object],
+     output_profile: OpticalOutputProfile,
+@@ -571,10 +772,15 @@ def _filter_channels_for_profile(
+ def _load_cuda_direct_light_extension():
+     _require_cuda_direct_light_deps()
+     return load_inline(
+-        name="robot_sim_cuda_direct_light_v3",
++        name="robot_sim_cuda_direct_light_v6",
+         cpp_sources=[_CPP_SOURCE],
+         cuda_sources=[_CUDA_SOURCE],
+-        functions=["first_hit_rays", "shade_direct_light_no_shadow", "shade_direct_light_with_shadows"],
++        functions=[
++            "pinhole_camera_rays_out",
++            "first_hit_rays",
++            "shade_direct_light_no_shadow",
++            "shade_direct_light_with_shadows",
++        ],
+         with_cuda=True,
+         extra_cflags=["-O2"],
+         extra_cuda_cflags=["-O2"],
+@@ -587,6 +793,28 @@ _CPP_SOURCE = r"""
+ 
+ #include <vector>
+ 
++void pinhole_camera_rays_out(
++    torch::Tensor origins,
++    torch::Tensor directions,
++    int64_t width,
++    int64_t height,
++    double fx,
++    double fy,
++    double cx,
++    double cy,
++    double origin_x,
++    double origin_y,
++    double origin_z,
++    double r00,
++    double r01,
++    double r02,
++    double r10,
++    double r11,
++    double r12,
++    double r20,
++    double r21,
++    double r22);
++
+ std::vector<torch::Tensor> first_hit_rays(
+     torch::Tensor origins,
+     torch::Tensor directions,
+@@ -665,7 +893,8 @@ std::vector<torch::Tensor> shade_direct_light_with_shadows(
+     double ambient_b,
+     double background_r,
+     double background_g,
+-    double background_b);
++    double background_b,
++    bool traversal_stats_enabled);
+ """
+ 
+ 
+@@ -673,6 +902,7 @@ _CUDA_SOURCE = r"""
+ #include <torch/extension.h>
+ 
+ #include <ATen/cuda/CUDAContext.h>
++#include <c10/cuda/CUDAGuard.h>
+ #include <c10/cuda/CUDAException.h>
+ 
+ #include <cmath>
+@@ -687,6 +917,50 @@ constexpr float kDirEps = 1.0e-8f;
+ constexpr float kTEps = 1.0e-5f;
+ constexpr int kMaxBvhStack = 32;
+ 
++__global__ void pinhole_camera_rays_kernel(
++    int width,
++    int height,
++    float fx,
++    float fy,
++    float cx,
++    float cy,
++    float origin_x,
++    float origin_y,
++    float origin_z,
++    float r00,
++    float r01,
++    float r02,
++    float r10,
++    float r11,
++    float r12,
++    float r20,
++    float r21,
++    float r22,
++    float* origins,
++    float* directions) {
++  int ray = blockIdx.x * blockDim.x + threadIdx.x;
++  int num_rays = width * height;
++  if (ray >= num_rays) {
++    return;
++  }
++
++  int px = ray % width;
++  int py = ray / width;
++  float camera_x = (static_cast<float>(px) - cx) / fx;
++  float camera_y = (static_cast<float>(py) - cy) / fy;
++  float inv_norm = rsqrtf(camera_x * camera_x + camera_y * camera_y + 1.0f);
++  camera_x *= inv_norm;
++  camera_y *= inv_norm;
++  float camera_z = inv_norm;
++
++  origins[ray * 3 + 0] = origin_x;
++  origins[ray * 3 + 1] = origin_y;
++  origins[ray * 3 + 2] = origin_z;
++  directions[ray * 3 + 0] = r00 * camera_x + r01 * camera_y + r02 * camera_z;
++  directions[ray * 3 + 1] = r10 * camera_x + r11 * camera_y + r12 * camera_z;
++  directions[ray * 3 + 2] = r20 * camera_x + r21 * camera_y + r22 * camera_z;
++}
++
+ __device__ __forceinline__ bool better_hit(float t, int64_t key, float best_t, int64_t best_key) {
+   if (t < best_t - kTEps) {
+     return true;
+@@ -1165,7 +1439,11 @@ __device__ bool shadow_occluded_by_triangles(
+     int num_bvh_nodes,
+     int64_t sensor_role_mask,
+     int32_t* shadow_stack_overflow_count,
+-    int32_t* shadow_max_stack_depth) {
++    int32_t* shadow_max_stack_depth,
++    int traversal_stats_enabled,
++    int32_t* shadow_traversal_node_visit_count,
++    int32_t* shadow_traversal_leaf_visit_count,
++    int32_t* shadow_traversal_triangle_test_count) {
+   if (max_distance <= 0.0f || num_bvh_nodes <= 0) {
+     return false;
+   }
+@@ -1173,6 +1451,9 @@ __device__ bool shadow_occluded_by_triangles(
+   int stack[kMaxBvhStack];
+   int stack_size = 0;
+   int local_max_stack = 0;
++  int local_node_visit_count = 0;
++  int local_leaf_visit_count = 0;
++  int local_triangle_test_count = 0;
+   float root_t = 0.0f;
+   if (intersect_aabb(
+           ox, oy, oz, dx, dy, dz, bvh_bounds_min, bvh_bounds_max, 0, max_distance, &root_t)) {
+@@ -1185,14 +1466,17 @@ __device__ bool shadow_occluded_by_triangles(
+   while (stack_size > 0 && !occluded) {
+     --stack_size;
+     int node = stack[stack_size];
++    ++local_node_visit_count;
+     int leaf_count = bvh_count[node];
+     if (leaf_count > 0) {
++      ++local_leaf_visit_count;
+       int leaf_start = bvh_start[node];
+       for (int offset = 0; offset < leaf_count; ++offset) {
+         int tri = bvh_prim_ids[leaf_start + offset];
+         if ((triangle_role_masks[tri] & sensor_role_mask) == 0) {
+           continue;
+         }
++        ++local_triangle_test_count;
+         float t = 0.0f;
+         float nx = 0.0f;
+         float ny = 0.0f;
+@@ -1272,6 +1556,11 @@ __device__ bool shadow_occluded_by_triangles(
+   }
+ 
+   atomicMax(shadow_max_stack_depth, local_max_stack);
++  if (traversal_stats_enabled != 0) {
++    atomicAdd(shadow_traversal_node_visit_count, local_node_visit_count);
++    atomicAdd(shadow_traversal_leaf_visit_count, local_leaf_visit_count);
++    atomicAdd(shadow_traversal_triangle_test_count, local_triangle_test_count);
++  }
+   return occluded;
+ }
+ 
+@@ -1311,6 +1600,16 @@ __global__ void shade_direct_light_with_shadows_kernel(
+     float* intensity,
+     int32_t* shadow_stack_overflow_count,
+     int32_t* shadow_max_stack_depth,
++    int traversal_stats_enabled,
++    int32_t* shadow_traversal_ray_count,
++    int32_t* shadow_traversal_directional_ray_count,
++    int32_t* shadow_traversal_point_ray_count,
++    int32_t* shadow_traversal_occluded_count,
++    int32_t* shadow_traversal_unoccluded_count,
++    int32_t* shadow_traversal_node_visit_count,
++    int32_t* shadow_traversal_leaf_visit_count,
++    int32_t* shadow_traversal_triangle_test_count,
++    int32_t* shadow_traversal_plane_test_count,
+     int num_rays) {
+   int ray = blockIdx.x * blockDim.x + threadIdx.x;
+   if (ray >= num_rays) {
+@@ -1377,9 +1676,17 @@ __global__ void shade_direct_light_with_shadows_kernel(
+         float shadow_ox = px + nx * shadow_bias;
+         float shadow_oy = py + ny * shadow_bias;
+         float shadow_oz = pz + nz * shadow_bias;
++        if (traversal_stats_enabled != 0) {
++          atomicAdd(shadow_traversal_ray_count, 1);
++          if (light_kind[light] == 1) {
++            atomicAdd(shadow_traversal_point_ray_count, 1);
++          } else {
++            atomicAdd(shadow_traversal_directional_ray_count, 1);
++          }
++        }
+         // P12.3d treats triangle meshes as CUDA shadow occluders. Planes can
+         // still be primary hits but are intentionally non-occluders here.
+-        bool visible_to_light = !shadow_occluded_by_triangles(
++        bool occluded = shadow_occluded_by_triangles(
+             shadow_ox,
+             shadow_oy,
+             shadow_oz,
+@@ -1402,7 +1709,19 @@ __global__ void shade_direct_light_with_shadows_kernel(
+             num_bvh_nodes,
+             sensor_role_mask,
+             shadow_stack_overflow_count,
+-            shadow_max_stack_depth);
++            shadow_max_stack_depth,
++            traversal_stats_enabled,
++            shadow_traversal_node_visit_count,
++            shadow_traversal_leaf_visit_count,
++            shadow_traversal_triangle_test_count);
++        if (traversal_stats_enabled != 0) {
++          if (occluded) {
++            atomicAdd(shadow_traversal_occluded_count, 1);
++          } else {
++            atomicAdd(shadow_traversal_unoccluded_count, 1);
++          }
++        }
++        bool visible_to_light = !occluded;
+         if (visible_to_light) {
+           float scale = light_intensity[light] * attenuation * n_dot_l;
+           out_r += albedo_r * light_color_rgb[light * 3 + 0] * scale;
+@@ -1444,8 +1763,76 @@ void check_i64_1d(torch::Tensor value, const char* name) {
+   TORCH_CHECK(value.dim() == 1, name, " must be rank-1");
+ }
+ 
++void check_same_device(torch::Tensor anchor, torch::Tensor value, const char* name) {
++  TORCH_CHECK(value.device() == anchor.device(), name, " must be on ", anchor.device());
++}
++
+ }  // namespace
+ 
++void pinhole_camera_rays_out(
++    torch::Tensor origins,
++    torch::Tensor directions,
++    int64_t width,
++    int64_t height,
++    double fx,
++    double fy,
++    double cx,
++    double cy,
++    double origin_x,
++    double origin_y,
++    double origin_z,
++    double r00,
++    double r01,
++    double r02,
++    double r10,
++    double r11,
++    double r12,
++    double r20,
++    double r21,
++    double r22) {
++  check_float_2d_3(origins, "origins");
++  check_float_2d_3(directions, "directions");
++  TORCH_CHECK(directions.sizes() == origins.sizes(), "directions must match origins shape");
++  check_same_device(origins, directions, "directions");
++  TORCH_CHECK(width > 0 && height > 0, "width and height must be > 0");
++  TORCH_CHECK(width <= INT32_MAX && height <= INT32_MAX, "width or height is too large");
++  TORCH_CHECK(width <= INT32_MAX / height, "camera ray count exceeds int32 range");
++  int64_t num_rays = width * height;
++  TORCH_CHECK(origins.size(0) == num_rays, "ray outputs must have width * height rows");
++  TORCH_CHECK(std::isfinite(fx) && fx > 0.0, "fx must be finite and > 0");
++  TORCH_CHECK(std::isfinite(fy) && fy > 0.0, "fy must be finite and > 0");
++  TORCH_CHECK(std::isfinite(cx) && std::isfinite(cy), "cx and cy must be finite");
++
++  const c10::cuda::CUDAGuard device_guard(origins.device());
++  if (num_rays > 0) {
++    cudaStream_t stream = at::cuda::getCurrentCUDAStream(origins.get_device());
++    int block = 256;
++    int grid = (static_cast<int>(num_rays) + block - 1) / block;
++    pinhole_camera_rays_kernel<<<grid, block, 0, stream>>>(
++        static_cast<int>(width),
++        static_cast<int>(height),
++        static_cast<float>(fx),
++        static_cast<float>(fy),
++        static_cast<float>(cx),
++        static_cast<float>(cy),
++        static_cast<float>(origin_x),
++        static_cast<float>(origin_y),
++        static_cast<float>(origin_z),
++        static_cast<float>(r00),
++        static_cast<float>(r01),
++        static_cast<float>(r02),
++        static_cast<float>(r10),
++        static_cast<float>(r11),
++        static_cast<float>(r12),
++        static_cast<float>(r20),
++        static_cast<float>(r21),
++        static_cast<float>(r22),
++        origins.data_ptr<float>(),
++        directions.data_ptr<float>());
++    C10_CUDA_KERNEL_LAUNCH_CHECK();
++  }
++}
++
+ std::vector<torch::Tensor> first_hit_rays(
+     torch::Tensor origins,
+     torch::Tensor directions,
+@@ -1499,12 +1886,35 @@ std::vector<torch::Tensor> first_hit_rays(
+   check_i32_1d(bvh_start, "bvh_start");
+   check_i32_1d(bvh_count, "bvh_count");
+   check_i32_1d(bvh_prim_ids, "bvh_prim_ids");
++  check_same_device(origins, directions, "directions");
++  check_same_device(origins, plane_normals, "plane_normals");
++  check_same_device(origins, plane_points, "plane_points");
++  check_same_device(origins, plane_numeric_ids, "plane_numeric_ids");
++  check_same_device(origins, plane_source_keys, "plane_source_keys");
++  check_same_device(origins, plane_role_masks, "plane_role_masks");
++  check_same_device(origins, plane_material_indices, "plane_material_indices");
++  check_same_device(origins, triangle_v0, "triangle_v0");
++  check_same_device(origins, triangle_e1, "triangle_e1");
++  check_same_device(origins, triangle_e2, "triangle_e2");
++  check_same_device(origins, triangle_normal, "triangle_normal");
++  check_same_device(origins, triangle_numeric_ids, "triangle_numeric_ids");
++  check_same_device(origins, triangle_source_keys, "triangle_source_keys");
++  check_same_device(origins, triangle_role_masks, "triangle_role_masks");
++  check_same_device(origins, triangle_material_indices, "triangle_material_indices");
++  check_same_device(origins, bvh_bounds_min, "bvh_bounds_min");
++  check_same_device(origins, bvh_bounds_max, "bvh_bounds_max");
++  check_same_device(origins, bvh_left, "bvh_left");
++  check_same_device(origins, bvh_right, "bvh_right");
++  check_same_device(origins, bvh_start, "bvh_start");
++  check_same_device(origins, bvh_count, "bvh_count");
++  check_same_device(origins, bvh_prim_ids, "bvh_prim_ids");
+ 
+   int64_t num_rays = origins.size(0);
+   TORCH_CHECK(num_rays <= static_cast<int64_t>(INT32_MAX), "too many rays");
+   TORCH_CHECK(num_planes >= 0 && num_planes <= plane_normals.size(0), "num_planes out of range");
+   TORCH_CHECK(num_bvh_nodes >= 0 && num_bvh_nodes <= bvh_bounds_min.size(0), "num_bvh_nodes out of range");
+ 
++  const c10::cuda::CUDAGuard device_guard(origins.device());
+   auto int_options = torch::TensorOptions().dtype(torch::kInt32).device(origins.device());
+   auto float_options = torch::TensorOptions().dtype(torch::kFloat32).device(origins.device());
+   auto hit_mask = torch::zeros({num_rays}, int_options);
+@@ -1517,7 +1927,7 @@ std::vector<torch::Tensor> first_hit_rays(
+   auto bvh_max_stack_depth = torch::zeros({1}, int_options);
+ 
+   if (num_rays > 0) {
+-    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
++    cudaStream_t stream = at::cuda::getCurrentCUDAStream(origins.get_device());
+     int block = 256;
+     int grid = (static_cast<int>(num_rays) + block - 1) / block;
+     first_hit_rays_kernel<<<grid, block, 0, stream>>>(
+@@ -1610,18 +2020,28 @@ std::vector<torch::Tensor> shade_direct_light_no_shadow(
+   TORCH_CHECK(num_lights <= light_position_or_direction_world.size(0), "num_lights exceeds light vectors");
+   TORCH_CHECK(num_lights <= light_intensity.size(0), "num_lights exceeds light intensities");
+   TORCH_CHECK(num_lights <= light_color_rgb.size(0), "num_lights exceeds light colors");
++  check_same_device(hit_mask, position_world, "position_world");
++  check_same_device(hit_mask, normal_world, "normal_world");
++  check_same_device(hit_mask, material_index, "material_index");
++  check_same_device(hit_mask, material_albedo_rgb, "material_albedo_rgb");
++  check_same_device(hit_mask, light_kind, "light_kind");
++  check_same_device(hit_mask, light_position_or_direction_world, "light_position_or_direction_world");
++  check_same_device(hit_mask, light_intensity, "light_intensity");
++  check_same_device(hit_mask, light_color_rgb, "light_color_rgb");
+ 
+   int64_t num_rays = hit_mask.size(0);
+   TORCH_CHECK(num_rays <= static_cast<int64_t>(INT32_MAX), "too many rays");
++  const c10::cuda::CUDAGuard device_guard(hit_mask.device());
+   auto int_options = torch::TensorOptions().dtype(torch::kInt32).device(hit_mask.device());
+   auto float_options = torch::TensorOptions().dtype(torch::kFloat32).device(hit_mask.device());
+   auto rgb = torch::empty({num_rays, 3}, float_options);
+   auto intensity = torch::empty({num_rays}, float_options);
+   auto shadow_stack_overflow_count = torch::zeros({1}, int_options);
+   auto shadow_max_stack_depth = torch::zeros({1}, int_options);
++  std::vector<torch::Tensor> shadow_traversal_counters(9, shadow_stack_overflow_count);
+ 
+   if (num_rays > 0) {
+-    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
++    cudaStream_t stream = at::cuda::getCurrentCUDAStream(hit_mask.get_device());
+     int block = 256;
+     int grid = (static_cast<int>(num_rays) + block - 1) / block;
+     shade_direct_light_no_shadow_kernel<<<grid, block, 0, stream>>>(
+@@ -1647,7 +2067,10 @@ std::vector<torch::Tensor> shade_direct_light_no_shadow(
+     C10_CUDA_KERNEL_LAUNCH_CHECK();
+   }
+ 
+-  return {rgb, intensity, shadow_stack_overflow_count, shadow_max_stack_depth};
++  std::vector<torch::Tensor> outputs = {
++      rgb, intensity, shadow_stack_overflow_count, shadow_max_stack_depth};
++  outputs.insert(outputs.end(), shadow_traversal_counters.begin(), shadow_traversal_counters.end());
++  return outputs;
+ }
+ 
+ std::vector<torch::Tensor> shade_direct_light_with_shadows(
+@@ -1681,7 +2104,8 @@ std::vector<torch::Tensor> shade_direct_light_with_shadows(
+     double ambient_b,
+     double background_r,
+     double background_g,
+-    double background_b) {
++    double background_b,
++    bool traversal_stats_enabled) {
+   check_i32_1d(hit_mask, "hit_mask");
+   check_float_2d_3(position_world, "position_world");
+   check_float_2d_3(normal_world, "normal_world");
+@@ -1722,18 +2146,47 @@ std::vector<torch::Tensor> shade_direct_light_with_shadows(
+   TORCH_CHECK(num_bvh_nodes <= bvh_start.size(0), "num_bvh_nodes exceeds bvh start");
+   TORCH_CHECK(num_bvh_nodes <= bvh_count.size(0), "num_bvh_nodes exceeds bvh count");
+   TORCH_CHECK(shadow_bias >= 0.0, "shadow_bias must be >= 0");
++  check_same_device(hit_mask, position_world, "position_world");
++  check_same_device(hit_mask, normal_world, "normal_world");
++  check_same_device(hit_mask, material_index, "material_index");
++  check_same_device(hit_mask, material_albedo_rgb, "material_albedo_rgb");
++  check_same_device(hit_mask, light_kind, "light_kind");
++  check_same_device(hit_mask, light_position_or_direction_world, "light_position_or_direction_world");
++  check_same_device(hit_mask, light_intensity, "light_intensity");
++  check_same_device(hit_mask, light_color_rgb, "light_color_rgb");
++  check_same_device(hit_mask, triangle_v0, "triangle_v0");
++  check_same_device(hit_mask, triangle_e1, "triangle_e1");
++  check_same_device(hit_mask, triangle_e2, "triangle_e2");
++  check_same_device(hit_mask, triangle_normal, "triangle_normal");
++  check_same_device(hit_mask, triangle_role_masks, "triangle_role_masks");
++  check_same_device(hit_mask, bvh_bounds_min, "bvh_bounds_min");
++  check_same_device(hit_mask, bvh_bounds_max, "bvh_bounds_max");
++  check_same_device(hit_mask, bvh_left, "bvh_left");
++  check_same_device(hit_mask, bvh_right, "bvh_right");
++  check_same_device(hit_mask, bvh_start, "bvh_start");
++  check_same_device(hit_mask, bvh_count, "bvh_count");
++  check_same_device(hit_mask, bvh_prim_ids, "bvh_prim_ids");
+ 
+   int64_t num_rays = hit_mask.size(0);
+   TORCH_CHECK(num_rays <= static_cast<int64_t>(INT32_MAX), "too many rays");
++  const c10::cuda::CUDAGuard device_guard(hit_mask.device());
+   auto int_options = torch::TensorOptions().dtype(torch::kInt32).device(hit_mask.device());
+   auto float_options = torch::TensorOptions().dtype(torch::kFloat32).device(hit_mask.device());
+   auto rgb = torch::empty({num_rays, 3}, float_options);
+   auto intensity = torch::empty({num_rays}, float_options);
+   auto shadow_stack_overflow_count = torch::zeros({1}, int_options);
+   auto shadow_max_stack_depth = torch::zeros({1}, int_options);
++  std::vector<torch::Tensor> shadow_traversal_counters;
++  if (traversal_stats_enabled) {
++    for (int counter = 0; counter < 9; ++counter) {
++      shadow_traversal_counters.push_back(torch::zeros({1}, int_options));
++    }
++  } else {
++    shadow_traversal_counters.assign(9, shadow_stack_overflow_count);
++  }
+ 
+   if (num_rays > 0) {
+-    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
++    cudaStream_t stream = at::cuda::getCurrentCUDAStream(hit_mask.get_device());
+     int block = 256;
+     int grid = (static_cast<int>(num_rays) + block - 1) / block;
+     shade_direct_light_with_shadows_kernel<<<grid, block, 0, stream>>>(
+@@ -1772,10 +2225,23 @@ std::vector<torch::Tensor> shade_direct_light_with_shadows(
+         intensity.data_ptr<float>(),
+         shadow_stack_overflow_count.data_ptr<int32_t>(),
+         shadow_max_stack_depth.data_ptr<int32_t>(),
++        static_cast<int>(traversal_stats_enabled),
++        shadow_traversal_counters[0].data_ptr<int32_t>(),
++        shadow_traversal_counters[1].data_ptr<int32_t>(),
++        shadow_traversal_counters[2].data_ptr<int32_t>(),
++        shadow_traversal_counters[3].data_ptr<int32_t>(),
++        shadow_traversal_counters[4].data_ptr<int32_t>(),
++        shadow_traversal_counters[5].data_ptr<int32_t>(),
++        shadow_traversal_counters[6].data_ptr<int32_t>(),
++        shadow_traversal_counters[7].data_ptr<int32_t>(),
++        shadow_traversal_counters[8].data_ptr<int32_t>(),
+         static_cast<int>(num_rays));
+     C10_CUDA_KERNEL_LAUNCH_CHECK();
+   }
+ 
+-  return {rgb, intensity, shadow_stack_overflow_count, shadow_max_stack_depth};
++  std::vector<torch::Tensor> outputs = {
++      rgb, intensity, shadow_stack_overflow_count, shadow_max_stack_depth};
++  outputs.insert(outputs.end(), shadow_traversal_counters.begin(), shadow_traversal_counters.end());
++  return outputs;
+ }
+ """
+diff --git a/tests/gpu/test_optical_gpu_runtime.py b/tests/gpu/test_optical_gpu_runtime.py
+index 53ca3ef..1ea8d9e 100644
+--- a/tests/gpu/test_optical_gpu_runtime.py
++++ b/tests/gpu/test_optical_gpu_runtime.py
+@@ -37,6 +37,7 @@ from optics import (
+     refit_device_bvh_from_snapshot,
+     stage_optical_compute_result_to_host,
+ )
++from optics.cuda_direct_light import _generate_pinhole_camera_ray_tensors
+ from optics.render_api import RenderRequest
+ from physics.geometry import BodyCollisionGeometry, ShapeInstance, SphereShape
+ from physics.joint import FreeJoint
+@@ -67,7 +68,11 @@ from tools.optical_pipeline_lab.runner import (
+     run_physics_video_scenario,
+     run_scenario,
+ )
+-from tools.optical_pipeline_lab.timing import FrameTimingRecorder, TimingRecorder
++from tools.optical_pipeline_lab.timing import (
++    SHADOW_TRAVERSAL_COUNTER_FIELDS,
++    FrameTimingRecorder,
++    TimingRecorder,
++)
+ 
+ try:
+     import warp as wp
+@@ -104,9 +109,9 @@ def _ball_model() -> RobotModel:
+     )
+ 
+ 
+-def _make_engine():
++def _make_engine(*, device: str = "cuda:0"):
+     merged = merge_models({"ball": _ball_model()})
+-    engine = GpuEngine(merged, num_envs=1, device="cuda:0")
++    engine = GpuEngine(merged, num_envs=1, device=device)
+     q0, _ = merged.tree.default_state()
+     q0[6] = 0.5
+     engine.reset(q0=q0)
+@@ -2047,6 +2052,71 @@ def test_cuda_lbvh_executor_matches_cpu_bvh_for_world_static_triangle_mesh():
+     assert 1 <= int(cuda_host.channel("bvh_max_stack_depth")[0]) <= 32
+ 
+ 
++@pytest.mark.cuda_ext
++def test_cuda_pinhole_raygen_directly_matches_host_rays():
++    torch = pytest.importorskip("torch")
++    device = torch.device("cuda:0")
++    camera = OpticalPinholeCameraSpec(
++        frame_id=17,
++        sim_time=0.25,
++        env_idx=0,
++        sensor_id="cuda_raygen",
++        width=7,
++        height=3,
++        fx=5.25,
++        fy=3.75,
++        cx=2.35,
++        cy=0.8,
++        X_world_camera=SpatialTransform.from_rpy(
++            0.31,
++            -0.27,
++            0.43,
++            r=np.array([0.7, -0.4, 1.9], dtype=np.float64),
++        ),
++        max_distance=12.0,
++        sensor_role="rgb",
++    )
++    host = build_pinhole_camera_rays(camera)
++    profile: list[tuple[str, float]] = []
++
++    origins, directions, timing = _generate_pinhole_camera_ray_tensors(
++        camera,
++        device=device,
++        render_profile=profile,
++    )
++    torch.cuda.synchronize(device)
++
++    assert origins.shape == (camera.width * camera.height, 3)
++    assert directions.shape == origins.shape
++    assert origins.dtype == torch.float32
++    assert directions.dtype == torch.float32
++    assert origins.is_contiguous() and directions.is_contiguous()
++    assert origins.device == device and directions.device == device
++    origins_host = origins.cpu().numpy()
++    directions_host = directions.cpu().numpy()
++    expected_origins = np.asarray(host.origins_world, dtype=np.float32)
++    expected_directions = np.asarray(host.directions_world, dtype=np.float32)
++    np.testing.assert_allclose(origins_host, expected_origins, rtol=0.0, atol=1e-6)
++    np.testing.assert_allclose(directions_host, expected_directions, rtol=1e-6, atol=2e-6)
++    np.testing.assert_allclose(np.linalg.norm(directions_host, axis=1), 1.0, atol=2e-6)
++    for py, px in ((0, 0), (0, 6), (1, 0), (1, 4), (2, 6)):
++        flat_index = py * camera.width + px
++        np.testing.assert_allclose(origins_host[flat_index], expected_origins[flat_index], atol=1e-6)
++        np.testing.assert_allclose(
++            directions_host[flat_index],
++            expected_directions[flat_index],
++            rtol=1e-6,
++            atol=2e-6,
++        )
++    assert timing is not None
++    assert float(timing.start.elapsed_time(timing.end)) >= 0.0
++    assert any(name == "raygen_camera_params_ms" for name, _ in profile)
++    assert any(name == "raygen_buffer_alloc_ms" for name, _ in profile)
++
++    with pytest.raises(TypeError, match="unexpected keyword argument 'stream'"):
++        CudaDeviceBvhOpticalExecutor(device="cuda:0", stream=object())
++
++
+ @pytest.mark.cuda_ext
+ def test_cuda_direct_light_first_hit_matches_warp_bvh_executor():
+     pytest.importorskip("torch")
+@@ -2104,7 +2174,7 @@ def test_cuda_direct_light_first_hit_matches_warp_bvh_executor():
+         include_aabb=True,
+     )
+     cuda_bvh = build_cuda_lbvh_from_snapshot(cuda_snapshot, device=engine._device, stream=stream)
+-    cuda_result = CudaDeviceBvhOpticalExecutor(device=engine._device, stream=stream).execute(
++    cuda_result = CudaDeviceBvhOpticalExecutor(device=engine._device).execute(
+         cuda_snapshot,
+         cuda_bvh,
+         spec,
+@@ -2139,6 +2209,216 @@ def test_cuda_direct_light_first_hit_matches_warp_bvh_executor():
+     assert 1 <= int(cuda_host.channel("bvh_max_stack_depth")[0]) <= 32
+ 
+ 
++@pytest.mark.cuda_ext
++def test_cuda_camera_geometry_and_direct_light_profiles_match_materialized_rays():
++    pytest.importorskip("torch")
++    engine = _make_engine()
++    consumer = _consumer("cuda_camera_profiles")
++    engine.register_consumer(consumer)
++    engine.step()
++    frame = engine.latest_published_frame()
++    registry = _world_static_triangle_grid_registry()
++    camera = OpticalPinholeCameraSpec(
++        frame_id=frame.frame_id,
++        sim_time=frame.sim_time,
++        env_idx=0,
++        sensor_id="cuda_camera_profiles",
++        width=7,
++        height=3,
++        fx=5.25,
++        fy=3.75,
++        cx=2.35,
++        cy=0.8,
++        X_world_camera=SpatialTransform.from_rpy(
++            np.pi,
++            0.08,
++            0.19,
++            r=np.array([0.0, 0.0, 2.0], dtype=np.float64),
++        ),
++        max_distance=10.0,
++        sensor_role="rgb",
++    )
++    rays = build_pinhole_camera_rays(camera)
++    stream = wp.Stream(device=engine._device)
++    borrowed = engine.borrow_device_frame(consumer.consumer_id, frame.frame_id, stream=stream)
++    cache = DeviceOpticalSceneCache(registry, device=engine._device, stream=stream)
++    snapshot = cache.snapshot_from_gpu_frame(borrowed, env_idx=0, stream=stream, include_aabb=True)
++    bvh = build_cuda_lbvh_from_snapshot(snapshot, device=engine._device, stream=stream)
++
++    geometry_executor = CudaDeviceBvhOpticalExecutor(device=engine._device)
++    materialized_geometry = geometry_executor.execute(snapshot, bvh, rays)
++    camera_geometry = geometry_executor.execute_camera(snapshot, bvh, camera)
++    materialized_geometry_host = stage_optical_compute_result_to_host(materialized_geometry)
++    camera_geometry_host = stage_optical_compute_result_to_host(camera_geometry)
++    np.testing.assert_array_equal(
++        camera_geometry_host.channel("hit_mask"), materialized_geometry_host.channel("hit_mask")
++    )
++    assert np.count_nonzero(camera_geometry_host.channel("hit_mask")) not in (0, camera.width * camera.height)
++    np.testing.assert_allclose(
++        camera_geometry_host.channel("range_m"),
++        materialized_geometry_host.channel("range_m"),
++        atol=2e-6,
++    )
++    np.testing.assert_allclose(
++        camera_geometry_host.channel("position_world"),
++        materialized_geometry_host.channel("position_world"),
++        atol=2e-6,
++        equal_nan=True,
++    )
++    np.testing.assert_allclose(
++        camera_geometry_host.channel("normal_world"),
++        materialized_geometry_host.channel("normal_world"),
++        atol=2e-6,
++        equal_nan=True,
++    )
++    np.testing.assert_array_equal(
++        camera_geometry_host.channel("numeric_instance_id"),
++        materialized_geometry_host.channel("numeric_instance_id"),
++    )
++    np.testing.assert_array_equal(
++        camera_geometry_host.channel("material_index"),
++        materialized_geometry_host.channel("material_index"),
++    )
++
++    for shadows in (False, True):
++        executor = CudaDeviceBvhDirectLightOpticalExecutor(
++            device=engine._device,
++            shadows=shadows,
++            ambient_rgb=(0.1, 0.2, 0.3),
++            background_rgb=(0.01, 0.02, 0.03),
++        )
++        for profile in (
++            OpticalOutputProfile.DIRECT_LIGHT_FULL,
++            OpticalOutputProfile.RGB_PREVIEW,
++            OpticalOutputProfile.RENDER_ONLY,
++        ):
++            materialized = executor.execute(
++                snapshot,
++                bvh,
++                rays,
++                output_profile=profile,
++                render_profile=[],
++            )
++            render_profile: list[tuple[str, float]] = []
++            camera_result = executor.execute_camera(
++                snapshot,
++                bvh,
++                camera,
++                output_profile=profile,
++                render_profile=render_profile,
++            )
++            assert camera_result.output_profile is profile
++            assert profile.guaranteed_channels.issubset(camera_result.channels)
++            if profile is not OpticalOutputProfile.DIRECT_LIGHT_FULL:
++                assert set(camera_result.channels) - set(SHADOW_TRAVERSAL_COUNTER_FIELDS) == set(
++                    profile.guaranteed_channels
++                )
++            materialized_host = stage_optical_compute_result_to_host(materialized)
++            camera_host = stage_optical_compute_result_to_host(camera_result)
++            for name in camera_result.channels:
++                expected = materialized_host.channel(name)
++                actual = camera_host.channel(name)
++                if np.issubdtype(np.asarray(actual).dtype, np.floating):
++                    np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=2e-5, equal_nan=True)
++                else:
++                    np.testing.assert_array_equal(actual, expected)
++            raygen_timings = [elapsed for name, elapsed in render_profile if name == "raygen_kernel"]
++            assert len(raygen_timings) == 1
++            assert np.isfinite(raygen_timings[0]) and raygen_timings[0] >= 0.0
++
++    done_event = engine.complete_device_consumer(consumer.consumer_id, frame.frame_id, stream=stream)
++    wp.synchronize_event(done_event)
++
++
++@pytest.mark.cuda_ext
++def test_cuda_camera_paths_guard_target_device_and_restore_ambient_device():
++    torch = pytest.importorskip("torch")
++    if torch.cuda.device_count() < 2:
++        pytest.skip("requires two visible CUDA devices")
++
++    target = torch.device("cuda:1")
++    engine = _make_engine(device="cuda:1")
++    consumer = _consumer("cuda_camera_device_guard")
++    engine.register_consumer(consumer)
++    engine.step()
++    frame = engine.latest_published_frame()
++    registry = _lit_triangle_registry()
++    camera = _downward_camera_spec(frame)
++    rays = build_pinhole_camera_rays(camera)
++    stream = wp.Stream(device=engine._device)
++    borrowed = engine.borrow_device_frame(consumer.consumer_id, frame.frame_id, stream=stream)
++    cache = DeviceOpticalSceneCache(registry, device=engine._device, stream=stream)
++    snapshot = cache.snapshot_from_gpu_frame(borrowed, env_idx=0, stream=stream, include_aabb=True)
++    bvh = build_cuda_lbvh_from_snapshot(snapshot, device=engine._device, stream=stream)
++
++    torch.cuda.set_device(0)
++    assert torch.cuda.current_device() == 0
++    origins, directions, _ = _generate_pinhole_camera_ray_tensors(camera, device=target)
++    torch.cuda.synchronize(target)
++    assert torch.cuda.current_device() == 0
++    assert origins.device == target and directions.device == target
++    np.testing.assert_allclose(origins.cpu().numpy(), rays.origins_world, atol=1e-6)
++    np.testing.assert_allclose(directions.cpu().numpy(), rays.directions_world, rtol=1e-6, atol=2e-6)
++
++    geometry_executor = CudaDeviceBvhOpticalExecutor(device=engine._device)
++    torch.cuda.set_device(0)
++    assert torch.cuda.current_device() == 0
++    geometry = geometry_executor.execute_camera(snapshot, bvh, camera)
++    assert torch.cuda.current_device() == 0
++    assert all(getattr(resource, "device", target) == target for resource in geometry.resources)
++
++    torch.cuda.set_device(0)
++    assert torch.cuda.current_device() == 0
++    materialized_geometry = geometry_executor.execute(snapshot, bvh, rays)
++    assert torch.cuda.current_device() == 0
++    geometry_host = stage_optical_compute_result_to_host(geometry)
++    materialized_geometry_host = stage_optical_compute_result_to_host(materialized_geometry)
++    np.testing.assert_array_equal(
++        geometry_host.channel("hit_mask"), materialized_geometry_host.channel("hit_mask")
++    )
++    np.testing.assert_allclose(
++        geometry_host.channel("range_m"), materialized_geometry_host.channel("range_m"), atol=2e-6
++    )
++
++    direct_executor = CudaDeviceBvhDirectLightOpticalExecutor(
++        device=engine._device,
++        shadows=False,
++        ambient_rgb=(0.1, 0.2, 0.3),
++        background_rgb=(0.01, 0.02, 0.03),
++    )
++    torch.cuda.set_device(0)
++    assert torch.cuda.current_device() == 0
++    direct = direct_executor.execute_camera(
++        snapshot,
++        bvh,
++        camera,
++        output_profile=OpticalOutputProfile.RGB_PREVIEW,
++    )
++    assert torch.cuda.current_device() == 0
++    assert all(getattr(resource, "device", target) == target for resource in direct.resources)
++
++    torch.cuda.set_device(0)
++    assert torch.cuda.current_device() == 0
++    materialized_direct = direct_executor.execute(
++        snapshot,
++        bvh,
++        rays,
++        output_profile=OpticalOutputProfile.RGB_PREVIEW,
++    )
++    assert torch.cuda.current_device() == 0
++    direct_host = stage_optical_compute_result_to_host(direct)
++    materialized_direct_host = stage_optical_compute_result_to_host(materialized_direct)
++    np.testing.assert_array_equal(
++        direct_host.channel("hit_mask"), materialized_direct_host.channel("hit_mask")
++    )
++    np.testing.assert_allclose(
++        direct_host.channel("rgb"), materialized_direct_host.channel("rgb"), rtol=1e-5, atol=1e-5
++    )
++
++    done_event = engine.complete_device_consumer(consumer.consumer_id, frame.frame_id, stream=stream)
++    wp.synchronize_event(done_event)
++
++
+ def test_device_bvh_executor_preserves_plane_triangle_tie_break():
+     engine = _make_engine()
+     consumer = _consumer()
+@@ -2420,14 +2700,12 @@ def test_cuda_direct_light_no_shadow_matches_cpu():
+     bvh = build_cuda_lbvh_from_snapshot(snapshot, device=engine._device, stream=stream)
+     gpu = CudaDeviceBvhDirectLightOpticalExecutor(
+         device=engine._device,
+-        stream=stream,
+         shadows=False,
+         ambient_rgb=(0.1, 0.2, 0.3),
+         background_rgb=(0.01, 0.02, 0.03),
+     ).execute(snapshot, bvh, spec)
+     preview = CudaDeviceBvhDirectLightOpticalExecutor(
+         device=engine._device,
+-        stream=stream,
+         shadows=False,
+         ambient_rgb=(0.1, 0.2, 0.3),
+         background_rgb=(0.01, 0.02, 0.03),
+@@ -2503,15 +2781,13 @@ def test_cuda_direct_light_shadowed_direct_light_matches_cpu_and_warp():
+     ).execute(snapshot, warp_bvh, spec)
+     cuda_gpu = CudaDeviceBvhDirectLightOpticalExecutor(
+         device=engine._device,
+-        stream=stream,
+         shadows=True,
+         shadow_bias=shadow_bias,
+         ambient_rgb=(0.1, 0.1, 0.1),
+         background_rgb=(0.0, 0.0, 0.0),
+-    ).execute(snapshot, cuda_bvh, spec)
++    ).execute(snapshot, cuda_bvh, spec, render_profile=[])
+     cuda_no_shadow = CudaDeviceBvhDirectLightOpticalExecutor(
+         device=engine._device,
+-        stream=stream,
+         shadows=False,
+         shadow_bias=shadow_bias,
+         ambient_rgb=(0.1, 0.1, 0.1),
+@@ -2538,6 +2814,19 @@ def test_cuda_direct_light_shadowed_direct_light_matches_cpu_and_warp():
+     np.testing.assert_allclose(cuda_host.channel("rgb")[0], [0.07, 0.06, 0.05], atol=1e-5)
+     np.testing.assert_array_equal(cuda_host.channel("shadow_stack_overflow_count"), [0])
+     assert 1 <= int(cuda_host.channel("shadow_max_stack_depth")[0]) <= 32
++    shadow_ray_count = int(cuda_host.channel("shadow_traversal_ray_count")[0])
++    assert shadow_ray_count == 2
++    assert int(cuda_host.channel("shadow_traversal_directional_ray_count")[0]) == shadow_ray_count
++    assert int(cuda_host.channel("shadow_traversal_point_ray_count")[0]) == 0
++    assert (
++        int(cuda_host.channel("shadow_traversal_occluded_count")[0])
++        + int(cuda_host.channel("shadow_traversal_unoccluded_count")[0])
++        == shadow_ray_count
++    )
++    assert int(cuda_host.channel("shadow_traversal_node_visit_count")[0]) >= shadow_ray_count
++    assert int(cuda_host.channel("shadow_traversal_leaf_visit_count")[0]) >= shadow_ray_count
++    assert int(cuda_host.channel("shadow_traversal_triangle_test_count")[0]) >= 1
++    assert int(cuda_host.channel("shadow_traversal_plane_test_count")[0]) == 0
+ 
+ 
+ @pytest.mark.cuda_ext
+@@ -2561,7 +2850,8 @@ def test_cuda_direct_light_lab_smoke(tmp_path: Path):
+         frames=1,
+         warmup_renders=1,
+         progress_every=0,
+-        video_raygen="host",
++        video_raygen="gpu",
++        render_profile=True,
+     )
+ 
+     run_scenario(config, options)
+@@ -2580,7 +2870,8 @@ def test_cuda_direct_light_lab_smoke(tmp_path: Path):
+     assert row["render_backend"] == "cuda_direct_light"
+     assert row["accel_backend"] == "cuda_lbvh"
+     assert row["readback_payload"] == "rgb"
+-    assert row["raygen_mode"] == "host"
++    assert row["raygen_mode"] == "gpu"
++    assert np.isfinite(float(row["render_raygen_kernel_ms"]))
+     frame_path = row["frame_path"]
+     assert frame_path
+     assert Path(frame_path).is_file()
+diff --git a/tests/unit/optics/test_device_optical.py b/tests/unit/optics/test_device_optical.py
+index e61d27e..1e4e511 100644
+--- a/tests/unit/optics/test_device_optical.py
++++ b/tests/unit/optics/test_device_optical.py
+@@ -249,7 +249,13 @@ def test_cuda_first_hit_validation_rejects_scene_bvh_device_mismatch():
+     spec = SimpleNamespace(frame_id=3, env_idx=0, max_distance=10.0)
+ 
+     with pytest.raises(ValueError, match="DeviceOpticalSceneSnapshot and DeviceOpticalBvh devices"):
+-        executor._validate(snapshot, bvh, spec)
++        executor._validate_request(
++            snapshot,
++            bvh,
++            frame_id=spec.frame_id,
++            env_idx=spec.env_idx,
++            max_distance=spec.max_distance,
++        )
+ 
+ 
+ def test_cuda_direct_light_profile_filter_keeps_render_only_counters():
+diff --git a/tests/unit/optics/test_optical_pipeline_lab.py b/tests/unit/optics/test_optical_pipeline_lab.py
+index 02064e1..f26740c 100644
+--- a/tests/unit/optics/test_optical_pipeline_lab.py
++++ b/tests/unit/optics/test_optical_pipeline_lab.py
+@@ -3687,6 +3687,80 @@ def test_lab_render_pipeline_create_from_source_builds_canonical_session(
+     assert frame.env_idx == 3
+ 
+ 
++def test_lab_render_pipeline_does_not_pass_warp_stream_to_cuda_executor(
++    monkeypatch: pytest.MonkeyPatch,
++):
++    registry = object()
++    base_frame = SimpleNamespace(frame_id=12, sim_time=1.2)
++    source = render_session.OpticalLabRenderSource(registry=registry, base_frame=base_frame)
++    snapshot = object()
++    bvh = SimpleNamespace(stats=SimpleNamespace(detail_ms=[]))
++    captured: dict[str, object] = {}
++
++    class FakeWp:
++        config = SimpleNamespace(quiet=False)
++
++        class Stream:
++            def __init__(self, *, device):
++                self.device = device
++
++        @staticmethod
++        def init():
++            return None
++
++        @staticmethod
++        def get_device(device):
++            return f"device:{device}"
++
++    class FakeCache:
++        def __init__(self, registry_arg, *, device, stream):
++            assert registry_arg is registry
++            captured["workspace_stream"] = stream
++
++        def snapshot_from_gpu_frame(self, frame, *, env_idx, stream, include_aabb):
++            assert frame is base_frame
++            assert env_idx == 0
++            assert stream is captured["workspace_stream"]
++            assert include_aabb is True
++            return snapshot
++
++    class FakeCudaExecutor:
++        def __init__(self, *, device, shadows, ambient_rgb, background_rgb):
++            captured["executor_device"] = device
++            captured["executor_shadows"] = shadows
++            captured["executor_ambient"] = ambient_rgb
++            captured["executor_background"] = background_rgb
++
++    def fake_build_cuda_bvh(snapshot_arg, *, device, stream):
++        assert snapshot_arg is snapshot
++        assert stream is captured["workspace_stream"]
++        return bvh
++
++    monkeypatch.setattr(render_session, "wp", FakeWp)
++    monkeypatch.setattr(render_session, "DeviceOpticalSceneCache", FakeCache)
++    monkeypatch.setattr(render_session, "build_cuda_lbvh_from_snapshot", fake_build_cuda_bvh)
++    monkeypatch.setattr(render_session, "CudaDeviceBvhDirectLightOpticalExecutor", FakeCudaExecutor)
++
++    pipeline = render_session.OpticalLabRenderPipeline.create_from_source(
++        source,
++        render_session.OpticalLabRenderOptions(
++            device="cuda:source",
++            render_backend="cuda_direct_light",
++            bvh_backend="cuda_lbvh",
++            shadows=False,
++        ),
++        TimingRecorder(),
++    )
++
++    assert captured == {
++        "workspace_stream": pipeline.session.workspace.stream,
++        "executor_device": "device:cuda:source",
++        "executor_shadows": False,
++        "executor_ambient": (0.08, 0.085, 0.09),
++        "executor_background": (0.025, 0.03, 0.038),
++    }
++
++
+ def test_lab_render_pipeline_create_from_source_builds_cpu_direct_light_session():
+     registry = dynamic_frames.make_body_bound_triangle_registry()
+     base_frame = CpuPublishedFrame(
+@@ -5073,7 +5147,7 @@ def test_cpu_direct_light_static_config_is_currently_implemented(tmp_path: Path)
+     )
+ 
+ 
+-def test_cuda_direct_light_synthetic_no_shadow_config_can_run_host_raygen_sync(tmp_path: Path):
++def test_cuda_direct_light_synthetic_no_shadow_config_can_run_host_or_gpu_raygen_sync(tmp_path: Path):
+     config = replace(
+         get_preset("go2_video_ordered_static"),
+         scenario_name="synthetic_cuda_direct_light",
+@@ -5093,6 +5167,14 @@ def test_cuda_direct_light_synthetic_no_shadow_config_can_run_host_raygen_sync(t
+             video_raygen="host",
+         ),
+     )
++    validate_run(
++        config,
++        LabRunOptions(
++            out=tmp_path / "cuda_direct_gpu_raygen",
++            video_raygen="gpu",
++            video_ray_cache="off",
++        ),
++    )
+     render_options = lab_runner.render_options_for_config(
+         config,
+         LabRunOptions(out=tmp_path / "cuda_direct", video_raygen="host"),
+@@ -5158,15 +5240,14 @@ def test_cuda_direct_light_rejects_incompatible_lab_options(tmp_path: Path):
+         render_backend=RenderBackend.CUDA_DIRECT_LIGHT,
+     )
+ 
+-    with pytest.raises(ValueError, match="requires video_raygen='host'"):
+-        validate_run(config, LabRunOptions(out=tmp_path / "cuda_direct"))
++    validate_run(config, LabRunOptions(out=tmp_path / "cuda_direct"))
+ 
+     with pytest.raises(ValueError, match="requires video_readback_delivery='sync'"):
+         validate_run(
+             config,
+             LabRunOptions(
+                 out=tmp_path / "cuda_direct",
+-                video_raygen="host",
++                video_raygen="gpu",
+                 video_readback_delivery="torch_async",
+             ),
+         )
+@@ -5177,7 +5258,7 @@ def test_cuda_direct_light_rejects_incompatible_lab_options(tmp_path: Path):
+             rgb8_config,
+             LabRunOptions(
+                 out=tmp_path / "cuda_direct",
+-                video_raygen="host",
++                video_raygen="gpu",
+             ),
+         )
+ 
+diff --git a/tools/optical_pipeline_lab/render_session.py b/tools/optical_pipeline_lab/render_session.py
+index 6ef358f..538e951 100644
+--- a/tools/optical_pipeline_lab/render_session.py
++++ b/tools/optical_pipeline_lab/render_session.py
+@@ -441,18 +441,19 @@ class OpticalLabRenderSession:
+             timings.add(f"bvh_build_{detail_name}", detail_elapsed_ms)
+ 
+         with timings.measure("executor_init"):
+-            executor_cls = (
+-                CudaDeviceBvhDirectLightOpticalExecutor
+-                if _is_cuda_direct_light_backend(options)
+-                else GpuDeviceBvhDirectLightOpticalExecutor
+-            )
+-            executor = executor_cls(
+-                device=workspace.device,
+-                stream=workspace.stream,
+-                shadows=options.shadows,
+-                ambient_rgb=(0.08, 0.085, 0.09),
+-                background_rgb=(0.025, 0.03, 0.038),
+-            )
++            executor_kwargs = {
++                "device": workspace.device,
++                "shadows": options.shadows,
++                "ambient_rgb": (0.08, 0.085, 0.09),
++                "background_rgb": (0.025, 0.03, 0.038),
++            }
++            if _is_cuda_direct_light_backend(options):
++                executor = CudaDeviceBvhDirectLightOpticalExecutor(**executor_kwargs)
++            else:
++                executor = GpuDeviceBvhDirectLightOpticalExecutor(
++                    **executor_kwargs,
++                    stream=workspace.stream,
++                )
+ 
+         return cls(
+             scene=scene,
+diff --git a/tools/optical_pipeline_lab/runner.py b/tools/optical_pipeline_lab/runner.py
+index bf51dcb..79aeccb 100644
+--- a/tools/optical_pipeline_lab/runner.py
++++ b/tools/optical_pipeline_lab/runner.py
+@@ -858,8 +858,6 @@ def _validate_run_options(config: OpticalLabScenarioConfig, options: LabRunOptio
+         if config.readback_payload is ReadbackPayload.RGB8:
+             raise ValueError("render_backend='cpu_direct_light' does not support readback_payload='rgb8'")
+     if config.render_backend is RenderBackend.CUDA_DIRECT_LIGHT:
+-        if options.video_raygen != "host":
+-            raise ValueError("render_backend='cuda_direct_light' requires video_raygen='host' until P12.3e")
+         if options.video_readback_delivery != "sync":
+             raise ValueError("render_backend='cuda_direct_light' requires video_readback_delivery='sync'")
+         if config.readback_payload is ReadbackPayload.RGB8:

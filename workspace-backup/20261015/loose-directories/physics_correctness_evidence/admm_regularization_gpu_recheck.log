@@ -1,0 +1,20 @@
+{"kind": "admm_stated_cone_qp", "returned": [0.8999999999994869, 0.8999999999996376, 0.0], "exact_minimizer": [1.35, 1.35, 0.0], "returned_objective": -1.7999999999996374, "exact_objective": -2.0250000000000004}
+{"kind": "cone_projection", "returned": [1.0, 1.0, 0.0], "euclidean_projection": [1.5, 1.5, 0.0]}
+Warp 1.12.0 initialized:
+   CUDA Toolkit 12.9, Driver 13.2
+   Devices:
+     "cpu"      : "x86_64"
+     "cuda:0"   : "NVIDIA H200" (140 GiB, sm_90, mempool enabled)
+   Kernel cache:
+     /home/ang.gao/.cache/warp/1.12.0
+Module physics.backends.warp.solver_kernels 394b7f9 load on device 'cuda:0' took 3.75 ms  (cached)
+{"kind": "gpu_jacobi_compliance", "impulse": [2.0, -0.5714285373687744, 0.0], "soft_model_impulse": [2.0, -0.5657142857142857, 0.0], "hard_model_impulse": [2.0, -0.5714285714285714, 0.0]}
+Module physics.backends.warp.colored_pgs_kernels 591627e load on device 'cuda:0' took 1.17 ms  (cached)
+{"kind": "gpu_colored_compliance", "impulse": [2.0, -0.5714285969734192, 0.0], "soft_model_impulse": [2.0, -0.5657142857142857, 0.0]}
+Module physics.backends.warp.kernels 4ff0094 load on device 'cuda:0' took 7.11 ms  (cached)
+Module physics.backends.warp.crba_kernels 88f0422 load on device 'cuda:0' took 4.48 ms  (cached)
+Module physics.backends.warp.collision_kernels f9b3ca2 load on device 'cuda:0' took 15.35 ms  (cached)
+Module physics.backends.warp.admm_kernels 50acee3 load on device 'cuda:0' took 1.05 ms  (cached)
+Module physics.gpu_engine c7d00cf load on device 'cuda:0' took 0.98 ms  (cached)
+{"kind": "gpu_admm_regularization", "physical_W_diag": [1.0, 3.450249671936035, 3.450249671936035], "regularization": [0.05263163894414902, 0.1834263950586319, 0.1834263950586319], "R_over_A": [0.05263163894414902, 0.05316322296857834, 0.05316322296857834], "cpu_model_ratio": 0.052631578947368474}
+{"kind": "flat_terrain_height", "requested_z": 0.5, "gpu_static_z": 0.0, "cpu_contacts": 1, "gpu_contacts": 0}

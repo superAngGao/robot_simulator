@@ -1,0 +1,72 @@
+robot_simulator local-workspace backup — 2026-10-15
+
+This is a preservation snapshot requested by the owner because C: is nearly full.
+It is not implementation approval or a merge of old rendering experiments into
+the physics implementation. No source workspace was reset, committed or deleted.
+Other projects under the shared workspace (TileOPs, TileSight, etc.) are excluded.
+
+Current physics development
+---------------------------
+GitHub branch: physics/correctness-audit-20261012
+Exact saved physics HEAD: 061e97a35c5dc6a7be358a9959e5d265c2f4eb3a
+The repository root of this backup branch has that same code and documentation,
+plus workspace-backup/. Continue development from the physics branch.
+
+Local work and Git history
+-------------------------
+git-workspaces.json records 44 Git working directories, their HEADs, local refs,
+branch names, original status and deletions. Fifteen had uncommitted changes.
+The backup commit preserves all 48 distinct recorded historical tips through its
+parents. Extra parents retain object history only; their code was not merged into
+the root source tree. Detached review HEADs are recorded too.
+
+working-trees/<directory>/ contains:
+- working-tree.patch: binary-capable diff from that directory's recorded HEAD.
+- index.patch: original staged diff from HEAD, normally empty here.
+- files/: exact bytes of changed and untracked files, including original line endings.
+
+To restore one old workspace, create a NEW checkout/worktree at its recorded HEAD,
+apply working-tree.patch if nonempty, then overlay files/ and honor deleted paths
+from git-workspaces.json. Applying index.patch with git apply --cached restores
+the original staging state. Use the fresh checkout, not an active development tree.
+The fifteen worktree patches were checked with git apply --cached --check against
+their recorded base trees. file-checksums.json records SHA256 for all 441 copied
+files, including small standalone evidence and non-Git staging directories.
+workspace-backup/.gitattributes disables line-ending conversion for these records.
+
+Complete original files and large evidence
+-----------------------------------------
+Local independent copy:
+  E:/robot_simulator_backup_20261015/robot-workspace-20261015.tar.gz
+  E:/robot_simulator_backup_20261015/archive-files.jsonl
+Archive receipt: archive-receipt.json in this directory.
+This archive preserves 130,977 regular files / 5,879,382,481 source bytes,
+including c4_assets, Git metadata, old workspaces, ignored caches, transfer bundles
+and related loose files. The receipt lists exact selected top-level paths.
+It was read back completely and every regular file checked against the SHA256
+calculated while reading the source. Local verification: local-verification.json.
+
+Primary server backup directory (SSH alias tileops-dev):
+  /data2/shared/ang.gao/workspace_backups/robot_simulator/20261015/
+Final archive: robot-workspace-20261015-verified.tar.gz
+Receipt and verification: server-archive-receipt.json and server-verification.json
+in this Git directory; the full archive-files.jsonl manifest is on the server.
+Existing server evidence was reused only after byte-hash equality, with missing
+objects uploaded separately. The reconstructed archive contains every original
+path and file byte, with owner/modes normalized as described in its receipt.
+The final archive is independently read back and checked against the full source
+manifest. The first interrupted upload is not a verified backup.
+
+For complete restoration, extract a verified archive into a NEW empty directory.
+Some original .git worktree files contain absolute C: paths; use the Git history
+and the saved base/patch/files records to create portable fresh worktrees instead
+of assuming those absolute worktree links are valid on a different machine.
+
+Disk findings and cleanup boundary
+----------------------------------
+C: had approximately 1.5–1.6 GiB free during inventory. c4_assets alone occupied
+about 4.67 GiB (logical file bytes). No C: files were deleted during this backup.
+The complete verified archives retain generated caches too, so old temporary
+directories can be considered for later cleanup after checking for newer work.
+Other large workspace directories belong to other projects and were not backed
+up or approved for deletion by this project-specific operation.

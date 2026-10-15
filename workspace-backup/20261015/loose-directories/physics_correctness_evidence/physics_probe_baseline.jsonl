@@ -1,0 +1,14 @@
+{"kind": "energy", "dt": 0.0004, "e0": 0.5202538142580021, "scale": 5.1800038142580025, "endpoint_j": -0.266582572020294, "max_j": 0.2735320477564299, "old_ratio": 0.5127828420053416, "max_ratio": 0.05280537574191176}
+{"kind": "energy", "dt": 0.0002, "e0": 0.5202538142580021, "scale": 5.1800038142580025, "endpoint_j": -0.13583167503681748, "max_j": 0.1425523756933903, "old_ratio": 0.2611360838247314, "max_ratio": 0.027519743383395537}
+{"kind": "energy", "dt": 0.0001, "e0": 0.5202538142580021, "scale": 5.1800038142580025, "endpoint_j": -0.06899641169782089, "max_j": 0.07270953025925941, "old_ratio": 0.1326251377031557, "max_ratio": 0.014036578517399126}
+{"kind": "geometry", "pair": "CylinderShape", "penetration": 1e-05, "depth": 9.999999999996123e-06, "distance": null}
+{"kind": "geometry", "pair": "CylinderShape", "penetration": 0.0001, "depth": 0.00010000000000000286, "distance": null}
+{"kind": "geometry", "pair": "CylinderShape", "penetration": 0.001, "depth": null, "distance": 0.11844579723908205}
+{"kind": "geometry", "pair": "CylinderShape", "penetration": 0.003, "depth": 0.0030000000000000027, "distance": null}
+{"kind": "geometry", "pair": "ConvexHullShape", "penetration": 1e-05, "depth": null, "distance": 0.14006891478108177}
+{"kind": "geometry", "pair": "ConvexHullShape", "penetration": 0.0001, "depth": null, "distance": 0.14006800657744542}
+{"kind": "geometry", "pair": "ConvexHullShape", "penetration": 0.001, "depth": null, "distance": 0.140062105006867}
+{"kind": "geometry", "pair": "ConvexHullShape", "penetration": 0.003, "depth": 0.0030000000000000027, "distance": null}
+{"kind": "settling", "solver": "admm", "mean_z": 0.41974916410167473, "min_z": 0.41444930934033386, "std_z": 0.0, "mean_abs_vz": 4.817116005668427e-14, "max_joint": 1.724401131381444e-17}
+{"kind": "settling", "solver": "pgs", "mean_z": 0.41497988949897, "min_z": 0.4146198832946658, "std_z": 5.551115123125783e-17, "mean_abs_vz": 2.154032652062075e-14, "max_joint": 0.0}
+{"kind": "dependency", "error": "name 'mujoco' is not defined"}

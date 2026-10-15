@@ -1,0 +1,1644 @@
+diff --git a/benchmarks/optical/instrumentation.py b/benchmarks/optical/instrumentation.py
+index 86a2ee7..7f86179 100644
+--- a/benchmarks/optical/instrumentation.py
++++ b/benchmarks/optical/instrumentation.py
+@@ -21,7 +21,7 @@ from .timing import (
+     record_runtime_hook_operation,
+ )
+ 
+-RUNTIME_HOOK_REGISTRY_VERSION = "q54.p12.4.runtime-hook-registry.v1"
++RUNTIME_HOOK_REGISTRY_VERSION = "q54.p12.4.runtime-hook-registry.v2"
+ 
+ 
+ @dataclass(frozen=True)
+@@ -158,7 +158,10 @@ FORBIDDEN_RUNTIME_HOOKS = (
+         "optics.cuda_lbvh.load_inline",
+         "optics.cuda_lbvh.load_inline",
+         "extension_load",
+-        ("optics.cuda_lbvh.",),
++        (
++            "optics.cuda_lbvh.",
++            "benchmarks.optical.lanes.warp.WarpCudaLbvhComparisonCommandBundle.",
++        ),
+     ),
+     RuntimeHookSpec(
+         "optics.cuda_direct_light.load_inline",
+diff --git a/benchmarks/optical/lanes/__init__.py b/benchmarks/optical/lanes/__init__.py
+index e0e2873..fadeb32 100644
+--- a/benchmarks/optical/lanes/__init__.py
++++ b/benchmarks/optical/lanes/__init__.py
+@@ -1,6 +1,25 @@
+ """Temporary P12.4 candidate-lane preflight adapters."""
+ 
+ from .cuda import CurrentCudaLanePreflight
+-from .warp import CurrentWarpLanePreflight
++from .warp import (
++    WARP_CUDA_LBVH_COMPARISON_SCHEMA_VERSION,
++    CurrentWarpLanePreflight,
++    WarpCudaLbvhComparisonCommandBundle,
++    WarpCudaLbvhComparisonEvidence,
++    WarpCudaLbvhComparisonFactory,
++    WarpCudaLbvhComparisonStorage,
++    WarpTorchStableView,
++    allocate_warp_cuda_lbvh_comparison_storage,
++)
+ 
+-__all__ = ["CurrentCudaLanePreflight", "CurrentWarpLanePreflight"]
++__all__ = [
++    "WARP_CUDA_LBVH_COMPARISON_SCHEMA_VERSION",
++    "CurrentCudaLanePreflight",
++    "CurrentWarpLanePreflight",
++    "WarpCudaLbvhComparisonCommandBundle",
++    "WarpCudaLbvhComparisonEvidence",
++    "WarpCudaLbvhComparisonFactory",
++    "WarpCudaLbvhComparisonStorage",
++    "WarpTorchStableView",
++    "allocate_warp_cuda_lbvh_comparison_storage",
++]
+diff --git a/benchmarks/optical/lanes/audit.py b/benchmarks/optical/lanes/audit.py
+index 68b9864..5b5b863 100644
+--- a/benchmarks/optical/lanes/audit.py
++++ b/benchmarks/optical/lanes/audit.py
+@@ -26,16 +26,6 @@ class _SourceCoverage:
+ 
+ 
+ _SHARED_SOURCE_COVERAGE = (
+-    _SourceCoverage(
+-        operation="scene_update",
+-        entry_point=(
+-            "tools.optical_pipeline_lab.render_session.OpticalLabRenderWorkspace.prepare_dynamic_frame"
+-        ),
+-        source_symbols=(
+-            "tools.optical_pipeline_lab.render_session.OpticalLabRenderWorkspace.prepare_dynamic_frame",
+-        ),
+-        known_contaminations=("allocation", "host_synchronize"),
+-    ),
+     _SourceCoverage(
+         operation="delivery",
+         entry_point="tools.optical_pipeline_lab.delivery.VideoDeliveryFacade.submit",
+@@ -64,10 +54,35 @@ _SHARED_SOURCE_COVERAGE = (
+ 
+ _LANE_SOURCE_COVERAGE = {
+     "warp": (
++        _SourceCoverage(
++            operation="scene_update",
++            entry_point="optics.device_scene.WarpSceneUpdateCommandBundle.enqueue",
++            source_symbols=("optics.device_scene.WarpSceneUpdateCommandBundle.enqueue",),
++        ),
++        _SourceCoverage(
++            operation="acceleration",
++            entry_point="optics.device_bvh.WarpBvhRefitCommandBundle.enqueue",
++            source_symbols=("optics.device_bvh.WarpBvhRefitCommandBundle.enqueue",),
++        ),
++        _SourceCoverage(
++            operation="scene_update",
++            entry_point=(
++                "benchmarks.optical.lanes.warp.WarpCudaLbvhComparisonCommandBundle.enqueue_scene_update"
++            ),
++            source_symbols=(
++                "benchmarks.optical.lanes.warp.WarpCudaLbvhComparisonCommandBundle.enqueue_scene_update",
++                "optics.device_scene.WarpSceneUpdateCommandBundle.enqueue",
++            ),
++        ),
+         _SourceCoverage(
+             operation="acceleration",
+-            entry_point="optics.device_bvh.refit_device_bvh_from_snapshot",
+-            source_symbols=("optics.device_bvh.refit_device_bvh_from_snapshot",),
++            entry_point=(
++                "benchmarks.optical.lanes.warp.WarpCudaLbvhComparisonCommandBundle.enqueue_acceleration"
++            ),
++            source_symbols=(
++                "benchmarks.optical.lanes.warp.WarpCudaLbvhComparisonCommandBundle.enqueue_acceleration",
++                "optics.cuda_lbvh.CudaLbvhRebuildStage.enqueue_bound_stream",
++            ),
+         ),
+         _SourceCoverage(
+             operation="render",
+@@ -80,6 +95,11 @@ _LANE_SOURCE_COVERAGE = {
+         ),
+     ),
+     "cuda": (
++        _SourceCoverage(
++            operation="scene_update",
++            entry_point="optics.cuda_scene.CudaSceneUpdateStage.enqueue",
++            source_symbols=("optics.cuda_scene.CudaSceneUpdateStage.enqueue",),
++        ),
+         _SourceCoverage(
+             operation="render",
+             entry_point="optics.cuda_direct_light.CudaDirectLightRenderStage.enqueue",
+@@ -92,15 +112,8 @@ _LANE_SOURCE_COVERAGE = {
+         ),
+         _SourceCoverage(
+             operation="acceleration",
+-            entry_point="optics.cuda_lbvh.build_cuda_lbvh_from_snapshot",
+-            source_symbols=("optics.cuda_lbvh.build_cuda_lbvh_from_snapshot",),
+-            known_contaminations=(
+-                "allocation",
+-                "global_device_synchronize",
+-                "host_synchronize",
+-                "warp_to_torch_bridge",
+-                "torch_to_warp_bridge",
+-            ),
++            entry_point="optics.cuda_lbvh.CudaLbvhRebuildStage.enqueue",
++            source_symbols=("optics.cuda_lbvh.CudaLbvhRebuildStage.enqueue",),
+         ),
+         _SourceCoverage(
+             operation="render",
+diff --git a/benchmarks/optical/lanes/warp.py b/benchmarks/optical/lanes/warp.py
+index a712878..71bf301 100644
+--- a/benchmarks/optical/lanes/warp.py
++++ b/benchmarks/optical/lanes/warp.py
+@@ -1,9 +1,14 @@
+-"""Fail-closed audit adapter for the current Warp optical product calls."""
++"""Fail-closed Warp audit adapter and temporary static comparison binding."""
+ 
+ from __future__ import annotations
+ 
++import hashlib
++import json
+ from collections.abc import Mapping
++from contextlib import nullcontext
++from dataclasses import dataclass
+ from pathlib import Path
++from types import MappingProxyType
+ from typing import Any
+ 
+ from ..assets import AssetPreflightError, preflight_case_asset
+@@ -12,8 +17,99 @@ from ..eligibility import (
+     evaluate_lane_eligibility,
+ )
+ from ..native import PreparedNativeInput
++from ..timing import assert_outside_timed_boundary
+ from .audit import verify_current_product_source_manifest
+ 
++WARP_CUDA_LBVH_COMPARISON_SCHEMA_VERSION = "q54.p12.4.warp-cuda-lbvh-comparison.v1"
++_PREPARED_COMPARISON_TOKEN = object()
++
++_LBVH_ARRAY_SPECS = (
++    ("scene_bounds_min", "float32", "scene"),
++    ("scene_bounds_max", "float32", "scene"),
++    ("morton_keys", "int64", "primitive"),
++    ("primitive_ids", "int32", "primitive"),
++    ("sorted_morton_keys", "int64", "primitive"),
++    ("sorted_primitive_ids", "int32", "primitive"),
++    ("left", "int32", "node"),
++    ("right", "int32", "node"),
++    ("parent", "int32", "node"),
++    ("start", "int32", "node"),
++    ("count", "int32", "node"),
++    ("range_start", "int32", "internal"),
++    ("range_end", "int32", "internal"),
++    ("split", "int32", "internal"),
++    ("node_bounds_min", "float32", "node_vec3"),
++    ("node_bounds_max", "float32", "node_vec3"),
++    ("child_counter", "int32", "internal"),
++)
++
++_WORLD_VIEW_NAMES = (
++    "triangle_aabb_min",
++    "triangle_aabb_max",
++)
++
++
++@dataclass(frozen=True)
++class WarpCudaLbvhComparisonStorage:
++    """Warp-owned one-shot LBVH outputs and scratch prepared outside timing."""
++
++    device: object
++    primitive_count: int
++    node_count: int
++    arrays: Mapping[str, object]
++    workspace: object
++    workspace_owner: object
++    node_depth: object
++    level_ranges: object
++    resources: tuple[object, ...] = ()
++
++
++@dataclass(frozen=True)
++class WarpTorchStableView:
++    """Strongly owned setup-time Torch view of one Warp CUDA allocation."""
++
++    name: str
++    warp_array: object
++    torch_tensor: object
++
++
++@dataclass(frozen=True)
++class WarpCudaLbvhComparisonEvidence:
++    """Independent facts for the temporary Warp-renderer/static-LBVH binding."""
++
++    schema_version: str
++    operation_id: str
++    acceleration_id: str
++    acceleration_class: str
++    topology_origin_id: str
++    topology_lifetime: str
++    device_ordinal: int
++    warp_stream_handle: int
++    torch_stream_handle: int
++    native_input_manifest_sha256: str
++    scene_contract_sha256: str
++    input_contract: str
++    transform_replay_sha256: str
++    transform_frame_index: int
++    primitive_count: int
++    node_count: int
++    stable_view_names: tuple[str, ...]
++    stable_view_alias_sha256: str
++    warp_scene_stage_evidence_sha256: str
++    cuda_lbvh_stage_evidence_sha256: str
++    setup_stable_view_count: int
++    bridge_creation_count: int
++
++    @property
++    def sha256(self) -> str:
++        return _canonical_sha256(self.to_payload())
++
++    def to_payload(self) -> dict[str, object]:
++        return {
++            **self.__dict__,
++            "stable_view_names": list(self.stable_view_names),
++        }
++
+ 
+ class CurrentWarpLanePreflight:
+     """Audit current Warp calls; intentionally has no sample submission API."""
+@@ -44,3 +140,742 @@ class CurrentWarpLanePreflight:
+             entry_point_audits=verify_current_product_source_manifest("warp"),
+             asset_manifest_sha256=asset_hash,
+         )
++
++
++class WarpCudaLbvhComparisonFactory:
++    """Freeze the setup-only Warp/Torch interop graph for static R2 rows.
++
++    The factory is comparison infrastructure, not a product executor and not a
++    C4 result capability.  C4 may later use it to seal final arena slots, but
++    only after those slots and their leases exist.
++    """
++
++    __slots__ = (
++        "_frozen_signature",
++        "_sealed",
++        "acceleration_class",
++        "context",
++        "cuda_lbvh_factory",
++        "external_stream",
++        "prepared",
++        "scene_factory",
++        "stream",
++    )
++
++    def __init__(
++        self,
++        *,
++        prepared: PreparedNativeInput,
++        acceleration_class: str,
++        stream: object,
++        external_stream: object,
++        context: object,
++        scene_factory: object,
++        cuda_lbvh_factory: object,
++        _prepared_token: object | None = None,
++    ) -> None:
++        self._sealed = False
++        if _prepared_token is not _PREPARED_COMPARISON_TOKEN:
++            raise ValueError("Warp CUDA-LBVH comparison factory must come from prepare()")
++        self.prepared = prepared
++        self.acceleration_class = acceleration_class
++        self.stream = stream
++        self.external_stream = external_stream
++        self.context = context
++        self.scene_factory = scene_factory
++        self.cuda_lbvh_factory = cuda_lbvh_factory
++        self._frozen_signature = self._factory_signature()
++        object.__setattr__(self, "_sealed", True)
++
++    def __setattr__(self, name: str, value: object) -> None:
++        if getattr(self, "_sealed", False) or hasattr(self, "_frozen_signature"):
++            raise AttributeError("Warp CUDA-LBVH comparison factory is immutable")
++        object.__setattr__(self, name, value)
++
++    def __delattr__(self, name: str) -> None:
++        raise AttributeError("Warp CUDA-LBVH comparison factory is immutable")
++
++    @classmethod
++    def prepare(
++        cls,
++        prepared: PreparedNativeInput,
++        *,
++        stream: object,
++        acceleration_class: str,
++    ) -> "WarpCudaLbvhComparisonFactory":
++        """Create the external-stream and extension binding outside timing."""
++
++        assert_outside_timed_boundary("Warp CUDA-LBVH comparison factory preparation")
++        torch, wp = _require_warp_torch_cuda()
++        manifest = prepared.manifest
++        if prepared.backend != "warp" or prepared.source is None:
++            raise ValueError("Warp CUDA-LBVH comparison requires Warp-owned native input")
++        if manifest.input_contract != "canonical_native_replay_v1":
++            raise ValueError("Warp CUDA-LBVH comparison requires canonical replay input")
++        if acceleration_class != "production_static":
++            raise ValueError("Warp CUDA-LBVH comparison is restricted to production_static")
++        if manifest.scene_contract_sha256 is None or manifest.transform_replay_sha256 is None:
++            raise ValueError("Warp CUDA-LBVH comparison provenance is incomplete")
++        packed = prepared.source.packed_scene_owner
++        if packed is None or packed.scene_contract_sha256 != manifest.scene_contract_sha256:
++            raise ValueError("Warp CUDA-LBVH comparison packed scene does not match its manifest")
++        _validate_warp_stream_identity(stream, prepared.device_ordinal, wp=wp)
++        if prepared.ready_event is not None:
++            stream.wait_event(prepared.ready_event)
++
++        target = torch.device("cuda", prepared.device_ordinal)
++        with torch.cuda.device(target):
++            external_stream = torch.cuda.ExternalStream(
++                int(stream.cuda_stream),
++                device=target,
++            )
++        from optics.cuda_lbvh import CudaLbvhRebuildStageFactory
++        from optics.cuda_timeline import CudaOpticalExecutionContext
++
++        context = CudaOpticalExecutionContext(device=target, stream=external_stream)
++        from ..native import build_prepared_warp_scene_update_factory
++
++        scene_factory = build_prepared_warp_scene_update_factory(prepared, stream=stream)
++        cuda_lbvh_factory = CudaLbvhRebuildStageFactory.prepare(
++            context=context,
++            primitive_count=packed.num_triangles,
++            native_input_manifest_sha256=manifest.sha256,
++            scene_contract_sha256=manifest.scene_contract_sha256,
++            input_contract=manifest.input_contract,
++        )
++        return cls(
++            prepared=prepared,
++            acceleration_class=acceleration_class,
++            stream=stream,
++            external_stream=external_stream,
++            context=context,
++            scene_factory=scene_factory,
++            cuda_lbvh_factory=cuda_lbvh_factory,
++            _prepared_token=_PREPARED_COMPARISON_TOKEN,
++        )
++
++    def seal(
++        self,
++        *,
++        transform_frame_index: int,
++        world: object,
++        storage: WarpCudaLbvhComparisonStorage,
++    ) -> "WarpCudaLbvhComparisonCommandBundle":
++        """Create stable views and seal one explicit one-shot storage graph."""
++
++        assert_outside_timed_boundary("Warp CUDA-LBVH comparison slot sealing")
++        self._assert_stable()
++        _, wp = _require_warp_torch_cuda()
++        _validate_comparison_storage(
++            storage,
++            requirements=self.cuda_lbvh_factory.requirements,
++            device_ordinal=self.prepared.device_ordinal,
++            wp=wp,
++        )
++        from ..native import build_prepared_warp_transform_inputs
++
++        transforms = build_prepared_warp_transform_inputs(
++            self.prepared,
++            transform_frame_index,
++        )
++        scene_bundle = self.scene_factory.seal(transforms=transforms, outputs=world)
++        stable_views = _create_stable_views(world=world, storage=storage, wp=wp)
++        view_by_name = {value.name: value.torch_tensor for value in stable_views}
++
++        from optics.cuda_lbvh import (
++            CudaLbvhBuffers,
++            CudaLbvhWorkspace,
++            CudaWorldAabbBuffers,
++        )
++
++        torch_world = CudaWorldAabbBuffers(
++            device_ordinal=self.prepared.device_ordinal,
++            resources=(world, stable_views),
++            **{name: view_by_name[f"world.{name}"] for name in _WORLD_VIEW_NAMES},
++        )
++        torch_outputs = CudaLbvhBuffers(
++            device_ordinal=self.prepared.device_ordinal,
++            primitive_count=storage.primitive_count,
++            node_count=storage.node_count,
++            resources=(storage, stable_views),
++            **{name: view_by_name[f"lbvh.{name}"] for name, _, _ in _LBVH_ARRAY_SPECS},
++        )
++        torch_workspace = CudaLbvhWorkspace(
++            storage=view_by_name["lbvh.workspace"],
++            requirements=self.cuda_lbvh_factory.requirements,
++            resources=(storage.workspace_owner, storage.workspace, stable_views),
++        )
++        acceleration_stage = self.cuda_lbvh_factory.bind(
++            world=torch_world,
++            outputs=torch_outputs,
++            workspace=torch_workspace,
++        )
++        warp_bvh = _build_warp_lbvh_view(
++            factory=self,
++            storage=storage,
++            frame_index=transform_frame_index,
++        )
++        evidence = _build_comparison_evidence(
++            factory=self,
++            scene_bundle=scene_bundle,
++            acceleration_stage=acceleration_stage,
++            stable_views=stable_views,
++            transform_frame_index=transform_frame_index,
++            primitive_count=storage.primitive_count,
++            node_count=storage.node_count,
++        )
++        return WarpCudaLbvhComparisonCommandBundle(
++            factory=self,
++            scene_bundle=scene_bundle,
++            acceleration_stage=acceleration_stage,
++            warp_bvh=warp_bvh,
++            stable_views=stable_views,
++            evidence=evidence,
++        )
++
++    def _factory_signature(self) -> tuple[object, ...]:
++        return (
++            id(self.prepared),
++            self.prepared.manifest.sha256,
++            self.prepared.device_ordinal,
++            self.acceleration_class,
++            id(self.stream),
++            int(self.stream.cuda_stream),
++            id(self.external_stream),
++            int(self.external_stream.cuda_stream),
++            id(self.context),
++            self.context.stream_handle,
++            id(self.scene_factory),
++            id(self.cuda_lbvh_factory),
++            self.cuda_lbvh_factory._factory_signature(),
++        )
++
++    def _assert_stable(self) -> None:
++        _, wp = _require_warp_torch_cuda()
++        _validate_warp_stream_identity(
++            self.stream,
++            self.prepared.device_ordinal,
++            wp=wp,
++        )
++        self.context._validate_identity()
++        if int(self.external_stream.cuda_stream) != int(self.stream.cuda_stream):
++            raise ValueError("Warp and Torch comparison stream handles differ")
++        self.cuda_lbvh_factory._assert_stable()
++        if self._factory_signature() != self._frozen_signature:
++            raise ValueError("Warp CUDA-LBVH comparison factory changed after construction")
++
++
++class WarpCudaLbvhComparisonCommandBundle:
++    """One-shot Warp scene-update then CUDA-LBVH native command sequence."""
++
++    __slots__ = (
++        "_binding_signature",
++        "_sealed",
++        "_state",
++        "acceleration_stage",
++        "evidence",
++        "factory",
++        "scene_bundle",
++        "stable_views",
++        "warp_bvh",
++    )
++
++    def __init__(
++        self,
++        *,
++        factory: WarpCudaLbvhComparisonFactory,
++        scene_bundle: object,
++        acceleration_stage: object,
++        warp_bvh: object,
++        stable_views: tuple[WarpTorchStableView, ...],
++        evidence: WarpCudaLbvhComparisonEvidence,
++    ) -> None:
++        self._sealed = False
++        self.factory = factory
++        self.scene_bundle = scene_bundle
++        self.acceleration_stage = acceleration_stage
++        self.warp_bvh = warp_bvh
++        self.stable_views = stable_views
++        self.evidence = evidence
++        self._state = "open"
++        self._binding_signature = self._bundle_signature()
++        object.__setattr__(self, "_sealed", True)
++
++    def __setattr__(self, name: str, value: object) -> None:
++        if getattr(self, "_sealed", False) or hasattr(self, "_binding_signature"):
++            raise AttributeError("Warp CUDA-LBVH comparison bundle is immutable")
++        object.__setattr__(self, name, value)
++
++    def __delattr__(self, name: str) -> None:
++        raise AttributeError("Warp CUDA-LBVH comparison bundle is immutable")
++
++    @property
++    def state(self) -> str:
++        return self._state
++
++    def arm(self) -> None:
++        """Perform the final full-graph validation before the timed boundary."""
++
++        assert_outside_timed_boundary("Warp CUDA-LBVH comparison pre-enqueue validation")
++        if self._state != "open":
++            raise RuntimeError("Warp CUDA-LBVH comparison bundle can only be armed once")
++        self.factory._assert_stable()
++        self.scene_bundle.validate_bound()
++        self.acceleration_stage.validate_bound()
++        _validate_bound_graph(self)
++        expected_evidence = _build_comparison_evidence(
++            factory=self.factory,
++            scene_bundle=self.scene_bundle,
++            acceleration_stage=self.acceleration_stage,
++            stable_views=self.stable_views,
++            transform_frame_index=self.scene_bundle.transforms.transform_frame_index,
++            primitive_count=self.acceleration_stage.outputs.primitive_count,
++            node_count=self.acceleration_stage.outputs.node_count,
++        )
++        if self.evidence != expected_evidence:
++            raise ValueError("Warp CUDA-LBVH comparison evidence changed after sealing")
++        if self._bundle_signature() != self._binding_signature:
++            raise ValueError("Warp CUDA-LBVH comparison binding changed after sealing")
++        object.__setattr__(self, "_state", "armed")
++
++    def enqueue_scene_update(self) -> None:
++        """Submit the frozen Warp scene command first on the shared stream."""
++
++        self._require_state("armed", operation="scene update")
++        try:
++            with self.factory.context.activate():
++                self.scene_bundle.enqueue()
++        except BaseException:
++            object.__setattr__(self, "_state", "poisoned")
++            raise
++        object.__setattr__(self, "_state", "scene_enqueued")
++
++    def enqueue_acceleration(self) -> None:
++        """Submit the CUDA LBVH command second without recording completion."""
++
++        self._require_state("scene_enqueued", operation="acceleration")
++        try:
++            self.acceleration_stage.enqueue_bound_stream()
++        except BaseException:
++            object.__setattr__(self, "_state", "poisoned")
++            raise
++        object.__setattr__(self, "_state", "acceleration_enqueued")
++
++    def _require_state(self, expected: str, *, operation: str) -> None:
++        if self._state != expected:
++            raise RuntimeError(
++                f"Warp CUDA-LBVH comparison {operation} requires state {expected!r}; found {self._state!r}"
++            )
++
++    def _bundle_signature(self) -> tuple[object, ...]:
++        return (
++            self.factory._factory_signature(),
++            id(self.scene_bundle),
++            self.scene_bundle.evidence.sha256,
++            id(self.acceleration_stage),
++            self.acceleration_stage.evidence.sha256,
++            id(self.warp_bvh),
++            _warp_bvh_binding_signature(self.warp_bvh),
++            tuple((value.name, id(value.warp_array), id(value.torch_tensor)) for value in self.stable_views),
++            _stable_view_alias_sha256(self.stable_views),
++            self.evidence.sha256,
++        )
++
++
++def _build_comparison_evidence(
++    *,
++    factory: WarpCudaLbvhComparisonFactory,
++    scene_bundle: object,
++    acceleration_stage: object,
++    stable_views: tuple[WarpTorchStableView, ...],
++    transform_frame_index: int,
++    primitive_count: int,
++    node_count: int,
++) -> WarpCudaLbvhComparisonEvidence:
++    manifest = factory.prepared.manifest
++    replay_sha256 = manifest.transform_replay_sha256
++    scene_sha256 = manifest.scene_contract_sha256
++    input_contract = manifest.input_contract
++    if replay_sha256 is None or scene_sha256 is None or input_contract is None:
++        raise ValueError("Warp CUDA-LBVH comparison evidence provenance is incomplete")
++    stage_evidence = acceleration_stage.evidence
++    return WarpCudaLbvhComparisonEvidence(
++        schema_version=WARP_CUDA_LBVH_COMPARISON_SCHEMA_VERSION,
++        operation_id=stage_evidence.operation_id,
++        acceleration_id=stage_evidence.acceleration_id,
++        acceleration_class=factory.acceleration_class,
++        topology_origin_id=stage_evidence.topology_origin_id,
++        topology_lifetime=stage_evidence.topology_lifetime,
++        device_ordinal=factory.prepared.device_ordinal,
++        warp_stream_handle=int(factory.stream.cuda_stream),
++        torch_stream_handle=int(factory.external_stream.cuda_stream),
++        native_input_manifest_sha256=manifest.sha256,
++        scene_contract_sha256=scene_sha256,
++        input_contract=input_contract,
++        transform_replay_sha256=replay_sha256,
++        transform_frame_index=transform_frame_index,
++        primitive_count=primitive_count,
++        node_count=node_count,
++        stable_view_names=tuple(value.name for value in stable_views),
++        stable_view_alias_sha256=_stable_view_alias_sha256(stable_views),
++        warp_scene_stage_evidence_sha256=scene_bundle.evidence.sha256,
++        cuda_lbvh_stage_evidence_sha256=stage_evidence.sha256,
++        setup_stable_view_count=len(stable_views),
++        bridge_creation_count=0,
++    )
++
++
++def _validate_bound_graph(bundle: WarpCudaLbvhComparisonCommandBundle) -> None:
++    factory = bundle.factory
++    scene_bundle = bundle.scene_bundle
++    stage = bundle.acceleration_stage
++    if scene_bundle.stream is not factory.stream:
++        raise ValueError("Warp comparison scene command uses a different stream owner")
++    if stage.factory is not factory.cuda_lbvh_factory or stage.factory.context is not factory.context:
++        raise ValueError("Warp comparison acceleration stage uses a different factory/context")
++    if not stage.world.resources or stage.world.resources[0] is not scene_bundle.outputs:
++        raise ValueError("Warp comparison AABB views do not own the scene output graph")
++    if not stage.outputs.resources or not isinstance(
++        stage.outputs.resources[0], WarpCudaLbvhComparisonStorage
++    ):
++        raise ValueError("Warp comparison LBVH views do not own their Warp storage graph")
++    storage = stage.outputs.resources[0]
++    if (
++        len(stage.workspace.resources) < 2
++        or stage.workspace.resources[0] is not storage.workspace_owner
++        or stage.workspace.resources[1] is not storage.workspace
++    ):
++        raise ValueError("Warp comparison workspace view lost its Warp owners")
++
++    expected_names = (
++        tuple(f"world.{name}" for name in _WORLD_VIEW_NAMES)
++        + tuple(f"lbvh.{name}" for name, _, _ in _LBVH_ARRAY_SPECS)
++        + ("lbvh.workspace",)
++    )
++    if tuple(value.name for value in bundle.stable_views) != expected_names:
++        raise ValueError("Warp comparison stable-view ABI is incomplete or reordered")
++    view_by_name = {value.name: value for value in bundle.stable_views}
++    for name in _WORLD_VIEW_NAMES:
++        view = view_by_name[f"world.{name}"]
++        if view.warp_array is not getattr(scene_bundle.outputs, name) or view.torch_tensor is not getattr(
++            stage.world, name
++        ):
++            raise ValueError("Warp comparison world-AABB stable view was rebound")
++    for name, _, _ in _LBVH_ARRAY_SPECS:
++        view = view_by_name[f"lbvh.{name}"]
++        if view.warp_array is not storage.arrays[name] or view.torch_tensor is not getattr(
++            stage.outputs, name
++        ):
++            raise ValueError("Warp comparison LBVH stable view was rebound")
++    workspace_view = view_by_name["lbvh.workspace"]
++    if (
++        workspace_view.warp_array is not storage.workspace
++        or workspace_view.torch_tensor is not stage.workspace.storage
++    ):
++        raise ValueError("Warp comparison workspace stable view was rebound")
++    if bundle.warp_bvh.resources != (factory, storage):
++        raise ValueError("Warp comparison traversal view lost its resource owners")
++    expected_warp_arrays = {
++        "bounds_min": storage.arrays["node_bounds_min"],
++        "bounds_max": storage.arrays["node_bounds_max"],
++        "left": storage.arrays["left"],
++        "right": storage.arrays["right"],
++        "start": storage.arrays["start"],
++        "count": storage.arrays["count"],
++        "prim_ids": storage.arrays["sorted_primitive_ids"],
++    }
++    if any(getattr(bundle.warp_bvh, name) is not value for name, value in expected_warp_arrays.items()):
++        raise ValueError("Warp comparison traversal view does not use the CUDA LBVH outputs")
++    if bundle.warp_bvh.ready_event is not None:
++        raise ValueError("C3 Warp comparison binding must not publish an intermediate event")
++    if (
++        scene_bundle.evidence.native_input_manifest_sha256 != factory.prepared.manifest.sha256
++        or scene_bundle.evidence.scene_contract_sha256 != factory.prepared.manifest.scene_contract_sha256
++        or scene_bundle.evidence.transform_replay_sha256 != factory.prepared.manifest.transform_replay_sha256
++        or scene_bundle.evidence.transform_frame_index != bundle.evidence.transform_frame_index
++    ):
++        raise ValueError("Warp comparison scene provenance does not match its prepared input")
++
++
++def _warp_bvh_binding_signature(value: object) -> tuple[object, ...]:
++    return (
++        id(value.device),
++        value.frame_id,
++        value.env_idx,
++        tuple(
++            id(getattr(value, name))
++            for name in (
++                "bounds_min",
++                "bounds_max",
++                "left",
++                "right",
++                "start",
++                "count",
++                "prim_ids",
++            )
++        ),
++        value.num_nodes,
++        value.num_primitives,
++        value.topology_origin_id,
++        value.scene_contract_sha256,
++        value.topology_sha256,
++        value.ready_event,
++        tuple(id(resource) for resource in value.resources),
++    )
++
++
++def allocate_warp_cuda_lbvh_comparison_storage(
++    requirements: object,
++    *,
++    device: object,
++    stream: object | None = None,
++) -> WarpCudaLbvhComparisonStorage:
++    """Allocate one Warp-owned C3 proof graph; C4 supplies final arena slots."""
++
++    assert_outside_timed_boundary("Warp CUDA-LBVH comparison storage allocation")
++    _, wp = _require_warp_torch_cuda()
++    from optics.cuda_lbvh import CudaLbvhWorkspaceRequirements
++
++    if not isinstance(requirements, CudaLbvhWorkspaceRequirements):
++        raise TypeError("requirements must be CudaLbvhWorkspaceRequirements")
++    resolved_device = wp.get_device(device)
++    if int(resolved_device.ordinal) != requirements.device_ordinal:
++        raise ValueError("Warp CUDA-LBVH comparison storage is on the wrong device")
++    if stream is not None:
++        _validate_warp_stream_identity(stream, requirements.device_ordinal, wp=wp)
++    primitive_count = requirements.primitive_count
++    node_count = requirements.node_capacity
++    internal_count = max(primitive_count - 1, 0)
++    shapes = {
++        "scene": (3,) if primitive_count else (0,),
++        "primitive": (primitive_count,),
++        "node": (node_count,),
++        "internal": (internal_count,),
++        "node_vec3": (node_count, 3),
++    }
++    dtypes = {"float32": wp.float32, "int32": wp.int32, "int64": wp.int64}
++    scope = wp.ScopedStream(stream) if stream is not None else nullcontext()
++    with scope:
++        arrays = {
++            name: wp.empty(shapes[shape_id], dtype=dtypes[dtype_id], device=resolved_device)
++            for name, dtype_id, shape_id in _LBVH_ARRAY_SPECS
++        }
++        required = requirements.required_bytes
++        alignment = requirements.alignment_bytes
++        if required:
++            workspace_owner = wp.empty(
++                (required + alignment - 1,),
++                dtype=wp.uint8,
++                device=resolved_device,
++            )
++            offset = (-int(workspace_owner.ptr)) % alignment
++            workspace = workspace_owner[offset : offset + required]
++        else:
++            workspace_owner = wp.empty((0,), dtype=wp.uint8, device=resolved_device)
++            workspace = workspace_owner
++        node_depth = wp.empty((node_count,), dtype=wp.int32, device=resolved_device)
++        level_ranges = wp.empty(
++            (1 if node_count else 0, 2),
++            dtype=wp.int32,
++            device=resolved_device,
++        )
++    result = WarpCudaLbvhComparisonStorage(
++        device=resolved_device,
++        primitive_count=primitive_count,
++        node_count=node_count,
++        arrays=MappingProxyType(arrays),
++        workspace=workspace,
++        workspace_owner=workspace_owner,
++        node_depth=node_depth,
++        level_ranges=level_ranges,
++        resources=tuple(arrays.values()) + (workspace_owner, workspace, node_depth, level_ranges),
++    )
++    _validate_comparison_storage(
++        result,
++        requirements=requirements,
++        device_ordinal=requirements.device_ordinal,
++        wp=wp,
++    )
++    return result
++
++
++def _create_stable_views(
++    *,
++    world: object,
++    storage: WarpCudaLbvhComparisonStorage,
++    wp: object,
++) -> tuple[WarpTorchStableView, ...]:
++    views: list[WarpTorchStableView] = []
++    for name in _WORLD_VIEW_NAMES:
++        value = getattr(world, name)
++        views.append(
++            WarpTorchStableView(
++                name=f"world.{name}",
++                warp_array=value,
++                torch_tensor=wp.to_torch(value),
++            )
++        )
++    for name, _, _ in _LBVH_ARRAY_SPECS:
++        value = storage.arrays[name]
++        views.append(
++            WarpTorchStableView(
++                name=f"lbvh.{name}",
++                warp_array=value,
++                torch_tensor=wp.to_torch(value),
++            )
++        )
++    views.append(
++        WarpTorchStableView(
++            name="lbvh.workspace",
++            warp_array=storage.workspace,
++            torch_tensor=wp.to_torch(storage.workspace),
++        )
++    )
++    result = tuple(views)
++    _validate_stable_views(result)
++    return result
++
++
++def _build_warp_lbvh_view(
++    *,
++    factory: WarpCudaLbvhComparisonFactory,
++    storage: WarpCudaLbvhComparisonStorage,
++    frame_index: int,
++) -> object:
++    from optics.cuda_lbvh import CUDA_LBVH_TOPOLOGY_ORIGIN_ID
++    from optics.device_bvh import DeviceBvhBuildStats, DeviceOpticalBvh
++
++    scene = factory.scene_factory.local_scene
++    stats = DeviceBvhBuildStats(
++        num_nodes=storage.node_count,
++        num_leaves=storage.primitive_count,
++        max_depth=0,
++        leaf_size=1,
++        sah_quality_cost=0.0,
++        split_strategy="cuda_lbvh",
++        supports_refit=False,
++        level_ranges=((0, storage.node_count),) if storage.node_count else (),
++    )
++    return DeviceOpticalBvh(
++        device=storage.device,
++        frame_id=frame_index,
++        env_idx=0,
++        bounds_min=storage.arrays["node_bounds_min"],
++        bounds_max=storage.arrays["node_bounds_max"],
++        left=storage.arrays["left"],
++        right=storage.arrays["right"],
++        start=storage.arrays["start"],
++        count=storage.arrays["count"],
++        node_depth=storage.node_depth,
++        level_ranges=storage.level_ranges,
++        prim_ids=storage.arrays["sorted_primitive_ids"],
++        primitive_global_id=scene.triangle_primitive_global_id,
++        primitive_instance_index=scene.triangle_instance_index,
++        primitive_index_within_instance=scene.triangle_primitive_index_within_instance,
++        primitive_geometry_index=scene.triangle_geometry_index,
++        primitive_geometry_primitive_index=scene.triangle_geometry_primitive_index,
++        primitive_source_order_key=scene.triangle_source_order_key,
++        stats=stats,
++        topology_origin_id=CUDA_LBVH_TOPOLOGY_ORIGIN_ID,
++        scene_contract_sha256=scene.scene_contract_sha256,
++        topology_sha256=None,
++        ready_event=None,
++        resources=(factory, storage),
++    )
++
++
++def _validate_warp_stream_identity(stream: object, device_ordinal: int, *, wp: object) -> None:
++    handle = getattr(stream, "cuda_stream", None)
++    if not isinstance(handle, int) or handle == 0:
++        raise ValueError("Warp CUDA-LBVH comparison requires a live non-default stream")
++    stream_device = wp.get_device(getattr(stream, "device", None))
++    if not stream_device.is_cuda or int(stream_device.ordinal) != device_ordinal:
++        raise ValueError("Warp CUDA-LBVH comparison stream is on the wrong device")
++
++
++def _validate_comparison_storage(
++    storage: WarpCudaLbvhComparisonStorage,
++    *,
++    requirements: object,
++    device_ordinal: int,
++    wp: object,
++) -> None:
++    if not isinstance(storage, WarpCudaLbvhComparisonStorage):
++        raise TypeError("storage must be WarpCudaLbvhComparisonStorage")
++    if int(wp.get_device(storage.device).ordinal) != device_ordinal:
++        raise ValueError("Warp CUDA-LBVH comparison storage device drifted")
++    if (
++        storage.primitive_count != requirements.primitive_count
++        or storage.node_count != requirements.node_capacity
++    ):
++        raise ValueError("Warp CUDA-LBVH comparison storage count mismatch")
++    if tuple(storage.arrays) != tuple(name for name, _, _ in _LBVH_ARRAY_SPECS):
++        raise ValueError("Warp CUDA-LBVH comparison storage ABI is incomplete or reordered")
++    if tuple(storage.workspace.shape) != (requirements.required_bytes,):
++        raise ValueError("Warp CUDA-LBVH comparison workspace has the wrong size")
++    if requirements.required_bytes and int(storage.workspace.ptr) % requirements.alignment_bytes:
++        raise ValueError("Warp CUDA-LBVH comparison workspace is not sufficiently aligned")
++    retained = tuple(id(value) for value in storage.resources)
++    if id(storage.workspace_owner) not in retained or id(storage.workspace) not in retained:
++        raise ValueError("Warp CUDA-LBVH comparison workspace owners are not retained")
++
++
++def _validate_stable_views(views: tuple[WarpTorchStableView, ...]) -> None:
++    names = tuple(value.name for value in views)
++    if len(names) != len(set(names)):
++        raise ValueError("Warp/Torch stable view names must be unique")
++    for value in views:
++        tensor = value.torch_tensor
++        warp_array = value.warp_array
++        if int(tensor.data_ptr()) != _warp_array_ptr(warp_array):
++            raise ValueError(f"stable view {value.name!r} does not alias its Warp owner")
++        if tuple(tensor.shape) != tuple(warp_array.shape):
++            raise ValueError(f"stable view {value.name!r} shape differs from its Warp owner")
++        if not tensor.is_cuda or not tensor.is_contiguous():
++            raise ValueError(f"stable view {value.name!r} must be contiguous CUDA storage")
++
++
++def _stable_view_alias_sha256(views: tuple[WarpTorchStableView, ...]) -> str:
++    _validate_stable_views(views)
++    return _canonical_sha256(
++        [
++            {
++                "name": value.name,
++                "warp_ptr": _warp_array_ptr(value.warp_array),
++                "torch_ptr": int(value.torch_tensor.data_ptr()),
++                "device_ordinal": int(value.torch_tensor.device.index),
++                "dtype": str(value.torch_tensor.dtype),
++                "shape": list(value.torch_tensor.shape),
++                "stride": list(value.torch_tensor.stride()),
++                "nbytes": int(value.torch_tensor.numel()) * int(value.torch_tensor.element_size()),
++            }
++            for value in views
++        ]
++    )
++
++
++def _canonical_sha256(value: object) -> str:
++    encoded = json.dumps(
++        value,
++        allow_nan=False,
++        ensure_ascii=True,
++        separators=(",", ":"),
++        sort_keys=True,
++    ).encode("utf-8")
++    return hashlib.sha256(encoded).hexdigest()
++
++
++def _warp_array_ptr(value: object) -> int:
++    pointer = getattr(value, "ptr", None)
++    return 0 if pointer is None else int(pointer)
++
++
++def _require_warp_torch_cuda() -> tuple[object, object]:
++    try:
++        import torch
++        import warp as wp
++    except ImportError as exc:  # pragma: no cover - exercised in optional environments.
++        raise ImportError("Warp CUDA-LBVH comparison requires Warp and PyTorch") from exc
++    if not torch.cuda.is_available() or wp.get_cuda_device_count() <= 0:
++        raise ImportError("Warp CUDA-LBVH comparison requires CUDA")
++    return torch, wp
+diff --git a/benchmarks/results/q54_p12_4/cleanup_ledger.json b/benchmarks/results/q54_p12_4/cleanup_ledger.json
+index 8b8b5ef..984f5db 100644
+--- a/benchmarks/results/q54_p12_4/cleanup_ledger.json
++++ b/benchmarks/results/q54_p12_4/cleanup_ledger.json
+@@ -80,18 +80,25 @@
+         "optics/device_bvh.py",
+         "optics/device.py",
+         "benchmarks/optical/native.py",
+-        "tests/gpu/test_optical_benchmark_native.py"
++        "tests/gpu/test_optical_benchmark_native.py",
++        "tests/gpu/test_optical_warp_native_commands.py"
+       ],
+       "symbols": {
+         "optics/device_scene.py": [
++          "class WarpSceneUpdateCommandFactory:",
++          "class WarpSceneUpdateCommandBundle:",
+           "def build_device_optical_scene_from_packed(",
+           "def device_optical_scene_from_arrays("
+         ],
+         "optics/device_bvh.py": [
++          "class WarpBvhRefitCommandFactory:",
++          "class WarpBvhRefitCommandBundle:",
+           "def build_host_median_bvh("
+         ],
+         "benchmarks/optical/native.py": [
+-          "def build_prepared_warp_local_scene("
++          "def build_prepared_warp_local_scene(",
++          "def build_prepared_warp_scene_update_factory(",
++          "def build_prepared_warp_bvh_refit_factory("
+         ]
+       },
+       "cuda_selected": {
+@@ -110,7 +117,8 @@
+         "optics/cuda_scene.py",
+         "benchmarks/optical/native.py",
+         "tests/unit/benchmarks/test_optical_benchmark_c3a.py",
+-        "tests/gpu/test_optical_benchmark_native.py"
++        "tests/gpu/test_optical_benchmark_native.py",
++        "tests/gpu/test_optical_cuda_scene.py"
+       ],
+       "symbols": {
+         "optics/cuda_scene.py": [
+@@ -137,9 +145,22 @@
+       "paths": [
+         "optics/cuda_lbvh.py",
+         "optics/_cuda_lbvh_source.py",
+-        "examples/cuda_lbvh_extension_spike.py"
++        "examples/cuda_lbvh_extension_spike.py",
++        "tests/unit/optics/test_cuda_lbvh_native.py",
++        "tests/gpu/test_optical_cuda_lbvh_native.py"
+       ],
+-      "symbols": {},
++      "symbols": {
++        "optics/cuda_lbvh.py": [
++          "class CudaLbvhWorkspaceRequirements:",
++          "class CudaWorldAabbBuffers:",
++          "class CudaLbvhRebuildStageFactory:",
++          "class CudaLbvhRebuildStage:",
++          "def cuda_lbvh_workspace_requirements(",
++          "def allocate_cuda_lbvh_workspace(",
++          "def allocate_cuda_lbvh_buffers(",
++          "def build_cuda_lbvh_from_snapshot("
++        ]
++      },
+       "cuda_selected": {
+         "action": "replace_then_delete",
+         "acceptance": "retain the native caller-owned source and stage API; remove the Warp-snapshot compatibility facade, Warp wrapping, and experiment filename"
+@@ -227,9 +248,17 @@
+     },
+     {
+       "entry_id": "temporary_warp_comparison_lane",
+-      "paths": ["benchmarks/optical/lanes/warp.py"],
++      "paths": [
++        "benchmarks/optical/lanes/warp.py",
++        "tests/gpu/test_optical_warp_cuda_lbvh_comparison.py"
++      ],
+       "symbols": {
+-        "benchmarks/optical/lanes/warp.py": ["class CurrentWarpLanePreflight:"]
++        "benchmarks/optical/lanes/warp.py": [
++          "class CurrentWarpLanePreflight:",
++          "class WarpCudaLbvhComparisonFactory:",
++          "class WarpCudaLbvhComparisonCommandBundle:",
++          "def allocate_warp_cuda_lbvh_comparison_storage("
++        ]
+       },
+       "cuda_selected": {
+         "action": "delete",
+@@ -265,6 +294,11 @@
+         "tests/unit/benchmarks/test_optical_benchmark_a3a.py"
+       ],
+       "symbols": {
++        "benchmarks/optical/lanes/__init__.py": [
++          "WarpCudaLbvhComparisonFactory",
++          "WarpCudaLbvhComparisonCommandBundle",
++          "allocate_warp_cuda_lbvh_comparison_storage"
++        ],
+         "benchmarks/optical/lanes/audit.py": [
+           "def current_product_source_entry_point_audits(",
+           "def verify_current_product_source_manifest("
+@@ -290,6 +324,7 @@
+         "tests/gpu/test_optical_gpu_runtime.py",
+         "tests/gpu/test_optical_warp_executor.py",
+         "tests/gpu/test_optical_benchmark_native.py",
++        "tests/gpu/test_optical_warp_cuda_lbvh_comparison.py",
+         "tests/unit/benchmarks/test_optical_benchmark_c3a.py",
+         "tests/unit/optics/test_scene_contract.py"
+       ],
+diff --git a/benchmarks/results/q54_p12_4/gate.json b/benchmarks/results/q54_p12_4/gate.json
+index 0628587..26d8f05 100644
+--- a/benchmarks/results/q54_p12_4/gate.json
++++ b/benchmarks/results/q54_p12_4/gate.json
+@@ -214,8 +214,8 @@
+   "eligibility_contract": {
+     "schema_version": "q54.p12.4.lane-eligibility.v2",
+     "operation_trace_schema_version": "q54.p12.4.operation-trace.v2",
+-    "runtime_hook_registry_version": "q54.p12.4.runtime-hook-registry.v1",
+-    "runtime_hook_registry_sha256": "3edfec9d9bb11c16b2bd2af17a472f0928f4372c11c5e2ae13cd614089591985",
++    "runtime_hook_registry_version": "q54.p12.4.runtime-hook-registry.v2",
++    "runtime_hook_registry_sha256": "fd03c565975848414d47f40331e8131b1fd3950740f3f5ea04ddfed02b3467e9",
+     "preflight_position": "before_timed_submission",
+     "runtime_hook_installation_owner": "single_lane_runner",
+     "high_level_trace_capture": "installed_entry_point_wrapper_only",
+diff --git a/optics/__init__.py b/optics/__init__.py
+index 26699dc..35fe741 100644
+--- a/optics/__init__.py
++++ b/optics/__init__.py
+@@ -34,6 +34,7 @@ from .cuda_lbvh import (
+     CudaLbvhRebuildStageFactory,
+     CudaLbvhWorkspace,
+     CudaLbvhWorkspaceRequirements,
++    CudaWorldAabbBuffers,
+     allocate_cuda_lbvh_buffers,
+     allocate_cuda_lbvh_workspace,
+     build_cuda_lbvh_from_snapshot,
+@@ -187,6 +188,7 @@ __all__ = [
+     "CudaLbvhRebuildStageFactory",
+     "CudaLbvhWorkspace",
+     "CudaLbvhWorkspaceRequirements",
++    "CudaWorldAabbBuffers",
+     "CudaSceneTransformInputs",
+     "CudaSceneUpdateStage",
+     "CudaSceneUpdateStageEvidence",
+diff --git a/optics/cuda_lbvh.py b/optics/cuda_lbvh.py
+index cf83865..4cff190 100644
+--- a/optics/cuda_lbvh.py
++++ b/optics/cuda_lbvh.py
+@@ -100,6 +100,22 @@ class CudaLbvhWorkspace:
+         )
+ 
+ 
++@dataclass(frozen=True)
++class CudaWorldAabbBuffers:
++    """Narrow caller-owned world-AABB input required by the LBVH command."""
++
++    device_ordinal: int
++    triangle_aabb_min: object
++    triangle_aabb_max: object
++    resources: tuple[object, ...] = ()
++
++    def tensor_items(self) -> tuple[tuple[str, object], ...]:
++        return (
++            ("triangle_aabb_min", self.triangle_aabb_min),
++            ("triangle_aabb_max", self.triangle_aabb_max),
++        )
++
++
+ @dataclass(frozen=True)
+ class CudaLbvhBuffers:
+     """Caller-owned mutable outputs for one native CUDA LBVH rebuild."""
+@@ -395,7 +411,7 @@ class CudaLbvhRebuildStageFactory:
+     def bind(
+         self,
+         *,
+-        world: CudaWorldSceneBuffers,
++        world: CudaWorldAabbBuffers | CudaWorldSceneBuffers,
+         outputs: CudaLbvhBuffers,
+         workspace: CudaLbvhWorkspace,
+     ) -> "CudaLbvhRebuildStage":
+@@ -475,7 +491,7 @@ class CudaLbvhRebuildStage:
+         self,
+         *,
+         factory: CudaLbvhRebuildStageFactory,
+-        world: CudaWorldSceneBuffers,
++        world: CudaWorldAabbBuffers | CudaWorldSceneBuffers,
+         outputs: CudaLbvhBuffers,
+         workspace: CudaLbvhWorkspace,
+         extension_entry: object | None,
+@@ -504,10 +520,31 @@ class CudaLbvhRebuildStage:
+         """Invoke only the frozen native entry on the transaction stream."""
+ 
+         with transaction.enqueue_stage(self):
+-            if self._extension_entry is not None:
+-                transaction.record_diagnostic_start("acceleration_kernel")
+-                self._extension_entry(*self._extension_args)
+-                transaction.record_diagnostic_end("acceleration_kernel")
++            transaction.record_diagnostic_start("acceleration_kernel")
++            self._launch_bound_entry()
++            transaction.record_diagnostic_end("acceleration_kernel")
++
++    def enqueue_bound_stream(self) -> None:
++        """Launch the sealed command without assuming a CUDA optical transaction.
++
++        This is the completion-neutral command entry used by an external native
++        sequence owner.  It records no event and creates no view; the owner must
++        validate its full stage sequence before timing and provide completion.
++        """
++
++        self._assert_cuda_transaction_stage_stable(self.factory.context)
++        with self.factory.context.activate():
++            self._launch_bound_entry()
++
++    def validate_bound(self) -> None:
++        """Revalidate the sealed ABI for an external sequence owner."""
++
++        self._validate_cuda_transaction_stage(self.factory.context)
++        self._assert_cuda_transaction_stage_stable(self.factory.context)
++
++    def _launch_bound_entry(self) -> None:
++        if self._extension_entry is not None:
++            self._extension_entry(*self._extension_args)
+ 
+     def _validate_cuda_transaction_stage(self, context: object) -> None:
+         if context is not self.factory.context:
+@@ -573,7 +610,7 @@ class CudaLbvhRebuildStage:
+ def _build_stage_evidence(
+     *,
+     factory: CudaLbvhRebuildStageFactory,
+-    world: CudaWorldSceneBuffers,
++    world: CudaWorldAabbBuffers | CudaWorldSceneBuffers,
+     outputs: CudaLbvhBuffers,
+     workspace: CudaLbvhWorkspace,
+     extension_entry: object | None,
+@@ -643,7 +680,7 @@ def _kernel_dispatch_count(primitive_count: int) -> int:
+ 
+ 
+ def _lbvh_abi_arguments(
+-    world: CudaWorldSceneBuffers,
++    world: CudaWorldAabbBuffers | CudaWorldSceneBuffers,
+     outputs: CudaLbvhBuffers,
+     workspace: CudaLbvhWorkspace,
+ ) -> tuple[object, ...]:
+@@ -742,12 +779,12 @@ def _validate_workspace(
+ 
+ 
+ def _validate_world_aabbs(
+-    world: CudaWorldSceneBuffers,
++    world: CudaWorldAabbBuffers | CudaWorldSceneBuffers,
+     primitive_count: int,
+     device: object,
+ ) -> None:
+-    if not isinstance(world, CudaWorldSceneBuffers):
+-        raise TypeError("world must be CudaWorldSceneBuffers")
++    if not isinstance(world, (CudaWorldAabbBuffers, CudaWorldSceneBuffers)):
++        raise TypeError("world must provide native CUDA world-AABB buffers")
+     target = torch.device(device)
+     if world.device_ordinal != target.index:
+         raise ValueError("CUDA LBVH world buffers are on the wrong device")
+@@ -829,7 +866,7 @@ def _validate_tensor(
+ 
+ 
+ def _validate_lbvh_storage_disjointness(
+-    world: CudaWorldSceneBuffers,
++    world: CudaWorldAabbBuffers | CudaWorldSceneBuffers,
+     outputs: CudaLbvhBuffers,
+     workspace: CudaLbvhWorkspace,
+ ) -> None:
+@@ -856,7 +893,7 @@ def _validate_lbvh_storage_disjointness(
+ 
+ 
+ def _world_aabb_items(
+-    world: CudaWorldSceneBuffers,
++    world: CudaWorldAabbBuffers | CudaWorldSceneBuffers,
+ ) -> tuple[tuple[str, object], ...]:
+     return (
+         ("triangle_aabb_min", world.triangle_aabb_min),
+diff --git a/optics/device_scene.py b/optics/device_scene.py
+index 9d43a72..68a2dc7 100644
+--- a/optics/device_scene.py
++++ b/optics/device_scene.py
+@@ -259,7 +259,18 @@ class WarpSceneUpdateCommandBundle:
+     """Immutable pre-recorded Warp scene commands for one storage graph."""
+ 
+     __slots__ = (
++        "_binding_signature",
+         "_commands",
++        "_frozen_commands",
++        "_frozen_device_ordinal",
++        "_frozen_dispatch_count",
++        "_frozen_dispatch_plan_sha256",
++        "_frozen_evidence",
++        "_frozen_evidence_sha256",
++        "_frozen_input_contract",
++        "_frozen_native_input_manifest_sha256",
++        "_frozen_owners",
++        "_frozen_stream_handle",
+         "_poisoned",
+         "_sealed",
+         "evidence",
+@@ -279,6 +290,8 @@ class WarpSceneUpdateCommandBundle:
+         outputs: WarpWorldSceneBuffers,
+         stream: object,
+     ) -> None:
++        self._sealed = False
++        self._binding_signature: tuple[object, ...] | None = None
+         self._commands = commands
+         self._poisoned = False
+         self.evidence = evidence
+@@ -286,13 +299,26 @@ class WarpSceneUpdateCommandBundle:
+         self.transforms = transforms
+         self.outputs = outputs
+         self.stream = stream
+-        self._sealed = True
++        self._frozen_commands = commands
++        self._frozen_owners = (local_scene, transforms, outputs, stream)
++        self._frozen_evidence = evidence
++        self._frozen_device_ordinal = evidence.device_ordinal
++        self._frozen_stream_handle = evidence.stream_handle
++        self._frozen_native_input_manifest_sha256 = evidence.native_input_manifest_sha256
++        self._frozen_input_contract = evidence.input_contract
++        self._frozen_dispatch_count = evidence.dispatch_count
++        self._frozen_dispatch_plan_sha256 = evidence.dispatch_plan_sha256
++        self._frozen_evidence_sha256 = evidence.sha256
++        self._freeze()
+ 
+     def __setattr__(self, name: str, value: object) -> None:
+-        if getattr(self, "_sealed", False):
++        if getattr(self, "_sealed", False) or getattr(self, "_binding_signature", None) is not None:
+             raise AttributeError("Warp scene-update command bundle is immutable")
+         object.__setattr__(self, name, value)
+ 
++    def __delattr__(self, name: str) -> None:
++        raise AttributeError("Warp scene-update command bundle is immutable")
++
+     @property
+     def dispatch_count(self) -> int:
+         return len(self._commands)
+@@ -301,18 +327,110 @@ class WarpSceneUpdateCommandBundle:
+     def poisoned(self) -> bool:
+         return self._poisoned
+ 
++    def validate_bound(self) -> None:
++        """Revalidate the exact sealed command/storage graph outside timing."""
++
++        self._validate_lightweight_bound()
++        scene = self.local_scene
++        transforms = self.transforms
++        outputs = self.outputs
++        _validate_warp_stream(self.stream, device=scene.device)
++        if int(scene.device.ordinal) != self._frozen_device_ordinal:
++            raise ValueError("Warp scene command device changed after sealing")
++        if transforms.input_contract != self._frozen_input_contract:
++            raise ValueError("Warp scene command input contract changed after sealing")
++        _validate_warp_transform_inputs(scene, transforms)
++        _validate_warp_world_scene_buffers(scene, outputs)
++        input_arrays = _warp_scene_command_inputs(scene, transforms)
++        output_arrays = _warp_world_scene_arrays(outputs)
++        protected_arrays = _warp_local_scene_arrays(scene) + (
++            ("x_world_R", transforms.x_world_R),
++            ("x_world_r", transforms.x_world_r),
++        )
++        _validate_disjoint_warp_storage(protected_arrays, output_arrays)
++
++        expected_evidence = WarpSceneUpdateCommandEvidence(
++            schema_version=WARP_SCENE_COMMAND_SCHEMA_VERSION,
++            operation_id=WARP_SCENE_UPDATE_OPERATION_ID,
++            device_ordinal=int(scene.device.ordinal),
++            stream_handle=int(self.stream.cuda_stream),
++            native_input_manifest_sha256=self._frozen_native_input_manifest_sha256,
++            scene_contract_sha256=scene.scene_contract_sha256,
++            input_contract=self._frozen_input_contract,
++            transform_replay_sha256=transforms.transform_replay_sha256,
++            transform_frame_index=transforms.transform_frame_index,
++            input_storage_sha256=_warp_storage_manifest_sha256(input_arrays),
++            output_storage_sha256=_warp_storage_manifest_sha256(output_arrays),
++            dispatch_count=len(self._commands),
++            dispatch_plan_sha256=_canonical_sha256(_warp_scene_dispatch_plan(scene)),
++        )
++        if self.evidence != expected_evidence:
++            raise ValueError("Warp scene command evidence changed after sealing")
++        if self._bundle_signature() != self._binding_signature:
++            raise ValueError("Warp scene command binding changed after sealing")
++
+     def enqueue(self) -> None:
+         """Launch only the frozen commands on the frozen stream."""
+ 
+         if self._poisoned:
+             raise RuntimeError("Warp scene-update command bundle is poisoned")
+         try:
++            self._validate_lightweight_bound()
+             for command in self._commands:
+                 command.launch(stream=self.stream)
+         except Exception:
+             object.__setattr__(self, "_poisoned", True)
+             raise
+ 
++    def _freeze(self) -> None:
++        if self._sealed or self._binding_signature is not None:
++            raise RuntimeError("Warp scene-update command bundle seal is one-way")
++        object.__setattr__(self, "_binding_signature", self._bundle_signature())
++        object.__setattr__(self, "_sealed", True)
++
++    def _validate_lightweight_bound(self) -> None:
++        if not self._sealed or self._binding_signature is None:
++            raise ValueError("Warp scene command bundle is not sealed")
++        local_scene, transforms, outputs, stream = self._frozen_owners
++        if (
++            self.local_scene is not local_scene
++            or self.transforms is not transforms
++            or self.outputs is not outputs
++            or self.stream is not stream
++        ):
++            raise ValueError("Warp scene command owners changed after sealing")
++        if self._commands is not self._frozen_commands:
++            raise ValueError("Warp scene command tuple changed after sealing")
++        if self.evidence is not self._frozen_evidence:
++            raise ValueError("Warp scene command evidence object changed after sealing")
++        if (
++            len(self._commands) != self._frozen_dispatch_count
++            or self.evidence.dispatch_count != self._frozen_dispatch_count
++        ):
++            raise ValueError("Warp scene command dispatch count changed after sealing")
++        if int(self.stream.cuda_stream) != self._frozen_stream_handle:
++            raise ValueError("Warp scene command stream changed after sealing")
++
++    def _bundle_signature(self) -> tuple[object, ...]:
++        return (
++            id(self._commands),
++            tuple(id(command) for command in self._commands),
++            id(self._frozen_commands),
++            tuple(id(command) for command in self._frozen_commands),
++            id(self.local_scene),
++            id(self.transforms),
++            id(self.outputs),
++            id(self.stream),
++            self._frozen_device_ordinal,
++            self._frozen_stream_handle,
++            self._frozen_native_input_manifest_sha256,
++            self._frozen_input_contract,
++            self._frozen_dispatch_count,
++            self._frozen_dispatch_plan_sha256,
++            self._frozen_evidence_sha256,
++            self.evidence.sha256,
++        )
++
+ 
+ class WarpSceneUpdateCommandFactory:
+     """Seal caller-owned world outputs into allocation-free Warp commands."""
+@@ -387,7 +505,6 @@ class WarpSceneUpdateCommandFactory:
+         _validate_disjoint_warp_storage(protected_arrays, output_arrays)
+ 
+         commands: list[object] = []
+-        dispatches: list[dict[str, object]] = []
+         if scene.num_triangles > 0:
+             commands.append(
+                 wp.launch(
+@@ -415,9 +532,6 @@ class WarpSceneUpdateCommandFactory:
+                     record_cmd=True,
+                 )
+             )
+-            dispatches.append(
+-                {"kernel": "update_triangles_derived_aabb_world", "dim": scene.num_triangles}
+-            )
+         if scene.num_planes > 0:
+             commands.append(
+                 wp.launch(
+@@ -442,7 +556,7 @@ class WarpSceneUpdateCommandFactory:
+                     record_cmd=True,
+                 )
+             )
+-            dispatches.append({"kernel": "update_planes_world", "dim": scene.num_planes})
++        dispatches = _warp_scene_dispatch_plan(scene)
+ 
+         evidence = WarpSceneUpdateCommandEvidence(
+             schema_version=WARP_SCENE_COMMAND_SCHEMA_VERSION,
+@@ -490,6 +604,17 @@ class WarpSceneUpdateCommandFactory:
+             raise ValueError("Warp scene factory provenance drifted after construction")
+ 
+ 
++def _warp_scene_dispatch_plan(scene: DeviceOpticalScene) -> list[dict[str, object]]:
++    dispatches: list[dict[str, object]] = []
++    if scene.num_triangles > 0:
++        dispatches.append(
++            {"kernel": "update_triangles_derived_aabb_world", "dim": scene.num_triangles}
++        )
++    if scene.num_planes > 0:
++        dispatches.append({"kernel": "update_planes_world", "dim": scene.num_planes})
++    return dispatches
++
++
+ def allocate_warp_world_scene_buffers(
+     scene: DeviceOpticalScene,
+     *,
+diff --git a/tests/gpu/test_optical_warp_native_commands.py b/tests/gpu/test_optical_warp_native_commands.py
+index 34ec2a4..4475ece 100644
+--- a/tests/gpu/test_optical_warp_native_commands.py
++++ b/tests/gpu/test_optical_warp_native_commands.py
+@@ -359,6 +359,50 @@ def test_warp_scene_factory_rejects_alias_and_stream_drift_before_recording():
+     assert not hasattr(setup.refit_factory.seal(world=setup.frame_one_world), "rebind")
+ 
+ 
++def test_warp_scene_bundle_rejects_reordered_recorded_commands_before_enqueue():
++    wp = pytest.importorskip("warp")
++    if wp.get_cuda_device_count() == 0:
++        pytest.skip("CUDA is required")
++
++    registry = _body_grid_registry()
++    registry.add_material(OpticalMaterialSpec("mat_plane"))
++    registry.add_plane_geometry(
++        "floor",
++        normal_local=[0.0, 0.0, 1.0],
++        point_local=[0.0, 0.0, -0.25],
++    )
++    registry.add_instance(OpticalInstanceSpec("floor_instance", "floor", "mat_plane"))
++    scene = build_device_optical_scene(registry, device="cuda:0")
++    stream = wp.Stream(device=scene.device)
++    rotations = np.broadcast_to(np.eye(3, dtype=np.float32), (1, 1, 3, 3)).copy()
++    translations = np.zeros((1, 1, 3), dtype=np.float32)
++    transforms = warp_replay_transform_inputs(
++        wp.array(rotations, dtype=wp.float32, device=scene.device),
++        wp.array(translations, dtype=wp.float32, device=scene.device),
++        frame_index=0,
++        input_contract="unit_mixed_replay_v1",
++        transform_replay_sha256="a" * 64,
++    )
++    world = allocate_warp_world_scene_buffers(scene, stream=stream)
++    bundle = WarpSceneUpdateCommandFactory(
++        scene,
++        stream=stream,
++        native_input_manifest_sha256="b" * 64,
++        input_contract="unit_mixed_replay_v1",
++    ).seal(transforms=transforms, outputs=world)
++    assert bundle.dispatch_count == 2
++    bundle.validate_bound()
++    with pytest.raises(AttributeError, match="immutable"):
++        bundle._sealed = False
++
++    object.__setattr__(bundle, "_commands", tuple(reversed(bundle._commands)))
++    with pytest.raises(ValueError, match="command tuple changed"):
++        bundle.validate_bound()
++    with pytest.raises(ValueError, match="command tuple changed"):
++        bundle.enqueue()
++    assert bundle.poisoned
++
++
+ def test_prebound_warp_internal_refit_matches_fresh_grid_bounds_and_traversal():
+     wp = pytest.importorskip("warp")
+     if wp.get_cuda_device_count() == 0:
+diff --git a/tests/unit/benchmarks/test_optical_benchmark_a3a.py b/tests/unit/benchmarks/test_optical_benchmark_a3a.py
+index 7771f6b..996954d 100644
+--- a/tests/unit/benchmarks/test_optical_benchmark_a3a.py
++++ b/tests/unit/benchmarks/test_optical_benchmark_a3a.py
+@@ -85,10 +85,17 @@ def test_gate_freezes_exact_acceleration_and_separate_input_contracts():
+     assert gate["lane_bindings"]["cuda"]["acceleration_by_class"]["production_dynamic"] == (
+         "cuda_morton_karras_lbvh_rebuild_v1"
+     )
++    assert gate["lane_bindings"]["warp"]["acceleration_by_class"]["production_static"] == (
++        "cuda_morton_karras_lbvh_rebuild_v1"
++    )
++    assert gate["lane_bindings"]["cuda"]["acceleration_by_class"]["production_static"] == (
++        "cuda_morton_karras_lbvh_rebuild_v1"
++    )
+     r1_rows = [row for row in gate["mandatory_rows"] if row["boundary"] == "R1"]
+     r2_rows = [row for row in gate["mandatory_rows"] if row["boundary"] == "R2"]
+     shipping_rows = [row for row in gate["mandatory_rows"] if row["boundary"] == "S"]
+     assert all(row["input_contract"] == CANONICAL_NATIVE_REPLAY_INPUT for row in r1_rows + r2_rows)
++    assert all(row["acceleration_class"] == "production_static" for row in r2_rows)
+     assert all(row["input_contract"] == GPU_ENGINE_PUBLISHED_FRAME_INPUT for row in shipping_rows)
+     assert gate["eligibility_contract"]["ineligible_result_emission"] == "forbidden"
+     assert gate["eligibility_contract"]["a3a_baseline_emission"] == "forbidden"
+@@ -124,6 +131,29 @@ def test_current_product_source_manifest_is_explicitly_not_runtime_evidence(lane
+     assert all(not audit.verified_runtime_hooks for audit in audits)
+ 
+ 
++def test_c3_source_manifests_name_real_prepared_scene_and_acceleration_entries():
++    warp_entries = {
++        audit.entry_point for audit in verify_current_product_source_manifest("warp")
++    }
++    cuda_entries = {
++        audit.entry_point for audit in verify_current_product_source_manifest("cuda")
++    }
++
++    assert (
++        "optics.device_scene.WarpSceneUpdateCommandBundle.enqueue" in warp_entries
++    )
++    assert (
++        "benchmarks.optical.lanes.warp."
++        "WarpCudaLbvhComparisonCommandBundle.enqueue_scene_update"
++    ) in warp_entries
++    assert (
++        "benchmarks.optical.lanes.warp."
++        "WarpCudaLbvhComparisonCommandBundle.enqueue_acceleration"
++    ) in warp_entries
++    assert "optics.cuda_scene.CudaSceneUpdateStage.enqueue" in cuda_entries
++    assert "optics.cuda_lbvh.CudaLbvhRebuildStage.enqueue" in cuda_entries
++
++
+ def test_current_preflight_adapters_do_not_expose_a_fake_submit_api():
+     warp = CurrentWarpLanePreflight(repo_root=REPO_ROOT)
+     cuda = CurrentCudaLanePreflight(repo_root=REPO_ROOT)
+diff --git a/tests/unit/optics/test_cuda_lbvh_native.py b/tests/unit/optics/test_cuda_lbvh_native.py
+index c921dd9..c037b68 100644
+--- a/tests/unit/optics/test_cuda_lbvh_native.py
++++ b/tests/unit/optics/test_cuda_lbvh_native.py
+@@ -49,7 +49,9 @@ def test_cuda_lbvh_extension_uses_fixed_caller_owned_abi_without_allocation():
+ def test_cuda_lbvh_timed_stage_only_invokes_prebound_entry():
+     source = inspect.getsource(CudaLbvhRebuildStage.enqueue)
+     assert "transaction.enqueue_stage(self)" in source
+-    assert "self._extension_entry(*self._extension_args)" in source
++    assert "self._launch_bound_entry()" in source
++    launch_source = inspect.getsource(CudaLbvhRebuildStage._launch_bound_entry)
++    assert "self._extension_entry(*self._extension_args)" in launch_source
+     for forbidden in (
+         "torch.empty",
+         "torch.zeros",
+diff --git a/tests/unit/optics/test_warp_native_command_contract.py b/tests/unit/optics/test_warp_native_command_contract.py
+index a6f6a5c..b0ac526 100644
+--- a/tests/unit/optics/test_warp_native_command_contract.py
++++ b/tests/unit/optics/test_warp_native_command_contract.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+ 
+ import inspect
+ from dataclasses import fields
++from types import SimpleNamespace
+ 
+ import numpy as np
+ import pytest
+@@ -99,7 +100,7 @@ def test_warp_scene_bundle_is_immutable_and_poison_is_fail_closed():
+         local_scene=object(),
+         transforms=object(),
+         outputs=object(),
+-        stream=object(),
++        stream=SimpleNamespace(cuda_stream=1),
+     )
+     with pytest.raises(RuntimeError, match="injected launch failure"):
+         bundle.enqueue()

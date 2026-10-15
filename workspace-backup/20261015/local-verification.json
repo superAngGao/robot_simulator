@@ -1,0 +1,8 @@
+{
+  "verified": true,
+  "files": 130977,
+  "source_bytes": 5879382481,
+  "archive_sha256": "5ec61794b7bc8d2b0ac832816ea0dda58894e93ddb02f50a18451732041bf33b",
+  "manifest_sha256": "d48cceafa6d1c2cf10e064b45d88ba81c6d3113f0e37e1b764a10618324a9bd7",
+  "method": "archive checksum and every archived regular file SHA256 checked against the source-read manifest; no extraction"
+}

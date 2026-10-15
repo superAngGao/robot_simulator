@@ -1,0 +1,411 @@
+diff --git a/.gitignore b/.gitignore
+index 3a64309..49879f4 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -35,3 +35,4 @@ benchmarks/results/q54_p12_4/**
+ !benchmarks/results/q54_p12_4/gate.json
+ !benchmarks/results/q54_p12_4/architecture_inventory.json
+ !benchmarks/results/q54_p12_4/cleanup_ledger.json
++!benchmarks/results/q54_p12_4/closed_worker_runtime_contract.json
+diff --git a/PROGRESS.md b/PROGRESS.md
+index 40e9e69..6e9f70b 100644
+--- a/PROGRESS.md
++++ b/PROGRESS.md
+@@ -1027,8 +1027,39 @@ Next milestone:
+       single-use prepared-acquire authority, one-to-one lease/transaction/owner
+       registration, and O(1) measured acquire are closed. The implementation
+       remains non-result-capable pending the joint C4/B3 activation review.
+-- [ ] P12.4 C4c — Warp native render/arena design v7 is ready for re-review. It
+-      freezes caller-owned render buffers, deterministic per-generation reset,
++- [ ] P12.4 C4c — Warp native render/arena design v7 is approved. C4c0 is
++      approved and sealed at `591ffc57`. C4c1 design v3 is awaiting review;
++      implementation has not started. It retains the bounded native Warp
++      render ABI—one kernel source, caller-owned deterministic buffers, four
++      fixed shade ABIs, and immutable recorded commands/evidence—but now moves
++      readiness into an exact CPU-safe production contract shared by Warp and
++      CUDA, confines every recorded-bundle execution to a supervised
++      sacrificial child with drain-or-quarantine ownership, and makes the CPU
++      canonical executor the primary numerical oracle. Public compatibility
++      executors share the kernel definitions but do not adopt the unfinished
++      multi-command bundle in C4c1. v3 additionally creates the guardian before
++      any CUDA-capable import, incrementally adopts setup owners, proves
++      supervised setup quiescence before sealing, latches possible submission
++      before entering every launch leaf, and requires supervisor ACK/deadline
++      coverage for both normal validation drain and emergency sync. C4c0
++      implements the stdlib-only closed worker/supervisor, strict canonical IPC,
++      frozen runtime/source/AST manifest, one-session/one-exit control state,
++      separate setup and measured-submission lifecycle, whole-graph guardian,
++      replayable termination evidence, and Warp/CUDA register-before-copy a2
++      preparation. The focused CPU contracts and real two-backend/two-device
++      setup-failure matrix pass. Product `PREPARE_FROZEN_ROW` GPU execution
++      remains explicitly disabled pending C4c0 implementation review. The
++      first implementation review's two P1s are now closed: the worker-facing
++      prepared-input contract/authority moved out of the benchmark package,
++      a live repository import ledger rejects every non-allowlisted source,
++      and an abort-start/acknowledgement handshake proves the supervisor has
++      committed its watchdog deadline before any emergency sync. ACK timeout,
++      EOF, or a wrong byte quarantines without calling the sync leaf. Parent
++      waits no longer misuse the response-write timeout;
++      quarantine evidence is consumed by the worker loop and forces
++      process-terminal `os._exit` without ordinary owner finalization.
++      The approved final C4c design freezes caller-owned render buffers,
++      deterministic per-generation reset,
+       pre-recorded fixed command variants, a closed trusted single-lane worker
+       with strict non-object IPC, boundary-symmetric diagnostic phases (six
+       records for R0, ten for R1/R2), a single terminal event, C4b-strength
+@@ -1044,10 +1075,9 @@ Next milestone:
+       leaf. Only exact target-only scope may use a target sync; any foreign or
+       unknown device scope goes directly to whole-process quarantine with no
+       ordinary resource release.
+-      C4c0 may not enable GPU preparation before both Warp/CUDA setup-failure
+-      lifecycle tests pass. The five host-payload R2 rows remain seal-rejected
++      The five host-payload R2 rows remain seal-rejected
+       until B3; normal drain/external-hold/joint shutdown remains C4d. No C4c
+-      implementation is authorized before review.
++      sample execution, a3b result, or baseline path is activated.
+ - [ ] P12.4 C4d/B3 — finish joint drain/poison/guardian ownership and add
+       reviewed host delivery storage. The a3b/result/baseline gates stay closed
+       until the joint activation review.
+diff --git a/REFLECTIONS.md b/REFLECTIONS.md
+index 593704f..90b67c6 100644
+--- a/REFLECTIONS.md
++++ b/REFLECTIONS.md
+@@ -3390,3 +3390,61 @@ or unknown scope instead retains the entire cross-device graph and exits the
+ process without per-resource cleanup, leaving CUDA-context/OS teardown as the
+ only release boundary. This is narrower and easier to validate than a partial
+ best-effort drain.
++
++C4c0 makes that rule executable without making a device query part of the
++proof. A device-scope descriptor is only immutable CPU metadata; the reviewed
++low-level call site records it before touching a runtime. Returned owners are
++adopted before their ordinal is checked, so a lying helper cannot lose the very
++foreign allocation that proves the contract breach. The dirty set grows
++monotonically, and an unknown bit never clears.
++
++The a2 convenience form also matters to failure safety. An allocation-plus-copy
++call is attractive in ordinary setup code, but it has no point where ownership
++can be registered between those two effects. The closed-worker path therefore
++uses a less concise sequence: host staging hold, destination allocation,
++immediate guardian adoption, and only then H2D copy. The ready-event wait is
++still not the final quiescence proof; one target-wide setup barrier follows all
++preparation and seals the evidence epoch.
++
++Finally, process isolation is useful only if its control plane is narrower than
++the Python process it replaced. The C4c0 worker starts under `-I -S`, validates
++the exact source list before extending `sys.path`, accepts canonical data rather
++than objects, and deliberately has no result-capable lane method. A tracked
++runtime contract carries exact liveness values while keeping them visibly
++separate from performance gates. This gives both candidate backends the same
++durable process boundary without committing the repository to a permanent
++dual-backend dispatcher.
++
++A source allowlist is not closed merely because the directly imported file is
++listed. Python executes package initializers first, and one apparently narrow
++`from package import module` can load a large transitive graph. Closed-worker
++evidence therefore needs both a frozen source manifest and a live import
++ledger based on repository-relative module origins. Shared prepared-input
++types and identity registries belong in a CPU-safe production module; importing
++the benchmark package from a trusted data-plane leaf defeats the boundary even
++when every resulting object is otherwise correct.
++
++An emergency-sync timeout must begin at the synchronization attempt, not only
++after the parent disappears. Compilation or warmup may legitimately outlive a
++response-write budget, while a hung device synchronization must be bounded
++even with a healthy parent. Separate pipes encode those separate facts: the
++parent-liveness pipe handles ownership loss, and a one-shot worker-to-supervisor
++abort signal arms the emergency watchdog before the CUDA call. If that signal
++cannot be delivered, synchronization is not safe to start and the graph stays
++quarantined.
++
++A successful write to an abort pipe is not evidence that the receiving event
++loop has processed it. The supervisor can still hold the read descriptor while
++being stalled before it installs the deadline. Emergency synchronization
++therefore needs a two-way commit: the worker sends abort-start, the supervisor
++sets the deadline, and only then does it return a one-shot acknowledgement. The
++worker must not call the synchronization leaf before validating that ACK.
++Timeout, EOF, or a wrong acknowledgement is itself a process-terminal
++quarantine path; notably, the sync callable remains uninvoked.
++
++Quarantine also has to be a worker-loop terminal action rather than an
++exception convention. Returning evidence to arbitrary Python callers still
++allows stack unwinding and resource finalizers to run. The loop must validate
++the session-bound termination evidence and use immediate process exit for
++quarantine dispositions; only a successful emergency sync may authorize an
++ordinary interpreter exit and object cleanup.
+diff --git a/benchmarks/optical/__init__.py b/benchmarks/optical/__init__.py
+index e1df848..43bb4e1 100644
+--- a/benchmarks/optical/__init__.py
++++ b/benchmarks/optical/__init__.py
+@@ -15,6 +15,11 @@ from .cases import (
+     cases_by_id,
+     get_case,
+ )
++from .closed_worker import (
++    ClosedWorkerLaneProxy,
++    build_closed_worker_runtime_manifest,
++    write_closed_worker_runtime_manifest,
++)
+ from .cuda_arena import build_cuda_c3_binding_from_arena_target
+ from .eligibility import (
+     CANONICAL_NATIVE_REPLAY_INPUT,
+@@ -164,6 +169,7 @@ __all__ = [
+     "ASSET_MANIFEST_SCHEMA_VERSION",
+     "BOUNDARY_VERSIONS",
+     "CASE_SCHEMA_VERSION",
++    "ClosedWorkerLaneProxy",
+     "CLEANUP_SCHEMA_VERSION",
+     "CANONICAL_NATIVE_REPLAY_INPUT",
+     "ELIGIBILITY_SCHEMA_VERSION",
+@@ -222,6 +228,7 @@ __all__ = [
+     "entry_point_hook_id",
+     "certify_native_readiness",
+     "build_c3_one_shot_native_execution_binding",
++    "build_closed_worker_runtime_manifest",
+     "build_cuda_c3_binding_from_arena_target",
+     "build_prepared_cuda_lbvh_rebuild_factory",
+     "build_prepared_warp_bvh_refit_factory",
+@@ -249,6 +256,7 @@ __all__ = [
+     "runtime_hook_registry_sha256",
+     "source_manifest_entry_point_audit",
+     "validate_trace_entry_points",
++    "write_closed_worker_runtime_manifest",
+     "verified_runtime_entry_point_audit",
+     "RUNTIME_OPERATION_KINDS",
+     "RuntimeOperationTrace",
+diff --git a/benchmarks/optical/native.py b/benchmarks/optical/native.py
+index 936c254..35f7c94 100644
+--- a/benchmarks/optical/native.py
++++ b/benchmarks/optical/native.py
+@@ -4,7 +4,6 @@ from __future__ import annotations
+ 
+ import hashlib
+ import json
+-import weakref
+ from collections.abc import Mapping, Sequence
+ from dataclasses import dataclass
+ from types import MappingProxyType
+@@ -12,6 +11,17 @@ from typing import Any, Literal
+ 
+ import numpy as np
+ 
++from optical_worker.native_contract import (
++    CudaPreparedNativeInput,
++    NativeBackend,
++    PreparedNativeInput,
++    WarpPreparedNativeInput,
++    assert_cuda_prepared_authority,
++    register_native_readiness,
++    register_prepared_native_input,
++    warp_dtype_from_host_dtype,
++)
++
+ from optics.device_bvh import build_host_median_bvh
+ from optics.scene_contract import SCENE_CONTRACT_SCHEMA_VERSION, PackedOpticalSceneHost
+ 
+@@ -28,39 +38,6 @@ from .workload_contract import frozen_workload_content
+ NATIVE_INPUT_SCHEMA_VERSION = "q54.p12.4.native-input.v2"
+ TRANSFORM_REPLAY_SCHEMA_VERSION = "q54.p12.4.transform-replay.v1"
+ FIXED_RENDER_FIXTURE_SCHEMA_VERSION = "q54.p12.4.fixed-render-fixture.v1"
+-NativeBackend = Literal["warp", "cuda"]
+-
+-_PREPARED_INPUT_AUTHORITIES: dict[
+-    int, tuple[weakref.ReferenceType[object], weakref.ReferenceType[object]]
+-] = {}
+-_READINESS_AUTHORITIES: dict[int, tuple[weakref.ReferenceType[object], weakref.ReferenceType[object]]] = {}
+-
+-
+-def _register_identity_authority(
+-    registry: dict[int, tuple[weakref.ReferenceType[object], weakref.ReferenceType[object]]],
+-    subject: object,
+-    owner: object,
+-) -> None:
+-    key = id(subject)
+-
+-    def discard(reference: weakref.ReferenceType[object]) -> None:
+-        current = registry.get(key)
+-        if current is not None and current[0] is reference:
+-            registry.pop(key, None)
+-
+-    registry[key] = (weakref.ref(subject, discard), weakref.ref(owner))
+-
+-
+-def _require_identity_authority(
+-    registry: dict[int, tuple[weakref.ReferenceType[object], weakref.ReferenceType[object]]],
+-    subject: object,
+-    owner: object,
+-    *,
+-    label: str,
+-) -> None:
+-    registered = registry.get(id(subject))
+-    if registered is None or registered[0]() is not subject or registered[1]() is not owner:
+-        raise ValueError(f"{label} was not issued by the canonical a2 preparation path")
+ 
+ 
+ _REPLAY_SEMANTICS = MappingProxyType(
+@@ -577,42 +554,6 @@ class CanonicalNativeInput:
+         return cls(manifest=manifest, arrays=MappingProxyType(frozen))
+ 
+ 
+-@dataclass(frozen=True)
+-class WarpPreparedNativeInput:
+-    """Warp-owned CUDA allocations at the native-ready boundary."""
+-
+-    manifest: NativeInputManifest
+-    device_ordinal: int
+-    arrays: Mapping[str, Any]
+-    ready_event: Any
+-    source: CanonicalNativeInput | None = None
+-
+-    @property
+-    def backend(self) -> NativeBackend:
+-        return "warp"
+-
+-
+-@dataclass(frozen=True)
+-class CudaPreparedNativeInput:
+-    """Torch-owned CUDA allocations at the native-ready boundary."""
+-
+-    manifest: NativeInputManifest
+-    device_ordinal: int
+-    arrays: Mapping[str, Any]
+-    ready_event: Any
+-    source: CanonicalNativeInput | None = None
+-
+-    @property
+-    def backend(self) -> NativeBackend:
+-        return "cuda"
+-
+-    def _assert_cuda_arena_a2_authority(self, readiness: object) -> None:
+-        assert_cuda_arena_a2_authority(self, readiness)
+-
+-
+-PreparedNativeInput = WarpPreparedNativeInput | CudaPreparedNativeInput
+-
+-
+ @dataclass(frozen=True)
+ class PreparedOpticalLocalScene:
+     """Allocation-free typed view of the exact a2 prepared scene arrays."""
+@@ -1119,43 +1060,9 @@ def assert_cuda_arena_a2_authority(
+     assert_outside_timed_boundary("CUDA arena a2 authority validation")
+     if type(prepared) is not CudaPreparedNativeInput:
+         raise TypeError("CUDA arena a2 authority requires CudaPreparedNativeInput")
+-    _require_identity_authority(
+-        _PREPARED_INPUT_AUTHORITIES,
+-        prepared,
+-        prepared.source,
+-        label="CUDA prepared native input",
+-    )
+-    if prepared.source is None or prepared.manifest is not prepared.source.manifest:
+-        raise ValueError("CUDA prepared native input lost its canonical source identity")
+     if type(readiness) is not NativeReadinessEvidence:
+         raise TypeError("CUDA arena a2 authority requires NativeReadinessEvidence")
+-    _require_identity_authority(
+-        _READINESS_AUTHORITIES,
+-        readiness,
+-        prepared,
+-        label="CUDA native readiness",
+-    )
+-    canonical = NativeReadinessEvidence.from_payload(readiness.to_payload())
+-    if canonical != readiness:
+-        raise ValueError("CUDA native readiness evidence is not canonical")
+-    manifest = prepared.manifest
+-    expected = {
+-        "backend": "cuda",
+-        "device_ordinal": prepared.device_ordinal,
+-        "manifest_sha256": manifest.sha256,
+-        "content_sha256": manifest.content_sha256,
+-        "topology_sha256": manifest.topology_sha256,
+-        "input_contract": manifest.input_contract,
+-        "scene_contract_schema_version": manifest.scene_contract_schema_version,
+-        "scene_contract_sha256": manifest.scene_contract_sha256,
+-        "scene_id": manifest.scene_id,
+-        "transform_replay_sha256": manifest.transform_replay_sha256,
+-        "transform_frame_count": manifest.transform_frame_count,
+-        "fixed_render_fixture_sha256": manifest.fixed_render_fixture_sha256,
+-    }
+-    for name, value in expected.items():
+-        if getattr(readiness, name) != value:
+-            raise ValueError(f"CUDA native readiness {name} does not match its prepared input")
++    assert_cuda_prepared_authority(prepared, readiness)
+ 
+ 
+ def certify_native_readiness(
+@@ -1216,7 +1123,7 @@ def certify_native_readiness(
+         compile_complete=True,
+         warmup_frames_completed=warmup_frames_completed,
+     )
+-    _register_identity_authority(_READINESS_AUTHORITIES, readiness, prepared)
++    register_native_readiness(readiness, prepared)
+     return readiness
+ 
+ 
+@@ -1253,7 +1160,7 @@ def prepare_warp_native_input(
+         ready_event=ready_event,
+         source=source,
+     )
+-    _register_identity_authority(_PREPARED_INPUT_AUTHORITIES, result, source)
++    register_prepared_native_input(result, source)
+     return result
+ 
+ 
+@@ -1292,7 +1199,7 @@ def prepare_cuda_native_input(
+         ready_event=ready_event,
+         source=source,
+     )
+-    _register_identity_authority(_PREPARED_INPUT_AUTHORITIES, result, source)
++    register_prepared_native_input(result, source)
+     return result
+ 
+ 
+@@ -1558,24 +1465,7 @@ def _native_array_to_numpy(prepared: PreparedNativeInput, value: Any) -> np.ndar
+ 
+ 
+ def _warp_dtype(wp: Any, dtype: np.dtype[Any]) -> Any:
+-    mapping = {
+-        np.dtype(np.bool_): wp.bool,
+-        np.dtype(np.int8): wp.int8,
+-        np.dtype(np.int16): wp.int16,
+-        np.dtype(np.int32): wp.int32,
+-        np.dtype(np.int64): wp.int64,
+-        np.dtype(np.uint8): wp.uint8,
+-        np.dtype(np.uint16): wp.uint16,
+-        np.dtype(np.uint32): wp.uint32,
+-        np.dtype(np.uint64): wp.uint64,
+-        np.dtype(np.float16): wp.float16,
+-        np.dtype(np.float32): wp.float32,
+-        np.dtype(np.float64): wp.float64,
+-    }
+-    try:
+-        return mapping[np.dtype(dtype)]
+-    except KeyError as exc:
+-        raise ValueError(f"unsupported Warp native input dtype {np.dtype(dtype)}") from exc
++    return warp_dtype_from_host_dtype(wp, np.dtype(dtype))
+ 
+ 
+ def _sha256_text(value: object) -> bool:
+diff --git a/optics/cuda_arena.py b/optics/cuda_arena.py
+index ae9b625..6ec2a0b 100644
+--- a/optics/cuda_arena.py
++++ b/optics/cuda_arena.py
+@@ -17,6 +17,8 @@ from collections.abc import Iterator, Mapping, Sequence
+ from dataclasses import asdict, dataclass, field, is_dataclass
+ from types import MappingProxyType
+ 
++from optical_worker.native_contract import CudaPreparedNativeInput
++
+ from .cuda_direct_light import (
+     CudaCameraParameters,
+     CudaDirectLightBuffers,
+@@ -1858,11 +1860,9 @@ def _validate_live_a2_binding(
+     prepared_input: object,
+     native_readiness: object,
+ ) -> None:
+-    prepared_type = type(prepared_input)
+     readiness_type = type(native_readiness)
+     if (
+-        prepared_type.__module__ != "benchmarks.optical.native"
+-        or prepared_type.__name__ != "CudaPreparedNativeInput"
++        type(prepared_input) is not CudaPreparedNativeInput
+         or readiness_type.__module__ != "benchmarks.optical.native"
+         or readiness_type.__name__ != "NativeReadinessEvidence"
+     ):

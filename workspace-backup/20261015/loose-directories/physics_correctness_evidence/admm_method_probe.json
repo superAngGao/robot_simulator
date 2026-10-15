@@ -1,0 +1,195 @@
+[
+  {
+    "kind": "positive_scalar_mass_scale",
+    "mass": 0.1,
+    "adaptive": false,
+    "f": 0.08999999980556674,
+    "exact": 0.09000000000000001,
+    "relative_error": 2.160369722620853e-09,
+    "iterations": 8,
+    "factorizations": 1,
+    "final_rho": 1.0,
+    "fixed_rho_theoretical_relative_error": 6.931074627105739e-55
+  },
+  {
+    "kind": "positive_scalar_mass_scale",
+    "mass": 0.1,
+    "adaptive": true,
+    "f": 0.08999999956181816,
+    "exact": 0.09000000000000001,
+    "relative_error": 4.868687243487891e-09,
+    "iterations": 5,
+    "factorizations": 5,
+    "final_rho": 0.0625,
+    "fixed_rho_theoretical_relative_error": 6.931074627105739e-55
+  },
+  {
+    "kind": "positive_scalar_mass_scale",
+    "mass": 1.0,
+    "adaptive": false,
+    "f": 0.89999999305831,
+    "exact": 0.9,
+    "relative_error": 7.712988889549719e-09,
+    "iterations": 25,
+    "factorizations": 1,
+    "final_rho": 1.0,
+    "fixed_rho_theoretical_relative_error": 5.949019936214834e-17
+  },
+  {
+    "kind": "positive_scalar_mass_scale",
+    "mass": 1.0,
+    "adaptive": true,
+    "f": 0.8999999996533712,
+    "exact": 0.9,
+    "relative_error": 3.851431519387284e-10,
+    "iterations": 8,
+    "factorizations": 8,
+    "final_rho": 0.0078125,
+    "fixed_rho_theoretical_relative_error": 5.949019936214834e-17
+  },
+  {
+    "kind": "positive_scalar_mass_scale",
+    "mass": 50.0,
+    "adaptive": false,
+    "f": 30.004994877248503,
+    "exact": 45.0,
+    "relative_error": 0.3332223360611444,
+    "iterations": 50,
+    "factorizations": 1,
+    "final_rho": 1.0,
+    "fixed_rho_theoretical_relative_error": 0.3332223360611466
+  },
+  {
+    "kind": "positive_scalar_mass_scale",
+    "mass": 50.0,
+    "adaptive": true,
+    "f": 44.999999819249076,
+    "exact": 45.0,
+    "relative_error": 4.0166871902632314e-09,
+    "iterations": 13,
+    "factorizations": 13,
+    "final_rho": 0.000244140625,
+    "fixed_rho_theoretical_relative_error": 0.3332223360611466
+  },
+  {
+    "kind": "positive_scalar_mass_scale",
+    "mass": 1000.0,
+    "adaptive": false,
+    "f": 48.610220375069964,
+    "exact": 900.0,
+    "relative_error": 0.9459886440277,
+    "iterations": 50,
+    "factorizations": 1,
+    "final_rho": 1.0,
+    "fixed_rho_theoretical_relative_error": 0.9459886440277049
+  },
+  {
+    "kind": "positive_scalar_mass_scale",
+    "mass": 1000.0,
+    "adaptive": true,
+    "f": 899.9999998884455,
+    "exact": 900.0,
+    "relative_error": 1.239494748814549e-10,
+    "iterations": 18,
+    "factorizations": 18,
+    "final_rho": 7.62939453125e-06,
+    "fixed_rho_theoretical_relative_error": 0.9459886440277049
+  },
+  {
+    "kind": "truncated_normal_feasibility",
+    "budget": 1,
+    "iterations": 1,
+    "returned": [
+      -0.47368421052631576
+    ],
+    "projected": [
+      0.0
+    ],
+    "exact": [
+      0.0
+    ]
+  },
+  {
+    "kind": "truncated_normal_feasibility",
+    "budget": 5,
+    "iterations": 5,
+    "returned": [
+      -0.0002912315839384287
+    ],
+    "projected": [
+      0.0
+    ],
+    "exact": [
+      0.0
+    ]
+  },
+  {
+    "kind": "truncated_normal_feasibility",
+    "budget": 50,
+    "iterations": 8,
+    "returned": [
+      -1.435219954929871e-09
+    ],
+    "projected": [
+      0.0
+    ],
+    "exact": [
+      0.0
+    ]
+  },
+  {
+    "kind": "rho_warmstart_scale",
+    "previous_final_rho": 512.0,
+    "next_initial_rho": 1.0,
+    "saved_u": [
+      -0.001953124999999971
+    ],
+    "cached_dual": [
+      -0.9999999999999851
+    ],
+    "interpreted_next_dual": [
+      -0.001953124999999971
+    ],
+    "next_one_step_returned": [
+      -0.47275904605263164
+    ],
+    "next_one_step_rescaled_reference": [
+      -7.046994566831257e-15
+    ],
+    "repeated_solve_iterations": 10,
+    "rescaled_repeated_solve_iterations": 1
+  },
+  {
+    "kind": "contact_order_warmstart",
+    "first_order": [
+      0.8999999999999554,
+      8.999999999999554
+    ],
+    "exact_reversed": [
+      9.0,
+      0.9
+    ],
+    "next_one_step_returned": [
+      5.1631578947368215,
+      4.736842105262947
+    ],
+    "next_one_step_mapped_reference": [
+      8.999999999999787,
+      0.8999999999999789
+    ]
+  },
+  {
+    "kind": "zero_angular_row_convexity",
+    "eigenvalues_Q": [
+      0.0,
+      1.1111111111111112,
+      1.1111111111111112,
+      1.1111111111111112
+    ]
+  },
+  {
+    "kind": "per_row_R_condition_number",
+    "condition_A": 1000000.0,
+    "condition_Q": 999999.9999999999
+  }
+]

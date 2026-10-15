@@ -1,0 +1,64 @@
+{
+  "force_gradient": [
+    1.0,
+    -1.0,
+    0.0
+  ],
+  "force_KKT_residual": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "scaling": [
+    {
+      "dt": 0.0002,
+      "impulse_KKT_residual_norm": 8.131516293641283e-20,
+      "objective_scaling_error": -5.293955920339377e-23
+    },
+    {
+      "dt": 0.001,
+      "impulse_KKT_residual_norm": 4.336808689942018e-19,
+      "objective_scaling_error": 0.0
+    },
+    {
+      "dt": 0.3,
+      "impulse_KKT_residual_norm": 2.0014830212433605e-16,
+      "objective_scaling_error": 1.1102230246251565e-16
+    },
+    {
+      "dt": 2.0,
+      "impulse_KKT_residual_norm": 0.0,
+      "objective_scaling_error": 0.0
+    }
+  ],
+  "fixed_rho_actual_iteration_checks": [
+    {
+      "mass": 0.1,
+      "iterations": 8,
+      "theory_at_actual_iterations": 2.160369772038167e-09,
+      "measured_error": 2.160369722620853e-09,
+      "absolute_difference": 4.9417313726531204e-17
+    },
+    {
+      "mass": 1.0,
+      "iterations": 25,
+      "theory_at_actual_iterations": 7.712989003113406e-09,
+      "measured_error": 7.712988889549719e-09,
+      "absolute_difference": 1.135636875087705e-16
+    },
+    {
+      "mass": 50.0,
+      "iterations": 50,
+      "theory_at_actual_iterations": 0.3332223360611466,
+      "measured_error": 0.3332223360611444,
+      "absolute_difference": 2.220446049250313e-15
+    },
+    {
+      "mass": 1000.0,
+      "iterations": 50,
+      "theory_at_actual_iterations": 0.9459886440277049,
+      "measured_error": 0.9459886440277,
+      "absolute_difference": 4.884981308350689e-15
+    }
+  ]
+}

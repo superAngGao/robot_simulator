@@ -1,0 +1,1521 @@
+diff --git a/benchmarks/optical/__init__.py b/benchmarks/optical/__init__.py
+index e1be9e5..3d3004e 100644
+--- a/benchmarks/optical/__init__.py
++++ b/benchmarks/optical/__init__.py
+@@ -51,6 +51,8 @@ from .native import (
+     WarpPreparedNativeInput,
+     assert_independent_native_inputs,
+     build_prepared_cuda_local_scene,
++    build_prepared_cuda_scene_update_factory,
++    build_prepared_cuda_transform_inputs,
+     build_prepared_warp_bvh_refit_factory,
+     build_prepared_warp_local_scene,
+     build_prepared_warp_scene_update_factory,
+@@ -218,6 +220,8 @@ __all__ = [
+     "build_c3_one_shot_native_execution_binding",
+     "build_prepared_warp_bvh_refit_factory",
+     "build_prepared_cuda_local_scene",
++    "build_prepared_cuda_scene_update_factory",
++    "build_prepared_cuda_transform_inputs",
+     "build_prepared_warp_local_scene",
+     "build_prepared_warp_scene_update_factory",
+     "build_prepared_warp_transform_inputs",
+diff --git a/benchmarks/optical/native.py b/benchmarks/optical/native.py
+index e70d802..6519137 100644
+--- a/benchmarks/optical/native.py
++++ b/benchmarks/optical/native.py
+@@ -859,6 +859,54 @@ def build_prepared_cuda_local_scene(prepared: CudaPreparedNativeInput):
+     )
+ 
+ 
++def build_prepared_cuda_transform_inputs(
++    prepared: CudaPreparedNativeInput,
++    frame_index: int,
++):
++    """Bind one exact a2 replay allocation range to the CUDA scene factory."""
++
++    assert_outside_timed_boundary("prepared CUDA transform-frame construction")
++    manifest = prepared.manifest
++    if prepared.backend != "cuda" or manifest.input_contract != CANONICAL_NATIVE_REPLAY_INPUT:
++        raise ValueError("prepared CUDA transform inputs require canonical_native_replay_v1")
++    if manifest.transform_replay_sha256 is None:
++        raise ValueError("prepared CUDA transform replay provenance is incomplete")
++    if frame_index < 0 or frame_index >= manifest.transform_frame_count:
++        raise ValueError("prepared CUDA transform frame index is out of range")
++    from optics.cuda_scene import cuda_replay_transform_inputs
++
++    return cuda_replay_transform_inputs(
++        prepared.arrays["replay_x_world_R"],
++        prepared.arrays["replay_x_world_r"],
++        frame_index=frame_index,
++        input_contract=manifest.input_contract,
++        transform_replay_sha256=manifest.transform_replay_sha256,
++        resources=(prepared,),
++    )
++
++
++def build_prepared_cuda_scene_update_factory(
++    prepared: CudaPreparedNativeInput,
++    *,
++    context: object,
++):
++    """Bind the CUDA scene factory to the exact prepared manifest and scene."""
++
++    assert_outside_timed_boundary("prepared CUDA scene-command factory construction")
++    if not prepared.manifest.result_capable or prepared.manifest.input_contract is None:
++        raise ValueError("prepared CUDA scene factory requires result-capable provenance")
++    if int(getattr(getattr(context, "device", None), "index", -1)) != prepared.device_ordinal:
++        raise ValueError("prepared CUDA scene factory context is on the wrong device")
++    from optics.cuda_scene import CudaSceneUpdateStageFactory
++
++    return CudaSceneUpdateStageFactory.prepare(
++        context=context,
++        local_scene=build_prepared_cuda_local_scene(prepared),
++        native_input_manifest_sha256=prepared.manifest.sha256,
++        input_contract=prepared.manifest.input_contract,
++    )
++
++
+ @dataclass(frozen=True)
+ class NativeInputValidationReport:
+     """Direct, untimed parity evidence for one prepared native input."""
+diff --git a/optics/__init__.py b/optics/__init__.py
+index cac455b..0e237bf 100644
+--- a/optics/__init__.py
++++ b/optics/__init__.py
+@@ -20,7 +20,19 @@ from .cuda_direct_light import (
+     cuda_direct_light_available,
+ )
+ from .cuda_lbvh import build_cuda_lbvh_from_snapshot
+-from .cuda_scene import CudaOpticalLocalScene, build_cuda_optical_scene, cuda_optical_scene_from_arrays
++from .cuda_scene import (
++    CUDA_SCENE_UPDATE_OPERATION_ID,
++    CudaOpticalLocalScene,
++    CudaSceneTransformInputs,
++    CudaSceneUpdateStage,
++    CudaSceneUpdateStageEvidence,
++    CudaSceneUpdateStageFactory,
++    CudaWorldSceneBuffers,
++    allocate_cuda_world_scene_buffers,
++    build_cuda_optical_scene,
++    cuda_optical_scene_from_arrays,
++    cuda_replay_transform_inputs,
++)
+ from .cuda_timeline import (
+     CudaDeferredProfile,
+     CudaOpticalCompletion,
+@@ -141,6 +153,12 @@ __all__ = [
+     "CudaOpticalTimelineError",
+     "CudaOpticalTransaction",
+     "CudaOpticalTransactionPoisonedError",
++    "CUDA_SCENE_UPDATE_OPERATION_ID",
++    "CudaSceneTransformInputs",
++    "CudaSceneUpdateStage",
++    "CudaSceneUpdateStageEvidence",
++    "CudaSceneUpdateStageFactory",
++    "CudaWorldSceneBuffers",
+     "CudaShadeInputs",
+     "DIRECT_LIGHT_FULL_HOST_PER_RAY_CHANNEL_SPECS",
+     "DIRECT_LIGHT_FULL_PRIMARY_HOST_CHANNEL_SPECS",
+@@ -200,7 +218,9 @@ __all__ = [
+     "build_host_optical_primitive_workload",
+     "allocate_warp_world_scene_buffers",
+     "allocate_cuda_direct_light_buffers",
++    "allocate_cuda_world_scene_buffers",
+     "cuda_direct_light_available",
++    "cuda_replay_transform_inputs",
+     "channel_is_device",
+     "channel_to_numpy",
+     "host_diagnostic_overlay_contract_schema",
+diff --git a/optics/cuda_scene.py b/optics/cuda_scene.py
+index 16b507f..9f88bca 100644
+--- a/optics/cuda_scene.py
++++ b/optics/cuda_scene.py
+@@ -2,8 +2,11 @@
+ 
+ from __future__ import annotations
+ 
++import hashlib
++import json
+ from collections.abc import Mapping
+ from dataclasses import dataclass
++from functools import lru_cache
+ from types import MappingProxyType
+ from typing import Any
+ 
+@@ -11,6 +14,22 @@ import numpy as np
+ 
+ from .scene_contract import PackedOpticalSceneHost
+ 
++CUDA_SCENE_UPDATE_OPERATION_ID = "torch_cuda_local_scene_transform_and_aabb_out_v1"
++CUDA_SCENE_UPDATE_STAGE_SCHEMA_VERSION = "q54.p12.4.cuda-scene-update-stage.v1"
++CUDA_SCENE_EXTENSION_ABI_VERSION = "q54.p12.4.cuda-scene-extension.v1"
++_INT32_MAX = (1 << 31) - 1
++_WORLD_OUTPUT_NAMES = (
++    "triangle_v0_world",
++    "triangle_e1_world",
++    "triangle_e2_world",
++    "triangle_normal_world",
++    "plane_normal_world",
++    "plane_point_world",
++    "triangle_aabb_min",
++    "triangle_aabb_max",
++)
++_PREPARED_EXTENSION_TOKEN = object()
++
+ 
+ @dataclass(frozen=True)
+ class CudaOpticalLocalScene:
+@@ -30,6 +49,68 @@ class CudaOpticalLocalScene:
+     resources: tuple[object, ...]
+ 
+ 
++@dataclass(frozen=True)
++class CudaSceneTransformInputs:
++    """One already-created Torch transform view bound outside native timing."""
++
++    x_world_R: object
++    x_world_r: object
++    env_idx: int
++    input_contract: str
++    transform_replay_sha256: str | None
++    transform_frame_index: int | None
++    resources: tuple[object, ...] = ()
++
++
++@dataclass(frozen=True)
++class CudaWorldSceneBuffers:
++    """Caller-owned mutable world geometry and AABB output tensors."""
++
++    device_ordinal: int
++    triangle_v0_world: object
++    triangle_e1_world: object
++    triangle_e2_world: object
++    triangle_normal_world: object
++    plane_normal_world: object
++    plane_point_world: object
++    triangle_aabb_min: object
++    triangle_aabb_max: object
++    resources: tuple[object, ...] = ()
++
++    def tensor_items(self) -> tuple[tuple[str, object], ...]:
++        return tuple((name, getattr(self, name)) for name in _WORLD_OUTPUT_NAMES)
++
++
++@dataclass(frozen=True)
++class CudaSceneUpdateStageEvidence:
++    """Independent scene-stage facts captured from the sealed runtime binding."""
++
++    schema_version: str
++    operation_id: str
++    extension_abi_version: str
++    extension_source_sha256: str
++    triangle_extension_entry: str | None
++    plane_extension_entry: str | None
++    device_ordinal: int
++    stream_handle: int
++    native_input_manifest_sha256: str
++    scene_contract_sha256: str
++    input_contract: str
++    transform_replay_sha256: str | None
++    transform_frame_index: int | None
++    num_triangles: int
++    num_planes: int
++    num_instances: int
++    input_storage_sha256: str
++    output_storage_sha256: str
++    dispatch_count: int
++    dispatch_plan_sha256: str
++
++    @property
++    def sha256(self) -> str:
++        return _canonical_sha256(self.__dict__)
++
++
+ def build_cuda_optical_scene(
+     packed_scene: PackedOpticalSceneHost,
+     *,
+@@ -108,6 +189,770 @@ def cuda_optical_scene_from_arrays(
+     )
+ 
+ 
++def cuda_replay_transform_inputs(
++    x_world_R: object,
++    x_world_r: object,
++    *,
++    frame_index: int,
++    input_contract: str,
++    transform_replay_sha256: str,
++    resources: tuple[object, ...] = (),
++) -> CudaSceneTransformInputs:
++    """Create exact Torch views of one already-uploaded replay frame."""
++
++    torch = _torch_module()
++    if not isinstance(frame_index, int) or isinstance(frame_index, bool) or frame_index < 0:
++        raise ValueError("transform replay frame index must be a non-negative integer")
++    if not input_contract or not _sha256_text(transform_replay_sha256):
++        raise ValueError("transform replay provenance must be non-empty")
++    if not isinstance(x_world_R, torch.Tensor) or not isinstance(x_world_r, torch.Tensor):
++        raise TypeError("CUDA replay transforms must be Torch tensors")
++    if not x_world_R.is_cuda or not x_world_r.is_cuda or x_world_R.device != x_world_r.device:
++        raise ValueError("CUDA replay transforms must share one CUDA device")
++    if x_world_R.dtype != torch.float32 or x_world_r.dtype != torch.float32:
++        raise ValueError("CUDA replay transforms must use float32")
++    if tuple(x_world_R.shape[2:]) != (3, 3) or tuple(x_world_r.shape[2:]) != (3,):
++        raise ValueError("CUDA replay transform trailing shapes are invalid")
++    if tuple(x_world_R.shape[:2]) != tuple(x_world_r.shape[:2]):
++        raise ValueError("CUDA replay transform frame/env dimensions do not agree")
++    if x_world_R.dim() != 4 or x_world_r.dim() != 3:
++        raise ValueError("CUDA replay transform ranks are invalid")
++    if not x_world_R.is_contiguous() or not x_world_r.is_contiguous():
++        raise ValueError("CUDA replay transforms must be contiguous")
++    if frame_index >= int(x_world_R.shape[0]):
++        raise IndexError("transform replay frame index is out of range")
++    rotation_view = x_world_R[frame_index : frame_index + 1]
++    translation_view = x_world_r[frame_index : frame_index + 1]
++    if not rotation_view.is_contiguous() or not translation_view.is_contiguous():
++        raise ValueError("CUDA replay frame views must be contiguous")
++    return CudaSceneTransformInputs(
++        x_world_R=rotation_view,
++        x_world_r=translation_view,
++        env_idx=0,
++        input_contract=input_contract,
++        transform_replay_sha256=transform_replay_sha256,
++        transform_frame_index=frame_index,
++        resources=tuple(resources) + (x_world_R, x_world_r),
++    )
++
++
++def allocate_cuda_world_scene_buffers(
++    scene: CudaOpticalLocalScene,
++) -> CudaWorldSceneBuffers:
++    """Allocate one setup/test output bundle; C4 supplies final arena slots."""
++
++    torch = _torch_module()
++    device = torch.device("cuda", scene.device_ordinal)
++    with torch.cuda.device(device):
++        values = {
++            "triangle_v0_world": torch.empty((scene.num_triangles, 3), dtype=torch.float32, device=device),
++            "triangle_e1_world": torch.empty((scene.num_triangles, 3), dtype=torch.float32, device=device),
++            "triangle_e2_world": torch.empty((scene.num_triangles, 3), dtype=torch.float32, device=device),
++            "triangle_normal_world": torch.empty(
++                (scene.num_triangles, 3), dtype=torch.float32, device=device
++            ),
++            "plane_normal_world": torch.empty((scene.num_planes, 3), dtype=torch.float32, device=device),
++            "plane_point_world": torch.empty((scene.num_planes, 3), dtype=torch.float32, device=device),
++            "triangle_aabb_min": torch.empty((scene.num_triangles, 3), dtype=torch.float32, device=device),
++            "triangle_aabb_max": torch.empty((scene.num_triangles, 3), dtype=torch.float32, device=device),
++        }
++    return CudaWorldSceneBuffers(
++        device_ordinal=scene.device_ordinal,
++        resources=(scene,),
++        **values,
++    )
++
++
++class CudaSceneUpdateStageFactory:
++    """Bind exact CUDA scene callables and immutable local-scene provenance."""
++
++    __slots__ = (
++        "_frozen_signature",
++        "_plane_entry",
++        "_sealed",
++        "_triangle_entry",
++        "context",
++        "input_contract",
++        "local_scene",
++        "module",
++        "native_input_manifest_sha256",
++    )
++
++    def __init__(
++        self,
++        *,
++        context: object,
++        local_scene: CudaOpticalLocalScene,
++        module: object,
++        native_input_manifest_sha256: str,
++        input_contract: str,
++        _prepared_extension_token: object | None = None,
++    ) -> None:
++        from .cuda_timeline import CudaOpticalExecutionContext
++
++        self._sealed = False
++        if _prepared_extension_token is not _PREPARED_EXTENSION_TOKEN:
++            raise ValueError("CUDA scene factory module must come from prepare()")
++        if not isinstance(context, CudaOpticalExecutionContext):
++            raise TypeError("CUDA scene factory requires CudaOpticalExecutionContext")
++        if not isinstance(local_scene, CudaOpticalLocalScene):
++            raise TypeError("CUDA scene factory requires CudaOpticalLocalScene")
++        if context.device.index != local_scene.device_ordinal:
++            raise ValueError("CUDA scene factory context and local-scene devices differ")
++        if not _sha256_text(native_input_manifest_sha256) or not input_contract:
++            raise ValueError("CUDA scene factory provenance must be non-empty")
++        triangle_entry = getattr(module, "update_triangles_world_aabb_out", None)
++        plane_entry = getattr(module, "update_planes_world_out", None)
++        if not callable(triangle_entry) or not callable(plane_entry):
++            raise ValueError("CUDA scene extension is missing its fixed out-style entries")
++        _validate_local_scene(local_scene, context.device)
++        context._validate_identity()
++        self.context = context
++        self.local_scene = local_scene
++        self.module = module
++        self.native_input_manifest_sha256 = native_input_manifest_sha256
++        self.input_contract = input_contract
++        self._triangle_entry = triangle_entry
++        self._plane_entry = plane_entry
++        self._frozen_signature = self._factory_signature()
++        object.__setattr__(self, "_sealed", True)
++
++    def __setattr__(self, name: str, value: object) -> None:
++        if getattr(self, "_sealed", False) or hasattr(self, "_frozen_signature"):
++            raise AttributeError("CUDA scene-update factory is immutable")
++        object.__setattr__(self, name, value)
++
++    def __delattr__(self, name: str) -> None:
++        raise AttributeError("CUDA scene-update factory is immutable")
++
++    @classmethod
++    def prepare(
++        cls,
++        *,
++        context: object,
++        local_scene: CudaOpticalLocalScene,
++        native_input_manifest_sha256: str,
++        input_contract: str,
++    ) -> "CudaSceneUpdateStageFactory":
++        """Load/compile the extension outside timing and freeze its entries."""
++
++        return cls(
++            context=context,
++            local_scene=local_scene,
++            module=_load_cuda_scene_extension(),
++            native_input_manifest_sha256=native_input_manifest_sha256,
++            input_contract=input_contract,
++            _prepared_extension_token=_PREPARED_EXTENSION_TOKEN,
++        )
++
++    def bind(
++        self,
++        *,
++        transforms: CudaSceneTransformInputs,
++        outputs: CudaWorldSceneBuffers,
++    ) -> "CudaSceneUpdateStage":
++        """Validate and seal one caller-owned output graph outside timing."""
++
++        self._assert_stable()
++        if transforms.input_contract != self.input_contract:
++            raise ValueError("CUDA transform input contract does not match the factory")
++        _validate_transform_inputs(self.local_scene, transforms, self.context.device)
++        _validate_world_outputs(self.local_scene, outputs, self.context.device)
++        input_items = _scene_input_items(self.local_scene, transforms)
++        output_items = outputs.tensor_items()
++        _validate_storage_disjointness(input_items, output_items)
++
++        triangle_args: tuple[object, ...] = ()
++        triangle_entry: object | None = None
++        if self.local_scene.num_triangles > 0:
++            triangle_entry = self._triangle_entry
++            triangle_args = _triangle_abi_arguments(
++                self.local_scene,
++                transforms,
++                outputs,
++            )
++
++        plane_args: tuple[object, ...] = ()
++        plane_entry: object | None = None
++        if self.local_scene.num_planes > 0:
++            plane_entry = self._plane_entry
++            plane_args = _plane_abi_arguments(
++                self.local_scene,
++                transforms,
++                outputs,
++            )
++
++        dispatches = tuple(
++            value
++            for value in (
++                {"entry": "update_triangles_world_aabb_out", "count": self.local_scene.num_triangles}
++                if triangle_entry is not None
++                else None,
++                {"entry": "update_planes_world_out", "count": self.local_scene.num_planes}
++                if plane_entry is not None
++                else None,
++            )
++            if value is not None
++        )
++        evidence = CudaSceneUpdateStageEvidence(
++            schema_version=CUDA_SCENE_UPDATE_STAGE_SCHEMA_VERSION,
++            operation_id=CUDA_SCENE_UPDATE_OPERATION_ID,
++            extension_abi_version=CUDA_SCENE_EXTENSION_ABI_VERSION,
++            extension_source_sha256=_CUDA_SCENE_EXTENSION_SOURCE_SHA256,
++            triangle_extension_entry=(
++                "update_triangles_world_aabb_out" if triangle_entry is not None else None
++            ),
++            plane_extension_entry="update_planes_world_out" if plane_entry is not None else None,
++            device_ordinal=self.local_scene.device_ordinal,
++            stream_handle=self.context.stream_handle,
++            native_input_manifest_sha256=self.native_input_manifest_sha256,
++            scene_contract_sha256=self.local_scene.scene_contract_sha256,
++            input_contract=self.input_contract,
++            transform_replay_sha256=transforms.transform_replay_sha256,
++            transform_frame_index=transforms.transform_frame_index,
++            num_triangles=self.local_scene.num_triangles,
++            num_planes=self.local_scene.num_planes,
++            num_instances=self.local_scene.num_instances,
++            input_storage_sha256=_storage_manifest_sha256(input_items),
++            output_storage_sha256=_storage_manifest_sha256(output_items),
++            dispatch_count=len(dispatches),
++            dispatch_plan_sha256=_canonical_sha256(dispatches),
++        )
++        stage = CudaSceneUpdateStage(
++            factory=self,
++            transforms=transforms,
++            outputs=outputs,
++            triangle_entry=triangle_entry,
++            triangle_args=triangle_args,
++            plane_entry=plane_entry,
++            plane_args=plane_args,
++            evidence=evidence,
++        )
++        stage._validate_cuda_transaction_stage(self.context)
++        stage._freeze()
++        return stage
++
++    def _factory_signature(self) -> tuple[object, ...]:
++        return (
++            id(self.context),
++            self.context.device,
++            self.context.stream_handle,
++            id(self.context.stream),
++            id(self.local_scene),
++            self.local_scene.scene_contract_sha256,
++            _storage_manifest_sha256(_local_scene_items(self.local_scene)),
++            id(self.module),
++            id(self._triangle_entry),
++            id(self._plane_entry),
++            CUDA_SCENE_EXTENSION_ABI_VERSION,
++            _CUDA_SCENE_EXTENSION_SOURCE_SHA256,
++            self.native_input_manifest_sha256,
++            self.input_contract,
++        )
++
++    def _assert_stable(self) -> None:
++        self.context._validate_identity()
++        if self._factory_signature() != self._frozen_signature:
++            raise ValueError("CUDA scene-update factory changed after construction")
++
++
++class CudaSceneUpdateStage:
++    """One immutable allocation-free scene-update transaction stage."""
++
++    cuda_transaction_stage_name = "cuda_scene_update"
++
++    __slots__ = (
++        "_binding_signature",
++        "_plane_args",
++        "_plane_entry",
++        "_sealed",
++        "_triangle_args",
++        "_triangle_entry",
++        "evidence",
++        "factory",
++        "outputs",
++        "transforms",
++    )
++
++    def __init__(
++        self,
++        *,
++        factory: CudaSceneUpdateStageFactory,
++        transforms: CudaSceneTransformInputs,
++        outputs: CudaWorldSceneBuffers,
++        triangle_entry: object | None,
++        triangle_args: tuple[object, ...],
++        plane_entry: object | None,
++        plane_args: tuple[object, ...],
++        evidence: CudaSceneUpdateStageEvidence,
++    ) -> None:
++        self._sealed = False
++        self.factory = factory
++        self.transforms = transforms
++        self.outputs = outputs
++        self._triangle_entry = triangle_entry
++        self._triangle_args = triangle_args
++        self._plane_entry = plane_entry
++        self._plane_args = plane_args
++        self.evidence = evidence
++        self._binding_signature: tuple[object, ...] | None = None
++
++    def __setattr__(self, name: str, value: object) -> None:
++        if getattr(self, "_sealed", False) or getattr(
++            self, "_binding_signature", None
++        ) is not None:
++            raise AttributeError("CUDA scene-update stage is immutable")
++        object.__setattr__(self, name, value)
++
++    def __delattr__(self, name: str) -> None:
++        raise AttributeError("CUDA scene-update stage is immutable")
++
++    @property
++    def dispatch_count(self) -> int:
++        return self.evidence.dispatch_count
++
++    def enqueue(self, transaction: object) -> None:
++        """Enqueue only the fixed entries and arguments on the transaction stream."""
++
++        with transaction.enqueue_stage(self):
++            transaction.record_diagnostic_start("scene_update_kernel")
++            if self._triangle_entry is not None:
++                self._triangle_entry(*self._triangle_args)
++            if self._plane_entry is not None:
++                self._plane_entry(*self._plane_args)
++            transaction.record_diagnostic_end("scene_update_kernel")
++
++    def _validate_cuda_transaction_stage(self, context: object) -> None:
++        if context is not self.factory.context:
++            raise ValueError("CUDA scene stage execution context identity mismatch")
++        self.factory._assert_stable()
++        _validate_transform_inputs(self.factory.local_scene, self.transforms, context.device)
++        _validate_world_outputs(self.factory.local_scene, self.outputs, context.device)
++        _validate_storage_disjointness(
++            _scene_input_items(self.factory.local_scene, self.transforms),
++            self.outputs.tensor_items(),
++        )
++        expected_triangle = (
++            self.factory._triangle_entry if self.factory.local_scene.num_triangles else None
++        )
++        expected_plane = (
++            self.factory._plane_entry if self.factory.local_scene.num_planes else None
++        )
++        if self._triangle_entry is not expected_triangle or self._plane_entry is not expected_plane:
++            raise ValueError("CUDA scene stage extension entry identity changed")
++        _validate_triangle_abi_binding(self)
++        _validate_plane_abi_binding(self)
++        _validate_scene_stage_evidence(self)
++
++    def _freeze(self) -> None:
++        if self._sealed or self._binding_signature is not None:
++            raise RuntimeError("CUDA scene-update stage seal is one-way")
++        object.__setattr__(self, "_binding_signature", self._stage_signature())
++        object.__setattr__(self, "_sealed", True)
++
++    def _assert_cuda_transaction_stage_stable(self, context: object) -> None:
++        if context is not self.factory.context:
++            raise ValueError("CUDA scene stage execution context changed")
++        if self._binding_signature is None or self._stage_signature() != self._binding_signature:
++            raise ValueError("CUDA scene stage binding changed after validation")
++
++    def _cuda_transaction_stage_evidence(self) -> CudaSceneUpdateStageEvidence:
++        return self.evidence
++
++    def _stage_signature(self) -> tuple[object, ...]:
++        return (
++            self.factory._factory_signature(),
++            id(self.transforms),
++            id(self.outputs),
++            id(self._triangle_entry),
++            id(self._triangle_args),
++            id(self._plane_entry),
++            id(self._plane_args),
++            self.evidence,
++            _transform_binding_signature(self.transforms),
++            _storage_manifest_sha256(_scene_input_items(self.factory.local_scene, self.transforms)),
++            _storage_manifest_sha256(self.outputs.tensor_items()),
++            tuple(id(resource) for resource in self.outputs.resources),
++        )
++
++
++def _triangle_abi_arguments(
++    scene: CudaOpticalLocalScene,
++    transforms: CudaSceneTransformInputs,
++    outputs: CudaWorldSceneBuffers,
++) -> tuple[object, ...]:
++    return (
++        scene.arrays["triangle_vertices_local"],
++        scene.arrays["triangle_instance_index"],
++        scene.arrays["instance_body_index"],
++        scene.arrays["instance_X_body_geometry_R"],
++        scene.arrays["instance_X_body_geometry_r"],
++        transforms.x_world_R,
++        transforms.x_world_r,
++        transforms.env_idx,
++        outputs.triangle_v0_world,
++        outputs.triangle_e1_world,
++        outputs.triangle_e2_world,
++        outputs.triangle_normal_world,
++        outputs.triangle_aabb_min,
++        outputs.triangle_aabb_max,
++    )
++
++
++def _plane_abi_arguments(
++    scene: CudaOpticalLocalScene,
++    transforms: CudaSceneTransformInputs,
++    outputs: CudaWorldSceneBuffers,
++) -> tuple[object, ...]:
++    return (
++        scene.arrays["plane_normal_local"],
++        scene.arrays["plane_point_local"],
++        scene.arrays["plane_instance_index"],
++        scene.arrays["instance_body_index"],
++        scene.arrays["instance_X_body_geometry_R"],
++        scene.arrays["instance_X_body_geometry_r"],
++        transforms.x_world_R,
++        transforms.x_world_r,
++        transforms.env_idx,
++        outputs.plane_normal_world,
++        outputs.plane_point_world,
++    )
++
++
++def _validate_triangle_abi_binding(stage: CudaSceneUpdateStage) -> None:
++    if stage.factory.local_scene.num_triangles == 0:
++        if stage._triangle_args:
++            raise ValueError("empty CUDA triangle scene-update ABI must have no arguments")
++        return
++    expected = _triangle_abi_arguments(
++        stage.factory.local_scene,
++        stage.transforms,
++        stage.outputs,
++    )
++    if not _fixed_abi_arguments_match(stage._triangle_args, expected, scalar_index=7):
++        raise ValueError("CUDA triangle scene-update ABI binding changed")
++
++
++def _validate_plane_abi_binding(stage: CudaSceneUpdateStage) -> None:
++    if stage.factory.local_scene.num_planes == 0:
++        if stage._plane_args:
++            raise ValueError("empty CUDA plane scene-update ABI must have no arguments")
++        return
++    expected = _plane_abi_arguments(
++        stage.factory.local_scene,
++        stage.transforms,
++        stage.outputs,
++    )
++    if not _fixed_abi_arguments_match(stage._plane_args, expected, scalar_index=8):
++        raise ValueError("CUDA plane scene-update ABI binding changed")
++
++
++def _fixed_abi_arguments_match(
++    actual: tuple[object, ...],
++    expected: tuple[object, ...],
++    *,
++    scalar_index: int,
++) -> bool:
++    if len(actual) != len(expected):
++        return False
++    for index, (actual_value, expected_value) in enumerate(zip(actual, expected, strict=True)):
++        if index == scalar_index:
++            if type(actual_value) is not int or actual_value != expected_value:
++                return False
++        elif actual_value is not expected_value:
++            return False
++    return True
++
++
++def _validate_scene_stage_evidence(stage: CudaSceneUpdateStage) -> None:
++    scene = stage.factory.local_scene
++    transforms = stage.transforms
++    triangle_entry_name = (
++        "update_triangles_world_aabb_out" if scene.num_triangles > 0 else None
++    )
++    plane_entry_name = "update_planes_world_out" if scene.num_planes > 0 else None
++    dispatches = tuple(
++        value
++        for value in (
++            {"entry": triangle_entry_name, "count": scene.num_triangles}
++            if triangle_entry_name is not None
++            else None,
++            {"entry": plane_entry_name, "count": scene.num_planes}
++            if plane_entry_name is not None
++            else None,
++        )
++        if value is not None
++    )
++    expected = CudaSceneUpdateStageEvidence(
++        schema_version=CUDA_SCENE_UPDATE_STAGE_SCHEMA_VERSION,
++        operation_id=CUDA_SCENE_UPDATE_OPERATION_ID,
++        extension_abi_version=CUDA_SCENE_EXTENSION_ABI_VERSION,
++        extension_source_sha256=_CUDA_SCENE_EXTENSION_SOURCE_SHA256,
++        triangle_extension_entry=triangle_entry_name,
++        plane_extension_entry=plane_entry_name,
++        device_ordinal=scene.device_ordinal,
++        stream_handle=stage.factory.context.stream_handle,
++        native_input_manifest_sha256=stage.factory.native_input_manifest_sha256,
++        scene_contract_sha256=scene.scene_contract_sha256,
++        input_contract=stage.factory.input_contract,
++        transform_replay_sha256=transforms.transform_replay_sha256,
++        transform_frame_index=transforms.transform_frame_index,
++        num_triangles=scene.num_triangles,
++        num_planes=scene.num_planes,
++        num_instances=scene.num_instances,
++        input_storage_sha256=_storage_manifest_sha256(
++            _scene_input_items(scene, transforms)
++        ),
++        output_storage_sha256=_storage_manifest_sha256(stage.outputs.tensor_items()),
++        dispatch_count=len(dispatches),
++        dispatch_plan_sha256=_canonical_sha256(dispatches),
++    )
++    if stage.evidence != expected:
++        raise ValueError("CUDA scene-update stage evidence changed from its bound ABI")
++
++
++def _validate_local_scene(scene: CudaOpticalLocalScene, device: object) -> None:
++    torch = _torch_module()
++    expected = {
++        "triangle_vertices_local": (torch.float32, (scene.num_triangles, 9)),
++        "triangle_instance_index": (torch.int32, (scene.num_triangles,)),
++        "plane_normal_local": (torch.float32, (scene.num_planes, 3)),
++        "plane_point_local": (torch.float32, (scene.num_planes, 3)),
++        "plane_instance_index": (torch.int32, (scene.num_planes,)),
++        "instance_body_index": (torch.int32, (scene.num_instances,)),
++        "instance_X_body_geometry_R": (torch.float32, (scene.num_instances, 9)),
++        "instance_X_body_geometry_r": (torch.float32, (scene.num_instances, 3)),
++    }
++    if (
++        scene.num_triangles > _INT32_MAX
++        or scene.num_planes > _INT32_MAX
++        or scene.num_instances > _INT32_MAX
++    ):
++        raise ValueError("CUDA scene count exceeds int32 kernel range")
++    for name, (dtype, shape) in expected.items():
++        _validate_tensor(scene.arrays[name], name=name, device=device, dtype=dtype, exact=shape)
++
++
++def _validate_transform_inputs(
++    scene: CudaOpticalLocalScene,
++    transforms: CudaSceneTransformInputs,
++    device: object,
++) -> None:
++    torch = _torch_module()
++    if not isinstance(transforms, CudaSceneTransformInputs):
++        raise TypeError("transforms must be CudaSceneTransformInputs")
++    _validate_tensor(
++        transforms.x_world_R,
++        name="x_world_R",
++        device=device,
++        dtype=torch.float32,
++        tail=(3, 3),
++    )
++    _validate_tensor(
++        transforms.x_world_r,
++        name="x_world_r",
++        device=device,
++        dtype=torch.float32,
++        tail=(3,),
++    )
++    if tuple(transforms.x_world_R.shape[:2]) != tuple(transforms.x_world_r.shape[:2]):
++        raise ValueError("CUDA transform env/body dimensions do not agree")
++    if (
++        not isinstance(transforms.env_idx, int)
++        or isinstance(transforms.env_idx, bool)
++        or not 0 <= transforms.env_idx < int(transforms.x_world_R.shape[0])
++    ):
++        raise ValueError("CUDA transform env index is out of range")
++    if scene.max_body_index >= int(transforms.x_world_R.shape[1]):
++        raise ValueError("CUDA transforms do not cover the scene body indices")
++    if int(transforms.x_world_R.shape[0]) > _INT32_MAX or int(
++        transforms.x_world_R.shape[1]
++    ) > _INT32_MAX:
++        raise ValueError("CUDA transform count exceeds int32 kernel range")
++    has_replay_hash = transforms.transform_replay_sha256 is not None
++    has_replay_index = transforms.transform_frame_index is not None
++    if has_replay_hash != has_replay_index:
++        raise ValueError("CUDA replay hash and frame index must appear together")
++    if has_replay_hash and (
++        not _sha256_text(transforms.transform_replay_sha256)
++        or not isinstance(transforms.transform_frame_index, int)
++        or isinstance(transforms.transform_frame_index, bool)
++        or transforms.transform_frame_index < 0
++    ):
++        raise ValueError("CUDA replay provenance is invalid")
++
++
++def _validate_world_outputs(
++    scene: CudaOpticalLocalScene,
++    outputs: CudaWorldSceneBuffers,
++    device: object,
++) -> None:
++    torch = _torch_module()
++    if not isinstance(outputs, CudaWorldSceneBuffers):
++        raise TypeError("outputs must be CudaWorldSceneBuffers")
++    if outputs.device_ordinal != scene.device_ordinal:
++        raise ValueError("CUDA world outputs and local scene devices differ")
++    expected_rows = {
++        "triangle_v0_world": scene.num_triangles,
++        "triangle_e1_world": scene.num_triangles,
++        "triangle_e2_world": scene.num_triangles,
++        "triangle_normal_world": scene.num_triangles,
++        "triangle_aabb_min": scene.num_triangles,
++        "triangle_aabb_max": scene.num_triangles,
++        "plane_normal_world": scene.num_planes,
++        "plane_point_world": scene.num_planes,
++    }
++    for name, rows in expected_rows.items():
++        _validate_tensor(
++            getattr(outputs, name),
++            name=name,
++            device=device,
++            dtype=torch.float32,
++            exact=(rows, 3),
++        )
++
++
++def _validate_tensor(
++    value: object,
++    *,
++    name: str,
++    device: object,
++    dtype: object,
++    exact: tuple[int, ...] | None = None,
++    tail: tuple[int, ...] | None = None,
++) -> None:
++    torch = _torch_module()
++    if not isinstance(value, torch.Tensor) or not value.is_cuda:
++        raise ValueError(f"{name} must be a CUDA tensor")
++    if value.device != torch.device(device):
++        raise ValueError(f"{name} must be on {torch.device(device)}")
++    if value.dtype != dtype:
++        raise ValueError(f"{name} has the wrong dtype")
++    if not value.is_contiguous():
++        raise ValueError(f"{name} must be contiguous")
++    if exact is not None and tuple(value.shape) != exact:
++        raise ValueError(f"{name} has the wrong shape")
++    if tail is not None:
++        if value.dim() != len(tail) + 2 or tuple(value.shape[-len(tail) :]) != tail:
++            raise ValueError(f"{name} has the wrong shape")
++
++
++def _local_scene_items(scene: CudaOpticalLocalScene) -> tuple[tuple[str, object], ...]:
++    return tuple((name, scene.arrays[name]) for name in sorted(scene.arrays))
++
++
++def _scene_input_items(
++    scene: CudaOpticalLocalScene,
++    transforms: CudaSceneTransformInputs,
++) -> tuple[tuple[str, object], ...]:
++    return _local_scene_items(scene) + (
++        ("x_world_R", transforms.x_world_R),
++        ("x_world_r", transforms.x_world_r),
++    )
++
++
++def _transform_binding_signature(
++    transforms: CudaSceneTransformInputs,
++) -> tuple[object, ...]:
++    return (
++        id(transforms.x_world_R),
++        id(transforms.x_world_r),
++        transforms.env_idx,
++        transforms.input_contract,
++        transforms.transform_replay_sha256,
++        transforms.transform_frame_index,
++        tuple(id(resource) for resource in transforms.resources),
++    )
++
++
++def _validate_storage_disjointness(
++    inputs: tuple[tuple[str, object], ...],
++    outputs: tuple[tuple[str, object], ...],
++) -> None:
++    input_spans = tuple(
++        (name, *_tensor_storage_span(value)) for name, value in inputs if int(value.numel()) > 0
++    )
++    seen_outputs: list[tuple[str, int, int]] = []
++    for name, value in outputs:
++        if int(value.numel()) == 0:
++            continue
++        start, end = _tensor_storage_span(value)
++        for other_name, other_start, other_end in input_spans:
++            if start < other_end and other_start < end:
++                raise ValueError(f"CUDA scene output {name!r} overlaps input {other_name!r}")
++        for other_name, other_start, other_end in seen_outputs:
++            if start < other_end and other_start < end:
++                raise ValueError(f"CUDA scene outputs {name!r} and {other_name!r} overlap")
++        seen_outputs.append((name, start, end))
++
++
++def _tensor_storage_span(value: object) -> tuple[int, int]:
++    start = int(value.data_ptr())
++    return start, start + int(value.numel()) * int(value.element_size())
++
++
++def _storage_manifest_sha256(values: tuple[tuple[str, object], ...]) -> str:
++    return _canonical_sha256(
++        [
++            {
++                "name": name,
++                "device_ordinal": int(value.device.index),
++                "ptr": int(value.data_ptr()),
++                "dtype": str(value.dtype),
++                "shape": list(value.shape),
++                "stride": list(value.stride()),
++                "nbytes": int(value.numel()) * int(value.element_size()),
++            }
++            for name, value in values
++        ]
++    )
++
++
++def _canonical_sha256(value: object) -> str:
++    encoded = json.dumps(
++        value,
++        allow_nan=False,
++        ensure_ascii=True,
++        separators=(",", ":"),
++        sort_keys=True,
++    ).encode("utf-8")
++    return hashlib.sha256(encoded).hexdigest()
++
++
++def _sha256_text(value: object) -> bool:
++    return (
++        isinstance(value, str)
++        and len(value) == 64
++        and all(character in "0123456789abcdef" for character in value)
++    )
++
++
++def _torch_module():
++    try:
++        import torch
++    except Exception as exc:  # pragma: no cover - CPU-only optional dependency guard.
++        raise ImportError("CUDA scene update requires PyTorch") from exc
++    if not torch.cuda.is_available():
++        raise ImportError("CUDA scene update requires Torch CUDA availability")
++    return torch
++
++
++@lru_cache(maxsize=1)
++def _load_cuda_scene_extension():
++    _torch_module()
++    from torch.utils.cpp_extension import load_inline
++
++    return load_inline(
++        name="robot_sim_cuda_scene_v1",
++        cpp_sources=[_CPP_SOURCE],
++        cuda_sources=[_CUDA_SOURCE],
++        with_cuda=True,
++        extra_cflags=["-O2"],
++        extra_cuda_cflags=["-O2"],
++        verbose=False,
++    )
++
++
+ def _torch_dtype_numpy(torch: Any, dtype: Any) -> np.dtype[Any]:
+     mapping = {
+         torch.bool: np.dtype(np.bool_),
+@@ -124,3 +969,512 @@ def _torch_dtype_numpy(torch: Any, dtype: Any) -> np.dtype[Any]:
+         return mapping[dtype]
+     except KeyError as exc:
+         raise ValueError(f"unsupported CUDA scene Torch dtype {dtype}") from exc
++
++
++_CPP_SOURCE = r"""
++#include <torch/extension.h>
++
++void update_triangles_world_aabb_out(
++    torch::Tensor triangle_vertices_local,
++    torch::Tensor triangle_instance_index,
++    torch::Tensor instance_body_index,
++    torch::Tensor instance_X_body_geometry_R,
++    torch::Tensor instance_X_body_geometry_r,
++    torch::Tensor frame_x_world_R,
++    torch::Tensor frame_x_world_r,
++    int64_t env_idx,
++    torch::Tensor triangle_v0_world,
++    torch::Tensor triangle_e1_world,
++    torch::Tensor triangle_e2_world,
++    torch::Tensor triangle_normal_world,
++    torch::Tensor triangle_aabb_min,
++    torch::Tensor triangle_aabb_max);
++
++void update_planes_world_out(
++    torch::Tensor plane_normal_local,
++    torch::Tensor plane_point_local,
++    torch::Tensor plane_instance_index,
++    torch::Tensor instance_body_index,
++    torch::Tensor instance_X_body_geometry_R,
++    torch::Tensor instance_X_body_geometry_r,
++    torch::Tensor frame_x_world_R,
++    torch::Tensor frame_x_world_r,
++    int64_t env_idx,
++    torch::Tensor plane_normal_world,
++    torch::Tensor plane_point_world);
++
++PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
++  m.def("update_triangles_world_aabb_out", &update_triangles_world_aabb_out);
++  m.def("update_planes_world_out", &update_planes_world_out);
++}
++"""
++
++
++_CUDA_SOURCE = r"""
++#include <torch/extension.h>
++#include <ATen/cuda/CUDAContext.h>
++#include <c10/cuda/CUDAGuard.h>
++#include <c10/cuda/CUDAException.h>
++#include <cuda.h>
++#include <cuda_runtime.h>
++#include <climits>
++#include <cstdint>
++
++namespace {
++
++constexpr int kThreads = 256;
++constexpr float kNormalEpsilon = 1.0e-8f;
++
++struct RigidTransform {
++  float R[9];
++  float r[3];
++};
++
++void check_cuda_tensor(
++    const torch::Tensor& value,
++    const torch::Device& device,
++    torch::ScalarType dtype,
++    const char* name) {
++  TORCH_CHECK(value.is_cuda(), name, " must be CUDA");
++  TORCH_CHECK(value.device() == device, name, " must be on the anchor device");
++  TORCH_CHECK(value.scalar_type() == dtype, name, " has the wrong dtype");
++  TORCH_CHECK(value.is_contiguous(), name, " must be contiguous");
++}
++
++uintptr_t span_start(const torch::Tensor& value) {
++  return reinterpret_cast<uintptr_t>(value.data_ptr());
++}
++
++uintptr_t span_end(const torch::Tensor& value) {
++  return span_start(value) + static_cast<uintptr_t>(value.numel() * value.element_size());
++}
++
++bool spans_overlap(const torch::Tensor& lhs, const torch::Tensor& rhs) {
++  if (lhs.numel() == 0 || rhs.numel() == 0) {
++    return false;
++  }
++  return span_start(lhs) < span_end(rhs) && span_start(rhs) < span_end(lhs);
++}
++
++template <int InputCount, int OutputCount>
++void check_output_disjointness(
++    const torch::Tensor* const (&inputs)[InputCount],
++    const torch::Tensor* const (&outputs)[OutputCount]) {
++  for (int output_index = 0; output_index < OutputCount; ++output_index) {
++    for (int input_index = 0; input_index < InputCount; ++input_index) {
++      TORCH_CHECK(
++          !spans_overlap(*outputs[output_index], *inputs[input_index]),
++          "CUDA scene output overlaps an input tensor");
++    }
++    for (int prior = 0; prior < output_index; ++prior) {
++      TORCH_CHECK(
++          !spans_overlap(*outputs[output_index], *outputs[prior]),
++          "CUDA scene output tensors overlap");
++    }
++  }
++}
++
++__device__ __forceinline__ RigidTransform compose_transform(
++    int instance_index,
++    int env_idx,
++    int body_count,
++    const int32_t* instance_body_index,
++    const float* instance_R,
++    const float* instance_r,
++    const float* frame_R,
++    const float* frame_r) {
++  RigidTransform result;
++  float Rwb[9] = {
++      1.0f, 0.0f, 0.0f,
++      0.0f, 1.0f, 0.0f,
++      0.0f, 0.0f, 1.0f};
++  float rwb[3] = {0.0f, 0.0f, 0.0f};
++  const int body_index = instance_body_index[instance_index];
++  if (body_index >= 0 && body_index < body_count) {
++    const int body_offset = (env_idx * body_count + body_index) * 9;
++    const int translation_offset = (env_idx * body_count + body_index) * 3;
++    #pragma unroll
++    for (int element = 0; element < 9; ++element) {
++      Rwb[element] = frame_R[body_offset + element];
++    }
++    #pragma unroll
++    for (int element = 0; element < 3; ++element) {
++      rwb[element] = frame_r[translation_offset + element];
++    }
++  }
++
++  const float* Rbg = instance_R + instance_index * 9;
++  const float* rbg = instance_r + instance_index * 3;
++  #pragma unroll
++  for (int row = 0; row < 3; ++row) {
++    #pragma unroll
++    for (int col = 0; col < 3; ++col) {
++      result.R[row * 3 + col] =
++          Rwb[row * 3 + 0] * Rbg[0 * 3 + col] +
++          Rwb[row * 3 + 1] * Rbg[1 * 3 + col] +
++          Rwb[row * 3 + 2] * Rbg[2 * 3 + col];
++    }
++    result.r[row] =
++        rwb[row] +
++        Rwb[row * 3 + 0] * rbg[0] +
++        Rwb[row * 3 + 1] * rbg[1] +
++        Rwb[row * 3 + 2] * rbg[2];
++  }
++  return result;
++}
++
++__device__ __forceinline__ void transform_point(
++    const RigidTransform& transform,
++    const float* point,
++    float* output) {
++  #pragma unroll
++  for (int row = 0; row < 3; ++row) {
++    output[row] =
++        transform.r[row] +
++        transform.R[row * 3 + 0] * point[0] +
++        transform.R[row * 3 + 1] * point[1] +
++        transform.R[row * 3 + 2] * point[2];
++  }
++}
++
++__global__ void update_triangles_kernel(
++    int triangle_count,
++    int env_idx,
++    int body_count,
++    const float* triangle_vertices_local,
++    const int32_t* triangle_instance_index,
++    const int32_t* instance_body_index,
++    const float* instance_R,
++    const float* instance_r,
++    const float* frame_R,
++    const float* frame_r,
++    float* triangle_v0_world,
++    float* triangle_e1_world,
++    float* triangle_e2_world,
++    float* triangle_normal_world,
++    float* triangle_aabb_min,
++    float* triangle_aabb_max) {
++  const int primitive = blockIdx.x * blockDim.x + threadIdx.x;
++  if (primitive >= triangle_count) {
++    return;
++  }
++  const int instance_index = triangle_instance_index[primitive];
++  const RigidTransform transform = compose_transform(
++      instance_index,
++      env_idx,
++      body_count,
++      instance_body_index,
++      instance_R,
++      instance_r,
++      frame_R,
++      frame_r);
++  const float* local = triangle_vertices_local + primitive * 9;
++  float p0[3];
++  float p1[3];
++  float p2[3];
++  transform_point(transform, local + 0, p0);
++  transform_point(transform, local + 3, p1);
++  transform_point(transform, local + 6, p2);
++  float e1[3];
++  float e2[3];
++  #pragma unroll
++  for (int axis = 0; axis < 3; ++axis) {
++    e1[axis] = p1[axis] - p0[axis];
++    e2[axis] = p2[axis] - p0[axis];
++    triangle_v0_world[primitive * 3 + axis] = p0[axis];
++    triangle_e1_world[primitive * 3 + axis] = e1[axis];
++    triangle_e2_world[primitive * 3 + axis] = e2[axis];
++    triangle_aabb_min[primitive * 3 + axis] = fminf(p0[axis], fminf(p1[axis], p2[axis]));
++    triangle_aabb_max[primitive * 3 + axis] = fmaxf(p0[axis], fmaxf(p1[axis], p2[axis]));
++  }
++  float normal[3] = {
++      e1[1] * e2[2] - e1[2] * e2[1],
++      e1[2] * e2[0] - e1[0] * e2[2],
++      e1[0] * e2[1] - e1[1] * e2[0]};
++  const float length = sqrtf(
++      normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
++  #pragma unroll
++  for (int axis = 0; axis < 3; ++axis) {
++    triangle_normal_world[primitive * 3 + axis] =
++        length > kNormalEpsilon ? normal[axis] / length : 0.0f;
++  }
++}
++
++__global__ void update_planes_kernel(
++    int plane_count,
++    int env_idx,
++    int body_count,
++    const float* plane_normal_local,
++    const float* plane_point_local,
++    const int32_t* plane_instance_index,
++    const int32_t* instance_body_index,
++    const float* instance_R,
++    const float* instance_r,
++    const float* frame_R,
++    const float* frame_r,
++    float* plane_normal_world,
++    float* plane_point_world) {
++  const int primitive = blockIdx.x * blockDim.x + threadIdx.x;
++  if (primitive >= plane_count) {
++    return;
++  }
++  const int instance_index = plane_instance_index[primitive];
++  const RigidTransform transform = compose_transform(
++      instance_index,
++      env_idx,
++      body_count,
++      instance_body_index,
++      instance_R,
++      instance_r,
++      frame_R,
++      frame_r);
++  const float* local_normal = plane_normal_local + primitive * 3;
++  const float* local_point = plane_point_local + primitive * 3;
++  float point[3];
++  transform_point(transform, local_point, point);
++  float normal[3];
++  #pragma unroll
++  for (int row = 0; row < 3; ++row) {
++    normal[row] =
++        transform.R[row * 3 + 0] * local_normal[0] +
++        transform.R[row * 3 + 1] * local_normal[1] +
++        transform.R[row * 3 + 2] * local_normal[2];
++  }
++  const float length = sqrtf(
++      normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
++  #pragma unroll
++  for (int axis = 0; axis < 3; ++axis) {
++    plane_point_world[primitive * 3 + axis] = point[axis];
++    plane_normal_world[primitive * 3 + axis] = length > 0.0f ? normal[axis] / length : 0.0f;
++  }
++}
++
++}  // namespace
++
++void update_triangles_world_aabb_out(
++    torch::Tensor triangle_vertices_local,
++    torch::Tensor triangle_instance_index,
++    torch::Tensor instance_body_index,
++    torch::Tensor instance_X_body_geometry_R,
++    torch::Tensor instance_X_body_geometry_r,
++    torch::Tensor frame_x_world_R,
++    torch::Tensor frame_x_world_r,
++    int64_t env_idx,
++    torch::Tensor triangle_v0_world,
++    torch::Tensor triangle_e1_world,
++    torch::Tensor triangle_e2_world,
++    torch::Tensor triangle_normal_world,
++    torch::Tensor triangle_aabb_min,
++    torch::Tensor triangle_aabb_max) {
++  TORCH_CHECK(triangle_v0_world.is_cuda(), "triangle_v0_world must be CUDA");
++  const c10::cuda::CUDAGuard device_guard(triangle_v0_world.device());
++  const torch::Device device = triangle_v0_world.device();
++  check_cuda_tensor(triangle_vertices_local, device, torch::kFloat32, "triangle_vertices_local");
++  check_cuda_tensor(triangle_instance_index, device, torch::kInt32, "triangle_instance_index");
++  check_cuda_tensor(instance_body_index, device, torch::kInt32, "instance_body_index");
++  check_cuda_tensor(instance_X_body_geometry_R, device, torch::kFloat32, "instance_X_body_geometry_R");
++  check_cuda_tensor(instance_X_body_geometry_r, device, torch::kFloat32, "instance_X_body_geometry_r");
++  check_cuda_tensor(frame_x_world_R, device, torch::kFloat32, "frame_x_world_R");
++  check_cuda_tensor(frame_x_world_r, device, torch::kFloat32, "frame_x_world_r");
++  check_cuda_tensor(triangle_v0_world, device, torch::kFloat32, "triangle_v0_world");
++  check_cuda_tensor(triangle_e1_world, device, torch::kFloat32, "triangle_e1_world");
++  check_cuda_tensor(triangle_e2_world, device, torch::kFloat32, "triangle_e2_world");
++  check_cuda_tensor(triangle_normal_world, device, torch::kFloat32, "triangle_normal_world");
++  check_cuda_tensor(triangle_aabb_min, device, torch::kFloat32, "triangle_aabb_min");
++  check_cuda_tensor(triangle_aabb_max, device, torch::kFloat32, "triangle_aabb_max");
++
++  const int64_t triangle_count = triangle_vertices_local.size(0);
++  const int64_t instance_count = instance_body_index.size(0);
++  TORCH_CHECK(instance_body_index.dim() == 1, "instance_body_index shape");
++  TORCH_CHECK(
++      triangle_vertices_local.dim() == 2 && triangle_vertices_local.size(1) == 9,
++      "triangle_vertices_local shape");
++  TORCH_CHECK(
++      triangle_instance_index.dim() == 1 &&
++          triangle_instance_index.size(0) == triangle_count,
++      "triangle_instance_index shape");
++  TORCH_CHECK(
++      instance_X_body_geometry_R.dim() == 2 &&
++          instance_X_body_geometry_R.size(0) == instance_count &&
++          instance_X_body_geometry_R.size(1) == 9,
++      "instance rotation shape");
++  TORCH_CHECK(
++      instance_X_body_geometry_r.dim() == 2 &&
++          instance_X_body_geometry_r.size(0) == instance_count &&
++          instance_X_body_geometry_r.size(1) == 3,
++      "instance translation shape");
++  TORCH_CHECK(
++      frame_x_world_R.dim() == 4 && frame_x_world_R.size(2) == 3 &&
++          frame_x_world_R.size(3) == 3,
++      "frame rotation shape");
++  TORCH_CHECK(
++      frame_x_world_r.dim() == 3 &&
++          frame_x_world_r.size(0) == frame_x_world_R.size(0) &&
++          frame_x_world_r.size(1) == frame_x_world_R.size(1) &&
++          frame_x_world_r.size(2) == 3,
++      "frame translation shape");
++  TORCH_CHECK(env_idx >= 0 && env_idx < frame_x_world_R.size(0), "env_idx out of range");
++  TORCH_CHECK(
++      triangle_count <= INT32_MAX && instance_count <= INT32_MAX &&
++          frame_x_world_R.size(0) <= INT32_MAX &&
++          frame_x_world_R.size(1) <= INT32_MAX,
++      "CUDA scene count exceeds int32");
++  const torch::Tensor* const inputs[7] = {
++      &triangle_vertices_local,
++      &triangle_instance_index,
++      &instance_body_index,
++      &instance_X_body_geometry_R,
++      &instance_X_body_geometry_r,
++      &frame_x_world_R,
++      &frame_x_world_r};
++  const torch::Tensor* const outputs[6] = {
++      &triangle_v0_world,
++      &triangle_e1_world,
++      &triangle_e2_world,
++      &triangle_normal_world,
++      &triangle_aabb_min,
++      &triangle_aabb_max};
++  for (int index = 0; index < 6; ++index) {
++    TORCH_CHECK(
++        outputs[index]->dim() == 2 && outputs[index]->size(0) == triangle_count &&
++            outputs[index]->size(1) == 3,
++        "triangle output shape");
++  }
++  check_output_disjointness(inputs, outputs);
++
++  if (triangle_count == 0) {
++    return;
++  }
++  cudaStream_t stream = at::cuda::getCurrentCUDAStream(triangle_v0_world.get_device());
++  const int blocks = (static_cast<int>(triangle_count) + kThreads - 1) / kThreads;
++  update_triangles_kernel<<<blocks, kThreads, 0, stream>>>(
++      static_cast<int>(triangle_count),
++      static_cast<int>(env_idx),
++      static_cast<int>(frame_x_world_R.size(1)),
++      triangle_vertices_local.data_ptr<float>(),
++      triangle_instance_index.data_ptr<int32_t>(),
++      instance_body_index.data_ptr<int32_t>(),
++      instance_X_body_geometry_R.data_ptr<float>(),
++      instance_X_body_geometry_r.data_ptr<float>(),
++      frame_x_world_R.data_ptr<float>(),
++      frame_x_world_r.data_ptr<float>(),
++      triangle_v0_world.data_ptr<float>(),
++      triangle_e1_world.data_ptr<float>(),
++      triangle_e2_world.data_ptr<float>(),
++      triangle_normal_world.data_ptr<float>(),
++      triangle_aabb_min.data_ptr<float>(),
++      triangle_aabb_max.data_ptr<float>());
++  C10_CUDA_KERNEL_LAUNCH_CHECK();
++}
++
++void update_planes_world_out(
++    torch::Tensor plane_normal_local,
++    torch::Tensor plane_point_local,
++    torch::Tensor plane_instance_index,
++    torch::Tensor instance_body_index,
++    torch::Tensor instance_X_body_geometry_R,
++    torch::Tensor instance_X_body_geometry_r,
++    torch::Tensor frame_x_world_R,
++    torch::Tensor frame_x_world_r,
++    int64_t env_idx,
++    torch::Tensor plane_normal_world,
++    torch::Tensor plane_point_world) {
++  TORCH_CHECK(plane_normal_world.is_cuda(), "plane_normal_world must be CUDA");
++  const c10::cuda::CUDAGuard device_guard(plane_normal_world.device());
++  const torch::Device device = plane_normal_world.device();
++  check_cuda_tensor(plane_normal_local, device, torch::kFloat32, "plane_normal_local");
++  check_cuda_tensor(plane_point_local, device, torch::kFloat32, "plane_point_local");
++  check_cuda_tensor(plane_instance_index, device, torch::kInt32, "plane_instance_index");
++  check_cuda_tensor(instance_body_index, device, torch::kInt32, "instance_body_index");
++  check_cuda_tensor(instance_X_body_geometry_R, device, torch::kFloat32, "instance_X_body_geometry_R");
++  check_cuda_tensor(instance_X_body_geometry_r, device, torch::kFloat32, "instance_X_body_geometry_r");
++  check_cuda_tensor(frame_x_world_R, device, torch::kFloat32, "frame_x_world_R");
++  check_cuda_tensor(frame_x_world_r, device, torch::kFloat32, "frame_x_world_r");
++  check_cuda_tensor(plane_normal_world, device, torch::kFloat32, "plane_normal_world");
++  check_cuda_tensor(plane_point_world, device, torch::kFloat32, "plane_point_world");
++
++  const int64_t plane_count = plane_normal_local.size(0);
++  const int64_t instance_count = instance_body_index.size(0);
++  TORCH_CHECK(instance_body_index.dim() == 1, "instance_body_index shape");
++  TORCH_CHECK(plane_normal_local.dim() == 2 && plane_normal_local.size(1) == 3, "plane_normal_local shape");
++  TORCH_CHECK(
++      plane_point_local.dim() == 2 && plane_point_local.size(0) == plane_count &&
++          plane_point_local.size(1) == 3,
++      "plane_point_local shape");
++  TORCH_CHECK(
++      plane_instance_index.dim() == 1 &&
++          plane_instance_index.size(0) == plane_count,
++      "plane_instance_index shape");
++  TORCH_CHECK(
++      instance_X_body_geometry_R.dim() == 2 &&
++          instance_X_body_geometry_R.size(0) == instance_count &&
++          instance_X_body_geometry_R.size(1) == 9,
++      "instance rotation shape");
++  TORCH_CHECK(
++      instance_X_body_geometry_r.dim() == 2 &&
++          instance_X_body_geometry_r.size(0) == instance_count &&
++          instance_X_body_geometry_r.size(1) == 3,
++      "instance translation shape");
++  TORCH_CHECK(
++      frame_x_world_R.dim() == 4 && frame_x_world_R.size(2) == 3 &&
++          frame_x_world_R.size(3) == 3,
++      "frame rotation shape");
++  TORCH_CHECK(
++      frame_x_world_r.dim() == 3 &&
++          frame_x_world_r.size(0) == frame_x_world_R.size(0) &&
++          frame_x_world_r.size(1) == frame_x_world_R.size(1) &&
++          frame_x_world_r.size(2) == 3,
++      "frame translation shape");
++  TORCH_CHECK(env_idx >= 0 && env_idx < frame_x_world_R.size(0), "env_idx out of range");
++  TORCH_CHECK(
++      plane_count <= INT32_MAX && instance_count <= INT32_MAX &&
++          frame_x_world_R.size(0) <= INT32_MAX &&
++          frame_x_world_R.size(1) <= INT32_MAX,
++      "CUDA scene count exceeds int32");
++  const torch::Tensor* const inputs[8] = {
++      &plane_normal_local,
++      &plane_point_local,
++      &plane_instance_index,
++      &instance_body_index,
++      &instance_X_body_geometry_R,
++      &instance_X_body_geometry_r,
++      &frame_x_world_R,
++      &frame_x_world_r};
++  const torch::Tensor* const outputs[2] = {
++      &plane_normal_world,
++      &plane_point_world};
++  for (int index = 0; index < 2; ++index) {
++    TORCH_CHECK(
++        outputs[index]->dim() == 2 && outputs[index]->size(0) == plane_count &&
++            outputs[index]->size(1) == 3,
++        "plane output shape");
++  }
++  check_output_disjointness(inputs, outputs);
++
++  if (plane_count == 0) {
++    return;
++  }
++  cudaStream_t stream = at::cuda::getCurrentCUDAStream(plane_normal_world.get_device());
++  const int blocks = (static_cast<int>(plane_count) + kThreads - 1) / kThreads;
++  update_planes_kernel<<<blocks, kThreads, 0, stream>>>(
++      static_cast<int>(plane_count),
++      static_cast<int>(env_idx),
++      static_cast<int>(frame_x_world_R.size(1)),
++      plane_normal_local.data_ptr<float>(),
++      plane_point_local.data_ptr<float>(),
++      plane_instance_index.data_ptr<int32_t>(),
++      instance_body_index.data_ptr<int32_t>(),
++      instance_X_body_geometry_R.data_ptr<float>(),
++      instance_X_body_geometry_r.data_ptr<float>(),
++      frame_x_world_R.data_ptr<float>(),
++      frame_x_world_r.data_ptr<float>(),
++      plane_normal_world.data_ptr<float>(),
++      plane_point_world.data_ptr<float>());
++  C10_CUDA_KERNEL_LAUNCH_CHECK();
++}
++"""
++
++
++_CUDA_SCENE_EXTENSION_SOURCE_SHA256 = hashlib.sha256(
++    (CUDA_SCENE_EXTENSION_ABI_VERSION + _CPP_SOURCE + _CUDA_SOURCE).encode("utf-8")
++).hexdigest()

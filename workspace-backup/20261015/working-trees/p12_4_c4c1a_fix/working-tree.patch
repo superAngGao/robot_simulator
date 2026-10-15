@@ -1,0 +1,403 @@
+diff --git a/PROGRESS.md b/PROGRESS.md
+index 5b77d06..5cf7c9c 100644
+--- a/PROGRESS.md
++++ b/PROGRESS.md
+@@ -1029,8 +1029,9 @@ Next milestone:
+       remains non-result-capable pending the joint C4/B3 activation review.
+ - [ ] P12.4 C4c — Warp native render/arena design v7 is approved. C4c0 is
+       approved and sealed at `591ffc57`. C4c1 design v3 was approved at
+-      `2521e64`. C4c1a exact readiness authority is implemented and awaiting
+-      review; C4c1b/c remain unimplemented. The design retains the bounded native Warp
++      `2521e64`. C4c1a exact readiness authority is implemented; its review P1
++      on same-object CUDA storage rebinding has a physical-signature fix awaiting
++      review. C4c1b/c remain unimplemented. The design retains the bounded native Warp
+       render ABI—one kernel source, caller-owned deterministic buffers, four
+       fixed shade ABIs, and immutable recorded commands/evidence—but now moves
+       readiness into an exact CPU-safe production contract shared by Warp and
+diff --git a/REFLECTIONS.md b/REFLECTIONS.md
+index af9dbc8..0b25737 100644
+--- a/REFLECTIONS.md
++++ b/REFLECTIONS.md
+@@ -3466,3 +3466,13 @@ paths without doing GPU preparation. Their readiness can be registered so the
+ record format remains canonical, but the Warp/CUDA consumer validator still
+ requires the independent prepared-input registration and exact storage/event
+ snapshot before any executable binding is accepted.
++
++The C4c1a review exposed a distinction inside that snapshot: Python object
++identity is not physical allocation identity. Torch `Tensor.set_()` can retain
++the exact tensor object while replacing its storage, and a Warp array's pointer
++can drift without replacing the array object. The untimed a2 authority check
++therefore snapshots and re-reads base pointer, storage identity/capacity,
++active byte interval, indexed device, dtype, shape, and strides. Holding the
++original Torch storage owner also prevents allocator pointer reuse from making
++a rebinding appear identical. This full inspection stays in preflight; C4
++measured acquire continues to use its fixed-cost lease checks.
+diff --git a/optical_worker/native_contract.py b/optical_worker/native_contract.py
+index 53b214c..53790e7 100644
+--- a/optical_worker/native_contract.py
++++ b/optical_worker/native_contract.py
+@@ -148,10 +148,94 @@ class NativeReadinessEvidence:
+         ).encode("utf-8")
+         return hashlib.sha256(payload).hexdigest()
+ 
++
++@dataclass(frozen=True)
++class _PhysicalStorageSignature:
++    """Untimed snapshot of a live allocation, not a caller-supplied digest."""
++
++    device_ordinal: int
++    base_pointer: int
++    storage_identity: int
++    storage_nbytes: int
++    active_start: int
++    active_count: int
++    dtype: str
++    shape: tuple[int, ...]
++    strides: tuple[int, ...]
++
++
++@dataclass(frozen=True)
++class _RegisteredArray:
++    name: str
++    array: object
++    signature: _PhysicalStorageSignature
++    storage_owner: object | None
++
++
++def _physical_storage_signature(
++    backend: NativeBackend, value: object, device_ordinal: int,
++) -> tuple[_PhysicalStorageSignature, object | None]:
++    """Inspect the backend's physical storage only during untimed setup/preflight."""
++
++    device = value.device
++    if backend == "cuda":
++        if device.type != "cuda" or device.index is None:
++            raise ValueError("prepared Torch input requires an indexed CUDA device")
++        storage = value.untyped_storage()
++        storage_nbytes = int(storage.nbytes())
++        base_pointer = int(storage.data_ptr()) if storage_nbytes else 0
++        active_pointer = int(value.data_ptr()) if storage_nbytes else 0
++        active_start = active_pointer - base_pointer
++        active_count = int(value.numel()) * int(value.element_size())
++        storage_identity = int(storage._cdata)
++        strides = tuple(int(item) for item in value.stride())
++        contiguous = bool(value.is_contiguous())
++        owner = storage
++        ordinal = int(device.index)
++    else:
++        if not device.is_cuda:
++            raise ValueError("prepared Warp input requires a CUDA device")
++        base_pointer = int(value.ptr or 0)
++        storage_nbytes = int(value.capacity)
++        active_start = 0
++        active_count = storage_nbytes
++        storage_identity = base_pointer
++        strides = tuple(int(item) for item in value.strides)
++        contiguous = bool(value.is_contiguous)
++        owner = None
++        ordinal = int(device.ordinal)
++    shape = tuple(int(item) for item in value.shape)
++    if (
++        ordinal != device_ordinal
++        or not contiguous
++        or storage_nbytes < 0
++        or active_start < 0
++        or active_count < 0
++        or active_start + active_count > storage_nbytes
++        or (storage_nbytes > 0 and base_pointer <= 0)
++        or (storage_nbytes > 0 and storage_identity <= 0)
++    ):
++        raise ValueError("prepared native array has invalid physical CUDA storage")
++    return (
++        _PhysicalStorageSignature(
++            device_ordinal=ordinal,
++            base_pointer=base_pointer,
++            storage_identity=storage_identity,
++            storage_nbytes=storage_nbytes,
++            active_start=active_start,
++            active_count=active_count,
++            dtype=str(value.dtype),
++            shape=shape,
++            strides=strides,
++        ),
++        owner,
++    )
++
++
+ _PREPARED_AUTHORITIES: dict[int, tuple[weakref.ReferenceType[object], weakref.ReferenceType[object]]] = {}
+ _READINESS_AUTHORITIES: dict[int, tuple[weakref.ReferenceType[object], weakref.ReferenceType[object]]] = {}
+ _PREPARED_STORAGE: dict[
+-    int, tuple[weakref.ReferenceType[object], object, object, tuple[tuple[str, object], ...]]
++    int, tuple[weakref.ReferenceType[object], object, object, tuple[_RegisteredArray, ...]]
+ ] = {}
+ 
+ 
+@@ -190,13 +274,30 @@ def register_prepared_native_input(subject: object, source: object) -> None:
+ 
+     if type(subject) not in {WarpPreparedNativeInput, CudaPreparedNativeInput}:
+         raise TypeError("native prepared-input registration requires an exact production type")
++    existing = _PREPARED_AUTHORITIES.get(id(subject))
++    if existing is not None and existing[0]() is subject:
++        raise ValueError("native identity authority cannot be registered twice")
+     if subject.source is not source or subject.manifest is not source.manifest:
+         raise ValueError("native prepared input does not own its exact canonical source")
+     if not isinstance(subject.arrays, Mapping):
+         raise TypeError("native prepared arrays must be a mapping")
+-    arrays = tuple(sorted(subject.arrays.items()))
+-    if any(not isinstance(name, str) for name, _ in arrays):
++    if any(not isinstance(name, str) for name in subject.arrays):
+         raise TypeError("native prepared array names must be strings")
++    manifest_arrays = {entry.name: entry for entry in subject.manifest.arrays}
++    if set(subject.arrays) != set(manifest_arrays):
++        raise ValueError("native prepared arrays do not match the canonical manifest")
++    arrays = []
++    for name in sorted(subject.arrays):
++        value = subject.arrays[name]
++        signature, owner = _physical_storage_signature(
++            subject.backend, value, subject.device_ordinal,
++        )
++        if (
++            signature.shape != tuple(manifest_arrays[name].shape)
++            or signature.active_count != int(manifest_arrays[name].nbytes)
++        ):
++            raise ValueError(f"native prepared array {name!r} does not match its manifest extent")
++        arrays.append(_RegisteredArray(name, value, signature, owner))
+     _register_identity_authority(_PREPARED_AUTHORITIES, subject, source)
+     key = id(subject)
+ 
+@@ -206,7 +307,7 @@ def register_prepared_native_input(subject: object, source: object) -> None:
+             _PREPARED_STORAGE.pop(key, None)
+ 
+     _PREPARED_STORAGE[key] = (
+-        weakref.ref(subject, discard), subject.arrays, subject.ready_event, arrays,
++        weakref.ref(subject, discard), subject.arrays, subject.ready_event, tuple(arrays),
+     )
+ 
+ 
+@@ -245,10 +346,18 @@ def _assert_prepared_authority(
+         or registered_storage[0]() is not prepared
+         or registered_storage[1] is not prepared.arrays
+         or registered_storage[2] is not prepared.ready_event
+-        or tuple(sorted(prepared.arrays)) != tuple(name for name, _ in registered_storage[3])
+-        or any(prepared.arrays[name] is not array for name, array in registered_storage[3])
++        or tuple(sorted(prepared.arrays)) != tuple(entry.name for entry in registered_storage[3])
++        or any(prepared.arrays[entry.name] is not entry.array for entry in registered_storage[3])
+     ):
+         raise ValueError(f"{backend} prepared native storage lost its registered object identities")
++    for entry in registered_storage[3]:
++        current, _ = _physical_storage_signature(
++            backend, entry.array, prepared.device_ordinal,
++        )
++        if current != entry.signature:
++            raise ValueError(
++                f"{backend} prepared native storage {entry.name!r} changed its physical allocation"
++            )
+     _require_identity_authority(
+         _READINESS_AUTHORITIES,
+         readiness,
+diff --git a/tests/gpu/test_cuda_native_arena.py b/tests/gpu/test_cuda_native_arena.py
+index 37c78df..1711fed 100644
+--- a/tests/gpu/test_cuda_native_arena.py
++++ b/tests/gpu/test_cuda_native_arena.py
+@@ -806,6 +806,28 @@ def test_c3_adapter_revalidates_a2_content_instead_of_trusting_correct_hashes():
+         tensor.copy_(original)
+ 
+ 
++def test_c3_adapter_rejects_same_a2_tensor_rebound_before_first_enqueue():
++    arena = _dynamic_arena()
++    target = arena.plan_target(transform_frame_index=0)
++    prepared, readiness = _A2_AUTHORITIES[id(arena)]
++    tensor = prepared.arrays["material_albedo_rgb"]
++    original_storage = tensor.untyped_storage()
++    original_pointer = tensor.data_ptr()
++    replacement = torch.empty_like(tensor)
++    try:
++        tensor.set_(replacement)
++        assert tensor.data_ptr() != original_pointer
++        with pytest.raises(ValueError, match="physical allocation"):
++            build_cuda_c3_binding_from_arena_target(
++                target,
++                prepared_input=prepared,
++                native_readiness=readiness,
++            )
++        assert arena.lifecycle_evidence().terminal_event_record_count == 0
++    finally:
++        tensor.set_(original_storage, 0, tensor.shape, tensor.stride())
++
++
+ def test_c3_binding_serialization_cannot_forge_adapter_issuance():
+     arena = _dynamic_arena()
+     target = arena.plan_target(transform_frame_index=0)
+diff --git a/tests/gpu/test_optical_benchmark_native.py b/tests/gpu/test_optical_benchmark_native.py
+index d670516..079bbb3 100644
+--- a/tests/gpu/test_optical_benchmark_native.py
++++ b/tests/gpu/test_optical_benchmark_native.py
+@@ -18,10 +18,60 @@ from benchmarks.optical.workloads import (
+     build_canonical_fixed_fixture,
+     build_canonical_packed_scene,
+ )
++from optical_worker.native_contract import (
++    assert_cuda_prepared_authority,
++    assert_warp_prepared_authority,
++)
+ 
+ pytestmark = pytest.mark.gpu
+ 
+ 
++def test_cuda_readiness_rejects_same_tensor_rebound_to_another_storage():
++    torch = pytest.importorskip("torch")
++    if not torch.cuda.is_available():
++        pytest.skip("CUDA is required")
++    source = _source()
++    prepared = prepare_cuda_native_input(source, device="cuda:0")
++    report = validate_prepared_native_input(source, prepared)
++    readiness = certify_native_readiness(
++        prepared, report, compile_complete=True, warmup_frames_completed=1,
++    )
++    assert_cuda_prepared_authority(prepared, readiness)
++
++    tensor = prepared.arrays["triangle_v0"]
++    old_pointer = tensor.data_ptr()
++    replacement = torch.empty_like(tensor)
++    tensor.set_(replacement)
++    assert tensor.data_ptr() != old_pointer
++    with pytest.raises(ValueError, match="physical allocation"):
++        assert_cuda_prepared_authority(prepared, readiness)
++
++
++def test_warp_readiness_rejects_same_array_pointer_drift():
++    wp = pytest.importorskip("warp")
++    if wp.get_cuda_device_count() == 0:
++        pytest.skip("CUDA is required")
++    source = _source()
++    prepared = prepare_warp_native_input(source, device="cuda:0")
++    report = validate_prepared_native_input(source, prepared)
++    readiness = certify_native_readiness(
++        prepared, report, compile_complete=True, warmup_frames_completed=1,
++    )
++    assert_warp_prepared_authority(prepared, readiness)
++
++    array = prepared.arrays["triangle_v0"]
++    replacement = wp.empty(array.shape, dtype=array.dtype, device=array.device)
++    old_pointer = int(array.ptr)
++    try:
++        array.ptr = replacement.ptr
++        assert int(array.ptr) != old_pointer
++        with pytest.raises(ValueError, match="physical allocation"):
++            assert_warp_prepared_authority(prepared, readiness)
++    finally:
++        array.ptr = old_pointer
++    assert_warp_prepared_authority(prepared, readiness)
++
++
+ def test_warp_and_cuda_native_inputs_are_direct_independent_and_value_equal(monkeypatch):
+     torch = pytest.importorskip("torch")
+     wp = pytest.importorskip("warp")
+diff --git a/tests/unit/benchmarks/test_native_readiness_authority.py b/tests/unit/benchmarks/test_native_readiness_authority.py
+index d14c6ab..50e1618 100644
+--- a/tests/unit/benchmarks/test_native_readiness_authority.py
++++ b/tests/unit/benchmarks/test_native_readiness_authority.py
+@@ -30,6 +30,74 @@ class _Manifest:
+     transform_replay_sha256: str | None = None
+     transform_frame_count: int = 0
+     fixed_render_fixture_sha256: str | None = None
++    arrays: tuple[object, ...] = ()
++
++
++@dataclass(frozen=True)
++class _ArrayManifest:
++    name: str = "scene"
++    shape: tuple[int, ...] = (2,)
++    nbytes: int = 8
++
++
++@dataclass(frozen=True)
++class _Device:
++    ordinal: int = 1
++    index: int = 1
++    type: str = "cuda"
++    is_cuda: bool = True
++
++
++class _CudaStorage:
++    _cdata = 123
++
++    def __init__(self):
++        self.ptr = 1000
++
++    def nbytes(self):
++        return 8
++
++    def data_ptr(self):
++        return self.ptr
++
++
++class _CudaArray:
++    device = _Device()
++    dtype = "torch.float32"
++    shape = (2,)
++
++    def __init__(self):
++        self.storage = _CudaStorage()
++
++    def untyped_storage(self):
++        return self.storage
++
++    def data_ptr(self):
++        return self.storage.ptr
++
++    def numel(self):
++        return 2
++
++    def element_size(self):
++        return 4
++
++    def stride(self):
++        return (1,)
++
++    def is_contiguous(self):
++        return True
++
++
++class _WarpArray:
++    device = _Device()
++    dtype = "warp.float32"
++    shape = (2,)
++    strides = (4,)
++    capacity = 8
++    is_contiguous = True
++
++    def __init__(self):
++        self.ptr = 1000
+ 
+ 
+ @dataclass
+@@ -38,9 +106,10 @@ class _Source:
+ 
+ 
+ def _pair(backend: str):
+-    source = _Source(_Manifest())
++    source = _Source(_Manifest(arrays=(_ArrayManifest(),)))
+     prepared_type = WarpPreparedNativeInput if backend == "warp" else CudaPreparedNativeInput
+-    prepared = prepared_type(source.manifest, 1, {"scene": object()}, object(), source)
++    array = _WarpArray() if backend == "warp" else _CudaArray()
++    prepared = prepared_type(source.manifest, 1, {"scene": array}, object(), source)
+     readiness = NativeReadinessEvidence(
+         schema_version=NATIVE_INPUT_SCHEMA_VERSION,
+         backend=backend,
+@@ -128,6 +197,15 @@ def test_replacing_registered_storage_or_event_is_rejected(backend, check):
+     with pytest.raises(ValueError, match="storage"):
+         check(prepared, readiness)
+ 
++    prepared, readiness = _pair(backend)
++    array = prepared.arrays["scene"]
++    if backend == "warp":
++        array.ptr = 2000
++    else:
++        array.storage.ptr = 2000
++    with pytest.raises(ValueError, match="physical allocation"):
++        check(prepared, readiness)
++
+     prepared, readiness = _pair(backend)
+     object.__setattr__(prepared, "ready_event", object())
+     with pytest.raises(ValueError, match="storage"):

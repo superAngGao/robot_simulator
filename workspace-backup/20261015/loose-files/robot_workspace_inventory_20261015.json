@@ -1,0 +1,570 @@
+[
+  {
+    "path": "c4_arena_fixed_work",
+    "head": "730497599317710a8b0df08ffaf3bd5b054aded6",
+    "branch": "implementation/c4-arena-fixed-work",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "c4_binding_fixture_review",
+    "head": "eab674c6f9c7eb9161a4f731db51e69352561634",
+    "branch": "",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "c4_dynamic_graph",
+    "head": "4ad9f0715be1429b85ac83a350a2e97cab03e257",
+    "branch": "implementation/c4-dynamic-graph",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "c4_final_graph",
+    "head": "6db106caaeeac66d3bfc939b2bee44c15ce104d9",
+    "branch": "implementation/c4-final-graph",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "c4_final_observation_design_review",
+    "head": "819a26f10ba32d8ce479c71acd45c8df41e6c027",
+    "branch": "",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "c4_final_observation_design_review_v2",
+    "head": "208f32c86c25b26bda6a31f66c21f9aeb0fe1ffb",
+    "branch": "",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "c4_incremental_baseline_925d606",
+    "head": "925d606fe118628d241753f32b95cbb5f0af99b4",
+    "branch": "",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [
+      "M tests/unit/optics/test_guarded_reducer_atomicity.py",
+      " M tests/unit/optics/test_integrated_worker_lifecycle.py",
+      " M tests/unit/optics/test_native_final_graph.py",
+      " M tests/unit/optics/test_prepared_fixed_render_inputs.py"
+    ],
+    "stash": ""
+  },
+  {
+    "path": "c4_input_precision",
+    "head": "5e79749009f47795325b4995790c98dffec2b051",
+    "branch": "implementation/c4-input-precision",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "c4_intersection_precision",
+    "head": "812ca29030a45d802addf10ca5811a4354ce0eb9",
+    "branch": "implementation/c4-intersection-precision",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "c4_native_reader_acceptance_review",
+    "head": "1286cbb94040b83e44cffbfcec98497f9af77138",
+    "branch": "",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "c4_native_reader_code_review",
+    "head": "4dcf73d78ef36dbfd40ac3025a228cf9be1b21cd",
+    "branch": "",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "c4_native_reader_code_review_v2",
+    "head": "5d804f73b5ae00e89fc18455080b1e339d20dade",
+    "branch": "",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "c4_native_reader_code_review_v3",
+    "head": "df1a46ae5039fe8a25718c7ec60f52fa7c60c549",
+    "branch": "",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "c4_native_reader_design_review",
+    "head": "1472b5fd2eba898bc53ef1c0ef2b5dbcbb80b056",
+    "branch": "",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "c4_native_worker_source_audit_review",
+    "head": "22b1db0ee619f05e30f03bd5e339f03e883e97a5",
+    "branch": "",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "c4_render_execution_next",
+    "head": "5a5a17cdd4e75c01016e1e71738aed99d9dab8fe",
+    "branch": "implementation/c4-render-execution-next",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "c4_setup_orchestration",
+    "head": "e54aac2924d3cb0e223a317296a499b3153f9a3b",
+    "branch": "implementation/c4-setup-orchestration",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "c4_stream_adoption_order_review",
+    "head": "cf7f5a6d9ff9b3971144410a7c3ad156a806646c",
+    "branch": "",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "c4_terminal_target_review_v1",
+    "head": "0be9876b9778cf4826a62f45c373a38d60ff33f1",
+    "branch": "",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "c4_warp_exit_fault_review",
+    "head": "fc23b4e38d816d5108b61363a5372710db6a2937",
+    "branch": "",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "c4_worker_acceptance_gap_review",
+    "head": "cf7f5a6d9ff9b3971144410a7c3ad156a806646c",
+    "branch": "",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "c4_worker_completion",
+    "head": "4f612a916c93be36e3fcf74519fcaaa2eab90f75",
+    "branch": "archive/cuda-render-experiment-2026-10-12",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "c4_worker_intake_gap_review",
+    "head": "26542543d067d20c64670d375065535420ede203",
+    "branch": "",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "p12_4_c3b",
+    "head": "f6aba95d0d35bc0f107b6db9122876ff19ec1660",
+    "branch": "main",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c3b/.git",
+    "changes": [
+      "M benchmarks/optical/__init__.py",
+      " M benchmarks/optical/native.py",
+      " M optics/__init__.py",
+      " M optics/cuda_lbvh.py",
+      " M optics/device_bvh.py",
+      " M optics/device_scene.py",
+      "?? collab/q54-optical-lab-p12-4c3b-prebound-warp-scene-refit__implementation-note__codex__v1.md",
+      "?? collab/q54-optical-lab-p12-4c3b-prebound-warp-scene-refit__implementation-note__codex__v2.md",
+      "?? tests/gpu/test_optical_warp_native_commands.py",
+      "?? tests/unit/optics/test_warp_native_command_contract.py"
+    ],
+    "stash": ""
+  },
+  {
+    "path": "p12_4_c3c",
+    "head": "6d2a8d583a6966152631f50134241a1a3715f62a",
+    "branch": "main",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c3c/.git",
+    "changes": [
+      "M benchmarks/optical/__init__.py",
+      " M benchmarks/optical/native.py",
+      " M optics/__init__.py",
+      " M optics/cuda_scene.py",
+      "?? collab/q54-optical-lab-p12-4c3c-cuda-scene-update__implementation-note__codex__v1.md",
+      "?? tests/gpu/test_optical_cuda_scene.py",
+      "?? tests/unit/optics/test_cuda_scene_native.py"
+    ],
+    "stash": ""
+  },
+  {
+    "path": "p12_4_c3d",
+    "head": "6a5213e025018204dc30bb02e8bb41809b7a9374",
+    "branch": "main",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c3d/.git",
+    "changes": [
+      "M benchmarks/optical/__init__.py",
+      " M benchmarks/optical/native.py",
+      " M benchmarks/results/q54_p12_4/architecture_inventory.json",
+      " M benchmarks/results/q54_p12_4/cleanup_ledger.json",
+      " M examples/cuda_lbvh_extension_spike.py",
+      " M optics/__init__.py",
+      " M optics/cuda_lbvh.py",
+      "?? collab/q54-optical-lab-p12-4c3d-native-cuda-lbvh__implementation-note__codex__v1.md",
+      "?? collab/q54-optical-lab-p12-4c3d-native-cuda-lbvh__implementation-note__codex__v2.md",
+      "?? collab/q54-optical-lab-p12-4c3d-native-cuda-lbvh__implementation-note__codex__v3.md",
+      "?? optics/_cuda_lbvh_source.py",
+      "?? tests/gpu/test_optical_cuda_lbvh_native.py",
+      "?? tests/unit/optics/test_cuda_lbvh_native.py"
+    ],
+    "stash": ""
+  },
+  {
+    "path": "p12_4_c3e",
+    "head": "2cb78ee689d9f3cc8fd6d3eb8f23e9ba553b0838",
+    "branch": "main",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c3e/.git",
+    "changes": [
+      "M benchmarks/optical/instrumentation.py",
+      " M benchmarks/optical/lanes/__init__.py",
+      " M benchmarks/optical/lanes/audit.py",
+      " M benchmarks/optical/lanes/warp.py",
+      " M benchmarks/results/q54_p12_4/cleanup_ledger.json",
+      " M benchmarks/results/q54_p12_4/gate.json",
+      " M optics/__init__.py",
+      " M optics/cuda_lbvh.py",
+      " M optics/device_scene.py",
+      " M tests/gpu/test_optical_warp_native_commands.py",
+      " M tests/unit/benchmarks/test_optical_benchmark_a3a.py",
+      " M tests/unit/optics/test_cuda_lbvh_native.py",
+      " M tests/unit/optics/test_warp_native_command_contract.py",
+      "?? collab/q54-optical-lab-p12-4c3e-static-warp-cuda-lbvh__implementation-note__codex__v1.md",
+      "?? collab/q54-optical-lab-p12-4c3e-static-warp-cuda-lbvh__implementation-note__codex__v2.md",
+      "?? collab/q54-optical-lab-p12-4c4-native-output-arena-leases__design-request__codex__v1.md",
+      "?? collab/q54-optical-lab-p12-4c4-native-output-arena-leases__design-request__codex__v2.md",
+      "?? tests/gpu/test_optical_warp_cuda_lbvh_comparison.py"
+    ],
+    "stash": ""
+  },
+  {
+    "path": "p12_4_c3_impl",
+    "head": "435ffb275674c04f6452cb41775533db0f47f1d3",
+    "branch": "main",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c3_impl/.git",
+    "changes": [
+      "M benchmarks/optical/__init__.py",
+      " M benchmarks/optical/assets.py",
+      " M benchmarks/optical/eligibility.py",
+      " M benchmarks/optical/native.py",
+      " M benchmarks/optical/receipts.py",
+      " M benchmarks/optical/runner.py",
+      " M benchmarks/optical/schema.py",
+      " M benchmarks/results/q54_p12_4/cleanup_ledger.json",
+      " M benchmarks/results/q54_p12_4/gate.json",
+      " M optics/__init__.py",
+      " M optics/device_bvh.py",
+      " M optics/device_scene.py",
+      " M tests/gpu/test_optical_benchmark_native.py",
+      " M tests/unit/benchmarks/test_optical_benchmark_a3a.py",
+      " M tests/unit/benchmarks/test_optical_benchmark_contracts.py",
+      " M tests/unit/benchmarks/test_optical_benchmark_core.py",
+      "?? benchmarks/optical/workload_contract.py",
+      "?? benchmarks/optical/workloads.py",
+      "?? collab/q54-optical-lab-p12-4c3a-scene-provenance__implementation-note__codex__v1.md",
+      "?? collab/q54-optical-lab-p12-4c3a-scene-provenance__implementation-note__codex__v2.md",
+      "?? optics/cuda_scene.py",
+      "?? optics/scene_contract.py",
+      "?? tests/unit/benchmarks/test_optical_benchmark_c3a.py",
+      "?? tests/unit/optics/test_scene_contract.py"
+    ],
+    "stash": ""
+  },
+  {
+    "path": "p12_4_c3_p1",
+    "head": "698adcf18b7215ce1e4e31a5a84b39fae05d90dd",
+    "branch": "main",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c3_p1/.git",
+    "changes": [
+      "M benchmarks/optical/__init__.py",
+      " M benchmarks/optical/receipts.py",
+      " M benchmarks/optical/runner.py",
+      " M benchmarks/optical/schema.py",
+      " M benchmarks/results/q54_p12_4/cleanup_ledger.json",
+      " M benchmarks/results/q54_p12_4/gate.json",
+      " M tests/unit/benchmarks/test_optical_benchmark_a3a.py",
+      " M tests/unit/benchmarks/test_optical_benchmark_contracts.py",
+      " M tests/unit/benchmarks/test_optical_benchmark_core.py",
+      "?? collab/q54-optical-lab-p12-4c3a-scene-provenance__implementation-note__codex__v3.md"
+    ],
+    "stash": ""
+  },
+  {
+    "path": "p12_4_c3_p2",
+    "head": "3a5628c4ac68c9048fbb7cab17a3d89c9abc8728",
+    "branch": "main",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c3_p2/.git",
+    "changes": [
+      "M benchmarks/optical/receipts.py",
+      " M benchmarks/optical/runner.py",
+      " M benchmarks/optical/schema.py",
+      " M benchmarks/results/q54_p12_4/gate.json",
+      " M tests/unit/benchmarks/test_optical_benchmark_a3a.py",
+      " M tests/unit/benchmarks/test_optical_benchmark_contracts.py",
+      " M tests/unit/benchmarks/test_optical_benchmark_core.py",
+      "?? collab/q54-optical-lab-p12-4c3a-scene-provenance__implementation-note__codex__v4.md"
+    ],
+    "stash": ""
+  },
+  {
+    "path": "p12_4_c4a",
+    "head": "d703bcdef06f7825e64edc303d74cb29f5d0910d",
+    "branch": "main",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4a/.git",
+    "changes": [
+      "M benchmarks/optical/__init__.py",
+      " M benchmarks/optical/eligibility.py",
+      " M benchmarks/optical/lanes/audit.py",
+      " M benchmarks/optical/runner.py",
+      " M benchmarks/optical/schema.py",
+      " M benchmarks/optical/timing.py",
+      " M benchmarks/results/q54_p12_4/cleanup_ledger.json",
+      " M benchmarks/results/q54_p12_4/gate.json",
+      " M optics/__init__.py",
+      " M tests/unit/benchmarks/test_optical_benchmark_a3a.py",
+      " M tests/unit/benchmarks/test_optical_benchmark_contracts.py",
+      " M tests/unit/benchmarks/test_optical_benchmark_core.py",
+      "?? benchmarks/optical/arena.py",
+      "?? collab/q54-optical-lab-p12-4c4a-arena-control-contract__implementation-note__codex__v1.md",
+      "?? collab/q54-optical-lab-p12-4c4a-arena-control-contract__implementation-note__codex__v2.md",
+      "?? collab/q54-optical-lab-p12-4c4a-arena-control-contract__implementation-note__codex__v3.md",
+      "?? optics/native_arena.py",
+      "?? tests/unit/benchmarks/test_optical_benchmark_c4a.py",
+      "?? tests/unit/optics/test_native_optical_arena.py"
+    ],
+    "stash": ""
+  },
+  {
+    "path": "p12_4_c4b_impl",
+    "head": "8696677e1e7057a33fcc0d7d92fbf55a276cc9ce",
+    "branch": "main",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4b_impl/.git",
+    "changes": [
+      "M OPEN_QUESTIONS.md",
+      " M PROGRESS.md",
+      " M REFLECTIONS.md",
+      " M benchmarks/optical/__init__.py",
+      " M benchmarks/optical/native.py",
+      " M benchmarks/optical/receipts.py",
+      " M optics/__init__.py",
+      " M optics/cuda_direct_light.py",
+      " M optics/cuda_timeline.py",
+      " M optics/native_arena.py",
+      " M tests/gpu/test_cuda_optical_timeline.py",
+      " M tests/unit/optics/test_cuda_timeline.py",
+      " M tests/unit/optics/test_native_optical_arena.py",
+      "?? benchmarks/optical/cuda_arena.py",
+      "?? collab/q54-optical-lab-p12-4c4b-cuda-arena-transaction-templates__implementation-note__codex__v1.md",
+      "?? collab/q54-optical-lab-p12-4c4b-cuda-arena-transaction-templates__implementation-note__codex__v2.md",
+      "?? collab/q54-optical-lab-p12-4c4b-exact-minted-execution-authority__implementation-note__codex__v4.md",
+      "?? collab/q54-optical-lab-p12-4c4b-live-lease-execution-authority__implementation-note__codex__v3.md",
+      "?? collab/q54-optical-lab-p12-4c4b-single-use-acquire-execution-authority__implementation-note__codex__v5.md",
+      "?? optics/cuda_arena.py",
+      "?? tests/gpu/test_cuda_native_arena.py",
+      "?? tests/unit/optics/test_cuda_arena_contract.py"
+    ],
+    "stash": ""
+  },
+  {
+    "path": "p12_4_c4c0_impl",
+    "head": "79fa00c0daaae22630ecd5e6dda1f40c5548529f",
+    "branch": "main",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c0_impl/.git",
+    "changes": [
+      "M .gitignore",
+      " M PROGRESS.md",
+      " M REFLECTIONS.md",
+      " M benchmarks/optical/__init__.py",
+      " M benchmarks/optical/native.py",
+      " M optics/cuda_arena.py",
+      "?? benchmarks/optical/closed_worker.py",
+      "?? benchmarks/results/q54_p12_4/closed_worker_runtime_contract.json",
+      "?? collab/q54-optical-lab-p12-4c4c0-closed-worker-ipc__implementation-note__codex__v1.md",
+      "?? collab/q54-optical-lab-p12-4c4c1-warp-native-render-abi__design-request__codex__v1.md",
+      "?? collab/q54-optical-lab-p12-4c4c1-warp-native-render-abi__design-request__codex__v2.md",
+      "?? collab/q54-optical-lab-p12-4c4c1-warp-native-render-abi__design-request__codex__v3.md",
+      "?? optical_worker/__init__.py",
+      "?? optical_worker/lifecycle.py",
+      "?? optical_worker/manifest.py",
+      "?? optical_worker/native_contract.py",
+      "?? optical_worker/native_setup.py",
+      "?? optical_worker/protocol.py",
+      "?? optical_worker/worker.py",
+      "?? tests/gpu/test_optical_closed_worker_setup.py",
+      "?? tests/unit/benchmarks/test_closed_worker_protocol.py",
+      "?? tests/unit/benchmarks/test_optical_closed_worker.py",
+      "?? tools/optical_closed_worker.py",
+      "?? tools/optical_closed_worker_supervisor.py"
+    ],
+    "stash": ""
+  },
+  {
+    "path": "p12_4_c4c1a_fix",
+    "head": "5cb288ab9824e203ef2816f4ea57e1b9d3956fc2",
+    "branch": "main",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1a_fix/.git",
+    "changes": [
+      "M PROGRESS.md",
+      " M REFLECTIONS.md",
+      " M optical_worker/native_contract.py",
+      " M tests/gpu/test_cuda_native_arena.py",
+      " M tests/gpu/test_optical_benchmark_native.py",
+      " M tests/unit/benchmarks/test_native_readiness_authority.py",
+      "?? collab/q54-optical-lab-p12-4c4c1a-storage-binding__review-followup__codex__v1.md"
+    ],
+    "stash": ""
+  },
+  {
+    "path": "p12_4_c4c1b2_impl",
+    "head": "39db95d0c97b952588f42b5a4918c34f5ddc5671",
+    "branch": "implementation/c4c1b2",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "p12_4_c4c1b_impl",
+    "head": "2b4106808cd5507cd825205c90c87d7894938480",
+    "branch": "main",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b_impl/.git",
+    "changes": [
+      "M PROGRESS.md",
+      " M REFLECTIONS.md",
+      " M optics/warp_execution.py",
+      "?? collab/q54-optical-lab-p12-4c4c1b1-warp-kernel-single-source__implementation-note__codex__v1.md",
+      "?? collab/q54-optical-lab-p12-4c4c1b1-warp-kernel-single-source__test-evidence__codex__v1.md",
+      "?? collab/robot-simulator-development-host-routing__decision__owner__v1.md",
+      "?? optics/warp_native_render.py",
+      "?? tests/unit/optics/test_warp_native_kernel_source.py"
+    ],
+    "stash": ""
+  },
+  {
+    "path": "p12_4_c4c1_impl",
+    "head": "2521e64a7cb38679016f783eecf2226480ce3c6f",
+    "branch": "main",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1_impl/.git",
+    "changes": [
+      "M PROGRESS.md",
+      " M REFLECTIONS.md",
+      " M benchmarks/optical/native.py",
+      " M optical_worker/native_contract.py",
+      " M optics/cuda_arena.py",
+      "?? collab/q54-optical-lab-p12-4c4c1a-readiness-authority__implementation-note__codex__v1.md",
+      "?? tests/unit/benchmarks/test_native_readiness_authority.py"
+    ],
+    "stash": ""
+  },
+  {
+    "path": "p12_4_c4_render_binding",
+    "head": "266fc8210020402e5a370b5a19fb279acf354140",
+    "branch": "implementation/c4-render-binding",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "p12_4_c4_sacrificial",
+    "head": "3c81fa14a71ee69f7a112170a2f436c5549e6725",
+    "branch": "implementation/c4-sacrificial",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "p12_4_c4_sacrificial_gpu",
+    "head": "fd18b87dfa8e89e73b929576b52ff906e3c51bca",
+    "branch": "implementation/c4-sacrificial-gpu",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "p12_4_c4_warp_timeline_design",
+    "head": "8b6cb2615ae05c17a4c16b55201d5b398b638933",
+    "branch": "implementation/c4-supervised-waits",
+    "common": "C:/Users/AG/新建文件夹/p12_4_c4c1b2_impl/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "robot_physics_correctness",
+    "head": "061e97a35c5dc6a7be358a9959e5d265c2f4eb3a",
+    "branch": "physics/correctness-audit-20261012",
+    "common": "C:/Users/AG/新建文件夹/robot_physics_correctness/.git",
+    "changes": [],
+    "stash": ""
+  },
+  {
+    "path": "robot_simulator",
+    "head": "a20d75ecae624de3be054916142386477f0a352c",
+    "branch": "main",
+    "common": "C:/Users/AG/新建文件夹/robot_simulator/.git",
+    "changes": [
+      "M PROGRESS.md",
+      " M REFLECTIONS.md",
+      " M optics/cuda_direct_light.py",
+      " M tests/gpu/test_optical_gpu_runtime.py",
+      " M tests/unit/optics/test_device_optical.py",
+      " M tests/unit/optics/test_optical_pipeline_lab.py",
+      " M tools/optical_pipeline_lab/render_session.py",
+      " M tools/optical_pipeline_lab/runner.py",
+      "?? collab/q54-optical-lab-p12-3e-cuda-camera-raygen__decision__owner__v1.md",
+      "?? collab/q54-optical-lab-p12-3e-cuda-camera-raygen__implementation-note__codex__v1.md",
+      "?? collab/q54-optical-lab-p12-3e-cuda-camera-raygen__proposal__codex__v1.md",
+      "?? collab/q54-optical-lab-p12-3e-cuda-camera-raygen__proposal__codex__v2.md",
+      "?? collab/q54-optical-lab-p12-3e-cuda-camera-raygen__proposal__codex__v3.md",
+      "?? collab/q54-optical-lab-p12-4-backend-parity-performance-gate__decision__owner__v1.md",
+      "?? collab/q54-optical-lab-p12-4-backend-parity-performance-gate__proposal__codex__v1.md",
+      "?? collab/q54-optical-lab-p12-4-backend-parity-performance-gate__proposal__codex__v2.md",
+      "?? deploy/robot_sim_cuda128/README.md",
+      "?? deploy/robot_sim_cuda128/conda-explicit.txt",
+      "?? deploy/robot_sim_cuda128/python-packages.txt",
+      "?? deploy/robot_sim_cuda128/wheelhouse.sha256"
+    ],
+    "stash": ""
+  },
+  {
+    "path": "robot_sim_review_workflow",
+    "head": "0470b7436a60427cdb5dea0e91041900fc094494",
+    "branch": "workflow/independent-review",
+    "common": "C:/Users/AG/新建文件夹/robot_sim_review_workflow/.git",
+    "changes": [],
+    "stash": ""
+  }
+]

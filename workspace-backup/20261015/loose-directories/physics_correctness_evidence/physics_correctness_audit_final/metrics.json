@@ -1,0 +1,187 @@
+[
+  {
+    "kind": "energy",
+    "dt": 0.0004,
+    "initial_j": 0.5202538142580021,
+    "scale_j": 5.1800038142580025,
+    "endpoint_j": -0.266582572020294,
+    "max_j": 0.2735320477564299,
+    "max_relative": 0.05280537574191176
+  },
+  {
+    "kind": "energy",
+    "dt": 0.0002,
+    "initial_j": 0.5202538142580021,
+    "scale_j": 5.1800038142580025,
+    "endpoint_j": -0.13583167503681748,
+    "max_j": 0.1425523756933903,
+    "max_relative": 0.027519743383395537
+  },
+  {
+    "kind": "energy",
+    "dt": 0.0001,
+    "initial_j": 0.5202538142580021,
+    "scale_j": 5.1800038142580025,
+    "endpoint_j": -0.06899641169782089,
+    "max_j": 0.07270953025925941,
+    "max_relative": 0.014036578517399126
+  },
+  {
+    "kind": "settling",
+    "solver": "admm",
+    "dt": 0.0002,
+    "iterations": 50,
+    "mean_z": 0.41974916410167473,
+    "equilibrium_z": 0.4197491641016729,
+    "error_m": 1.8318679906315083e-15,
+    "tail_range_m": 0.0,
+    "max_abs_vz": 4.8195145949321325e-14
+  },
+  {
+    "kind": "settling",
+    "solver": "pgs",
+    "dt": 0.0002,
+    "iterations": 60,
+    "mean_z": 0.4199280300387738,
+    "equilibrium_z": 0.41499999999896997,
+    "error_m": 0.004928030039803855,
+    "tail_range_m": 3.068064857725261e-09,
+    "max_abs_vz": 8.970599601116909e-08
+  },
+  {
+    "kind": "settling",
+    "solver": "admm",
+    "dt": 0.0002,
+    "iterations": 100,
+    "mean_z": 0.41974916410167473,
+    "equilibrium_z": 0.4197491641016729,
+    "error_m": 1.8318679906315083e-15,
+    "tail_range_m": 0.0,
+    "max_abs_vz": 4.8195145949321325e-14
+  },
+  {
+    "kind": "settling",
+    "solver": "pgs",
+    "dt": 0.0002,
+    "iterations": 120,
+    "mean_z": 0.41992802907279836,
+    "equilibrium_z": 0.41499999999896997,
+    "error_m": 0.004928029073828388,
+    "tail_range_m": 2.2424662682318797e-09,
+    "max_abs_vz": 6.297534650485659e-08
+  },
+  {
+    "kind": "settling",
+    "solver": "admm",
+    "dt": 0.0004,
+    "iterations": 50,
+    "mean_z": 0.41974916410167246,
+    "equilibrium_z": 0.4197491641016729,
+    "error_m": -4.440892098500626e-16,
+    "tail_range_m": 0.0,
+    "max_abs_vz": 1.4927134308963556e-14
+  },
+  {
+    "kind": "settling",
+    "solver": "admm",
+    "dt": 0.0001,
+    "iterations": 50,
+    "mean_z": 0.4197491641016796,
+    "equilibrium_z": 0.4197491641016729,
+    "error_m": 6.716849298982197e-15,
+    "tail_range_m": 0.0,
+    "max_abs_vz": 1.8666856748642907e-13
+  },
+  {
+    "kind": "settling",
+    "solver": "pgs",
+    "dt": 0.0004,
+    "iterations": 60,
+    "mean_z": 0.41969729933116295,
+    "equilibrium_z": 0.41499999999587983,
+    "error_m": 0.004697299335283123,
+    "tail_range_m": 1.8584254135589617e-09,
+    "max_abs_vz": 3.748649205324163e-08
+  },
+  {
+    "kind": "settling",
+    "solver": "pgs",
+    "dt": 0.0001,
+    "iterations": 60,
+    "mean_z": 0.41996638109864964,
+    "equilibrium_z": 0.4149999999997425,
+    "error_m": 0.004966381098907124,
+    "tail_range_m": 2.61438976023598e-09,
+    "max_abs_vz": 1.2964099298837854e-07
+  },
+  {
+    "kind": "settling",
+    "solver": "mujoco",
+    "dt": 0.0002,
+    "mean_z": 0.4188928875631802,
+    "max_abs_vz": 1.201762932962481e-13
+  },
+  {
+    "kind": "unresolved_geometry",
+    "pair": "CylinderShape",
+    "penetration_m": 1e-05,
+    "detected": true,
+    "depth_m": 9.999999999996123e-06
+  },
+  {
+    "kind": "unresolved_geometry",
+    "pair": "CylinderShape",
+    "penetration_m": 0.0001,
+    "detected": true,
+    "depth_m": 0.00010000000000000286
+  },
+  {
+    "kind": "unresolved_geometry",
+    "pair": "CylinderShape",
+    "penetration_m": 0.001,
+    "detected": false,
+    "depth_m": null
+  },
+  {
+    "kind": "unresolved_geometry",
+    "pair": "CylinderShape",
+    "penetration_m": 0.003,
+    "detected": true,
+    "depth_m": 0.0030000000000000027
+  },
+  {
+    "kind": "unresolved_geometry",
+    "pair": "ConvexHullShape",
+    "penetration_m": 1e-05,
+    "detected": false,
+    "depth_m": null
+  },
+  {
+    "kind": "unresolved_geometry",
+    "pair": "ConvexHullShape",
+    "penetration_m": 0.0001,
+    "detected": false,
+    "depth_m": null
+  },
+  {
+    "kind": "unresolved_geometry",
+    "pair": "ConvexHullShape",
+    "penetration_m": 0.001,
+    "detected": false,
+    "depth_m": null
+  },
+  {
+    "kind": "unresolved_geometry",
+    "pair": "ConvexHullShape",
+    "penetration_m": 0.003,
+    "detected": true,
+    "depth_m": 0.0030000000000000027
+  },
+  {
+    "kind": "settling",
+    "solver": "gpu_admm",
+    "dt": 0.0002,
+    "mean_z": 0.41975000500679016,
+    "max_abs_vz": 2.3184344172477722e-05
+  }
+]

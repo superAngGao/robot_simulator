@@ -1,0 +1,288 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+from optics import (
+    MAX_PRIMITIVES_PER_INSTANCE,
+    CudaDeviceBvhDirectLightOpticalExecutor,
+    CudaDeviceBvhOpticalExecutor,
+    OpticalComputeResult,
+    OpticalFrameInputs,
+    OpticalInstanceSpec,
+    OpticalMaterialSpec,
+    OpticalOutputProfile,
+    OpticalSceneCache,
+    OpticalWorldRegistry,
+    build_host_optical_primitive_workload,
+    channel_is_device,
+    channel_to_numpy,
+    channel_to_torch,
+    cuda_direct_light_available,
+    pack_source_order_key,
+    stage_channels_to_host,
+    stage_optical_channels,
+    stage_optical_compute_result_to_host,
+)
+from optics.cuda_direct_light import _filter_channels_for_profile, _require_cuda_direct_light_deps
+from physics.publish import CpuPublishedFrame
+
+
+class _ArrayLike:
+    def __init__(self, value):
+        self._value = np.asarray(value)
+
+    def numpy(self):
+        return self._value
+
+
+def _frame(*, frame_id: int = 51, sim_time: float = 0.51) -> CpuPublishedFrame:
+    return CpuPublishedFrame(
+        frame_id=frame_id,
+        sim_time=sim_time,
+        step_index=frame_id,
+        env_mask=None,
+        q=np.zeros(0, dtype=np.float64),
+        qdot=np.zeros(0, dtype=np.float64),
+        X_world=[],
+        v_bodies=[],
+        contact_count=0,
+        contacts=[],
+        telemetry=None,
+    )
+
+
+def _snapshot(registry: OpticalWorldRegistry):
+    return OpticalSceneCache(registry).snapshot_from_frame_inputs(
+        OpticalFrameInputs.from_published_frame(_frame())
+    )
+
+
+def test_pack_source_order_key_preserves_lexicographic_order():
+    assert pack_source_order_key(0, 9) < pack_source_order_key(1, 0)
+    assert pack_source_order_key(2, 3) < pack_source_order_key(2, 4)
+
+
+def test_pack_source_order_key_rejects_out_of_range_values():
+    with pytest.raises(ValueError, match="instance_index"):
+        pack_source_order_key(-1, 0)
+    with pytest.raises(ValueError, match="primitive_index"):
+        pack_source_order_key(0, -1)
+    with pytest.raises(ValueError, match="MAX_PRIMITIVES"):
+        pack_source_order_key(0, MAX_PRIMITIVES_PER_INSTANCE)
+
+
+def test_build_host_optical_primitive_workload_filters_roles_and_packs_keys():
+    registry = OpticalWorldRegistry()
+    registry.add_material(OpticalMaterialSpec("mat"))
+    registry.add_plane_geometry("plane", normal_local=[0.0, 0.0, 1.0], point_local=[0.0, 0.0, 0.0])
+    registry.add_triangle_mesh_geometry(
+        "tri",
+        vertices_local=[
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ],
+        triangles=[[0, 1, 2], [3, 4, 5]],
+    )
+    registry.add_instance(OpticalInstanceSpec("plane_depth", "plane", "mat", roles=frozenset({"depth"})))
+    registry.add_instance(OpticalInstanceSpec("tri_rgb", "tri", "mat", roles=frozenset({"rgb"})))
+    registry.add_instance(OpticalInstanceSpec("tri_depth", "tri", "mat", roles=frozenset({"depth"})))
+    snapshot = _snapshot(registry)
+
+    workload = build_host_optical_primitive_workload(snapshot, sensor_role="depth")
+
+    assert workload.plane_normal_world.shape == (1, 3)
+    assert workload.triangles_world.shape == (1, 3, 3)
+    np.testing.assert_array_equal(workload.plane_numeric_instance_id, [1])
+    np.testing.assert_array_equal(workload.triangle_numeric_instance_id, [3])
+    np.testing.assert_array_equal(workload.plane_source_order_key, [pack_source_order_key(0, 0)])
+    np.testing.assert_array_equal(workload.triangle_source_order_key, [pack_source_order_key(2, 0)])
+    assert workload.triangles_world.dtype == np.float32
+    assert workload.triangle_source_order_key.dtype == np.int64
+
+
+def test_stage_optical_compute_result_to_host_normalizes_device_channels():
+    device_result = OpticalComputeResult(
+        frame_id=7,
+        sim_time=0.07,
+        env_idx=2,
+        sensor_id="gpu_probe",
+        location="device",
+        channels={
+            "hit_mask": _ArrayLike(np.array([1, 0], dtype=np.int32)),
+            "range_m": _ArrayLike(np.array([1.5, np.inf], dtype=np.float32)),
+            "position_world": _ArrayLike(
+                np.array([[1.0, 2.0, 3.0], [np.nan, np.nan, np.nan]], dtype=np.float32)
+            ),
+            "normal_world": _ArrayLike(
+                np.array([[0.0, 0.0, 1.0], [np.nan, np.nan, np.nan]], dtype=np.float32)
+            ),
+            "numeric_instance_id": _ArrayLike(np.array([4, 0], dtype=np.int32)),
+        },
+    )
+
+    host = stage_optical_compute_result_to_host(device_result)
+
+    assert host.location == "host"
+    assert host.ready_event is None
+    assert host.frame_id == 7
+    np.testing.assert_array_equal(host.channel("hit_mask"), [True, False])
+    assert host.channel("hit_mask").dtype == bool
+    assert host.channel("range_m").dtype == np.float64
+    assert host.channel("position_world").dtype == np.float64
+    assert host.channel("normal_world").dtype == np.float64
+    assert host.channel("numeric_instance_id").dtype == np.int64
+    np.testing.assert_allclose(host.channel("range_m"), [1.5, np.inf])
+
+
+def test_stage_optical_channels_stages_selected_channels_only():
+    device_result = OpticalComputeResult(
+        frame_id=7,
+        sim_time=0.07,
+        env_idx=2,
+        sensor_id="gpu_probe",
+        location="device",
+        channels={
+            "hit_mask": _ArrayLike(np.array([1, 0], dtype=np.int32)),
+            "rgb": _ArrayLike(np.array([[0.1, 0.2, 0.3]], dtype=np.float32)),
+            "numeric_instance_id": _ArrayLike(np.array([4, 0], dtype=np.int32)),
+        },
+    )
+
+    staged = stage_optical_channels(device_result, ("rgb", "numeric_instance_id"))
+
+    assert set(staged) == {"rgb", "numeric_instance_id"}
+    assert staged["rgb"].dtype == np.float64
+    assert staged["numeric_instance_id"].dtype == np.int64
+    np.testing.assert_allclose(staged["rgb"], [[0.1, 0.2, 0.3]], rtol=1e-6)
+    np.testing.assert_array_equal(staged["numeric_instance_id"], [4, 0])
+
+
+def test_stage_optical_channels_can_preserve_device_dtypes_for_preview_readback():
+    device_result = OpticalComputeResult(
+        frame_id=7,
+        sim_time=0.07,
+        env_idx=2,
+        sensor_id="gpu_probe",
+        location="device",
+        channels={
+            "hit_mask": _ArrayLike(np.array([1, 0], dtype=np.int32)),
+            "rgb": _ArrayLike(np.array([[0.1, 0.2, 0.3]], dtype=np.float32)),
+            "bvh_stack_overflow_count": _ArrayLike(np.array([0], dtype=np.int32)),
+        },
+    )
+
+    staged = stage_optical_channels(
+        device_result,
+        ("hit_mask", "rgb", "bvh_stack_overflow_count"),
+        canonical_dtypes=False,
+    )
+
+    assert staged["hit_mask"].dtype == np.int32
+    assert staged["rgb"].dtype == np.float32
+    assert staged["bvh_stack_overflow_count"].dtype == np.int32
+    np.testing.assert_allclose(staged["rgb"], [[0.1, 0.2, 0.3]], rtol=1e-6)
+
+
+def test_device_channel_boundary_stages_host_arrays_without_backend_knowledge():
+    result = OpticalComputeResult(
+        frame_id=7,
+        sim_time=0.07,
+        env_idx=2,
+        sensor_id="host_probe",
+        channels={
+            "rgb": np.array([[0.1, 0.2, 0.3]], dtype=np.float32),
+            "hit_mask": [1, 0],
+        },
+    )
+
+    staged = stage_channels_to_host(result, ("rgb", "hit_mask"))
+
+    assert channel_is_device(result.channel("rgb")) is False
+    assert staged["rgb"].dtype == np.float32
+    np.testing.assert_allclose(channel_to_numpy(result.channel("rgb")), [[0.1, 0.2, 0.3]])
+    np.testing.assert_array_equal(staged["hit_mask"], [1, 0])
+
+
+def test_device_channel_boundary_accepts_torch_tensors_when_available():
+    torch = pytest.importorskip("torch")
+    value = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
+
+    tensor = channel_to_torch(value)
+    array = channel_to_numpy(value)
+
+    assert tensor is value
+    assert channel_is_device(value) is False
+    np.testing.assert_allclose(array, [[1.0, 2.0]])
+
+
+def test_cuda_direct_light_skeleton_is_import_safe():
+    assert isinstance(cuda_direct_light_available(), bool)
+    assert "range_m" in CudaDeviceBvhOpticalExecutor.capabilities
+    assert "rgb" in CudaDeviceBvhDirectLightOpticalExecutor.capabilities
+    assert "intensity" in CudaDeviceBvhDirectLightOpticalExecutor.capabilities
+
+
+def test_cuda_direct_light_dependency_probe_matches_availability():
+    if cuda_direct_light_available():
+        _require_cuda_direct_light_deps()
+    else:
+        with pytest.raises(ImportError):
+            _require_cuda_direct_light_deps()
+
+
+def test_cuda_first_hit_validation_rejects_scene_bvh_device_mismatch():
+    executor = object.__new__(CudaDeviceBvhOpticalExecutor)
+    executor.device = "cuda:0"
+    snapshot = SimpleNamespace(
+        frame_id=3,
+        env_idx=0,
+        scene=SimpleNamespace(device="cuda:0"),
+    )
+    bvh = SimpleNamespace(frame_id=3, env_idx=0, device="cuda:1")
+    spec = SimpleNamespace(frame_id=3, env_idx=0, max_distance=10.0)
+
+    with pytest.raises(ValueError, match="DeviceOpticalSceneSnapshot and DeviceOpticalBvh devices"):
+        executor._validate_request(
+            snapshot,
+            bvh,
+            frame_id=spec.frame_id,
+            env_idx=spec.env_idx,
+            max_distance=spec.max_distance,
+        )
+
+
+def test_cuda_direct_light_profile_filter_keeps_render_only_counters():
+    channels = {
+        "hit_mask": object(),
+        "range_m": object(),
+        "rgb": object(),
+        "bvh_stack_overflow_count": object(),
+        "bvh_max_stack_depth": object(),
+        "shadow_stack_overflow_count": object(),
+        "shadow_max_stack_depth": object(),
+    }
+
+    filtered = _filter_channels_for_profile(channels, OpticalOutputProfile.RENDER_ONLY)
+
+    assert set(filtered) == OpticalOutputProfile.RENDER_ONLY.guaranteed_channels
+
+
+def test_stage_optical_compute_result_to_host_rejects_host_result():
+    result = OpticalComputeResult(frame_id=1, sim_time=0.0, env_idx=0, sensor_id="probe")
+
+    with pytest.raises(ValueError, match="device result"):
+        stage_optical_compute_result_to_host(result)
+
+
+def test_stage_optical_channels_rejects_host_result():
+    result = OpticalComputeResult(frame_id=1, sim_time=0.0, env_idx=0, sensor_id="probe")
+
+    with pytest.raises(ValueError, match="device result"):
+        stage_optical_channels(result, ("rgb",))

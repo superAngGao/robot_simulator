@@ -1,0 +1,21 @@
+Warp 1.12.0 initialized:
+   CUDA Toolkit 12.9, Driver 13.2
+   Devices:
+     "cpu"      : "x86_64"
+     "cuda:0"   : "NVIDIA H200" (140 GiB, sm_90, mempool enabled)
+   Kernel cache:
+     /home/ang.gao/.cache/warp/1.12.0
+Module physics.backends.warp.kernels 4ff0094 load on device 'cuda:0' took 7.17 ms  (cached)
+Module physics.backends.warp.crba_kernels 88f0422 load on device 'cuda:0' took 5.05 ms  (cached)
+Module physics.backends.warp.solver_kernels 394b7f9 load on device 'cuda:0' took 2.75 ms  (cached)
+Module physics.backends.warp.collision_kernels f9b3ca2 load on device 'cuda:0' took 15.14 ms  (cached)
+Module physics.backends.warp.admm_kernels 50acee3 load on device 'cuda:0' took 1.16 ms  (cached)
+Module physics.gpu_engine c7d00cf load on device 'cuda:0' took 1.07 ms  (cached)
+{"mass": 0.1, "iterations": 30, "W": 10.0, "R": 1.110987901687622, "rhs": 0.0019669856410473585, "impulse": 0.00017703066987451166, "scalar_model_reference": 0.00017703067076048186, "relative_error": 5.004614139597684e-09}
+{"mass": 0.1, "iterations": 300, "W": 10.0, "R": 1.110987901687622, "rhs": 0.0019669856410473585, "impulse": 0.00017703066987451166, "scalar_model_reference": 0.00017703067076048186, "relative_error": 5.004614139597684e-09}
+{"mass": 1.0, "iterations": 30, "W": 1.0, "R": 0.11109888553619385, "rhs": 0.0019669856410473585, "impulse": 0.0017703066114336252, "scalar_model_reference": 0.0017703065556565032, "relative_error": 3.1507041473772436e-08}
+{"mass": 1.0, "iterations": 300, "W": 1.0, "R": 0.11109888553619385, "rhs": 0.0019669856410473585, "impulse": 0.0017703066114336252, "scalar_model_reference": 0.0017703065556565032, "relative_error": 3.1507041473772436e-08}
+{"mass": 50.0, "iterations": 30, "W": 0.020000001415610313, "R": 0.002222087001428008, "rhs": 0.0019669856410473585, "impulse": 0.0427367277443409, "scalar_model_reference": 0.088514886815913, "relative_error": 0.5171803378880017}
+{"mass": 50.0, "iterations": 300, "W": 0.020000001415610313, "R": 0.002222087001428008, "rhs": 0.0019669856410473585, "impulse": 0.08839363604784012, "scalar_model_reference": 0.088514886815913, "relative_error": 0.0013698347524869476}
+{"mass": 1000.0, "iterations": 30, "W": 0.0010000000474974513, "R": 0.00011120988347101957, "rhs": 0.0019669856410473585, "impulse": 0.05800503119826317, "scalar_model_reference": 1.7701296453794644, "relative_error": 0.9672311961162434}
+{"mass": 1000.0, "iterations": 300, "W": 0.0010000000474974513, "R": 0.00011120988347101957, "rhs": 0.0019669856410473585, "impulse": 0.5015694499015808, "scalar_model_reference": 1.7701296453794644, "relative_error": 0.7166481838147742}

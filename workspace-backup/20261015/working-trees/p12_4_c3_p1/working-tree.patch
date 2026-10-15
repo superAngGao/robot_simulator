@@ -1,0 +1,1666 @@
+diff --git a/benchmarks/optical/__init__.py b/benchmarks/optical/__init__.py
+index 4011cb1..ed5b346 100644
+--- a/benchmarks/optical/__init__.py
++++ b/benchmarks/optical/__init__.py
+@@ -63,20 +63,28 @@ from .native import (
+ )
+ from .receipts import (
+     ACCELERATION_RECEIPT_SCHEMA_VERSION,
+-    C3_ONE_SHOT_BINDING_CAPABILITY,
+-    C4_RESULT_BINDING_CAPABILITY,
++    DYNAMIC_ACCELERATION_INPUT_NAMES,
++    DYNAMIC_ACCELERATION_OUTPUT_NAMES,
++    DYNAMIC_DATAFLOW_CONTRACT_SCHEMA_VERSION,
++    DYNAMIC_RENDER_METADATA_INPUT_NAMES,
++    DYNAMIC_RENDER_SHADE_INPUT_NAMES,
++    DYNAMIC_RENDER_WORLD_INPUT_NAMES,
++    DYNAMIC_SCENE_OUTPUT_NAMES,
++    DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES,
+     NATIVE_EXECUTION_BINDING_SCHEMA_VERSION,
+     NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
+     SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION,
+     AccelerationReceipt,
+-    NativeExecutionBindingEvidence,
++    C3OneShotNativeExecutionBindingEvidence,
+     NativeStageBinding,
+     NativeStageEvidence,
+     NativeStorageSignature,
+     ShippingPublicationReceipt,
+-    build_native_execution_binding,
++    build_c3_one_shot_native_execution_binding,
+     canonical_dataflow_binding_sha256,
++    canonical_dataflow_contract_id,
+     canonical_storage_manifest_sha256,
++    dynamic_scene_update_input_storage,
+ )
+ from .runner import (
+     SINGLE_LANE_RUNNER_VERSION,
+@@ -134,8 +142,14 @@ from .workloads import (
+ 
+ __all__ = [
+     "ACCELERATION_RECEIPT_SCHEMA_VERSION",
+-    "C3_ONE_SHOT_BINDING_CAPABILITY",
+-    "C4_RESULT_BINDING_CAPABILITY",
++    "DYNAMIC_ACCELERATION_INPUT_NAMES",
++    "DYNAMIC_ACCELERATION_OUTPUT_NAMES",
++    "DYNAMIC_DATAFLOW_CONTRACT_SCHEMA_VERSION",
++    "DYNAMIC_RENDER_METADATA_INPUT_NAMES",
++    "DYNAMIC_RENDER_SHADE_INPUT_NAMES",
++    "DYNAMIC_RENDER_WORLD_INPUT_NAMES",
++    "DYNAMIC_SCENE_OUTPUT_NAMES",
++    "DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES",
+     "NATIVE_EXECUTION_BINDING_SCHEMA_VERSION",
+     "NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION",
+     "ASSET_MANIFEST_SCHEMA_VERSION",
+@@ -157,7 +171,7 @@ __all__ = [
+     "RESULT_SCHEMA_VERSION",
+     "ExecutionReceipt",
+     "AccelerationReceipt",
+-    "NativeExecutionBindingEvidence",
++    "C3OneShotNativeExecutionBindingEvidence",
+     "NativeStageBinding",
+     "NativeStageEvidence",
+     "NativeStorageSignature",
+@@ -183,6 +197,7 @@ __all__ = [
+     "WarpPreparedNativeInput",
+     "CanonicalOpticalCase",
+     "canonical_gate_sha256",
++    "canonical_dataflow_contract_id",
+     "canonical_dataflow_binding_sha256",
+     "canonical_storage_manifest_sha256",
+     "canonical_execution_receipt_sha256",
+@@ -197,7 +212,7 @@ __all__ = [
+     "evaluate_lane_eligibility",
+     "entry_point_hook_id",
+     "certify_native_readiness",
+-    "build_native_execution_binding",
++    "build_c3_one_shot_native_execution_binding",
+     "build_prepared_cuda_local_scene",
+     "build_prepared_warp_local_scene",
+     "FORBIDDEN_TIMED_OPERATIONS",
+@@ -209,6 +224,7 @@ __all__ = [
+     "prepare_cuda_native_input",
+     "prepare_warp_native_input",
+     "prepared_storage_signatures",
++    "dynamic_scene_update_input_storage",
+     "ResolvedLaneSample",
+     "record_runtime_operation",
+     "required_runtime_operations",
+diff --git a/benchmarks/optical/receipts.py b/benchmarks/optical/receipts.py
+index 372d40e..acd93a4 100644
+--- a/benchmarks/optical/receipts.py
++++ b/benchmarks/optical/receipts.py
+@@ -7,14 +7,81 @@ import json
+ from collections.abc import Mapping, Sequence
+ from dataclasses import dataclass
+ 
+-from .eligibility import GPU_ENGINE_PUBLISHED_FRAME_INPUT
++from .eligibility import (
++    EXACT_ACCELERATION_CONTRACTS,
++    EXACT_LANE_BINDINGS,
++    GPU_ENGINE_PUBLISHED_FRAME_INPUT,
++)
+ 
+ ACCELERATION_RECEIPT_SCHEMA_VERSION = "q54.p12.4.acceleration-receipt.v2"
+ SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION = "q54.p12.4.shipping-publication-receipt.v1"
+-NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION = "q54.p12.4.native-stage-evidence.v1"
+-NATIVE_EXECUTION_BINDING_SCHEMA_VERSION = "q54.p12.4.native-execution-binding.v2"
+-C3_ONE_SHOT_BINDING_CAPABILITY = "c3_one_shot_non_result_capable"
+-C4_RESULT_BINDING_CAPABILITY = "c4_result_capable"
++NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION = "q54.p12.4.native-stage-evidence.v2"
++NATIVE_EXECUTION_BINDING_SCHEMA_VERSION = "q54.p12.4.c3-one-shot-binding.v4"
++DYNAMIC_DATAFLOW_CONTRACT_SCHEMA_VERSION = "q54.p12.4.dynamic-dataflow.v1"
++
++# These names are the logical allocation ABI between C3 stages.  They mirror
++# DeviceOpticalSceneSnapshot, DeviceOpticalBvh, CudaFirstHitInputs, and
++# CudaShadeInputs.  The tuple order is part of the contract.
++DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES = (
++    "triangle_vertices_local",
++    "triangle_instance_index",
++    "plane_normal_local",
++    "plane_point_local",
++    "plane_instance_index",
++    "instance_body_index",
++    "instance_X_body_geometry_R",
++    "instance_X_body_geometry_r",
++)
++DYNAMIC_TRANSFORM_INPUT_NAMES = ("replay_x_world_R", "replay_x_world_r")
++DYNAMIC_SCENE_OUTPUT_NAMES = (
++    "triangle_v0_world",
++    "triangle_e1_world",
++    "triangle_e2_world",
++    "triangle_normal_world",
++    "plane_normal_world",
++    "plane_point_world",
++    "triangle_aabb_min",
++    "triangle_aabb_max",
++)
++DYNAMIC_ACCELERATION_INPUT_NAMES = ("triangle_aabb_min", "triangle_aabb_max")
++DYNAMIC_ACCELERATION_OUTPUT_NAMES = (
++    "bvh_bounds_min",
++    "bvh_bounds_max",
++    "bvh_left",
++    "bvh_right",
++    "bvh_start",
++    "bvh_count",
++    "bvh_prim_ids",
++)
++DYNAMIC_RENDER_WORLD_INPUT_NAMES = (
++    "plane_normal_world",
++    "plane_point_world",
++    "triangle_v0_world",
++    "triangle_e1_world",
++    "triangle_e2_world",
++    "triangle_normal_world",
++)
++DYNAMIC_RENDER_METADATA_INPUT_NAMES = (
++    "plane_numeric_instance_id",
++    "plane_source_order_key",
++    "plane_role_mask",
++    "plane_material_index",
++    "triangle_numeric_instance_id",
++    "triangle_source_order_key",
++    "triangle_role_mask",
++    "triangle_material_index",
++)
++DYNAMIC_RENDER_SHADE_INPUT_NAMES = (
++    "material_albedo_rgb",
++    "light_kind",
++    "light_position_or_direction_world",
++    "light_intensity",
++    "light_color_rgb",
++)
++
++_SUPPORTED_OUTPUT_PROFILES = frozenset(
++    {"direct_light_full", "rgb_preview", "render_only"}
++)
+ 
+ 
+ def _canonical_sha256(payload: object) -> str:
+@@ -100,6 +167,8 @@ class NativeStageEvidence:
+     schema_version: str
+     stage_name: str
+     operation_id: str
++    output_profile: str | None
++    shadows: bool | None
+     scene_contract_sha256: str
+     input_contract: str
+     transform_replay_sha256: str | None
+@@ -120,6 +189,13 @@ class NativeStageEvidence:
+         for name in ("stage_name", "operation_id", "input_contract"):
+             if not isinstance(payload.get(name), str) or not payload[name]:
+                 raise ValueError(f"native stage evidence {name} must be non-empty")
++        if payload["stage_name"] == "render":
++            if payload.get("output_profile") not in _SUPPORTED_OUTPUT_PROFILES:
++                raise ValueError("native render stage output profile is invalid")
++            if not isinstance(payload.get("shadows"), bool):
++                raise ValueError("native render stage shadows must be boolean")
++        elif payload.get("output_profile") is not None or payload.get("shadows") is not None:
++            raise ValueError("non-render native stage cannot carry render identity")
+         for name in (
+             "scene_contract_sha256",
+             "transform_replay_sha256",
+@@ -147,6 +223,8 @@ class NativeStageEvidence:
+             schema_version=NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
+             stage_name=payload["stage_name"],
+             operation_id=payload["operation_id"],
++            output_profile=payload["output_profile"],
++            shadows=payload["shadows"],
+             scene_contract_sha256=payload["scene_contract_sha256"],
+             input_contract=payload["input_contract"],
+             transform_replay_sha256=payload["transform_replay_sha256"],
+@@ -163,6 +241,8 @@ class NativeStageEvidence:
+             "schema_version": self.schema_version,
+             "stage_name": self.stage_name,
+             "operation_id": self.operation_id,
++            "output_profile": self.output_profile,
++            "shadows": self.shadows,
+             "scene_contract_sha256": self.scene_contract_sha256,
+             "input_contract": self.input_contract,
+             "transform_replay_sha256": self.transform_replay_sha256,
+@@ -215,8 +295,13 @@ class NativeStageBinding:
+ 
+ 
+ @dataclass(frozen=True)
+-class NativeExecutionBindingEvidence:
+-    """Outer aggregate binding stage facts to one prepared input and row."""
++class C3OneShotNativeExecutionBindingEvidence:
++    """C3 one-shot aggregate binding stage facts to prepared allocations.
++
++    This type is deliberately not a result-submission capability.  C4 must
++    introduce a separate evidence type whose constructor proves arena, slot,
++    generation, lease, and ring ownership.
++    """
+ 
+     schema_version: str
+     row_id: str
+@@ -224,7 +309,11 @@ class NativeExecutionBindingEvidence:
+     case_sha256: str
+     boundary: str
+     lane: str
+-    submission_capability: str
++    renderer_id: str
++    acceleration_id: str
++    output_profile: str
++    shadows: bool
++    dataflow_contract_id: str
+     input_contract: str
+     native_input_manifest_sha256: str
+     native_readiness_sha256: str
+@@ -240,22 +329,31 @@ class NativeExecutionBindingEvidence:
+     dataflow_binding_sha256: str
+ 
+     @classmethod
+-    def from_payload(cls, payload: object) -> "NativeExecutionBindingEvidence":
++    def from_payload(cls, payload: object) -> "C3OneShotNativeExecutionBindingEvidence":
+         expected = set(cls.__dataclass_fields__)
+         if not isinstance(payload, Mapping) or set(payload) != expected:
+             raise ValueError("native execution binding fields are invalid")
+         if payload.get("schema_version") != NATIVE_EXECUTION_BINDING_SCHEMA_VERSION:
+             raise ValueError("native execution binding schema version is invalid")
+-        for name in ("row_id", "case_id", "boundary", "lane", "input_contract"):
++        for name in (
++            "row_id",
++            "case_id",
++            "boundary",
++            "lane",
++            "renderer_id",
++            "acceleration_id",
++            "output_profile",
++            "dataflow_contract_id",
++            "input_contract",
++        ):
+             if not isinstance(payload.get(name), str) or not payload[name]:
+                 raise ValueError(f"native execution binding {name} must be non-empty")
+         if payload.get("lane") not in {"warp", "cuda"}:
+             raise ValueError("native execution binding lane is invalid")
+-        if payload.get("submission_capability") not in {
+-            C3_ONE_SHOT_BINDING_CAPABILITY,
+-            C4_RESULT_BINDING_CAPABILITY,
+-        }:
+-            raise ValueError("native execution binding submission capability is invalid")
++        if payload.get("output_profile") not in _SUPPORTED_OUTPUT_PROFILES:
++            raise ValueError("native execution binding output profile is invalid")
++        if not isinstance(payload.get("shadows"), bool):
++            raise ValueError("native execution binding shadows must be boolean")
+         for name in (
+             "case_sha256",
+             "native_input_manifest_sha256",
+@@ -336,6 +434,12 @@ class NativeExecutionBindingEvidence:
+             all_storage += evidence.input_storage + evidence.output_storage
+         _validate_stage_dataflow(
+             boundary=boundary,
++            lane=payload["lane"],
++            renderer_id=payload["renderer_id"],
++            acceleration_id=payload["acceleration_id"],
++            output_profile=payload["output_profile"],
++            shadows=payload["shadows"],
++            dataflow_contract_id=payload["dataflow_contract_id"],
+             runtime_scene_storage=runtime_scene_storage,
+             derived_fixture_storage=derived_fixture_storage,
+             ordered_stage_evidence=tuple(stages),
+@@ -360,7 +464,11 @@ class NativeExecutionBindingEvidence:
+             case_sha256=payload["case_sha256"],
+             boundary=payload["boundary"],
+             lane=payload["lane"],
+-            submission_capability=payload["submission_capability"],
++            renderer_id=payload["renderer_id"],
++            acceleration_id=payload["acceleration_id"],
++            output_profile=payload["output_profile"],
++            shadows=payload["shadows"],
++            dataflow_contract_id=payload["dataflow_contract_id"],
+             input_contract=payload["input_contract"],
+             native_input_manifest_sha256=payload["native_input_manifest_sha256"],
+             native_readiness_sha256=payload["native_readiness_sha256"],
+@@ -384,7 +492,11 @@ class NativeExecutionBindingEvidence:
+             "case_sha256": self.case_sha256,
+             "boundary": self.boundary,
+             "lane": self.lane,
+-            "submission_capability": self.submission_capability,
++            "renderer_id": self.renderer_id,
++            "acceleration_id": self.acceleration_id,
++            "output_profile": self.output_profile,
++            "shadows": self.shadows,
++            "dataflow_contract_id": self.dataflow_contract_id,
+             "input_contract": self.input_contract,
+             "native_input_manifest_sha256": self.native_input_manifest_sha256,
+             "native_readiness_sha256": self.native_readiness_sha256,
+@@ -626,6 +738,12 @@ def _storage_sequence(payload: object, *, label: str) -> tuple[NativeStorageSign
+ def _validate_stage_dataflow(
+     *,
+     boundary: str,
++    lane: str,
++    renderer_id: str,
++    acceleration_id: str,
++    output_profile: str,
++    shadows: bool,
++    dataflow_contract_id: str,
+     runtime_scene_storage: tuple[NativeStorageSignature, ...],
+     derived_fixture_storage: tuple[NativeStorageSignature, ...],
+     ordered_stage_evidence: tuple[NativeStageBinding, ...],
+@@ -638,6 +756,23 @@ def _validate_stage_dataflow(
+     evidence = tuple(stage.evidence for stage in ordered_stage_evidence)
+     if boundary == "R0":
+         render = evidence[0]
++        expected_renderer = EXACT_LANE_BINDINGS[lane]["renderer_id"]
++        if renderer_id != expected_renderer or render.operation_id != expected_renderer:
++            raise ValueError("R0 render operation does not match its lane renderer")
++        if acceleration_id != "fixed_bvh_fixture":
++            raise ValueError("R0 acceleration identity must be fixed_bvh_fixture")
++        if render.output_profile != output_profile or render.shadows != shadows:
++            raise ValueError("R0 render stage identity does not match its binding")
++        expected_contract_id = canonical_dataflow_contract_id(
++            boundary=boundary,
++            lane=lane,
++            renderer_id=renderer_id,
++            acceleration_id=acceleration_id,
++            output_profile=output_profile,
++            shadows=shadows,
++        )
++        if dataflow_contract_id != expected_contract_id:
++            raise ValueError("R0 dataflow contract identity is invalid")
+         if render.input_storage != initial:
+             raise ValueError("R0 render must read the exact scene/fixture storage union")
+         if not render.output_storage:
+@@ -647,32 +782,97 @@ def _validate_stage_dataflow(
+         return
+ 
+     scene, acceleration, render = evidence[:3]
+-    scene_prefix = scene.input_storage[: len(runtime_scene_storage)]
+-    transform_storage = scene.input_storage[len(runtime_scene_storage) :]
+-    if scene_prefix != runtime_scene_storage or tuple(value.name for value in transform_storage) != (
+-        "replay_x_world_R",
+-        "replay_x_world_r",
+-    ):
+-        raise ValueError(
+-            "dynamic scene update must read the exact local scene and selected replay frame"
+-        )
+-    if not scene.output_storage:
+-        raise ValueError("dynamic scene update output storage is empty")
+-    if not acceleration.input_storage or not acceleration.output_storage:
+-        raise ValueError("dynamic acceleration storage is incomplete")
+-    if any(value not in scene.output_storage for value in acceleration.input_storage):
+-        raise ValueError("dynamic acceleration input is not a scene-update output")
++    expected_lane_binding = EXACT_LANE_BINDINGS[lane]
++    expected_acceleration_id = expected_lane_binding["acceleration_by_class"][
++        "production_dynamic"
++    ]
++    acceleration_contract = EXACT_ACCELERATION_CONTRACTS[lane][expected_acceleration_id]
++    if renderer_id != expected_lane_binding["renderer_id"]:
++        raise ValueError("dynamic renderer identity does not match its lane")
++    if acceleration_id != expected_acceleration_id:
++        raise ValueError("dynamic acceleration identity does not match its lane")
++    expected_operations = (
++        acceleration_contract["timed_scene_update_operation"],
++        acceleration_contract["timed_acceleration_operation"],
++        expected_lane_binding["renderer_id"],
++    )
++    if tuple(stage.operation_id for stage in (scene, acceleration, render)) != expected_operations:
++        raise ValueError("dynamic stage operation sequence is not the frozen lane contract")
++    if render.output_profile != output_profile or render.shadows != shadows:
++        raise ValueError("dynamic render stage identity does not match its binding")
++    expected_contract_id = canonical_dataflow_contract_id(
++        boundary=boundary,
++        lane=lane,
++        renderer_id=renderer_id,
++        acceleration_id=acceleration_id,
++        output_profile=output_profile,
++        shadows=shadows,
++    )
++    if dataflow_contract_id != expected_contract_id:
++        raise ValueError("dynamic dataflow contract identity is invalid")
+ 
+-    available = runtime_scene_storage + scene.output_storage + acceleration.output_storage
+-    if any(value not in available for value in render.input_storage):
+-        raise ValueError("dynamic render input is not prepared or produced storage")
+-    if not any(value in scene.output_storage for value in render.input_storage):
+-        raise ValueError("dynamic render does not read scene-update output")
+-    if not any(value in acceleration.output_storage for value in render.input_storage):
+-        raise ValueError("dynamic render does not read acceleration output")
++    runtime_by_name = _storage_by_name(runtime_scene_storage, label="runtime scene")
++    expected_transform = _require_named_storage(
++        scene.input_storage,
++        DYNAMIC_TRANSFORM_INPUT_NAMES,
++        label="dynamic scene transform input",
++        allow_other_names=True,
++    )
++    expected_scene_input = _select_storage(
++        runtime_by_name,
++        DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES,
++        label="dynamic scene runtime input",
++    ) + expected_transform
++    _require_exact_storage(
++        scene.input_storage,
++        expected_scene_input,
++        label="dynamic scene-update input",
++    )
++    _require_exact_storage_names(
++        scene.output_storage,
++        DYNAMIC_SCENE_OUTPUT_NAMES,
++        label="dynamic scene-update output",
++    )
++    scene_by_name = _storage_by_name(scene.output_storage, label="dynamic scene output")
++    expected_acceleration_input = _select_storage(
++        scene_by_name,
++        DYNAMIC_ACCELERATION_INPUT_NAMES,
++        label="dynamic acceleration input",
++    )
++    _require_exact_storage(
++        acceleration.input_storage,
++        expected_acceleration_input,
++        label="dynamic acceleration input",
++    )
++    _require_exact_storage_names(
++        acceleration.output_storage,
++        DYNAMIC_ACCELERATION_OUTPUT_NAMES,
++        label="dynamic acceleration output",
++    )
++    acceleration_by_name = _storage_by_name(
++        acceleration.output_storage, label="dynamic acceleration output"
++    )
++    render_names = (
++        DYNAMIC_RENDER_WORLD_INPUT_NAMES
++        + DYNAMIC_RENDER_METADATA_INPUT_NAMES
++        + DYNAMIC_ACCELERATION_OUTPUT_NAMES
++        + DYNAMIC_RENDER_SHADE_INPUT_NAMES
++    )
++    combined_by_name = runtime_by_name | scene_by_name | acceleration_by_name
++    expected_render_input = _select_storage(
++        combined_by_name,
++        render_names,
++        label="dynamic render input",
++    )
++    _require_exact_storage(
++        render.input_storage,
++        expected_render_input,
++        label="dynamic render input",
++    )
+     if not render.output_storage:
+         raise ValueError("dynamic render output storage is empty")
+ 
++    available = runtime_scene_storage + scene.output_storage + acceleration.output_storage
+     available += render.output_storage
+     for later in evidence[3:]:
+         if any(value not in available for value in later.input_storage):
+@@ -682,6 +882,103 @@ def _validate_stage_dataflow(
+         available += later.output_storage
+ 
+ 
++def _storage_by_name(
++    storage: Sequence[NativeStorageSignature], *, label: str
++) -> dict[str, NativeStorageSignature]:
++    result = {value.name: value for value in storage}
++    if len(result) != len(storage):
++        raise ValueError(f"{label} storage names must be unique")
++    return result
++
++
++def _select_storage(
++    storage_by_name: Mapping[str, NativeStorageSignature],
++    names: Sequence[str],
++    *,
++    label: str,
++) -> tuple[NativeStorageSignature, ...]:
++    missing = tuple(name for name in names if name not in storage_by_name)
++    if missing:
++        raise ValueError(f"{label} is missing required storage {missing!r}")
++    return tuple(storage_by_name[name] for name in names)
++
++
++def _require_exact_storage(
++    actual: Sequence[NativeStorageSignature],
++    expected: Sequence[NativeStorageSignature],
++    *,
++    label: str,
++) -> None:
++    if tuple(actual) != tuple(expected):
++        raise ValueError(f"{label} must match the complete ordered storage contract")
++
++
++def _require_exact_storage_names(
++    actual: Sequence[NativeStorageSignature],
++    expected_names: Sequence[str],
++    *,
++    label: str,
++) -> None:
++    if tuple(value.name for value in actual) != tuple(expected_names):
++        raise ValueError(f"{label} must match the complete ordered storage-name contract")
++
++
++def _require_named_storage(
++    actual: Sequence[NativeStorageSignature],
++    expected_names: Sequence[str],
++    *,
++    label: str,
++    allow_other_names: bool = False,
++) -> tuple[NativeStorageSignature, ...]:
++    by_name = _storage_by_name(actual, label=label)
++    if not allow_other_names and tuple(by_name) != tuple(expected_names):
++        raise ValueError(f"{label} contains missing or extra storage")
++    return _select_storage(by_name, expected_names, label=label)
++
++
++def dynamic_scene_update_input_storage(
++    runtime_scene_storage: Sequence[NativeStorageSignature],
++    transform_storage: Sequence[NativeStorageSignature],
++) -> tuple[NativeStorageSignature, ...]:
++    """Return the exact ordered C3 scene-update input allocation tuple."""
++
++    runtime_by_name = _storage_by_name(runtime_scene_storage, label="runtime scene")
++    transform_by_name = _storage_by_name(transform_storage, label="replay transform")
++    return _select_storage(
++        runtime_by_name,
++        DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES,
++        label="dynamic scene runtime input",
++    ) + _select_storage(
++        transform_by_name,
++        DYNAMIC_TRANSFORM_INPUT_NAMES,
++        label="dynamic scene transform input",
++    )
++
++
++def canonical_dataflow_contract_id(
++    *,
++    boundary: str,
++    lane: str,
++    renderer_id: str,
++    acceleration_id: str,
++    output_profile: str,
++    shadows: bool,
++) -> str:
++    """Hash the frozen stage/operation/profile identity, independent of storage tokens."""
++
++    identity_sha256 = _canonical_sha256(
++        {
++            "boundary": boundary,
++            "lane": lane,
++            "renderer_id": renderer_id,
++            "acceleration_id": acceleration_id,
++            "output_profile": output_profile,
++            "shadows": shadows,
++        }
++    )
++    return f"{DYNAMIC_DATAFLOW_CONTRACT_SCHEMA_VERSION}:{identity_sha256}"
++
++
+ def canonical_storage_manifest_sha256(values: Sequence[NativeStorageSignature]) -> str:
+     return _canonical_sha256([value.to_payload() for value in values])
+ 
+@@ -703,14 +1000,17 @@ def canonical_dataflow_binding_sha256(
+     )
+ 
+ 
+-def build_native_execution_binding(
++def build_c3_one_shot_native_execution_binding(
+     *,
+     row_id: str,
+     case_id: str,
+     case_sha256: str,
+     boundary: str,
+     lane: str,
+-    submission_capability: str = C3_ONE_SHOT_BINDING_CAPABILITY,
++    renderer_id: str,
++    acceleration_id: str,
++    output_profile: str,
++    shadows: bool,
+     input_contract: str,
+     native_input_manifest_sha256: str,
+     native_readiness_sha256: str,
+@@ -721,8 +1021,8 @@ def build_native_execution_binding(
+     runtime_scene_storage: Sequence[NativeStorageSignature],
+     derived_fixture_storage: Sequence[NativeStorageSignature],
+     stage_evidence: Sequence[NativeStageEvidence],
+-) -> NativeExecutionBindingEvidence:
+-    """Freeze stage payloads, then construct their one-way outer aggregate."""
++) -> C3OneShotNativeExecutionBindingEvidence:
++    """Build C3 one-shot evidence; this constructor can never authorize results."""
+ 
+     runtime_storage = tuple(runtime_scene_storage)
+     derived_storage = tuple(derived_fixture_storage)
+@@ -734,14 +1034,25 @@ def build_native_execution_binding(
+         )
+         for evidence in stage_evidence
+     )
+-    binding = NativeExecutionBindingEvidence(
++    binding = C3OneShotNativeExecutionBindingEvidence(
+         schema_version=NATIVE_EXECUTION_BINDING_SCHEMA_VERSION,
+         row_id=row_id,
+         case_id=case_id,
+         case_sha256=case_sha256,
+         boundary=boundary,
+         lane=lane,
+-        submission_capability=submission_capability,
++        renderer_id=renderer_id,
++        acceleration_id=acceleration_id,
++        output_profile=output_profile,
++        shadows=shadows,
++        dataflow_contract_id=canonical_dataflow_contract_id(
++            boundary=boundary,
++            lane=lane,
++            renderer_id=renderer_id,
++            acceleration_id=acceleration_id,
++            output_profile=output_profile,
++            shadows=shadows,
++        ),
+         input_contract=input_contract,
+         native_input_manifest_sha256=native_input_manifest_sha256,
+         native_readiness_sha256=native_readiness_sha256,
+@@ -762,4 +1073,4 @@ def build_native_execution_binding(
+             ordered_stage_evidence=stages,
+         ),
+     )
+-    return NativeExecutionBindingEvidence.from_payload(binding.to_payload())
++    return C3OneShotNativeExecutionBindingEvidence.from_payload(binding.to_payload())
+diff --git a/benchmarks/optical/runner.py b/benchmarks/optical/runner.py
+index c0a5fe8..928baa0 100644
+--- a/benchmarks/optical/runner.py
++++ b/benchmarks/optical/runner.py
+@@ -22,7 +22,10 @@ from .native import (
+     prepared_storage_signatures,
+     prepared_transform_frame_signatures,
+ )
+-from .receipts import C4_RESULT_BINDING_CAPABILITY, NativeExecutionBindingEvidence
++from .receipts import (
++    C3OneShotNativeExecutionBindingEvidence,
++    dynamic_scene_update_input_storage,
++)
+ from .schema import (
+     RESULT_SCHEMA_VERSION,
+     ExecutionReceipt,
+@@ -98,7 +101,7 @@ class SingleLane(Protocol):
+         *,
+         row: Mapping[str, Any],
+         prepared: PreparedNativeInput,
+-        binding: NativeExecutionBindingEvidence,
++        binding: C3OneShotNativeExecutionBindingEvidence,
+         request: LaneSampleRequest,
+     ) -> PendingLaneSample:
+         """Enqueue one sample and return without host/global synchronization."""
+@@ -109,7 +112,7 @@ class SingleLane(Protocol):
+         row: Mapping[str, Any],
+         prepared: PreparedNativeInput,
+         readiness: NativeReadinessEvidence,
+-    ) -> NativeExecutionBindingEvidence:
++    ) -> C3OneShotNativeExecutionBindingEvidence:
+         """Freeze exact stage/storage provenance before timed submission."""
+ 
+ 
+@@ -123,7 +126,7 @@ class SubmittedLaneSample:
+     readiness: NativeReadinessEvidence
+     eligibility: LaneEligibilityEvidence
+     operation_trace: RuntimeOperationTraceEvidence
+-    native_execution_binding: NativeExecutionBindingEvidence
++    native_execution_binding: C3OneShotNativeExecutionBindingEvidence
+     request: LaneSampleRequest
+     pending: PendingLaneSample
+     _resolved: bool = field(default=False, init=False, repr=False)
+@@ -229,24 +232,28 @@ class SingleLaneSampleRunner:
+             prepared=prepared,
+             readiness=readiness,
+         )
+-        if not isinstance(binding, NativeExecutionBindingEvidence):
+-            raise TypeError("lane bind_sample must return NativeExecutionBindingEvidence")
++        if not isinstance(binding, C3OneShotNativeExecutionBindingEvidence):
++            raise TypeError(
++                "lane bind_sample must return C3OneShotNativeExecutionBindingEvidence"
++            )
+         try:
+-            binding = NativeExecutionBindingEvidence.from_payload(binding.to_payload())
++            binding = C3OneShotNativeExecutionBindingEvidence.from_payload(
++                binding.to_payload()
++            )
+         except (AttributeError, TypeError, ValueError) as exc:
+             raise LaneIneligibleError(
+                 f"native execution binding failed canonical pre-enqueue validation: {exc}"
+             ) from exc
+-        if binding.submission_capability != C4_RESULT_BINDING_CAPABILITY:
+-            raise LaneIneligibleError(
+-                "C3 one-shot native binding is not result-capable; a reviewed C4 binding is required"
+-            )
+         self._validate_native_binding_pre_enqueue(
+             row=submitted_row,
+             prepared=prepared,
+             readiness=readiness,
+             binding=binding,
+         )
++        raise LaneIneligibleError(
++            "C3 one-shot native binding cannot enter timed submission; "
++            "the independently reviewed C4 arena/slot/lease binding is not implemented"
++        )
+         operation_trace = RuntimeOperationTrace(
+             row_id=row_id,
+             lane=lane.lane_id,
+@@ -379,7 +386,7 @@ class SingleLaneSampleRunner:
+         readiness: NativeReadinessEvidence,
+         eligibility: LaneEligibilityEvidence,
+         operation_trace: RuntimeOperationTraceEvidence,
+-        native_execution_binding: NativeExecutionBindingEvidence,
++        native_execution_binding: C3OneShotNativeExecutionBindingEvidence,
+         sample: ResolvedLaneSample,
+     ) -> None:
+         receipt = sample.receipt
+@@ -410,13 +417,13 @@ class SingleLaneSampleRunner:
+         ):
+             raise ValueError("lane receipt operation trace does not match timed submission")
+ 
+-    @staticmethod
+     def _validate_native_binding_pre_enqueue(
++        self,
+         *,
+         row: Mapping[str, Any],
+         prepared: PreparedNativeInput,
+         readiness: NativeReadinessEvidence,
+-        binding: NativeExecutionBindingEvidence,
++        binding: C3OneShotNativeExecutionBindingEvidence,
+     ) -> None:
+         manifest = prepared.manifest
+         if not manifest.result_capable:
+@@ -427,6 +434,12 @@ class SingleLaneSampleRunner:
+             "case_sha256": manifest.case_sha256,
+             "boundary": row["boundary"],
+             "lane": prepared.backend,
++            "renderer_id": self._gate["lane_bindings"][prepared.backend]["renderer_id"],
++            "acceleration_id": self._gate["lane_bindings"][prepared.backend][
++                "acceleration_by_class"
++            ][row["acceleration_class"]],
++            "output_profile": row["output_profile"],
++            "shadows": row["shadows"],
+             "input_contract": manifest.input_contract,
+             "native_input_manifest_sha256": manifest.sha256,
+             "native_readiness_sha256": readiness.sha256,
+@@ -463,8 +476,9 @@ class SingleLaneSampleRunner:
+                 prepared,
+                 binding.transform_frame_index,
+             )
+-            if stages["scene_update"].input_storage != (
+-                expected_scene_storage + expected_transform_storage
++            if stages["scene_update"].input_storage != dynamic_scene_update_input_storage(
++                expected_scene_storage,
++                expected_transform_storage,
+             ):
+                 raise LaneIneligibleError(
+                     "scene-update stage substituted prepared scene or replay-frame storage"
+diff --git a/benchmarks/optical/schema.py b/benchmarks/optical/schema.py
+index 81456c5..77d87b5 100644
+--- a/benchmarks/optical/schema.py
++++ b/benchmarks/optical/schema.py
+@@ -42,13 +42,12 @@ from .native import (
+ )
+ from .receipts import (
+     ACCELERATION_RECEIPT_SCHEMA_VERSION,
+-    C3_ONE_SHOT_BINDING_CAPABILITY,
+-    C4_RESULT_BINDING_CAPABILITY,
++    DYNAMIC_DATAFLOW_CONTRACT_SCHEMA_VERSION,
+     NATIVE_EXECUTION_BINDING_SCHEMA_VERSION,
+     NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
+     SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION,
+     AccelerationReceipt,
+-    NativeExecutionBindingEvidence,
++    C3OneShotNativeExecutionBindingEvidence,
+     ShippingPublicationReceipt,
+ )
+ from .timing import (
+@@ -65,8 +64,8 @@ from .workload_contract import (
+     frozen_workload_payloads,
+ )
+ 
+-GATE_SCHEMA_VERSION = "q54.p12.4.gate.v8"
+-RESULT_SCHEMA_VERSION = "q54.p12.4.result.v8"
++GATE_SCHEMA_VERSION = "q54.p12.4.gate.v9"
++RESULT_SCHEMA_VERSION = "q54.p12.4.result.v9"
+ ROW_SEMANTICS_SCHEMA_VERSION = "q54.p12.4.row-semantics.v5"
+ INVENTORY_SCHEMA_VERSION = "q54.p12.4.architecture-inventory.v1"
+ CLEANUP_SCHEMA_VERSION = "q54.p12.4.cleanup-ledger.v1"
+@@ -358,9 +357,13 @@ EXPECTED_NATIVE_EXECUTION_BINDING_CONTRACT = {
+     "stage_payload_references_outer_binding": False,
+     "binding_references_stage_sha256": True,
+     "acceleration_receipt_references_acceleration_stage_sha256": True,
+-    "C3_factory_capability": C3_ONE_SHOT_BINDING_CAPABILITY,
+-    "C4_result_capability": C4_RESULT_BINDING_CAPABILITY,
++    "C3_constructor": "build_c3_one_shot_native_execution_binding",
++    "C3_binding_type": "C3OneShotNativeExecutionBindingEvidence",
+     "C3_one_shot_result_emission": "forbidden",
++    "C4_binding_schema": "not_implemented_until_C4_review",
++    "C4_required_evidence": ["arena", "slot", "generation", "lease", "ring"],
++    "dynamic_dataflow_contract_schema_version": DYNAMIC_DATAFLOW_CONTRACT_SCHEMA_VERSION,
++    "dynamic_storage_rule": "complete_ordered_profile_specific_no_missing_or_extra_storage",
+     "pre_enqueue_validation": [
+         "row_case_boundary_lane_and_input_contract",
+         "native_manifest_and_readiness",
+@@ -523,7 +526,7 @@ class ExecutionReceipt:
+     transform_replay_sha256: str | None
+     transform_frame_index: int | None
+     fixed_render_fixture_sha256: str | None
+-    native_execution_binding: NativeExecutionBindingEvidence
++    native_execution_binding: C3OneShotNativeExecutionBindingEvidence
+     native_execution_binding_sha256: str
+     eligibility: LaneEligibilityEvidence
+     eligibility_sha256: str
+@@ -638,7 +641,7 @@ class ExecutionReceipt:
+         acceleration = AccelerationReceipt.from_payload(payload.get("acceleration"))
+         if payload.get("acceleration_sha256") != acceleration.sha256:
+             raise ValueError("acceleration SHA-256 does not match its receipt content")
+-        native_binding = NativeExecutionBindingEvidence.from_payload(
++        native_binding = C3OneShotNativeExecutionBindingEvidence.from_payload(
+             payload.get("native_execution_binding")
+         )
+         if payload.get("native_execution_binding_sha256") != native_binding.sha256:
+@@ -1012,8 +1015,10 @@ def validate_result_record(record: Mapping[str, Any], gate: Mapping[str, Any]) -
+             errors.append("S receipt must not carry replay or fixed-fixture provenance")
+ 
+         native_binding = receipt.native_execution_binding
+-        if native_binding.submission_capability != C4_RESULT_BINDING_CAPABILITY:
+-            errors.append("receipt uses a non-result-capable C3 one-shot binding")
++        errors.append(
++            "result receipt cannot contain C3 one-shot binding; reviewed C4 binding schema "
++            "is not implemented"
++        )
+         expected_binding_identity = {
+             "row_id": receipt.row_id,
+             "case_id": receipt.case_id,
+diff --git a/benchmarks/results/q54_p12_4/cleanup_ledger.json b/benchmarks/results/q54_p12_4/cleanup_ledger.json
+index 46d1e92..b39f2cc 100644
+--- a/benchmarks/results/q54_p12_4/cleanup_ledger.json
++++ b/benchmarks/results/q54_p12_4/cleanup_ledger.json
+@@ -208,7 +208,7 @@
+           "class CanonicalFixedRenderFixtureHost:"
+         ],
+         "benchmarks/optical/receipts.py": [
+-          "class NativeExecutionBindingEvidence:"
++          "class C3OneShotNativeExecutionBindingEvidence:"
+         ],
+         "benchmarks/optical/workload_contract.py": [
+           "class FrozenWorkloadContent:"
+diff --git a/benchmarks/results/q54_p12_4/gate.json b/benchmarks/results/q54_p12_4/gate.json
+index 7d14c93..f388e1a 100644
+--- a/benchmarks/results/q54_p12_4/gate.json
++++ b/benchmarks/results/q54_p12_4/gate.json
+@@ -1,6 +1,6 @@
+ {
+-  "schema_version": "q54.p12.4.gate.v8",
+-  "result_schema_version": "q54.p12.4.result.v8",
++  "schema_version": "q54.p12.4.gate.v9",
++  "result_schema_version": "q54.p12.4.result.v9",
+   "case_schema_version": "q54.p12.4.case.v1",
+   "status": "frozen",
+   "frozen_at": "2026-08-13T10:41:19+08:00",
+@@ -532,8 +532,8 @@
+     ]
+   },
+   "native_execution_binding_contract": {
+-    "schema_version": "q54.p12.4.native-execution-binding.v2",
+-    "stage_schema_version": "q54.p12.4.native-stage-evidence.v1",
++    "schema_version": "q54.p12.4.c3-one-shot-binding.v4",
++    "stage_schema_version": "q54.p12.4.native-stage-evidence.v2",
+     "construction_order": [
+       "source_and_prepared_storage",
+       "independent_stage_evidence",
+@@ -544,9 +544,13 @@
+     "stage_payload_references_outer_binding": false,
+     "binding_references_stage_sha256": true,
+     "acceleration_receipt_references_acceleration_stage_sha256": true,
+-    "C3_factory_capability": "c3_one_shot_non_result_capable",
+-    "C4_result_capability": "c4_result_capable",
++    "C3_constructor": "build_c3_one_shot_native_execution_binding",
++    "C3_binding_type": "C3OneShotNativeExecutionBindingEvidence",
+     "C3_one_shot_result_emission": "forbidden",
++    "C4_binding_schema": "not_implemented_until_C4_review",
++    "C4_required_evidence": ["arena", "slot", "generation", "lease", "ring"],
++    "dynamic_dataflow_contract_schema_version": "q54.p12.4.dynamic-dataflow.v1",
++    "dynamic_storage_rule": "complete_ordered_profile_specific_no_missing_or_extra_storage",
+     "pre_enqueue_validation": [
+       "row_case_boundary_lane_and_input_contract",
+       "native_manifest_and_readiness",
+diff --git a/tests/unit/benchmarks/test_optical_benchmark_a3a.py b/tests/unit/benchmarks/test_optical_benchmark_a3a.py
+index ead152d..d76ed37 100644
+--- a/tests/unit/benchmarks/test_optical_benchmark_a3a.py
++++ b/tests/unit/benchmarks/test_optical_benchmark_a3a.py
+@@ -41,13 +41,19 @@ from benchmarks.optical.native import (
+     prepared_transform_frame_signatures,
+ )
+ from benchmarks.optical.receipts import (
+-    C4_RESULT_BINDING_CAPABILITY,
++    DYNAMIC_ACCELERATION_INPUT_NAMES,
++    DYNAMIC_ACCELERATION_OUTPUT_NAMES,
++    DYNAMIC_RENDER_METADATA_INPUT_NAMES,
++    DYNAMIC_RENDER_SHADE_INPUT_NAMES,
++    DYNAMIC_RENDER_WORLD_INPUT_NAMES,
++    DYNAMIC_SCENE_OUTPUT_NAMES,
++    DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES,
+     NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
+     SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION,
+     NativeStageEvidence,
+     NativeStorageSignature,
+     ShippingPublicationReceipt,
+-    build_native_execution_binding,
++    build_c3_one_shot_native_execution_binding,
+ )
+ from benchmarks.optical.runner import LaneSampleRequest, SingleLaneSampleRunner
+ from benchmarks.optical.schema import load_frozen_gate
+@@ -265,13 +271,13 @@ def test_registered_low_level_hook_classes_fail_before_the_original_call(
+     assert observation.violation_contamination == contamination
+ 
+ 
+-def test_operation_trace_rejects_out_of_order_frozen_transaction(monkeypatch):
++def test_c3_one_shot_binding_cannot_reach_operation_trace(monkeypatch):
+     gate = _activated_gate(monkeypatch)
+     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r1_dynamic_full_shadow")
+     prepared = _prepared_input(case_id=row["case_id"])
+     lane = _OutOfOrderLane(row=row)
+ 
+-    with pytest.raises(LaneIneligibleError, match="ordered transaction"):
++    with pytest.raises(LaneIneligibleError, match="C3 one-shot"):
+         SingleLaneSampleRunner(gate, execution_phase="P12.4a3b").submit_sample(
+             row_id=row["row_id"],
+             lane=lane,
+@@ -540,29 +546,13 @@ class _OutOfOrderLane:
+             prepared, prepared.manifest.scene_array_names
+         )
+         transform_storage = prepared_transform_frame_signatures(prepared, 0)
+-        world = NativeStorageSignature(
+-            name="world",
+-            backend="warp",
+-            device_ordinal=0,
+-            storage_token="warp:0x8000",
+-            dtype="<f4",
+-            shape=(1,),
+-            nbytes=4,
+-            active_start=0,
+-            active_count=4,
+-            owner_token="unit-slot",
++        scene_outputs = tuple(
++            _unit_storage(name=name, token=0x8000 + index * 0x10)
++            for index, name in enumerate(DYNAMIC_SCENE_OUTPUT_NAMES)
+         )
+-        bvh = NativeStorageSignature(
+-            name="bvh",
+-            backend="warp",
+-            device_ordinal=0,
+-            storage_token="warp:0x8100",
+-            dtype="<f4",
+-            shape=(1,),
+-            nbytes=4,
+-            active_start=0,
+-            active_count=4,
+-            owner_token="unit-slot",
++        acceleration_outputs = tuple(
++            _unit_storage(name=name, token=0x9000 + index * 0x10)
++            for index, name in enumerate(DYNAMIC_ACCELERATION_OUTPUT_NAMES)
+         )
+         output = NativeStorageSignature(
+             name="output",
+@@ -576,20 +566,49 @@ class _OutOfOrderLane:
+             active_count=4,
+             owner_token="unit-slot",
+         )
++        runtime_by_name = {value.name: value for value in scene_storage}
++        scene_by_name = {value.name: value for value in scene_outputs}
++        acceleration_by_name = {value.name: value for value in acceleration_outputs}
++        render_names = (
++            DYNAMIC_RENDER_WORLD_INPUT_NAMES
++            + DYNAMIC_RENDER_METADATA_INPUT_NAMES
++            + DYNAMIC_ACCELERATION_OUTPUT_NAMES
++            + DYNAMIC_RENDER_SHADE_INPUT_NAMES
++        )
+         stage_specs = (
+             (
+                 "scene_update",
+-                scene_storage + transform_storage,
+-                (world,),
++                "warp_local_scene_transform_and_aabb_out_v1",
++                tuple(
++                    runtime_by_name[name]
++                    for name in DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES
++                )
++                + transform_storage,
++                scene_outputs,
++            ),
++            (
++                "acceleration",
++                "warp_bvh_leaf_internal_refit_out_v1",
++                tuple(scene_by_name[name] for name in DYNAMIC_ACCELERATION_INPUT_NAMES),
++                acceleration_outputs,
++            ),
++            (
++                "render",
++                "warp_bvh_direct_light",
++                tuple(
++                    (runtime_by_name | scene_by_name | acceleration_by_name)[name]
++                    for name in render_names
++                ),
++                (output,),
+             ),
+-            ("acceleration", (world,), (bvh,)),
+-            ("render", scene_storage + (world, bvh), (output,)),
+         )
+         stages = tuple(
+             NativeStageEvidence(
+                 schema_version=NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
+                 stage_name=name,
+-                operation_id=f"unit_{name}_v1",
++                operation_id=operation_id,
++                output_profile=row["output_profile"] if name == "render" else None,
++                shadows=row["shadows"] if name == "render" else None,
+                 scene_contract_sha256=prepared.manifest.scene_contract_sha256,
+                 input_contract=prepared.manifest.input_contract,
+                 transform_replay_sha256=prepared.manifest.transform_replay_sha256,
+@@ -600,15 +619,18 @@ class _OutOfOrderLane:
+                 output_storage=outputs,
+                 dispatch_plan_sha256=hex(index + 10)[2:] * 64,
+             )
+-            for index, (name, inputs, outputs) in enumerate(stage_specs)
++            for index, (name, operation_id, inputs, outputs) in enumerate(stage_specs)
+         )
+-        return build_native_execution_binding(
++        return build_c3_one_shot_native_execution_binding(
+             row_id=row["row_id"],
+             case_id=row["case_id"],
+             case_sha256=prepared.manifest.case_sha256,
+             boundary=row["boundary"],
+             lane="warp",
+-            submission_capability=C4_RESULT_BINDING_CAPABILITY,
++            renderer_id="warp_bvh_direct_light",
++            acceleration_id="cpu_median_leaf4_topology_warp_refit_v1",
++            output_profile=row["output_profile"],
++            shadows=row["shadows"],
+             input_contract=prepared.manifest.input_contract,
+             native_input_manifest_sha256=prepared.manifest.sha256,
+             native_readiness_sha256=readiness.sha256,
+@@ -635,6 +657,21 @@ class _OutOfOrderLane:
+         return _PendingNeverResolve()
+ 
+ 
++def _unit_storage(*, name: str, token: int) -> NativeStorageSignature:
++    return NativeStorageSignature(
++        name=name,
++        backend="warp",
++        device_ordinal=0,
++        storage_token=f"warp:0x{token:x}",
++        dtype="<f4",
++        shape=(1,),
++        nbytes=4,
++        active_start=0,
++        active_count=4,
++        owner_token="unit-slot",
++    )
++
++
+ _UNIT_ENTRY_POINTS = {
+     "scene_update": "json.dumps",
+     "acceleration": "hashlib.sha256",
+diff --git a/tests/unit/benchmarks/test_optical_benchmark_contracts.py b/tests/unit/benchmarks/test_optical_benchmark_contracts.py
+index 4346d3d..b5d95e8 100644
+--- a/tests/unit/benchmarks/test_optical_benchmark_contracts.py
++++ b/tests/unit/benchmarks/test_optical_benchmark_contracts.py
+@@ -1,30 +1,36 @@
+ from __future__ import annotations
+ 
+ import copy
++import inspect
+ import json
+ from dataclasses import replace
+ from pathlib import Path
+ 
+ import pytest
+ 
++import benchmarks.optical as optical_benchmarks
+ from benchmarks.optical import (
+     ACCELERATION_RECEIPT_SCHEMA_VERSION,
+     BOUNDARY_VERSIONS,
+-    C3_ONE_SHOT_BINDING_CAPABILITY,
+-    C4_RESULT_BINDING_CAPABILITY,
++    DYNAMIC_ACCELERATION_INPUT_NAMES,
++    DYNAMIC_ACCELERATION_OUTPUT_NAMES,
++    DYNAMIC_RENDER_METADATA_INPUT_NAMES,
++    DYNAMIC_RENDER_SHADE_INPUT_NAMES,
++    DYNAMIC_RENDER_WORLD_INPUT_NAMES,
++    DYNAMIC_SCENE_OUTPUT_NAMES,
++    DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES,
+     NATIVE_INPUT_SCHEMA_VERSION,
+     NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
+     RESULT_SCHEMA_VERSION,
+     SHIPPING_PUBLICATION_RECEIPT_SCHEMA_VERSION,
+     AccelerationReceipt,
+     ExecutionReceipt,
+-    NativeExecutionBindingEvidence,
+     NativeReadinessEvidence,
+     NativeStageEvidence,
+     NativeStorageSignature,
+     ObservedChannel,
+     ShippingPublicationReceipt,
+-    build_native_execution_binding,
++    build_c3_one_shot_native_execution_binding,
+     canonical_cases,
+     canonical_execution_receipt_sha256,
+     canonical_gate_sha256,
+@@ -83,6 +89,17 @@ _TEST_ENTRY_POINTS = {
+ }
+ 
+ 
++def test_c3_public_api_has_no_forgeable_c4_capability():
++    parameters = inspect.signature(
++        optical_benchmarks.build_c3_one_shot_native_execution_binding
++    ).parameters
++
++    assert "submission_capability" not in parameters
++    assert not hasattr(optical_benchmarks, "C4_RESULT_BINDING_CAPABILITY")
++    assert not hasattr(optical_benchmarks, "build_native_execution_binding")
++    assert hasattr(optical_benchmarks, "C3OneShotNativeExecutionBindingEvidence")
++
++
+ def test_canonical_case_ids_and_hashes_are_frozen():
+     cases = canonical_cases()
+ 
+@@ -119,56 +136,88 @@ def test_native_binding_rejects_same_shape_unproduced_stage_storage():
+     substitute = replace(render.input_storage[-1], storage_token="cuda:0xdeadbeef")
+     stages[2] = replace(render, input_storage=render.input_storage[:-1] + (substitute,))
+ 
+-    with pytest.raises(ValueError, match="render input is not prepared or produced storage"):
+-        build_native_execution_binding(
+-            row_id=binding.row_id,
+-            case_id=binding.case_id,
+-            case_sha256=binding.case_sha256,
+-            boundary=binding.boundary,
+-            lane=binding.lane,
+-            submission_capability=binding.submission_capability,
+-            input_contract=binding.input_contract,
+-            native_input_manifest_sha256=binding.native_input_manifest_sha256,
+-            native_readiness_sha256=binding.native_readiness_sha256,
+-            scene_contract_sha256=binding.scene_contract_sha256,
+-            transform_replay_sha256=binding.transform_replay_sha256,
+-            transform_frame_index=binding.transform_frame_index,
+-            fixed_render_fixture_sha256=binding.fixed_render_fixture_sha256,
+-            runtime_scene_storage=binding.runtime_scene_storage,
+-            derived_fixture_storage=binding.derived_fixture_storage,
+-            stage_evidence=stages,
++    with pytest.raises(ValueError, match="complete ordered storage contract"):
++        _rebuild_c3_binding(binding, stages)
++
++
++@pytest.mark.parametrize(
++    ("stage_name", "storage_name"),
++    [
++        ("render", "triangle_v0_world"),
++        ("acceleration", "triangle_aabb_min"),
++        ("render", "bvh_left"),
++        ("render", "triangle_numeric_instance_id"),
++        ("render", "material_albedo_rgb"),
++        ("render", "light_kind"),
++    ],
++)
++def test_dynamic_binding_rejects_each_missing_required_storage(stage_name, storage_name):
++    gate = load_frozen_gate()
++    row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r1_dynamic_full_shadow")
++    binding = ExecutionReceipt.from_payload(
++        _valid_result_record(gate, row)["receipt"]
++    ).native_execution_binding
++    stages = [stage.evidence for stage in binding.ordered_stage_evidence]
++    stage_index = next(index for index, stage in enumerate(stages) if stage.stage_name == stage_name)
++    stage = stages[stage_index]
++    stages[stage_index] = replace(
++        stage,
++        input_storage=tuple(value for value in stage.input_storage if value.name != storage_name),
++    )
++
++    with pytest.raises(ValueError, match="complete ordered storage contract"):
++        _rebuild_c3_binding(binding, stages)
++
++
++def test_dynamic_binding_rejects_extra_and_reordered_render_storage():
++    gate = load_frozen_gate()
++    row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r1_dynamic_full_shadow")
++    binding = ExecutionReceipt.from_payload(
++        _valid_result_record(gate, row)["receipt"]
++    ).native_execution_binding
++    stages = [stage.evidence for stage in binding.ordered_stage_evidence]
++    render = stages[2]
++    extra = next(
++        value for value in binding.runtime_scene_storage if value.name == "triangle_vertices_local"
++    )
++
++    stages[2] = replace(render, input_storage=render.input_storage + (extra,))
++    with pytest.raises(ValueError, match="complete ordered storage contract"):
++        _rebuild_c3_binding(binding, stages)
++
++    stages[2] = replace(
++        render,
++        input_storage=(render.input_storage[1], render.input_storage[0]) + render.input_storage[2:],
++    )
++    with pytest.raises(ValueError, match="complete ordered storage contract"):
++        _rebuild_c3_binding(binding, stages)
++
++
++def test_dynamic_binding_contract_is_bound_to_operation_and_profile():
++    gate = load_frozen_gate()
++    row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r1_dynamic_full_shadow")
++    binding = ExecutionReceipt.from_payload(
++        _valid_result_record(gate, row)["receipt"]
++    ).native_execution_binding
++    stages = [stage.evidence for stage in binding.ordered_stage_evidence]
++    stages[1] = replace(stages[1], operation_id="unit_fake_refit")
++
++    with pytest.raises(ValueError, match="operation sequence"):
++        _rebuild_c3_binding(binding, stages)
++
++    with pytest.raises(ValueError, match="render stage identity"):
++        _rebuild_c3_binding(
++            binding,
++            [stage.evidence for stage in binding.ordered_stage_evidence],
++            output_profile="render_only",
+         )
+ 
+ 
+-def test_result_rejects_c3_one_shot_binding_capability():
++def test_result_rejects_c3_one_shot_binding_type():
+     gate = load_frozen_gate()
+     row = next(row for row in gate["mandatory_rows"] if row["boundary"] == "R0")
+     record = _valid_result_record(gate, row)
+-    receipt = copy.deepcopy(record["receipt"])
+-    binding_payload = copy.deepcopy(receipt["native_execution_binding"])
+-    binding_payload["submission_capability"] = C3_ONE_SHOT_BINDING_CAPABILITY
+-    binding = NativeExecutionBindingEvidence.from_payload(binding_payload)
+-    receipt["native_execution_binding"] = binding_payload
+-    receipt["native_execution_binding_sha256"] = binding.sha256
+-    receipt["input_provenance_sha256"] = canonical_input_provenance_sha256(
+-        input_contract=receipt["input_contract"],
+-        case_id=receipt["case_id"],
+-        case_sha256=receipt["case_sha256"],
+-        native_input_manifest_sha256=receipt["native_input_manifest_sha256"],
+-        native_input_content_sha256=receipt["native_input_content_sha256"],
+-        topology_sha256=receipt["topology_sha256"],
+-        scene_contract_sha256=receipt["scene_contract_sha256"],
+-        transform_replay_sha256=receipt["transform_replay_sha256"],
+-        transform_frame_index=receipt["transform_frame_index"],
+-        fixed_render_fixture_sha256=receipt["fixed_render_fixture_sha256"],
+-        native_execution_binding_sha256=binding.sha256,
+-        asset_manifest_sha256=receipt["eligibility"]["asset_manifest_sha256"],
+-        shipping_publication_sha256=receipt["shipping_publication_sha256"],
+-    )
+-    record["receipt"] = receipt
+-    record["receipt_sha256"] = canonical_execution_receipt_sha256(receipt)
+-
+-    with pytest.raises(ValueError, match="non-result-capable C3 one-shot"):
++    with pytest.raises(ValueError, match="C3 one-shot binding"):
+         validate_result_record(record, gate)
+ 
+ 
+@@ -208,7 +257,8 @@ def test_result_record_is_bound_to_gate_row_case_and_unprofiled_primary_mode():
+     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
+     record = _valid_result_record(gate, row)
+ 
+-    validate_result_record(record, gate)
++    with pytest.raises(ValueError, match="C3 one-shot binding"):
++        validate_result_record(record, gate)
+     changed = copy.deepcopy(record)
+     changed["profile_phases_ms"] = {"raygen_kernel_ms": 0.1}
+     with pytest.raises(ValueError, match="must not contain profile phase"):
+@@ -277,7 +327,8 @@ def test_result_record_rejects_wrong_r2_payload_ring_or_reclaim_evidence():
+     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r2_go2_rgb8_async_shadow")
+     record = _valid_result_record(gate, row)
+ 
+-    validate_result_record(record, gate)
++    with pytest.raises(ValueError, match="C3 one-shot binding"):
++        validate_result_record(record, gate)
+     changes = (
+         ("payload", "rgb", "payload"),
+         ("ring_depth", 1, "ring_depth"),
+@@ -609,9 +660,27 @@ def _valid_result_record(gate, row):
+         else None
+     )
+     replay_index = 0 if replay_sha256 is not None else None
+-    runtime_storage = (
+-        _storage(name="scene", lane=lane, token="cuda:0x1000", owner="prepared-scene"),
+-    )
++    if row["boundary"] == "R0":
++        runtime_storage = (
++            _storage(name="scene", lane=lane, token="cuda:0x1000", owner="prepared-scene"),
++        )
++    else:
++        runtime_names = tuple(
++            dict.fromkeys(
++                DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES
++                + DYNAMIC_RENDER_METADATA_INPUT_NAMES
++                + DYNAMIC_RENDER_SHADE_INPUT_NAMES
++            )
++        )
++        runtime_storage = tuple(
++            _storage(
++                name=name,
++                lane=lane,
++                token=f"cuda:0x1{index:03x}",
++                owner="prepared-scene",
++            )
++            for index, name in enumerate(runtime_names)
++        )
+     fixture_storage = (
+         (_storage(name="fixture", lane=lane, token="cuda:0x2000", owner="prepared-fixture"),)
+         if fixed_fixture_sha256 is not None
+@@ -682,13 +751,18 @@ def _valid_result_record(gate, row):
+         compile_complete=True,
+         warmup_frames_completed=10,
+     )
+-    native_binding = build_native_execution_binding(
++    native_binding = build_c3_one_shot_native_execution_binding(
+         row_id=row["row_id"],
+         case_id=row["case_id"],
+         case_sha256=gate["cases"][row["case_id"]]["sha256"],
+         boundary=row["boundary"],
+         lane=lane,
+-        submission_capability=C4_RESULT_BINDING_CAPABILITY,
++        renderer_id=gate["lane_bindings"][lane]["renderer_id"],
++        acceleration_id=gate["lane_bindings"][lane]["acceleration_by_class"][
++            row["acceleration_class"]
++        ],
++        output_profile=row["output_profile"],
++        shadows=row["shadows"],
+         input_contract=row["input_contract"],
+         native_input_manifest_sha256="1" * 64,
+         native_readiness_sha256=readiness.sha256,
+@@ -832,11 +906,47 @@ def _native_stages(
+     runtime_storage,
+     fixture_storage,
+ ):
+-    world = _storage(name="world", lane=lane, token="cuda:0x3000", owner="slot")
+-    bvh = _storage(name="bvh", lane=lane, token="cuda:0x4000", owner="slot")
++    operation_ids = {
++        "warp": (
++            "warp_local_scene_transform_and_aabb_out_v1",
++            "warp_bvh_leaf_internal_refit_out_v1",
++            "warp_bvh_direct_light",
++        ),
++        "cuda": (
++            "torch_cuda_local_scene_transform_and_aabb_out_v1",
++            "cuda_lbvh_scene_bounds_morton_sort_topology_bounds_out_v1",
++            "cuda_direct_light",
++        ),
++    }[lane]
++    scene_operation_id, acceleration_operation_id, renderer_id = operation_ids
++    scene_outputs = tuple(
++        _storage(
++            name=name,
++            lane=lane,
++            token=f"cuda:0x3{index:03x}",
++            owner="scene-slot",
++        )
++        for index, name in enumerate(DYNAMIC_SCENE_OUTPUT_NAMES)
++    )
++    acceleration_outputs = tuple(
++        _storage(
++            name=name,
++            lane=lane,
++            token=f"cuda:0x4{index:03x}",
++            owner="acceleration-slot",
++        )
++        for index, name in enumerate(DYNAMIC_ACCELERATION_OUTPUT_NAMES)
++    )
+     output = _storage(name="render", lane=lane, token="cuda:0x5000", owner="slot")
+     if row["boundary"] == "R0":
+-        specs = (("render", runtime_storage + fixture_storage, (output,)),)
++        specs = (
++            (
++                "render",
++                renderer_id,
++                runtime_storage + fixture_storage,
++                (output,),
++            ),
++        )
+     else:
+         transform_storage = (
+             _storage(
+@@ -852,16 +962,45 @@ def _native_stages(
+                 owner="prepared-replay",
+             ),
+         )
++        runtime_by_name = {value.name: value for value in runtime_storage}
++        scene_by_name = {value.name: value for value in scene_outputs}
++        acceleration_by_name = {value.name: value for value in acceleration_outputs}
++        scene_input = tuple(
++            runtime_by_name[name] for name in DYNAMIC_SCENE_UPDATE_RUNTIME_INPUT_NAMES
++        ) + transform_storage
++        acceleration_input = tuple(
++            scene_by_name[name] for name in DYNAMIC_ACCELERATION_INPUT_NAMES
++        )
++        render_names = (
++            DYNAMIC_RENDER_WORLD_INPUT_NAMES
++            + DYNAMIC_RENDER_METADATA_INPUT_NAMES
++            + DYNAMIC_ACCELERATION_OUTPUT_NAMES
++            + DYNAMIC_RENDER_SHADE_INPUT_NAMES
++        )
++        all_by_name = runtime_by_name | scene_by_name | acceleration_by_name
++        render_input = tuple(all_by_name[name] for name in render_names)
+         specs = (
+-            ("scene_update", runtime_storage + transform_storage, (world,)),
+-            ("acceleration", (world,), (bvh,)),
+-            ("render", runtime_storage + (world, bvh), (output,)),
++            (
++                "scene_update",
++                scene_operation_id,
++                scene_input,
++                scene_outputs,
++            ),
++            (
++                "acceleration",
++                acceleration_operation_id,
++                acceleration_input,
++                acceleration_outputs,
++            ),
++            ("render", renderer_id, render_input, (output,)),
+         )
+     return tuple(
+         NativeStageEvidence(
+             schema_version=NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
+             stage_name=name,
+-            operation_id=f"unit_{name}_v1",
++            operation_id=operation_id,
++            output_profile=row["output_profile"] if name == "render" else None,
++            shadows=row["shadows"] if name == "render" else None,
+             scene_contract_sha256=scene_contract_sha256,
+             input_contract=row["input_contract"],
+             transform_replay_sha256=replay_sha256,
+@@ -872,7 +1011,31 @@ def _native_stages(
+             output_storage=outputs,
+             dispatch_plan_sha256=hex(index + 10)[2:] * 64,
+         )
+-        for index, (name, inputs, outputs) in enumerate(specs)
++        for index, (name, operation_id, inputs, outputs) in enumerate(specs)
++    )
++
++
++def _rebuild_c3_binding(binding, stages, *, output_profile=None):
++    return build_c3_one_shot_native_execution_binding(
++        row_id=binding.row_id,
++        case_id=binding.case_id,
++        case_sha256=binding.case_sha256,
++        boundary=binding.boundary,
++        lane=binding.lane,
++        renderer_id=binding.renderer_id,
++        acceleration_id=binding.acceleration_id,
++        output_profile=binding.output_profile if output_profile is None else output_profile,
++        shadows=binding.shadows,
++        input_contract=binding.input_contract,
++        native_input_manifest_sha256=binding.native_input_manifest_sha256,
++        native_readiness_sha256=binding.native_readiness_sha256,
++        scene_contract_sha256=binding.scene_contract_sha256,
++        transform_replay_sha256=binding.transform_replay_sha256,
++        transform_frame_index=binding.transform_frame_index,
++        fixed_render_fixture_sha256=binding.fixed_render_fixture_sha256,
++        runtime_scene_storage=binding.runtime_scene_storage,
++        derived_fixture_storage=binding.derived_fixture_storage,
++        stage_evidence=stages,
+     )
+ 
+ 
+diff --git a/tests/unit/benchmarks/test_optical_benchmark_core.py b/tests/unit/benchmarks/test_optical_benchmark_core.py
+index 93c5925..9768b60 100644
+--- a/tests/unit/benchmarks/test_optical_benchmark_core.py
++++ b/tests/unit/benchmarks/test_optical_benchmark_core.py
+@@ -27,12 +27,11 @@ from benchmarks.optical.native import (
+ )
+ from benchmarks.optical.receipts import (
+     ACCELERATION_RECEIPT_SCHEMA_VERSION,
+-    C4_RESULT_BINDING_CAPABILITY,
+     NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
+     AccelerationReceipt,
+     NativeStageEvidence,
+     NativeStorageSignature,
+-    build_native_execution_binding,
++    build_c3_one_shot_native_execution_binding,
+ )
+ from benchmarks.optical.runner import (
+     LaneSampleRequest,
+@@ -116,7 +115,7 @@ def test_timed_boundary_restores_context_after_lane_failure():
+     assert active_timed_boundary() is None
+ 
+ 
+-def test_single_lane_runner_submits_inside_timing_and_resolves_outside(monkeypatch):
++def test_single_lane_runner_refuses_c3_before_timing_even_if_activation_is_flipped(monkeypatch):
+     gate = _activated_gate(monkeypatch)
+     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
+     source = _runner_native_source()
+@@ -125,29 +124,26 @@ def test_single_lane_runner_submits_inside_timing_and_resolves_outside(monkeypat
+     lane = _FakeLane(gate=gate, row=row, prepared=prepared, trace=trace)
+     runner = SingleLaneSampleRunner(gate, execution_phase="P12.4a3b")
+ 
+-    record = runner.run_sample(
+-        row_id=row["row_id"],
+-        lane=lane,
+-        prepared=prepared,
+-        readiness=_readiness(prepared),
+-        request=LaneSampleRequest(run_id="unit-run", repeat_index=1, sample_index=2),
+-    )
++    with pytest.raises(LaneIneligibleError, match="C3 one-shot"):
++        runner.run_sample(
++            row_id=row["row_id"],
++            lane=lane,
++            prepared=prepared,
++            readiness=_readiness(prepared),
++            request=LaneSampleRequest(run_id="unit-run", repeat_index=1, sample_index=2),
++        )
+ 
+-    assert trace == [("submit", True), ("resolve", False)]
+-    assert record["run_id"] == "unit-run"
+-    assert record["repeat_index"] == 1
+-    assert record["sample_index"] == 2
+-    assert record["receipt"]["native_input_manifest_sha256"] == source.manifest.sha256
++    assert trace == []
+ 
+ 
+-def test_single_lane_runner_rejects_lane_fabricated_native_provenance(monkeypatch):
++def test_c3_rejection_prevents_lane_from_fabricating_result_provenance(monkeypatch):
+     gate = _activated_gate(monkeypatch)
+     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
+     source = _runner_native_source()
+     prepared = _prepared(source)
+     lane = _FakeLane(gate=gate, row=row, prepared=prepared, trace=[], bad_manifest=True)
+ 
+-    with pytest.raises(ValueError, match="prepared input manifest"):
++    with pytest.raises(LaneIneligibleError, match="C3 one-shot"):
+         SingleLaneSampleRunner(gate, execution_phase="P12.4a3b").run_sample(
+             row_id=row["row_id"],
+             lane=lane,
+@@ -157,7 +153,7 @@ def test_single_lane_runner_rejects_lane_fabricated_native_provenance(monkeypatc
+         )
+ 
+ 
+-def test_single_lane_runner_allows_ordered_submit_then_drain_and_rejects_double_resolve(
++def test_c3_rejection_prevents_ordered_submit_or_drain(
+     monkeypatch,
+ ):
+     gate = _activated_gate(monkeypatch)
+@@ -169,28 +165,15 @@ def test_single_lane_runner_allows_ordered_submit_then_drain_and_rejects_double_
+     lane = _FakeLane(gate=gate, row=row, prepared=prepared, trace=trace)
+     runner = SingleLaneSampleRunner(gate, execution_phase="P12.4a3b")
+ 
+-    submitted = [
++    with pytest.raises(LaneIneligibleError, match="C3 one-shot"):
+         runner.submit_sample(
+             row_id=row["row_id"],
+             lane=lane,
+             prepared=prepared,
+             readiness=readiness,
+-            request=LaneSampleRequest(run_id="ordered", repeat_index=0, sample_index=index),
++            request=LaneSampleRequest(run_id="ordered", repeat_index=0, sample_index=0),
+         )
+-        for index in range(2)
+-    ]
+-    assert trace == [("submit", True), ("submit", True)]
+-
+-    records = [runner.resolve_sample(sample) for sample in submitted]
+-    assert trace == [
+-        ("submit", True),
+-        ("submit", True),
+-        ("resolve", False),
+-        ("resolve", False),
+-    ]
+-    assert [record["sample_index"] for record in records] == [0, 1]
+-    with pytest.raises(RuntimeError, match="already been resolved"):
+-        runner.resolve_sample(submitted[0])
++    assert trace == []
+ 
+ 
+ def test_single_lane_runner_rejects_incomplete_warmup_evidence(monkeypatch):
+@@ -246,14 +229,14 @@ def test_single_lane_runner_rejects_incomplete_warmup_evidence(monkeypatch):
+         )
+ 
+ 
+-def test_single_lane_runner_does_not_copy_wrong_actual_request_from_gate(monkeypatch):
++def test_c3_rejection_prevents_lane_request_receipt_fabrication(monkeypatch):
+     gate = _activated_gate(monkeypatch)
+     row = next(row for row in gate["mandatory_rows"] if row["row_id"] == "r0_asymmetric_full_shadow")
+     source = _runner_native_source()
+     prepared = _prepared(source)
+     lane = _FakeLane(gate=gate, row=row, prepared=prepared, trace=[], wrong_shadows=True)
+ 
+-    with pytest.raises(ValueError, match="receipt shadows does not match"):
++    with pytest.raises(LaneIneligibleError, match="C3 one-shot"):
+         SingleLaneSampleRunner(gate, execution_phase="P12.4a3b").run_sample(
+             row_id=row["row_id"],
+             lane=lane,
+@@ -417,7 +400,6 @@ def test_runner_rejects_c3_one_shot_binding_before_timed_enqueue(monkeypatch):
+         row=row,
+         prepared=prepared,
+         trace=trace,
+-        one_shot_binding=True,
+     )
+ 
+     with pytest.raises(LaneIneligibleError, match="C3 one-shot"):
+@@ -492,7 +474,6 @@ class _FakeLane:
+     wrong_shadows: bool = False
+     substitute_scene_storage: bool = False
+     invalid_direct_binding: bool = False
+-    one_shot_binding: bool = False
+     lane_id: str = "warp"
+     preflight_called: bool = field(default=False, init=False)
+     bind_called: bool = field(default=False, init=False)
+@@ -532,6 +513,8 @@ class _FakeLane:
+             schema_version=NATIVE_STAGE_EVIDENCE_SCHEMA_VERSION,
+             stage_name="render",
+             operation_id="warp_bvh_direct_light",
++            output_profile=row["output_profile"],
++            shadows=row["shadows"],
+             scene_contract_sha256=prepared.manifest.scene_contract_sha256,
+             input_contract=prepared.manifest.input_contract,
+             transform_replay_sha256=None,
+@@ -542,17 +525,16 @@ class _FakeLane:
+             output_storage=(render_output,),
+             dispatch_plan_sha256="d" * 64,
+         )
+-        binding = build_native_execution_binding(
++        binding = build_c3_one_shot_native_execution_binding(
+             row_id=row["row_id"],
+             case_id=row["case_id"],
+             case_sha256=prepared.manifest.case_sha256,
+             boundary=row["boundary"],
+             lane="warp",
+-            submission_capability=(
+-                "c3_one_shot_non_result_capable"
+-                if self.one_shot_binding
+-                else C4_RESULT_BINDING_CAPABILITY
+-            ),
++            renderer_id="warp_bvh_direct_light",
++            acceleration_id="fixed_bvh_fixture",
++            output_profile=row["output_profile"],
++            shadows=row["shadows"],
+             input_contract=prepared.manifest.input_contract,
+             native_input_manifest_sha256=prepared.manifest.sha256,
+             native_readiness_sha256=readiness.sha256,

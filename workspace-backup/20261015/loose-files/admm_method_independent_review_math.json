@@ -1,0 +1,1 @@
+{"production_projection": [1.0, 1.0, 0.0], "euclidean_projection": [1.5, 1.5, 0.0], "production_distance_squared": 1.0, "minimum_distance_squared": 0.5, "analytic_cone_optimum": [1.8, 1.8, 0.0], "gradient_at_optimum": [1.0, -1.0, 0.0], "cone_multiplier": 1.0}
