@@ -33,10 +33,14 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
-from .pgs_solver import ContactConstraint, _build_contact_frame
 from .contact_regularization import (
-    MINVAL, impedance, normalize_parameters, reference_body_weights, validate_policy,
+    MINVAL,
+    impedance,
+    normalize_parameters,
+    reference_body_weights,
+    validate_policy,
 )
+from .pgs_solver import ContactConstraint, _build_contact_frame
 
 
 class ADMMQPSolver:
@@ -147,8 +151,10 @@ class ADMMQPSolver:
             for c in contacts:
                 if c.condim not in (1, 3):
                     raise ValueError("mujoco regularization supports condim 1/3")
-                if any(not isinstance(i, (int, np.integer)) or i < -1 or i >= tree.num_bodies
-                       for i in (c.body_i, c.body_j)):
+                if any(
+                    not isinstance(i, (int, np.integer)) or i < -1 or i >= tree.num_bodies
+                    for i in (c.body_i, c.body_j)
+                ):
                     raise ValueError("invalid contact body index")
                 if not all(np.all(np.isfinite(x)) for x in (c.point, c.normal, c.depth, c.mu)):
                     raise ValueError("nonfinite contact data")
@@ -227,7 +233,7 @@ class ADMMQPSolver:
             else:
                 w = sum(weights[i] for i in (c.body_i, c.body_j) if i >= 0)
                 R_diag[base] = max(MINVAL, ratio * w)
-                R_diag[base + 1:base + c.condim] = R_diag[base] / max(MINVAL, self.impratio)
+                R_diag[base + 1 : base + c.condim] = R_diag[base] / max(MINVAL, self.impratio)
         R = np.diag(R_diag)
 
         # ── Reference acceleration a_ref (solref spring-damper) ──

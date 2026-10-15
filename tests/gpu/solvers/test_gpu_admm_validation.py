@@ -293,7 +293,7 @@ class TestConeProjection:
             s: wp.array(dtype=wp.float32, ndim=2),
             ca: wp.array(dtype=wp.int32, ndim=2),
         ):
-            _cone_project_all(0, z, s, ca, 0.5, 3)
+            _cone_project_all(0, z, s, ca, 0.5, 3, 3)
 
         wp.launch(_test_proj, dim=1, device="cuda:0", inputs=[z, s, contact_active])
         s_gpu = s.numpy()[0]

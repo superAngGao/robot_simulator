@@ -22,8 +22,9 @@ CONDIM = wp.constant(3)
 
 
 @wp.func
-def _mujoco_impedance(depth: float, d0: float, dw: float, width: float,
-                      midpoint: float, power: float) -> float:
+def _mujoco_impedance(
+    depth: float, d0: float, dw: float, width: float, midpoint: float, power: float
+) -> float:
     if width <= 1.0e-15:
         return 0.5 * (d0 + dw)
     x = wp.min(1.0, wp.abs(depth) / width)
@@ -279,7 +280,9 @@ def batched_admm_solve(
         depth_c = contact_depth[env, c]
         d_imp = _impedance(depth_c, solimp_d0, solimp_dwidth, solimp_width, solimp_midpoint, solimp_power)
         if regularization == 1:
-            d_imp = _mujoco_impedance(depth_c, solimp_d0, solimp_dwidth, solimp_width, solimp_midpoint, solimp_power)
+            d_imp = _mujoco_impedance(
+                depth_c, solimp_d0, solimp_dwidth, solimp_width, solimp_midpoint, solimp_power
+            )
 
         # Physical R uses raw W, never the PGS-adjusted W_diag.
         ratio = (1.0 - d_imp) / wp.max(d_imp, 1.0e-10)
@@ -321,8 +324,11 @@ def batched_admm_solve(
     for i in range(n_active_rows):
         for j in range(n_active_rows):
             AR_rho[env, i, j] = W[env, i, j]
-            if (contact_active[env, i // CONDIM] == 0 or contact_active[env, j // CONDIM] == 0 or
-                (contact_condim == 1 and (i % CONDIM != 0 or j % CONDIM != 0))):
+            if (
+                contact_active[env, i // CONDIM] == 0
+                or contact_active[env, j // CONDIM] == 0
+                or (contact_condim == 1 and (i % CONDIM != 0 or j % CONDIM != 0))
+            ):
                 AR_rho[env, i, j] = 0.0
         AR_rho[env, i, i] = AR_rho[env, i, i] + R_diag[env, i] + rho
     # Zero the rest (for clean Cholesky)

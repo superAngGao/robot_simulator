@@ -277,7 +277,7 @@ class GpuEngine(PhysicsEngine):
         impratio: float = 1.0,
         contact_condim: int = 3,
     ) -> None:
-        from .solvers.contact_regularization import validate_policy, reference_body_weights
+        from .solvers.contact_regularization import reference_body_weights, validate_policy
 
         validate_policy(regularization, impratio)
         if contact_condim not in (1, 3):
@@ -287,7 +287,11 @@ class GpuEngine(PhysicsEngine):
         self._regularization = regularization
         self._impratio = float(impratio)
         self._contact_condim = contact_condim
-        weights = reference_body_weights(merged.tree) if regularization == "mujoco" else np.zeros(merged.tree.num_bodies)
+        weights = (
+            reference_body_weights(merged.tree)
+            if regularization == "mujoco"
+            else np.zeros(merged.tree.num_bodies)
+        )
         if not np.all(np.isfinite(weights.astype(np.float32))):
             raise ValueError("body mobility is outside float32 range")
         super().__init__(merged)
@@ -1386,7 +1390,9 @@ class GpuEngine(PhysicsEngine):
                 from .solvers.contact_regularization import normalize_parameters, reference_coefficients
 
                 _, admm_solimp = normalize_parameters(self._admm_solref, admm_solimp, dt)
-                native = np.asarray((*self._admm_solref, *admm_solimp, dt, self.impratio), dtype=np.float32)
+                native = np.asarray(
+                    (*self._admm_solref, *admm_solimp, dt, max(1e-15, self.impratio)), dtype=np.float32
+                )
                 if not np.all(np.isfinite(native)) or np.any(native[[0, 1, 7, 8]] <= 0):
                     raise ValueError("ADMM model parameters are outside float32 range")
                 reference_coefficients(self._admm_solref, admm_solimp, dt, dtype=np.float32)
