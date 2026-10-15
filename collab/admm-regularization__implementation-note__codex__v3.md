@@ -3,9 +3,9 @@ Stage: implementation-note
 Author: codex
 Version: v3
 Date: 2026-10-15
-Status: in_review
-Related Files: collab/admm-regularization__code-review__codex__v2.md; docs/admm_regularization.md
-Owner Summary: 按第二轮独立审阅补齐下降阻抗精度、R 原生范围和宽度阈值转换问题。216 项真实环境回归通过；最终候选待独立复审。正则化接口、普通法向验收及摩擦排除范围均保持不变。
+Status: accepted
+Related Files: collab/admm-regularization__code-review__codex__v2.md; collab/admm-regularization__code-review__codex__v3.md; docs/admm_regularization.md
+Owner Summary: 按第二轮独立审阅补齐下降阻抗精度、R 原生范围和宽度阈值转换问题。216 项真实环境回归通过；第三轮独立复审已批准精确版本 52f14d5911468f4824f4e254ceb20e58973e3352。正则化接口、普通法向验收及摩擦排除范围均保持不变。
 
 ## Provenance and scope
 
@@ -86,3 +86,19 @@ earlier repairs remain intact. No condim3 force accuracy, friction projection,
 default-30-iteration convergence, arbitrary collision/integration correctness,
 extreme-scale force convergence, private-buffer mutation, material fidelity,
 performance or full MuJoCo compatibility is approved by these results.
+
+## Final independent approval record
+
+Independent code review v3 approved exact frozen candidate
+**52f14d5911468f4824f4e254ceb20e58973e3352**. The complete report is preserved
+verbatim in [code-review v3](admm-regularization__code-review__codex__v3.md).
+The reviewer independently reran the focused suite on real H200:
+**216 passed, 1 existing fixture-deprecation warning, 69.15 s**. Additional
+reviewer-owned Decimal-oracle, actual MuJoCo, boundary, atomicity and recovery
+probes passed; F1 through F4 are closed at that revision. Both reviewed checkouts
+remained clean. Earlier Request changes verdicts remain historical records.
+
+This appended approval record and verbatim report are an evidence-only follow-up.
+They change no code, tests, requirements or approved scope. Approval covers the
+optional regularization policies and bounded normal-only verification described
+above; the stated friction, material and broader-correctness exclusions remain.

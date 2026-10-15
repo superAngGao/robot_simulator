@@ -26,6 +26,7 @@
 - CPU/Warp GPU 新增 `regularization='per_row'|'mujoco'`；默认保持 per_row。
   GPU per_row 已改用原始 W，对齐 CPU 定义；新增 condim1 引擎路径以验证纯法向接触。
 - [接口与边界](docs/admm_regularization.md)；[执行证据及审阅状态](collab/admm-regularization__implementation-note__codex__v3.md)。
+- 独立代码审阅 v3 已批准 `52f14d5`；真实 H200 独立重跑 216 项测试全部通过，F1–F4 已关闭：[完整审阅报告](collab/admm-regularization__code-review__codex__v3.md)。
 - 摩擦投影反例、默认迭代数收敛、缓存身份、材料标定与完整刚体正确性仍未关闭。
 
 > Last updated: 2026-04-16 (session 32)
