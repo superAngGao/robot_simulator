@@ -328,8 +328,8 @@ def test_decreasing_and_width_switch_against_actual_mujoco(imp):
 
 @pytest.mark.parametrize("width", [0.001, 0.010001])
 @pytest.mark.parametrize("condim", [1, 3])
-def test_decreasing_native_upper_boundary(width, condim):
-    mass = 4.89730620518322e-35
+@pytest.mark.parametrize("mass,accepted", [(4.89730620518322e-35, False), (5e-35, True)])
+def test_decreasing_native_upper_boundary(width, condim, mass, accepted):
     merged = merge_models(robots={"a": _ball_model(mass), "b": _ball_model(mass)})
     engine = GpuEngine(merged, solver="admm", regularization="mujoco", contact_condim=condim, dt=0.002)
     engine._admm_solimp = (0.9999, 0.00012, width, 0.5, 2)
@@ -338,6 +338,13 @@ def test_decreasing_native_upper_boundary(width, condim):
     q[6] = q[13] = 0.09
     q[11] = 0.19
     engine.reset(q)
+    if not accepted:
+        before = snapshot(engine)
+        with pytest.raises(ValueError):
+            engine.step()
+        assert_unchanged(engine, before)
+        engine.close()
+        return
     engine.step()
     active = engine._contact_active.numpy()[0].astype(bool)
     assert active.sum() == 3
