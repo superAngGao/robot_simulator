@@ -1,0 +1,41 @@
+......................................TRAJECTORY {"contact_count_disagreements": 0, "cumulative_impulse_error": 7.476658181460039e-16, "dt": 0.001, "kind": "sphere", "max_penetration_error": 1.3877787807814457e-17, "max_penetration_mujoco": 0.01236544039384005, "max_penetration_ours": 0.01236544039384005, "max_q_error": 1.3877787807814457e-17, "max_step_impulse_error": 4.996003610813204e-16, "max_v_error": 9.992007221626409e-16}
+.TRAJECTORY {"contact_count_disagreements": 0, "cumulative_impulse_error": 2.0122792321330962e-15, "dt": 0.001, "kind": "quadruped", "max_penetration_error": 1.1449174941446927e-16, "max_penetration_mujoco": 0.001026631136496741, "max_penetration_ours": 0.0010266311364966856, "max_q_error": 4.440892098500626e-16, "max_step_impulse_error": 9.749145934989656e-16, "max_v_error": 3.108624468950438e-14}
+.TRAJECTORY {"contact_count_disagreements": 0, "cumulative_impulse_error": 1.0260889360402814e-15, "dt": 0.0005, "kind": "sphere", "max_penetration_error": 1.3877787807814457e-17, "max_penetration_mujoco": 0.0126297776807347, "max_penetration_ours": 0.0126297776807347, "max_q_error": 1.3877787807814457e-17, "max_step_impulse_error": 2.498001805406602e-16, "max_v_error": 1.3322676295501878e-15}
+.TRAJECTORY {"contact_count_disagreements": 0, "cumulative_impulse_error": 1.1275702593849246e-15, "dt": 0.0005, "kind": "quadruped", "max_penetration_error": 1.1102230246251565e-16, "max_penetration_mujoco": 0.001026631136496741, "max_penetration_ours": 0.0010266311364966856, "max_q_error": 6.661338147750939e-16, "max_step_impulse_error": 7.8236028766554e-16, "max_v_error": 3.2862601528904634e-14}
+.Warp 1.12.0 initialized:
+   CUDA Toolkit 12.9, Driver 13.2
+   Devices:
+     "cpu"      : "x86_64"
+     "cuda:0"   : "NVIDIA H200" (140 GiB, sm_90, mempool enabled)
+   Kernel cache:
+     /home/ang.gao/.cache/warp/1.12.0
+Module physics.backends.warp.kernels 4ff0094 load on device 'cuda:0' took 7.09 ms  (cached)
+Module physics.backends.warp.crba_kernels 88f0422 load on device 'cuda:0' took 4.45 ms  (cached)
+Module physics.backends.warp.solver_kernels 394b7f9 load on device 'cuda:0' took 3.03 ms  (cached)
+Module physics.backends.warp.collision_kernels f9b3ca2 load on device 'cuda:0' took 15.13 ms  (cached)
+Module physics.backends.warp.admm_kernels d657d1e load on device 'cuda:0' took 2152.41 ms  (compiled)
+Module physics.gpu_engine c7d00cf load on device 'cuda:0' took 24.45 ms  (cached)
+GPU_REGULARIZATION {"policy": "per_row", "condim": 1, "impratio": 1, "max_R_relative_error": 2.682209014892578e-07, "max_impulse_error": 6.48671395486744e-08}
+.GPU_REGULARIZATION {"policy": "per_row", "condim": 3, "impratio": 1, "max_R_relative_error": 3.325052091440739e-07, "max_impulse_error": null}
+.GPU_REGULARIZATION {"policy": "mujoco", "condim": 1, "impratio": 1, "max_R_relative_error": 2.7567148276619345e-07, "max_impulse_error": 6.48671395486744e-08}
+.GPU_REGULARIZATION {"policy": "mujoco", "condim": 3, "impratio": 10, "max_R_relative_error": 2.1979212700556903e-07, "max_impulse_error": null}
+.GPU_REGULARIZATION {"policy": "mujoco", "condim": 3, "impratio": 1e-16, "max_R_relative_error": 1.7029898285209862e-08, "max_impulse_error": null}
+.GPU_REGULARIZATION {"policy": "mujoco", "condim": 3, "impratio": 1, "max_R_relative_error": 1.7029898285209862e-08, "max_impulse_error": null}
+.GPU_REGULARIZATION {"policy": "mujoco", "condim": 3, "impratio": 1, "max_R_relative_error": 7.874396615995609e-08, "max_impulse_error": null}
+.............................................Module robot_sim_physics_correctness.tests.gpu.solvers.test_gpu_admm_validation 9326a36 load on device 'cuda:0' took 0.86 ms  (cached)
+.Module robot_sim_physics_correctness.tests.gpu.solvers.test_gpu_admm_validation 2711963 load on device 'cuda:0' took 1.14 ms  (cached)
+.Module robot_sim_physics_correctness.tests.gpu.solvers.test_gpu_admm_validation 7c304a4 load on device 'cuda:0' took 1.26 ms  (cached)
+.Module robot_sim_physics_correctness.tests.gpu.solvers.test_gpu_admm_validation 524ff19 load on device 'cuda:0' took 1.39 ms  (cached)
+.Module robot_sim_physics_correctness.tests.gpu.solvers.test_gpu_admm_validation b5ec008 load on device 'cuda:0' took 1449.78 ms  (compiled)
+................................................................
+=============================== warnings summary ===============================
+tests/unit/solvers/test_mujoco_qp.py::TestMuJoCoTrajectory::test_z_l2_below_threshold
+  /home/ang.gao/miniforge3/envs/robot_sim/lib/python3.12/site-packages/_pytest/fixtures.py:1313: PytestRemovedIn10Warning: Class-scoped fixture defined as instance method is deprecated.
+  Instance attributes set in this fixture will NOT be visible to test methods,
+  as each test gets a new instance while the fixture runs only once per class.
+  Use @classmethod decorator and set attributes on cls instead.
+  See https://docs.pytest.org/en/stable/deprecations.html#class-scoped-fixture-as-instance-method
+    fixturefunc = resolve_fixture_function(fixturedef, request)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+161 passed, 1 warning in 71.64s (0:01:11)

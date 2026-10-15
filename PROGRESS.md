@@ -20,6 +20,14 @@
 
 以下历史阶段表保留供追溯，不能覆盖上述现状。
 
+### 2026-10-15 — ADMM 可选正则化，实施与验收
+
+- 按用户确定的顺序，先分离 R 策略，再处理摩擦。设计 v2 已独立批准。
+- CPU/Warp GPU 新增 `regularization='per_row'|'mujoco'`；默认保持 per_row。
+  GPU per_row 已改用原始 W，对齐 CPU 定义；新增 condim1 引擎路径以验证纯法向接触。
+- [接口与边界](docs/admm_regularization.md)；[执行证据及审阅状态](collab/admm-regularization__implementation-note__codex__v1.md)。
+- 摩擦投影反例、默认迭代数收敛、缓存身份、材料标定与完整刚体正确性仍未关闭。
+
 > Last updated: 2026-04-16 (session 32)
 > Reference plan: [PLAN.md](./PLAN.md)
 > Q54 optical-pipeline milestone addendum updated: 2026-08-10
