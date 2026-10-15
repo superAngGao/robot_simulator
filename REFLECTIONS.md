@@ -1891,6 +1891,11 @@ R_normal，精确抵消力臂放大效应。这是数学自洽的：放大因子
 - 纯 ADMM ρ 无 R：ρ 只是算法参数，完全收敛后消失，不改变最优解
 
 **我们的 per-row R vs MuJoCo per-contact R**：
+> 2026-10-15 更正：以下是历史判断，不能作为当前正确性结论。MuJoCo 3.15
+> 的近似对角路线按参考位姿的 body_invweight0 构造法向 R，再用 impratio
+> 调整切向 R，并非所有 condim 行无条件共享。穿透较小不能证明更接近物理真实。
+> 当前保留 per_row，并新增显式 mujoco 策略；解析与无摩擦交叉验证先于摩擦修复。
+
 MuJoCo 实现用 per-contact 常数 R（所有 condim 行共享），论文推导是 per-row。
 我们忠于论文：per-row R 让摩擦行按 A_tt 自适应。对 Q25 更优（自动补偿力臂），
 对刚体穿透也更优（Q30 已验证：穿透 0.25mm vs MuJoCo 1.1mm，不依赖机器人结构）。

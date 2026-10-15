@@ -8,15 +8,15 @@ Solves the dual constrained dynamics QP:
 
 where:
     A     = J H^{-1} J^T         (constraint-space inverse inertia, joint-space)
-    R     = (1-d)/d * diag(A)    (self-adaptive compliance regularization)
+    R     = selected contact-model regularization (per_row or mujoco)
     a_u_c = J @ a_u              (unconstrained constraint-space acceleration)
     a_ref = -b*v_c - k*d(r)*r   (spring-damper reference acceleration)
 
 Key properties:
     1. Acceleration level — forces, not impulses
     2. Joint-space A via CRBA — captures inertia coupling
-    3. R regularization — QP strictly convex, unique stable equilibrium
-    4. Self-adaptive R — scales with A_ii, no manual tuning per robot
+    3. R is model compliance; rho is an independent algorithmic penalty
+    4. Default per_row scales with A_ii; mujoco uses reference body mobility
     5. Warmstarting — reuses previous solution for faster convergence
     6. Adaptive rho — residual balancing per Boyd et al. (2011) §3.4.1
 
@@ -53,6 +53,12 @@ class ADMMQPSolver:
                     d_0: impedance at zero penetration [0..1].
                     d_width: impedance at full penetration [0..1].
                     width: penetration range for transition [m].
+        regularization: 'per_row' (default) or 'mujoco' (3.15 approximate
+                    diagonal Euler model, rigid isotropic condim1/3 only).
+        impratio  : Normal/tangent R ratio for mujoco; must be 1 for per_row.
+
+    The existing condim3 clamp/disk projection is not an exact cone projection;
+    this model option does not establish frictional QP or trajectory accuracy.
     """
 
     def __init__(

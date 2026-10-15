@@ -31,7 +31,9 @@ def test_matched_frictionless_trajectory(kind,dt):
     errors=[]; impulses=[]; depths=[]; counts=[]
     for _ in range(round(duration/dt)):
         out=engine.step(q,v,np.zeros(merged.tree.nv))
-        ours_impulse=float(np.sum(s.last_forces))*dt if s.last_forces is not None else 0.
+        # AccelLevelAdapter bypasses the solver on empty frames; last_forces
+        # describes the last solve, not necessarily this frame.
+        ours_impulse=float(np.sum(s.last_forces))*dt if engine._last_contacts else 0.
         our_depth=max([c.depth for c in engine._last_contacts]+[0.])
         mujoco.mj_step(m,d)
         ref_impulse=float(np.sum(d.efc_force))*dt
@@ -51,3 +53,12 @@ def test_matched_frictionless_trajectory(kind,dt):
     print("TRAJECTORY",json.dumps(result,sort_keys=True))
     assert np.all(np.isfinite(errors))
     assert max(c[0] for c in counts)>0
+    # Matched discrete equations on these fixtures agree to rounding plus the
+    # 1e-12 solve tolerance accumulated over <=1000 steps. This is a numerical
+    # equivalence gate, not a universal geometric/material fidelity tolerance.
+    assert result["max_q_error"] < 1e-10
+    assert result["max_v_error"] < 1e-9
+    assert result["max_penetration_error"] < 1e-10
+    assert result["max_step_impulse_error"] < 1e-10
+    assert result["cumulative_impulse_error"] < 1e-9
+    assert result["contact_count_disagreements"] == 0
