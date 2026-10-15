@@ -56,6 +56,7 @@ def contacts_from_mujoco(tree, model, data):
         i = model.geom_bodyid[geom]
         return -1 if i == 0 else names[mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i)]
     return [ContactConstraint(body_i=bid(c.geom2), body_j=bid(c.geom1), point=c.pos.copy(),
+                tangent1=np.zeros(3), tangent2=np.zeros(3),
                 normal=c.frame[:3].copy(), depth=-c.dist, mu=c.friction[0], condim=c.dim)
             for c in data.contact]
 
