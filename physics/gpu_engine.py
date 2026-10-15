@@ -285,7 +285,7 @@ class GpuEngine(PhysicsEngine):
         )
 
         validate_policy(regularization, impratio)
-        if contact_condim not in (1, 3):
+        if not isinstance(contact_condim, (int, np.integer)) or contact_condim not in (1, 3):
             raise ValueError("contact_condim must be 1 or 3")
         if solver != "admm" and (regularization != "per_row" or impratio != 1 or contact_condim != 3):
             raise ValueError("nondefault ADMM model options require solver='admm'")

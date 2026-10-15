@@ -147,12 +147,12 @@ class ADMMQPSolver:
         solimp = self.solimp
         weights = None
         if self.regularization == "mujoco":
-            _, solimp = normalize_parameters(self.solref, solimp, dt)
-            coefficients = reference_coefficients(self.solref, solimp, dt)
+            solref, solimp = normalize_parameters(self.solref, solimp, dt)
+            coefficients = reference_coefficients(solref, solimp, dt)
             if not all(np.all(np.isfinite(x)) for x in (q, qdot, a_u)):
                 raise ValueError("nonfinite contact state")
             for c in contacts:
-                if c.condim not in (1, 3):
+                if not isinstance(c.condim, (int, np.integer)) or c.condim not in (1, 3):
                     raise ValueError("mujoco regularization supports condim 1/3")
                 if any(
                     not isinstance(i, (int, np.integer)) or i < -1 or i >= tree.num_bodies
@@ -241,14 +241,13 @@ class ADMMQPSolver:
         R = np.diag(R_diag)
 
         # ── Reference acceleration a_ref (solref spring-damper) ──
-        timeconst, dampratio = self.solref
-        # Safety clamp: timeconst >= 2*dt (MuJoCo default)
-        timeconst = max(timeconst, 2.0 * dt)
-        # b, k use d_width (solimp[1]), not d(0) — per MuJoCo docs
-        d_w = solimp[1]  # impedance at full penetration
         if weights is not None:
             b, k = coefficients
         else:
+            timeconst, dampratio = self.solref
+            # Safety clamp: timeconst >= 2*dt (MuJoCo default).
+            timeconst = max(timeconst, 2.0 * dt)
+            d_w = solimp[1]  # b, k use d_width, not d(0).
             b = 2.0 / (d_w * timeconst)
             k = 1.0 / (d_w**2 * timeconst**2 * dampratio**2)
 

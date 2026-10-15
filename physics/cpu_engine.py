@@ -57,7 +57,7 @@ class CpuEngine(PhysicsEngine):
         *,
         contact_condim: int = 3,
     ) -> None:
-        if contact_condim not in (1, 3):
+        if not isinstance(contact_condim, (int, np.integer)) or contact_condim not in (1, 3):
             raise ValueError("contact_condim must be 1 or 3")
         self._contact_condim = contact_condim
         super().__init__(merged)
